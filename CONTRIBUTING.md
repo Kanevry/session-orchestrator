@@ -81,7 +81,7 @@ Skills are the core logic units. Each skill is a Markdown file with YAML frontma
 - Skills can invoke other skills (e.g., `session-start` invokes `session-plan`)
 - A skill directory may contain supporting files (e.g., `soul.md` alongside `SKILL.md`)
 
-**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`
+**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`
 
 ### Commands (`commands/<name>.md`)
 
@@ -364,74 +364,19 @@ Session Config is the per-repo configuration mechanism. It lives in each project
 
 When adding new configurable behavior:
 
-1. **Add the field to Session Config documentation** in `session-start` (Phase 0), where all config fields are listed and described.
+1. **Add the field to the Field Reference table** in `docs/USER-GUIDE.md` Section 4 (the authoritative reference for all Session Config fields). Include: field name, type, default value, and description.
 
-2. **Document the field** with:
-   - Field name
-   - Type (string, list, boolean, object)
-   - Default value
-   - Description of what it controls
+2. **Add the field to `session-start` Phase 0** where all config fields are listed with brief descriptions.
 
-3. **Update README.md** to include the new field in the Session Config table.
+3. **Use graceful degradation.** If the field is not present in a repo's config, the skill should either skip the related functionality or use a sensible default. Never fail because a config field is missing.
 
-4. **Use graceful degradation.** If the field is not present in a repo's config, the skill should either skip the related functionality or use a sensible default. Never fail because a config field is missing.
-
-5. **Example:** Adding a `test-command` field:
-
-   In `session-start` Phase 0, add:
-   ```
-   - `test-command` -- custom test command (default: `pnpm test`)
-   ```
-
-   In the skill that uses it:
-   ```
-   Read `test-command` from Session Config. If not set, default to `pnpm test`.
-   ```
-
-   In README.md Session Config table:
-   ```
-   - **test-command:** pnpm test
-   ```
+4. **Example:** To add a `test-command` field, add it to USER-GUIDE.md Section 4 Field Reference table, add it to session-start Phase 0 config list, and in the consuming skill write: "Read `test-command` from Session Config. If not set, default to `pnpm test --run`."
 
 ## Label Taxonomy
 
-When working with VCS integration (issues, merge requests, pull requests), use the standard label taxonomy:
+The standard label taxonomy is defined in the **Label Taxonomy** section of `skills/gitlab-ops/SKILL.md`. This is the single source of truth for all label definitions.
 
-### Priority
-
-| Label               | Meaning                           |
-|---------------------|-----------------------------------|
-| `priority:critical` | Blocking production or users      |
-| `priority:high`     | Important, schedule this sprint   |
-| `priority:medium`   | Plan for next sprint              |
-| `priority:low`      | Backlog, nice-to-have             |
-
-### Status
-
-| Label                | Meaning                        |
-|----------------------|--------------------------------|
-| `status:ready`       | Defined, ready to pick up      |
-| `status:in-progress` | Actively being worked on       |
-| `status:review`      | MR/PR created, awaiting review |
-| `status:blocked`     | Waiting on external dependency |
-
-### Area
-
-Use `area:<name>` labels to indicate the part of the system affected:
-
-`area:frontend`, `area:backend`, `area:database`, `area:ai`, `area:security`, `area:testing`, `area:ci`, `area:infrastructure`, `area:compliance`
-
-### Type
-
-| Label           | Meaning                          |
-|-----------------|----------------------------------|
-| `bug`           | Something is broken              |
-| `feature`       | New capability                   |
-| `enhancement`   | Improvement to existing feature  |
-| `refactor`      | Code restructuring, no behavior change |
-| `chore`         | Maintenance, dependencies, CI    |
-| `documentation` | Docs only                        |
-| `epic`          | Large initiative spanning multiple issues |
+When your skill or agent interacts with VCS labels, reference the gitlab-ops taxonomy. If you need to add a new label category, add it to gitlab-ops first, then use it in your skill.
 
 ## Pull Request Guidelines
 

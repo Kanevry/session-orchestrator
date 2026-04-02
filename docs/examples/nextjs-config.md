@@ -25,7 +25,7 @@ Add this to your project's `CLAUDE.md`:
 
 ## What this enables
 
-- **Pencil integration**: Design-code alignment reviews after Wave 2 and Wave 3, comparing `designs/app.pen` frames with your React components
+- **Pencil integration**: Design-code alignment reviews after Impl-Core and Impl-Polish waves, comparing `designs/app.pen` frames with your React components
 - **Cross-repo awareness**: Checks `~/Projects/shared-ui-library` for recent changes and critical issues
 - **Health monitoring**: Checks production and preview deployment health at session start
 - **GitHub integration**: Uses `gh` CLI for issues, PRs, and workflow status
@@ -35,6 +35,6 @@ Add this to your project's `CLAUDE.md`:
 
 1. `/session feature` — analyzes Next.js project state, Vercel deployments, GitHub issues
 2. Wave plan accounts for frontend (React components) and backend (API routes) work
-3. After Wave 2: Pencil design review compares your implemented components with design frames
-4. After Wave 3: Final design alignment check before quality waves
+3. After Impl-Core: Pencil design review compares your implemented components with design frames
+4. After Impl-Polish: Final design alignment check before Quality wave
 5. `/close` — runs `pnpm typecheck`, `pnpm test`, `pnpm lint`, commits, updates GitHub issues

@@ -177,6 +177,8 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 - **gitlab-host:** gitlab.company.com
 - **health-endpoints:** [{name: "API", url: "https://api.example.com/health"}, {name: "Worker", url: "http://worker:8080/healthz"}]
 - **special:** "Always run database migrations before testing"
+- **test-command:** pnpm vitest run
+- **stale-issue-days:** 14
 ```
 
 ### Field Reference
@@ -186,7 +188,7 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `session-types` | list | `[feature]` | Which session types this repo supports. Controls what `/session <type>` accepts. |
 | `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
-| `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Waves 2 and 3. |
+| `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than 5 days. |
 | `cli-tools` | list | none | CLI tools available in this project (e.g., `glab`, `vercel`, `supabase`, `stripe`). Informs the orchestrator what commands it can use. |
@@ -196,6 +198,15 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
 | `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
+| `test-command` | string | `pnpm test --run` | Custom test command. Used by quality gates for all test invocations. |
+| `typecheck-command` | string | `tsgo --noEmit` | Custom TypeScript check command. Set to `skip` for non-TS projects. |
+| `lint-command` | string | `pnpm lint` | Custom lint command. Used by the Full Gate quality check at session end. |
+| `ssot-freshness-days` | integer | `5` | Days before an SSOT file is flagged as stale during session start. |
+| `plugin-freshness-days` | integer | `30` | Days before the plugin itself is flagged as potentially outdated. |
+| `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
+| `issue-limit` | integer | `50` | Maximum issues to fetch when querying VCS during session start. |
+| `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
+| `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 
 ### Minimal Config
 
@@ -213,39 +224,50 @@ See [examples](examples/) for project-specific configurations (Next.js, Express 
 
 ## 5. The Wave Pattern
 
-Feature and deep sessions execute work in 5 structured waves. Each wave has a specific purpose, and agents within a wave run in parallel.
+Feature and deep sessions execute work in structured waves, each assigned one of 5 roles. Each wave has a specific purpose, and agents within a wave run in parallel.
 
 ### Wave Structure
 
-| Wave | Name | Purpose | Agents modify code? |
-|------|------|---------|---------------------|
-| **1** | Validation & Discovery | Understand the current state before changing anything | No (read-only) |
-| **2** | Implementation A | Core feature work — the primary implementation | Yes |
-| **3** | Implementation B | Polish, fix Wave 2 issues, integration, edge cases | Yes |
-| **4** | Quality & Testing | Tests, TypeScript checks, lint, security review | Yes (tests only) |
-| **5** | Finalization | Documentation, issue cleanup, commit preparation | Minimal |
+| Role | Purpose | Agents modify code? |
+|------|---------|---------------------|
+| **Discovery** | Understand the current state before changing anything | No (read-only) |
+| **Impl-Core** | Core feature work — the primary implementation | Yes |
+| **Impl-Polish** | Polish, fix Impl-Core issues, integration, edge cases | Yes |
+| **Quality** | Tests, TypeScript checks, lint, security review | Yes (tests only) |
+| **Finalization** | Documentation, issue cleanup, commit preparation | Minimal |
+
+### Role-to-Wave Mapping
+
+Roles map dynamically to the configured wave count (default: 5):
+
+| `waves` | Mapping |
+|---------|---------|
+| 3 | W1=Discovery+Impl-Core, W2=Impl-Polish+Quality, W3=Finalization |
+| 4 | W1=Discovery, W2=Impl-Core+Impl-Polish, W3=Quality, W4=Finalization |
+| 5 | W1=Discovery, W2=Impl-Core, W3=Impl-Polish, W4=Quality, W5=Finalization |
+| 6+ | W1=Discovery, W2-W3=Impl-Core (split), W4-W5=Impl-Polish (split), W6=Quality+Finalization |
 
 ### Wave Details
 
-**Wave 1 — Validation & Discovery**
-Agents audit affected code paths, verify assumptions from the plan, check existing test coverage, and identify edge cases. This wave is read-only: no files are modified. If discoveries warrant it, the plan is adjusted before Wave 2 begins.
+**Discovery**
+Agents audit affected code paths, verify assumptions from the plan, check existing test coverage, and identify edge cases. This wave is read-only: no files are modified. If discoveries warrant it, the plan is adjusted before Impl-Core begins.
 
-**Wave 2 — Implementation A (Core)**
+**Impl-Core**
 The primary implementation wave. Agents write core feature code, database changes, API endpoints, and primary UI components. Each agent has a clearly scoped set of files and acceptance criteria. Output: a working (possibly rough) implementation.
 
-**Wave 3 — Implementation B (Polish)**
-Agents fix issues discovered during Wave 2, implement secondary features, handle integration between Wave 2 outputs, and address edge cases. If Pencil design review is configured, a design-code alignment check runs after this wave.
+**Impl-Polish**
+Agents fix issues discovered during Impl-Core, implement secondary features, handle integration between Impl-Core outputs, and address edge cases. If Pencil design review is configured, a design-code alignment check runs after this wave.
 
-**Wave 4 — Quality & Testing**
-Agents write and update tests, run the full test suite, run TypeScript checks (`tsgo --noEmit`), run lint, and perform a security review. Goal: all tests passing, zero TypeScript errors, no lint violations.
+**Quality**
+Agents write and update tests, run quality checks per the quality-gates skill, and perform a security review. Goal: all tests passing, zero TypeScript errors, no lint violations.
 
-**Wave 5 — Finalization**
+**Finalization**
 One or two agents update SSOT files, close or update issues, write session handover documentation, and prepare clean commits. No new feature work happens here.
 
 ### Agent Counts by Session Type
 
-| Session Type | Wave 1 | Wave 2 | Wave 3 | Wave 4 | Wave 5 |
-|-------------|--------|--------|--------|--------|--------|
+| Session Type | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
+|-------------|-----------|-----------|-------------|---------|-------------|
 | housekeeping | 2 | 2 | 1 | 1 | 1 |
 | feature | 4-6 | 6 | 4-6 | 4 | 2 |
 | deep | 6-8 | 6-10 | 6-8 | 6 | 2-4 |
@@ -258,8 +280,8 @@ Between each wave, the orchestrator:
 
 1. Reviews all agent outputs
 2. Checks for file conflicts between agents
-3. Runs incremental verification (tests, TypeScript after Wave 4)
-4. Runs design review if configured (after Waves 2 and 3)
+3. Runs verification based on wave role (Incremental after Impl-Core/Impl-Polish, Full Gate after Quality)
+4. Runs design review if configured (after Impl-Core and Impl-Polish roles)
 5. Adapts the plan for the next wave if needed (adds fix tasks, re-scopes)
 6. Reports progress to you
 
@@ -307,23 +329,23 @@ You pick an option (or propose your own). The orchestrator does not proceed unti
 
 ### Step 3: Review the wave plan
 
-After you choose a direction, the orchestrator decomposes the work into a 5-wave plan:
+After you choose a direction, the orchestrator decomposes the work into a role-based wave plan:
 
 ```
 ## Wave Plan (Session: feature)
 
-### Wave 1: Validation & Discovery (4 agents)
+### Wave 1: Discovery (4 agents)
 - Agent 1: Audit API endpoint structure → src/api/ → map current routes
 - Agent 2: Verify database schema → prisma/schema.prisma → check relations
 ...
 
-### Wave 2: Implementation A (6 agents)
+### Wave 2: Impl-Core (6 agents)
 - Agent 1: Implement new API route → src/api/users.ts → endpoint returns 200
 ...
 
 ### Inter-Wave Checkpoints
-- After W2: Design review (Pencil configured)
-- After W4: Full quality gate
+- After Impl-Core: Design review (Pencil configured)
+- After Quality: Full quality gate
 
 Ready to execute? Use /go to begin.
 ```
@@ -339,18 +361,18 @@ You can request changes to the plan. When satisfied:
 Waves execute automatically. Agents within each wave run in parallel. Between waves, the orchestrator reviews results, runs checks, and adapts the plan if needed. You see progress updates after each wave:
 
 ```
-## Wave 2 Complete ✓
+## Wave 2 (Impl-Core) Complete ✓
 - Agent 1: done — API route implemented, returns correct schema
 - Agent 2: done — Database migration created
 - Agent 3: done — Frontend form component built
 - Tests: 3 new passing | TypeScript: 0 errors
 - Design: ALIGNED
-- Adaptations for Wave 3: none
+- Adaptations for Impl-Polish: none
 ```
 
 ### Step 5: Close the session
 
-After Wave 5 completes:
+After the Finalization wave completes:
 
 ```
 /close
@@ -416,29 +438,9 @@ or
 
 ### Label Taxonomy
 
-The orchestrator uses a structured label system. Create these labels in your VCS if they do not already exist:
+The orchestrator uses a structured label system for issue management. For the complete label taxonomy (priority, status, area, and type labels), see the **Label Taxonomy** section of the `gitlab-ops` skill (`skills/gitlab-ops/SKILL.md`).
 
-**Priority labels:**
-
-| Label | Meaning |
-|-------|---------|
-| `priority:critical` | Blocking production or users |
-| `priority:high` | Important, schedule this sprint |
-| `priority:medium` | Plan for next sprint |
-| `priority:low` | Backlog, nice-to-have |
-
-**Status labels:**
-
-| Label | Meaning |
-|-------|---------|
-| `status:ready` | Defined, ready to pick up |
-| `status:in-progress` | Actively being worked on |
-| `status:review` | MR/PR created, awaiting review |
-| `status:blocked` | Waiting on external dependency |
-
-**Area labels:** `area:frontend`, `area:backend`, `area:database`, `area:ai`, `area:security`, `area:testing`, `area:ci`, `area:infrastructure`, `area:compliance`
-
-**Type labels:** `bug`, `feature`, `enhancement`, `refactor`, `chore`, `documentation`, `epic`
+Create these labels in your VCS platform if they do not already exist. The orchestrator will use them automatically during session start (categorizing issues), execution (marking in-progress), and close-out (updating status).
 
 ### GitHub Mirroring
 
@@ -458,13 +460,13 @@ Session Orchestrator enforces quality at two levels: inter-wave checks during ex
 
 ### Session Reviewer Agent
 
-The `session-reviewer` is a dedicated agent that verifies work quality. It runs between waves (especially before Wave 3 and after Wave 4) and at session end. It checks:
+The `session-reviewer` is a dedicated agent that verifies work quality. It runs between waves (especially before Impl-Polish and after Quality) and at session end. It checks:
 
 1. **Implementation correctness** — Changed files match task descriptions. No incomplete implementations, placeholder values, or hardcoded data. Error handling follows project patterns.
 
 2. **Test coverage** — Every changed source file has a corresponding test file. Tests cover the new behavior (not just boilerplate). Tests pass when run.
 
-3. **TypeScript health** — `tsgo --noEmit` reports zero errors. This is non-negotiable.
+3. **TypeScript health** — typecheck per quality-gates skill reports zero errors. This is non-negotiable.
 
 4. **Security basics (OWASP quick check):**
    - No hardcoded secrets or API keys
@@ -481,7 +483,7 @@ The `session-reviewer` is a dedicated agent that verifies work quality. It runs 
 The reviewer produces a structured verdict:
 
 ```
-## Quality Review — Wave 2
+## Quality Review — Impl-Core
 
 ### Implementation: PASS
 ### Tests: WARN — missing test for src/api/users.ts
@@ -489,7 +491,7 @@ The reviewer produces a structured verdict:
 ### Security: PASS
 ### Issues: PASS
 
-### Verdict: PROCEED (address test gap in Wave 4)
+### Verdict: PROCEED (address test gap in Quality wave)
 ```
 
 Possible verdicts:
@@ -528,7 +530,7 @@ The path is relative to your project root. The orchestrator verifies the file ex
 
 ### How it works
 
-After **Wave 2** and **Wave 3**, the orchestrator:
+After **Impl-Core** and **Impl-Polish** waves, the orchestrator:
 
 1. Opens the `.pen` file via Pencil MCP
 2. Finds design frames relevant to the current wave's UI work
@@ -549,10 +551,10 @@ Each design review produces one of three verdicts:
 ### Example output
 
 ```
-## Wave 2 Complete ✓
+## Wave 2 (Impl-Core) Complete ✓
 ...
 - Design: MINOR DRIFT — card grid uses 3 columns instead of designed 2-column layout
-- Adaptations for Wave 3: Agent 2 assigned to fix card grid layout
+- Adaptations for Impl-Polish: Agent 2 assigned to fix card grid layout
 ```
 
 ### Without Pencil
@@ -647,20 +649,20 @@ If `health-endpoints` is not configured, the service table is omitted. If `cross
 ```
 /session feature          # Research + recommendations
   (pick a direction)      # User chooses focus
-  (review wave plan)      # Orchestrator proposes 5-wave plan
+  (review wave plan)      # Orchestrator proposes role-based wave plan
 /go                       # Execute waves with parallel agents
-  (waves 1-5 execute)     # Automatic, with inter-wave reviews
+  (role-based waves execute) # Automatic, with inter-wave reviews
 /close                    # Verify, commit, push, summarize
 ```
 
 ### Wave Quick Reference
 
 ```
-Wave 1  Validation & Discovery  (read-only)
-Wave 2  Implementation A        (core work)
-Wave 3  Implementation B        (polish + integration)
-Wave 4  Quality & Testing       (tests, TS, lint, security)
-Wave 5  Finalization            (docs, issues, commits)
+Discovery       Validation & read-only audit
+Impl-Core       Primary implementation (core work)
+Impl-Polish     Fix, integrate, polish, edge cases
+Quality         Tests, TypeScript, lint, security
+Finalization    Documentation, issues, commits
 ```
 
 ---

@@ -32,7 +32,7 @@ This example shows a minimal Session Config for a Swift iOS project. Session Orc
 ## Typical session flow
 
 1. `/session feature` — checks GitHub issues, recent commits, branch state
-2. Wave 1: Reviews Swift code, identifies affected view controllers and models
-3. Wave 2: Implements feature across model/view/controller layers
-4. Wave 3: Runs xcodebuild tests, quality review, finalizes
+2. Discovery + Impl-Core wave: Reviews Swift code, implements feature across model/view/controller layers
+3. Impl-Polish + Quality wave: Fixes issues, runs xcodebuild tests, quality review
+4. Finalization wave: Documentation, issue updates, commit preparation
 5. `/close` — commits, updates GitHub issues

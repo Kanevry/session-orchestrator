@@ -1,7 +1,7 @@
 ---
 name: wave-executor
 description: >
-  Executes the agreed session plan in 5 waves with parallel subagents. Handles inter-wave
+  Executes the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
   quality checks, plan adaptation, and progress tracking. Core orchestration engine for
   feature and deep sessions. Triggered by /go command.
 ---
@@ -16,18 +16,18 @@ You are the **coordinator**. You do NOT implement — you orchestrate. Your job:
 3. Review their outputs
 4. Adapt the plan if needed
 5. Dispatch the next wave
-6. Repeat until all 5 waves complete
+6. Repeat until all waves complete
 
 ## Pre-Execution Check
 
-Before starting Wave 1:
+Before starting the first wave (Discovery role):
 1. `git status --short` — ensure clean working directory (commit or stash if needed)
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
 
 ## Wave Execution Loop
 
-For each wave (1 through 5):
+For each wave, resolve its assigned role(s) from the session plan's role-to-wave mapping:
 
 ### 1. Dispatch Agents
 
@@ -59,13 +59,13 @@ After ALL agents in the wave complete:
 1. **Read each agent's result** carefully
 2. **Check for conflicts**: did two agents modify the same file? → manual merge needed
 3. **Check for failures**: did any agent report errors or blockers?
-4. **Run incremental verification**:
-   - After Wave 1: no verification needed (read-only)
-   - After Wave 2: run tests on changed files only
-   - After Wave 3: run full integration test if available
-   - After Wave 4: `tsgo --noEmit` + `pnpm test --run` + `pnpm lint`
-   - After Wave 5: final git status check
-5. **Pencil design review** (after Wave 2 and Wave 3 only, if `pencil` configured in Session Config):
+4. **Run incremental verification** (per the quality-gates skill, based on the wave's role):
+   - After **Discovery**: no verification needed (read-only)
+   - After **Impl-Core**: Incremental quality checks per quality-gates (test changed files, typecheck)
+   - After **Impl-Polish**: Incremental quality checks + integration verification
+   - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
+   - After **Finalization**: final git status check
+5. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
    a. Check Pencil editor state: `get_editor_state({ include_schema: false })`. If no editor active, open the configured `.pen` file via `open_document({ filePathOrTemplate: "<pencil-path>" })`. If that also fails → skip with note "Pencil review skipped — .pen file unavailable."
    b. Get design structure: `batch_get({ filePath: "<pencil-path>", patterns: [{ type: "frame" }], readDepth: 2, searchDepth: 2 })` — find frames relevant to this wave's UI work.
    c. Screenshot relevant frames: `get_screenshot({ filePath: "<pencil-path>", nodeId: "<frame-id>" })` for each frame matching the wave's UI tasks.
@@ -94,12 +94,12 @@ After reviewing wave results, decide:
 After each wave, provide a brief status:
 
 ```
-## Wave [N] Complete ✓
+## Wave [N] ([Role]) Complete ✓
 - [Agent 1]: [done/partial/failed] — [1-line summary]
 - [Agent 2]: [done/partial/failed] — [1-line summary]
 - Tests: [passing/failing] | TypeScript: [0 errors / N errors]
-- Design: [aligned/drift/mismatch — or N/A if no pencil config or Wave 1/4/5]
-- Adaptations for Wave [N+1]: [none / list changes]
+- Design: [aligned/drift/mismatch — or N/A if not Impl-Core/Impl-Polish or no pencil config]
+- Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
 ## Agent Prompt Best Practices
@@ -127,14 +127,14 @@ Each agent prompt MUST NOT include:
 - End with a single commit summarizing all housekeeping work
 
 ### Feature Sessions
-- Full 5-wave execution
+- Full wave execution (5 roles mapped to configured wave count)
 - 4-6 agents per wave (read from Session Config)
 - Balance between implementation speed and quality
 
 ### Deep Sessions
-- Full 5-wave execution
+- Full wave execution (5 roles mapped to configured wave count)
 - Up to 10-18 agents per wave (read from Session Config)
-- Extra emphasis on Wave 1 discovery and Wave 4 testing
+- Extra emphasis on Discovery role and Quality role
 - May include security audits, performance profiling, architecture refactoring
 
 ## Error Recovery
@@ -145,13 +145,13 @@ Each agent prompt MUST NOT include:
 | Agent produces broken code | Add fix task to next wave |
 | Tests fail after wave | Diagnose in next wave, don't skip |
 | Merge conflict between agents | Resolve manually, document |
-| TypeScript errors introduced | Track count, must be 0 by Wave 4 |
-| New critical issue discovered | Inform user, add to Wave 3+ if fits scope |
+| TypeScript errors introduced | Track count, run Full Gate per quality-gates by Quality wave |
+| New critical issue discovered | Inform user, add to Impl-Polish+ roles if fits scope |
 | Agent edits wrong files | Revert via git, re-dispatch with stricter scope |
 
 ## Completion
 
-After Wave 5 completes successfully:
+After the Finalization wave completes successfully:
 1. Report final status to the user
 2. Suggest invoking `/close` to finalize the session
 3. Do NOT auto-commit — `/close` handles that with proper verification

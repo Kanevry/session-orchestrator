@@ -26,6 +26,26 @@ fi
 - `vcs: github|gitlab` — force a specific platform
 - `gitlab-host: <host>` — override auto-detected GitLab host (glab reads host from git remote by default)
 
+## How Other Skills Reference This
+
+**Directive:** Consuming skills MUST NOT duplicate VCS auto-detection logic or CLI command
+syntax inline. This skill is the single source of truth for all VCS operations.
+
+When a skill needs VCS operations, include this reference block in its instructions:
+
+> **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.
+> Use CLI commands per the "Common CLI Commands" section. For cross-project queries, see "Dynamic Project Resolution."
+
+**Canonical commands:** All `glab` and `gh` command syntax — flags, output formats,
+pagination options — is defined in the "Common CLI Commands" section below. Consuming
+skills must reference that section rather than redefining commands. If a skill needs a
+command variant not listed there, add it to this file first, then reference it.
+
+**What consuming skills should include:**
+- The reference block above (copy-paste it verbatim)
+- Any skill-specific *parameters* they pass to commands (e.g., label names, issue templates)
+- They should NOT include raw `glab`/`gh` invocations or detection snippets
+
 ## Dynamic Project Resolution
 
 Never hardcode project IDs. Resolve them at runtime.

@@ -39,12 +39,12 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 
 Run ALL checks — do NOT skip any:
 
-1. **TypeScript**: `tsgo --noEmit` → must be 0 errors
-2. **Tests**: `pnpm test --run` (or equivalent) → must pass
-3. **Lint**: `pnpm lint` → must pass (warnings OK, errors NOT OK)
-4. **Git status**: `git status` → understand all changes
-5. **Uncommitted changes**: everything should be staged for commit
-6. **No debug artifacts**: search for `console.log`, `debugger`, `TODO: remove` in changed files
+> **Quality Reference:** Run Full Gate quality checks per the quality-gates skill. Read `test-command`, `typecheck-command`, and `lint-command` from Session Config (defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`).
+
+1. **Full Gate checks**: TypeScript (0 errors), tests (must pass), lint (must pass, warnings OK)
+2. **Git status**: `git status` → understand all changes
+3. **Uncommitted changes**: everything should be staged for commit
+4. **No debug artifacts**: search for `console.log`, `debugger`, `TODO: remove` in changed files
 
 If any check fails:
 - Fix it if quick (<2 min)
@@ -103,17 +103,13 @@ git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || ech
 
 ## Phase 5: Issue Cleanup
 
-1. **Close resolved issues**: 
-   - GitLab: `glab issue close <IID>`. To add a closing comment, use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`. The `--comment` flag does NOT exist on `glab issue close`.
-   - GitHub: `gh issue close <NUMBER> --comment "comment"`
-2. **Update in-progress issues**: ensure labels reflect actual state
-   - GitLab: `glab issue update <IID> --label "status:in-progress"`
-   - GitHub: `gh issue edit <NUMBER> --add-label "status:in-progress"`
-3. **Create carryover issues**: for partially-done work (from Phase 1.2)
-   - GitLab: `glab issue create --title "[Carryover] ..." --label "priority:...,status:ready"`
-   - GitHub: `gh issue create --title "[Carryover] ..." --label "priority:...,status:ready"`
+> **VCS Reference:** Use CLI commands per the "Common CLI Commands" section of the gitlab-ops skill.
+
+1. **Close resolved issues**: Use the issue close command for the detected VCS platform. To add a closing comment, use the issue note/comment command first, then close. **Important for GitLab:** The `--comment` flag does NOT exist on `glab issue close` — use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`.
+2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
+3. **Create carryover issues**: for partially-done work (from Phase 1.2), use the issue create command with appropriate labels
 4. **Create gap issues**: for newly-discovered problems
-5. **Update milestones**: if milestone progress changed (GitLab-specific; GitHub uses Projects)
+5. **Update milestones**: if milestone progress changed
 
 ## Phase 6: Final Report
 

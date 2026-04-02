@@ -58,59 +58,22 @@ Read the `cross-repos` field from Session Config. If not configured or empty, pr
 
 and skip this section.
 
-### Auto-detect VCS type
+### Detect VCS
 
-Determine whether to use `glab` (GitLab) or `gh` (GitHub) based on the git remote URL:
-
-```bash
-remote_url=$(git remote get-url origin 2>/dev/null)
-if echo "$remote_url" | grep -qi github; then
-  VCS="github"
-elif echo "$remote_url" | grep -qi gitlab; then
-  VCS="gitlab"
-else
-  echo "Could not detect VCS type from remote: $remote_url"
-fi
-```
+> **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.
+> Use CLI commands per the "Common CLI Commands" section. For cross-project queries, see "Dynamic Project Resolution."
 
 ### For each cross-repo, query critical issues
 
-**GitLab** (`glab`):
+Using the detected VCS CLI (per gitlab-ops "Common CLI Commands" and "Dynamic Project Resolution" sections):
 
-```bash
-# Resolve project ID from repo path, then query
-# For a cross-repo like "mygroup/myproject":
-project_id=$(glab api "projects/$(echo '<group>/<project>' | sed 's|/|%2F|g')" 2>/dev/null \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
-
-if [ -n "$project_id" ]; then
-  glab api "projects/$project_id/issues?labels=priority::critical,priority::high&state=opened&per_page=5" 2>/dev/null \
-    | python3 -c "
-import json,sys
-issues = json.load(sys.stdin)
-for i in issues:
-    print(f'  {i[\"references\"][\"full\"]} {i[\"title\"][:60]}')
-" 2>/dev/null
-fi
-```
-
-**GitHub** (`gh`):
-
-```bash
-# For a cross-repo like "owner/repo":
-gh issue list --repo <owner>/<repo> --label "priority:critical,priority:high" --state open --limit 5 2>/dev/null
-```
+1. Resolve the project ID or owner/repo slug for each cross-repo
+2. Query open issues with `priority:critical` or `priority:high` labels (limit 5 per repo)
+3. Collect results across all configured repos
 
 ## CI Pipeline Status
 
-```bash
-# Check latest pipeline for current repo
-# GitLab:
-glab pipeline list --per-page 3 2>/dev/null | head -10
-
-# GitHub:
-gh run list --limit 3 2>/dev/null
-```
+Query the latest pipeline/workflow runs for the current repo using the detected VCS CLI (per gitlab-ops "Common CLI Commands" section). Report the 3 most recent runs.
 
 ## Report Format
 

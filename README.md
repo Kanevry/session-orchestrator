@@ -27,11 +27,11 @@ Work flows through 5 typed waves: Discovery (read-only validation), Core Impleme
 
 ### Inter-Wave Quality Gates
 
-A dedicated session-reviewer agent checks implementation correctness, test coverage, TypeScript health, and OWASP security basics between waves. Verification escalates progressively: changed-file tests after Wave 2, full integration tests after Wave 3, complete quality suite after Wave 4.
+A dedicated session-reviewer agent checks implementation correctness, test coverage, TypeScript health, and OWASP security basics between waves. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
 
 ### Design-Code Alignment
 
-When configured with a Pencil design file, the wave executor screenshots design frames after Waves 2 and 3 and compares them with the actual implementation — checking layout structure, component hierarchy, and visual elements. Results are classified as ALIGNED / MINOR DRIFT / MAJOR MISMATCH with automatic plan adaptation.
+When configured with a Pencil design file, the wave executor screenshots design frames after Impl-Core and Impl-Polish waves and compares them with the actual implementation — checking layout structure, component hierarchy, and visual elements. Results are classified as ALIGNED / MINOR DRIFT / MAJOR MISMATCH with automatic plan adaptation.
 
 ### VCS Dual Support
 
@@ -94,6 +94,8 @@ Add to each repo's `CLAUDE.md`:
 - **special:** "any repo-specific instructions"
 ```
 
+For the complete field reference with types, defaults, and descriptions, see the [User Guide — Session Config Reference](docs/USER-GUIDE.md#4-session-config-reference).
+
 ## VCS Auto-Detection
 
 Session Orchestrator auto-detects your VCS from the git remote URL:
@@ -113,7 +115,7 @@ User → /session → Research → Q&A → Plan → /go → 5 Waves → /close �
 
 ## Components
 
-- **6 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops
+- **7 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates
 - **3 Commands**: /session, /go, /close
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification

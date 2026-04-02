@@ -31,7 +31,7 @@ This example shows Session Config for a backend API project using Express.js, ho
 ## Typical session flow
 
 1. `/session feature` — checks GitLab issues, API health, cross-repo status
-2. Wave 1: Validates existing API endpoints, test coverage, database schema
-3. Waves 2-3: Implements new endpoints, updates shared types if needed
-4. Wave 4: Runs integration tests, checks TypeScript, security review
+2. Discovery: Validates existing API endpoints, test coverage, database schema
+3. Impl-Core + Impl-Polish: Implements new endpoints, updates shared types if needed
+4. Quality: Runs integration tests, checks TypeScript, security review
 5. `/close` — commits, updates GitLab issues, mirrors to GitHub if configured

@@ -29,8 +29,19 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `gitlab-host` — custom GitLab host if not auto-detectable (default: from git remote)
 - `health-endpoints` — service URLs to check health `[{name, url}]` (default: none)
 - `special` — any repo-specific instructions
+- `test-command` — custom test command (default: `pnpm test --run`)
+- `typecheck-command` — custom typecheck command (default: `tsgo --noEmit`)
+- `lint-command` — custom lint command (default: `pnpm lint`)
+- `ssot-freshness-days` — days before SSOT file flagged stale (default: 5)
+- `plugin-freshness-days` — days before plugin flagged outdated (default: 30)
+- `recent-commits` — number of recent commits to show (default: 20)
+- `issue-limit` — max issues to fetch from VCS (default: 50)
+- `stale-branch-days` — days before branch flagged stale (default: 7)
+- `stale-issue-days` — days before issue flagged for triage (default: 30)
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
+
+For the full Session Config field reference, see `docs/USER-GUIDE.md` Section 4.
 
 Also read `.claude/STATE.md` or `.claude/STATUS.md` if they exist for session continuity.
 
@@ -39,32 +50,23 @@ Also read `.claude/STATE.md` or `.claude/STATUS.md` if they exist for session co
 Run these checks in parallel using Bash:
 
 1. **Branch state**: `git branch -a`, current branch, ahead/behind origin
-2. **Recent commits**: `git log --oneline -20` — identify last session's work by commit patterns
+2. **Recent commits**: `git log --oneline -N` where N is read from `recent-commits` config (default: 20) — identify last session's work by commit patterns
 3. **Unpushed/uncommitted**: `git status --short` + `git log origin/main..HEAD --oneline`
 4. **Open branches**: list all local branches, identify which are mergeable to develop/main
-5. **Stale branches**: branches with no commits in >7 days
+5. **Stale branches**: branches with no commits in more than `stale-branch-days` (default: 7) days
 
 ## Phase 2: VCS Deep Dive (parallel)
 
-Detect VCS type:
-- If `vcs` is set in Session Config, use that
-- Otherwise: check `git remote get-url origin` — if contains `github.com` → GitHub, else → GitLab
+> **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.
+> Use CLI commands per the "Common CLI Commands" section. For cross-project queries, see "Dynamic Project Resolution."
 
-Using the appropriate VCS CLI (`glab` for GitLab, `gh` for GitHub):
+Using the detected VCS CLI, query (reading `issue-limit` from Session Config, default: 50):
 
-**GitLab** (set GITLAB_HOST if needed from .env or .env.local):
-1. **Open issues**: `glab issue list --per-page 50` — categorize by priority and status labels
-2. **Recently closed**: `glab issue list --state closed --per-page 10` — what was done since last session
-3. **Milestones**: `glab api "projects/:id/milestones?state=active"` — active sprint status
-4. **Open MRs**: `glab mr list --state opened` — anything waiting for review/merge
-5. **Pipeline status**: `glab pipeline list --per-page 3` — is CI green?
-
-**GitHub**:
-1. **Open issues**: `gh issue list --limit 50` — categorize by priority and labels
-2. **Recently closed**: `gh issue list --state closed --limit 10` — what was done since last session
-3. **Milestones**: `gh api "repos/{owner}/{repo}/milestones"` — active milestone status
-4. **Open PRs**: `gh pr list` — anything waiting for review/merge
-5. **CI status**: `gh run list --limit 3` — is CI green?
+1. **Open issues** — categorize by priority and status labels
+2. **Recently closed** — what was done since last session
+3. **Milestones** — active sprint status
+4. **Open MRs/PRs** — anything waiting for review/merge
+5. **Pipeline/CI status** — is CI green?
 
 Group issues by:
 - `priority:critical` / `priority:high` — must-address
@@ -73,12 +75,11 @@ Group issues by:
 
 ## Phase 3: SSOT & Environment Check
 
-1. **SSOT freshness**: for each file in `ssot-files` config, check last modified date. Flag if >5 days old.
-2. **TypeScript health** (if TS project): `tsgo --noEmit 2>&1 | tail -5` — current error count. If no `typecheck` script exists, try `npx tsgo --noEmit` or skip.
-3. **Test baseline**: `pnpm test --run 2>&1 | tail -5` (or equivalent) — are tests passing? Run with short timeout.
-4. **Test quality** (OPTIONAL): If `scripts/test-quality.sh` exists, run it in background (`run_in_background: true`) — it can take 1-2 minutes. Report results when available but do NOT block the session flow.
-5. **Pencil design status**: if `pencil` is configured, verify the `.pen` file exists at the configured path. Report: "Pencil design configured at [path] — design-code alignment reviews will run after Wave 2 and Wave 3." If file not found, warn: "Pencil path configured but file not found at [path]."
-6. **Plugin freshness**: Determine the session-orchestrator plugin directory (navigate up from this skill's base directory to the plugin root). Run `git -C <plugin-dir> log -1 --format="%ci"` to get the last commit date. If >30 days old, flag a warning in the Session Overview: `"⚠ Session Orchestrator plugin last updated [N] days ago — consider pulling the latest version."` Non-blocking — present in overview, don't halt.
+1. **SSOT freshness**: for each file in `ssot-files` config, check last modified date. Flag if older than `ssot-freshness-days` (default: 5) days.
+2. **Quality baseline**: Run Baseline quality checks per the quality-gates skill. Read `test-command`, `typecheck-command`, and `lint-command` from Session Config (defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`). Report results but do not block the session.
+3. **Test quality** (OPTIONAL): If `scripts/test-quality.sh` exists, run it in background (`run_in_background: true`) — it can take 1-2 minutes. Report results when available but do NOT block the session flow.
+4. **Pencil design status**: if `pencil` is configured, verify the `.pen` file exists at the configured path. Report: "Pencil design configured at [path] — design-code alignment reviews will run after Impl-Core and Impl-Polish waves." If file not found, warn: "Pencil path configured but file not found at [path]."
+5. **Plugin freshness**: Determine the session-orchestrator plugin directory (navigate up from this skill's base directory to the plugin root). Run `git -C <plugin-dir> log -1 --format="%ci"` to get the last commit date. If older than `plugin-freshness-days` (default: 30) days, flag a warning in the Session Overview: `"⚠ Session Orchestrator plugin last updated [N] days ago — consider pulling the latest version."` Non-blocking — present in overview, don't halt.
 
 ## Phase 4: Cross-Repo Status (if configured)
 
@@ -93,7 +94,7 @@ Look across the gathered data for:
 - **Recurring patterns**: same types of issues appearing repeatedly → suggest standardization
 - **Blocking chains**: issues blocked by other issues across repos
 - **Quick wins**: low-effort issues that could be closed alongside main work
-- **Staleness**: issues open >30 days without progress → flag for triage
+- **Staleness**: issues open longer than `stale-issue-days` (default: 30) days without progress → flag for triage
 - **Synergies**: issues that share code paths and can be combined
 
 ## Phase 6: Research (session type dependent)

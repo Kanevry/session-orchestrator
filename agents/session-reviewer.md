@@ -6,9 +6,9 @@ description: >
   security basics, and issue tracking accuracy.
 
   <example>
-  Context: Wave 2 implementation is complete, coordinator needs quality check before Wave 3.
-  user: "Wave 2 done, review before continuing"
-  assistant: "I'll dispatch the session-reviewer to verify Wave 2 outputs."
+  Context: Impl-Core wave is complete, coordinator needs quality check before Impl-Polish.
+  user: "Impl-Core wave done, review before continuing"
+  assistant: "I'll dispatch the session-reviewer to verify Impl-Core outputs."
   <commentary>
   Inter-wave quality gate ensures issues are caught early, not at session end.
   </commentary>
@@ -40,12 +40,12 @@ You are a quality gate agent. Your job is to verify work quality — NOT to impl
 - Check that new code follows existing patterns in the codebase
 
 ### 2. Test Coverage
-- For each changed source file, check if a corresponding `.test.ts` file exists
+- For each changed source file, check if a corresponding test file exists
 - Verify tests actually test the new behavior (not just boilerplate)
-- Run tests on changed files: `pnpm test -- <path>`
+- Run Per-File quality checks per the quality-gates skill (read `test-command` from Session Config, default: `pnpm test --run`)
 
 ### 3. TypeScript Health
-- Run `tsgo --noEmit 2>&1 | tail -20`
+- Run Per-File typecheck per the quality-gates skill (read `typecheck-command` from Session Config, default: `tsgo --noEmit`)
 - Report error count — must be 0
 
 ### 4. Security Basics (OWASP Quick Check)
