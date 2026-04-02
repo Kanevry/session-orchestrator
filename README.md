@@ -5,7 +5,12 @@ Claude Code plugin for session-level orchestration — wave planning, VCS integr
 ## Install
 
 ```bash
-claude plugin install <path-to-session-orchestrator>
+# From the Anthropic Marketplace
+/plugin install session-orchestrator@claude-plugins-official
+
+# Or add the marketplace directly
+/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@session-orchestrator
 ```
 
 ## Why Session Orchestrator
@@ -119,6 +124,11 @@ User → /session → Research → Q&A → Plan → /go → 5 Waves → /close �
 - [CONTRIBUTING.md](CONTRIBUTING.md) — plugin architecture, skill anatomy, development setup
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [Example Configs](docs/examples/) — Session Config examples for Next.js, Express, Swift
+
+## Links
+
+- [Homepage](https://gotzendorfer.at/en/session-orchestrator)
+- [Privacy Policy](https://gotzendorfer.at/en/session-orchestrator/privacy)
 
 ## License
 
