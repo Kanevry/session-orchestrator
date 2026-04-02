@@ -1,11 +1,11 @@
 # Session Orchestrator
 
-Claude Code plugin for session-level orchestration across the Götzendorfer ecosystem.
+Claude Code plugin for session-level orchestration — wave planning, VCS integration, quality gates.
 
 ## Install
 
 ```bash
-claude plugin install /Users/bernhardgoetzendorfer/Projects/session-orchestrator
+claude plugin install <path-to-session-orchestrator>
 ```
 
 ## Usage
@@ -38,7 +38,19 @@ Add to each repo's `CLAUDE.md`:
 - **cli-tools:** [glab, vercel, supabase]
 - **mirror:** github
 - **ecosystem-health:** true
+- **vcs:** github|gitlab (default: auto-detect)
+- **gitlab-host:** custom-gitlab.example.com
+- **health-endpoints:** [{name: "API", url: "https://api.example.com/health"}]
+- **special:** "any repo-specific instructions"
 ```
+
+## VCS Auto-Detection
+
+Session Orchestrator auto-detects your VCS from the git remote URL:
+- Remote contains `github.com` → uses `gh` CLI
+- All other remotes → uses `glab` CLI
+
+Override with `vcs: github` or `vcs: gitlab` in Session Config.
 
 ## Architecture
 

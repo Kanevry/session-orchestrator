@@ -103,11 +103,17 @@ git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || ech
 
 ## Phase 5: Issue Cleanup
 
-1. **Close resolved issues**: `glab issue close <IID>` for each completed task. To add a closing comment, use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`. The `--comment` flag does NOT exist on `glab issue close`.
+1. **Close resolved issues**: 
+   - GitLab: `glab issue close <IID>`. To add a closing comment, use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`. The `--comment` flag does NOT exist on `glab issue close`.
+   - GitHub: `gh issue close <NUMBER> --comment "comment"`
 2. **Update in-progress issues**: ensure labels reflect actual state
+   - GitLab: `glab issue update <IID> --label "status:in-progress"`
+   - GitHub: `gh issue edit <NUMBER> --add-label "status:in-progress"`
 3. **Create carryover issues**: for partially-done work (from Phase 1.2)
+   - GitLab: `glab issue create --title "[Carryover] ..." --label "priority:...,status:ready"`
+   - GitHub: `gh issue create --title "[Carryover] ..." --label "priority:...,status:ready"`
 4. **Create gap issues**: for newly-discovered problems
-5. **Update milestones**: if milestone progress changed
+5. **Update milestones**: if milestone progress changed (GitLab-specific; GitHub uses Projects)
 
 ## Phase 6: Final Report
 

@@ -1,7 +1,7 @@
 ---
 name: session-start
 description: >
-  Full session initialization for any Götzendorfer repo. Autonomously analyzes git state,
+  Full session initialization for any project repo. Autonomously analyzes git state,
   GitLab issues, SSOT files, branches, environment, and cross-repo status. Then presents
   structured findings with recommendations for user alignment before creating a wave plan.
   Triggered by /session [housekeeping|feature|deep] command.
@@ -25,6 +25,9 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `cli-tools` — CLI tools available (glab, vercel, supabase, stripe, etc.)
 - `mirror` — mirror target (github, none)
 - `ecosystem-health` — whether to run service health checks
+- `vcs` — version control system: `github` or `gitlab` (default: auto-detect from git remote)
+- `gitlab-host` — custom GitLab host if not auto-detectable (default: from git remote)
+- `health-endpoints` — service URLs to check health `[{name, url}]` (default: none)
 - `special` — any repo-specific instructions
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
@@ -41,15 +44,27 @@ Run these checks in parallel using Bash:
 4. **Open branches**: list all local branches, identify which are mergeable to develop/main
 5. **Stale branches**: branches with no commits in >7 days
 
-## Phase 2: GitLab Deep Dive (parallel)
+## Phase 2: VCS Deep Dive (parallel)
 
-Using `glab` CLI (set GITLAB_HOST if needed from .env or .env.local):
+Detect VCS type:
+- If `vcs` is set in Session Config, use that
+- Otherwise: check `git remote get-url origin` — if contains `github.com` → GitHub, else → GitLab
 
+Using the appropriate VCS CLI (`glab` for GitLab, `gh` for GitHub):
+
+**GitLab** (set GITLAB_HOST if needed from .env or .env.local):
 1. **Open issues**: `glab issue list --per-page 50` — categorize by priority and status labels
 2. **Recently closed**: `glab issue list --state closed --per-page 10` — what was done since last session
 3. **Milestones**: `glab api "projects/:id/milestones?state=active"` — active sprint status
 4. **Open MRs**: `glab mr list --state opened` — anything waiting for review/merge
 5. **Pipeline status**: `glab pipeline list --per-page 3` — is CI green?
+
+**GitHub**:
+1. **Open issues**: `gh issue list --limit 50` — categorize by priority and labels
+2. **Recently closed**: `gh issue list --state closed --limit 10` — what was done since last session
+3. **Milestones**: `gh api "repos/{owner}/{repo}/milestones"` — active milestone status
+4. **Open PRs**: `gh pr list` — anything waiting for review/merge
+5. **CI status**: `gh run list --limit 3` — is CI green?
 
 Group issues by:
 - `priority:critical` / `priority:high` — must-address
@@ -135,7 +150,7 @@ AskUserQuestion({
     options: [
       { label: "Issues #91 + #92 (Empfohlen)", description: "OpenTelemetry + OpenAPI — hohe Synergien, concrete deliverables" },
       { label: "Infra cleanup #44 + #60", description: "In-progress Issues abschließen, ecosystem optimization" },
-      { label: "Deep work #37", description: "Clank MVP — high priority, dedicated session" }
+      { label: "Deep work #37", description: "Core refactor — high priority, dedicated session" }
     ]
   }]
 })

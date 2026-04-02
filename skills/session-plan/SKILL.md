@@ -81,8 +81,12 @@ Read `agents-per-wave` from Session Config to cap the maximum.
 ## Step 4: Issue Updates
 
 Before presenting the plan:
-1. Mark all selected issues as `status:in-progress` via `glab issue update <IID> --label "status:in-progress"`
-2. Add a comment to each issue noting the session and planned wave: `glab issue note <IID> -m "Working on this in current session (Wave N)"`
+1. Mark all selected issues as `status:in-progress`:
+   - GitLab: `glab issue update <IID> --label "status:in-progress"`
+   - GitHub: `gh issue edit <NUMBER> --add-label "status:in-progress"`
+2. Add a comment to each issue noting the session and planned wave:
+   - GitLab: `glab issue note <IID> -m "Working on this in current session (Wave N)"`
+   - GitHub: `gh issue comment <NUMBER> -b "Working on this in current session (Wave N)"`
 
 ## Step 5: Present Plan for Approval
 

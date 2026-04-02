@@ -1,29 +1,58 @@
 ---
 name: gitlab-ops
 description: >
-  GitLab operations reference: glab CLI commands, label taxonomy, issue templates,
-  project ID mapping. Used as a reference by other skills and during issue management.
+  VCS operations reference for GitLab and GitHub: CLI commands (glab/gh),
+  label taxonomy, issue templates, dynamic project resolution.
+  Used as a reference by other skills and during issue management.
 ---
 
-# GitLab Operations Reference
+# VCS Operations Reference
 
-## Project ID Mapping
+## VCS Auto-Detection
 
-| Project | ID | Group | Path |
-|---------|-----|-------|------|
-| BuchhaltGenie | 2 | products | products/BuchhaltGenieV5 |
-| EventDrop | 6 | products | products/EventDrop |
-| Clank | 8 | agents | agents/clank |
-| bg-pdf-service | 12 | infrastructure | infrastructure/bg-pdf-service |
-| Launchpad | 13 | internal | internal/launchpad |
-| WalkAITalkie | 41 | mobile | mobile/WalkAITalkie |
-| FeedFoundry | 51 | agents | agents/feedfoundry |
-| projects-baseline | 52 | infrastructure | infrastructure/projects-baseline |
-| ci-components | 55 | infrastructure | infrastructure/ci-components |
-| scrapling-service | 59 | infrastructure | infrastructure/scrapling-service |
-| ai-gateway | 68 | infrastructure | infrastructure/ai-gateway |
-| claude-code-skills | 71 | infrastructure | infrastructure/claude-code-skills |
-| session-orchestrator | 74 | infrastructure | infrastructure/session-orchestrator |
+Detect which VCS platform the current repo uses and select the right CLI:
+
+```bash
+# Check git remote
+REMOTE_URL=$(git remote get-url origin 2>/dev/null)
+if echo "$REMOTE_URL" | grep -q "github.com"; then
+  VCS=github    # use `gh`
+else
+  VCS=gitlab    # use `glab`
+fi
+```
+
+**Session Config overrides:**
+- `vcs: github|gitlab` — force a specific platform
+- `gitlab-host: <host>` — override auto-detected GitLab host (glab reads host from git remote by default)
+
+## Dynamic Project Resolution
+
+Never hardcode project IDs. Resolve them at runtime.
+
+### Current project
+
+```bash
+# GitLab — get numeric project ID
+glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
+
+# GitHub — get owner/name identifier
+gh repo view --json nameWithOwner -q '.nameWithOwner'
+```
+
+### Cross-project queries
+
+When a skill needs to reference other projects (e.g., from `cross-repos` in Session Config):
+
+```bash
+# GitLab — resolve project ID by name
+glab api "projects?search=<project-name>" | python3 -c "import json,sys; [print(p['id'], p['path_with_namespace']) for p in json.load(sys.stdin)]"
+
+# GitHub — resolve repo details
+gh api "repos/<owner>/<name>" --jq '.full_name'
+```
+
+**Note:** Some API calls require numeric project IDs (GitLab) or `owner/repo` slugs (GitHub). Always resolve dynamically from the project name.
 
 ## Label Taxonomy
 
@@ -36,7 +65,7 @@ description: >
 ### Status Labels
 - `status:ready` — defined, ready to pick up
 - `status:in-progress` — actively being worked on
-- `status:review` — MR created, awaiting review
+- `status:review` — MR/PR created, awaiting review
 - `status:blocked` — waiting on external dependency
 
 ### Area Labels
@@ -48,7 +77,9 @@ description: >
 - `bug` | `feature` | `enhancement` | `refactor`
 - `chore` | `documentation` | `epic`
 
-## Common glab Commands
+## Common CLI Commands
+
+### GitLab (glab)
 
 ```bash
 # Issues
@@ -72,9 +103,38 @@ glab mr merge <MR_IID>                                     # Merge MR
 glab pipeline list --per-page 5                            # Recent pipelines
 glab pipeline status <ID>                                  # Pipeline details
 
-# API (for advanced queries)
-GITLAB_HOST=49.12.187.142 glab api "projects/<ID>/issues?state=opened&per_page=50"
-GITLAB_HOST=49.12.187.142 glab api "projects/<ID>/milestones?state=active"
+# API (reads host from git remote automatically)
+glab api "projects/$(glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/issues?state=opened&per_page=50"
+glab api "projects/$(glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/milestones?state=active"
+```
+
+### GitHub (gh)
+
+```bash
+# Issues
+gh issue list --limit 50                                   # All open issues
+gh issue list --label "status:ready" --limit 10            # Ready to work on
+gh issue list --label "priority:high" --limit 10           # High priority
+gh issue list --state closed --limit 10                    # Recently closed
+gh issue view <NUMBER>                                      # View issue details
+gh issue view <NUMBER> --comments                           # With comments
+gh issue create --title "title" --label "priority:high,status:ready"
+gh issue edit <NUMBER> --add-label "status:in-progress"
+gh issue close <NUMBER>
+gh issue comment <NUMBER> --body "Comment text"            # Add comment
+
+# PRs
+gh pr list --state open                                    # Open PRs
+gh pr create --fill --draft                                 # Create draft PR
+gh pr merge <NUMBER>                                       # Merge PR
+
+# Workflows (CI equivalent)
+gh run list --limit 5                                      # Recent workflow runs
+gh run view <RUN_ID>                                       # Run details
+
+# API
+gh api "repos/{owner}/{repo}/issues?state=open&per_page=50"
+gh api "repos/{owner}/{repo}/milestones?state=open"
 ```
 
 ## Issue Templates
