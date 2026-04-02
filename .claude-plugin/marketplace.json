@@ -1,19 +1,29 @@
 {
   "name": "session-orchestrator",
   "owner": {
-    "name": "Bernhard Götzendorfer",
-    "email": "bernhard@gotzendorfer.at"
+    "name": "Bernhard Goetzendorfer",
+    "email": "office@gotzendorfer.at"
+  },
+  "metadata": {
+    "description": "Session-level orchestration for Claude Code — wave planning, VCS integration, quality gates",
+    "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "session-orchestrator",
-      "description": "Wave planning, GitLab integration, quality gates — replaces manual session prompts with /session, /go, /close",
-      "version": "1.0.0",
       "source": "./",
+      "description": "Wave planning, parallel subagent execution, GitLab/GitHub integration, quality gates — replaces manual session prompts with /session, /go, /close",
+      "version": "1.0.0",
       "author": {
-        "name": "Bernhard Götzendorfer",
-        "email": "bernhard@gotzendorfer.at"
-      }
+        "name": "Bernhard Goetzendorfer",
+        "email": "office@gotzendorfer.at"
+      },
+      "homepage": "https://github.com/Kanevry/session-orchestrator",
+      "repository": "https://github.com/Kanevry/session-orchestrator",
+      "license": "MIT",
+      "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates", "subagents"],
+      "category": "productivity",
+      "tags": ["session-management", "wave-execution", "vcs-integration", "code-review", "agent-orchestration"]
     }
   ]
 }

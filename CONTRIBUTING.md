@@ -40,7 +40,7 @@ The user workflow is:
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/goetzendorfer/session-orchestrator.git
+   git clone https://github.com/Kanevry/session-orchestrator.git
    ```
 
 2. **Install as a local plugin:**

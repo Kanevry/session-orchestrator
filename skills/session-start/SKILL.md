@@ -147,18 +147,18 @@ Example of what you MUST do:
 ```
 AskUserQuestion({
   questions: [{
-    question: "Welchen Session-Fokus empfiehlst du?",
-    header: "Fokus",
+    question: "Which session focus do you recommend?",
+    header: "Focus",
     options: [
-      { label: "Issues #91 + #92 (Empfohlen)", description: "OpenTelemetry + OpenAPI — hohe Synergien, concrete deliverables" },
-      { label: "Infra cleanup #44 + #60", description: "In-progress Issues abschließen, ecosystem optimization" },
+      { label: "Issues #91 + #92 (Recommended)", description: "OpenTelemetry + OpenAPI — high synergy, concrete deliverables" },
+      { label: "Infra cleanup #44 + #60", description: "Close in-progress issues, ecosystem optimization" },
       { label: "Deep work #37", description: "Core refactor — high priority, dedicated session" }
     ]
   }]
 })
 ```
 
-Always include your recommendation as the first option with "(Empfohlen)" in the label.
+Always include your recommendation as the first option with "(Recommended)" in the label.
 
 ## Phase 8: Handoff to Session Plan
 

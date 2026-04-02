@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "description": "Session-level orchestration — wave planning, VCS integration, quality gates",
   "author": {
-    "name": "Bernhard Götzendorfer",
-    "email": "bernhard@gotzendorfer.at",
+    "name": "Bernhard Goetzendorfer",
+    "email": "office@gotzendorfer.at",
     "url": "https://gotzendorfer.at"
   },
-  "repository": "https://github.com/goetzendorfer/session-orchestrator",
+  "homepage": "https://github.com/Kanevry/session-orchestrator",
+  "repository": "https://github.com/Kanevry/session-orchestrator",
   "license": "MIT",
   "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"]
 }

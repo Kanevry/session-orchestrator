@@ -788,4 +788,4 @@ If `mirror: github` is configured but mirroring fails:
 
 ## License
 
-Session Orchestrator is released under the MIT License. See the project repository for details: [https://github.com/goetzendorfer/session-orchestrator](https://github.com/goetzendorfer/session-orchestrator)
+Session Orchestrator is released under the MIT License. See the project repository for details: [https://github.com/Kanevry/session-orchestrator](https://github.com/Kanevry/session-orchestrator)

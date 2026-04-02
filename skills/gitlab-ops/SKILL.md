@@ -141,14 +141,14 @@ gh api "repos/{owner}/{repo}/milestones?state=open"
 
 ### Bug Template
 ```
-## Beschreibung
-Was passiert vs. was sollte passieren.
+## Description
+What happens vs. what should happen.
 
-## Schritte zum Reproduzieren
+## Steps to Reproduce
 1.
 2.
 
-## Root Cause (wenn bekannt)
+## Root Cause (if known)
 
 ## Acceptance Criteria
 - [ ]
@@ -157,7 +157,7 @@ Was passiert vs. was sollte passieren.
 ### Feature Template
 ```
 ## Goal
-Was soll erreicht werden und warum.
+What should be achieved and why.
 
 ## Tasks
 - [ ]
@@ -173,16 +173,16 @@ Was soll erreicht werden und warum.
 ```
 ## [Carryover] Original Task Description
 
-### Was erledigt wurde
+### What was completed
 - [completed items]
 
-### Was noch offen ist
+### What remains
 - [ ] [remaining task 1]
 - [ ] [remaining task 2]
 
-### Kontext für nächste Session
+### Context for next session
 [relevant context, file paths, decisions made]
 
-### Ursprüngliches Issue
+### Original Issue
 Relates to #ORIGINAL_IID
 ```

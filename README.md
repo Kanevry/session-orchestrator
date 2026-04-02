@@ -115,5 +115,11 @@ User → /session → Research → Q&A → Plan → /go → 5 Waves → /close �
 
 ## Documentation
 
-- See [User Guide](docs/USER-GUIDE.md) for detailed documentation
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
+- [User Guide](docs/USER-GUIDE.md) — installation, config reference, workflow walkthrough, FAQ
+- [CONTRIBUTING.md](CONTRIBUTING.md) — plugin architecture, skill anatomy, development setup
+- [CHANGELOG.md](CHANGELOG.md) — version history
+- [Example Configs](docs/examples/) — Session Config examples for Next.js, Express, Swift
+
+## License
+
+[MIT](LICENSE)

@@ -1,4 +1,12 @@
 node_modules/
 .env
 .env.local
+.env.*
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
