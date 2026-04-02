@@ -1,0 +1,19 @@
+{
+  "name": "session-orchestrator",
+  "owner": {
+    "name": "Bernhard Götzendorfer",
+    "email": "bernhard@gotzendorfer.at"
+  },
+  "plugins": [
+    {
+      "name": "session-orchestrator",
+      "description": "Wave planning, GitLab integration, quality gates — replaces manual session prompts with /session, /go, /close",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "Bernhard Götzendorfer",
+        "email": "bernhard@gotzendorfer.at"
+      }
+    }
+  ]
+}
