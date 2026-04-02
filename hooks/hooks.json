@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '🎯 Session Orchestrator v1.0 — /session [housekeeping|feature|deep] to start'",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}

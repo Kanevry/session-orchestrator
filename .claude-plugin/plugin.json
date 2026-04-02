@@ -1,0 +1,13 @@
+{
+  "name": "session-orchestrator",
+  "version": "1.0.0",
+  "description": "Session-level orchestration for the Götzendorfer ecosystem — wave planning, GitLab integration, quality gates",
+  "author": {
+    "name": "Bernhard Götzendorfer",
+    "email": "bernhard@gotzendorfer.at",
+    "url": "https://gotzendorfer.at"
+  },
+  "repository": "https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator",
+  "license": "MIT",
+  "keywords": ["session", "orchestration", "waves", "gitlab", "quality-gates"]
+}
