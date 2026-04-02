@@ -59,9 +59,9 @@ Group issues by:
 ## Phase 3: SSOT & Environment Check
 
 1. **SSOT freshness**: for each file in `ssot-files` config, check last modified date. Flag if >5 days old.
-2. **TypeScript health** (if TS project): `tsgo --noEmit 2>&1 | tail -5` — current error count
-3. **Test baseline**: `pnpm test --run 2>&1 | tail -5` (or equivalent) — are tests passing?
-4. **Dependency health**: check for outdated critical deps if `pnpm outdated` is fast
+2. **TypeScript health** (if TS project): `tsgo --noEmit 2>&1 | tail -5` — current error count. If no `typecheck` script exists, try `npx tsgo --noEmit` or skip.
+3. **Test baseline**: `pnpm test --run 2>&1 | tail -5` (or equivalent) — are tests passing? Run with short timeout.
+4. **Test quality** (OPTIONAL): If `scripts/test-quality.sh` exists, run it in background (`run_in_background: true`) — it can take 1-2 minutes. Report results when available but do NOT block the session flow.
 5. **Pencil design status**: if `pencil` is configured, note it for the user (don't open it yet)
 
 ## Phase 4: Cross-Repo Status (if configured)
@@ -121,10 +121,27 @@ Based on priority, synergies, and session type, I recommend:
 - [ ] Issues to triage/close: [list]
 
 ## Questions
-[Specific questions about priorities, scope, or approach — use AskUserQuestion tool]
+[Use AskUserQuestion tool — NOT plain text options]
 ```
 
-Use the **AskUserQuestion** tool to present options. Always include your recommendation as the first option with "(Empfohlen)" label.
+**MANDATORY: Use the AskUserQuestion tool** to present options to the user. Do NOT write options as plain text in your response. The AskUserQuestion tool provides a structured UI with clickable options that is far superior to text-based A/B/C lists.
+
+Example of what you MUST do:
+```
+AskUserQuestion({
+  questions: [{
+    question: "Welchen Session-Fokus empfiehlst du?",
+    header: "Fokus",
+    options: [
+      { label: "Issues #91 + #92 (Empfohlen)", description: "OpenTelemetry + OpenAPI — hohe Synergien, concrete deliverables" },
+      { label: "Infra cleanup #44 + #60", description: "In-progress Issues abschließen, ecosystem optimization" },
+      { label: "Deep work #37", description: "Clank MVP — high priority, dedicated session" }
+    ]
+  }]
+})
+```
+
+Always include your recommendation as the first option with "(Empfohlen)" in the label.
 
 ## Phase 8: Handoff to Session Plan
 

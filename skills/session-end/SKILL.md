@@ -95,14 +95,15 @@ For sessions with many changes, prefer ONE commit per logical unit (not one mega
 git push origin HEAD
 ```
 
-### 4.4 GitHub Mirror (if configured)
+### 4.4 GitHub Mirror (if configured in Session Config)
 ```bash
-git push github HEAD 2>/dev/null || echo "GitHub mirror: not configured or failed"
+# Only attempt if 'mirror: github' is in Session Config AND remote exists
+git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || echo "GitHub mirror: not configured"
 ```
 
 ## Phase 5: Issue Cleanup
 
-1. **Close resolved issues**: `glab issue close <IID>` for each completed task
+1. **Close resolved issues**: `glab issue close <IID>` for each completed task. To add a closing comment, use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`. The `--comment` flag does NOT exist on `glab issue close`.
 2. **Update in-progress issues**: ensure labels reflect actual state
 3. **Create carryover issues**: for partially-done work (from Phase 1.2)
 4. **Create gap issues**: for newly-discovered problems
