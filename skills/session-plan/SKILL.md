@@ -115,8 +115,8 @@ Present the plan in this format:
 
 ### Inter-Wave Checkpoints
 - After W1: Validate discoveries, adjust W2 scope if needed
-- After W2: Run incremental tests, check for conflicts between agents
-- After W3: Integration test, verify all pieces connect
+- After W2: Run incremental tests, check for conflicts between agents. **If `pencil` configured: design review — screenshot frames, compare with implemented UI, flag drift.**
+- After W3: Integration test, verify all pieces connect. **If `pencil` configured: final design-code alignment check before quality waves.**
 - After W4: Full quality gate — if failing, create fix tasks for W5
 - After W5: Final review before session-end
 

@@ -77,7 +77,8 @@ Group issues by:
 2. **TypeScript health** (if TS project): `tsgo --noEmit 2>&1 | tail -5` — current error count. If no `typecheck` script exists, try `npx tsgo --noEmit` or skip.
 3. **Test baseline**: `pnpm test --run 2>&1 | tail -5` (or equivalent) — are tests passing? Run with short timeout.
 4. **Test quality** (OPTIONAL): If `scripts/test-quality.sh` exists, run it in background (`run_in_background: true`) — it can take 1-2 minutes. Report results when available but do NOT block the session flow.
-5. **Pencil design status**: if `pencil` is configured, note it for the user (don't open it yet)
+5. **Pencil design status**: if `pencil` is configured, verify the `.pen` file exists at the configured path. Report: "Pencil design configured at [path] — design-code alignment reviews will run after Wave 2 and Wave 3." If file not found, warn: "Pencil path configured but file not found at [path]."
+6. **Plugin freshness**: Determine the session-orchestrator plugin directory (navigate up from this skill's base directory to the plugin root). Run `git -C <plugin-dir> log -1 --format="%ci"` to get the last commit date. If >30 days old, flag a warning in the Session Overview: `"⚠ Session Orchestrator plugin last updated [N] days ago — consider pulling the latest version."` Non-blocking — present in overview, don't halt.
 
 ## Phase 4: Cross-Repo Status (if configured)
 
@@ -120,6 +121,7 @@ Present your findings in this structure:
 - Health: [TypeScript: 0 errors | Tests: passing/failing | CI: green/red]
 - SSOT: [fresh/stale files listed]
 - Cross-repos: [status summary]
+- Plugin: [fresh / ⚠ N days without update]
 
 ## Recommended Focus
 Based on priority, synergies, and session type, I recommend:

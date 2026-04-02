@@ -65,6 +65,17 @@ After ALL agents in the wave complete:
    - After Wave 3: run full integration test if available
    - After Wave 4: `tsgo --noEmit` + `pnpm test --run` + `pnpm lint`
    - After Wave 5: final git status check
+5. **Pencil design review** (after Wave 2 and Wave 3 only, if `pencil` configured in Session Config):
+   a. Check Pencil editor state: `get_editor_state({ include_schema: false })`. If no editor active, open the configured `.pen` file via `open_document({ filePathOrTemplate: "<pencil-path>" })`. If that also fails → skip with note "Pencil review skipped — .pen file unavailable."
+   b. Get design structure: `batch_get({ filePath: "<pencil-path>", patterns: [{ type: "frame" }], readDepth: 2, searchDepth: 2 })` — find frames relevant to this wave's UI work.
+   c. Screenshot relevant frames: `get_screenshot({ filePath: "<pencil-path>", nodeId: "<frame-id>" })` for each frame matching the wave's UI tasks.
+   d. Read the actual UI files changed in this wave (from agent outputs).
+   e. **Compare**: layout structure, component hierarchy, visual elements (headings, buttons, inputs, cards), responsive behavior.
+   f. **Report** in wave progress:
+      `- Design: [ALIGNED / MINOR DRIFT / MAJOR MISMATCH] — [specific findings]`
+   g. **Act**: ALIGNED → proceed. MINOR DRIFT → add fix tasks to next wave. MAJOR MISMATCH → inform user, propose revised plan.
+   
+   Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
 
 ### 3. Adapt Plan (if needed)
 
@@ -87,6 +98,7 @@ After each wave, provide a brief status:
 - [Agent 1]: [done/partial/failed] — [1-line summary]
 - [Agent 2]: [done/partial/failed] — [1-line summary]
 - Tests: [passing/failing] | TypeScript: [0 errors / N errors]
+- Design: [aligned/drift/mismatch — or N/A if no pencil config or Wave 1/4/5]
 - Adaptations for Wave [N+1]: [none / list changes]
 ```
 
