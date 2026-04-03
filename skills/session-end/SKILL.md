@@ -36,6 +36,19 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 - Document and attribute to relevant issues
 - If new issues were identified: create them on GitLab
 
+### 1.5 Discovery Scan (if enabled)
+
+Check if `discovery-on-close` is `true` in Session Config. If not configured or `false`, skip this section.
+
+When enabled, invoke the discovery skill in **embedded mode**:
+- Run discovery Phases 0-3 only (Config, Stack Detection, Probe Execution, Verification & Scoring)
+- Scope: `session` probes always run; additional probes per `discovery-probes` config
+- Collect verified findings from the discovery skill output
+- Incorporate findings into issue management:
+  - Findings with severity `critical` or `high` → create issues immediately (Phase 5)
+  - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
+- Report: "Discovery scan: [N] findings ([X] critical/high → issues, [Y] medium/low → deferred)"
+
 ## Phase 2: Quality Gate
 
 Run ALL checks — do NOT skip any:

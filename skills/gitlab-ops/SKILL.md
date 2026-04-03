@@ -96,7 +96,7 @@ gh api "repos/<owner>/<name>" --jq '.full_name'
 
 ### Type Labels
 - `bug` | `feature` | `enhancement` | `refactor`
-- `chore` | `documentation` | `epic`
+- `chore` | `documentation` | `epic` | `discovery`
 
 ## Common CLI Commands
 
@@ -207,3 +207,41 @@ What should be achieved and why.
 ### Original Issue
 Relates to #ORIGINAL_IID
 ```
+
+### Discovery Finding
+
+```markdown
+## [Discovery] <finding title>
+
+**Probe:** <probe_name>
+**Severity:** <priority:critical|high|medium|low>
+**Category:** <code|infra|ui|arch|session>
+
+### Finding
+
+<description of the problem>
+
+### Evidence
+
+- **File:** `<file_path>`
+- **Line:** <line_number>
+- **Code:**
+  ```
+  <matched_text with surrounding context>
+  ```
+
+### Impact
+
+<why this matters — severity rationale>
+
+### Recommended Fix
+
+<concrete fix suggestion>
+
+### Acceptance Criteria
+
+- [ ] <specific, verifiable condition>
+- [ ] Quality gates pass after fix
+```
+
+Labels: `type:discovery`, `priority:<level>`, `area:<inferred>`, `status:ready`

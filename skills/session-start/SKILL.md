@@ -39,6 +39,10 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `issue-limit` — max issues to fetch from VCS (default: 50)
 - `stale-branch-days` — days before branch flagged stale (default: 7)
 - `stale-issue-days` — days before issue flagged for triage (default: 30)
+- `discovery-on-close` — bool, default `false`. Run discovery probes automatically during `/close`
+- `discovery-probes` — list, default `[all]`. Categories to enable: `all`, `code`, `infra`, `ui`, `arch`, `session`
+- `discovery-exclude-paths` — list, default `[]`. Glob patterns to exclude from discovery scanning
+- `discovery-severity-threshold` — string, default `low`. Minimum severity to report: `critical`, `high`, `medium`, `low`
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
 

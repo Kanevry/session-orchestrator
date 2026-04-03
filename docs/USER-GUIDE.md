@@ -16,9 +16,10 @@ Session Orchestrator is a Claude Code plugin that brings structured, wave-based 
 8. [Quality Gates](#8-quality-gates)
 9. [Design-Code Alignment (Pencil Integration)](#9-design-code-alignment-pencil-integration)
 10. [Ecosystem Health](#10-ecosystem-health)
-11. [Cheat Sheet](#11-cheat-sheet)
-12. [FAQ](#12-faq)
-13. [Troubleshooting](#13-troubleshooting)
+11. [Quality Discovery](#11-quality-discovery)
+12. [Cheat Sheet](#12-cheat-sheet)
+13. [FAQ](#13-faq)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -71,13 +72,14 @@ The orchestrator researches your project state autonomously, presents findings w
 
 ## 2. Commands Reference
 
-Session Orchestrator provides three commands:
+Session Orchestrator provides four commands:
 
 | Command | Purpose | When to use |
 |---------|---------|-------------|
 | `/session [type]` | Start a new session | Beginning of a work session |
 | `/go` | Approve the plan and begin wave execution | After reviewing the proposed wave plan |
 | `/close` | End the session with verification and commits | When all waves are complete |
+| `/discovery [scope]` | Systematic quality discovery and issue detection | Anytime, or automatically during `/close` |
 
 ### `/session [type]`
 
@@ -207,6 +209,10 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `issue-limit` | integer | `50` | Maximum issues to fetch when querying VCS during session start. |
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
+| `discovery-on-close` | boolean | `false` | Run discovery probes automatically during `/close`. |
+| `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`. |
+| `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
+| `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 
 ### Minimal Config
 
@@ -611,7 +617,45 @@ If `health-endpoints` is not configured, the service table is omitted. If `cross
 
 ---
 
-## 11. Cheat Sheet
+## 11. Quality Discovery
+
+The `/discovery` command runs systematic quality probes to find issues that don't have VCS issues yet.
+
+### Usage
+
+```
+/discovery              # Scan all categories
+/discovery code         # Code quality only
+/discovery session      # Session gap analysis only
+/discovery code,session # Multiple categories
+```
+
+### Scope Options
+
+| Scope | Probes | Focus |
+|-------|--------|-------|
+| `all` | 22 probes | Everything (default) |
+| `code` | 8 probes | Hardcoded values, dead code, AI slop, type safety, tests, security |
+| `infra` | 4 probes | CI pipelines, env config, dependencies, deployments |
+| `ui` | 3 probes | Accessibility, responsive design, design drift |
+| `arch` | 3 probes | Circular deps, complexity hotspots, dependency security |
+| `session` | 4 probes | Gap analysis, hallucination check, stale issues, dependency chains |
+
+### How It Works
+
+1. **Stack Detection** -- Detects your tech stack (JS/TS, Python, Docker, etc.) and activates relevant probes
+2. **Probe Execution** -- Runs probes in parallel as read-only subagents
+3. **Verification** -- Re-reads files to confirm findings, discards false positives
+4. **Interactive Triage** -- Critical/High findings reviewed individually; Medium/Low batched by category
+5. **Issue Creation** -- Approved findings become VCS issues with `type:discovery` label
+
+### Embedded Mode
+
+Set `discovery-on-close: true` in Session Config to automatically run discovery during `/close`. In embedded mode, critical/high findings become issues; medium/low are listed in the session report.
+
+---
+
+## 12. Cheat Sheet
 
 ### Commands
 
@@ -622,6 +666,9 @@ If `health-endpoints` is not configured, the service table is omitted. If `cross
 /go                    Approve plan, begin wave execution
 /go <instructions>     Approve plan with additional guidance
 /close                 Verify all work, commit, push, clean up issues
+/discovery             Run quality probes across all categories
+/discovery code        Scan code quality only
+/discovery code,arch   Scan multiple categories
 ```
 
 ### Session Config (add to CLAUDE.md)
@@ -642,6 +689,9 @@ If `health-endpoints` is not configured, the service table is omitted. If `cross
 - **ecosystem-health:** true
 - **health-endpoints:** [{name: "API", url: "https://api.example.com/health"}]
 - **special:** "Run migrations before testing"
+- **discovery-on-close:** true
+- **discovery-probes:** [code, arch]
+- **discovery-severity-threshold:** medium
 ```
 
 ### Typical Session Flow
@@ -667,7 +717,7 @@ Finalization    Documentation, issues, commits
 
 ---
 
-## 12. FAQ
+## 13. FAQ
 
 ### Can I use this with GitHub?
 
@@ -707,7 +757,7 @@ Yes. Configure `cross-repos` in your Session Config with the names of related re
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### "glab: command not found" or "gh: command not found"
 
