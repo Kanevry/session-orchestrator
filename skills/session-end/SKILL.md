@@ -49,6 +49,25 @@ When enabled, invoke the discovery skill in **embedded mode**:
   - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
 - Report: "Discovery scan: [N] findings ([X] critical/high → issues, [Y] medium/low → deferred)"
 
+### 1.6 Safety Review
+
+> Skip if `persistence` is `false` in Session Config (STATE.md won't exist).
+
+Review safety metrics from the session. This is informational — it does NOT block the session close.
+
+1. Read `.claude/STATE.md` to extract:
+   - **Circuit breaker activations**: agents that hit maxTurns (`PARTIAL`), agents that spiraled (`SPIRAL`), agents that failed (`FAILED`)
+   - **Worktree status**: which agents used worktree isolation, any fallbacks or merge conflicts
+2. Read enforcement hook logs from stderr (if captured): count of scope violations blocked/warned, command violations blocked/warned
+3. Summarize:
+   ```
+   Safety review:
+   - Agents: [X] complete, [Y] partial (hit turn limit), [Z] spiral/failed
+   - Enforcement: [N] scope violations, [M] command blocks
+   - Isolation: [K] agents in worktrees, [J] fallbacks
+   ```
+4. If any agents were `SPIRAL` or `FAILED`, ensure carryover issues exist (cross-reference with Phase 1.2)
+
 ## Phase 2: Quality Gate
 
 Run ALL checks — do NOT skip any:
@@ -83,6 +102,39 @@ Review `.claude/rules/` files that are relevant to this session's work:
 - Should any rule be updated with new patterns?
 - Should a new path-scoped rule be created?
 - Suggest changes but DO NOT modify without user confirmation
+
+### 3.4 Update STATE.md
+
+If `persistence` is enabled in Session Config and `.claude/STATE.md` exists:
+1. Set frontmatter `status: completed`
+2. Record final wave count and completion time in the frontmatter
+3. Keep the file as a record — do NOT delete it (next session-start reads it)
+
+After updating STATE.md, also delete `.claude/wave-scope.json` if it exists (cleanup — enforcement hooks only apply during active waves).
+
+If STATE.md doesn't exist, skip this subsection.
+
+### 3.5 Session Memory
+
+> Gate: Only run if `persistence` is enabled in Session Config.
+
+1. Create `~/.claude/projects/<project>/memory/session-<YYYY-MM-DD>.md` with:
+   - Frontmatter: `name`, `description` (1-line summary), `type: project`
+   - `## Outcomes` — per-issue status (completed / partial / not started) with evidence
+   - `## Learnings` — patterns discovered, architectural insights, gotchas
+   - `## Next Session` — priority recommendations, suggested session type, blockers
+2. Update `~/.claude/projects/<project>/memory/MEMORY.md`:
+   - Under a `## Sessions` heading (create if missing), add:
+     `- [Session <date>](session-<date>.md) — <one-line summary>`
+
+### 3.6 Memory Cleanup Check
+
+> Gate: Only run if `persistence` is enabled in Session Config.
+
+1. Count session memory files matching `session-*.md` in the memory directory
+2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
+   "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
+3. This is a suggestion only — not blocking
 
 ## Phase 4: Commit & Push
 
@@ -150,6 +202,8 @@ Present to the user:
 - TypeScript: 0 errors
 - Commits: [N] pushed to [branch]
 - Mirror: [synced/skipped]
+- Enforcement: [N violations blocked / M warnings] (or "N/A" if enforcement off)
+- Circuit breaker: [N agents hit limits, M spirals detected] (or "none")
 
 ### Next Session Recommendations
 - Priority: [what should be tackled next]

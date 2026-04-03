@@ -17,9 +17,11 @@ Session Orchestrator is a Claude Code plugin that brings structured, wave-based 
 9. [Design-Code Alignment (Pencil Integration)](#9-design-code-alignment-pencil-integration)
 10. [Ecosystem Health](#10-ecosystem-health)
 11. [Quality Discovery](#11-quality-discovery)
-12. [Cheat Sheet](#12-cheat-sheet)
-13. [FAQ](#13-faq)
-14. [Troubleshooting](#14-troubleshooting)
+12. [Session Persistence](#12-session-persistence)
+13. [Safety Features](#13-safety-features)
+14. [Cheat Sheet](#14-cheat-sheet)
+15. [FAQ](#15-faq)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -181,6 +183,11 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 - **special:** "Always run database migrations before testing"
 - **test-command:** pnpm vitest run
 - **stale-issue-days:** 14
+- **persistence:** true
+- **memory-cleanup-threshold:** 5
+- **enforcement:** warn
+- **isolation:** auto
+- **max-turns:** auto
 ```
 
 ### Field Reference
@@ -213,6 +220,11 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
+| `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
+| `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
+| `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
+| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
+| `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 
 ### Minimal Config
 
@@ -655,7 +667,75 @@ Set `discovery-on-close: true` in Session Config to automatically run discovery 
 
 ---
 
-## 12. Cheat Sheet
+## 12. Session Persistence
+
+Session Orchestrator persists session state so you can resume after crashes, pauses, or context window exhaustion.
+
+### STATE.md
+
+Lives at `.claude/STATE.md` in your project. Contains YAML frontmatter (`session-type`, `branch`, `issues`, `started`, `status`, `current-wave`, `total-waves`) and a Markdown body tracking the Current Wave, Wave History, and any Deviations from the plan. Written by the wave-executor after each wave; read by session-start on the next `/session` invocation.
+
+### Session Continuity
+
+When you run `/session`, the orchestrator checks for an existing STATE.md:
+
+- **`status: active`** -- Crashed or interrupted session detected. You are offered the choice to resume from the last completed wave or start fresh.
+- **`status: paused`** -- Intentional pause (e.g., you closed Claude Code mid-session). Resume picks up where you left off.
+- **`status: completed`** -- Normal end state. No resume offered; a new session starts cleanly.
+
+### Session Memory
+
+After each session, `/close` writes a memory file to `~/.claude/projects/<project>/memory/session-<date>.md` containing Outcomes, Learnings, and Next Session recommendations. On the next `/session`, the orchestrator reads the last 2-3 session memory files for context continuity across sessions.
+
+When memory files accumulate past the `memory-cleanup-threshold` (default: 5), the orchestrator recommends running `/memory-cleanup` to consolidate them.
+
+### Disabling Persistence
+
+Set `persistence: false` in your Session Config to disable STATE.md writing and session memory. Sessions will not be resumable and will not carry context forward.
+
+---
+
+## 13. Safety Features
+
+### Scope Enforcement
+
+Before each wave, the wave-executor writes `.claude/wave-scope.json` defining the allowed file paths and blocked commands for that wave's agents. PreToolUse hooks validate Edit/Write operations against `allowedPaths` and Bash commands against `blockedCommands`.
+
+Enforcement levels (configured via `enforcement`):
+
+| Level | Behavior |
+|-------|----------|
+| `strict` | Out-of-scope operations are denied |
+| `warn` | Out-of-scope operations are allowed but logged with a warning |
+| `off` | No enforcement; agents have full access |
+
+### Circuit Breaker
+
+The orchestrator enforces turn limits per session type to prevent runaway execution:
+
+| Session Type | Default Max Turns |
+|-------------|-------------------|
+| housekeeping | 8 |
+| feature | 15 |
+| deep | 25 |
+
+Override with `max-turns` in Session Config, or set to `auto` for these defaults.
+
+The circuit breaker also detects execution spirals: a file edited 3+ times in the same wave, repeated identical errors, or self-reverts. Recovery depends on the failure mode:
+
+- **FAILED** -- A fix task is created for the next wave
+- **PARTIAL** -- Completed work is carried forward; remaining tasks become carryover issues
+- **SPIRAL** -- Changes are reverted and the scope is narrowed before retrying
+
+### Worktree Isolation
+
+When `isolation` is set to `worktree` (the default for feature and deep sessions), each subagent gets its own git worktree. This prevents file conflicts between agents working in parallel within the same wave. Housekeeping sessions default to `none` since they typically run fewer agents with non-overlapping scopes.
+
+Set `isolation: none` to disable worktrees (all agents work in the main working directory). Set `isolation: auto` to let the orchestrator choose based on session type.
+
+---
+
+## 14. Cheat Sheet
 
 ### Commands
 
@@ -692,6 +772,10 @@ Set `discovery-on-close: true` in Session Config to automatically run discovery 
 - **discovery-on-close:** true
 - **discovery-probes:** [code, arch]
 - **discovery-severity-threshold:** medium
+- **persistence:** true
+- **enforcement:** warn
+- **isolation:** auto
+- **max-turns:** auto
 ```
 
 ### Typical Session Flow
@@ -717,7 +801,7 @@ Finalization    Documentation, issues, commits
 
 ---
 
-## 13. FAQ
+## 15. FAQ
 
 ### Can I use this with GitHub?
 
@@ -757,7 +841,7 @@ Yes. Configure `cross-repos` in your Session Config with the names of related re
 
 ---
 
-## 14. Troubleshooting
+## 16. Troubleshooting
 
 ### "glab: command not found" or "gh: command not found"
 

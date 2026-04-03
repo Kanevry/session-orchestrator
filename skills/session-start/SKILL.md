@@ -43,12 +43,29 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `discovery-probes` — list, default `[all]`. Categories to enable: `all`, `code`, `infra`, `ui`, `arch`, `session`
 - `discovery-exclude-paths` — list, default `[]`. Glob patterns to exclude from discovery scanning
 - `discovery-severity-threshold` — string, default `low`. Minimum severity to report: `critical`, `high`, `medium`, `low`
+- `persistence` — bool, default `true`. Enable STATE.md + session memory persistence
+- `memory-cleanup-threshold` — integer, default `5`. Recommend `/memory-cleanup` after N sessions
+- `enforcement` — `strict|warn|off`, default `warn`. Hook enforcement level for scope/command restrictions
+- `isolation` — `worktree|none`, default `auto` (worktree for feature/deep, none for housekeeping). Agent isolation mode
+- `max-turns` — integer, default `auto` (housekeeping=8, feature=15, deep=25). Maximum agent turns before PARTIAL
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
 
 For the full Session Config field reference, see `docs/USER-GUIDE.md` Section 4.
 
-Also read `.claude/STATE.md` or `.claude/STATUS.md` if they exist for session continuity.
+## Phase 0.5: Session Continuity
+
+> Skip this phase if `persistence` config is `false`.
+
+Check for `.claude/STATE.md` in the project root:
+
+1. **STATE.md exists** — read it and inspect the `status` field:
+   - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
+   - `status: paused` — session was intentionally paused. Use AskUserQuestion to offer resuming from the pause point or starting fresh.
+   - `status: completed` — previous session ended cleanly. Note the summary for context (what was done, what was deferred) but continue with normal initialization.
+2. **STATE.md does not exist** — first session or persistence was previously off. Continue normally.
+
+Also read `.claude/STATUS.md` if it exists for additional project-level context.
 
 ## Phase 1: Git Analysis (parallel)
 
@@ -101,6 +118,18 @@ Look across the gathered data for:
 - **Quick wins**: low-effort issues that could be closed alongside main work
 - **Staleness**: issues open longer than `stale-issue-days` (default: 30) days without progress → flag for triage
 - **Synergies**: issues that share code paths and can be combined
+
+## Phase 5.5: Memory Recall
+
+> Skip this phase if `persistence` config is `false`.
+
+Surface context from previous sessions:
+
+1. Look for session memory files at `~/.claude/projects/<project>/memory/session-*.md`
+2. Read the 2–3 most recent files (by filename date, newest first)
+3. Extract relevant context: what was accomplished, what was carried over as unfinished, what patterns or warnings were noted
+4. If the `memory-cleanup-threshold` has been reached (number of session-*.md files >= threshold), include a note in the Session Overview: "Consider running `/memory-cleanup` — [N] session memory files accumulated."
+5. Incorporate surfaced context into the Session Overview under a **Previous Sessions** subsection (e.g., recent accomplishments, deferred items, recurring patterns)
 
 ## Phase 6: Research (session type dependent)
 

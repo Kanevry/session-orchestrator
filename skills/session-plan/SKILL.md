@@ -15,6 +15,13 @@ Transform the agreed session scope (from session-start Q&A) into an executable w
 
 ## Step 1: Task Decomposition
 
+0. **Check for resume context**: If `.claude/STATE.md` exists with `status: active` or `status: paused`, read it to understand:
+   - Which waves were completed in the prior session
+   - Which agents completed, which were partial/failed
+   - What deviations were logged
+   - Use this to avoid re-doing completed work and to prioritize carryover tasks
+   If no STATE.md or `status: completed`, proceed with fresh planning.
+
 For each agreed task/issue:
 1. Read the VCS issue description and acceptance criteria
 2. Identify affected files by searching the codebase (Grep/Glob — don't guess)
@@ -87,7 +94,12 @@ For each wave, define agents with:
   Acceptance: [what "done" looks like — measurable]
   Tools needed: [Read, Write, Edit, Bash, Grep, Glob, etc.]
   Dependencies: [output from which prior role/agent]
+  Isolation: [worktree|none — read from Session Config, default: worktree for feature/deep, none for housekeeping]
+  MaxTurns: [read from Session Config max-turns, default: housekeeping=8, feature=15, deep=25]
 ```
+
+- `Isolation: worktree` means the wave-executor will pass `isolation: "worktree"` to the Agent tool, giving each agent its own git worktree copy
+- `MaxTurns` is enforced via the agent prompt — wave-executor includes a turn limit instruction in each agent's prompt
 
 ### Agent Count by Session Type
 

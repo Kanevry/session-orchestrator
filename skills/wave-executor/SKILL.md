@@ -25,6 +25,41 @@ Before starting the first wave (Discovery role):
 1. `git status --short` — ensure clean working directory (commit or stash if needed)
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
+4. Read `persistence` from Session Config (default: `true`)
+
+## Pre-Wave 1: Initialize STATE.md
+
+> Skip this section entirely if `persistence: false`.
+
+Before dispatching Wave 1, write `.claude/STATE.md` with YAML frontmatter and Markdown body:
+
+```yaml
+---
+session-type: feature|deep|housekeeping
+branch: <current branch>
+issues: [<issue numbers from plan>]
+started: <ISO 8601 timestamp with timezone>
+status: active
+current-wave: 0
+total-waves: <from session plan>
+---
+```
+
+```markdown
+## Current Wave
+
+Wave 0 — Initializing
+
+## Wave History
+
+(none yet)
+
+## Deviations
+
+(none yet)
+```
+
+Create the `.claude/` directory if it doesn't exist. This file is the persistent state record — other skills and resumed sessions read it.
 
 ## Wave Execution Loop
 
@@ -90,6 +125,25 @@ After reviewing wave results, decide:
 
 **Deviation protocol**: ALWAYS document WHY you deviated from the plan. Log it in a brief note that session-end can reference.
 
+### 3a. Post-Wave: Update STATE.md
+
+> Skip if `persistence: false`.
+
+After each wave completes and before the progress update, update `.claude/STATE.md`:
+
+1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input)
+2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
+3. **`## Wave History`**: append an entry for the completed wave:
+   ```
+   ### Wave N — <Role>
+   - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
+   - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
+   ```
+4. **`## Deviations`**: if the plan was adapted in step 3, append a timestamped entry:
+   ```
+   - [<ISO timestamp>] Wave N: <what changed and why>
+   ```
+
 ### 4. Progress Update
 
 After each wave, provide a brief status:
@@ -103,6 +157,59 @@ After each wave, provide a brief status:
 - Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
+## Scope Manifest
+
+Before each wave dispatch:
+
+1. **Write `.claude/wave-scope.json`** with the wave's scope:
+   ```json
+   {
+     "wave": N,
+     "role": "<role>",
+     "enforcement": "<from Session Config, default: warn>",
+     "allowedPaths": ["<from agent specs in session plan>"],
+     "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
+   }
+   ```
+2. `allowedPaths` is the UNION of all agent file scopes for this wave
+3. Read `enforcement` from Session Config (default: `warn`)
+4. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
+
+## Circuit Breaker
+
+1. **MaxTurns enforcement**: Read `max-turns` from Session Config (default: auto — housekeeping=8, feature=15, deep=25). Include this instruction in EVERY agent prompt:
+   ```
+   TURN LIMIT: You have a maximum of [N] turns. If you cannot complete within [N] turns, report PARTIAL with what you accomplished and what remains.
+   ```
+2. **Spiral detection**: After each wave, the coordinator checks agent results for:
+   - Same file edited 3+ times → possible thrashing
+   - Same error message repeated across turns → stuck
+   - Agent reverted its own changes → loop
+   If spiral detected: log in STATE.md, mark agent as SPIRAL, re-scope task narrower for next wave.
+3. **Recovery protocol**:
+   - FAILED agent → log in STATE.md, add fix task to next wave with corrected instructions
+   - PARTIAL agent → carry forward remaining work with context
+   - SPIRAL agent → revert changes, narrow scope, consider splitting task
+
+## Worktree Isolation
+
+1. **When to use**: Read `isolation` from Session Config. Default: `worktree` for feature/deep sessions, `none` for housekeeping.
+2. **Dispatch with isolation**: When isolation is enabled, add `isolation: "worktree"` to Agent tool calls:
+   ```
+   Agent({
+     description: "...",
+     prompt: "...",
+     subagent_type: "general-purpose",
+     run_in_background: false,
+     isolation: "worktree"
+   })
+   ```
+3. **Post-wave merge**: After wave completes, worktree changes are automatically available. If agents made changes in worktrees:
+   - Review each agent's changes for conflicts
+   - If conflicts detected: resolve manually before proceeding
+   - Run incremental quality checks after merging
+4. **Fallback**: If worktree creation fails (e.g., git state issue), fall back to shared directory with a warning logged.
+
 ## Agent Prompt Best Practices
 
 Each agent prompt MUST include:
@@ -113,6 +220,7 @@ Each agent prompt MUST include:
 4. **Rule references**: "Follow patterns in .claude/rules/[relevant].md"
 5. **Testing expectation**: "Write tests for your changes" or "Run existing tests"
 6. **Commit instruction**: "Do NOT commit. The coordinator handles commits."
+7. **Turn limit**: Include the maxTurns instruction from the Circuit Breaker section
 
 Each agent prompt MUST NOT include:
 - References to other agents' tasks (isolation)
