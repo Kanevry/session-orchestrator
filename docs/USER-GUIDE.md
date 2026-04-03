@@ -47,7 +47,7 @@ claude plugin install session-orchestrator
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-alpha — /session [housekeeping|feature|deep] | /discovery [scope]
+🎯 Session Orchestrator v2.0.0-alpha.4 — /session [housekeeping|feature|deep] | /discovery [scope]
 ```
 
 ### Add Session Config to your project
@@ -817,9 +817,9 @@ Three factors are scored (0-2 points each):
 | Issue count | 1 issue | 2-3 issues | 4+ issues |
 
 ### Complexity Tiers
-- **Simple** (0-2 points): fewer agents per wave
-- **Moderate** (3-4 points): standard allocation
-- **Complex** (5-6 points): maximum agents per wave
+- **Simple** (0-1 points): fewer agents per wave
+- **Moderate** (2-3 points): standard allocation
+- **Complex** (4-6 points): maximum agents per wave
 
 ### Dynamic Scaling Between Waves
 After each wave, agent count is adjusted based on performance:

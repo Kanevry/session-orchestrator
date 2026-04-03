@@ -552,7 +552,7 @@ Value: <dimension if applicable>
 
 ### Probe: design-drift
 
-**Activation:** Pencil MCP configured in Session Config (`pencil: true` or design file path provided).
+**Activation:** Pencil MCP configured in Session Config (`pencil` path provided, e.g. `pencil: designs/app.pen`).
 
 **Detection Method:**
 

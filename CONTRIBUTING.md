@@ -138,8 +138,30 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha — /session [housekeeping|feature|deep] | /discovery [scope]'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.4 — /session [housekeeping|feature|deep] | /discovery [scope]'",
             "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.sh\"",
+            "timeout": 5
           }
         ]
       }
@@ -148,7 +170,10 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
 }
 ```
 
-**Current hooks:** `SessionStart` notification displaying plugin version and usage hint.
+**Current hooks:**
+- `SessionStart` — notification displaying plugin version and usage hint
+- `PreToolUse` (Edit/Write) — scope enforcement via `enforce-scope.sh`
+- `PreToolUse` (Bash) — command restrictions via `enforce-commands.sh`
 
 ## Skill Anatomy
 
