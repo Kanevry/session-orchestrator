@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.4] - 2026-04-03
+
+### Fixed
+- **enforce-scope.sh**: glob matching now supports `**` recursive patterns via regex conversion (was limited to single-level globs)
+- **enforce-commands.sh**: word-boundary matching prevents false positives (e.g., `rm -rflag` no longer blocked by `rm -rf` pattern)
+- **session_id uniqueness**: format changed from `<branch>-<YYYY-MM-DD>` to `<branch>-<YYYY-MM-DD>-<HHmm>` to prevent same-day collisions
+- **Spiral detection scope**: clarified as per-agent (not per-wave) — two agents editing the same file is expected, not a spiral
+- **Complexity tier boundaries**: rebalanced to Simple (0-1), Moderate (2-3), Complex (4-6) for better distribution
+- **Dynamic scaling threshold**: "fast" defined as under 3 minutes wall-clock (was undefined)
+- **Worktree merge strategy**: defined sequential merge protocol with conflict resolution heuristics
+- **Directory creation**: explicit `mkdir -p` commands instead of prose instructions for STATE.md and metrics
+- **JSONL write safety**: documented POSIX-atomic `>>` append, warned against read-modify-write
+- **USER-GUIDE spiral wording**: corrected "per wave" to "per agent" to match authoritative circuit-breaker.md
+
+### Added
+- `deviation-pattern` learning type — session-end now reads STATE.md deviations for cross-session pattern extraction
+- Discovery role enforcement: `allowedPaths: []` + read-only prompt instruction
+- Quality role scope restriction: `allowedPaths` limited to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
+- Role combination verification example (Discovery+Impl-Core → Incremental checks)
+- 6+ wave splitting criteria (by module/dependency boundary)
+- jq prerequisite documentation in USER-GUIDE.md with install commands
+- Integration test reference config (`docs/examples/integration-test-config.md`) covering all 30 Session Config fields
+- Validation checklist (`docs/validation-checklist.md`) mapping to #21's 11 test plan items
+
+### Changed
+- Hook jq-missing warnings now explicitly state that enforcement is fully disabled
+- `enforce-scope.sh` matching has 4 branches: directory prefix → recursive glob → simple glob → exact match
+
 ## [2.0.0-alpha.3] - 2026-04-03
 
 ### Added

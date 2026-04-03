@@ -84,7 +84,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 3. Prepare the JSONL entry (written in Phase 3.7):
    ```json
    {
-     "session_id": "<branch>-<YYYY-MM-DD>",
+     "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
      "session_type": "<type>",
      "started_at": "<ISO 8601>",
      "completed_at": "<ISO 8601>",
@@ -99,6 +99,8 @@ Finalize session metrics by reading the wave data accumulated during execution:
      ]
    }
    ```
+
+> The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
 
 ## Phase 2: Quality Gate
 
@@ -170,12 +172,13 @@ Analyze the completed session to extract reusable learnings for future sessions.
 - **Effective sizing**: actual agent count vs. planned — what worked for this complexity level
 - **Recurring issues**: same issue type appearing across waves (e.g., type errors, missing imports)
 - **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?
+- **Deviation patterns**: read the `## Deviations` section from `.claude/STATE.md` — were there plan adaptations? What triggered them? Extract as `deviation-pattern` type if a pattern emerges across sessions (e.g., "scope expansion during Impl-Core is common for this project")
 
 **Learning format** (append each as one JSONL line to `.claude/metrics/learnings.jsonl`):
 ```json
 {
   "id": "<uuid-v4>",
-  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance",
+  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern",
   "subject": "<what the learning is about>",
   "insight": "<the actionable insight>",
   "evidence": "<what happened this session>",
@@ -209,8 +212,9 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 
 > Gate: Only run if `persistence` is enabled in Session Config.
 
-1. Ensure `.claude/metrics/` directory exists (create if missing)
+1. Ensure `.claude/metrics/` directory exists: `mkdir -p .claude/metrics`
 2. Append the prepared JSONL entry (from Phase 1.7) as a single line to `.claude/metrics/sessions.jsonl`
+   > **Concurrent write safety**: Use shell `>>` append for the single JSONL line — this is atomic on POSIX systems for writes under PIPE_BUF (typically 4096 bytes). Do NOT read-modify-write the file.
 3. Create the file if it does not exist
 4. Verify: read back the last line to confirm valid JSON
 

@@ -712,6 +712,14 @@ Enforcement levels (configured via `enforcement`):
 | `warn` | Out-of-scope operations are allowed but logged with a warning |
 | `off` | No enforcement; agents have full access |
 
+### Prerequisites
+
+Scope and command enforcement hooks require `jq` to be installed. If `jq` is not available, hooks degrade gracefully — all operations are allowed with a warning to stderr. Install `jq` for enforcement to be active:
+
+- **macOS**: `brew install jq`
+- **Ubuntu/Debian**: `sudo apt-get install jq`
+- **Alpine**: `apk add jq`
+
 ### Circuit Breaker
 
 The orchestrator enforces turn limits per session type to prevent runaway execution:
@@ -724,7 +732,7 @@ The orchestrator enforces turn limits per session type to prevent runaway execut
 
 Override with `max-turns` in Session Config, or set to `auto` for these defaults.
 
-The circuit breaker also detects execution spirals: a file edited 3+ times in the same wave, repeated identical errors, or self-reverts. Recovery depends on the failure mode:
+The circuit breaker also detects execution spirals: a file edited 3+ times within a single agent's execution, repeated identical errors, or self-reverts. Recovery depends on the failure mode:
 
 - **FAILED** -- A fix task is created for the next wave
 - **PARTIAL** -- Completed work is carried forward; remaining tasks become carryover issues

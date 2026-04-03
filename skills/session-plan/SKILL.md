@@ -62,12 +62,18 @@ Map roles to the configured wave count:
 
 When roles are combined into a single wave, agents from both roles execute in that wave. The combined wave inherits the more restrictive verification level.
 
+> Example: When Discovery+Impl-Core are combined (3-wave config), the wave runs Incremental quality checks (Impl-Core's level) rather than no verification (Discovery's level).
+
+**Splitting criteria for 6+ waves**: When Impl-Core or Impl-Polish span multiple waves, split by module or dependency boundary. Tasks with shared file dependencies go in the same wave; tasks touching independent modules go in separate waves. If no clear boundary exists, split by task count (distribute evenly).
+
 ### Role Details
 
 **Discovery**
 - Explore-type subagents (read-only, fast)
 - Tasks: Audit affected code paths, verify assumptions, check test coverage, identify edge cases
 - Output: Validated understanding, updated task scope if discoveries warrant it
+- Tools: Read, Grep, Glob, Bash (read-only commands only) — do NOT use Edit or Write
+- Scope enforcement: set `allowedPaths` to `[]` (empty) for Discovery waves. Include in agent prompts: "You are READ-ONLY. Do NOT use Edit or Write tools."
 
 **Impl-Core**
 - Full implementation agents with Write/Edit/Bash access
@@ -81,7 +87,8 @@ When roles are combined into a single wave, agents from both roles execute in th
 
 **Quality**
 - Test writers + quality reviewers
-- Tasks: Write/update tests, run full quality checks per quality-gates skill, security review
+- Tasks: Write/update tests (test files only — `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`), run full quality checks per quality-gates skill, security review
+- Scope restriction: `allowedPaths` should be restricted to test file patterns and test configuration. Quality agents MUST NOT modify production source files.
 - Output: All tests passing, 0 TypeScript errors, no lint violations
 
 **Finalization**
@@ -107,9 +114,9 @@ Score the session scope to determine optimal agent counts per wave. Skip for hou
 
 | Tier | Score | Description |
 |------|-------|-------------|
-| Simple | 0-2 | Small scope, few files, single module |
-| Moderate | 3-4 | Medium scope, multiple modules |
-| Complex | 5-6 | Large scope, many modules and issues |
+| Simple | 0-1 | Small scope, few files, single module |
+| Moderate | 2-3 | Medium scope, multiple modules |
+| Complex | 4-6 | Large scope, many modules and issues |
 
 ### Agent Count by Tier
 

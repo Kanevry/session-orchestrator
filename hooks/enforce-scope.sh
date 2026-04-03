@@ -16,7 +16,7 @@ INPUT=$(cat)
 
 # Check jq available — graceful degradation
 if ! command -v jq &>/dev/null; then
-  echo "enforce-scope: jq not found, allowing operation" >&2
+  echo "WARNING: enforce-scope: jq not installed — ALL file edits allowed without scope checking. Install jq to enable enforcement." >&2
   exit 0
 fi
 
@@ -42,7 +42,7 @@ ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFOR
 # Convert absolute file_path to relative (strip project root prefix)
 REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
 
-# Check against allowed paths using prefix/glob matching
+# Check against allowed paths using prefix/glob/regex matching
 MATCHED=false
 while IFS= read -r pattern; do
   [[ -z "$pattern" ]] && continue
@@ -50,8 +50,33 @@ while IFS= read -r pattern; do
   if [[ "$pattern" == */ && "$REL_PATH" == "$pattern"* ]]; then
     MATCHED=true
     break
-  # Exact match or glob match
-  elif [[ "$REL_PATH" == $pattern ]]; then
+  # Recursive glob (**) match: convert to regex
+  elif [[ "$pattern" == *'**'* ]]; then
+    # Escape dots, convert ** to .*, convert remaining standalone * to [^/]*
+    regex="$pattern"
+    regex="${regex//./\\.}"            # . → \.
+    regex="${regex//\*\*\//<<DSLASH>>}" # **/ → placeholder (zero+ dirs with slash)
+    regex="${regex//\*\*/<<DBL>>}"     # ** at end → placeholder (zero+ path chars)
+    regex="${regex//\*/[^/]*}"         # * → [^/]* (single-segment)
+    regex="${regex//<<DSLASH>>/(.*\/)?}" # **/ → optional dir segments
+    regex="${regex//<<DBL>>/.*}"       # ** → any depth
+    regex="^${regex}$"
+    if [[ "$REL_PATH" =~ $regex ]]; then
+      MATCHED=true
+      break
+    fi
+  # Glob with * (no **): convert to regex so * doesn't cross directories
+  elif [[ "$pattern" == *'*'* ]]; then
+    regex="$pattern"
+    regex="${regex//./\\.}"        # . → \.
+    regex="${regex//\*/[^/]*}"     # * → [^/]* (single-segment only)
+    regex="^${regex}$"
+    if [[ "$REL_PATH" =~ $regex ]]; then
+      MATCHED=true
+      break
+    fi
+  # Exact match (literal path, no wildcards)
+  elif [[ "$REL_PATH" == "$pattern" ]]; then
     MATCHED=true
     break
   fi

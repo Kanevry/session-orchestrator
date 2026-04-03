@@ -27,7 +27,7 @@ Before starting the first wave (Discovery role):
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
 4. Read `persistence` from Session Config (default: `true`)
 5. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
-   - `session_id`: `<branch>-<YYYY-MM-DD>`
+   - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
    - `session_type`: from Session Config
    - `started_at`: ISO 8601 timestamp
    - `waves`: empty array (populated after each wave)
@@ -65,7 +65,7 @@ Wave 0 — Initializing
 (none yet)
 ```
 
-Create the `.claude/` directory if it doesn't exist. This file is the persistent state record — other skills and resumed sessions read it.
+Create the `.claude/` directory if needed (`mkdir -p .claude`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 
 ## Wave Execution Loop
 
@@ -145,7 +145,7 @@ After reviewing wave results, adjust the next wave's agent count based on perfor
 
 | Signal | Action | Example |
 |--------|--------|---------|
-| All agents completed fast, no issues | Reduce next wave by 1-2 agents | 6 agents all done quickly → next wave uses 4 |
+| All agents completed in under 3 minutes wall-clock, no issues | Reduce next wave by 1-2 agents | 6 agents all done in <3m → next wave uses 4 |
 | Agent failures or broken code | Add fix agents to next wave (+1-2) | 2 agents failed → next wave gets 2 extra |
 | Scope expansion discovered | Scale up next wave | New module found → add agents for it |
 | Quality regressions found | Add targeted fix agents | 3 test failures → 3 fix agents next wave |
@@ -206,7 +206,9 @@ Before each wave dispatch:
    ```
 2. `allowedPaths` is the UNION of all agent file scopes for this wave
 3. Read `enforcement` from Session Config (default: `warn`)
-4. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
+4. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
+5. For **Quality** role waves, restrict `allowedPaths` to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality agents must not modify production source code.
+6. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
 
 ## Circuit Breaker & Worktree Isolation
 

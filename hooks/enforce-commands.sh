@@ -11,7 +11,7 @@ INPUT=$(cat)
 
 # Graceful degradation: if jq is not available, allow everything
 if ! command -v jq &>/dev/null; then
-  echo "⚠ enforce-commands: jq not found, allowing operation" >&2
+  echo "WARNING: enforce-commands: jq not installed — ALL commands allowed without restriction. Install jq to enable enforcement." >&2
   exit 0
 fi
 
@@ -31,10 +31,10 @@ SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
 ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="warn"
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
 
-# Check command against blocked patterns (substring match)
+# Check command against blocked patterns (word-boundary match)
 while IFS= read -r pattern; do
   [[ -z "$pattern" ]] && continue
-  if [[ "$COMMAND" == *"$pattern"* ]]; then
+  if [[ "$COMMAND" =~ (^|[[:space:]])"$pattern"([[:space:]]|$) ]]; then
     case "$ENFORCEMENT" in
       strict)
         jq -nc --arg pat "$pattern" --arg cmd "$COMMAND" \

@@ -41,6 +41,18 @@ Auto-detects GitLab or GitHub from your git remote. Full lifecycle support for b
 
 Checks configured service endpoints and scans cross-repo critical issues at session start. Know your ecosystem state before you start working.
 
+### Session Persistence & Safety
+
+Sessions persist across interruptions via `STATE.md` — crash recovery, resume from pause point, and clean handover between sessions. PreToolUse hooks enforce agent scope (file paths) and block dangerous commands. A circuit breaker detects execution spirals (thrashing, repeated errors, self-reverts) and recovers automatically.
+
+### Metrics & Cross-Session Learning
+
+Every session writes quantitative metrics (duration, agents, files changed per wave) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). Future sessions consume these learnings to adapt wave sizing and flag known problem areas — the system gets smarter over time.
+
+### Adaptive Wave Sizing
+
+Agent counts scale with session complexity. A scoring formula (files × modules × issues) determines simple/moderate/complex tier, which maps to concrete agent counts per role and session type. Dynamic scaling adjusts between waves based on actual agent performance.
+
 ### Verified Session Close-Out
 
 `/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. Nothing falls through the cracks.
@@ -50,11 +62,15 @@ Checks configured service endpoints and scans cross-repo critical issues at sess
 | Feature | Session Orchestrator | Manual CLAUDE.md | Other Orchestrators |
 |---------|---------------------|------------------|-------------------|
 | Session lifecycle (start → plan → execute → close) | Full, automated | Manual | Partial |
-| Typed waves with quality gates | 5 waves, progressive verification | None | Batch execution |
+| Typed waves with quality gates | 5 roles, progressive verification | None | Batch execution |
+| Session persistence & crash recovery | STATE.md + memory files | None | Partial |
+| Scope & command enforcement hooks | PreToolUse with strict/warn/off | None | None |
+| Circuit breaker & spiral detection | Per-agent, with recovery | None | Partial |
+| Cross-session learning | Confidence-scored learnings | None | None |
+| Adaptive wave sizing | Complexity-scored, dynamic | Fixed | Fixed |
 | VCS integration (GitLab + GitHub) | Dual, auto-detected | Manual CLI | Usually GitHub only |
 | Design-code alignment | Pencil integration | None | None |
 | Session close with carryover | Verified, with issue creation | Manual | Partial |
-| Personality/decision system | Soul system | None | None |
 
 Session Orchestrator does not optimize for token cost or model routing. It optimizes for engineering quality — every wave verified, every issue tracked, every session closed cleanly.
 
@@ -93,6 +109,11 @@ Add to each repo's `CLAUDE.md`:
 - **gitlab-host:** custom-gitlab.example.com
 - **health-endpoints:** [{name: "API", url: "https://api.example.com/health"}]
 - **special:** "any repo-specific instructions"
+- **persistence:** true
+- **enforcement:** warn (strict|warn|off)
+- **isolation:** worktree (worktree|none|auto)
+- **max-turns:** auto (housekeeping=8, feature=15, deep=25)
+- **discovery-on-close:** true
 ```
 
 For the complete field reference with types, defaults, and descriptions, see the [User Guide — Session Config Reference](docs/USER-GUIDE.md#4-session-config-reference).
@@ -119,7 +140,7 @@ User → /session → Research → Q&A → Plan → /go → 5 Waves → /close �
 - **8 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery
 - **4 Commands**: /session, /go, /close, /discovery
 - **1 Agent**: session-reviewer (inter-wave quality gate)
-- **Hooks**: SessionStart notification
+- **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
 
 ## Documentation
 
