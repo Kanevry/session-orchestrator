@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v1.1 — /session [housekeeping|feature|deep] | /discovery [scope]'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha — /session [housekeeping|feature|deep] | /discovery [scope]'",
             "async": false
           }
         ]

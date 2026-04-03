@@ -11,7 +11,9 @@ This example shows a minimal Session Config for a Swift iOS project. Session Orc
 - **agents-per-wave:** 3
 - **waves:** 3
 - **vcs:** github
-- **special:** "No TypeScript — skip tsgo checks. Use `xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 16'` for tests. Build with `xcodebuild build -scheme MyApp`."
+- **test-command:** xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 16'
+- **typecheck-command:** skip
+- **special:** "Build with `xcodebuild build -scheme MyApp`."
 ```
 
 ## What this enables

@@ -20,7 +20,8 @@ Add this to your project's `CLAUDE.md`:
 - **ecosystem-health:** true
 - **vcs:** github
 - **health-endpoints:** [{name: "Production", url: "https://myapp.vercel.app/api/health"}, {name: "Preview", url: "https://myapp-preview.vercel.app/api/health"}]
-- **special:** "Run `pnpm typecheck` instead of `tsgo --noEmit`. Use `pnpm test` for tests."
+- **test-command:** pnpm test
+- **typecheck-command:** pnpm typecheck
 ```
 
 ## What this enables

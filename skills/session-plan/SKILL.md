@@ -16,7 +16,7 @@ Transform the agreed session scope (from session-start Q&A) into an executable w
 ## Step 1: Task Decomposition
 
 For each agreed task/issue:
-1. Read the GitLab issue description and acceptance criteria
+1. Read the VCS issue description and acceptance criteria
 2. Identify affected files by searching the codebase (Grep/Glob — don't guess)
 3. Map dependencies: which tasks must complete before others can start
 4. Estimate complexity: small (1 agent), medium (2-3 agents), large (dedicated wave)

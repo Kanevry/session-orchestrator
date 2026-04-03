@@ -11,7 +11,7 @@ description: >
 
 ## Session Config Fields Used
 
-This skill reads from the project's Session Config (`.session-config.yml` or equivalent):
+This skill reads from the project's `## Session Config` section in CLAUDE.md:
 
 - **`health-endpoints`** — list of `{name, url}` objects for service health checks
 - **`cross-repos`** — list of related repositories for critical issue scanning

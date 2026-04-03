@@ -1,6 +1,6 @@
 {
   "name": "session-orchestrator",
-  "version": "1.0.0",
+  "version": "2.0.0-alpha",
   "description": "Session-level orchestration — wave planning, VCS integration, quality gates",
   "author": {
     "name": "Bernhard Goetzendorfer",

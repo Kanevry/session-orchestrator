@@ -3,7 +3,7 @@ name: session-start
 user-invocable: false
 description: >
   Full session initialization for any project repo. Autonomously analyzes git state,
-  GitLab issues, SSOT files, branches, environment, and cross-repo status. Then presents
+  VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents
   structured findings with recommendations for user alignment before creating a wave plan.
   Triggered by /session [housekeeping|feature|deep] command.
 ---
@@ -23,7 +23,7 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `pencil` — path to .pen design file (if any)
 - `cross-repos` — related repos to check (paths under ~/Projects/)
 - `ssot-files` — SSOT files to check freshness (e.g., STATUS.md, STATE.md)
-- `cli-tools` — CLI tools available (glab, vercel, supabase, stripe, etc.)
+- `cli-tools` — CLI tools available (glab, gh, vercel, supabase, stripe, etc.)
 - `mirror` — mirror target (github, none)
 - `ecosystem-health` — whether to run service health checks
 - `vcs` — version control system: `github` or `gitlab` (default: auto-detect from git remote)
@@ -123,7 +123,7 @@ Present your findings in this structure:
 - Type: [housekeeping|feature|deep]
 - Repo: [name] on branch [branch]
 - Git: [X uncommitted, Y unpushed, Z open branches]
-- GitLab: [N open issues (H high, M medium), K open MRs]
+- VCS: [N open issues (H high, M medium), K open MRs/PRs]
 - Health: [TypeScript: 0 errors | Tests: passing/failing | CI: green/red]
 - SSOT: [fresh/stale files listed]
 - Cross-repos: [status summary]
@@ -177,8 +177,8 @@ After user alignment:
 - **NEVER make assumptions** about code state based on memory or docs — always verify in actual files
 - **NEVER skip the Q&A phase** — the user MUST confirm direction before wave planning
 - **ALWAYS use `run_in_background: false`** for parallel subagent work — wait for completion
-- **ALWAYS check `.env` or `.env.local`** for GitLab host, API keys, and service URLs
+- **ALWAYS check `.env` or `.env.local`** for VCS host, API keys, and service URLs
 - **ALWAYS present options with pros/cons and a clear recommendation** — never just list facts
-- **ALWAYS update GitLab issue status** when claiming work: `glab issue update <IID> --label "status:in-progress"`
+- **ALWAYS update VCS issue status** when claiming work — use the issue update command per the "Common CLI Commands" section of the gitlab-ops skill
 - **For Pencil designs**: use the `filePath` parameter, work only on new designs, treat completed ones as done
 - **For cross-repo work**: always check the actual state of related repos, don't assume from memory

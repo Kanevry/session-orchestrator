@@ -20,7 +20,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 
 ### 1.2 Partially Done Items
 - Document what was completed and what remains
-- Create a GitLab issue for the remaining work with:
+- Create a VCS issue for the remaining work with:
   - Title: `[Carryover] <original task description>`
   - Labels: `priority:<original>`, `status:ready`
   - Description: what's done, what's left, context for next session
@@ -34,7 +34,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 ### 1.4 Emergent Work
 - Tasks that were NOT in the plan but were done (fixes, discoveries)
 - Document and attribute to relevant issues
-- If new issues were identified: create them on GitLab
+- If new issues were identified: create them on the VCS platform
 
 ### 1.5 Discovery Scan (if enabled)
 
@@ -119,7 +119,7 @@ git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || ech
 
 > **VCS Reference:** Use CLI commands per the "Common CLI Commands" section of the gitlab-ops skill.
 
-1. **Close resolved issues**: Use the issue close command for the detected VCS platform. To add a closing comment, use the issue note/comment command first, then close. **Important for GitLab:** The `--comment` flag does NOT exist on `glab issue close` — use TWO separate commands: `glab issue note <IID> -m "comment"` THEN `glab issue close <IID>`.
+1. **Close resolved issues**: Use the issue close and note commands per the "Common CLI Commands" section of the gitlab-ops skill. Note: some VCS platforms require separate note and close commands.
 2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
 3. **Create carryover issues**: for partially-done work (from Phase 1.2), use the issue create command with appropriate labels
 4. **Create gap issues**: for newly-discovered problems
@@ -162,7 +162,7 @@ Present to the user:
 - **NEVER claim work is done without running verification** — evidence before assertions
 - **NEVER commit with TypeScript errors** — 0 errors is non-negotiable
 - **NEVER use `git add .`** — stage files individually to avoid capturing parallel session work
-- **NEVER skip issue updates** — GitLab must reflect reality after every session
+- **NEVER skip issue updates** — VCS must reflect reality after every session
 - **ALWAYS create issues for unfinished work** — nothing should be "remembered" without a ticket
 - **ALWAYS push to origin** — local-only work is lost work
 - **ALWAYS mirror to GitHub** if configured — keep mirrors in sync

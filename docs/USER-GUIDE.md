@@ -42,7 +42,7 @@ claude plugin install session-orchestrator
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v1.0 — /session [housekeeping|feature|deep] to start
+🎯 Session Orchestrator v2.0.0-alpha — /session [housekeeping|feature|deep] | /discovery [scope]
 ```
 
 ### Add Session Config to your project

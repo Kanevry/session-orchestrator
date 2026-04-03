@@ -43,7 +43,7 @@ For each agent in this wave:
       - Which files to read/modify (exact paths)
       - Acceptance criteria (how to verify done)
       - Relevant patterns from .claude/rules/
-      - GitLab issue reference if applicable
+      - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
       >",
     subagent_type: "general-purpose",

@@ -81,7 +81,7 @@ Skills are the core logic units. Each skill is a Markdown file with YAML frontma
 - Skills can invoke other skills (e.g., `session-start` invokes `session-plan`)
 - A skill directory may contain supporting files (e.g., `soul.md` alongside `SKILL.md`)
 
-**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`
+**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`
 
 ### Commands (`commands/<name>.md`)
 
@@ -100,7 +100,7 @@ Commands are user-facing entry points that map slash commands to skill invocatio
 - Commands should be thin wrappers -- delegate logic to skills
 - Each command maps to one primary skill
 
-**Current commands:** `/session`, `/go`, `/close`
+**Current commands:** `/session`, `/go`, `/close`, `/discovery`
 
 ### Agents (`agents/<name>.md`)
 
@@ -138,7 +138,7 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\ud83c\udfaf Session Orchestrator v1.0 \u2014 /session [housekeeping|feature|deep] to start'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha — /session [housekeeping|feature|deep] | /discovery [scope]'",
             "async": false
           }
         ]

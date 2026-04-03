@@ -107,7 +107,7 @@ gh api "repos/<owner>/<name>" --jq '.full_name'
 glab issue list --per-page 50                              # All open issues
 glab issue list --label "status:ready" --per-page 10       # Ready to work on
 glab issue list --label "priority:high" --per-page 10      # High priority
-glab issue list --state closed --per-page 10               # Recently closed
+glab issue list --closed --per-page 10                      # Recently closed
 glab issue view <IID>                                       # View issue details
 glab issue view <IID> --comments                            # With comments
 glab issue create --title "title" --label "priority:high,status:ready"
@@ -116,7 +116,7 @@ glab issue close <IID>
 glab issue note <IID> -m "Comment text"                    # Add comment
 
 # MRs
-glab mr list --state opened                                # Open MRs
+glab mr list                                                # Open MRs
 glab mr create --fill --draft                               # Create draft MR
 glab mr merge <MR_IID>                                     # Merge MR
 

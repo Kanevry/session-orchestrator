@@ -10,4 +10,4 @@ You are beginning a new development session. The user has invoked `/session` wit
 
 **Your job: Autonomously research the full project state, then present structured findings with recommendations for the user to approve before creating a wave plan.**
 
-Follow the session-start skill instructions precisely. Do NOT skip any phase. Do NOT make assumptions — verify everything in code and on GitLab.
+Follow the session-start skill instructions precisely. Do NOT skip any phase. Do NOT make assumptions — verify everything in code and on the VCS platform.
