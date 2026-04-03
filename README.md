@@ -23,11 +23,11 @@ A `soul.md` file defines the orchestrator's identity as a seasoned engineering l
 
 ### 5-Wave Execution Pattern
 
-Work flows through 5 typed waves: Discovery (read-only validation), Core Implementation, Polish & Integration, Quality & Testing, Finalization. Each wave has a defined purpose and agent count that scales by session type. This isn't just batching — it's structured engineering workflow.
+Work flows through 5 typed waves: Discovery (read-only validation), Core Implementation, Polish & Integration, Quality & Testing, Finalization. The Quality wave includes a simplification pass that cleans AI-generated code patterns (unnecessary try-catch, over-documentation, redundant logic) before tests are written. Each wave has a defined purpose and agent count that scales by session type. This isn't just batching — it's structured engineering workflow.
 
 ### Inter-Wave Quality Gates
 
-A dedicated session-reviewer agent checks implementation correctness, test coverage, TypeScript health, and OWASP security basics between waves. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
+A dedicated session-reviewer agent checks implementation correctness, test coverage, TypeScript health, OWASP security basics, silent failure analysis (catch blocks that swallow errors), test depth (assertion quality, mock boundaries), and type design (overly broad types, missing unions) between waves. Every finding is confidence-scored (0-100) — only high-confidence issues (>=80) make it into the report. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
 
 ### Design-Code Alignment
 
@@ -47,7 +47,7 @@ Sessions persist across interruptions via `STATE.md` — crash recovery, resume 
 
 ### Metrics & Cross-Session Learning
 
-Every session writes quantitative metrics (duration, agents, files changed per wave) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). Future sessions consume these learnings to adapt wave sizing and flag known problem areas — the system gets smarter over time.
+Every session writes quantitative metrics (duration, agents, files changed per wave) plus effectiveness stats (completion rate, discovery probe value, carryover patterns) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). After 5+ sessions, the system surfaces trends: low-value probes to disable, scope adjustments for high carryover, and completion rate analysis. The system gets smarter over time.
 
 ### Adaptive Wave Sizing
 
@@ -55,7 +55,7 @@ Agent counts scale with session complexity. A scoring formula (files × modules 
 
 ### Verified Session Close-Out
 
-`/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. Nothing falls through the cracks.
+`/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. `/discovery` runs 33 modular probes across code, infra, UI, architecture, and session categories — each finding confidence-scored to reduce triage noise. Nothing falls through the cracks.
 
 ### Comparison
 

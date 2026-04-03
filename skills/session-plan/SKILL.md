@@ -86,10 +86,10 @@ When roles are combined into a single wave, agents from both roles execute in th
 - Output: Complete implementation with integrations working
 
 **Quality**
-- Test writers + quality reviewers
-- Tasks: Write/update tests (test files only — `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`), run full quality checks per quality-gates skill, security review
-- Scope restriction: `allowedPaths` should be restricted to test file patterns and test configuration. Quality agents MUST NOT modify production source files.
-- Output: All tests passing, 0 TypeScript errors, no lint violations
+- Simplification agents + test writers + quality reviewers
+- Tasks: Simplify AI-generated code patterns (using slop-patterns.md from discovery skill), write/update tests (test files only — `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`), run full quality checks per quality-gates skill, security review
+- Scope restriction: Simplification agents may edit production files changed in this session. Test/review agents restricted to test file patterns and test configuration.
+- Output: Simplified code, all tests passing, 0 TypeScript errors, no lint violations
 
 **Finalization**
 - 1-2 specialized agents

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.5] - 2026-04-03
+
+### Added
+- **Confidence-based scoring for discovery probes** (#22) — 0-100 confidence score per finding based on pattern specificity, file context, and historical signal. Auto-defers low-confidence findings below configurable threshold (`discovery-confidence-threshold`, default: 60). Critical findings never auto-deferred.
+- **Post-implementation simplification pass** (#23) — Quality wave now dispatches simplification agents before test writers, applying `slop-patterns.md` patterns to clean AI-generated code (unnecessary try-catch, over-documentation, redundant boolean logic, re-implemented stdlib functions).
+- **Session-reviewer specialized review sections** (#24) — 3 new review sections: Silent Failure Analysis (catch blocks that swallow errors), Test Depth Check (assertion quality, mock boundaries), Type Design Spot-Check (overly broad types, missing unions). Per-finding confidence scoring (>=80 threshold).
+- **CLAUDE.md quality audit probe** (#25) — New `claude-md-audit` probe in session category: validates Session Config paths, checks rules freshness against codebase, detects stale CLAUDE.md, cross-references technology mentions against package.json.
+- **Session effectiveness tracking** (#26) — Extended `sessions.jsonl` schema with `discovery_stats`, `review_stats`, and `effectiveness` fields. Session-start surfaces completion rate trends, low-value probe detection, and carryover pattern analysis after 5+ sessions.
+- Confidence Scoring Reference section in `probes.md` with per-category guidance
+- Discovery Phase 6 (Capture Discovery Stats) for standalone mode
+
 ## [2.0.0-alpha.4] - 2026-04-03
 
 ### Fixed

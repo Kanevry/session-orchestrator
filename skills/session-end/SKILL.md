@@ -96,11 +96,41 @@ Finalize session metrics by reading the wave data accumulated during execution:
      "waves": [
        {"wave": 1, "role": "Discovery", "agent_count": N, "files_changed": N, "quality": "pass|fail|skip"},
        ...
-     ]
+     ],
+     "discovery_stats": {
+       "probes_run": N,
+       "findings_raw": N,
+       "findings_verified": N,
+       "false_positives": N,
+       "user_dismissed": N,
+       "issues_created": N,
+       "by_category": {
+         "code": {"findings": N, "actioned": N},
+         "infra": {"findings": N, "actioned": N},
+         "ui": {"findings": N, "actioned": N},
+         "arch": {"findings": N, "actioned": N},
+         "session": {"findings": N, "actioned": N}
+       }
+     },
+     "review_stats": {
+       "total_findings": N,
+       "high_confidence": N,
+       "auto_fixed": N,
+       "manual_required": N
+     },
+     "effectiveness": {
+       "planned_issues": N,
+       "completed": N,
+       "carryover": N,
+       "emergent": N,
+       "completion_rate": 0.0
+     }
    }
    ```
 
 > The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
+
+> Fields `discovery_stats` and `review_stats` are optional — only populated when discovery or review ran in this session. The `effectiveness` object is always populated from Phase 1 plan verification results. `completion_rate` is calculated as `completed / planned_issues` (0.0-1.0).
 
 ## Phase 2: Quality Gate
 

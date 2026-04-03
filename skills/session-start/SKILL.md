@@ -160,6 +160,31 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
    ```
    If no active learnings exist, display: "No project intelligence yet — learnings accumulate after 2+ sessions."
 
+3. **Effectiveness analysis** (requires 5+ sessions in `sessions.jsonl`):
+
+   > Skip if `.claude/metrics/sessions.jsonl` does not exist or has fewer than 5 entries.
+
+   Read `.claude/metrics/sessions.jsonl` and compute:
+   - **Completion rate trend**: average `effectiveness.completion_rate` over last 5 sessions
+     - If < 0.6: "Completion rate is [X]%. Consider reducing scope or using deep sessions."
+     - If > 0.9: "Consistently high completion. Current scope sizing works well."
+   - **Discovery probe value**: for sessions with `discovery_stats`, check each category in `by_category`:
+     - If `actioned / findings < 0.1` across 3+ sessions: "Probe category '[X]' has low action rate ([Y]%). Consider excluding via `discovery-probes` config."
+   - **Carryover pattern**: if `effectiveness.carryover / planned_issues > 0.3` across 3+ sessions:
+     "High carryover rate ([X]%). Consider: smaller scope, longer sessions (deep), or splitting across sessions."
+
+   If fewer than 5 sessions exist: "Effectiveness analysis: not enough data yet ([N]/5 sessions)."
+
+   Include effectiveness insights in the **Project Intelligence** section of the Phase 7 presentation:
+   ```
+   ## Project Intelligence (from [N] learnings, [M] sessions)
+   - Fragile: [files] (confidence: [X])
+   - Sizing: [recommendation]
+   - Watch: [recurring issues]
+   - Scope: [guidance]
+   - Effectiveness: [completion rate trend, probe value, carryover pattern]
+   ```
+
 ## Phase 6: Research (session type dependent)
 
 **For `feature` and `deep` sessions:**

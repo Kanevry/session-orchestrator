@@ -6,6 +6,20 @@ document -- not a skill. The main SKILL.md references probes by name and categor
 Each probe specifies: activation conditions, exact detection commands, evidence format,
 and default severity. All Grep patterns and Bash commands are copy-pasteable.
 
+## Confidence Scoring Reference
+
+Each probe category has typical confidence factors. Use these as guidance when scoring findings:
+
+**Code probes:** Pattern specificity is the primary driver. Hardcoded secrets (API key regex) score high (+20); generic URL matches score low (+0). Findings in test fixtures or example files always get low file context (+0).
+
+**Infra probes:** CI failures and known CVEs score high (objective, verifiable signals). Outdated minor version bumps score low. Deployment health failures score high.
+
+**UI probes:** WCAG Level A violations (img-no-alt, html-no-lang) score high. Responsive heuristics (fixed widths, absolute positioning) score medium — context-dependent.
+
+**Arch probes:** Circular dependencies with short cycles (2-3 files) score high. Deep nesting in generated/vendored files scores low. Complexity hotspots in frequently-changed files score higher.
+
+**Session probes:** Hallucination checks score high (objective, commit-verifiable). Stale issues with no priority label score low. Gap analysis on planned items scores high.
+
 ---
 
 ## Category: `code`
@@ -855,3 +869,75 @@ Issues Involved:
 ```
 
 **Default Severity:** Medium.
+
+---
+
+### Probe: claude-md-audit
+
+**Activation:** CLAUDE.md exists in project root.
+
+**Detection Method:**
+
+1. Session Config completeness (if session-orchestrator plugin is installed):
+```bash
+# Check if ## Session Config section exists
+Grep pattern: ^## Session Config
+  --glob "CLAUDE.md"
+
+# If section exists, validate referenced paths:
+# Extract file paths from Session Config values (pencil, cross-repos, ssot-files)
+# For each referenced path:
+test -e <path>
+# Flag paths that don't exist
+```
+
+2. Rules freshness:
+```bash
+# List all .claude/rules/ files
+Glob pattern: ".claude/rules/*.md"
+
+# For each rule file:
+# a) Extract key identifiers (function names, file paths, patterns mentioned)
+# b) Grep for those identifiers in source code
+Grep pattern: <extracted_identifier>
+  --glob "*.{ts,tsx,js,jsx,py,go,rs}" --glob "!**/node_modules/**"
+# Flag rules whose referenced patterns/functions/files no longer exist in the codebase
+```
+
+3. CLAUDE.md staleness:
+```bash
+# Check last modification date
+# macOS:
+stat -f "%Sm" -t "%Y-%m-%d" CLAUDE.md
+# Linux:
+stat -c "%y" CLAUDE.md
+
+# Compare against ssot-freshness-days from Session Config (default: 5)
+# Flag if CLAUDE.md is older than threshold
+```
+
+4. Technology references:
+```bash
+# Extract technology/framework mentions from CLAUDE.md
+# Common patterns: "uses X", "built with X", framework names, library names
+# Cross-reference against package.json dependencies:
+cat package.json | python3 -c "
+import json, sys
+pkg = json.load(sys.stdin)
+deps = set(pkg.get('dependencies', {}).keys()) | set(pkg.get('devDependencies', {}).keys())
+print('\n'.join(sorted(deps)))
+"
+# Flag technologies mentioned in CLAUDE.md but absent from dependencies
+# Also flag major dependencies NOT mentioned in CLAUDE.md (potential documentation gap)
+```
+
+**Evidence Format:**
+```
+File: CLAUDE.md (or .claude/rules/<name>.md)
+Issue: missing-session-config | invalid-path-reference | stale-rule | stale-claude-md | phantom-technology | undocumented-dependency
+Detail: <specific finding>
+Referenced: <what was referenced>
+Actual: <what was found or NOT found>
+```
+
+**Default Severity:** Medium (staleness, phantom tech, undocumented deps), High (invalid paths, stale rules with no codebase match).

@@ -133,6 +133,26 @@ For EACH finding:
 3. If NOT confirmed, discard with note "false positive -- text not found at reported location"
 4. Report: "Verification: N confirmed, M discarded as false positives"
 
+### 3.2a Confidence Scoring
+
+For each verified finding, assign a confidence score (0-100) based on three factors:
+
+| Factor | Low (+0) | Medium (+10) | High (+20) |
+|--------|----------|-------------|------------|
+| Pattern specificity | Generic match (URL, TODO) | Moderate (orphaned annotation, magic number) | Specific (API key regex, eval(), SQL injection) |
+| File context | Test fixture, example, seed data, docs | Utility, config, scripts | Production source, API handler, middleware |
+| Historical signal | Previously dismissed as false positive | No prior data (first occurrence) | Recurring issue (confirmed in learnings.jsonl) |
+
+**Scoring rules:**
+1. Start at 40 (baseline)
+2. Add each factor's score (+0/+10/+20)
+3. Clamp to 0-100 range
+4. **Critical severity override:** findings with severity `critical` get a minimum confidence of 70 — they are NEVER auto-deferred
+
+**Threshold:** Read `discovery-confidence-threshold` from Session Config (default: 60). If not configured, use 60.
+
+Annotate each finding with its confidence score for Phase 4 presentation.
+
 ### 3.3 Deduplication
 
 Two findings are duplicates if:
@@ -156,7 +176,25 @@ If in embedded mode (called from session-end): STOP HERE. Return structured find
 
 ## Phase 4: Interactive Triage (Standalone Mode Only)
 
+### 4.0 Auto-Defer Low-Confidence Findings
+
+Before presenting findings for triage, separate by confidence threshold:
+
+1. Findings with confidence >= threshold → present for interactive triage (below)
+2. Findings with confidence < threshold → auto-defer with summary:
+   "Auto-deferred [N] low-confidence findings (score < [threshold]). Review with `/discovery --include-deferred`."
+3. List auto-deferred findings in a collapsed section (not interactive — informational only)
+
+### 4.1 Present High-Confidence Findings
+
 Present findings using AskUserQuestion -- NEVER plain text options.
+
+Include confidence scores in the presentation:
+```
+[CRITICAL] (confidence: 85) hardcoded-values: API key found in src/config.ts:42
+[HIGH] (confidence: 72) security-basics: eval() usage in src/utils/parser.ts:18
+[MEDIUM] (confidence: 61) orphaned-annotations: TODO without issue in src/lib/auth.ts:55
+```
 
 ### Step 1: Summary
 
@@ -287,3 +325,25 @@ For each approved finding:
 - If in embedded mode, stop after Phase 3, return findings as structured data
 - Respect `discovery-severity-threshold` -- filter before presenting to user
 - Default exclude paths always apply: `node_modules/`, `.git/`, `dist/`, `build/`, `.next/`, `.nuxt/`, `coverage/`
+
+## Phase 6: Capture Discovery Stats (Standalone Mode Only)
+
+> This phase runs only in standalone mode. Embedded mode returns findings to the caller.
+
+After Phase 5 (Issue Creation) completes, prepare discovery statistics for session metrics:
+
+1. Count totals from the triage results:
+   - `probes_run`: number of probes that were activated and executed
+   - `findings_raw`: total findings before verification
+   - `findings_verified`: findings that passed Phase 3.2 verification
+   - `false_positives`: findings discarded during verification
+   - `user_dismissed`: findings the user declined during Phase 4 triage
+   - `issues_created`: issues created in Phase 5
+   - `by_category`: per-category breakdown of findings and actioned items
+
+2. Report stats summary:
+   ```
+   Discovery stats: [probes_run] probes, [findings_raw] raw → [findings_verified] verified ([false_positives] false positives). User dismissed [user_dismissed]. Created [issues_created] issues.
+   ```
+
+3. These stats are available for session-end to include in `sessions.jsonl` under the `discovery_stats` field. The discovery skill does NOT write to `sessions.jsonl` directly — session-end handles that.

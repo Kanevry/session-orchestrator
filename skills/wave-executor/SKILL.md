@@ -105,6 +105,16 @@ After ALL agents in the wave complete:
    - After **Discovery**: no verification needed (read-only)
    - After **Impl-Core**: Incremental quality checks per quality-gates (test changed files, typecheck)
    - After **Impl-Polish**: Incremental quality checks + integration verification
+   - **Simplification pass** (at the start of the Quality wave, before test/review agents):
+     1. Identify all files changed in this session: `git diff --name-only <session-start-ref>..HEAD`
+     2. Dispatch 1-2 simplification agents with:
+        - Changed file list (production files only — exclude `*.test.*`, `*.spec.*`, `__tests__/`)
+        - Reference: `slop-patterns.md` from the discovery skill directory — include the actual patterns in the agent prompt
+        - Reference: project's CLAUDE.md conventions
+        - Instruction: "Review each changed file for AI-generated code patterns. Apply targeted simplifications: remove unnecessary try-catch around non-throwing operations, delete over-documentation (params that repeat the name, returns that say 'the result'), replace re-implemented stdlib functions with standard alternatives, simplify redundant boolean logic (if/else returning true/false, double negation, explicit boolean comparisons). Do NOT change functionality. Do NOT touch files you weren't given. Do NOT commit."
+        - Tools: Read, Edit, Grep, Glob
+        - Model: sonnet
+     3. After simplification agents complete, proceed to Quality test/review agents
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
    - After **Finalization**: final git status check
 5. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
