@@ -1,5 +1,6 @@
 ---
 name: gitlab-ops
+user-invocable: false
 description: >
   VCS operations reference for GitLab and GitHub: CLI commands (glab/gh),
   label taxonomy, issue templates, dynamic project resolution.

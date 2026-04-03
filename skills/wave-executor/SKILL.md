@@ -1,5 +1,6 @@
 ---
 name: wave-executor
+user-invocable: false
 description: >
   Executes the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
   quality checks, plan adaptation, and progress tracking. Core orchestration engine for

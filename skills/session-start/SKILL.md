@@ -1,5 +1,6 @@
 ---
 name: session-start
+user-invocable: false
 description: >
   Full session initialization for any project repo. Autonomously analyzes git state,
   GitLab issues, SSOT files, branches, environment, and cross-repo status. Then presents

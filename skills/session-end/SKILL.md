@@ -1,5 +1,6 @@
 ---
 name: session-end
+user-invocable: false
 description: >
   Full session close-out: verifies all planned work against the agreed plan, creates issues
   for gaps, runs quality gates, commits cleanly, mirrors to GitHub, and produces a session

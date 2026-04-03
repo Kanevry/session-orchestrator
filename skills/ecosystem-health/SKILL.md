@@ -1,5 +1,6 @@
 ---
 name: ecosystem-health
+user-invocable: false
 description: >
   Monitor health across configured service endpoints, CI pipelines, and critical
   issues. Automatically invoked during session-start when ecosystem-health is

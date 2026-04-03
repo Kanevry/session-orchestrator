@@ -1,5 +1,6 @@
 ---
 name: session-plan
+user-invocable: false
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
   Decomposes agreed tasks into configurable waves (default 5) with optimal agent assignment,
