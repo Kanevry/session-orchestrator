@@ -67,6 +67,14 @@ Check for `.claude/STATE.md` in the project root:
 
 Also read `.claude/STATUS.md` if it exists for additional project-level context.
 
+## Phase 0.6: Metrics Initialization
+
+> Skip if `persistence` config is `false`.
+
+1. Ensure `.claude/metrics/` directory exists in the project root (create if missing)
+2. If `.claude/metrics/sessions.jsonl` exists, count lines to determine number of previous sessions
+3. Store the count for display in Phase 7 — this feeds the Historical Trends section
+
 ## Phase 1: Git Analysis (parallel)
 
 Run these checks in parallel using Bash:
@@ -131,6 +139,27 @@ Surface context from previous sessions:
 4. If the `memory-cleanup-threshold` has been reached (number of session-*.md files >= threshold), include a note in the Session Overview: "Consider running `/memory-cleanup` — [N] session memory files accumulated."
 5. Incorporate surfaced context into the Session Overview under a **Previous Sessions** subsection (e.g., recent accomplishments, deferred items, recurring patterns)
 
+## Phase 5.6: Project Intelligence
+
+> Skip if `persistence` config is `false` or `.claude/metrics/learnings.jsonl` does not exist.
+
+Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence > 0.3, not expired):
+
+1. Group learnings by type:
+   - **Fragile files**: "These files have been problematic: [list with confidence scores]"
+   - **Effective sizing**: "Previous sessions suggest [N] agents for [scope type]"
+   - **Recurring issues**: "Watch for: [issue patterns with frequency]"
+   - **Scope guidance**: "Sessions with [N] issues typically [outcome]"
+2. Include a **Project Intelligence** section in the Phase 7 presentation:
+   ```
+   ## Project Intelligence (from [N] learnings)
+   - Fragile: [files] (confidence: [X])
+   - Sizing: [recommendation]
+   - Watch: [recurring issues]
+   - Scope: [guidance]
+   ```
+   If no active learnings exist, display: "No project intelligence yet — learnings accumulate after 2+ sessions."
+
 ## Phase 6: Research (session type dependent)
 
 **For `feature` and `deep` sessions:**
@@ -157,6 +186,7 @@ Present your findings in this structure:
 - SSOT: [fresh/stale files listed]
 - Cross-repos: [status summary]
 - Plugin: [fresh / ⚠ N days without update]
+- Metrics: [N previous sessions tracked | no history yet]
 
 ## Recommended Focus
 Based on priority, synergies, and session type, I recommend:
@@ -166,6 +196,13 @@ Based on priority, synergies, and session type, I recommend:
 **Option C:** [if applicable]
 
 [Pros/cons for each, clear recommendation with WHY]
+
+## Historical Trends (last 5 sessions)
+> Only show if 2+ sessions exist in `.claude/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
+
+| Session | Type | Duration | Waves | Agents | Files Changed |
+|---------|------|----------|-------|--------|---------------|
+| <date>  | <type> | Xm     | N     | M      | K             |
 
 ## Housekeeping Items (if any)
 - [ ] Branches to merge: [list]

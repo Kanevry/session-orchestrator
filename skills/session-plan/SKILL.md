@@ -22,6 +22,12 @@ Transform the agreed session scope (from session-start Q&A) into an executable w
    - Use this to avoid re-doing completed work and to prioritize carryover tasks
    If no STATE.md or `status: completed`, proceed with fresh planning.
 
+0.5. **Read project intelligence**: If `.claude/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
+   - **Fragile files**: if any planned task touches a known fragile file, note it as a warning in the agent spec
+   - **Effective sizing**: use historical sizing data to inform Step 3 complexity scoring
+   - **Recurring issues**: pre-populate risk mitigation with known issue patterns
+   - **Scope guidance**: validate planned scope against historical session capacity
+
 For each agreed task/issue:
 1. Read the VCS issue description and acceptance criteria
 2. Identify affected files by searching the codebase (Grep/Glob — don't guess)
@@ -83,7 +89,44 @@ When roles are combined into a single wave, agents from both roles execute in th
 - Tasks: Update SSOT files, close issues, write session handover, prepare commits
 - Output: Clean git state, updated documentation, issues resolved
 
-## Step 3: Agent Specification
+## Step 3: Complexity Assessment
+
+Score the session scope to determine optimal agent counts per wave. Skip for housekeeping sessions (use fixed counts from Step 4).
+
+### Scoring Formula
+
+| Factor | 0 points | 1 point | 2 points |
+|--------|----------|---------|----------|
+| Files to change | 1-5 | 6-15 | 16+ |
+| Cross-module scope | 1 directory | 2-3 directories | 4+ directories |
+| Issue count | 1 issue | 2-3 issues | 4+ issues |
+
+**Total score** = sum of all factors (0-6 range).
+
+### Complexity Tiers
+
+| Tier | Score | Description |
+|------|-------|-------------|
+| Simple | 0-2 | Small scope, few files, single module |
+| Moderate | 3-4 | Medium scope, multiple modules |
+| Complex | 5-6 | Large scope, many modules and issues |
+
+### Agent Count by Tier
+
+| Session Type | Tier | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
+|-------------|------|-----------|-----------|-------------|---------|-------------|
+| feature | simple | 2-3 | 3-4 | 2-3 | 2 | 1 |
+| feature | moderate | 4-5 | 5-6 | 4-5 | 3-4 | 2 |
+| feature | complex | 5-6 | 6 | 5-6 | 4 | 2 |
+| deep | simple | 3-4 | 4-6 | 3-4 | 3 | 2 |
+| deep | moderate | 5-6 | 6-8 | 5-6 | 4-5 | 2-3 |
+| deep | complex | 6-8 | 8-10 | 6-8 | 6 | 3-4 |
+
+The `agents-per-wave` Session Config value caps the maximum regardless of tier.
+
+If project intelligence (learnings) suggests different sizing based on historical data, prefer the historical recommendation over the formula.
+
+## Step 4: Agent Specification
 
 For each wave, define agents with:
 
@@ -111,7 +154,9 @@ For each wave, define agents with:
 
 Read `agents-per-wave` from Session Config to cap the maximum.
 
-## Step 4: Issue Updates
+> **Note:** For feature and deep sessions, prefer the complexity-based agent counts from Step 3. This table provides defaults when complexity scoring is skipped (housekeeping) or as a fallback.
+
+## Step 5: Issue Updates
 
 Before presenting the plan:
 
@@ -120,7 +165,7 @@ Before presenting the plan:
 1. Mark all selected issues as `status:in-progress` (use the issue update/edit command for the detected VCS platform)
 2. Add a comment to each issue noting the session and planned wave (use the issue note/comment command for the detected VCS platform)
 
-## Step 5: Present Plan for Approval
+## Step 6: Present Plan for Approval
 
 Present the plan in this format:
 
@@ -151,13 +196,17 @@ Present the plan in this format:
 - After Quality: Full Gate per quality-gates — if failing, create fix tasks for Finalization
 - After Finalization: Final review before session-end
 
+### Project Intelligence Applied
+- [list of learnings that influenced this plan, with confidence scores]
+- Or: "No project intelligence available yet"
+
 ### Risk Mitigation
 - [identified risks and how each wave handles them]
 
 Ready to execute? Use /go to begin.
 ```
 
-## Step 6: Handle Plan Changes
+## Step 7: Handle Plan Changes
 
 If the user requests changes:
 - Re-scope affected waves

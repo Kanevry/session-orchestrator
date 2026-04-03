@@ -48,6 +48,17 @@ Commands:
 Behavior: Report failures. If issues are found, add fix tasks to the next wave automatically.
 Do not block wave progression — let the next wave address regressions.
 
+Metrics output (for consuming skills to capture):
+```json
+{
+  "variant": "incremental",
+  "duration_seconds": null,
+  "typecheck": "pass|fail|skip",
+  "test": "pass|fail|skip",
+  "errors": []
+}
+```
+
 ## Variant 3: Full Gate
 
 **Used by:** session-end (Phase 2)
@@ -62,6 +73,18 @@ Commands:
 Behavior: BLOCKING. Do not commit if any check fails. Fix quick issues (<2 min) inline.
 For anything longer, create a `priority:high` issue and proceed without committing the
 affected files.
+
+Metrics output (for consuming skills to capture):
+```json
+{
+  "variant": "full-gate",
+  "duration_seconds": null,
+  "typecheck": {"status": "pass|fail|skip", "error_count": 0},
+  "test": {"status": "pass|fail|skip", "total": 0, "passed": 0},
+  "lint": {"status": "pass|fail|skip", "warnings": 0},
+  "debug_artifacts": []
+}
+```
 
 ## Variant 4: Per-File
 

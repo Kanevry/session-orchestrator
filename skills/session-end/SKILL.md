@@ -68,6 +68,38 @@ Review safety metrics from the session. This is informational — it does NOT bl
    ```
 4. If any agents were `SPIRAL` or `FAILED`, ensure carryover issues exist (cross-reference with Phase 1.2)
 
+### 1.7 Metrics Collection
+
+> Gate: Only run if `persistence` is enabled in Session Config.
+
+Finalize session metrics by reading the wave data accumulated during execution:
+
+1. Read `.claude/STATE.md` Wave History to extract per-wave data: agent counts, statuses, files changed
+2. Compute session totals:
+   - `total_duration_seconds`: from `started` to now (ISO 8601 diff)
+   - `total_waves`: count of completed waves
+   - `total_agents`: sum of agents across all waves
+   - `total_files_changed`: unique files changed across entire session (from `git diff --stat`)
+   - `agent_summary`: `{complete: N, partial: N, failed: N, spiral: N}`
+3. Prepare the JSONL entry (written in Phase 3.7):
+   ```json
+   {
+     "session_id": "<branch>-<YYYY-MM-DD>",
+     "session_type": "<type>",
+     "started_at": "<ISO 8601>",
+     "completed_at": "<ISO 8601>",
+     "duration_seconds": N,
+     "total_waves": N,
+     "total_agents": N,
+     "total_files_changed": N,
+     "agent_summary": {"complete": N, "partial": N, "failed": N, "spiral": N},
+     "waves": [
+       {"wave": 1, "role": "Discovery", "agent_count": N, "files_changed": N, "quality": "pass|fail|skip"},
+       ...
+     ]
+   }
+   ```
+
 ## Phase 2: Quality Gate
 
 Run ALL checks — do NOT skip any:
@@ -127,6 +159,39 @@ If STATE.md doesn't exist, skip this subsection.
    - Under a `## Sessions` heading (create if missing), add:
      `- [Session <date>](session-<date>.md) — <one-line summary>`
 
+### 3.5a Learning Extraction
+
+> Gate: Only run if `persistence` is enabled in Session Config.
+
+Analyze the completed session to extract reusable learnings for future sessions.
+
+**What to extract:**
+- **Fragile files**: files that needed 3+ iterations across waves or caused cascading failures
+- **Effective sizing**: actual agent count vs. planned — what worked for this complexity level
+- **Recurring issues**: same issue type appearing across waves (e.g., type errors, missing imports)
+- **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?
+
+**Learning format** (append each as one JSONL line to `.claude/metrics/learnings.jsonl`):
+```json
+{
+  "id": "<uuid-v4>",
+  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance",
+  "subject": "<what the learning is about>",
+  "insight": "<the actionable insight>",
+  "evidence": "<what happened this session>",
+  "confidence": 0.5,
+  "source_session": "<session_id>",
+  "created_at": "<ISO 8601>",
+  "expires_at": "<ISO 8601 + 90 days>"
+}
+```
+
+**Confidence updates for existing learnings:**
+Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject`:
+- If this session **confirms** an existing learning: increment `confidence` by +0.15 (cap at 1.0). Rewrite the line.
+- If this session **contradicts** an existing learning: decrement `confidence` by -0.2. If confidence reaches 0.0, remove the line.
+- If no existing match: append as new learning with confidence 0.5.
+
 ### 3.6 Memory Cleanup Check
 
 > Gate: Only run if `persistence` is enabled in Session Config.
@@ -135,6 +200,19 @@ If STATE.md doesn't exist, skip this subsection.
 2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
    "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
 3. This is a suggestion only — not blocking
+4. **Prune expired learnings** from `.claude/metrics/learnings.jsonl` (if file exists):
+   - Remove entries where `expires_at` < current date
+   - Remove entries where `confidence` = 0.0
+   - Consolidate duplicate entries (same `type` + `subject`): keep the one with highest confidence
+
+### 3.7 Write Session Metrics
+
+> Gate: Only run if `persistence` is enabled in Session Config.
+
+1. Ensure `.claude/metrics/` directory exists (create if missing)
+2. Append the prepared JSONL entry (from Phase 1.7) as a single line to `.claude/metrics/sessions.jsonl`
+3. Create the file if it does not exist
+4. Verify: read back the last line to confirm valid JSON
 
 ## Phase 4: Commit & Push
 
@@ -197,13 +275,22 @@ Present to the user:
 - #S: [title] (priority: [X], status: ready)
 
 ### Metrics
+- Duration: [total wall-clock time]
+- Waves: [N completed]
+- Agents: [total dispatched] ([X complete, Y partial, Z failed])
 - Files changed: [N]
+- Per-wave breakdown:
+  - Wave 1 (Discovery): [duration] — [N agents] — [K files]
+  - Wave 2 (Impl-Core): [duration] — [N agents] — [K files]
+  - ...
 - Tests: [passing/total]
 - TypeScript: 0 errors
 - Commits: [N] pushed to [branch]
 - Mirror: [synced/skipped]
 - Enforcement: [N violations blocked / M warnings] (or "N/A" if enforcement off)
 - Circuit breaker: [N agents hit limits, M spirals detected] (or "none")
+- Metrics written to: `.claude/metrics/sessions.jsonl`
+- Learnings: [N] new, [M] confirmed, [K] contradicted/expired — written to `.claude/metrics/learnings.jsonl`
 
 ### Next Session Recommendations
 - Priority: [what should be tackled next]

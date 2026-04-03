@@ -29,3 +29,6 @@ Skills are loaded by Claude Code from the plugin directory — no build step nee
 - Circuit breaker: maxTurns limit + spiral detection
 - Worktree isolation for parallel agent execution
 - 5 new Session Config fields (persistence, enforcement, circuit breaker, worktrees, ecosystem-health)
+- Session metrics tracking with historical trends (sessions.jsonl)
+- Adaptive wave sizing based on complexity scoring
+- Cross-session learning system with confidence-based intelligence

@@ -10,3 +10,8 @@ Thumbs.db
 *.swo
 *~
 *.log
+
+# Claude Code runtime state (session orchestrator)
+.claude/STATE.md
+.claude/wave-scope.json
+.claude/metrics/

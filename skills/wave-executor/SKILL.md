@@ -26,6 +26,12 @@ Before starting the first wave (Discovery role):
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
 4. Read `persistence` from Session Config (default: `true`)
+5. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
+   - `session_id`: `<branch>-<YYYY-MM-DD>`
+   - `session_type`: from Session Config
+   - `started_at`: ISO 8601 timestamp
+   - `waves`: empty array (populated after each wave)
+   This object lives in memory during execution — it is written to disk by session-end.
 
 ## Pre-Wave 1: Initialize STATE.md
 
@@ -113,6 +119,14 @@ After ALL agents in the wave complete:
    
    Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
 
+6. **Capture wave metrics** (if `persistence` enabled): After all agents complete and quality checks run, record for this wave:
+   - `wave_number`, `role`, `started_at` (when agents were dispatched), `completed_at` (when all finished)
+   - `agent_count`: number of agents dispatched
+   - Per-agent results: `{description, status: done|partial|failed, files_changed_count}`
+   - `files_changed`: total unique files changed this wave (from `git diff --stat --name-only`)
+   - `quality_check`: incremental check result (pass/fail/skipped)
+   Append this wave record to the session metrics `waves` array.
+
 ### 3. Adapt Plan (if needed)
 
 After reviewing wave results, decide:
@@ -124,6 +138,23 @@ After reviewing wave results, decide:
 - **Scope change**: document why, adjust remaining waves, inform user
 
 **Deviation protocol**: ALWAYS document WHY you deviated from the plan. Log it in a brief note that session-end can reference.
+
+#### Dynamic Scaling
+
+After reviewing wave results, adjust the next wave's agent count based on performance signals:
+
+| Signal | Action | Example |
+|--------|--------|---------|
+| All agents completed fast, no issues | Reduce next wave by 1-2 agents | 6 agents all done quickly → next wave uses 4 |
+| Agent failures or broken code | Add fix agents to next wave (+1-2) | 2 agents failed → next wave gets 2 extra |
+| Scope expansion discovered | Scale up next wave | New module found → add agents for it |
+| Quality regressions found | Add targeted fix agents | 3 test failures → 3 fix agents next wave |
+
+**Scaling constraints:**
+- Never exceed `agents-per-wave` from Session Config
+- Never go below 1 agent per wave
+- Log all scaling decisions in the wave progress update
+- Record actual vs. planned agent count in wave metrics
 
 ### 3a. Post-Wave: Update STATE.md
 
@@ -152,8 +183,10 @@ After each wave, provide a brief status:
 ## Wave [N] ([Role]) Complete ✓
 - [Agent 1]: [done/partial/failed] — [1-line summary]
 - [Agent 2]: [done/partial/failed] — [1-line summary]
+- Duration: [Nm Ns] (wall-clock from dispatch to completion)
 - Tests: [passing/failing] | TypeScript: [0 errors / N errors]
 - Design: [aligned/drift/mismatch — or N/A if not Impl-Core/Impl-Polish or no pencil config]
+- Scaling: [unchanged / reduced to N / increased to N] — [reason]
 - Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
@@ -175,40 +208,9 @@ Before each wave dispatch:
 3. Read `enforcement` from Session Config (default: `warn`)
 4. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
 
-## Circuit Breaker
+## Circuit Breaker & Worktree Isolation
 
-1. **MaxTurns enforcement**: Read `max-turns` from Session Config (default: auto — housekeeping=8, feature=15, deep=25). Include this instruction in EVERY agent prompt:
-   ```
-   TURN LIMIT: You have a maximum of [N] turns. If you cannot complete within [N] turns, report PARTIAL with what you accomplished and what remains.
-   ```
-2. **Spiral detection**: After each wave, the coordinator checks agent results for:
-   - Same file edited 3+ times → possible thrashing
-   - Same error message repeated across turns → stuck
-   - Agent reverted its own changes → loop
-   If spiral detected: log in STATE.md, mark agent as SPIRAL, re-scope task narrower for next wave.
-3. **Recovery protocol**:
-   - FAILED agent → log in STATE.md, add fix task to next wave with corrected instructions
-   - PARTIAL agent → carry forward remaining work with context
-   - SPIRAL agent → revert changes, narrow scope, consider splitting task
-
-## Worktree Isolation
-
-1. **When to use**: Read `isolation` from Session Config. Default: `worktree` for feature/deep sessions, `none` for housekeeping.
-2. **Dispatch with isolation**: When isolation is enabled, add `isolation: "worktree"` to Agent tool calls:
-   ```
-   Agent({
-     description: "...",
-     prompt: "...",
-     subagent_type: "general-purpose",
-     run_in_background: false,
-     isolation: "worktree"
-   })
-   ```
-3. **Post-wave merge**: After wave completes, worktree changes are automatically available. If agents made changes in worktrees:
-   - Review each agent's changes for conflicts
-   - If conflicts detected: resolve manually before proceeding
-   - Run incremental quality checks after merging
-4. **Fallback**: If worktree creation fails (e.g., git state issue), fall back to shared directory with a warning logged.
+> **Reference:** See `circuit-breaker.md` in this skill directory for MaxTurns enforcement, spiral detection, recovery protocol, and worktree isolation configuration. Apply those rules during every wave dispatch and post-wave review.
 
 ## Agent Prompt Best Practices
 
@@ -220,7 +222,7 @@ Each agent prompt MUST include:
 4. **Rule references**: "Follow patterns in .claude/rules/[relevant].md"
 5. **Testing expectation**: "Write tests for your changes" or "Run existing tests"
 6. **Commit instruction**: "Do NOT commit. The coordinator handles commits."
-7. **Turn limit**: Include the maxTurns instruction from the Circuit Breaker section
+7. **Turn limit**: Include the maxTurns instruction from `circuit-breaker.md`
 
 Each agent prompt MUST NOT include:
 - References to other agents' tasks (isolation)

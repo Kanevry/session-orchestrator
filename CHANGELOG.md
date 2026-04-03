@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.3] - 2026-04-03
+
+### Added
+- Session metrics tracking — wall-clock time, agent counts, files changed per wave (#8)
+- Historical trend display in session-start showing last 5 sessions
+- Adaptive wave sizing with complexity scoring (simple/moderate/complex tiers) (#19)
+- Dynamic agent scaling between waves based on performance signals
+- Cross-session learning system with confidence scoring (#20)
+- Project Intelligence sections in session-start and session-plan from accumulated learnings
+- Structured quality-gates output format (JSON) for metrics integration
+
+### Changed
+- Circuit breaker and worktree isolation extracted to `circuit-breaker.md` sub-reference
+- session-plan steps renumbered (new Step 3: Complexity Assessment)
+- session-end Final Report expanded with per-wave metrics breakdown and learnings summary
+- Quality gates Variants 2 and 3 have structured JSON output specifications
+
+## [2.0.0-alpha.2] - 2026-04-03
+
+### Added
+- Hybrid session persistence via STATE.md lifecycle (init/update/clear) + session memory files (#16)
+- PreToolUse hook enforcement: enforce-scope.sh (Edit/Write), enforce-commands.sh (Bash) (#17)
+- Circuit breaker with maxTurns limit and spiral detection (#18)
+- Worktree isolation for parallel agent execution (#18)
+- 5 new Session Config fields: persistence, memory-cleanup-threshold, enforcement, isolation, max-turns
+- SESSION-START Phase 0.5 (Session Continuity) and Phase 5.5 (Memory Recall)
+
+### Changed
+- USER-GUIDE.md: 2 new sections (Session Persistence, Safety Features) + config fields + cheat sheet
+- wave-executor: STATE.md initialization, post-wave updates, scope manifest, circuit breaker
+
 ## [2.0.0-alpha] - 2026-04-02
 
 ### Added

@@ -19,9 +19,12 @@ Session Orchestrator is a Claude Code plugin that brings structured, wave-based 
 11. [Quality Discovery](#11-quality-discovery)
 12. [Session Persistence](#12-session-persistence)
 13. [Safety Features](#13-safety-features)
-14. [Cheat Sheet](#14-cheat-sheet)
-15. [FAQ](#15-faq)
-16. [Troubleshooting](#16-troubleshooting)
+14. [Session Metrics](#14-session-metrics)
+15. [Cross-Session Learning](#15-cross-session-learning)
+16. [Adaptive Wave Sizing](#16-adaptive-wave-sizing)
+17. [Cheat Sheet](#17-cheat-sheet)
+18. [FAQ](#18-faq)
+19. [Troubleshooting](#19-troubleshooting)
 
 ---
 
@@ -735,7 +738,95 @@ Set `isolation: none` to disable worktrees (all agents work in the main working 
 
 ---
 
-## 14. Cheat Sheet
+## 14. Session Metrics
+
+Session Orchestrator tracks metrics across sessions to provide historical trends and inform future planning.
+
+### What is tracked
+- **Per-wave**: duration (wall-clock), agent count, files changed, quality check result
+- **Per-session**: total duration, total waves, total agents, total files changed, agent summary (complete/partial/failed/spiral)
+
+### Storage
+Metrics are stored in `.claude/metrics/sessions.jsonl` — one JSON line per session, append-only. This file is created automatically on first session close.
+
+### Historical Trends
+During session-start (Phase 7), the last 5 sessions are displayed as a trend table:
+
+| Session | Type | Duration | Waves | Agents | Files Changed |
+|---------|------|----------|-------|--------|---------------|
+
+If fewer than 2 sessions exist, the message "Not enough history for trends (need 2+)" is displayed.
+
+### Quality Gates Output
+Quality gates (Incremental and Full Gate variants) produce structured JSON output for metrics integration, including duration, check status, and error details.
+
+> **Requires:** `persistence: true` (default) in Session Config.
+
+---
+
+## 15. Cross-Session Learning
+
+The learning system captures patterns from completed sessions and surfaces them in future sessions as "Project Intelligence."
+
+### What is learned
+- **Fragile files**: files that needed 3+ iterations or caused cascading failures
+- **Effective sizing**: which agent counts worked for different complexity levels
+- **Recurring issues**: issue patterns that appear across waves (type errors, missing imports)
+- **Scope guidance**: how many issues fit comfortably in one session
+
+### Storage
+Learnings are stored in `.claude/metrics/learnings.jsonl` — one JSON line per learning.
+
+### Confidence System
+Each learning has a confidence score (0.0 to 1.0):
+- New learnings start at **0.5**
+- Confirmed by a subsequent session: **+0.15**
+- Contradicted by a subsequent session: **-0.2**
+- Learnings at **0.0** are removed
+- Learnings expire after **90 days**
+- Only learnings with confidence **> 0.3** are surfaced
+
+### Lifecycle
+1. **Collection** (session-end Phase 3.5a): analyze completed session, extract learnings
+2. **Consumption** (session-start Phase 5.6 + session-plan Step 1): read and apply learnings
+3. **Pruning** (session-end Phase 3.6): remove expired and zero-confidence entries
+
+> **Requires:** `persistence: true` (default) in Session Config.
+
+---
+
+## 16. Adaptive Wave Sizing
+
+Instead of fixed agent counts, the orchestrator scores session complexity and adjusts agent allocation dynamically.
+
+### Complexity Scoring
+Three factors are scored (0-2 points each):
+
+| Factor | 0 points | 1 point | 2 points |
+|--------|----------|---------|----------|
+| Files to change | 1-5 | 6-15 | 16+ |
+| Cross-module scope | 1 directory | 2-3 directories | 4+ directories |
+| Issue count | 1 issue | 2-3 issues | 4+ issues |
+
+### Complexity Tiers
+- **Simple** (0-2 points): fewer agents per wave
+- **Moderate** (3-4 points): standard allocation
+- **Complex** (5-6 points): maximum agents per wave
+
+### Dynamic Scaling Between Waves
+After each wave, agent count is adjusted based on performance:
+- All agents fast + no issues → reduce next wave
+- Failures or broken code → add fix agents
+- Scope expansion → scale up
+- Quality regressions → targeted fix agents
+
+The `agents-per-wave` config value always caps the maximum.
+
+> **Note:** Housekeeping sessions skip complexity scoring and use fixed counts.
+
+---
+
+## 17. Cheat Sheet
 
 ### Commands
 
@@ -801,7 +892,7 @@ Finalization    Documentation, issues, commits
 
 ---
 
-## 15. FAQ
+## 18. FAQ
 
 ### Can I use this with GitHub?
 
@@ -841,7 +932,7 @@ Yes. Configure `cross-repos` in your Session Config with the names of related re
 
 ---
 
-## 16. Troubleshooting
+## 19. Troubleshooting
 
 ### "glab: command not found" or "gh: command not found"
 
