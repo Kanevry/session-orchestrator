@@ -24,7 +24,7 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || C
 
 # Locate wave-scope manifest
 find_project_root() {
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
   local dir
   dir="$(pwd)"
   while [[ "$dir" != "/" ]]; do
@@ -37,10 +37,9 @@ PROJECT_ROOT="$(find_project_root)"
 SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
 [[ ! -f "$SCOPE_FILE" ]] && exit 0
 
-# Enforcement level from wave-scope.json. Default "warn" matches Session Config default.
-# The wave-executor MUST always write this field explicitly — if missing, enforcement
-# silently degrades to warn even if Session Config specifies strict.
-ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="warn"
+# Enforcement level from wave-scope.json. Default "strict" to fail-closed.
+# The wave-executor MUST always write this field explicitly.
+ENFORCEMENT=$(jq -r '.enforcement // "strict"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="strict"
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
 
 # Check command against blocked patterns (word-boundary match).
@@ -64,5 +63,25 @@ while IFS= read -r pattern; do
     esac
   fi
 done < <(jq -r '.blockedCommands[]? // empty' "$SCOPE_FILE" 2>/dev/null)
+
+# Fallback: if wave-scope.json had no blockedCommands, enforce minimum safety blocklist
+BLOCKED_COUNT=$(jq -r '.blockedCommands | length // 0' "$SCOPE_FILE" 2>/dev/null) || BLOCKED_COUNT=0
+if [[ "$BLOCKED_COUNT" -eq 0 ]]; then
+  for pattern in "rm -rf" "git push --force" "git reset --hard" "DROP TABLE" "git checkout -- ."; do
+    if [[ "$COMMAND" =~ (^|[[:space:]])"$pattern"([[:space:]]|$) ]]; then
+      case "$ENFORCEMENT" in
+        strict)
+          jq -nc --arg pat "$pattern" --arg cmd "$COMMAND" \
+            '{"permissionDecision":"deny","reason":"Blocked by fallback safety list: \($pat) found in: \($cmd)"}'
+          exit 2
+          ;;
+        warn)
+          echo "⚠ enforce-commands: fallback blocklist pattern '$pattern' found in command — proceeding (warn mode)" >&2
+          exit 0
+          ;;
+      esac
+    fi
+  done
+fi
 
 exit 0

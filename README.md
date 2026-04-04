@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0--alpha.7-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0--alpha.8-orange.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.
@@ -14,6 +14,11 @@ Claude Code plugin for session-level orchestration — project planning, wave ex
 # Add as a Claude Code plugin
 claude plugin add github:Kanevry/session-orchestrator
 ```
+
+## Prerequisites
+
+- **Claude Code** — [Anthropic's agentic coding CLI](https://docs.anthropic.com/en/docs/claude-code)
+- **jq** (recommended) — required for scope and command enforcement hooks. Install via `brew install jq` (macOS) or `apt install jq` (Linux). Without jq, enforcement hooks allow all operations.
 
 ## Why Session Orchestrator
 

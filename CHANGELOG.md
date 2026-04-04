@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.8] - 2026-04-04
+
+### Fixed
+- **enforce-scope.sh**: default enforcement changed from `warn` (fail-open) to `strict` (fail-closed) when `enforcement` field missing from `wave-scope.json`
+- **enforce-commands.sh**: same fail-closed default applied
+- **enforce-scope.sh**: incomplete regex metacharacter escaping — `+`, `?`, `|`, `[`, `]`, `(`, `)` now escaped before glob→regex conversion
+- **enforce-scope.sh**: symlink bypass — `realpath` canonicalization added for both PROJECT_ROOT and FILE_PATH (directory-level resolution for new files)
+- **enforce-commands.sh**: hardcoded fallback safety blocklist (`rm -rf`, `git push --force`, `git reset --hard`, `DROP TABLE`, `git checkout -- .`) enforced when `blockedCommands` absent from `wave-scope.json`
+- **Both hooks**: `CLAUDE_PROJECT_DIR` environment variable now validated — must contain `.claude/` directory to be trusted
+- **wave-executor**: jq prerequisite check added to Pre-Execution phase (step 4) — warns user if jq missing before wave dispatch
+
+### Changed
+- Plugin version alpha.7 → alpha.8
+- SECURITY.md expanded with Enforcement Architecture, Prerequisites, Known Limitations, Credential Safety sections
+- README.md: jq listed as prerequisite for enforcement hooks
+- USER-GUIDE.md: credential safety warning added to Session Config section
+
 ## [2.0.0-alpha.7] - 2026-04-04
 
 ### Added

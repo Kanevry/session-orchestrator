@@ -25,8 +25,9 @@ Before starting the first wave (Discovery role):
 1. `git status --short` — ensure clean working directory (commit or stash if needed)
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
-4. Read `persistence` from Session Config (default: `true`)
-5. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
+4. **Verify `jq` is installed** — run `command -v jq`. If not found, warn the user: "⚠ jq is not installed. Scope and command enforcement hooks will be DISABLED. Install jq (`brew install jq` / `apt install jq`) to enable security enforcement." Do NOT proceed with waves until user acknowledges.
+5. Read `persistence` from Session Config (default: `true`)
+6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
    - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
    - `session_type`: from Session Config
    - `started_at`: ISO 8601 timestamp
@@ -240,7 +241,7 @@ Before each wave dispatch:
    }
    ```
 2. `allowedPaths` is the UNION of all agent file scopes for this wave
-3. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement.
+3. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
 4. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
 5. For **Quality** role waves, use two-phase scope enforcement:
    - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, delete `.claude/wave-scope.json`.

@@ -30,7 +30,7 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) 
 
 # Resolve project root (where .claude/ lives)
 find_project_root() {
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
   local dir
   dir="$(pwd)"
   while [[ "$dir" != "/" ]]; do
@@ -41,15 +41,23 @@ find_project_root() {
 }
 PROJECT_ROOT="$(find_project_root)"
 
+# Canonicalize paths to prevent symlink bypass (preserve original if realpath fails)
+PROJECT_ROOT=$(realpath "$PROJECT_ROOT" 2>/dev/null || echo "$PROJECT_ROOT")
+
 # Load scope manifest — no manifest means no wave in progress
 SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
 [[ ! -f "$SCOPE_FILE" ]] && exit 0
 
-# Enforcement level from wave-scope.json. Default "warn" matches Session Config default.
-# The wave-executor MUST always write this field explicitly — if missing, enforcement
-# silently degrades to warn even if Session Config specifies strict.
-ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="warn"
+# Enforcement level from wave-scope.json. Default "strict" to fail-closed.
+# The wave-executor MUST always write this field explicitly.
+ENFORCEMENT=$(jq -r '.enforcement // "strict"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="strict"
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
+
+# Resolve symlinks in file path — use directory resolution for new files that don't exist yet
+FILE_DIR=$(dirname "$FILE_PATH")
+FILE_BASE=$(basename "$FILE_PATH")
+FILE_DIR=$(realpath "$FILE_DIR" 2>/dev/null || echo "$FILE_DIR")
+FILE_PATH="$FILE_DIR/$FILE_BASE"
 
 # Convert absolute file_path to relative (strip project root prefix)
 REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
@@ -84,6 +92,13 @@ while IFS= read -r pattern; do
     # Escape dots, convert ** to .*, convert remaining standalone * to [^/]*
     regex="$pattern"
     regex="${regex//./\\.}"            # . → \.
+    regex="${regex//+/\\+}"
+    regex="${regex//\?/\\?}"
+    regex="${regex//|/\\|}"
+    regex="${regex//\[/\\[}"
+    regex="${regex//\]/\\]}"
+    regex="${regex//\(/\\(}"
+    regex="${regex//\)/\\)}"
     regex="${regex//\*\*\//<<DSLASH>>}" # **/ → placeholder (zero+ dirs with slash)
     regex="${regex//\*\*/<<DBL>>}"     # ** at end → placeholder (zero+ path chars)
     regex="${regex//\*/[^/]*}"         # * → [^/]* (single-segment)
@@ -98,6 +113,13 @@ while IFS= read -r pattern; do
   elif [[ "$pattern" == *'*'* ]]; then
     regex="$pattern"
     regex="${regex//./\\.}"        # . → \.
+    regex="${regex//+/\\+}"
+    regex="${regex//\?/\\?}"
+    regex="${regex//|/\\|}"
+    regex="${regex//\[/\\[}"
+    regex="${regex//\]/\\]}"
+    regex="${regex//\(/\\(}"
+    regex="${regex//\)/\\)}"
     regex="${regex//\*/[^/]*}"     # * → [^/]* (single-segment only)
     regex="^${regex}$"
     if [[ "$REL_PATH" =~ $regex ]]; then

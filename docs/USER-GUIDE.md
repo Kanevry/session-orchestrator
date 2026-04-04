@@ -47,7 +47,7 @@ claude plugin install session-orchestrator
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-alpha.7 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
+🎯 Session Orchestrator v2.0.0-alpha.8 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
 ```
 
 ### Add Session Config to your project
@@ -262,6 +262,8 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
 | `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
+
+> **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in CLAUDE.md which may be committed to version control. Use header-based auth or separate secret management instead.
 
 ### Minimal Config
 
