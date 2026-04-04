@@ -61,7 +61,7 @@ For the full Session Config field reference, see `docs/USER-GUIDE.md` Section 4.
 Check for `.claude/STATE.md` in the project root:
 
 1. **STATE.md exists** — read it and inspect the `status` field:
-   - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
+   - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started_at]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
    - `status: paused` — session was intentionally paused. Use AskUserQuestion to offer resuming from the pause point or starting fresh.
    - `status: completed` — previous session ended cleanly. Note the summary for context (what was done, what was deferred) but continue with normal initialization.
 2. **STATE.md does not exist** — first session or persistence was previously off. Continue normally.
@@ -225,6 +225,7 @@ Based on priority, synergies, and session type, I recommend:
 
 ## Historical Trends (last 5 sessions)
 > Only show if 2+ sessions exist in `.claude/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
+> Read the last 5 lines from `sessions.jsonl`, parse each as JSON, and display most recent first (by `completed_at` timestamp). If fewer than 5 sessions exist, show all available.
 
 | Session | Type | Duration | Waves | Agents | Files Changed |
 |---------|------|----------|-------|--------|---------------|

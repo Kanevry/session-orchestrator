@@ -110,6 +110,8 @@ Score the session scope to determine optimal agent counts per wave. Skip for hou
 
 **Total score** = sum of all factors (0-6 range).
 
+> **Cross-module scope** counts top-level source directories (e.g., `src/auth/`, `src/api/`, `lib/utils/`). Nested subdirectories under the same parent count as one directory. Non-source directories (docs, config, scripts) don't count unless they contain modified production code.
+
 ### Complexity Tiers
 
 | Tier | Score | Description |
@@ -128,6 +130,9 @@ Score the session scope to determine optimal agent counts per wave. Skip for hou
 | deep | simple | 3-4 | 4-6 | 3-4 | 3 | 2 |
 | deep | moderate | 5-6 | 6-8 | 5-6 | 4-5 | 2-3 |
 | deep | complex | 6-8 | 8-10 | 6-8 | 6 | 3-4 |
+| housekeeping | (fixed) | — | 2 | 1 | 1 | 1 |
+
+> Housekeeping sessions skip Discovery (tasks are predefined) and use fixed agent counts regardless of complexity.
 
 The `agents-per-wave` Session Config value caps the maximum regardless of tier.
 

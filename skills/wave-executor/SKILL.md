@@ -33,6 +33,16 @@ Before starting the first wave (Discovery role):
    - `waves`: empty array (populated after each wave)
    This object lives in memory during execution — it is written to disk by session-end.
 
+## Pre-Wave 1: Capture Session Start Ref
+
+Before dispatching Wave 1, capture the current commit as the session baseline:
+
+```bash
+SESSION_START_REF=$(git rev-parse HEAD)
+```
+
+Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts.
+
 ## Pre-Wave 1: Initialize STATE.md
 
 > Skip this section entirely if `persistence: false`.
@@ -44,7 +54,7 @@ Before dispatching Wave 1, write `.claude/STATE.md` with YAML frontmatter and Ma
 session-type: feature|deep|housekeeping
 branch: <current branch>
 issues: [<issue numbers from plan>]
-started: <ISO 8601 timestamp with timezone>
+started_at: <ISO 8601 timestamp with timezone>
 status: active
 current-wave: 0
 total-waves: <from session plan>
@@ -106,7 +116,7 @@ After ALL agents in the wave complete:
    - After **Impl-Core**: Incremental quality checks per quality-gates (test changed files, typecheck)
    - After **Impl-Polish**: Incremental quality checks + integration verification
    - **Simplification pass** (at the start of the Quality wave, before test/review agents):
-     1. Identify all files changed in this session: `git diff --name-only <session-start-ref>..HEAD`
+     1. Identify all files changed in this session: `git diff --name-only $SESSION_START_REF..HEAD`
      2. Dispatch 1-2 simplification agents with:
         - Changed file list (production files only — exclude `*.test.*`, `*.spec.*`, `__tests__/`)
         - Reference: `slop-patterns.md` from the discovery skill directory — include the actual patterns in the agent prompt
@@ -129,7 +139,7 @@ After ALL agents in the wave complete:
      ```
    - The session-reviewer checks changed files against the plan and reports PASS/WARN/FAIL per category (implementation, tests, TypeScript, security, silent failures, test depth, type design, issues).
    - If the session-reviewer reports **WARN or FAIL** findings: add fix tasks to the next wave's agent assignments (feed into step 3 — Adapt Plan).
-   - After the **Quality** wave: dispatch the session-reviewer with **full session scope** (all files changed since session start, not just the current wave). Use `git diff --name-only <session-start-ref>..HEAD` to provide the complete changed files list.
+   - After the **Quality** wave: dispatch the session-reviewer with **full session scope** (all files changed since session start, not just the current wave). Use `git diff --name-only $SESSION_START_REF..HEAD` to provide the complete changed files list.
    - **Discovery** and **Finalization** waves: skip session-reviewer dispatch — Discovery is read-only and Finalization is a final git status check only.
    - This is complementary to the incremental verification in step 4 — the session-reviewer provides deeper analysis (security, silent failures, test depth, type design) that automated checks do not cover.
 6. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
@@ -144,7 +154,7 @@ After ALL agents in the wave complete:
    
    Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
 
-7. **Capture wave metrics** (if `persistence` enabled): After all agents complete and quality checks run, record for this wave:
+7. **Capture wave metrics**: If `persistence` is enabled in Session Config, record for this wave after all agents complete and quality checks run. If `persistence` is `false`, skip metrics capture entirely — do not accumulate in-memory metrics. Record:
    - `wave_number`, `role`, `started_at` (when agents were dispatched), `completed_at` (when all finished)
    - `agent_count`: number of agents dispatched
    - Per-agent results: `{description, status: done|partial|failed, files_changed_count}`
@@ -230,9 +240,11 @@ Before each wave dispatch:
    }
    ```
 2. `allowedPaths` is the UNION of all agent file scopes for this wave
-3. Read `enforcement` from Session Config (default: `warn`)
+3. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement.
 4. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
-5. For **Quality** role waves, restrict `allowedPaths` to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality agents must not modify production source code.
+5. For **Quality** role waves, use two-phase scope enforcement:
+   - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, delete `.claude/wave-scope.json`.
+   - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `.claude/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.
 6. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
 
 ## Circuit Breaker & Worktree Isolation

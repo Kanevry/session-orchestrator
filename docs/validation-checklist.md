@@ -45,7 +45,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 - Start a new session and verify session-start detects the previous completed session
 
 **Expected behavior:**
-- STATE.md is created at `.claude/STATE.md` with YAML frontmatter (`session-type`, `branch`, `issues`, `started`, `status: active`, `current-wave: 0`, `total-waves: 5`)
+- STATE.md is created at `.claude/STATE.md` with YAML frontmatter (`session-type`, `branch`, `issues`, `started_at`, `status: active`, `current-wave: 0`, `total-waves: 5`)
 - After each wave: `current-wave` increments, `## Wave History` gains an entry with agent results
 - After `/close`: `status` changes to `completed`, completion time is recorded
 - Next `/session` reads the completed STATE.md and notes previous session context
@@ -363,7 +363,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 **Expected behavior:**
 - At the start of the Quality wave, 1-2 simplification agents are dispatched before any test or review agents
 - Simplification agents receive:
-  - The list of all files changed in this session (`git diff --name-only <session-start-ref>..HEAD`), filtered to production files only
+  - The list of all files changed in this session (`git diff --name-only $SESSION_START_REF..HEAD`), filtered to production files only
   - Test files (`*.test.*`, `*.spec.*`, `__tests__/`) are excluded from the simplification target list
   - Reference to `slop-patterns.md` patterns from the discovery skill directory — actual patterns included in the agent prompt
   - Reference to the project's CLAUDE.md conventions

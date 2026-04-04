@@ -44,6 +44,8 @@ When enabled, invoke the discovery skill in **embedded mode**:
 - Run discovery Phases 0-3 only (Config, Stack Detection, Probe Execution, Verification & Scoring)
 - Scope: `session` probes always run; additional probes per `discovery-probes` config
 - Collect verified findings from the discovery skill output
+- Parse the discovery output for the **findings array** and **stats object** (schema defined in discovery skill Phase 3.6)
+- Store the stats object for Phase 1.7 metrics collection (`discovery_stats` field)
 - Incorporate findings into issue management:
   - Findings with severity `critical` or `high` → create issues immediately (Phase 5)
   - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
@@ -76,7 +78,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 
 1. Read `.claude/STATE.md` Wave History to extract per-wave data: agent counts, statuses, files changed
 2. Compute session totals:
-   - `total_duration_seconds`: from `started` to now (ISO 8601 diff)
+   - `total_duration_seconds`: from `started_at` to now (ISO 8601 diff)
    - `total_waves`: count of completed waves
    - `total_agents`: sum of agents across all waves
    - `total_files_changed`: unique files changed across entire session (from `git diff --stat`)
@@ -130,7 +132,10 @@ Finalize session metrics by reading the wave data accumulated during execution:
 
 > The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
 
-> Fields `discovery_stats` and `review_stats` are optional — only populated when discovery or review ran in this session. The `effectiveness` object is always populated from Phase 1 plan verification results. `completion_rate` is calculated as `completed / planned_issues` (0.0-1.0).
+> **Conditional fields:**
+> - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 3.6 for schema).
+> - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
+> - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
 
 ### 1.8 Session Review
 
@@ -180,7 +185,7 @@ Review `.claude/rules/` files that are relevant to this session's work:
 
 ### 3.4 Update STATE.md
 
-If `persistence` is enabled in Session Config and `.claude/STATE.md` exists:
+> Gate: Only run if `persistence` is enabled in Session Config and `.claude/STATE.md` exists.
 1. Set frontmatter `status: completed`
 2. Record final wave count and completion time in the frontmatter
 3. Keep the file as a record — do NOT delete it (next session-start reads it)
@@ -231,10 +236,14 @@ Analyze the completed session to extract reusable learnings for future sessions.
 ```
 
 **Confidence updates for existing learnings:**
-Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject`:
-- If this session **confirms** an existing learning: increment `confidence` by +0.15 (cap at 1.0). Rewrite the line.
-- If this session **contradicts** an existing learning: decrement `confidence` by -0.2. If confidence reaches 0.0, remove the line.
-- If no existing match: append as new learning with confidence 0.5.
+Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
+- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0)
+- If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
+- If no existing match: note as a new learning with confidence 0.5
+
+**File I/O strategy:** Track all updates in memory during extraction. Do NOT modify `learnings.jsonl` here — Phase 3.6 handles the actual file write. Pass the list of new/updated learnings to Phase 3.6.
+
+**Subject matching:** Match on exact `type` + `subject` string equality. For `fragile-file`, `subject` is the file path. For other types, use a short canonical identifier (e.g., `type-errors-in-api`, `scope-too-large`, `missing-imports`).
 
 ### 3.6 Memory Cleanup Check
 
@@ -244,10 +253,14 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
    "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
 3. This is a suggestion only — not blocking
-4. **Prune expired learnings** from `.claude/metrics/learnings.jsonl` (if file exists):
-   - Remove entries where `expires_at` < current date
-   - Remove entries where `confidence` = 0.0
-   - Consolidate duplicate entries (same `type` + `subject`): keep the one with highest confidence
+4. **Write learnings** to `.claude/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
+   a. Read all existing lines from `learnings.jsonl` (if exists)
+   b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0, contradicted: -0.2)
+   c. Append new learnings from Phase 3.5a (those with no existing match)
+   d. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
+   e. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence
+   f. Write the entire result back to `learnings.jsonl` (atomic rewrite with `>`, not append with `>>`)
+   g. If no existing file and no new learnings: skip
 
 ### 3.7 Write Session Metrics
 

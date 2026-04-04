@@ -138,7 +138,7 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.5 — /session [housekeeping|feature|deep] | /discovery [scope]'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.6 — /session [housekeeping|feature|deep] | /discovery [scope]'",
             "async": false
           }
         ]

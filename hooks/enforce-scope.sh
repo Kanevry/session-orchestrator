@@ -29,13 +29,25 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) 
 [[ -z "$FILE_PATH" ]] && exit 0
 
 # Resolve project root (where .claude/ lives)
-PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+find_project_root() {
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  local dir
+  dir="$(pwd)"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.claude/wave-scope.json" ]]; then echo "$dir"; return; fi
+    dir="$(dirname "$dir")"
+  done
+  pwd
+}
+PROJECT_ROOT="$(find_project_root)"
 
 # Load scope manifest — no manifest means no wave in progress
 SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
 [[ ! -f "$SCOPE_FILE" ]] && exit 0
 
-# Parse enforcement level
+# Enforcement level from wave-scope.json. Default "warn" matches Session Config default.
+# The wave-executor MUST always write this field explicitly — if missing, enforcement
+# silently degrades to warn even if Session Config specifies strict.
 ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="warn"
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
 

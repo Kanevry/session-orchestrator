@@ -172,7 +172,36 @@ Group remaining findings by category for Phase 4 presentation.
 
 ### 3.6 Embedded Mode Exit
 
-If in embedded mode (called from session-end): STOP HERE. Return structured findings to the caller. Do not proceed to Phase 4.
+If in embedded mode (called from session-end): STOP HERE. Return structured findings to the caller using this schema:
+
+**Findings array** — one entry per verified finding:
+```json
+[{
+  "probe": "<probe name>",
+  "category": "<code|infra|ui|arch|session>",
+  "severity": "<critical|high|medium|low>",
+  "confidence": <0-100>,
+  "file_path": "<path>",
+  "line_number": <N>,
+  "title": "<short title>",
+  "description": "<detailed description>"
+}]
+```
+
+**Stats object** — summary of the discovery run:
+```json
+{
+  "probes_run": <N>,
+  "findings_raw": <N>,
+  "findings_verified": <N>,
+  "false_positives": <N>,
+  "by_category": {
+    "<category>": {"findings": <N>, "actioned": <N>}
+  }
+}
+```
+
+Present both as structured data in your final output. Do not proceed to Phase 4.
 
 ## Phase 4: Interactive Triage (Standalone Mode Only)
 
