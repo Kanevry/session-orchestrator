@@ -237,7 +237,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 
 **Confidence updates for existing learnings:**
 Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
-- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0)
+- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0) and reset `expires_at` to current date + 90 days
 - If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
 - If no existing match: note as a new learning with confidence 0.5
 
@@ -255,7 +255,7 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 3. This is a suggestion only — not blocking
 4. **Write learnings** to `.claude/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
    a. Read all existing lines from `learnings.jsonl` (if exists)
-   b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0, contradicted: -0.2)
+   b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0 AND reset `expires_at` to current date + 90 days; contradicted: -0.2)
    c. Append new learnings from Phase 3.5a (those with no existing match)
    d. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
    e. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence

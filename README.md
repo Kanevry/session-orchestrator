@@ -1,16 +1,18 @@
 # Session Orchestrator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-2.0.0--alpha.7-orange.svg)](CHANGELOG.md)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
+
 Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.
+
+> [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's agentic coding CLI. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
 
 ## Install
 
 ```bash
-# From the Anthropic Marketplace
-/plugin install session-orchestrator@claude-plugins-official
-
-# Or add the marketplace directly
-/plugin marketplace add Kanevry/session-orchestrator
-/plugin install session-orchestrator@session-orchestrator
+# Add as a Claude Code plugin
+claude plugin add github:Kanevry/session-orchestrator
 ```
 
 ## Why Session Orchestrator
