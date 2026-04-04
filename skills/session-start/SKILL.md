@@ -49,6 +49,10 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `enforcement` — `strict|warn|off`, default `warn`. Hook enforcement level for scope/command restrictions
 - `isolation` — `worktree|none`, default `auto` (worktree for feature/deep, none for housekeeping). Agent isolation mode
 - `max-turns` — integer, default `auto` (housekeeping=8, feature=15, deep=25). Maximum agent turns before PARTIAL
+- `plan-baseline-path` — path to projects-baseline directory, required for `/plan` skill (default: none, error if missing when `/plan` is invoked)
+- `plan-default-visibility` — default repo visibility for `/plan new`: `internal`, `private`, or `public` (default: `internal`)
+- `plan-prd-location` — directory where PRD documents are saved, relative to project root (default: `docs/prd/`)
+- `plan-retro-location` — directory where retrospective documents are saved, relative to project root (default: `docs/retro/`)
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
 

@@ -187,6 +187,10 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 - **test-command:** pnpm vitest run
 - **stale-issue-days:** 14
 - **persistence:** true
+- **plan-baseline-path:** ~/Projects/projects-baseline
+- **plan-default-visibility:** internal
+- **plan-prd-location:** docs/prd/
+- **plan-retro-location:** docs/retro/
 - **memory-cleanup-threshold:** 5
 - **enforcement:** warn
 - **isolation:** auto
@@ -225,6 +229,10 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Required for `/plan` skill. Error if missing when `/plan` is invoked. |
+| `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
+| `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
+| `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
@@ -881,6 +889,9 @@ The `agents-per-wave` config value always caps the maximum.
 /discovery             Run quality probes across all categories
 /discovery code        Scan code quality only
 /discovery code,arch   Scan multiple categories
+/plan new              Plan a new project (PRD + repo setup + issues)
+/plan feature          Plan a feature (compact PRD + issues)
+/plan retro            Run a data-driven retrospective
 ```
 
 ### Session Config (add to CLAUDE.md)
