@@ -93,14 +93,14 @@ Present via 2 AskUserQuestion calls (3+2 split).
 
 **Call 1:**
 
-1. **Highlights** — Top 3 data-backed successes. Options: `Confirm (Empfohlen)` | `Reorder/adjust` | `Add my own`
-2. **Blockers** — Top 3 data-backed problems with root causes. Options: `Confirm (Empfohlen)` | `Different root causes` | `Add blockers`
-3. **Carryover** — Unfinished issues from recent sessions (from `effectiveness.carryover` + `[Carryover]` prefixed issues). Options: `All still relevant (Empfohlen)` | `Cancel some` | `Reprioritize`
+1. **Highlights** — Top 3 data-backed successes. Options: `Confirm (Recommended)` | `Reorder/adjust` | `Add my own`
+2. **Blockers** — Top 3 data-backed problems with root causes. Options: `Confirm (Recommended)` | `Different root causes` | `Add blockers`
+3. **Carryover** — Unfinished issues from recent sessions (from `effectiveness.carryover` + `[Carryover]` prefixed issues). Options: `All still relevant (Recommended)` | `Cancel some` | `Reprioritize`
 
 **Call 2:**
 
-4. **Process** — Session structure assessment based on observed wave/agent patterns. Options: `Process is working well (Empfohlen)` | `Adjust wave/agent sizing` | `Change session type mix` | `Other`
-5. **Surprises** — Open-ended. Present data anomalies as starters. Options: `No surprises (Empfohlen)` | `Positive surprise` | `Negative surprise` | `Other`
+4. **Process** — Session structure assessment based on observed wave/agent patterns. Options: `Process is working well (Recommended)` | `Adjust wave/agent sizing` | `Change session type mix` | `Other`
+5. **Surprises** — Open-ended. Present data anomalies as starters. Options: `No surprises (Recommended)` | `Positive surprise` | `Negative surprise` | `Other`
 
 ### Wave 2 — Improvements (Conditional)
 
@@ -108,14 +108,14 @@ Present via 2 AskUserQuestion calls (3+2 split).
 
 **Call 1:**
 
-1. **Improvement actions** — Propose 3-5 concrete improvements. Each with: action, expected impact, effort. `multiSelect: true`. Example: `Add pre-commit type checks (Empfohlen)` — "Impact: reduce type errors ~50%. Effort: 1h."
+1. **Improvement actions** — Propose 3-5 concrete improvements. Each with: action, expected impact, effort. `multiSelect: true`. Example: `Add pre-commit type checks (Recommended)` — "Impact: reduce type errors ~50%. Effort: 1h."
 2. **Priority** — Rank selected improvements. Present in recommended order, user reorders.
-3. **Ownership** — When to tackle each. Options: `All in next session (Empfohlen)` | `Spread across sessions` | `Assign to specific sessions`
+3. **Ownership** — When to tackle each. Options: `All in next session (Recommended)` | `Spread across sessions` | `Assign to specific sessions`
 
 **Call 2:**
 
-4. **Baseline changes** — Only if recurring issues (3+ sessions, same root cause). Propose specific template/script/rule changes. Options: `No changes needed (Empfohlen)` | `Apply suggested` | `Custom changes`
-5. **Session Config changes** — Propose config adjustments (e.g., `agents-per-wave`, `discovery-exclude-paths`, `stale-issue-days`). Options: `No changes needed (Empfohlen)` | `Apply suggested` | `Custom changes`
+4. **Baseline changes** — Only if recurring issues (3+ sessions, same root cause). Propose specific template/script/rule changes. Options: `No changes needed (Recommended)` | `Apply suggested` | `Custom changes`
+5. **Session Config changes** — Propose config adjustments (e.g., `agents-per-wave`, `discovery-exclude-paths`, `stale-issue-days`). Options: `No changes needed (Recommended)` | `Apply suggested` | `Custom changes`
 
 ---
 

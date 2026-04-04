@@ -49,14 +49,14 @@ Results synthesize into 2 `AskUserQuestion` calls per wave (max 4 questions per 
 ```
 AskUserQuestion({ questions: [
   { question: "...", header: "Topic", options: [
-    { label: "Option A (Empfohlen)", description: "Pro: X. Con: Y." },
+    { label: "Option A (Recommended)", description: "Pro: X. Con: Y." },
     { label: "Option B", description: "Pro: X. Con: Y." },
     { label: "Option C", description: "Pro: X. Con: Y." }
   ], multiSelect: false },
   // ... up to 4 questions per call
 ]})
 ```
-- Option 1 is always the recommendation (marked with "Empfohlen")
+- Option 1 is always the recommendation (marked with "Recommended")
 - User can select or provide custom input via "Other"
 
 **Adaptive depth:** 2-5 waves. Fewer waves when answers are clear and unambiguous (e.g., user knows exactly what they want). More waves when answers reveal complexity (multiple subsystems, unclear requirements, conflicting constraints). User can abort early ("enough questions, generate the PRD").

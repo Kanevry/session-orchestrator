@@ -245,7 +245,7 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 
 **Subject matching:** Match on exact `type` + `subject` string equality. For `fragile-file`, `subject` is the file path. For other types, use a short canonical identifier (e.g., `type-errors-in-api`, `scope-too-large`, `missing-imports`).
 
-### 3.6 Memory Cleanup Check
+### 3.6 Memory Cleanup & Learnings Write
 
 > Gate: Only run if `persistence` is enabled in Session Config.
 

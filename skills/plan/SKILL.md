@@ -87,7 +87,7 @@ Wait for ALL agents to complete before proceeding. Use `run_in_background: false
 Synthesize research results into 5 questions per wave. Split across 2 AskUserQuestion calls (3+2 or 4+1) to stay within the 4-question-per-call limit.
 
 **Option format rules:**
-- Option 1 is ALWAYS the recommendation, marked with `(Empfohlen)` in the label
+- Option 1 is ALWAYS the recommendation, marked with `(Recommended)` in the label
 - Each option includes a `description` with Pros/Cons drawn from the research
 - Include an "Other" option when custom input makes sense
 - Use `multiSelect: false` unless the question genuinely requires multiple selections
@@ -97,18 +97,18 @@ Example payload:
 ```
 AskUserQuestion({ questions: [
   { question: "Which project archetype fits best?", header: "Archetype", options: [
-    { label: "nextjs-saas (Empfohlen)", description: "Pro: Full SaaS stack with auth, payments. Con: Heavier initial setup." },
+    { label: "nextjs-saas (Recommended)", description: "Pro: Full SaaS stack with auth, payments. Con: Heavier initial setup." },
     { label: "express-service", description: "Pro: Lightweight API. Con: No frontend." },
     { label: "docker-service", description: "Pro: Maximum flexibility. Con: More manual setup." },
     { label: "Other", description: "Describe your preferred archetype." }
   ], multiSelect: false },
   { question: "Which visibility tier?", header: "Visibility", options: [
-    { label: "internal (Empfohlen)", description: "Pro: GitLab private, team access. Con: No external visibility." },
+    { label: "internal (Recommended)", description: "Pro: GitLab private, team access. Con: No external visibility." },
     { label: "private", description: "Pro: + optional GitHub mirror. Con: Limited collaboration." },
     { label: "public/OSS", description: "Pro: Open source, GitHub public + license. Con: Requires careful secret management." }
   ], multiSelect: false },
   { question: "Who is the target audience?", header: "Audience", options: [
-    { label: "Internal team (Empfohlen)", description: "Pro: Controlled rollout. Con: Limited feedback pool." },
+    { label: "Internal team (Recommended)", description: "Pro: Controlled rollout. Con: Limited feedback pool." },
     { label: "B2B customers", description: "Pro: Revenue potential. Con: Higher quality bar." },
     { label: "Public/developers", description: "Pro: Community contributions. Con: Support burden." },
     { label: "Other", description: "Describe your target audience." }
@@ -200,7 +200,7 @@ AskUserQuestion({
     question: "The PRD reviewer flagged these remaining issues after 3 revision rounds:\n\n[list issues]\n\nHow do you want to proceed?",
     header: "PRD Review",
     options: [
-      { label: "Accept as-is (Empfohlen)", description: "Issues are minor, proceed with current PRD." },
+      { label: "Accept as-is (Recommended)", description: "Issues are minor, proceed with current PRD." },
       { label: "Manual edit", description: "I'll edit the PRD myself before continuing." },
       { label: "Re-run review", description: "Try one more revision round." }
     ],
@@ -219,7 +219,7 @@ AskUserQuestion({
     question: "PRD is ready for your review. It has been saved to [path].\n\nPlease review the document and confirm.",
     header: "PRD Approval",
     options: [
-      { label: "Approve PRD (Empfohlen)", description: "PRD looks good, proceed to issue creation." },
+      { label: "Approve PRD (Recommended)", description: "PRD looks good, proceed to issue creation." },
       { label: "Request changes", description: "I have feedback — let me describe what to change." }
     ],
     multiSelect: false
@@ -265,7 +265,7 @@ AskUserQuestion({
     question: "Proposed issue structure:\n\n**Epic:** [title]\n\n| # | Sub-Issue | Priority | Labels | Blocked By |\n|---|----------|----------|--------|------------|\n| 1 | [title]  | critical | [labels] | — |\n| 2 | [title]  | high     | [labels] | #1 |\n| ... | ... | ... | ... | ... |\n\nTotal: [N] issues. Confirm or adjust.",
     header: "Issue Review",
     options: [
-      { label: "Create all issues (Empfohlen)", description: "Proceed with the proposed structure." },
+      { label: "Create all issues (Recommended)", description: "Proceed with the proposed structure." },
       { label: "Adjust priorities", description: "I want to change some priorities before creating." },
       { label: "Remove issues", description: "Some issues should not be created." },
       { label: "Cancel", description: "Do not create any issues." }
@@ -321,7 +321,7 @@ For `/plan retro`, next steps include: "Address improvement issues in your next 
 - **NEVER skip the Q&A phase** — even if the user provides a detailed brief, validate through structured questions. The Q&A surfaces blind spots.
 - **NEVER assume projects-baseline templates** — always read from the configured `plan-baseline-path`. Templates change; hardcoded assumptions break.
 - **ALWAYS research before asking** — dispatch Explore agents before every Q&A wave. Questions without research backing are guesses.
-- **ALWAYS mark Option 1 as recommended** — with `(Empfohlen)` in the label. Every question must have a clear recommendation.
+- **ALWAYS mark Option 1 as recommended** — with `(Recommended)` in the label. Every question must have a clear recommendation.
 - **ALWAYS use AskUserQuestion** — never present options as plain text. The structured UI is mandatory.
 - **ALWAYS save documents before creating issues** — the PRD/retro document is the source of truth. Issues reference it.
 - **Security** — never include internal paths, IPs, or infrastructure details in output documents. Read sensitive baseline areas for context but filter from outputs.
