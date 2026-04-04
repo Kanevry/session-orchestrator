@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.7] - 2026-04-04
+
+### Added
+- **`/plan` skill** — structured project planning & PRD generation (#27)
+- `/plan new` — project kickoff with 3-wave requirement gathering, full PRD, and repo setup
+- `/plan feature` — compact feature PRD with 1-2 wave discovery
+- `/plan retro` — data-driven retrospective from session metrics
+- 3 PRD templates: full (8 sections), feature (5 sections), retro (metrics + actions)
+- PRD reviewer prompt with 6-criteria quality review and max 3 iteration protocol
+- Product Strategist soul identity (`skills/plan/soul.md`)
+- 4 new Session Config fields: `plan-baseline-path`, `plan-default-visibility`, `plan-prd-location`, `plan-retro-location`
+
+### Changed
+- Plugin version alpha.6 → alpha.7
+- SessionStart hook message updated to include `/plan [new|feature|retro]`
+- Component counts updated: 8→9 skills, 4→5 commands
+
+## [2.0.0-alpha.6] - 2026-04-04
+
+### Fixed
+- **Worktree enforcement bypass** — `find_project_root()` fallback added to both hook scripts (#21 prep)
+- **Quality wave scope conflict** — two-phase scope enforcement: simplification agents get production file scope, then test/review agents get test-only scope (#21 prep)
+- **Undefined `<session-start-ref>`** — `SESSION_START_REF` captured at session start, used in 3 locations (#21 prep)
+- **PARTIAL/SPIRAL/FAILED detection** — STATUS reporting protocol with coordinator detection rules and definitions table (#21 prep)
+- **Discovery embedded mode return contract** — JSON schema for findings + stats between discovery and session-end (#21 prep)
+- **Learnings I/O** — in-memory tracking in Phase 3.5a, atomic rewrite in Phase 3.6, explicit conditions (#21 prep)
+- 8 medium/low consistency fixes: subject matching, cross-module scope definition, sort order, gate headers, field naming, enforcement docs (M1-M6, L1-L2)
+
+### Changed
+- Version bumped alpha.5 → alpha.6 across 5 files
+- Validation checklist expanded from 11 to 17 scenarios
+
 ## [2.0.0-alpha.5] - 2026-04-03
 
 ### Added

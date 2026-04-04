@@ -57,6 +57,8 @@ The user workflow is:
    - `/session housekeeping` -- tests the lightweight session path
    - `/go` -- tests wave execution (requires an active session plan)
    - `/close` -- tests session close-out and verification
+   - `/discovery [scope]` -- tests systematic quality discovery
+   - `/plan new` -- tests structured project planning and PRD generation
 
 There is no build step, no compilation, and no dependency installation. Edit the files, reload Claude Code, and test.
 
@@ -81,7 +83,7 @@ Skills are the core logic units. Each skill is a Markdown file with YAML frontma
 - Skills can invoke other skills (e.g., `session-start` invokes `session-plan`)
 - A skill directory may contain supporting files (e.g., `soul.md` alongside `SKILL.md`)
 
-**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`
+**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`, `plan`
 
 ### Commands (`commands/<name>.md`)
 
@@ -100,7 +102,7 @@ Commands are user-facing entry points that map slash commands to skill invocatio
 - Commands should be thin wrappers -- delegate logic to skills
 - Each command maps to one primary skill
 
-**Current commands:** `/session`, `/go`, `/close`, `/discovery`
+**Current commands:** `/session`, `/go`, `/close`, `/discovery`, `/plan`
 
 ### Agents (`agents/<name>.md`)
 
@@ -138,7 +140,7 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.6 — /session [housekeeping|feature|deep] | /discovery [scope]'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.7 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]'",
             "async": false
           }
         ]

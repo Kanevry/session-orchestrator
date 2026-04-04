@@ -82,6 +82,7 @@ Session Orchestrator does not optimize for token cost or model routing. It optim
 | `/go` | Approve plan, begin wave execution |
 | `/close` | End session with verification |
 | `/discovery [scope]` | Systematic quality discovery and issue detection |
+| `/plan [mode]` | Plan a project, feature, or retrospective |
 
 ## Session Types
 
@@ -137,8 +138,8 @@ User → /session → Research → Q&A → Plan → /go → 5 Waves → /close �
 
 ## Components
 
-- **8 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery
-- **4 Commands**: /session, /go, /close, /discovery
+- **9 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan
+- **5 Commands**: /session, /go, /close, /discovery, /plan
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
 
