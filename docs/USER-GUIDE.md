@@ -77,7 +77,7 @@ The orchestrator researches your project state autonomously, presents findings w
 
 ## 2. Commands Reference
 
-Session Orchestrator provides four commands:
+Session Orchestrator provides five commands:
 
 | Command | Purpose | When to use |
 |---------|---------|-------------|
@@ -85,6 +85,7 @@ Session Orchestrator provides four commands:
 | `/go` | Approve the plan and begin wave execution | After reviewing the proposed wave plan |
 | `/close` | End the session with verification and commits | When all waves are complete |
 | `/discovery [scope]` | Systematic quality discovery and issue detection | Anytime, or automatically during `/close` |
+| `/plan [mode]` | Structured project planning and PRD generation | Before starting a session, or standalone |
 
 ### `/session [type]`
 
@@ -116,6 +117,30 @@ Ends the session. This runs a full verification against the agreed plan, creates
 ```
 /close
 ```
+
+### `/plan [mode]`
+
+Structured requirement gathering, PRD generation, and issue creation. Accepts one argument: `new`, `feature`, or `retro`.
+
+```
+/plan new
+/plan feature
+/plan retro
+```
+
+**`/plan new`** — Full project kickoff. Gathers requirements across 3 waves of questions (core decisions, technical details, business scope), generates an 8-section PRD, optionally scaffolds the repository, and creates a prioritized Epic with sub-issues. Typically 30-45 minutes.
+
+**`/plan feature`** — Compact feature planning. Gathers requirements in 1-2 waves, generates a 5-section PRD with acceptance criteria, and creates feature sub-issues. Typically 5-15 minutes.
+
+**`/plan retro`** — Data-driven retrospective. Reads session metrics from `.claude/metrics/sessions.jsonl`, surfaces trends and patterns, guides reflection, and creates improvement issues. Typically 10-20 minutes.
+
+**When to use `/plan` vs `/session`:**
+- `/plan` answers **"What should we build?"** — requirements, PRDs, issues
+- `/session` answers **"How do we build it?"** — wave planning, agent execution, verification
+
+`/plan` runs outside of sessions. Its output (PRD + issues) feeds into the next `/session`, which picks from those issues and executes them. You can skip `/plan` entirely and create issues manually — sessions work with any existing issues.
+
+**Requires:** `plan-baseline-path` in Session Config (for `/plan new` repo scaffolding). Not required for `/plan feature` or `/plan retro`.
 
 ---
 
@@ -924,12 +949,14 @@ The `agents-per-wave` config value always caps the maximum.
 ### Typical Session Flow
 
 ```
-/session feature          # Research + recommendations
+/plan feature             # (Optional) Define requirements → PRD + issues
+/session feature          # Research + recommendations → pick issues
   (pick a direction)      # User chooses focus
   (review wave plan)      # Orchestrator proposes role-based wave plan
 /go                       # Execute waves with parallel agents
   (role-based waves execute) # Automatic, with inter-wave reviews
 /close                    # Verify, commit, push, summarize
+/plan retro               # (Optional) Retrospective → improvement issues
 ```
 
 ### Wave Quick Reference
@@ -981,6 +1008,18 @@ During `/close`, any work that was planned but not completed is documented. The 
 ### Can I use this across multiple repos?
 
 Yes. Configure `cross-repos` in your Session Config with the names of related repositories (located under `~/Projects/`). The orchestrator checks their git state and critical issues at session start, giving you ecosystem-wide awareness.
+
+### When should I use `/plan` vs creating issues manually?
+
+`/plan` provides structured requirement gathering with parallel research agents, auto-prioritization, and PRD documents for reference. Use it when you want a thorough requirements process. Skip it when you already know exactly what to build — just create issues manually and run `/session`.
+
+### What's the difference between `/plan new` and `/plan feature`?
+
+`/plan new` is for brand-new projects — it scaffolds a repository, creates a full PRD, and generates an Epic with sub-issues. `/plan feature` is for adding a feature to an existing project — it produces a compact PRD and feature issues. Use `/plan new` once per project, `/plan feature` once per feature.
+
+### Can I run `/plan` during an active session?
+
+No. `/plan` runs outside of sessions. The session scope is locked after `/session` + user alignment + `/go`. If new requirements emerge during a session, create them as issues for the next session or let `/close` generate carryover issues.
 
 ---
 

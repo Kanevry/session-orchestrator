@@ -1,6 +1,6 @@
 # Session Orchestrator
 
-Claude Code plugin for session-level orchestration — wave planning, VCS integration, quality gates.
+Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.
 
 ## Install
 
@@ -84,6 +84,44 @@ Session Orchestrator does not optimize for token cost or model routing. It optim
 | `/discovery [scope]` | Systematic quality discovery and issue detection |
 | `/plan [mode]` | Plan a project, feature, or retrospective |
 
+## Workflow
+
+Session Orchestrator has two complementary workflows: **planning** (what to build) and **execution** (how to build it).
+
+```
+/plan [mode]  →  /session [type]  →  /go  →  /close  →  /plan retro
+    WHAT              HOW            DO      VERIFY       REFLECT
+```
+
+### Planning (`/plan`)
+
+Run `/plan` **before** starting a session to define requirements and create issues:
+
+- **`/plan new`** — Full project kickoff: 3-wave requirement gathering, 8-section PRD, repo scaffolding, Epic + prioritized issues. Use when starting from scratch.
+- **`/plan feature`** — Compact feature PRD: 1-2 wave discovery, acceptance criteria, feature issues. Use when adding a feature to an existing project.
+- **`/plan retro`** — Data-driven retrospective: analyzes session metrics, surfaces trends, creates improvement issues. Use after completing significant work.
+
+`/plan` is optional — you can create issues manually and jump straight to `/session`.
+
+### Execution (`/session` → `/go` → `/close`)
+
+Run `/session` to **implement** existing issues across structured waves:
+
+```
+/session feature     # Analyze project, pick issues, agree on scope
+/go                  # Execute across 5 parallel waves
+/close               # Verify, commit, push, create carryover issues
+```
+
+### Example: Feature from idea to delivery
+
+```bash
+/plan feature        # 10 min: define requirements → PRD + 3 issues
+/session feature     # Pick those 3 issues → wave plan
+/go                  # Execute: Discovery → Impl-Core → Polish → Quality → Finalize
+/close               # Verify + commit + push
+```
+
 ## Session Types
 
 - **housekeeping** — Git cleanup, SSOT refresh, CI checks, branch merges (1-2 agents, serial)
@@ -133,7 +171,13 @@ Session Orchestrator handles the **session layer** (orchestration, VCS integrati
 Superpowers handles the **task layer** (TDD, debugging, brainstorming per feature).
 
 ```
-User → /session → Research → Q&A → Plan → /go → 5 Waves → /close → Verify → Commit
+/plan → PRD + Issues    (optional: define WHAT to build)
+  ↓
+/session → Research → Q&A → Plan    (define HOW to build it)
+  ↓
+/go → 5 Waves → Inter-Wave Reviews    (execute)
+  ↓
+/close → Verify → Commit → Mirror    (verify + ship)
 ```
 
 ## Components
