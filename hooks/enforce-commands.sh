@@ -31,7 +31,11 @@ SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
 ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="warn"
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
 
-# Check command against blocked patterns (word-boundary match)
+# Check command against blocked patterns (word-boundary match).
+# Each blockedCommands entry is matched as a literal string (not regex) with
+# word boundaries: the pattern must appear at the start of the command or after
+# whitespace, and end at the end of the command or before whitespace. This
+# prevents partial matches (e.g., "rm" won't match "format").
 while IFS= read -r pattern; do
   [[ -z "$pattern" ]] && continue
   if [[ "$COMMAND" =~ (^|[[:space:]])"$pattern"([[:space:]]|$) ]]; then

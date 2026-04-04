@@ -100,7 +100,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 - Discovery wave: `allowedPaths` is `[]`, agent prompts include "You are READ-ONLY"
 - Impl-Core/Impl-Polish waves: `allowedPaths` lists specific file paths from agent specs
 - Quality wave: `allowedPaths` restricted to `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`
-- With `strict` enforcement, out-of-scope edits are **blocked** (hook returns `{"decision": "block"}`)
+- With `strict` enforcement, out-of-scope edits are **blocked** (hook returns `{"permissionDecision":"deny","reason":"Scope violation: <path> not in allowed paths [<allowed>]"}` and exits with code 2)
 - Blocked commands (`rm -rf`, `git push --force`, `DROP TABLE`, `git reset --hard`, `git checkout -- .`) are rejected
 
 **Files to verify:**
@@ -324,6 +324,191 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 - Session-end final report includes Safety Review with enforcement counts, circuit breaker stats, and isolation summary
 - `/close` runs discovery probes and creates issues for critical/high findings
 - The session completes end-to-end: no feature is silently skipped due to interactions between the three
+
+---
+
+## 12. Discovery Confidence Threshold
+
+**What to test:**
+- Run a session with `discovery-confidence-threshold: 70` (non-default; default is 60)
+- Trigger discovery probes that produce findings at varying confidence levels
+- Verify the threshold is read from Session Config and applied during finding triage
+
+**Expected behavior:**
+- Findings with calculated confidence below 70 are auto-deferred (not presented for user triage)
+- Findings with confidence at or above 70 are reported as actionable findings
+- Critical severity findings override the threshold — they get a minimum confidence of 70 and are NEVER auto-deferred, regardless of other scoring factors
+- Deferred findings still appear in the Final Report under "Discovery Findings (deferred)" for visibility
+
+**Files to verify:**
+- `skills/discovery/SKILL.md` — confidence scoring formula (baseline 40 + factor scores, clamped 0-100)
+- Session Config — `discovery-confidence-threshold: 70` is read and applied
+- Final Report output — deferred vs. reported findings match the threshold boundary
+
+**Pass criteria:**
+- Non-default threshold (70) is used instead of the default (60)
+- A finding scoring 65 is auto-deferred; a finding scoring 75 is reported
+- A critical finding scoring below 70 is still reported (severity override applies)
+- The threshold value appears in discovery output or is observable in triage behavior
+
+---
+
+## 13. Simplification Pass in Quality Wave
+
+**What to test:**
+- Run a feature session through at least the Quality wave
+- Verify the simplification pass runs at the start of the Quality wave, before test/review agents
+- Check that simplification agents receive the correct context and constraints
+
+**Expected behavior:**
+- At the start of the Quality wave, 1-2 simplification agents are dispatched before any test or review agents
+- Simplification agents receive:
+  - The list of all files changed in this session (`git diff --name-only <session-start-ref>..HEAD`), filtered to production files only
+  - Test files (`*.test.*`, `*.spec.*`, `__tests__/`) are excluded from the simplification target list
+  - Reference to `slop-patterns.md` patterns from the discovery skill directory — actual patterns included in the agent prompt
+  - Reference to the project's CLAUDE.md conventions
+  - Tools limited to: Read, Edit, Grep, Glob
+  - Model: sonnet
+- After simplification agents complete, Quality wave proceeds to dispatch test/review agents
+
+**Files to verify:**
+- `skills/wave-executor/SKILL.md` — simplification pass definition in inter-wave quality checks
+- Agent prompts — verify slop-patterns.md content is included
+- Quality wave dispatch order — simplification agents run first
+
+**Pass criteria:**
+- Simplification agents are dispatched before test writers in the Quality wave
+- Only production files are targeted (no test files in the simplification scope)
+- Agent prompts reference slop-patterns.md patterns explicitly
+- Quality wave test/review agents run after simplification agents complete (not in parallel)
+
+---
+
+## 14. Persistence Disabled
+
+**What to test:**
+- Run a complete session (`/session feature` -> `/go` -> `/close`) with `persistence: false` in Session Config
+- Verify the session functions end-to-end without creating any persistence artifacts
+- Confirm no errors or warnings about missing persistence files
+
+**Expected behavior:**
+- Session-start skips Phase 0.5 (Session Continuity) — no STATE.md check
+- Session-start skips Phase 0.6 (Metrics Initialization) — no `.claude/metrics/` setup
+- Session-start skips Phase 5.5 (Memory Recall) — no previous session context surfaced
+- Session-start skips Phase 5.6 (Project Intelligence) — no learnings loaded
+- Wave-executor skips STATE.md creation (Pre-Wave 1) and all STATE.md updates (Post-Wave 3a)
+- Wave-executor skips wave metrics capture
+- Session-end skips Phase 1.6 (Safety Review — STATE.md won't exist)
+- Session-end skips Phase 1.7 (Metrics Collection)
+- Session-end skips Phase 3.4 (Update STATE.md)
+- Session-end skips Phase 3.5 (Session Memory) — no session memory file written
+- Session-end skips Phase 3.5a (Learning Extraction) — no learnings.jsonl entry
+- Session-end skips Phase 3.6 (Memory Cleanup Check)
+- Session-end skips Phase 3.7 (Write Session Metrics) — no sessions.jsonl append
+- The session still plans, executes waves, runs quality gates, commits, and produces a final report
+
+**Files to verify:**
+- `.claude/STATE.md` — must NOT exist after the session
+- `.claude/metrics/sessions.jsonl` — must NOT be appended (or created if it didn't exist)
+- `.claude/metrics/learnings.jsonl` — must NOT be appended
+- `~/.claude/projects/<project>/memory/session-<date>.md` — must NOT be created
+- `~/.claude/projects/<project>/memory/MEMORY.md` — must NOT be updated with a new session link
+
+**Pass criteria:**
+- No persistence artifacts are created or modified during the entire session lifecycle
+- Session completes end-to-end without errors related to missing STATE.md or metrics
+- Wave execution, quality gates, commits, and final report all function normally
+- No "file not found" or "directory not found" errors for persistence paths
+
+---
+
+## 15. max-turns: Auto vs Explicit
+
+**What to test:**
+- Run sessions with `max-turns: auto` for each session type (housekeeping, feature, deep) and verify the auto-calculated defaults
+- Run a session with `max-turns: 10` (explicit value) and verify agents receive that exact value
+
+**Expected behavior:**
+- With `max-turns: auto`:
+  - Housekeeping sessions: agents get `TURN LIMIT: You have a maximum of 8 turns`
+  - Feature sessions: agents get `TURN LIMIT: You have a maximum of 15 turns`
+  - Deep sessions: agents get `TURN LIMIT: You have a maximum of 25 turns`
+- With `max-turns: 10` (explicit):
+  - All agents regardless of session type get `TURN LIMIT: You have a maximum of 10 turns`
+  - The explicit value overrides the auto-calculated default
+- In both cases, agents exceeding the limit report `PARTIAL` with accomplished work and remaining tasks
+
+**Files to verify:**
+- `skills/wave-executor/circuit-breaker.md` — auto defaults (housekeeping=8, feature=15, deep=25)
+- Agent prompts (in wave-executor dispatch) — verify turn limit text matches the configured or auto value
+- `.claude/STATE.md` — Wave History entries show agent statuses reflecting turn limit enforcement
+
+**Pass criteria:**
+- `auto` resolves to the correct default per session type (8/15/25)
+- Explicit integer value (10) overrides auto for all agents in the session
+- Agent prompts contain the exact turn limit number (not a placeholder or wrong value)
+- PARTIAL reports from agents that exceed the limit include both accomplished work and remaining tasks
+
+---
+
+## 16. VCS, Thresholds, and Freshness Checks
+
+**What to test:**
+- Run a session with the integration test config's non-default threshold values
+- Verify session-start reads and applies each threshold instead of falling back to defaults
+- Check that `vcs: github` forces `gh` CLI usage throughout
+
+**Expected behavior:**
+- `vcs: github` forces all VCS operations through `gh` CLI, even if the remote URL could be ambiguous
+- `cli-tools: [gh]` is verified present during session-start Phase 1; missing tools are flagged as warnings
+- `issue-limit: 25` caps issue queries — `gh issue list --limit 25` (not the default 50)
+- `recent-commits: 15` limits git log output — `git log -15` (not the default 20)
+- `stale-branch-days: 5` flags branches with no commits in 5+ days as stale (not the default 7)
+- `stale-issue-days: 14` flags issues with no progress in 14+ days for triage (not the default 30)
+- `ssot-freshness-days: 3` flags SSOT files (STATUS.md) older than 3 days as stale (not the default 5)
+- `plugin-freshness-days: 14` checks the session-orchestrator plugin's last commit date; if older than 14 days, a staleness warning appears in the Session Overview (not the default 30)
+
+**Files to verify:**
+- Session Overview output — verify threshold-dependent warnings and counts use the configured (non-default) values
+- `skills/session-start/SKILL.md` — Phase 3 step 5 (plugin freshness), Phase 2 (git log with recent-commits), Phase 2 (stale branches/issues)
+
+**Pass criteria:**
+- Issue queries use `--limit 25`, not the default 50
+- Git log shows 15 commits, not the default 20
+- Branches idle >5 days are flagged (not >7)
+- Issues idle >14 days are flagged (not >30)
+- SSOT files older than 3 days are flagged stale (not >5)
+- Plugin older than 14 days triggers a freshness warning (not >30)
+- All threshold values are read from Session Config, not hardcoded defaults
+
+---
+
+## 17. Discovery Probes, Exclusions, and Close Integration
+
+**What to test:**
+- Run a full session ending with `/close` while `discovery-on-close: true`
+- Verify that only the configured probe categories run and exclusion paths are respected
+- Combine with Scenario 12 (confidence threshold) for full discovery coverage
+
+**Expected behavior:**
+- `/close` Phase 1.5 triggers discovery scan automatically because `discovery-on-close: true` (default is false)
+- Only `code` and `arch` probe categories execute (from `discovery-probes: [code, arch]`); other categories (infra, ui, session) are skipped
+- `discovery-exclude-paths: [node_modules, dist, .next]` causes discovery to skip these directories entirely — no findings from excluded paths appear in results
+- Combined with `discovery-severity-threshold: medium`, low-severity findings are suppressed
+- Combined with `discovery-confidence-threshold: 70`, findings below 70 confidence are auto-deferred
+- Critical/high findings from the `code` and `arch` probes create VCS issues; medium findings are listed as deferred
+
+**Files to verify:**
+- Discovery output — verify only `code` and `arch` probes are listed as executed
+- Discovery findings — verify no findings reference files in `node_modules`, `dist`, or `.next`
+- Session-end final report — discovery section present (since `discovery-on-close: true`)
+
+**Pass criteria:**
+- Discovery runs automatically at `/close` without manual invocation
+- Only 2 probe categories execute (code, arch), not all 5
+- Zero findings originate from excluded paths
+- Discovery respects both severity and confidence thresholds (tested in Scenario 12)
+- When `discovery-on-close: false` (default), `/close` skips discovery entirely
 
 ---
 

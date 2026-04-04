@@ -117,7 +117,22 @@ After ALL agents in the wave complete:
      3. After simplification agents complete, proceed to Quality test/review agents
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
    - After **Finalization**: final git status check
-5. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
+5. **Session-reviewer dispatch** (after Impl-Core, Impl-Polish, and Quality waves only):
+   - After **Impl-Core** and **Impl-Polish** waves, dispatch the session-reviewer agent to verify wave output:
+     ```
+     Agent({
+       description: "Review wave N output",
+       prompt: "<include: session plan, wave results, changed files list, acceptance criteria>",
+       subagent_type: "session-orchestrator:session-reviewer",
+       run_in_background: false
+     })
+     ```
+   - The session-reviewer checks changed files against the plan and reports PASS/WARN/FAIL per category (implementation, tests, TypeScript, security, silent failures, test depth, type design, issues).
+   - If the session-reviewer reports **WARN or FAIL** findings: add fix tasks to the next wave's agent assignments (feed into step 3 — Adapt Plan).
+   - After the **Quality** wave: dispatch the session-reviewer with **full session scope** (all files changed since session start, not just the current wave). Use `git diff --name-only <session-start-ref>..HEAD` to provide the complete changed files list.
+   - **Discovery** and **Finalization** waves: skip session-reviewer dispatch — Discovery is read-only and Finalization is a final git status check only.
+   - This is complementary to the incremental verification in step 4 — the session-reviewer provides deeper analysis (security, silent failures, test depth, type design) that automated checks do not cover.
+6. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
    a. Check Pencil editor state: `get_editor_state({ include_schema: false })`. If no editor active, open the configured `.pen` file via `open_document({ filePathOrTemplate: "<pencil-path>" })`. If that also fails → skip with note "Pencil review skipped — .pen file unavailable."
    b. Get design structure: `batch_get({ filePath: "<pencil-path>", patterns: [{ type: "frame" }], readDepth: 2, searchDepth: 2 })` — find frames relevant to this wave's UI work.
    c. Screenshot relevant frames: `get_screenshot({ filePath: "<pencil-path>", nodeId: "<frame-id>" })` for each frame matching the wave's UI tasks.
@@ -129,7 +144,7 @@ After ALL agents in the wave complete:
    
    Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
 
-6. **Capture wave metrics** (if `persistence` enabled): After all agents complete and quality checks run, record for this wave:
+7. **Capture wave metrics** (if `persistence` enabled): After all agents complete and quality checks run, record for this wave:
    - `wave_number`, `role`, `started_at` (when agents were dispatched), `completed_at` (when all finished)
    - `agent_count`: number of agents dispatched
    - Per-agent results: `{description, status: done|partial|failed, files_changed_count}`

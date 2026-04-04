@@ -33,6 +33,7 @@ Every field is set explicitly (many to non-default values) so that tests can ver
 - **discovery-probes:** [code, arch]
 - **discovery-exclude-paths:** [node_modules, dist, .next]
 - **discovery-severity-threshold:** medium
+- **discovery-confidence-threshold:** 70
 - **persistence:** true
 - **memory-cleanup-threshold:** 3
 - **enforcement:** strict
@@ -60,7 +61,7 @@ Each field is set to a specific value for testing. The table below explains what
 | `ssot-files` | `[STATUS.md]` | n/a | SSOT freshness check against `ssot-freshness-days` (set to 3 below) |
 | `cli-tools` | `[gh]` | n/a | GitHub CLI; used for issue queries, PR status, CI checks |
 | `mirror` | `none` | `none` | No mirror push at session-end Phase 4.4 |
-| `ecosystem-health` | `false` | `true` | Health monitoring disabled; session-start should skip health endpoint checks |
+| `ecosystem-health` | `false` | `false` | Health monitoring disabled; session-start should skip health endpoint checks |
 | `vcs` | `github` | auto-detect | Explicit VCS; forces `gh` CLI usage even if remote could be ambiguous |
 | `health-endpoints` | `[]` | `[]` | No endpoints; combined with `ecosystem-health: false` confirms health is fully off |
 | `special` | `"Integration test..."` | none | Free-text instruction; verify it appears in session context |
@@ -92,6 +93,7 @@ Each field is set to a specific value for testing. The table below explains what
 | `discovery-probes` | `[code, arch]` | `[all]` | Subset of probes; only code and arch categories should run, not all |
 | `discovery-exclude-paths` | `[node_modules, dist, .next]` | `[]` | Excluded paths; verify discovery skips these directories |
 | `discovery-severity-threshold` | `medium` | `low` | Higher threshold; low-severity findings should be suppressed |
+| `discovery-confidence-threshold` | `70` | `60` | Higher threshold; findings with confidence below 70 are auto-deferred instead of presented for triage |
 
 ### v2.0 persistence and safety
 
@@ -191,3 +193,14 @@ These scenarios map config fields to observable behaviors during a full `/sessio
 - `git log` shows 15 recent commits
 - Branches with no commits in 5+ days are flagged stale
 - Issues with no progress in 14+ days are flagged for triage
+
+### Scenario 10: Confidence threshold filtering
+
+**Fields exercised:** `discovery-confidence-threshold`, `discovery-severity-threshold`
+
+- Discovery Phase 3.2a scores each finding using pattern specificity, file context, and historical signal
+- With `discovery-confidence-threshold: 70`, findings scoring below 70 are auto-deferred (not the default 60)
+- A medium-severity finding in a test fixture (baseline 40 + 0 specificity + 0 context = 40) is auto-deferred
+- A high-specificity finding in production source (baseline 40 + 20 + 20 = 80) passes the threshold and is presented for triage
+- Critical-severity findings get a minimum confidence of 70 and are never auto-deferred
+- Auto-deferred findings appear in a collapsed informational section, not in interactive triage

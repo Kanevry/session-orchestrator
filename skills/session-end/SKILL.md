@@ -132,6 +132,17 @@ Finalize session metrics by reading the wave data accumulated during execution:
 
 > Fields `discovery_stats` and `review_stats` are optional — only populated when discovery or review ran in this session. The `effectiveness` object is always populated from Phase 1 plan verification results. `completion_rate` is calculated as `completed / planned_issues` (0.0-1.0).
 
+### 1.8 Session Review
+
+Dispatch the session-reviewer agent to verify implementation quality before the quality gate:
+
+1. Invoke `subagent_type: "session-orchestrator:session-reviewer"` with:
+   - **Scope**: all files changed this session (from `git diff --name-only` against the base branch)
+   - **Context**: the session plan (issues, acceptance criteria) and all wave results from STATE.md
+2. Wait for the reviewer's **Verdict**:
+   - **PROCEED** — continue to Phase 2
+   - **FIX REQUIRED** — address each listed item before proceeding. For quick fixes (<2 min each), fix inline. For larger items, create carryover issues (same as Phase 1.2) and note them as unresolved review findings in the Final Report
+
 ## Phase 2: Quality Gate
 
 Run ALL checks — do NOT skip any:

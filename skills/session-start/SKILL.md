@@ -39,6 +39,7 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. This t
 - `issue-limit` — max issues to fetch from VCS (default: 50)
 - `stale-branch-days` — days before branch flagged stale (default: 7)
 - `stale-issue-days` — days before issue flagged for triage (default: 30)
+- `discovery-confidence-threshold` — minimum confidence score for interactive triage; below this, findings are auto-deferred (integer, default: 60)
 - `discovery-on-close` — bool, default `false`. Run discovery probes automatically during `/close`
 - `discovery-probes` — list, default `[all]`. Categories to enable: `all`, `code`, `infra`, `ui`, `arch`, `session`
 - `discovery-exclude-paths` — list, default `[]`. Glob patterns to exclude from discovery scanning

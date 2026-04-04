@@ -223,6 +223,7 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
+| `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
@@ -280,7 +281,7 @@ The primary implementation wave. Agents write core feature code, database change
 Agents fix issues discovered during Impl-Core, implement secondary features, handle integration between Impl-Core outputs, and address edge cases. If Pencil design review is configured, a design-code alignment check runs after this wave.
 
 **Quality**
-Agents write and update tests, run quality checks per the quality-gates skill, and perform a security review. Goal: all tests passing, zero TypeScript errors, no lint violations.
+Before test writers run, the orchestrator dispatches 1-2 simplification agents that scan all files changed in the session (excluding test files) and clean up common AI-generated code patterns — unnecessary try-catch wrappers, over-documentation, re-implemented stdlib functions, and redundant boolean logic. These agents reference `slop-patterns.md` (produced by the discovery skill) and do not change functionality. After simplification, the remaining agents write and update tests, run quality checks per the quality-gates skill, and perform a security review. Goal: all tests passing, zero TypeScript errors, no lint violations.
 
 **Finalization**
 One or two agents update SSOT files, close or update issues, write session handover documentation, and prepare clean commits. No new feature work happens here.
@@ -499,6 +500,14 @@ The `session-reviewer` is a dedicated agent that verifies work quality. It runs 
 
 5. **Issue tracking accuracy** — Claimed issues have the correct status labels. Acceptance criteria from issues are actually met.
 
+6. **Silent failure analysis** — Catch blocks that swallow errors, empty error handlers, and fallback returns that hide failures.
+
+7. **Test depth check** — Tests exercise changed behavior (not just boilerplate), edge cases are present, assertion quality is adequate, and mock boundaries are correct.
+
+8. **Type design spot-check** — String parameters that should be unions, overly broad `any` types, and unused generics.
+
+Each finding includes a **confidence score** (0-100). Only findings with confidence >= 80 appear in the main report. Findings scored 50-79 are listed in a separate "Possible Issues" section for manual review.
+
 ### Review Output
 
 The reviewer produces a structured verdict:
@@ -649,12 +658,12 @@ The `/discovery` command runs systematic quality probes to find issues that don'
 
 | Scope | Probes | Focus |
 |-------|--------|-------|
-| `all` | 22 probes | Everything (default) |
+| `all` | 23 probes | Everything (default) |
 | `code` | 8 probes | Hardcoded values, dead code, AI slop, type safety, tests, security |
 | `infra` | 4 probes | CI pipelines, env config, dependencies, deployments |
 | `ui` | 3 probes | Accessibility, responsive design, design drift |
 | `arch` | 3 probes | Circular deps, complexity hotspots, dependency security |
-| `session` | 4 probes | Gap analysis, hallucination check, stale issues, dependency chains |
+| `session` | 5 probes | Gap analysis, hallucination check, stale issues, dependency chains, claude-md audit |
 
 ### How It Works
 
@@ -667,6 +676,19 @@ The `/discovery` command runs systematic quality probes to find issues that don'
 ### Embedded Mode
 
 Set `discovery-on-close: true` in Session Config to automatically run discovery during `/close`. In embedded mode, critical/high findings become issues; medium/low are listed in the session report.
+
+### Confidence Scoring
+
+Each verified finding receives a confidence score from 0 to 100 that reflects how trustworthy the detection is. The score starts at a baseline of 40 and adds points from three factors: **pattern specificity** (how specific the match pattern is — generic patterns score lower), **file context** (whether surrounding code reinforces the finding), and **historical signal** (whether the same issue has appeared in prior discovery runs). Each factor contributes 0, 10, or 20 points, so scores range from 40 to 100 in practice.
+
+Findings below the confidence threshold are **auto-deferred** — they skip interactive triage entirely and appear in a collapsed summary instead. The threshold is controlled by `discovery-confidence-threshold` in your Session Config (default: `60`). Raise it if you are seeing too many false positives in triage; lower it if you want more aggressive detection. Auto-deferred findings are not lost — you can review them anytime with `/discovery --include-deferred`.
+
+One exception: findings with **critical** severity always receive a minimum confidence of 70, regardless of how the three factors score. This ensures that critical issues — potential security holes, data-loss risks — are never silently deferred. They always appear in interactive triage.
+
+```yaml
+## Session Config
+discovery-confidence-threshold: 60   # default; raise to reduce noise
+```
 
 ---
 
@@ -768,6 +790,16 @@ If fewer than 2 sessions exist, the message "Not enough history for trends (need
 ### Quality Gates Output
 Quality gates (Incremental and Full Gate variants) produce structured JSON output for metrics integration, including duration, check status, and error details.
 
+### Effectiveness Tracking
+
+After 5 or more completed sessions, session-start automatically computes effectiveness metrics from `sessions.jsonl` and surfaces them in the **Project Intelligence** section of the session overview. Three metrics are tracked:
+
+- **Completion rate trend** — averages `effectiveness.completion_rate` over the last 5 sessions. If the rate is below 0.6, the orchestrator suggests reducing scope. If above 0.9, it confirms that current sizing works well.
+- **Discovery probe value** — if the ratio of actioned findings to total findings stays below 0.1 across 3 or more sessions for a probe category, that category is flagged as low-value and may be excluded from future discovery runs.
+- **Carryover pattern** — if the ratio of carryover issues to planned issues exceeds 0.3 across 3 or more sessions, the orchestrator suggests smaller scope or switching to deep sessions to reduce persistent overflow.
+
+These metrics are only displayed once enough session history exists; projects with fewer than 5 sessions see the standard trend table instead.
+
 > **Requires:** `persistence: true` (default) in Session Config.
 
 ---
@@ -781,6 +813,7 @@ The learning system captures patterns from completed sessions and surfaces them 
 - **Effective sizing**: which agent counts worked for different complexity levels
 - **Recurring issues**: issue patterns that appear across waves (type errors, missing imports)
 - **Scope guidance**: how many issues fit comfortably in one session
+- **Deviation patterns**: plan adaptations that recur across sessions (scope changes, unexpected blockers)
 
 ### Storage
 Learnings are stored in `.claude/metrics/learnings.jsonl` — one JSON line per learning.

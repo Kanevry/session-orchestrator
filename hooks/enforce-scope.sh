@@ -42,7 +42,24 @@ ENFORCEMENT=$(jq -r '.enforcement // "warn"' "$SCOPE_FILE" 2>/dev/null) || ENFOR
 # Convert absolute file_path to relative (strip project root prefix)
 REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
 
+# If REL_PATH still starts with /, the file is outside the project root
+if [[ "$REL_PATH" == /* ]]; then
+  case "$ENFORCEMENT" in
+    strict)
+      jq -nc --arg path "$FILE_PATH" \
+        '{"permissionDecision":"deny","reason":"File outside project root: \($path)"}'
+      exit 2
+      ;;
+    warn)
+      echo "enforce-scope: $FILE_PATH is outside project root — proceeding (warn mode)" >&2
+      exit 0
+      ;;
+  esac
+fi
+
 # Check against allowed paths using prefix/glob/regex matching
+# Empty allowedPaths means deny-all (Discovery waves). The loop below won't
+# iterate, so MATCHED stays false.
 MATCHED=false
 while IFS= read -r pattern; do
   [[ -z "$pattern" ]] && continue

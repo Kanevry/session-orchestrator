@@ -27,7 +27,7 @@ Work flows through 5 typed waves: Discovery (read-only validation), Core Impleme
 
 ### Inter-Wave Quality Gates
 
-A dedicated session-reviewer agent checks implementation correctness, test coverage, TypeScript health, OWASP security basics, silent failure analysis (catch blocks that swallow errors), test depth (assertion quality, mock boundaries), and type design (overly broad types, missing unions) between waves. Every finding is confidence-scored (0-100) — only high-confidence issues (>=80) make it into the report. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
+A dedicated session-reviewer agent runs 8 review sections between waves: implementation correctness, test coverage, TypeScript health, OWASP security basics, issue tracking, silent failure analysis (catch blocks that swallow errors), test depth (assertion quality, mock boundaries), and type design (overly broad types, missing unions). Every finding is confidence-scored (0-100) — only high-confidence issues (>=80) make it into the report. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
 
 ### Design-Code Alignment
 
@@ -55,7 +55,7 @@ Agent counts scale with session complexity. A scoring formula (files × modules 
 
 ### Verified Session Close-Out
 
-`/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. `/discovery` runs 33 modular probes across code, infra, UI, architecture, and session categories — each finding confidence-scored to reduce triage noise. Nothing falls through the cracks.
+`/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. `/discovery` runs 23 modular probes across code, infra, UI, architecture, and session categories — each finding confidence-scored to reduce triage noise. Nothing falls through the cracks.
 
 ### Comparison
 
