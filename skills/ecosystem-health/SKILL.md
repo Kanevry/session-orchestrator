@@ -1,6 +1,8 @@
 ---
 name: ecosystem-health
 user-invocable: false
+tags: [reference, health, monitoring, ci, endpoints]
+model-preference: sonnet
 description: >
   Monitor health across configured service endpoints, CI pipelines, and critical
   issues. Automatically invoked during session-start when ecosystem-health is

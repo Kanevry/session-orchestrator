@@ -1,6 +1,8 @@
 ---
 name: session-plan
 user-invocable: false
+tags: [orchestration, planning, waves, agents]
+model-preference: opus
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
   Decomposes agreed tasks into configurable waves (default 5) with optimal agent assignment,
@@ -225,6 +227,14 @@ If the user requests changes:
 - Re-assign agents
 - Update issue comments if scope changes
 - Re-present the modified plan
+
+## Anti-Patterns
+
+- **DO NOT** create waves with circular dependencies — if wave N depends on wave N+1 output, the plan is broken
+- **DO NOT** assign Discovery and Implementation roles to the same wave — read-only and write agents must be separated
+- **DO NOT** create agent prompts that reference other agents' work — each agent must be fully self-contained
+- **DO NOT** over-split simple tasks into many waves — a 2-file change doesn't need 5 waves
+- **DO NOT** plan without reading the actual codebase — plans based on assumptions produce wasted waves
 
 ## Critical Rules
 

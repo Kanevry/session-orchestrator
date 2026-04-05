@@ -12,4 +12,4 @@ You are beginning a structured planning session. The user has invoked `/plan` wi
 
 **Your job: Guide the user through structured requirement gathering and produce a complete plan document for the chosen mode.**
 
-Follow the plan skill instructions precisely. Do NOT skip any phase. Do NOT make assumptions — gather requirements interactively.
+**Invoke the plan skill.** Follow its instructions precisely. Do NOT skip any phase. Do NOT make assumptions — gather requirements interactively.

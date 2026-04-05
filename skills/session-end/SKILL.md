@@ -1,6 +1,8 @@
 ---
 name: session-end
 user-invocable: false
+tags: [orchestration, verification, commits, issues]
+model-preference: sonnet
 description: >
   Full session close-out: verifies all planned work against the agreed plan, creates issues
   for gaps, runs quality gates, commits cleanly, mirrors to GitHub, and produces a session
@@ -355,6 +357,14 @@ Present to the user:
 - Type: [housekeeping/feature/deep recommended]
 - Notes: [any context for next session]
 ```
+
+## Anti-Patterns
+
+- **DO NOT** commit before running quality gates — a "clean commit" with TypeScript errors is not clean
+- **DO NOT** mark issues as closed without verifying the implementation actually addresses them
+- **DO NOT** skip creating tracking issues for unfinished work — "I'll remember for next session" always fails
+- **DO NOT** use `git add .` or `git add -A` — parallel sessions may have uncommitted work in the tree
+- **DO NOT** push to mirrors before verifying origin push succeeded — broken state propagates
 
 ## Critical Rules
 

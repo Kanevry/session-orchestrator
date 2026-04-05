@@ -1,6 +1,8 @@
 ---
 name: discovery
 user-invocable: false
+tags: [quality, discovery, probes, issues]
+model-preference: sonnet
 description: >
   Systematic quality discovery and issue detection. Runs modular probes
   adapted to the project's tech stack, presents findings interactively
@@ -27,6 +29,7 @@ Read the project's CLAUDE.md and extract the `## Session Config` section. Parse 
 - `discovery-probes` — list, default `[all]`
 - `discovery-exclude-paths` — list, default `[]`
 - `discovery-severity-threshold` — string, default `low`
+- `discovery-confidence-threshold` — number (0-100), default `60`. Findings below this confidence score are auto-dismissed before triage
 - `test-command` — custom test command (default: `pnpm test --run`)
 - `typecheck-command` — custom typecheck command (default: `tsgo --noEmit`)
 - `lint-command` — custom lint command (default: `pnpm lint`)
@@ -162,9 +165,10 @@ Two findings are duplicates if:
 
 Keep the higher severity finding. Merge descriptions.
 
-### 3.4 Apply Threshold
+### 3.4 Apply Thresholds
 
-Remove findings below `discovery-severity-threshold` from Session Config.
+1. **Severity filter:** Remove findings below `discovery-severity-threshold` from Session Config.
+2. **Confidence filter:** Remove findings with confidence score below `discovery-confidence-threshold` (default: 60). Log filtered-out findings: "Auto-dismissed N low-confidence findings (below threshold [T]). Use `discovery-confidence-threshold: 0` to see all."
 
 ### 3.5 Group by Category
 
@@ -376,3 +380,11 @@ After Phase 5 (Issue Creation) completes, prepare discovery statistics for sessi
    ```
 
 3. These stats are available for session-end to include in `sessions.jsonl` under the `discovery_stats` field. The discovery skill does NOT write to `sessions.jsonl` directly — session-end handles that.
+
+## Anti-Patterns
+
+- **DO NOT** report findings without verifying them first — false positives erode user trust faster than missed issues
+- **DO NOT** skip the interactive triage phase — auto-creating issues for unconfirmed findings creates noise
+- **DO NOT** run probes outside the configured scope — if the user asked for `code` scope, don't scan infrastructure
+- **DO NOT** present findings without evidence (file path, line number, actual content) — assertions without proof are useless
+- **DO NOT** write to `sessions.jsonl` directly — session-end handles metrics persistence

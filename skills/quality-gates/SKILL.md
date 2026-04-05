@@ -1,6 +1,8 @@
 ---
 name: quality-gates
 user-invocable: false
+tags: [reference, quality, typecheck, test, lint]
+model-preference: sonnet
 description: >
   Canonical quality check commands for typecheck, test, and lint.
   Defines 4 variants (Baseline, Incremental, Full Gate, Per-File) used by

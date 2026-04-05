@@ -1,6 +1,8 @@
 ---
 name: gitlab-ops
 user-invocable: false
+tags: [reference, vcs, gitlab, github, issues]
+model-preference: sonnet
 description: >
   VCS operations reference for GitLab and GitHub: CLI commands (glab/gh),
   label taxonomy, issue templates, dynamic project resolution.

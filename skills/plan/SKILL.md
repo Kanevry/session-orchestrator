@@ -1,6 +1,8 @@
 ---
 name: plan
 user-invocable: false
+tags: [planning, prd, requirements, research]
+model-preference: opus
 description: >
   Structured project planning and PRD generation with three modes:
   new (project kickoff with repo scaffolding), feature (compact feature PRD),
@@ -11,6 +13,14 @@ description: >
 ---
 
 # Plan Skill
+
+## File Structure
+
+- `SKILL.md` — Core framework: mode router, Q&A engine, shared phases
+- `mode-new.md` — Project kickoff: 3 Q&A waves, PRD template, repo scaffolding
+- `mode-feature.md` — Feature PRD: 2 Q&A waves, compact scope, acceptance criteria
+- `mode-retro.md` — Retrospective: metrics analysis, reflection waves, improvement actions
+- `soul.md` — Product Strategist identity and behavioral anchor
 
 ## Soul Reference
 

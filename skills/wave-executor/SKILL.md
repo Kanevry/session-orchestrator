@@ -1,6 +1,8 @@
 ---
 name: wave-executor
 user-invocable: false
+tags: [orchestration, execution, agents, waves]
+model-preference: sonnet
 description: >
   Executes the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
   quality checks, plan adaptation, and progress tracking. Core orchestration engine for
@@ -151,7 +153,14 @@ After ALL agents in the wave complete:
    e. **Compare**: layout structure, component hierarchy, visual elements (headings, buttons, inputs, cards), responsive behavior.
    f. **Report** in wave progress:
       `- Design: [ALIGNED / MINOR DRIFT / MAJOR MISMATCH] — [specific findings]`
-   g. **Act**: ALIGNED → proceed. MINOR DRIFT → add fix tasks to next wave. MAJOR MISMATCH → inform user, propose revised plan.
+   g. **Act on results**:
+      - ALIGNED → proceed to next wave
+      - MINOR DRIFT → add fix tasks to next wave (no pause)
+      - MAJOR MISMATCH → **PAUSE wave execution**:
+        1. Report specific mismatches to user
+        2. AskUserQuestion: "Continue as-is", "Revise plan for remaining waves", "Abort session"
+        3. If "Revise" → re-run session-plan for remaining waves only
+        4. If "Abort" → mark remaining waves as DEFERRED, proceed to session-end
    
    Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
 
@@ -243,6 +252,7 @@ Before each wave dispatch:
 2. `allowedPaths` is the UNION of all agent file scopes for this wave
 3. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
 4. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
+   > **Defense in depth:** The empty `allowedPaths` enforcement hook is the PRIMARY barrier (blocks Write/Edit at the tool level). The prompt instruction is a SECONDARY safeguard. If jq is unavailable (enforcement set to `off`), the prompt instruction becomes the ONLY barrier — log a warning in this case.
 5. For **Quality** role waves, use two-phase scope enforcement:
    - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, delete `.claude/wave-scope.json`.
    - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `.claude/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.

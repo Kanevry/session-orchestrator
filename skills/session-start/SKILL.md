@@ -1,6 +1,8 @@
 ---
 name: session-start
 user-invocable: false
+tags: [orchestration, initialization, analysis, alignment]
+model-preference: opus
 description: >
   Full session initialization for any project repo. Autonomously analyzes git state,
   VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents
@@ -268,6 +270,13 @@ Always include your recommendation as the first option with "(Recommended)" in t
 After user alignment:
 1. Invoke the **session-plan** skill with the agreed scope
 2. The session-plan skill will decompose tasks into waves and present the execution plan
+
+## Anti-Patterns
+
+- **DO NOT** skip Phase 0 and jump straight to analysis — Session Config drives everything, missing it means wrong defaults
+- **DO NOT** present raw data dumps without recommendations — the user expects opinionated analysis, not a wall of text
+- **DO NOT** assume issue status from titles or labels alone — always check the actual VCS API for current state
+- **DO NOT** run quality gates during session-start — that's discovery's job; session-start only assesses project state
 
 ## Critical Rules
 
