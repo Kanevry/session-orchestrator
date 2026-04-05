@@ -1,0 +1,64 @@
+# Presentation Format
+
+> Output templates for Phase 7 of the session-start skill.
+
+## Session Overview Template
+
+```
+## Session Overview
+- Type: [housekeeping|feature|deep]
+- Repo: [name] on branch [branch]
+- Git: [X uncommitted, Y unpushed, Z open branches]
+- VCS: [N open issues (H high, M medium), K open MRs/PRs]
+- Health: [TypeScript: 0 errors | Tests: passing/failing | CI: green/red]
+- SSOT: [fresh/stale files listed]
+- Cross-repos: [status summary]
+- Plugin: [fresh / ⚠ N days without update]
+- Metrics: [N previous sessions tracked | no history yet]
+
+## Recommended Focus
+Based on priority, synergies, and session type, I recommend:
+
+**Option A (recommended):** [issues + rationale]
+**Option B:** [alternative focus]
+**Option C:** [if applicable]
+
+[Pros/cons for each, clear recommendation with WHY]
+
+## Historical Trends (last 5 sessions)
+> Only show if 2+ sessions exist in `.claude/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
+> Read the last 5 lines from `sessions.jsonl`, parse each as JSON, and display most recent first (by `completed_at` timestamp). If fewer than 5 sessions exist, show all available.
+
+| Session | Type | Duration | Waves | Agents | Files Changed |
+|---------|------|----------|-------|--------|---------------|
+| <date>  | <type> | Xm     | N     | M      | K             |
+
+## Housekeeping Items (if any)
+- [ ] Branches to merge: [list]
+- [ ] SSOT files to refresh: [list]
+- [ ] Issues to triage/close: [list]
+
+## Questions
+[Use AskUserQuestion tool — NOT plain text options]
+```
+
+## AskUserQuestion Usage
+
+**MANDATORY: Use the AskUserQuestion tool** to present options to the user. Do NOT write options as plain text in your response. The AskUserQuestion tool provides a structured UI with clickable options that is far superior to text-based A/B/C lists.
+
+Example:
+```
+AskUserQuestion({
+  questions: [{
+    question: "Which session focus do you recommend?",
+    header: "Focus",
+    options: [
+      { label: "Issues #91 + #92 (Recommended)", description: "OpenTelemetry + OpenAPI — high synergy, concrete deliverables" },
+      { label: "Infra cleanup #44 + #60", description: "Close in-progress issues, ecosystem optimization" },
+      { label: "Deep work #37", description: "Core refactor — high priority, dedicated session" }
+    ]
+  }]
+})
+```
+
+Always include your recommendation as the first option with "(Recommended)" in the label.

@@ -31,10 +31,10 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 Read the project's CLAUDE.md and extract the `## Session Config` section. Parse these fields:
 
 - `plan-baseline-path` — path to projects-baseline directory. **Required.** If missing, stop immediately and report: "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
-- `plan-default-visibility` — default repo visibility (default: `internal`)
-- `plan-prd-location` — directory for PRD documents (default: `docs/prd/`)
-- `plan-retro-location` — directory for retro documents (default: `docs/retro/`)
-- `vcs` — version control system: `github` or `gitlab` (default: auto-detect from git remote)
+
+For additional plan-relevant fields and all other Session Config fields, see `docs/session-config-reference.md` in the plugin root.
+
+Plan-specific fields (also parse these): `plan-default-visibility`, `plan-prd-location`, `plan-retro-location`, `vcs`
 
 Store all values for use in subsequent phases. Expand `~` in paths to the full home directory.
 

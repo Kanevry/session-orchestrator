@@ -18,43 +18,9 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 
 ## Phase 0: Read Session Config
 
-Read the project's CLAUDE.md and extract the `## Session Config` section. This tells you:
-- `session-types` — which types this repo supports
-- `agents-per-wave` — how many subagents per wave (default: 6)
-- `waves` — how many waves (default: 5)
-- `pencil` — path to .pen design file (if any)
-- `cross-repos` — related repos to check (paths under ~/Projects/)
-- `ssot-files` — SSOT files to check freshness (e.g., STATUS.md, STATE.md)
-- `cli-tools` — CLI tools available (glab, gh, vercel, supabase, stripe, etc.)
-- `mirror` — mirror target (github, none)
-- `ecosystem-health` — whether to run service health checks
-- `vcs` — version control system: `github` or `gitlab` (default: auto-detect from git remote)
-- `gitlab-host` — custom GitLab host if not auto-detectable (default: from git remote)
-- `health-endpoints` — service URLs to check health `[{name, url}]` (default: none)
-- `special` — any repo-specific instructions
-- `test-command` — custom test command (default: `pnpm test --run`)
-- `typecheck-command` — custom typecheck command (default: `tsgo --noEmit`)
-- `lint-command` — custom lint command (default: `pnpm lint`)
-- `ssot-freshness-days` — days before SSOT file flagged stale (default: 5)
-- `plugin-freshness-days` — days before plugin flagged outdated (default: 30)
-- `recent-commits` — number of recent commits to show (default: 20)
-- `issue-limit` — max issues to fetch from VCS (default: 50)
-- `stale-branch-days` — days before branch flagged stale (default: 7)
-- `stale-issue-days` — days before issue flagged for triage (default: 30)
-- `discovery-confidence-threshold` — minimum confidence score for interactive triage; below this, findings are auto-deferred (integer, default: 60)
-- `discovery-on-close` — bool, default `false`. Run discovery probes automatically during `/close`
-- `discovery-probes` — list, default `[all]`. Categories to enable: `all`, `code`, `infra`, `ui`, `arch`, `session`
-- `discovery-exclude-paths` — list, default `[]`. Glob patterns to exclude from discovery scanning
-- `discovery-severity-threshold` — string, default `low`. Minimum severity to report: `critical`, `high`, `medium`, `low`
-- `persistence` — bool, default `true`. Enable STATE.md + session memory persistence
-- `memory-cleanup-threshold` — integer, default `5`. Recommend `/memory-cleanup` after N sessions
-- `enforcement` — `strict|warn|off`, default `warn`. Hook enforcement level for scope/command restrictions
-- `isolation` — `worktree|none`, default `auto` (worktree for feature/deep, none for housekeeping). Agent isolation mode
-- `max-turns` — integer, default `auto` (housekeeping=8, feature=15, deep=25). Maximum agent turns before PARTIAL
-- `plan-baseline-path` — path to projects-baseline directory, required for `/plan` skill (default: none, error if missing when `/plan` is invoked)
-- `plan-default-visibility` — default repo visibility for `/plan new`: `internal`, `private`, or `public` (default: `internal`)
-- `plan-prd-location` — directory where PRD documents are saved, relative to project root (default: `docs/prd/`)
-- `plan-retro-location` — directory where retrospective documents are saved, relative to project root (default: `docs/retro/`)
+Read the project's CLAUDE.md and extract the `## Session Config` section.
+
+For the complete field reference with types, defaults, and descriptions, see `docs/session-config-reference.md` in the plugin root.
 
 If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
 
@@ -206,64 +172,11 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
 
 ## Phase 7: Structured Presentation & Q&A
 
-Present your findings in this structure:
+Read `presentation-format.md` in this skill directory for the output structure, templates, and AskUserQuestion examples.
 
-```
-## Session Overview
-- Type: [housekeeping|feature|deep]
-- Repo: [name] on branch [branch]
-- Git: [X uncommitted, Y unpushed, Z open branches]
-- VCS: [N open issues (H high, M medium), K open MRs/PRs]
-- Health: [TypeScript: 0 errors | Tests: passing/failing | CI: green/red]
-- SSOT: [fresh/stale files listed]
-- Cross-repos: [status summary]
-- Plugin: [fresh / ⚠ N days without update]
-- Metrics: [N previous sessions tracked | no history yet]
-
-## Recommended Focus
-Based on priority, synergies, and session type, I recommend:
-
-**Option A (recommended):** [issues + rationale]
-**Option B:** [alternative focus]
-**Option C:** [if applicable]
-
-[Pros/cons for each, clear recommendation with WHY]
-
-## Historical Trends (last 5 sessions)
-> Only show if 2+ sessions exist in `.claude/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
-> Read the last 5 lines from `sessions.jsonl`, parse each as JSON, and display most recent first (by `completed_at` timestamp). If fewer than 5 sessions exist, show all available.
-
-| Session | Type | Duration | Waves | Agents | Files Changed |
-|---------|------|----------|-------|--------|---------------|
-| <date>  | <type> | Xm     | N     | M      | K             |
-
-## Housekeeping Items (if any)
-- [ ] Branches to merge: [list]
-- [ ] SSOT files to refresh: [list]
-- [ ] Issues to triage/close: [list]
-
-## Questions
-[Use AskUserQuestion tool — NOT plain text options]
-```
-
-**MANDATORY: Use the AskUserQuestion tool** to present options to the user. Do NOT write options as plain text in your response. The AskUserQuestion tool provides a structured UI with clickable options that is far superior to text-based A/B/C lists.
-
-Example of what you MUST do:
-```
-AskUserQuestion({
-  questions: [{
-    question: "Which session focus do you recommend?",
-    header: "Focus",
-    options: [
-      { label: "Issues #91 + #92 (Recommended)", description: "OpenTelemetry + OpenAPI — high synergy, concrete deliverables" },
-      { label: "Infra cleanup #44 + #60", description: "Close in-progress issues, ecosystem optimization" },
-      { label: "Deep work #37", description: "Core refactor — high priority, dedicated session" }
-    ]
-  }]
-})
-```
-
-Always include your recommendation as the first option with "(Recommended)" in the label.
+Present your findings following that structure. Key rules:
+- **MANDATORY: Use the AskUserQuestion tool** — not plain text options
+- Always include your recommendation as the first option with "(Recommended)" in the label
 
 ## Phase 8: Handoff to Session Plan
 
@@ -288,3 +201,10 @@ After user alignment:
 - **ALWAYS update VCS issue status** when claiming work — use the issue update command per the "Common CLI Commands" section of the gitlab-ops skill
 - **For Pencil designs**: use the `filePath` parameter, work only on new designs, treat completed ones as done
 - **For cross-repo work**: always check the actual state of related repos, don't assume from memory
+
+## Sub-File Reference
+
+| File | Purpose |
+|------|---------|
+| `soul.md` | Identity and communication principles |
+| `presentation-format.md` | Phase 7 output templates and AskUserQuestion examples |

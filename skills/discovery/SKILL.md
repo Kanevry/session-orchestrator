@@ -23,22 +23,14 @@ The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `s
 
 ## Phase 0: Read Session Config
 
-Read the project's CLAUDE.md and extract the `## Session Config` section. Parse these fields:
+Read the project's CLAUDE.md and extract the `## Session Config` section.
 
-- `discovery-on-close` — bool, default `false`
-- `discovery-probes` — list, default `[all]`
-- `discovery-exclude-paths` — list, default `[]`
-- `discovery-severity-threshold` — string, default `low`
-- `discovery-confidence-threshold` — number (0-100), default `60`. Findings below this confidence score are auto-dismissed before triage
-- `test-command` — custom test command (default: `pnpm test --run`)
-- `typecheck-command` — custom typecheck command (default: `tsgo --noEmit`)
-- `lint-command` — custom lint command (default: `pnpm lint`)
-- `health-endpoints` — service URLs to check health `[{name, url}]` (default: none)
-- `cross-repos` — related repos to check (paths under ~/Projects/)
-- `cli-tools` — CLI tools available (glab, vercel, supabase, stripe, etc.)
-- `vcs` — version control system: `github` or `gitlab` (default: auto-detect from git remote)
-- `pencil` — path to .pen design file (if any)
-- `stale-issue-days` — days before issue flagged for triage (default: 30)
+For the complete field reference, see `docs/session-config-reference.md` in the plugin root.
+
+Discovery-relevant fields (parse these specifically):
+- `discovery-on-close`, `discovery-probes`, `discovery-exclude-paths`, `discovery-severity-threshold`, `discovery-confidence-threshold`
+- `test-command`, `typecheck-command`, `lint-command`
+- `pencil`, `vcs`, `cross-repos`, `stale-issue-days`
 
 If no Session Config section exists, use sensible defaults.
 

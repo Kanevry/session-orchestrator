@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.10] - 2026-04-05
+
+### v2.0.0-alpha.10
+
+**Quality & Architecture**
+
+- fix: remove hardcoded archetype/style/group mappings in plan mode-new — now discovered dynamically from `$BASELINE_PATH` (#11)
+- feat: shared Session Config reference at `docs/session-config-reference.md` — single source of truth for all 36 fields (#12)
+- refactor: deduplicate Phase 0 config lists across session-start, discovery, and plan skills (#12)
+- refactor: extract session-start Phase 7 presentation template to `presentation-format.md` (#18)
+- refactor: session-start SKILL.md reduced from 290 to 210 lines (28% reduction) (#18)
+
 ## [2.0.0-alpha.8] - 2026-04-04
 
 ### Fixed

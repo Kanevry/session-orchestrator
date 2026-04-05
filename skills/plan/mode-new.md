@@ -32,11 +32,11 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 
 **Questions:**
 
-1. **Project archetype** — Options from `$BASELINE_PATH/templates/` directory. Present agent findings. Choices: nextjs-saas, express-service, docker-service, monorepo-oss, swift-app, cli-tool.
+1. **Project archetype** — Options from `$BASELINE_PATH/templates/` directory. Present agent findings. Choices: Dynamically list directories in $BASELINE_PATH/templates/. Present each as an option via AskUserQuestion.
 2. **Visibility** — internal (GitLab private), private (+ optional GitHub mirror), public/OSS (+ GitHub public + license).
 3. **Target audience** — Options informed by market research agent. User selects or provides custom.
 4. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
-5. **GitLab group** — products, agents, internal, mobile, infrastructure.
+5. **GitLab group** — Discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or use `glab group list` to discover GitLab groups. Present findings via AskUserQuestion.
 
 ### Wave 2 — Technical Details (5 questions, dynamic per archetype)
 
@@ -59,7 +59,7 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for shared patte
 **Questions:**
 
 1. **Tech stack decisions** — e.g., Supabase vs alternative DB for nextjs-saas. Options informed by archetype config agent.
-2. **Design style** — For nextjs-saas: shadcn variants (vega/nova/maia/lyra/mira). Dispatch agent to read baseline style configs. Skip for non-frontend archetypes.
+2. **Design style** — For frontend archetypes: read `$BASELINE_PATH/templates/{archetype}/styles/` to discover available design variants. Dispatch agent to read baseline style configs. Skip for non-frontend archetypes (those without a `styles/` directory).
 3. **External integrations** — APIs, services, payment providers. Agent research informs common choices.
 4. **Performance requirements** — Latency targets, concurrent users, throughput expectations.
 5. **Security requirements** — Beyond baseline. Auth strategy, encryption, compliance needs (GDPR, SOC2).
@@ -119,9 +119,13 @@ After PRD is approved by user:
 Map gathered answers to script input choices:
 
 ```bash
-# Archetype → choice: 1=nextjs-saas, 2=express-service, 3=docker-service, 4=monorepo-oss, 5=swift-app, 6=cli-tool
-# Style → choice (nextjs-saas only): 1=vega, 2=nova, 3=maia, 4=lyra, 5=mira
-# Group → choice: 1=products, 2=agents, 3=internal, 4=mobile, 5=infrastructure
+# Resolve input choices dynamically from setup-project.sh:
+# 1. Read $BASELINE_PATH/scripts/setup-project.sh
+# 2. Parse menu/select/case statements to find choice→name mappings
+# 3. Map user's selected archetype name → numeric choice for TYPE_CHOICE
+# 4. Map user's selected style name → numeric choice for STYLE_CHOICE (if applicable)
+# 5. Map user's selected group name → numeric choice for GROUP_CHOICE
+# Do NOT hardcode numeric mappings — they must be derived from the script.
 (
   echo "$TYPE_CHOICE"    # e.g., "1" for nextjs-saas
   echo "$STYLE_CHOICE"   # e.g., "1" for vega (only if nextjs-saas)

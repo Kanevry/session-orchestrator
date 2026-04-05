@@ -47,7 +47,7 @@ claude plugin install session-orchestrator
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-alpha.8 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
+🎯 Session Orchestrator v2.0.0-alpha.10 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
 ```
 
 ### Add Session Config to your project
@@ -188,6 +188,8 @@ Best for: complex backend work, security audits, database refactoring, architect
 ---
 
 ## 4. Session Config Reference
+
+> **Skill authors:** The authoritative field reference used by all skills is [`docs/session-config-reference.md`](session-config-reference.md). Update that file when adding or changing Session Config fields.
 
 Add a `## Session Config` section to your project's `CLAUDE.md` to configure how Session Orchestrator behaves in that repository.
 
