@@ -154,7 +154,7 @@ Append new patterns to `.claude/metrics/learnings.jsonl`. Use the same JSONL sch
   "confidence": 0.5,
   "source_session": "retro-YYYY-MM-DD",
   "created_at": "<ISO 8601>",
-  "expires_at": "<ISO 8601 + 90 days>"
+  "expires_at": "<ISO 8601 + learning-expiry-days (default: 30)>"
 }
 ```
 

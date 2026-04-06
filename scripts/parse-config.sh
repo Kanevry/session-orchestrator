@@ -246,6 +246,7 @@ V_STALE_ISSUE=$(json_integer "stale-issue-days" "30")
 V_SSOT_FRESH=$(json_integer "ssot-freshness-days" "5")
 V_PLUGIN_FRESH=$(json_integer "plugin-freshness-days" "30")
 V_MEM_CLEANUP=$(json_integer "memory-cleanup-threshold" "5")
+V_LEARNING_EXPIRY=$(json_integer "learning-expiry-days" "30")
 V_DISC_CONF=$(json_integer "discovery-confidence-threshold" "60")
 
 # Boolean fields
@@ -301,6 +302,7 @@ jq -n \
   --argjson discovery_confidence_threshold "$V_DISC_CONF" \
   --argjson persistence "$V_PERSISTENCE" \
   --argjson memory_cleanup_threshold "$V_MEM_CLEANUP" \
+  --argjson learning_expiry_days "$V_LEARNING_EXPIRY" \
   --argjson enforcement "$V_ENFORCEMENT" \
   --argjson isolation "$V_ISOLATION" \
   --argjson max_turns "$V_MAX_TURNS" \
@@ -338,6 +340,7 @@ jq -n \
     "discovery-confidence-threshold": $discovery_confidence_threshold,
     "persistence": $persistence,
     "memory-cleanup-threshold": $memory_cleanup_threshold,
+    "learning-expiry-days": $learning_expiry_days,
     "enforcement": $enforcement,
     "isolation": $isolation,
     "max-turns": $max_turns,

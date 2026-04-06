@@ -140,7 +140,7 @@ For confirmed learnings, use atomic rewrite strategy:
 2. Apply confidence updates for confirmed existing learnings:
    - Increment confidence by +0.15
    - Cap at 1.0
-   - Reset `expires_at` to current date + 90 days
+   - Reset `expires_at` to current date + `learning-expiry-days` (default: 30)
 3. Apply confidence decrements for contradicted learnings (-0.2)
 4. Append new learnings with:
    - `id`: generate a uuid-v4 (use `uuidgen` or equivalent)
@@ -151,7 +151,7 @@ For confirmed learnings, use atomic rewrite strategy:
    - `confidence`: 0.5 for new learnings
    - `source_session`: session ID from which the pattern was extracted
    - `created_at`: current ISO 8601 date
-   - `expires_at`: current date + 90 days (ISO 8601)
+   - `expires_at`: current date + `learning-expiry-days` (default: 30) (ISO 8601)
 5. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
 6. **Consolidate duplicates:** if same `type` + `subject` appears more than once, keep the entry with highest confidence
 7. Write entire result back to `.claude/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
@@ -199,7 +199,7 @@ AskUserQuestion({
       { label: "Boost confidence", description: "Select learnings to boost (+0.15)" },
       { label: "Reduce confidence", description: "Select learnings to reduce (-0.2)" },
       { label: "Delete specific learnings", description: "Select learnings to remove" },
-      { label: "Extend expiry", description: "Reset expires_at to +90 days from now" },
+      { label: "Extend expiry", description: "Reset expires_at by learning-expiry-days from now" },
       { label: "Done — no changes", description: "Exit without changes" }
     ]
   }]
@@ -214,10 +214,10 @@ Use the same atomic rewrite strategy as Phase 2, Step 2.5:
 
 1. Read all lines from `learnings.jsonl`
 2. Apply the selected operation to selected learnings:
-   - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to +90 days
+   - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to +`learning-expiry-days`
    - **Reduce:** -0.2 confidence
    - **Delete:** remove selected entries
-   - **Extend:** reset expires_at to current date + 90 days
+   - **Extend:** reset expires_at to current date + `learning-expiry-days`
 3. Prune entries where `expires_at` < current date OR `confidence` <= 0.0
 4. Consolidate duplicates (same type + subject): keep highest confidence
 5. Write entire result back with `>` (atomic rewrite)
@@ -275,7 +275,7 @@ N active learnings (M high confidence, K expiring soon)
 - **NEVER** skip the deduplication check — duplicates degrade the intelligence system
 - **NEVER** write learnings without user confirmation — always present via AskUserQuestion first
 - **ALWAYS** use uuid-v4 for new learning IDs (generate via `uuidgen` or equivalent bash command)
-- **ALWAYS** set `expires_at` to current date + 90 days for new learnings
+- **ALWAYS** set `expires_at` to current date + `learning-expiry-days` from config (default: 30) for new learnings
 - **ALWAYS** present findings to user before writing — no silent writes
 - **ALWAYS** use atomic rewrite (read all, modify, write all with `>`) — never append with `>>`
 - **ALWAYS** cap confidence at 1.0 — never exceed
