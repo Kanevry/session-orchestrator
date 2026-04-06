@@ -30,28 +30,27 @@ read_input() {
   fi
 }
 
-validate() {
+validate_json() {
   local input="$1"
-  local errors=()
-
-  # 1. JSON validity
   if ! echo "$input" | jq empty 2>/dev/null; then
     echo "ERROR: Input is not valid JSON" >&2
     exit 1
   fi
+}
 
-  # 2. Required fields with type checking
+validate_required_fields() {
+  local input="$1"
 
   # wave — must be a positive integer (> 0)
   local wave_raw
   wave_raw=$(echo "$input" | jq -r '.wave // empty')
   if [[ -z "$wave_raw" ]]; then
-    errors+=("Missing required field: wave")
+    echo "Missing required field: wave"
   else
     local is_int
     is_int=$(echo "$input" | jq 'if (.wave | type) == "number" and (.wave | floor) == .wave and .wave > 0 then "yes" else "no" end' -r)
     if [[ "$is_int" != "yes" ]]; then
-      errors+=("wave must be a positive integer, got: $wave_raw")
+      echo "wave must be a positive integer, got: $wave_raw"
     fi
   fi
 
@@ -59,12 +58,12 @@ validate() {
   local role_type
   role_type=$(echo "$input" | jq -r '.role | type' 2>/dev/null) || role_type="null"
   if [[ "$role_type" != "string" ]]; then
-    errors+=("role must be a string, got type: $role_type")
+    echo "role must be a string, got type: $role_type"
   else
     local role_val
     role_val=$(echo "$input" | jq -r '.role')
     if [[ -z "$role_val" ]]; then
-      errors+=("role must be a non-empty string")
+      echo "role must be a non-empty string"
     fi
   fi
 
@@ -72,24 +71,26 @@ validate() {
   local enforcement_type
   enforcement_type=$(echo "$input" | jq -r '.enforcement | type' 2>/dev/null) || enforcement_type="null"
   if [[ "$enforcement_type" != "string" ]]; then
-    errors+=("enforcement must be a string, got type: $enforcement_type")
+    echo "enforcement must be a string, got type: $enforcement_type"
   else
     local enforcement_val
     enforcement_val=$(echo "$input" | jq -r '.enforcement')
     if [[ "$enforcement_val" != "strict" && "$enforcement_val" != "warn" && "$enforcement_val" != "off" ]]; then
-      errors+=("enforcement must be one of: strict, warn, off — got: $enforcement_val")
+      echo "enforcement must be one of: strict, warn, off — got: $enforcement_val"
     fi
   fi
+}
 
-  # allowedPaths — must be an array
+validate_allowed_paths() {
+  local input="$1"
+
   local ap_type
   ap_type=$(echo "$input" | jq -r 'if has("allowedPaths") then (.allowedPaths | type) else "missing" end' 2>/dev/null) || ap_type="missing"
   if [[ "$ap_type" == "missing" ]]; then
-    errors+=("Missing required field: allowedPaths")
+    echo "Missing required field: allowedPaths"
   elif [[ "$ap_type" != "array" ]]; then
-    errors+=("allowedPaths must be an array, got type: $ap_type")
+    echo "allowedPaths must be an array, got type: $ap_type"
   else
-    # 3. Security checks on allowedPaths entries
     local path_count
     path_count=$(echo "$input" | jq '.allowedPaths | length')
     local i
@@ -97,43 +98,56 @@ validate() {
       local entry
       entry=$(echo "$input" | jq -r ".allowedPaths[$i]")
 
-      # Reject empty strings
       if [[ -z "$entry" ]]; then
-        errors+=("allowedPaths contains empty string")
+        echo "allowedPaths contains empty string"
         continue
       fi
 
-      # Reject absolute paths
       if [[ "$entry" == /* ]]; then
-        errors+=("allowedPaths contains absolute path: $entry")
+        echo "allowedPaths contains absolute path: $entry"
       fi
 
-      # Reject path traversal
       if [[ "$entry" == *"../"* ]]; then
-        errors+=("allowedPaths contains path traversal: $entry")
+        echo "allowedPaths contains path traversal: $entry"
       fi
 
-      # Warn on overly permissive patterns (don't fail)
+      # warn, don't fail
       if [[ "$entry" == "**/*" || "$entry" == "*" ]]; then
         echo "WARNING: allowedPaths contains overly permissive pattern: $entry" >&2
       fi
     done
   fi
+}
 
-  # blockedCommands — must be an array
+validate_blocked_commands() {
+  local input="$1"
+
   local bc_type
   bc_type=$(echo "$input" | jq -r 'if has("blockedCommands") then (.blockedCommands | type) else "missing" end' 2>/dev/null) || bc_type="missing"
   if [[ "$bc_type" == "missing" ]]; then
-    errors+=("Missing required field: blockedCommands")
+    echo "Missing required field: blockedCommands"
   elif [[ "$bc_type" != "array" ]]; then
-    errors+=("blockedCommands must be an array, got type: $bc_type")
+    echo "blockedCommands must be an array, got type: $bc_type"
   fi
+}
 
-  # Report all collected errors
-  if [[ ${#errors[@]} -gt 0 ]]; then
-    for err in "${errors[@]}"; do
+validate() {
+  local input="$1"
+  local error_output
+
+  validate_json "$input"
+
+  error_output=$(validate_required_fields "$input")
+  error_output+=$(printf '\n%s' "$(validate_allowed_paths "$input")")
+  error_output+=$(printf '\n%s' "$(validate_blocked_commands "$input")")
+
+  # Strip leading/trailing blank lines
+  error_output=$(echo "$error_output" | sed '/^$/d')
+
+  if [[ -n "$error_output" ]]; then
+    while IFS= read -r err; do
       echo "ERROR: $err" >&2
-    done
+    done <<< "$error_output"
     return 1
   fi
 

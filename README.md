@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0--alpha.12-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0--alpha.13-orange.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.

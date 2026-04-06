@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.13] - 2026-04-06 — Validate Refactor + Probes Split + PostToolUse Hook
+
+- **refactor:** extract 4 helpers from `validate()` in validate-wave-scope.sh — 109→22 lines (#25)
+- **refactor:** split `probes.md` (943 lines) into 6 category files — code, infra, ui, arch, session + intro (#26)
+- **feat:** PostToolUse hook for incremental typecheck after Edit/Write — informational, never blocks (#20)
+  - `hooks/post-edit-validate.sh` — resolves typecheck command from config, 2s timeout, macOS-compatible
+  - hooks.json updated with PostToolUse section
+- **test:** 33 new test assertions (wave-scope edge cases + hook test suite)
+- **fix:** macOS `date +%s%3N` compatibility in post-edit-validate.sh (BSD date lacks `%N`)
+
 ## [2.0.0-alpha.12] - 2026-04-06 — /evolve + Skill Splits
 
 - **feat:** `/evolve` command + skill — extract, review, and list cross-session learnings (#21)

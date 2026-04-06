@@ -135,6 +135,60 @@ assert_exit "enforcement hard exits 1" "1" bash -c "echo '$(make_scope hard)' | 
 
 # ---------------------------------------------------------------------------
 echo ""
+echo "=== Test Group 9: Wave Field Edge Cases ==="
+
+float_wave=$(echo "$base" | jq '.wave = 1.5')
+assert_exit "float wave (1.5) exits 1" "1" bash -c "echo '$float_wave' | \"$VALIDATE\""
+
+zero_wave=$(echo "$base" | jq '.wave = 0')
+assert_exit "zero wave exits 1" "1" bash -c "echo '$zero_wave' | \"$VALIDATE\""
+
+neg_wave=$(echo "$base" | jq '.wave = -1')
+assert_exit "negative wave (-1) exits 1" "1" bash -c "echo '$neg_wave' | \"$VALIDATE\""
+
+str_wave=$(echo "$base" | jq '.wave = "one"')
+assert_exit "string wave exits 1" "1" bash -c "echo '$str_wave' | \"$VALIDATE\""
+
+large_wave=$(echo "$base" | jq '.wave = 999999')
+assert_exit "large integer wave (999999) exits 0" "0" bash -c "echo '$large_wave' | \"$VALIDATE\""
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test Group 10: Role & Enforcement Edge Cases ==="
+
+empty_role=$(echo "$base" | jq '.role = ""')
+assert_exit "empty role exits 1" "1" bash -c "echo '$empty_role' | \"$VALIDATE\""
+
+num_role=$(echo "$base" | jq '.role = 42')
+assert_exit "numeric role exits 1" "1" bash -c "echo '$num_role' | \"$VALIDATE\""
+
+empty_enf=$(echo "$base" | jq '.enforcement = ""')
+assert_exit "empty enforcement exits 1" "1" bash -c "echo '$empty_enf' | \"$VALIDATE\""
+
+num_enf=$(echo "$base" | jq '.enforcement = 1')
+assert_exit "numeric enforcement exits 1" "1" bash -c "echo '$num_enf' | \"$VALIDATE\""
+
+null_enf=$(echo "$base" | jq '.enforcement = null')
+assert_exit "null enforcement exits 1" "1" bash -c "echo '$null_enf' | \"$VALIDATE\""
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test Group 11: AllowedPaths Security Edge Cases ==="
+
+double_traversal='{"wave":1,"role":"Impl","enforcement":"strict","allowedPaths":["../../etc"],"blockedCommands":["rm -rf"]}'
+assert_exit "double traversal ../../etc exits 1" "1" bash -c "echo '$double_traversal' | \"$VALIDATE\""
+
+mid_traversal='{"wave":1,"role":"Impl","enforcement":"strict","allowedPaths":["foo/../bar"],"blockedCommands":["rm -rf"]}'
+assert_exit "mid-path traversal foo/../bar exits 1" "1" bash -c "echo '$mid_traversal' | \"$VALIDATE\""
+
+paths_as_string=$(echo "$base" | jq '.allowedPaths = "src/"')
+assert_exit "allowedPaths as string exits 1" "1" bash -c "echo '$paths_as_string' | \"$VALIDATE\""
+
+cmds_as_string=$(echo "$base" | jq '.blockedCommands = "rm -rf"')
+assert_exit "blockedCommands as string exits 1" "1" bash -c "echo '$cmds_as_string' | \"$VALIDATE\""
+
+# ---------------------------------------------------------------------------
+echo ""
 echo "==========================================="
 echo "  Results: $PASS passed, $FAIL failed"
 echo "==========================================="
