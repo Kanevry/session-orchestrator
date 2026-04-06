@@ -19,7 +19,6 @@
 
 set -euo pipefail
 
-# Resolve this script's directory and source shared library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
@@ -74,11 +73,9 @@ extract_command() {
 
   local config_json=""
 
-  # Determine if CONFIG is a file path or a JSON string
   if [[ -f "$CONFIG" ]]; then
     config_json="$(cat "$CONFIG")"
   else
-    # Try to parse as JSON string
     if echo "$CONFIG" | jq empty 2>/dev/null; then
       config_json="$CONFIG"
     else
@@ -101,9 +98,7 @@ TEST_CMD="$(extract_command "test-command" "$DEFAULT_TEST_CMD")"
 TYPECHECK_CMD="$(extract_command "typecheck-command" "$DEFAULT_TYPECHECK_CMD")"
 LINT_CMD="$(extract_command "lint-command" "$DEFAULT_LINT_CMD")"
 
-# Run a command, capturing output and exit code.
-# Handles "skip" commands and command-not-found (exit 127) gracefully.
-# Sets: _run_status ("pass"|"fail"|"skip"), _run_output, _run_exit_code
+# Sets globals: _run_status ("pass"|"fail"|"skip"), _run_output, _run_exit_code
 run_check() {
   local cmd="$1"
   _run_status=""
@@ -116,7 +111,7 @@ run_check() {
   fi
 
   set +e
-  _run_output="$(eval "$cmd" 2>&1)"
+  _run_output="$(bash -c "$cmd" 2>&1)"
   _run_exit_code=$?
   set -e
 
@@ -168,19 +163,89 @@ find_changed_test_files() {
   find_changed_files "$ref" | grep -E '\.(test|spec)\.(ts|tsx|js|jsx|mjs)$' || true
 }
 
+extract_count() {
+  local output="$1" pattern="$2"
+  echo "$output" | grep -ic "$pattern" || true
+}
+
+# Sets globals: _test_passed, _test_failed, _test_total
+extract_test_counts() {
+  local output="$1"
+  _test_passed="$(echo "$output" | grep -oE '[0-9]+ passed' | head -1 | grep -oE '[0-9]+' || true)"
+  [[ -z "$_test_passed" ]] && _test_passed=0
+  _test_failed="$(echo "$output" | grep -oE '[0-9]+ failed' | head -1 | grep -oE '[0-9]+' || true)"
+  [[ -z "$_test_failed" ]] && _test_failed=0
+  _test_total=$(( _test_passed + _test_failed ))
+}
+
+collect_debug_artifacts() {
+  local ref="$1"
+  if [[ -z "$ref" ]]; then
+    echo "[]"
+    return
+  fi
+  local changed_files
+  changed_files="$(find_changed_files "$ref")"
+  if [[ -z "$changed_files" ]]; then
+    echo "[]"
+    return
+  fi
+  local artifacts
+  artifacts="$(echo "$changed_files" | xargs grep -rn 'console\.log\|debugger\|TODO: remove' 2>/dev/null || true)"
+  if [[ -z "$artifacts" ]]; then
+    echo "[]"
+    return
+  fi
+  local json
+  json="$(echo "$artifacts" | head -50 | jq -R -s 'split("\n") | map(select(length > 0))')"
+  [[ -z "$json" || "$json" == "null" ]] && json="[]"
+  echo "$json"
+}
+
+extract_error_lines_json() {
+  local output="$1" pattern="$2"
+  local json
+  json="$(echo "$output" | grep -iE "$pattern" | head -20 | jq -R -s 'split("\n") | map(select(length > 0))')"
+  [[ -z "$json" || "$json" == "null" ]] && json="[]"
+  echo "$json"
+}
+
+resolve_test_files() {
+  local files_csv="$1" start_ref="$2"
+  if [[ -n "$files_csv" ]]; then
+    local IFS=','
+    local items=()
+    read -ra items <<< "$files_csv"
+    local filtered=()
+    for f in "${items[@]}"; do
+      f="$(echo "$f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      if echo "$f" | grep -qE '\.(test|spec)\.(ts|tsx|js|jsx|mjs)$'; then
+        filtered+=("$f")
+      fi
+    done
+    if [[ ${#filtered[@]} -gt 0 ]]; then
+      echo "${filtered[*]}"
+    fi
+  elif [[ -n "$start_ref" ]]; then
+    local result
+    result="$(find_changed_test_files "$start_ref" | tr '\n' ' ')"
+    echo "$result" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+  fi
+}
+
 # Variant: baseline
 run_baseline() {
   local tc_status="skip" tc_output=""
   local test_status="skip" test_output=""
 
   if [[ "$TYPECHECK_CMD" != "skip" ]]; then
-    run_check "$TYPECHECK_CMD 2>&1 | tail -5"
+    run_check "set -o pipefail; $TYPECHECK_CMD 2>&1 | tail -5"
     tc_status="$_run_status"
     tc_output="$_run_output"
   fi
 
   if [[ "$TEST_CMD" != "skip" ]]; then
-    run_check "$TEST_CMD 2>&1 | tail -5"
+    run_check "set -o pipefail; $TEST_CMD 2>&1 | tail -5"
     test_status="$_run_status"
     test_output="$_run_output"
   fi
@@ -205,45 +270,12 @@ run_baseline() {
 # Variant: incremental
 run_incremental() {
   SECONDS=0
-
-  local tc_status="skip"
-  local test_status="skip"
-  local errors_json="[]"
-
-  # Typecheck
+  local tc_status="skip" test_status="skip" errors_json="[]"
   run_check "$TYPECHECK_CMD"
   tc_status="$_run_status"
-  if [[ "$tc_status" == "fail" ]]; then
-    # Collect error lines
-    errors_json="$(echo "$_run_output" | grep -i 'error' | head -20 | jq -R -s 'split("\n") | map(select(length > 0))')"
-    [[ -z "$errors_json" || "$errors_json" == "null" ]] && errors_json="[]"
-  fi
-
-  # Determine test files
+  [[ "$tc_status" == "fail" ]] && errors_json="$(extract_error_lines_json "$_run_output" 'error')"
   local test_files=""
-
-  if [[ -n "$FILES" ]]; then
-    # Use provided files — filter to test files
-    local IFS=','
-    local items=()
-    read -ra items <<< "$FILES"
-    local filtered=()
-    for f in "${items[@]}"; do
-      f="$(echo "$f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      if echo "$f" | grep -qE '\.(test|spec)\.(ts|tsx|js|jsx|mjs)$'; then
-        filtered+=("$f")
-      fi
-    done
-    if [[ ${#filtered[@]} -gt 0 ]]; then
-      test_files="${filtered[*]}"
-    fi
-  elif [[ -n "$SESSION_START_REF" ]]; then
-    # Find changed test files via git diff
-    test_files="$(find_changed_test_files "$SESSION_START_REF" | tr '\n' ' ')"
-    test_files="$(echo "$test_files" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  fi
-
-  # Run tests
+  test_files="$(resolve_test_files "$FILES" "$SESSION_START_REF")"
   if [[ "$TEST_CMD" == "skip" ]]; then
     test_status="skip"
   elif [[ -n "$test_files" ]]; then
@@ -251,127 +283,58 @@ run_incremental() {
     test_status="$_run_status"
     if [[ "$test_status" == "fail" ]]; then
       local test_errors
-      test_errors="$(echo "$_run_output" | grep -iE '(fail|error|FAIL)' | head -20 | jq -R -s 'split("\n") | map(select(length > 0))')"
-      [[ -z "$test_errors" || "$test_errors" == "null" ]] && test_errors="[]"
-      # Merge errors
+      test_errors="$(extract_error_lines_json "$_run_output" '(fail|error|FAIL)')"
       errors_json="$(jq -n --argjson a "$errors_json" --argjson b "$test_errors" '$a + $b')"
     fi
+  elif [[ -z "$FILES" && -z "$SESSION_START_REF" ]]; then
+    run_check "$TEST_CMD"
+    test_status="$_run_status"
   else
-    # No test files to run — still run full suite if no files filter available
-    if [[ -z "$FILES" && -z "$SESSION_START_REF" ]]; then
-      run_check "$TEST_CMD"
-      test_status="$_run_status"
-    else
-      warn "No test files found for incremental run; skipping tests"
-      test_status="skip"
-    fi
+    warn "No test files found for incremental run; skipping tests"
+    test_status="skip"
   fi
-
-  local duration=$SECONDS
-
-  jq -n \
-    --arg variant "incremental" \
-    --argjson duration "$duration" \
-    --arg typecheck "$tc_status" \
-    --arg test "$test_status" \
+  jq -n --arg variant "incremental" --argjson duration "$SECONDS" \
+    --arg typecheck "$tc_status" --arg test "$test_status" \
     --argjson errors "$errors_json" \
-    '{
-      variant: $variant,
-      duration_seconds: $duration,
-      typecheck: $typecheck,
-      test: $test,
-      errors: $errors
-    }'
-
+    '{ variant: $variant, duration_seconds: $duration,
+       typecheck: $typecheck, test: $test, errors: $errors }'
   exit 0
 }
 
 # Variant: full-gate
 run_full_gate() {
   SECONDS=0
-
   local gate_failed=0
-
-  # --- Typecheck ---
   local tc_status="skip" tc_error_count=0
   run_check "$TYPECHECK_CMD"
   tc_status="$_run_status"
   if [[ "$tc_status" == "fail" ]]; then
-    tc_error_count="$(echo "$_run_output" | grep -ic 'error' || true)"
-    [[ -z "$tc_error_count" ]] && tc_error_count=0
-    gate_failed=1
+    tc_error_count="$(extract_count "$_run_output" 'error')"; gate_failed=1
   fi
-
-  # --- Test ---
-  local test_status="skip" test_total=0 test_passed=0
+  local test_status="skip"
   run_check "$TEST_CMD"
   test_status="$_run_status"
-  if [[ "$test_status" == "fail" ]]; then
-    gate_failed=1
-  fi
-  # Try to extract test counts from output (common patterns: "X passed", "X tests", "Tests: X passed, Y failed")
-  if [[ "$test_status" != "skip" ]]; then
-    # Try vitest/jest style: "Tests  X passed" or "X passed"
-    test_passed="$(echo "$_run_output" | grep -oE '[0-9]+ passed' | head -1 | grep -oE '[0-9]+' || true)"
-    [[ -z "$test_passed" ]] && test_passed=0
-    local test_failed
-    test_failed="$(echo "$_run_output" | grep -oE '[0-9]+ failed' | head -1 | grep -oE '[0-9]+' || true)"
-    [[ -z "$test_failed" ]] && test_failed=0
-    test_total=$(( test_passed + test_failed ))
-  fi
-
-  # --- Lint ---
+  [[ "$test_status" == "fail" ]] && gate_failed=1
+  _test_passed=0; _test_failed=0; _test_total=0
+  [[ "$test_status" != "skip" ]] && extract_test_counts "$_run_output"
   local lint_status="skip" lint_warnings=0
   run_check "$LINT_CMD"
   lint_status="$_run_status"
-  if [[ "$lint_status" == "fail" ]]; then
-    gate_failed=1
-  fi
-  if [[ "$lint_status" != "skip" ]]; then
-    lint_warnings="$(echo "$_run_output" | grep -ic 'warning' || true)"
-    [[ -z "$lint_warnings" ]] && lint_warnings=0
-  fi
-
-  # --- Debug artifacts ---
-  local debug_artifacts_json="[]"
-  if [[ -n "$SESSION_START_REF" ]]; then
-    local changed_files
-    changed_files="$(find_changed_files "$SESSION_START_REF")"
-    if [[ -n "$changed_files" ]]; then
-      local artifacts
-      artifacts="$(echo "$changed_files" | xargs grep -rn 'console\.log\|debugger\|TODO: remove' 2>/dev/null || true)"
-      if [[ -n "$artifacts" ]]; then
-        debug_artifacts_json="$(echo "$artifacts" | head -50 | jq -R -s 'split("\n") | map(select(length > 0))')"
-        [[ -z "$debug_artifacts_json" || "$debug_artifacts_json" == "null" ]] && debug_artifacts_json="[]"
-      fi
-    fi
-  fi
-
-  local duration=$SECONDS
-
-  jq -n \
-    --arg variant "full-gate" \
-    --argjson duration "$duration" \
-    --arg tc_status "$tc_status" \
-    --argjson tc_error_count "$tc_error_count" \
-    --arg test_status "$test_status" \
-    --argjson test_total "$test_total" \
-    --argjson test_passed "$test_passed" \
-    --arg lint_status "$lint_status" \
-    --argjson lint_warnings "$lint_warnings" \
-    --argjson debug_artifacts "$debug_artifacts_json" \
-    '{
-      variant: $variant,
-      duration_seconds: $duration,
-      typecheck: { status: $tc_status, error_count: $tc_error_count },
-      test: { status: $test_status, total: $test_total, passed: $test_passed },
-      lint: { status: $lint_status, warnings: $lint_warnings },
-      debug_artifacts: $debug_artifacts
-    }'
-
-  if (( gate_failed )); then
-    exit 2
-  fi
+  [[ "$lint_status" == "fail" ]] && gate_failed=1
+  [[ "$lint_status" != "skip" ]] && lint_warnings="$(extract_count "$_run_output" 'warning')"
+  local debug_artifacts_json
+  debug_artifacts_json="$(collect_debug_artifacts "$SESSION_START_REF")"
+  jq -n --arg variant "full-gate" --argjson duration "$SECONDS" \
+    --arg tc_status "$tc_status" --argjson tc_error_count "$tc_error_count" \
+    --arg test_status "$test_status" --argjson test_total "$_test_total" \
+    --argjson test_passed "$_test_passed" --arg lint_status "$lint_status" \
+    --argjson lint_warnings "$lint_warnings" --argjson debug_artifacts "$debug_artifacts_json" \
+    '{ variant: $variant, duration_seconds: $duration,
+       typecheck: { status: $tc_status, error_count: $tc_error_count },
+       test: { status: $test_status, total: $test_total, passed: $test_passed },
+       lint: { status: $lint_status, warnings: $lint_warnings },
+       debug_artifacts: $debug_artifacts }'
+  if (( gate_failed )); then exit 2; fi
   exit 0
 }
 
@@ -389,15 +352,13 @@ run_per_file() {
     files_json="$(csv_to_json_array "$FILES")"
   fi
 
-  # Typecheck (runs on the whole project, not per-file)
+  # Typecheck runs on the whole project, not per-file
   run_check "$TYPECHECK_CMD"
   tc_status="$_run_status"
 
-  # Test with file args
   if [[ "$TEST_CMD" == "skip" ]]; then
     test_status="skip"
   elif [[ -n "$FILES" ]]; then
-    # Convert comma-separated to space-separated for test runner
     local file_args
     file_args="$(echo "$FILES" | tr ',' ' ')"
     run_check "$TEST_CMD -- $file_args"
