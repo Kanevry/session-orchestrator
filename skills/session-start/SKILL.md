@@ -140,7 +140,8 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
      - If < 0.6: "Completion rate is [X]%. Consider reducing scope or using deep sessions."
      - If > 0.9: "Consistently high completion. Current scope sizing works well."
    - **Discovery probe value**: for sessions with `discovery_stats`, check each category in `by_category`:
-     - If `actioned / findings < 0.1` across 3+ sessions: "Probe category '[X]' has low action rate ([Y]%). Consider excluding via `discovery-probes` config."
+     - If `findings == 0` across 3+ sessions: "Probe category '[X]' has produced no findings in [N] sessions. Consider excluding via `discovery-probes` config."
+     - If `findings > 5` consistently but issues are rarely created from that category: "Probe category '[X]' generates many findings ([avg]) but few lead to issues. Consider raising `discovery-severity-threshold` or `discovery-confidence-threshold`."
    - **Carryover pattern**: if `effectiveness.carryover / planned_issues > 0.3` across 3+ sessions:
      "High carryover rate ([X]%). Consider: smaller scope, longer sessions (deep), or splitting across sessions."
 
@@ -158,11 +159,12 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
 
 ## Phase 6: Research (session type dependent)
 
+> **Note:** Implementation-specific research (library APIs, best practices for specific code changes) is deferred to session-plan, which knows the exact scope. Session-start focuses on state analysis.
+
 **For `feature` and `deep` sessions:**
-- Use REF MCP (`ref_search_documentation`) to look up best practices for the tech stack areas you'll be working in
-- Use `context7` for any library-specific questions
-- Check SSOT files for established patterns before proposing anything new
-- ALWAYS verify implementations in actual code — never assume based on memory or SSOT alone
+- Check SSOT files for established patterns relevant to the recommended focus
+- Review any tech stack changes since last session (dependency updates, new tooling)
+- ALWAYS verify current state in actual code — never assume based on memory or SSOT alone
 
 **For `housekeeping` sessions:**
 - Focus on git cleanup, documentation currency, CI health
@@ -187,7 +189,7 @@ After user alignment:
 - **DO NOT** skip Phase 0 and jump straight to analysis — Session Config drives everything, missing it means wrong defaults
 - **DO NOT** present raw data dumps without recommendations — the user expects opinionated analysis, not a wall of text
 - **DO NOT** assume issue status from titles or labels alone — always check the actual VCS API for current state
-- **DO NOT** run quality gates during session-start — that's discovery's job; session-start only assesses project state
+- **DO NOT** run blocking quality gates (Full Gate) during session-start — that's the Quality wave's job. Baseline checks (non-blocking, informational) in Phase 3 are fine.
 
 ## Critical Rules
 

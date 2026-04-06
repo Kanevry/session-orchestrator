@@ -86,6 +86,7 @@ Session Orchestrator provides five commands:
 | `/close` | End the session with verification and commits | When all waves are complete |
 | `/discovery [scope]` | Systematic quality discovery and issue detection | Anytime, or automatically during `/close` |
 | `/plan [mode]` | Structured project planning and PRD generation | Before starting a session, or standalone |
+| `/evolve [mode]` | Extract and manage cross-session learnings | After 2+ sessions, or to review/prune learnings |
 
 ### `/session [type]`
 
@@ -881,6 +882,45 @@ Each learning has a confidence score (0.0 to 1.0):
 
 > **Requires:** `persistence: true` (default) in Session Config.
 
+### Managing Learnings with /evolve
+
+The `/evolve` command gives you manual control over the learning system.
+
+#### Analyze Mode (default)
+
+```
+/evolve
+/evolve analyze
+```
+
+Reads `sessions.jsonl`, extracts patterns (fragile files, sizing, scope, recurring issues, deviations), deduplicates against existing learnings, and presents candidates for your approval via interactive selection. Only confirmed learnings are saved.
+
+**When to use:** After 2-3 sessions to validate the tool, or when you suspect the learning system is missing patterns.
+
+#### Review Mode
+
+```
+/evolve review
+```
+
+Displays all active learnings in a formatted table grouped by type. You can:
+- **Boost** confidence (+0.15) for learnings you've validated
+- **Reduce** confidence (-0.2) for learnings that seem wrong
+- **Delete** specific learnings
+- **Extend** expiry (+90 days) for learnings you want to keep longer
+
+**When to use:** When Project Intelligence suggestions seem off, or to prune stale learnings.
+
+#### List Mode
+
+```
+/evolve list
+```
+
+Read-only display of all active learnings with confidence scores and expiry dates. Shows high-confidence (>0.7) and expiring-soon (<14 days) counts.
+
+**When to use:** Quick check of what the system has learned, without making changes.
+
 ---
 
 ## 16. Adaptive Wave Sizing
@@ -931,6 +971,10 @@ The `agents-per-wave` config value always caps the maximum.
 /plan new              Plan a new project (PRD + repo setup + issues)
 /plan feature          Plan a feature (compact PRD + issues)
 /plan retro            Run a data-driven retrospective
+/evolve                Analyze sessions, extract learnings (default: analyze)
+/evolve analyze        Extract patterns from session history
+/evolve review         Interactively manage existing learnings
+/evolve list           Display active learnings
 ```
 
 ### Session Config (add to CLAUDE.md)

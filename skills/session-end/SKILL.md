@@ -206,7 +206,7 @@ If STATE.md doesn't exist, skip this subsection.
 Analyze the completed session to extract reusable learnings for future sessions.
 
 **What to extract:**
-- **Fragile files**: files that needed 3+ iterations across waves or caused cascading failures
+- **Fragile files**: use `git log --name-only --format="" $SESSION_START_REF..HEAD | sort | uniq -c | sort -rn | head -10` to find files changed most frequently across commits this session. Files appearing in 3+ commits are candidates for fragile-file learnings. Cross-reference with `.claude/STATE.md` Wave History to correlate with specific waves.
 - **Effective sizing**: actual agent count vs. planned — what worked for this complexity level
 - **Recurring issues**: same issue type appearing across waves (e.g., type errors, missing imports)
 - **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?

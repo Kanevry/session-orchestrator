@@ -54,6 +54,7 @@ Before dispatching Wave 1, write `.claude/STATE.md` with YAML frontmatter and Ma
 
 ```yaml
 ---
+schema-version: 1
 session-type: feature|deep|housekeeping
 branch: <current branch>
 issues: [<issue numbers from plan>]
@@ -107,6 +108,8 @@ For each agent in this wave:
 
 **CRITICAL: `run_in_background: false`** — You MUST wait for ALL agents to complete before proceeding. NEVER use `run_in_background: true` during wave execution. Dispatch all agents in a single message for maximum parallelism, then wait.
 
+> **Timeout note:** Agent timeout is controlled by `maxTurns` from `circuit-breaker.md`, not by a time-based timeout. Claude Code's built-in turn limit provides the safety net. There is no need to set explicit time-based timeouts on agent dispatch.
+
 ### 2. Review Agent Outputs
 
 After ALL agents in the wave complete:
@@ -120,14 +123,15 @@ After ALL agents in the wave complete:
    - After **Impl-Polish**: Incremental quality checks + integration verification
    - **Simplification pass** (at the start of the Quality wave, before test/review agents):
      1. Identify all files changed in this session: `git diff --name-only $SESSION_START_REF..HEAD`
-     2. Dispatch 1-2 simplification agents with:
+     2. Filter to production files only (exclude `*.test.*`, `*.spec.*`, `__tests__/`). If no production files changed, skip the simplification pass entirely — proceed directly to test/review agents.
+     3. Dispatch 1-2 simplification agents with:
         - Changed file list (production files only — exclude `*.test.*`, `*.spec.*`, `__tests__/`)
         - Reference: `slop-patterns.md` from the discovery skill directory — include the actual patterns in the agent prompt
         - Reference: project's CLAUDE.md conventions
         - Instruction: "Review each changed file for AI-generated code patterns. Apply targeted simplifications: remove unnecessary try-catch around non-throwing operations, delete over-documentation (params that repeat the name, returns that say 'the result'), replace re-implemented stdlib functions with standard alternatives, simplify redundant boolean logic (if/else returning true/false, double negation, explicit boolean comparisons). Do NOT change functionality. Do NOT touch files you weren't given. Do NOT commit."
         - Tools: Read, Edit, Grep, Glob
         - Model: sonnet
-     3. After simplification agents complete, proceed to Quality test/review agents
+     4. After simplification agents complete, proceed to Quality test/review agents
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
    - After **Finalization**: final git status check
 5. **Session-reviewer dispatch** (after Impl-Core, Impl-Polish, and Quality waves only):
