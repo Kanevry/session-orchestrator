@@ -184,6 +184,7 @@ Add to each repo's `CLAUDE.md`:
 - **enforcement:** warn (strict|warn|off)
 - **isolation:** worktree (worktree|none|auto)
 - **max-turns:** auto (housekeeping=8, feature=15, deep=25)
+- **learning-expiry-days:** 30
 - **discovery-on-close:** true
 ```
 
@@ -218,7 +219,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
-- `scripts/` — 3 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope) + shared lib + 94 tests
+- `scripts/` — 4 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, token-audit) + shared lib + 151 tests
 
 ## Documentation
 
