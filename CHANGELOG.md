@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v2.0.0-alpha.12 — /evolve + Skill Splits
+## [2.0.0-alpha.12] - 2026-04-06 — /evolve + Skill Splits
 
 - **feat:** `/evolve` command + skill — extract, review, and list cross-session learnings (#21)
   - `analyze` mode: extract patterns from session history (5 learning types), present via AskUserQuestion, atomic write
@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **refactor:** extract `wave-template.md` from session-plan SKILL.md Step 4 (#18)
 - **feat:** seed initial `learnings.jsonl` with 4 learnings from 8-session history (effective-sizing, scope-guidance)
 
-## v2.0.0-alpha.11 — Deterministic Scripts
+## [2.0.0-alpha.11] - 2026-04-06 — Deterministic Scripts
 
 - **feat:** `scripts/parse-config.sh` — deterministic Session Config parser with type validation, 36 fields, defaults from reference doc (#19)
 - **feat:** `scripts/run-quality-gate.sh` — 4 quality gate variants (baseline, incremental, full-gate, per-file) with structured JSON output (#19)
