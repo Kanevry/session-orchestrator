@@ -23,7 +23,9 @@ The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `s
 
 ## Phase 0: Read Session Config
 
-Read the project's CLAUDE.md and extract the `## Session Config` section.
+Run `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user. Store the JSON output as `$CONFIG` for use throughout this skill — extract fields with `echo "$CONFIG" | jq -r '.field-name'`.
+
+If the script is not available, fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
 
 For the complete field reference, see `docs/session-config-reference.md` in the plugin root.
 
@@ -31,8 +33,6 @@ Discovery-relevant fields (parse these specifically):
 - `discovery-on-close`, `discovery-probes`, `discovery-exclude-paths`, `discovery-severity-threshold`, `discovery-confidence-threshold`
 - `test-command`, `typecheck-command`, `lint-command`
 - `pencil`, `vcs`, `cross-repos`, `stale-issue-days`
-
-If no Session Config section exists, use sensible defaults.
 
 ## Phase 1: Stack Detection & Probe Activation
 

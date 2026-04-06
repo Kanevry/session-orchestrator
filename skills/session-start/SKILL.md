@@ -18,13 +18,11 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 
 ## Phase 0: Read Session Config
 
-Read the project's CLAUDE.md and extract the `## Session Config` section.
+Run `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user. Store the JSON output as `$CONFIG` for use throughout this skill — extract fields with `echo "$CONFIG" | jq -r '.field-name'`.
 
-For the complete field reference with types, defaults, and descriptions, see `docs/session-config-reference.md` in the plugin root.
+If the script is not available, fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
 
-If no Session Config section exists, use sensible defaults: `feature` type, 6 agents, 5 waves.
-
-For the full Session Config field reference, see `docs/USER-GUIDE.md` Section 4.
+For the complete field reference, see `docs/session-config-reference.md` in the plugin root.
 
 ## Phase 0.5: Session Continuity
 

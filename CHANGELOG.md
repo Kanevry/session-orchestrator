@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v2.0.0-alpha.11 — Deterministic Scripts
+
+- **feat:** `scripts/parse-config.sh` — deterministic Session Config parser with type validation, 36 fields, defaults from reference doc (#19)
+- **feat:** `scripts/run-quality-gate.sh` — 4 quality gate variants (baseline, incremental, full-gate, per-file) with structured JSON output (#19)
+- **feat:** `scripts/validate-wave-scope.sh` — wave-scope.json validator with security checks (path traversal, absolute paths) (#19)
+- **feat:** `scripts/lib/common.sh` — shared library (find_project_root, require_jq, die, warn, resolve_plugin_root)
+- **feat:** 94 bash tests across 3 test suites with 8 fixtures
+- **refactor:** skills updated to reference scripts (session-start, discovery, plan, wave-executor, session-end, quality-gates)
+
 ## [2.0.0-alpha.10] - 2026-04-05
 
 ### v2.0.0-alpha.10

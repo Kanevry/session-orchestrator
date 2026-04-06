@@ -1,0 +1,7 @@
+{
+  "wave": 1,
+  "role": "Impl-Core",
+  "enforcement": "warn",
+  "allowedPaths": ["src/", "lib/**/*.ts", "tests/**/*.test.ts"],
+  "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE"]
+}

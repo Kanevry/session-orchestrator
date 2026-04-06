@@ -249,14 +249,15 @@ Before each wave dispatch:
      "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
    }
    ```
-2. `allowedPaths` is the UNION of all agent file scopes for this wave
-3. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
-4. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
+2. Validate by piping through `bash "$CLAUDE_PLUGIN_ROOT/scripts/validate-wave-scope.sh"`. If validation fails (exit 1), fix the JSON based on stderr errors and retry.
+3. `allowedPaths` is the UNION of all agent file scopes for this wave
+4. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
+5. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
    > **Defense in depth:** The empty `allowedPaths` enforcement hook is the PRIMARY barrier (blocks Write/Edit at the tool level). The prompt instruction is a SECONDARY safeguard. If jq is unavailable (enforcement set to `off`), the prompt instruction becomes the ONLY barrier — log a warning in this case.
-5. For **Quality** role waves, use two-phase scope enforcement:
+6. For **Quality** role waves, use two-phase scope enforcement:
    - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, delete `.claude/wave-scope.json`.
    - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `.claude/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.
-6. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
+7. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
 
 ## Circuit Breaker & Worktree Isolation
 

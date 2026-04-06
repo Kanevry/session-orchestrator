@@ -47,7 +47,7 @@ claude plugin install session-orchestrator
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-alpha.10 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
+🎯 Session Orchestrator v2.0.0-alpha.11 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope]
 ```
 
 ### Add Session Config to your project
@@ -578,6 +578,16 @@ Before any code is committed, `/close` runs all checks:
 | Git status | All changes accounted for |
 
 If any check fails and cannot be quickly fixed, the orchestrator creates a `priority:high` issue for immediate follow-up rather than committing broken code.
+
+### Deterministic Scripts
+
+Session Orchestrator includes bash scripts for critical workflow paths. These provide deterministic, testable alternatives to agent-interpreted instructions:
+
+- `scripts/parse-config.sh` — Parses `## Session Config` from CLAUDE.md, outputs validated JSON with all 36 fields and defaults applied. Run: `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh" [path/to/CLAUDE.md]`
+- `scripts/run-quality-gate.sh` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
+- `scripts/validate-wave-scope.sh` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
+
+All scripts require `jq`. Run `bash scripts/test/run-all.sh` to verify the test suite (94 tests).
 
 ---
 

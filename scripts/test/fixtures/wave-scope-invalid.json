@@ -1,0 +1,7 @@
+{
+  "wave": -1,
+  "role": "",
+  "enforcement": "hard",
+  "allowedPaths": ["/etc/passwd", "../secrets", "", "src/"],
+  "blockedCommands": "not-an-array"
+}

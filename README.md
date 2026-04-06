@@ -193,6 +193,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **5 Commands**: /session, /go, /close, /discovery, /plan
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
+- `scripts/` — 3 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope) + shared lib + 94 tests
 
 ## Documentation
 
