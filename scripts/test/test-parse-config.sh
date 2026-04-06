@@ -209,6 +209,34 @@ assert_eq "plain: enforcement" \
   "$(parse_field "$PLAIN" "enforcement")"
 
 # ============================================================================
+# Test Group 4b: Override Syntax (claude-md-overrides.md)
+# ============================================================================
+echo ""
+echo "--- Test Group 4b: Override Syntax ---"
+
+OVERRIDES="$FIXTURES/claude-md-overrides.md"
+
+assert_eq "overrides: agents-per-wave is object" \
+  '{"default":6,"deep":18}' \
+  "$(parse_json_field "$OVERRIDES" "agents-per-wave")"
+
+assert_eq "overrides: agents-per-wave.default" \
+  "6" \
+  "$(bash "$PARSE_CONFIG" "$OVERRIDES" 2>/dev/null | jq -r '."agents-per-wave".default')"
+
+assert_eq "overrides: agents-per-wave.deep" \
+  "18" \
+  "$(bash "$PARSE_CONFIG" "$OVERRIDES" 2>/dev/null | jq -r '."agents-per-wave".deep')"
+
+assert_eq "overrides: waves (plain integer)" \
+  "5" \
+  "$(parse_field "$OVERRIDES" "waves")"
+
+assert_eq "overrides: valid JSON" \
+  "0" \
+  "$(bash "$PARSE_CONFIG" "$OVERRIDES" 2>/dev/null | jq . > /dev/null 2>&1; echo $?)"
+
+# ============================================================================
 # Test Group 5: Bad Types (claude-md-bad-types.md)
 # ============================================================================
 echo ""

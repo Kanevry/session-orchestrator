@@ -108,6 +108,39 @@ json_integer() {
   local key="$1" default="$2"
   local val
   val="$(get_val "$key" "$default")"
+
+  # Support override syntax: "N (key1: M1, key2: M2)"
+  # Example: "6 (deep: 18)" → base=6, overrides={"deep": 18}
+  if echo "$val" | grep -qE '^[0-9]+[[:space:]]*\('; then
+    local base overrides_str
+    base="$(echo "$val" | sed 's/[[:space:]]*(.*//;s/[[:space:]]*$//')"
+    overrides_str="$(echo "$val" | sed 's/^[0-9]*[[:space:]]*(//;s/)[[:space:]]*$//')"
+
+    if ! echo "$base" | grep -qE '^[0-9]+$'; then
+      die "Invalid integer base for '$key': '$base' (from '$val')"
+    fi
+
+    # Build JSON object: {"default": N, "key1": M1, ...}
+    local json_obj
+    json_obj="{\"default\":$base"
+    local pair
+    while IFS= read -r pair; do
+      pair="$(echo "$pair" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$pair" ]] && continue
+      local okey oval
+      okey="$(echo "$pair" | sed 's/:.*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      oval="$(echo "$pair" | sed 's/^[^:]*://' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      if ! echo "$oval" | grep -qE '^[0-9]+$'; then
+        die "Invalid integer override for '$key.$okey': '$oval'"
+      fi
+      json_obj="${json_obj},\"$okey\":$oval"
+    done <<< "$(echo "$overrides_str" | tr ',' '\n')"
+    json_obj="${json_obj}}"
+
+    echo "$json_obj"
+    return
+  fi
+
   if ! echo "$val" | grep -qE '^[0-9]+$'; then
     die "Invalid integer for '$key': '$val'"
   fi

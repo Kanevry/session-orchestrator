@@ -8,7 +8,7 @@
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `session-types` | list | `[feature]` | Which session types this repo supports. Controls what `/session <type>` accepts. |
-| `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. |
+| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
