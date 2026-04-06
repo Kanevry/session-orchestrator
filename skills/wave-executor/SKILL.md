@@ -81,6 +81,8 @@ Wave 0 — Initializing
 
 Create the `.claude/` directory if needed (`mkdir -p .claude`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 
+> **Ownership:** STATE.md is owned by the wave-executor. Only the wave-executor writes to it (initialization + post-wave updates). session-end reads it for metrics extraction and sets `status: completed`. session-start reads it only for continuity checks (Phase 0.5). No other skill should write to STATE.md.
+
 ## Wave Execution Loop
 
 For each wave, resolve its assigned role(s) from the session plan's role-to-wave mapping:
@@ -287,10 +289,19 @@ Each agent prompt MUST NOT include:
 ## Session Type Behavior
 
 ### Housekeeping Sessions
-- Skip wave structure entirely
-- Execute tasks serially with 1-2 agents
-- Focus: git cleanup, SSOT refresh, CI fixes, branch merges, documentation
-- End with a single commit summarizing all housekeeping work
+
+Housekeeping sessions bypass the wave dispatch loop:
+
+1. Initialize STATE.md as normal (`session-type: housekeeping`, `total-waves: 1`)
+2. Do NOT create `wave-scope.json` — no scope enforcement for housekeeping tasks
+3. Dispatch tasks serially with 1-2 agents per task
+4. Run Baseline quality checks after all tasks complete (not between tasks)
+5. Skip session-reviewer dispatch — housekeeping changes are low-risk
+6. Update STATE.md to `status: completed` when done
+7. Proceed directly to session-end (`/close`)
+
+Focus: git cleanup, SSOT refresh, CI fixes, branch merges, documentation.
+End with a single commit summarizing all housekeeping work.
 
 ### Feature Sessions
 - Full wave execution (5 roles mapped to configured wave count)

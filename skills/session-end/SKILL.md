@@ -48,6 +48,8 @@ When enabled, invoke the discovery skill in **embedded mode**:
 - Collect verified findings from the discovery skill output
 - Parse the discovery output for the **findings array** and **stats object** (schema defined in discovery skill Phase 3.6)
 - Store the stats object for Phase 1.7 metrics collection (`discovery_stats` field)
+
+> **Parsing discovery output:** When discovery runs in embedded mode, it returns two data structures: (1) a **findings array** — JSON array of objects with `probe`, `category`, `severity`, `confidence`, `title`, `description` fields; (2) a **stats object** — JSON with `probes_run`, `findings_raw`, `findings_verified`, `false_positives`, `by_category`. Extract these from the discovery agent's output. Store stats as `discovery_stats` in session metrics (Phase 1.7).
 - Incorporate findings into issue management:
   - Findings with severity `critical` or `high` → create issues immediately (Phase 5)
   - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
@@ -79,6 +81,9 @@ Review safety metrics from the session. This is informational — it does NOT bl
 Finalize session metrics by reading the wave data accumulated during execution:
 
 1. Read `.claude/STATE.md` Wave History to extract per-wave data: agent counts, statuses, files changed
+
+> **Graceful degradation:** If STATE.md is missing expected fields (no Wave History, missing frontmatter keys, malformed YAML), degrade gracefully: report what is available, skip metrics fields that cannot be parsed. Do NOT fail the session close because STATE.md is incomplete — a crashed session may leave partial STATE.md behind.
+
 2. Compute session totals:
    - `total_duration_seconds`: from `started_at` to now (ISO 8601 diff)
    - `total_waves`: count of completed waves
@@ -158,6 +163,16 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 
 ## Phase 3: Documentation Updates
 
+### 3.0 Defensive Cleanup
+
+Delete `.claude/wave-scope.json` if it still exists:
+
+```bash
+rm -f .claude/wave-scope.json
+```
+
+This should have been cleaned up by wave-executor after the final wave, but crashed sessions or interrupted executions may leave it behind. A stale scope manifest from a previous session could incorrectly restrict the next session's enforcement hooks.
+
 ### 3.1 SSOT Files
 - Update `STATUS.md` / `STATE.md` if they exist (metrics, dates, status)
 - Update `CLAUDE.md` if patterns or conventions changed during this session
@@ -181,8 +196,6 @@ Review `.claude/rules/` files that are relevant to this session's work:
 1. Set frontmatter `status: completed`
 2. Record final wave count and completion time in the frontmatter
 3. Keep the file as a record — do NOT delete it (next session-start reads it)
-
-After updating STATE.md, also delete `.claude/wave-scope.json` if it exists (cleanup — enforcement hooks only apply during active waves).
 
 If STATE.md doesn't exist, skip this subsection.
 

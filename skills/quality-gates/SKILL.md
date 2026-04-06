@@ -123,7 +123,7 @@ Replace the bracketed variant name with the specific variant required by that ph
 
 ## Script Alternative
 
-For deterministic execution, use `scripts/run-quality-gate.sh`:
+Prefer `scripts/run-quality-gate.sh` for deterministic execution with structured JSON output. The inline command approach is supported but produces unstructured output that downstream consumers cannot reliably parse.
 
 ```bash
 # Baseline (session-start)

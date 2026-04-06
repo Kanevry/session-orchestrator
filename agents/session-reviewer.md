@@ -132,4 +132,26 @@ Only include findings with confidence >= 80 in the main section reports. Group f
 [If FIX REQUIRED: list specific items that must be addressed]
 ```
 
-Report ONLY actionable findings with confidence >= 80. Do not report style preferences or minor nits. Group lower-confidence findings (50-79) in the Possible Issues section.
+## Machine-Readable Summary
+
+After the human-readable report, append a JSON summary block for consuming skills to parse:
+
+```json
+{
+  "verdict": "PROCEED|FIX_REQUIRED",
+  "total_findings": 0,
+  "high_confidence": 0,
+  "categories": {
+    "implementation": "PASS|WARN|FAIL",
+    "tests": "PASS|WARN|FAIL",
+    "typescript": "PASS|FAIL",
+    "security": "PASS|WARN|FAIL"
+  },
+  "fix_required": []
+}
+```
+
+Rules:
+- `verdict`: `PROCEED` if no FAIL categories; `FIX_REQUIRED` if any category is FAIL
+- `fix_required`: array of strings describing items that must be addressed before proceeding
+- Wrap in a fenced code block tagged `json` so consuming skills can extract via regex

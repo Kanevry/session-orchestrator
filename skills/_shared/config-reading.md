@@ -46,3 +46,15 @@ fi
 ## Fallback
 
 If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
+
+## Learning Expiry Semantics
+
+Learnings in `.claude/metrics/learnings.jsonl` follow this lifecycle:
+
+- **Created**: `confidence: 0.5`, `expires_at`: current date + `learning-expiry-days` (default: 30)
+- **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset
+- **Contradicted** (evidence against): `confidence -= 0.2`
+- **Expired**: `expires_at < current date` — removed on next write
+- **Dead**: `confidence <= 0.0` — removed on next write
+
+Cleanup (pruning expired + deduplicating by type+subject) runs on EVERY write to `learnings.jsonl`, in both session-end and evolve skills.
