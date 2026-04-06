@@ -14,9 +14,7 @@ description: >
 
 ### 0.1 Read Session Config
 
-Run `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user. Store the JSON output as `$CONFIG`.
-
-If the script is not available, fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
+Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
 ### 0.2 Check Persistence
 

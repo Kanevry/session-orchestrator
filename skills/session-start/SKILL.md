@@ -18,11 +18,7 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 
 ## Phase 0: Read Session Config
 
-Run `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user. Store the JSON output as `$CONFIG` for use throughout this skill — extract fields with `echo "$CONFIG" | jq -r '.field-name'`.
-
-If the script is not available, fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
-
-For the complete field reference, see `docs/session-config-reference.md` in the plugin root.
+Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
 ## Phase 0.5: Session Continuity
 
@@ -169,6 +165,7 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
 **For `housekeeping` sessions:**
 - Focus on git cleanup, documentation currency, CI health
 - Skip deep research — prioritize operational tasks
+- Run token efficiency check: `bash "$CLAUDE_PLUGIN_ROOT/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
 
 ## Phase 7: Structured Presentation & Q&A
 

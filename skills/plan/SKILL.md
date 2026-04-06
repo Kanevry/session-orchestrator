@@ -28,11 +28,7 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 
 ## Phase 0: Read Session Config
 
-Run `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user. Store the JSON output as `$CONFIG` for use throughout this skill — extract fields with `echo "$CONFIG" | jq -r '.field-name'`.
-
-If the script is not available, fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
-
-For the complete field reference, see `docs/session-config-reference.md` in the plugin root.
+Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
 After parsing, verify that `plan-baseline-path` is not null: `echo "$CONFIG" | jq -e '."plan-baseline-path"'`. If null, stop with: "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
 

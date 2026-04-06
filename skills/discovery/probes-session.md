@@ -228,3 +228,56 @@ Actual: <what was found or NOT found>
 ```
 
 **Default Severity:** Medium (staleness, phantom tech, undocumented deps), High (invalid paths, stale rules with no codebase match).
+
+5. Token efficiency — CLAUDE.md size:
+```bash
+# Count lines in CLAUDE.md
+wc -l CLAUDE.md
+
+# Flag if > 150 lines (warning) or > 250 lines (high)
+# Identify sections > 30 lines that could move to .claude/rules/ or .claude/docs/
+# Check for inline code blocks > 10 lines (should be in separate files)
+```
+
+6. Token efficiency — .claudeignore coverage:
+```bash
+# Check if .claudeignore exists
+test -f .claudeignore
+
+# If not, scan for common excludable patterns:
+# - Large binary/data directories (> 10MB total)
+# - Test fixture directories with > 50 files
+# Flag projects without .claudeignore that have > 500 files
+find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' | wc -l
+```
+
+7. Token efficiency — .claude directory hygiene:
+```bash
+# Check .claude/ total size
+du -sh .claude/ 2>/dev/null
+
+# Flag if > 10MB
+# Check for stale directories: backups/, screenshots/, temp-*
+# Check for files not modified in > 90 days
+find .claude/ -maxdepth 1 -type d -name "backups" -o -name "screenshots" -o -name "temp-*" 2>/dev/null
+find .claude/ -type f -mtime +90 2>/dev/null | head -10
+```
+
+8. Token efficiency — duplicate pattern detection:
+```bash
+# Hash the ## Session Config section across repos
+# If cross-repos is configured, compare CLAUDE.md patterns
+# Flag identical sections that could be consolidated into ~/.claude/CLAUDE.md or .claude/rules/
+```
+
+**Evidence Format (token efficiency):**
+```
+File: CLAUDE.md (or .claude/)
+Issue: oversized-claude-md | missing-claudeignore | bloated-claude-dir | stale-claude-artifacts | duplicate-patterns
+Detail: <specific finding>
+Current: <size/count>
+Threshold: <limit>
+Recommendation: <action>
+```
+
+**Default Severity:** Medium (oversized CLAUDE.md, missing .claudeignore), Low (stale artifacts, duplicate patterns), High (.claude dir > 50MB).
