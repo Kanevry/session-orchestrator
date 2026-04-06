@@ -142,33 +142,11 @@ If project intelligence (learnings) suggests different sizing based on historica
 
 ## Step 4: Agent Specification
 
-For each wave, define agents with:
+> **Template Reference:** See `wave-template.md` in this skill directory for the agent specification format, isolation settings, and count tables.
 
-```
-[Role] (Wave N) Agent M:
-  Task: [specific task description]
-  Files: [exact file paths to read/modify]
-  Acceptance: [what "done" looks like — measurable]
-  Tools needed: [Read, Write, Edit, Bash, Grep, Glob, etc.]
-  Dependencies: [output from which prior role/agent]
-  Isolation: [worktree|none — read from Session Config, default: worktree for feature/deep, none for housekeeping]
-  MaxTurns: [read from Session Config max-turns, default: housekeeping=8, feature=15, deep=25]
-```
+For each wave, define agents using the template format in `wave-template.md`. Apply the agent count table based on session type, capped by `agents-per-wave` from Session Config.
 
-- `Isolation: worktree` means the wave-executor will pass `isolation: "worktree"` to the Agent tool, giving each agent its own git worktree copy
-- `MaxTurns` is enforced via the agent prompt — wave-executor includes a turn limit instruction in each agent's prompt
-
-### Agent Count by Session Type
-
-| Session Type | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
-|-------------|-----------|-----------|-------------|---------|-------------|
-| housekeeping | 2 | 2 | 1 | 1 | 1 |
-| feature | 4-6 | 6 | 4-6 | 4 | 2 |
-| deep | 6-8 | 6-10 | 6-8 | 6 | 2-4 |
-
-Read `agents-per-wave` from Session Config to cap the maximum.
-
-> **Note:** For feature and deep sessions, prefer the complexity-based agent counts from Step 3. This table provides defaults when complexity scoring is skipped (housekeeping) or as a fallback.
+If project intelligence (learnings) suggests different sizing based on historical data, prefer the historical recommendation over the formula.
 
 ## Step 5: Issue Updates
 
@@ -227,6 +205,12 @@ If the user requests changes:
 - Re-assign agents
 - Update issue comments if scope changes
 - Re-present the modified plan
+
+## Sub-File Reference
+
+| File | Purpose |
+|------|---------|
+| `wave-template.md` | Step 4 agent specification format and count tables |
 
 ## Anti-Patterns
 

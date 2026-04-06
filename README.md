@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0--alpha.8-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0--alpha.12-orange.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.
@@ -54,7 +54,7 @@ Sessions persist across interruptions via `STATE.md` — crash recovery, resume 
 
 ### Metrics & Cross-Session Learning
 
-Every session writes quantitative metrics (duration, agents, files changed per wave) plus effectiveness stats (completion rate, discovery probe value, carryover patterns) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). After 5+ sessions, the system surfaces trends: low-value probes to disable, scope adjustments for high carryover, and completion rate analysis. The system gets smarter over time.
+Every session writes quantitative metrics (duration, agents, files changed per wave) plus effectiveness stats (completion rate, discovery probe value, carryover patterns) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). After 5+ sessions, the system surfaces trends: low-value probes to disable, scope adjustments for high carryover, and completion rate analysis. Run `/evolve analyze` to retroactively extract patterns across all sessions, `/evolve review` to curate learnings, or `/evolve list` to see what the system knows. The system gets smarter over time.
 
 ### Adaptive Wave Sizing
 
@@ -90,6 +90,7 @@ Session Orchestrator does not optimize for token cost or model routing. It optim
 | `/close` | End session with verification |
 | `/discovery [scope]` | Systematic quality discovery and issue detection |
 | `/plan [mode]` | Plan a project, feature, or retrospective |
+| `/evolve [mode]` | Extract, review, or list cross-session learnings |
 
 ## Workflow
 
@@ -127,6 +128,30 @@ Run `/session` to **implement** existing issues across structured waves:
 /session feature     # Pick those 3 issues → wave plan
 /go                  # Execute: Discovery → Impl-Core → Polish → Quality → Finalize
 /close               # Verify + commit + push
+```
+
+### Learning (`/evolve`)
+
+`/evolve` is a standalone command for deliberate reflection — it is **not** called automatically during sessions.
+
+**Why it exists:** `/close` extracts learnings from the *current* session only. `/evolve` analyzes *all* session history to find cross-session patterns that only emerge over time.
+
+- **`/evolve analyze`** (default) — Reads `sessions.jsonl`, extracts patterns across all sessions (fragile files, effective sizing, recurring issues, scope guidance, deviation patterns). Presents findings for confirmation before writing.
+- **`/evolve review`** — Interactive management: boost or reduce confidence, delete stale learnings, extend expiry.
+- **`/evolve list`** — Read-only display of active learnings grouped by type.
+
+**When to use:**
+- After 5+ sessions — enough data for meaningful patterns
+- When Project Intelligence is empty despite running sessions
+- Before a big feature — check if the system has useful sizing/scope recommendations
+- Periodically for housekeeping — prune outdated or incorrect learnings
+
+**How it fits in the flow:**
+```
+/session → /go → /close       ← automatic learning (per-session)
+         ...repeat 5+ times...
+/evolve analyze                ← deliberate learning (cross-session)
+/session → /go → /close       ← now session-start shows richer Project Intelligence
 ```
 
 ## Session Types
@@ -189,8 +214,8 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 
 ## Components
 
-- **9 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan
-- **5 Commands**: /session, /go, /close, /discovery, /plan
+- **10 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve
+- **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
 - `scripts/` — 3 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope) + shared lib + 94 tests

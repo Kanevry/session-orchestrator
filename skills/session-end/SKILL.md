@@ -152,20 +152,9 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
 
 ## Phase 2: Quality Gate
 
-Run ALL checks — do NOT skip any:
+> **Verification Reference:** See `verification-checklist.md` in this skill directory for the full quality gate checklist.
 
-> **Quality Reference:** Run Full Gate quality checks per the quality-gates skill. Read `test-command`, `typecheck-command`, and `lint-command` from Session Config (defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`).
-
-1. **Full Gate checks**: TypeScript (0 errors), tests (must pass), lint (must pass, warnings OK)
-   Alternatively, run `bash "$CLAUDE_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant full-gate --config "$CONFIG"` for deterministic quality gate execution with structured JSON output.
-2. **Git status**: `git status` → understand all changes
-3. **Uncommitted changes**: everything should be staged for commit
-4. **No debug artifacts**: search for `console.log`, `debugger`, `TODO: remove` in changed files
-
-If any check fails:
-- Fix it if quick (<2 min)
-- Otherwise create a `priority:high` issue for immediate follow-up
-- Do NOT commit broken code
+Run ALL checks listed in the verification checklist. If any check fails: fix if quick (<2 min), otherwise create a `priority:high` issue. Do NOT commit broken code.
 
 ## Phase 3: Documentation Updates
 
@@ -358,6 +347,12 @@ Present to the user:
 - Type: [housekeeping/feature/deep recommended]
 - Notes: [any context for next session]
 ```
+
+## Sub-File Reference
+
+| File | Purpose |
+|------|---------|
+| `verification-checklist.md` | Phase 2 quality gate checklist and checks |
 
 ## Anti-Patterns
 

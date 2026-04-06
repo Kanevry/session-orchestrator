@@ -4,8 +4,8 @@ Claude Code plugin for session-level orchestration. This is a **plugin repo** �
 
 ## Structure
 
-- `skills/` — 9 skills (session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan)
-- `commands/` — 5 commands (/session, /go, /close, /discovery, /plan)
+- `skills/` — 10 skills (session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve)
+- `commands/` — 6 commands (/session, /go, /close, /discovery, /plan, /evolve)
 - `agents/` — 1 agent (session-reviewer)
 - `hooks/` — SessionStart notification + PreToolUse enforcement (scope + commands)
 
