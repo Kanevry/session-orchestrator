@@ -45,6 +45,24 @@ else
 fi
 ```
 
+## Handling `agent-mapping` Config
+
+`agent-mapping` is an optional JSON object that maps role keys to agent names. If present, session-plan uses these explicit mappings to assign agents to tasks (overriding auto-discovery matching).
+
+**Role keys**: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`
+
+```bash
+# Extract agent-mapping (returns null if not configured)
+AGENT_MAPPING=$(echo "$CONFIG" | jq -r '."agent-mapping" // empty')
+```
+
+Example config in CLAUDE.md:
+```yaml
+agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect, ui: ui-designer, security: security-auditor, compliance: austrian-compliance }
+```
+
+When `agent-mapping` is not present, session-plan falls back to auto-discovery (scanning `.claude/agents/` and matching task descriptions against agent descriptions).
+
 ## Fallback
 
 If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI), depending on which platform is active.

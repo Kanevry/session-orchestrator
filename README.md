@@ -230,7 +230,18 @@ Add to each repo's `CLAUDE.md`:
 - **max-turns:** auto (housekeeping=8, feature=15, deep=25)
 - **learning-expiry-days:** 30
 - **discovery-on-close:** true
+- **agent-mapping:** { impl: code-editor, test: test-specialist, db: database-architect }
 ```
+
+### Intelligent Agent Dispatch
+
+When dispatching agents, Session Orchestrator uses a three-tier resolution:
+
+1. **Project agents** (`.claude/agents/`) — highest priority, domain-specific
+2. **Plugin agents** (`session-orchestrator:*`) — generic base agents, work in any project
+3. **`general-purpose`** — fallback when no specialized agent matches
+
+The `agent-mapping` config lets you explicitly bind roles to agents. Without it, session-plan auto-matches tasks to agents based on their descriptions.
 
 For the complete field reference with types, defaults, and descriptions, see the [User Guide — Session Config Reference](docs/USER-GUIDE.md#4-session-config-reference).
 
@@ -261,7 +272,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 
 - **10 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve
 - **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
-- **1 Agent**: session-reviewer (inter-wave quality gate)
+- **6 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer (generic base agents) + session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
 - `.codex-plugin/` — Codex CLI plugin manifest (`config.toml`) + 3 agent role definitions (explorer, wave-worker, session-reviewer)
 - `scripts/` — 4 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, token-audit) + shared lib + 151 tests

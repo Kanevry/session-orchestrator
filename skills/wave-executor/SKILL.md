@@ -95,7 +95,11 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 
 ### 1. Dispatch Agents
 
-Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message:
+Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
+
+#### Agent-Type Resolution
+
+Each agent in the session plan specifies a `subagent_type`. Use that value directly when dispatching:
 
 ```
 For each agent in this wave:
@@ -109,20 +113,35 @@ For each agent in this wave:
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
       >",
-    subagent_type: "general-purpose",
+    subagent_type: "<from session plan>",   // resolved agent type
     run_in_background: false   // CRITICAL: always false — wait for completion
   })
 ```
+
+**Resolution chain** (if the plan does not specify `subagent_type` for an agent):
+
+1. **Discovery waves** → `"Explore"` (always, read-only)
+2. **Quality review** → `"session-orchestrator:session-reviewer"` (always)
+3. **Impl-Core / Impl-Polish / Quality (test-writing)** → check in order:
+   a. Project agent matching the task domain (e.g., `"database-architect"` for DB tasks)
+   b. Plugin agent (e.g., `"session-orchestrator:code-implementer"`)
+   c. `"general-purpose"` (final fallback)
+4. **Finalization** → direct execution (no subagent needed)
+
+> **How to detect project agents:** The session plan's "Agent Registry" section lists all discovered agents. If an agent name does NOT contain a colon (`:`), it's a project-level agent. If it contains `session-orchestrator:`, it's a plugin agent.
 
 **CRITICAL: `run_in_background: false`** — You MUST wait for ALL agents to complete before proceeding. NEVER use `run_in_background: true` during wave execution. Dispatch all agents in a single message for maximum parallelism, then wait.
 
 #### Platform-Specific Dispatch
 
-**Claude Code:** Use the `Agent` tool as shown above with `subagent_type: "general-purpose"` (or `"Explore"` for Discovery waves, `"session-orchestrator:session-reviewer"` for quality review).
+**Claude Code:** Use the `Agent` tool as shown above. Agent types resolve as:
+- Project agents: `subagent_type: "<agent-name>"` (e.g., `"database-architect"`, `"ui-designer"`)
+- Plugin agents: `subagent_type: "session-orchestrator:<agent-name>"` (e.g., `"session-orchestrator:code-implementer"`)
+- Built-in: `"Explore"`, `"general-purpose"`
 
 **Codex CLI:** Codex uses typed agent roles defined in `.codex-plugin/agents/`. Map wave roles to Codex agents:
 - **Discovery** waves → `explorer` agent (read-only)
-- **Impl-Core / Impl-Polish** waves → `wave-worker` agent (workspace-write)
+- **Impl-Core / Impl-Polish** waves → `wave-worker` agent (workspace-write), or project-specific agents if defined in `.codex/agents/`
 - **Quality** review → `session-reviewer` agent (read-only)
 - **Finalization** → direct execution (no subagent needed)
 

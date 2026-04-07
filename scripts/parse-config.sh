@@ -245,6 +245,54 @@ json_enum() {
   jq -n --arg v "$lower" '$v'
 }
 
+# Parse a simple object value: { key1: val1, key2: val2 } -> JSON object of strings
+# Returns "null" for null/none/empty-when-default-is-null
+json_object() {
+  local key="$1" default="${2:-__NULL__}"
+  local val
+  val="$(get_val "$key" "$default")"
+
+  # Null / none / not set
+  if [[ "$val" == "__NULL__" || "$val" == "none" ]]; then
+    echo "null"
+    return
+  fi
+
+  # Strip surrounding braces if present
+  val="$(echo "$val" | sed 's/^[[:space:]]*{//;s/}[[:space:]]*$//')"
+
+  # Trim
+  val="$(echo "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+  # Empty after stripping braces -> null
+  if [[ -z "$val" ]]; then
+    echo "null"
+    return
+  fi
+
+  # Split on comma, parse key: value pairs, build JSON object
+  local json_obj="{"
+  local first=1
+  local pair
+  while IFS= read -r pair; do
+    pair="$(echo "$pair" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$pair" ]] && continue
+    local okey oval
+    okey="$(echo "$pair" | sed 's/:.*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    oval="$(echo "$pair" | sed 's/^[^:]*://' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$okey" || -z "$oval" ]] && continue
+    if (( first )); then
+      first=0
+    else
+      json_obj="${json_obj},"
+    fi
+    json_obj="${json_obj}$(jq -n --arg k "$okey" --arg v "$oval" '{($k): $v}' | sed 's/^{//;s/}$//')"
+  done <<< "$(echo "$val" | tr ',' '\n')"
+  json_obj="${json_obj}}"
+
+  echo "$json_obj"
+}
+
 # max-turns accepts a positive integer or the literal "auto"
 json_max_turns() {
   local val
@@ -310,6 +358,9 @@ V_ENFORCEMENT=$(json_enum "enforcement" "warn" "strict" "warn" "off")
 V_ISOLATION=$(json_enum "isolation" "auto" "worktree" "none" "auto")
 V_DISC_SEV=$(json_enum "discovery-severity-threshold" "low" "critical" "high" "medium" "low")
 
+# Object fields
+V_AGENT_MAPPING=$(json_object "agent-mapping")
+
 # Special field
 V_MAX_TURNS=$(json_max_turns)
 
@@ -352,6 +403,7 @@ jq -n \
   --argjson plan_default_visibility "$V_PLAN_VISIBILITY" \
   --argjson plan_prd_location "$V_PLAN_PRD" \
   --argjson plan_retro_location "$V_PLAN_RETRO" \
+  --argjson agent_mapping "$V_AGENT_MAPPING" \
   '{
     "session-types": $session_types,
     "agents-per-wave": $agents_per_wave,
@@ -389,5 +441,6 @@ jq -n \
     "plan-baseline-path": $plan_baseline_path,
     "plan-default-visibility": $plan_default_visibility,
     "plan-prd-location": $plan_prd_location,
-    "plan-retro-location": $plan_retro_location
+    "plan-retro-location": $plan_retro_location,
+    "agent-mapping": $agent_mapping
   }'

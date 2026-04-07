@@ -39,6 +39,34 @@ For each agreed task/issue:
 4. Estimate complexity: small (1 agent), medium (2-3 agents), large (dedicated wave)
 5. Identify synergies: tasks that touch the same files → same wave, same agent
 
+## Step 1.5: Agent Discovery
+
+Before assigning tasks to waves, discover available agents for this session:
+
+1. **Scan for project-level agents**: Glob `.claude/agents/*.md` (Claude Code / Cursor) or `.codex/agents/*.md` (Codex CLI)
+   - Read each file's YAML frontmatter: extract `name` and `description`
+   - Filter out non-agent reference files (skip files with `description` containing "Reference documentation" or "NOT an executable agent")
+   - Build a list of available project agents with their names and capabilities
+
+2. **Read agent-mapping from Session Config** (optional):
+   - Field: `agent-mapping` — a JSON object mapping role keys to agent names
+   - Role keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`
+   - Example: `agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect }`
+   - If present, these explicit mappings take priority over auto-matching
+
+3. **Build Agent Registry** (resolution priority):
+   - **Priority 1**: Project agents (from `.claude/agents/`) — matched by name
+   - **Priority 2**: Plugin agents (`session-orchestrator:code-implementer`, `session-orchestrator:test-writer`, `session-orchestrator:ui-developer`, `session-orchestrator:db-specialist`, `session-orchestrator:security-reviewer`)
+   - **Priority 3**: `general-purpose` (fallback)
+
+4. **Match tasks to agents**: For each task from Step 1:
+   - If `agent-mapping` config specifies a mapping for the task's domain → use that agent
+   - Else, match task description against agent descriptions (keyword overlap: database/schema/migration → db agent, test/coverage/spec → test agent, UI/component/style/page → ui agent, security/auth/OWASP → security agent)
+   - Else, use role-based default: Impl-Core/Impl-Polish → `code-implementer`, Quality → `test-writer`
+   - Record the resolved `subagent_type` for each task
+
+> **No agents found?** If no project agents exist and plugin agents are available, use plugin agents. If neither, fall back to `general-purpose` for all tasks. The system works at every level.
+
 ## Step 2: Wave Assignment
 
 Distribute tasks across waves using 5 named roles. Read `waves` from Session Config (default: 5) and map roles to wave numbers.
@@ -167,11 +195,11 @@ Present the plan in this format:
 ## Wave Plan (Session: [type], [N] waves)
 
 ### Wave 1: Discovery ([N agents])
-- Agent 1: [task] → [files] → [acceptance criteria]
+- Agent 1: [task] → [files] → [acceptance criteria] → `subagent_type: Explore`
 ...
 
 ### Wave 2: Impl-Core ([N agents])
-- Agent 1: [task] → [files] → [acceptance criteria]
+- Agent 1: [task] → [files] → [acceptance criteria] → `subagent_type: [resolved agent]`
 ...
 
 ### Wave 3: Impl-Polish ([N agents])
@@ -182,6 +210,10 @@ Present the plan in this format:
 
 ### Wave 5: Finalization ([N agents])
 ...
+
+### Agent Registry
+- [list which agents were discovered and how they map to tasks]
+- Example: "database-architect (project) → DB tasks, session-orchestrator:code-implementer (plugin) → API tasks"
 
 ### Inter-Wave Checkpoints
 - After Discovery: Validate discoveries, adjust Impl-Core scope if needed

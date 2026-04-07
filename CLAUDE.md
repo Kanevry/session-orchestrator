@@ -6,7 +6,7 @@ Claude Code plugin for session-level orchestration. This is a **plugin repo** �
 
 - `skills/` — 10 skills (session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve)
 - `commands/` — 6 commands (/session, /go, /close, /discovery, /plan, /evolve)
-- `agents/` — 1 agent (session-reviewer)
+- `agents/` — 6 agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer)
 - `hooks/` — SessionStart notification + PreToolUse enforcement (scope + commands)
 
 ## Development
@@ -32,3 +32,6 @@ Skills are loaded by Claude Code from the plugin directory — no build step nee
 - Session metrics tracking with historical trends (sessions.jsonl)
 - Adaptive wave sizing based on complexity scoring
 - Cross-session learning system with confidence-based intelligence
+- Intelligent agent dispatch: project agents > plugin agents > general-purpose
+- Agent-mapping Session Config for explicit role-to-agent binding
+- Model selection matrix (haiku/sonnet/opus per task type)

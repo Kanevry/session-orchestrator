@@ -372,6 +372,33 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 5. **Test** by having wave-executor dispatch the agent, or by invoking it directly via the Agent tool in Claude Code.
 
+## Custom Agents for Your Project
+
+Session Orchestrator includes 5 generic base agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer) that work in any project. For domain-specific needs, define custom agents in your project's `.claude/agents/` directory.
+
+### How Agent Resolution Works
+
+When the wave-executor dispatches agents, it follows this priority:
+
+1. **Project agents** (`.claude/agents/`) — highest priority
+2. **Plugin agents** (`session-orchestrator:*`) — generic fallback
+3. **`general-purpose`** — last resort
+
+### Setting Up Project Agents
+
+1. Create `.claude/agents/` in your project
+2. Add agent `.md` files with YAML frontmatter (`name`, `description` with `<example>` blocks, `tools`, `model`)
+3. Optionally add `agent-mapping` to your Session Config for explicit role binding:
+   ```yaml
+   agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect }
+   ```
+
+### When to Use Project Agents vs. Plugin Agents
+
+- **Plugin agents** are sufficient for most projects — they cover the common roles (code, tests, UI, DB, security)
+- **Project agents** are valuable when you need domain-specific knowledge (e.g., Austrian tax compliance, specific design system rules, custom DB tooling)
+- Projects can mix both: use project agents for specialized tasks and let plugin agents handle the rest
+
 ## Modifying Existing Skills
 
 Before changing an existing skill:
