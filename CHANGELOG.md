@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.14] - 2026-04-07 — Cross-Platform + Housekeeping
+
+### Added
+- **Codex CLI full support** — platform detection (`scripts/lib/platform.sh`), `.orchestrator/metrics/` shared knowledge layer, `.codex-plugin/` with 3 agent TOMLs (explorer, wave-worker, session-reviewer), hooks-codex.json, codex-setup.md
+- **Cursor IDE rules-based integration** — 9 `.cursor/rules/*.mdc` files, sequential execution model (no Agent() tool), platform.sh cursor detection, cursor-setup.md, hooks-cursor.json, cursor-install.sh
+- **Intelligent agent dispatch** — 3-tier resolution: project agents > plugin agents > general-purpose fallback. 5 domain agents (code-implementer, test-writer, db-specialist, ui-developer, security-reviewer)
+- **Worktree tests** (GL#39) — `scripts/test/test-worktree.sh` with 10 assertions covering create/cleanup/cleanup_all
+- **Platform slow-path tests** (GL#42) — 8 assertions for marker directory detection without env vars
+
+### Changed
+- **DRY hook scripts** (GL#41) — all 3 hooks now source `platform.sh` instead of duplicating `find_project_root()`
+- **Removed orphan config fields** (GL#40) — `session-types` and `cli-tools` removed from parser, docs, tests, and 23 files total
+- **Codex agent specialization** documented as known limitation (GL#43) — Platform Limitations section in codex-setup.md
+- **Test-writer hardening** — 3 anti-greenwashing rules: hardcoded assertions, mandatory error tests, falsification self-check
+- **Lifecycle Simulation v3** — 37 gaps found across 3-platform trace, 28 fixed (session-end, wave-executor, session-plan, discovery, evolve, hooks, .cursor/rules)
+- All 10 SKILL.md files now include `model-preference-cursor` frontmatter
+- `skills/_shared/platform-tools.md` extended with Cursor column
+- `skills/_shared/config-reading.md` updated with Cursor fallback paths
+- Tests: 130 → 155 passing (10 worktree + 8 platform slow-path + adjustments for removed fields)
+
+### Fixed
+- **3 discovery issues created** — GL#44 (post-edit-validate.sh JSON injection), GL#45 (Session Config dogfooding), GL#46 (.claudeignore)
+
 ## [2.0.0-alpha.13] - 2026-04-06 — Validate Refactor + Probes Split + PostToolUse Hook
 
 - **refactor:** extract 4 helpers from `validate()` in validate-wave-scope.sh — 109→22 lines (#25)
@@ -45,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor: deduplicate Phase 0 config lists across session-start, discovery, and plan skills (#12)
 - refactor: extract session-start Phase 7 presentation template to `presentation-format.md` (#18)
 - refactor: session-start SKILL.md reduced from 290 to 210 lines (28% reduction) (#18)
+
+## [2.0.0-alpha.9] - 2026-04-05 — Cross-Repo Learnings + Competitive Analysis
+
+- **feat:** cross-repo learnings — anti-pattern detection, skill metadata extraction, confidence-based filtering
+- **feat:** skill frontmatter extended with `tags` and `model-preference` fields
+- **fix:** discovery probe consistency fixes (false positive reduction, deduplication logic)
+- **analysis:** competitive analysis of everything-claude-code, projects-baseline, claude-code-skills repos
 
 ## [2.0.0-alpha.8] - 2026-04-04
 
