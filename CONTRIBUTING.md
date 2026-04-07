@@ -408,17 +408,19 @@ When your skill or agent interacts with VCS labels, reference the gitlab-ops tax
 
 ## Platform Abstraction
 
-Session Orchestrator supports both Claude Code and Codex CLI. When contributing, follow these guidelines to maintain cross-platform compatibility:
+Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contributing, follow these guidelines to maintain cross-platform compatibility:
 
 ### File Location Conventions
 
 | Category | Location | Notes |
 |----------|----------|-------|
-| Plugin manifests | `.claude-plugin/` and `.codex-plugin/` | Platform-specific, separate files |
-| Skills | `skills/` | Shared — one SKILL.md serves both platforms |
-| Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md |
+| Plugin manifests | `.claude-plugin/`, `.codex-plugin/` | Platform-specific, separate files |
+| Skills | `skills/` | Shared — one SKILL.md serves all platforms |
+| Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md, Cursor via rules |
 | Hooks (Claude Code) | `hooks/hooks.json` | Uses `$CLAUDE_PLUGIN_ROOT` |
 | Hooks (Codex) | `hooks/hooks-codex.json` | Uses `$CODEX_PLUGIN_ROOT` |
+| Hooks (Cursor) | `hooks/hooks-cursor.json` | Reference; configure in Cursor Settings |
+| Rules (Cursor) | `.cursor/rules/*.mdc` | Cursor-native format, one per skill |
 | Agents (Claude Code) | `agents/` | Markdown format |
 | Agents (Codex) | `.codex-plugin/agents/` | TOML format |
 | Shell scripts | `scripts/` | Shared — use `$SO_*` variables from `platform.sh` |
@@ -426,10 +428,10 @@ Session Orchestrator supports both Claude Code and Codex CLI. When contributing,
 ### Writing Platform-Portable Skills
 
 1. **Reference `skills/_shared/platform-tools.md`** for tool mappings between platforms
-2. **Add `model-preference-codex`** to SKILL.md frontmatter alongside `model-preference`
-3. **AskUserQuestion**: Always add a Codex fallback note: "On Codex CLI, present as numbered list"
-4. **Agent dispatch**: Document both Claude Code (`Agent()` tool) and Codex (agent roles) patterns
-5. **State paths**: Use `<state-dir>/` instead of hardcoding `.claude/`
+2. **Model preferences**: Add `model-preference`, `model-preference-codex`, and `model-preference-cursor` to SKILL.md frontmatter
+3. **AskUserQuestion**: Add fallback note: "On Codex CLI / Cursor, present as numbered list"
+4. **Agent dispatch**: Document all three patterns — Claude Code (`Agent()` tool), Codex (agent roles), Cursor (sequential execution)
+5. **State paths**: Use `<state-dir>/` (`.claude/`, `.codex/`, `.cursor/`) — never hardcode a single platform
 6. **Metrics paths**: Use `.orchestrator/metrics/` (shared) for learnings and sessions
 7. **Config file**: Reference "Session Config in CLAUDE.md or AGENTS.md" — not just CLAUDE.md
 
@@ -438,7 +440,7 @@ Session Orchestrator supports both Claude Code and Codex CLI. When contributing,
 1. **Source `platform.sh`**: `source "$(dirname "${BASH_SOURCE[0]}")/../lib/platform.sh"` (or `|| true` for graceful fallback)
 2. **Use `$SO_*` variables**: `$SO_PLATFORM`, `$SO_PLUGIN_ROOT`, `$SO_STATE_DIR`, `$SO_CONFIG_FILE`, `$SO_SHARED_DIR`
 3. **Never hardcode `.claude/`** in new scripts — always use `$SO_STATE_DIR`
-4. **Check both env vars**: `$CLAUDE_PROJECT_DIR` and `$CODEX_PROJECT_DIR` for project root resolution
+4. **Check all three env vars** for project root: `$CLAUDE_PROJECT_DIR`, `$CODEX_PROJECT_DIR`, `$CURSOR_PROJECT_DIR`
 
 ## Pull Request Guidelines
 

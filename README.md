@@ -4,10 +4,11 @@
 [![Version](https://img.shields.io/badge/version-2.0.0--alpha.13-orange.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex CLI](https://img.shields.io/badge/Codex_CLI-Compatible-green.svg)](https://developers.openai.com/codex/cli)
+[![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
 
-Session orchestration plugin for Claude Code and Codex CLI — project planning, wave execution, VCS integration, quality gates.
+Session orchestration plugin for Claude Code, Codex CLI, and Cursor IDE — project planning, wave execution, VCS integration, quality gates.
 
-> [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex CLI](https://developers.openai.com/codex/cli) are agentic coding CLIs. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
+> [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and [Cursor IDE](https://cursor.com) are agentic coding tools. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
 
 ## Install
 
@@ -31,25 +32,37 @@ git clone https://github.com/Kanevry/session-orchestrator.git ~/.codex/plugins/s
 # Add to .codex/config.toml: [features] hooks = true
 ```
 
+### Cursor IDE
+
+```bash
+# 1. Clone the session-orchestrator repo
+git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+
+# 2. Install Cursor rules into your project
+bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/project
+
+# Session Config goes in CLAUDE.md (Cursor reads it natively)
+```
+
 ## Prerequisites
 
-- **Claude Code** or **Codex CLI** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex CLI](https://developers.openai.com/codex/cli)
+- **Claude Code**, **Codex CLI**, or **Cursor IDE** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex CLI](https://developers.openai.com/codex/cli) | [Cursor IDE](https://cursor.com)
 - **jq** (recommended) — required for scope and command enforcement hooks
 
 ### Platform Support
 
-| Feature | Claude Code | Codex CLI |
-|---------|------------|-----------|
-| All 6 commands | Native slash commands | Instruction-based |
-| Parallel agents | Agent tool | Multi-agent roles |
-| Session persistence | .claude/STATE.md | .codex/STATE.md |
-| Shared knowledge | .orchestrator/metrics/ | .orchestrator/metrics/ |
-| Scope enforcement | PreToolUse hooks | Hooks (experimental) |
-| AskUserQuestion | Native tool | Numbered list fallback |
-| Quality gates | Full | Full |
-| Design alignment | Pencil integration | Pencil integration |
+| Feature | Claude Code | Codex CLI | Cursor IDE |
+|---------|------------|-----------|------------|
+| All 6 commands | Native slash commands | Instruction-based | Rules-based (.mdc) |
+| Parallel agents | Agent tool | Multi-agent roles | Sequential only |
+| Session persistence | .claude/STATE.md | .codex/STATE.md | .cursor/STATE.md |
+| Shared knowledge | .orchestrator/metrics/ | .orchestrator/metrics/ | .orchestrator/metrics/ |
+| Scope enforcement | PreToolUse hooks | Hooks (experimental) | afterFileEdit (post-hoc) |
+| AskUserQuestion | Native tool | Numbered list fallback | Numbered list fallback |
+| Quality gates | Full | Full | Full |
+| Design alignment | Pencil integration | Pencil integration | Pencil integration |
 
-Both platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.sh`.
+All platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.sh`. See setup guides: [Codex CLI](docs/codex-setup.md) | [Cursor IDE](docs/cursor-setup.md).
 
 ## Why Session Orchestrator
 
@@ -57,15 +70,15 @@ Session Orchestrator provides a complete development session lifecycle — from 
 
 ### Soul Personality System
 
-A `soul.md` file defines the orchestrator's identity as a seasoned engineering lead — with communication principles ("be direct"), a decision-making hierarchy (safety > productivity > quality > ecosystem health > speed), and values (pragmatism, evidence, ownership). This shapes every interaction, not just tone.
+A `soul.md` file defines the orchestrator's identity — communication principles, a decision-making hierarchy (safety > productivity > quality > ecosystem health > speed), and values (pragmatism, evidence, ownership). This shapes every interaction, not just tone.
 
 ### 5-Wave Execution Pattern
 
-Work flows through 5 typed waves: Discovery (read-only validation), Core Implementation, Polish & Integration, Quality & Testing, Finalization. The Quality wave includes a simplification pass that cleans AI-generated code patterns (unnecessary try-catch, over-documentation, redundant logic) before tests are written. Each wave has a defined purpose and agent count that scales by session type. This isn't just batching — it's structured engineering workflow.
+Five typed waves: Discovery (read-only), Core Implementation, Polish & Integration, Quality & Testing, Finalization. The Quality wave includes a simplification pass that cleans AI-generated code patterns before tests are written. Each wave has a defined purpose and agent count that scales by session type.
 
 ### Inter-Wave Quality Gates
 
-A dedicated session-reviewer agent runs 8 review sections between waves: implementation correctness, test coverage, TypeScript health, OWASP security basics, issue tracking, silent failure analysis (catch blocks that swallow errors), test depth (assertion quality, mock boundaries), and type design (overly broad types, missing unions). Every finding is confidence-scored (0-100) — only high-confidence issues (>=80) make it into the report. Verification escalates progressively: changed-file tests after Impl-Core, full integration tests after Impl-Polish, complete quality suite after Quality.
+A session-reviewer agent runs 8 review sections between waves (implementation correctness, test coverage, TypeScript health, OWASP security, issue tracking, silent failures, test depth, type design). Findings are confidence-scored (0-100) -- only >=80 make the report. Verification escalates progressively across waves.
 
 ### Design-Code Alignment
 
@@ -81,19 +94,19 @@ Checks configured service endpoints and scans cross-repo critical issues at sess
 
 ### Session Persistence & Safety
 
-Sessions persist across interruptions via `STATE.md` — crash recovery, resume from pause point, and clean handover between sessions. PreToolUse hooks enforce agent scope (file paths) and block dangerous commands. A circuit breaker detects execution spirals (thrashing, repeated errors, self-reverts) and recovers automatically.
+Sessions persist across interruptions via `STATE.md` -- crash recovery, resume, and handover. PreToolUse hooks enforce agent scope and block dangerous commands. A circuit breaker detects execution spirals and recovers automatically.
 
 ### Metrics & Cross-Session Learning
 
-Every session writes quantitative metrics (duration, agents, files changed per wave) plus effectiveness stats (completion rate, discovery probe value, carryover patterns) and extracts qualitative learnings (fragile files, effective sizing, recurring issues). After 5+ sessions, the system surfaces trends: low-value probes to disable, scope adjustments for high carryover, and completion rate analysis. Run `/evolve analyze` to retroactively extract patterns across all sessions, `/evolve review` to curate learnings, or `/evolve list` to see what the system knows. The system gets smarter over time.
+Every session writes metrics (duration, agents, files per wave) and effectiveness stats (completion rate, carryover). After 5+ sessions, the system surfaces trends. Use `/evolve analyze` to extract cross-session patterns, `/evolve review` to curate learnings, or `/evolve list` to inspect them.
 
 ### Adaptive Wave Sizing
 
-Agent counts scale with session complexity. A scoring formula (files × modules × issues) determines simple/moderate/complex tier, which maps to concrete agent counts per role and session type. Dynamic scaling adjusts between waves based on actual agent performance.
+A complexity scoring formula (files x modules x issues) determines agent counts per role and session type. Dynamic scaling adjusts between waves based on actual performance.
 
 ### Verified Session Close-Out
 
-`/close` verifies every planned item with evidence, runs a full quality gate, creates carryover issues for unfinished work, commits with individually staged files, and optionally mirrors to GitHub. `/discovery` runs 23 modular probes across code, infra, UI, architecture, and session categories — each finding confidence-scored to reduce triage noise. Nothing falls through the cracks.
+`/close` verifies every planned item, runs a full quality gate, creates carryover issues for unfinished work, and commits with individually staged files. `/discovery` runs 23 modular probes across code, infra, UI, architecture, and session categories -- each finding confidence-scored.
 
 ### Comparison
 
@@ -110,7 +123,7 @@ Agent counts scale with session complexity. A scoring formula (files × modules 
 | Design-code alignment | Pencil integration | None | None |
 | Session close with carryover | Verified, with issue creation | Manual | Partial |
 
-Session Orchestrator does not optimize for token cost or model routing. It optimizes for engineering quality — every wave verified, every issue tracked, every session closed cleanly.
+Session Orchestrator optimizes for engineering quality -- every wave verified, every issue tracked, every session closed cleanly.
 
 ## Usage
 

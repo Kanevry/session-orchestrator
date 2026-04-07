@@ -3,7 +3,7 @@
 # Part of Session Orchestrator v2.0
 #
 # Validates that Edit/Write tool calls target files within the current
-# wave's allowed scope. Reads scope manifest from .claude/wave-scope.json.
+# wave's allowed scope. Reads scope manifest from .claude/wave-scope.json, .codex/wave-scope.json, or .cursor/wave-scope.json.
 #
 # Exit codes:
 #   0 — allow (or no scope manifest / enforcement off)
@@ -32,10 +32,11 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) 
 find_project_root() {
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
   if [[ -n "${CODEX_PROJECT_DIR:-}" && -d "${CODEX_PROJECT_DIR}/.codex" ]]; then echo "$CODEX_PROJECT_DIR"; return; fi
+  if [[ -n "${CURSOR_PROJECT_DIR:-}" && -d "${CURSOR_PROJECT_DIR}/.cursor" ]]; then echo "$CURSOR_PROJECT_DIR"; return; fi
   local dir
   dir="$(pwd)"
   while [[ "$dir" != "/" ]]; do
-    if [[ -f "$dir/.claude/wave-scope.json" || -f "$dir/.codex/wave-scope.json" ]]; then echo "$dir"; return; fi
+    if [[ -f "$dir/.claude/wave-scope.json" || -f "$dir/.codex/wave-scope.json" || -f "$dir/.cursor/wave-scope.json" ]]; then echo "$dir"; return; fi
     dir="$(dirname "$dir")"
   done
   pwd
@@ -46,7 +47,9 @@ PROJECT_ROOT="$(find_project_root)"
 PROJECT_ROOT=$(realpath "$PROJECT_ROOT" 2>/dev/null || echo "$PROJECT_ROOT")
 
 # Load scope manifest — no manifest means no wave in progress (platform-aware)
-if [[ -f "$PROJECT_ROOT/.codex/wave-scope.json" ]]; then
+if [[ -f "$PROJECT_ROOT/.cursor/wave-scope.json" ]]; then
+  SCOPE_FILE="$PROJECT_ROOT/.cursor/wave-scope.json"
+elif [[ -f "$PROJECT_ROOT/.codex/wave-scope.json" ]]; then
   SCOPE_FILE="$PROJECT_ROOT/.codex/wave-scope.json"
 elif [[ -f "$PROJECT_ROOT/.claude/wave-scope.json" ]]; then
   SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"

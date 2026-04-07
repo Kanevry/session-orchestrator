@@ -4,6 +4,7 @@ user-invocable: false
 tags: [orchestration, initialization, analysis, alignment]
 model-preference: opus
 model-preference-codex: gpt-5.4
+model-preference-cursor: claude-opus-4-6
 description: >
   Full session initialization for any project repo. Autonomously analyzes git state,
   VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents

@@ -1,0 +1,218 @@
+---
+description: "When the user types /evolve or asks about session learnings, pattern extraction, or learning management"
+globs: ""
+alwaysApply: false
+---
+
+# Evolve — Session Learning Extraction
+
+Extract patterns from session history into reusable learnings. Three modes of operation.
+
+## Prerequisites
+
+- Persistence must be enabled in Session Config (`persistence: true`)
+- Session history must exist at `.orchestrator/metrics/sessions.jsonl`
+- Learnings are stored at `.orchestrator/metrics/learnings.jsonl`
+
+## Mode Selection
+
+Determine mode from user input (default: `analyze`):
+
+| Mode | Purpose |
+|------|---------|
+| `analyze` | Extract new learnings from session history |
+| `review` | Edit/manage existing learnings interactively |
+| `list` | Display active learnings (read-only) |
+
+---
+
+## Mode 1: Analyze
+
+Extract learnings from `.orchestrator/metrics/sessions.jsonl`.
+
+### Step 1: Load Session Data
+
+1. Read all entries from `sessions.jsonl`, parse each line as JSON
+2. Sort by `completed_at` descending (most recent first)
+3. If no sessions found, abort: "No session data available."
+
+### Step 2: Pattern Extraction
+
+Apply these heuristics for each learning type:
+
+#### fragile-file
+- Same file appears in 3+ waves' `files_changed` within a session, or in 3+ different sessions
+- Subject = relative file path
+
+#### effective-sizing
+- Compare `total_agents` and `total_waves` across session types
+- Calculate average agents per wave per session type
+- Subject = e.g. `deep-session-sizing` or `feature-session-sizing`
+
+#### recurring-issue
+- `agent_summary` shows `failed` or `partial` > 0 across multiple sessions
+- Repeated failures in wave `quality` fields
+- Subject = issue pattern identifier (e.g. `test-failures-in-wave-execution`)
+
+#### scope-guidance
+- Cross-reference `effectiveness.planned_issues` vs `effectiveness.completion_rate`
+- Skip sessions lacking the `effectiveness` field
+- If completion_rate consistently 1.0 with N issues: "N issues per session works well"
+- If completion_rate < 0.7: "scope was too large"
+- Subject = `optimal-scope-per-session-type`
+
+#### deviation-pattern
+- Read `.cursor/STATE.md` if it exists, check `## Deviations` section
+- Cross-reference session duration vs planned waves
+- Subject = pattern name (e.g. `scope-creep-in-feature-sessions`)
+
+### Step 3: Deduplicate
+
+For each extracted pattern, check if a learning with same `type` + `subject` exists in `learnings.jsonl`:
+- **Exists:** propose confidence update (+0.15 if confirmed, -0.2 if contradicted)
+- **New:** propose as new learning with confidence 0.5
+
+### Step 4: Present to User
+
+Present extracted patterns for confirmation. Let the user select which to save. Include a "Skip all" option.
+
+If user skips or selects nothing: "No learnings saved."
+
+If zero patterns were extracted, report: "No patterns found in session history." and stop.
+
+### Step 5: Write Confirmed Learnings
+
+Use atomic rewrite strategy:
+1. Read ALL existing lines from `learnings.jsonl` into memory
+2. Apply confidence updates for confirmed existing learnings (+0.15, cap at 1.0)
+3. Apply confidence decrements for contradicted learnings (-0.2)
+4. Append new learnings with confidence 0.5
+5. Prune entries where `expires_at` < current date OR `confidence` <= 0.0
+6. Consolidate duplicates (same `type` + `subject`): keep highest confidence
+7. Write entire result back with `>` (atomic rewrite, NOT append `>>`)
+
+Report: "Saved N new learnings, updated M existing. Total active: K."
+
+---
+
+## Mode 2: Review
+
+Interactive management of existing learnings.
+
+### Step 1: Load and Display
+
+Read `learnings.jsonl`. If empty or missing: "No learnings found. Run `/evolve analyze` first."
+
+Display as a formatted table grouped by type:
+
+```
+## Active Learnings
+
+| # | Type | Subject | Confidence | Expires | Insight |
+|---|------|---------|------------|---------|---------|
+| 1 | fragile-file | src/lib/auth.ts | 0.80 | 2026-07-05 | Changed in 4 of last 5 sessions |
+
+Summary: N active learnings (M high confidence, K expiring soon)
+```
+
+### Step 2: Interactive Management
+
+Offer these operations:
+- **Boost confidence** — select learnings to boost (+0.15, cap 1.0)
+- **Reduce confidence** — select learnings to reduce (-0.2)
+- **Delete specific learnings** — remove selected entries
+- **Extend expiry** — reset `expires_at` to current date + `learning-expiry-days`
+- **Done** — exit without changes
+
+### Step 3: Apply Changes
+
+Same atomic rewrite strategy as analyze mode. Read all, modify selected, prune, consolidate, write all with `>`.
+
+Report: "Updated N learnings. Total active: K."
+
+---
+
+## Mode 3: List
+
+Read-only display of active learnings.
+
+### Output Format
+
+Display grouped by type:
+
+```
+## Active Learnings
+
+### fragile-file
+| Subject | Confidence | Expires | Insight |
+|---------|------------|---------|---------|
+
+### effective-sizing
+| Subject | Confidence | Expires | Insight |
+|---------|------------|---------|---------|
+
+(repeat for each type with entries)
+```
+
+### Summary Line
+
+```
+N active learnings (M high confidence, K expiring soon)
+```
+
+- **High confidence** = confidence > 0.7
+- **Expiring soon** = `expires_at` within 14 days of current date
+
+---
+
+## Learning JSONL Format
+
+Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
+
+```json
+{
+  "id": "uuid-v4",
+  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern",
+  "subject": "identifier for the pattern",
+  "insight": "human-readable description",
+  "evidence": "specific data points supporting the pattern",
+  "confidence": 0.5,
+  "source_session": "session-id",
+  "created_at": "2026-04-07T00:00:00Z",
+  "expires_at": "2026-05-07T00:00:00Z"
+}
+```
+
+### Confidence Lifecycle
+
+| Event | Change |
+|-------|--------|
+| Created | 0.5 |
+| Confirmed (new evidence or user boost) | +0.15 (cap 1.0) |
+| Contradicted or user reduce | -0.2 |
+| Past `expires_at` date | Pruned on next write |
+| Confidence <= 0.0 | Pruned on next write |
+
+### Valid Learning Types
+
+| Type | What it captures |
+|------|-----------------|
+| `fragile-file` | Files changed too frequently across sessions/waves |
+| `effective-sizing` | Optimal agent/wave sizing per session type |
+| `recurring-issue` | Repeated failures or partial completions |
+| `scope-guidance` | How many issues fit well in a session |
+| `deviation-pattern` | Scope creep, underestimation, plan deviations |
+
+---
+
+## Critical Rules
+
+- NEVER modify `learnings.jsonl` without reading it first
+- NEVER skip deduplication (check `type` + `subject` match)
+- NEVER write learnings without user confirmation
+- ALWAYS use uuid-v4 for new learning IDs (generate via `uuidgen`)
+- ALWAYS set `expires_at` to current date + `learning-expiry-days` from config (default: 30)
+- ALWAYS use atomic rewrite (read all, modify, write all with `>`)
+- ALWAYS cap confidence at 1.0
+- NEVER fabricate patterns -- only extract from actual session data with verifiable evidence
+- NEVER append to `learnings.jsonl` with `>>` -- always atomic rewrite

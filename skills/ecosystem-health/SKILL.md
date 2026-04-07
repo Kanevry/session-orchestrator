@@ -4,6 +4,7 @@ user-invocable: false
 tags: [reference, health, monitoring, ci, endpoints]
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
+model-preference-cursor: claude-sonnet-4-6
 description: >
   Monitor health across configured service endpoints, CI pipelines, and critical
   issues. Automatically invoked during session-start when ecosystem-health is

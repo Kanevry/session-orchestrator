@@ -4,6 +4,7 @@ user-invocable: false
 tags: [reference, vcs, gitlab, github, issues]
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
+model-preference-cursor: claude-sonnet-4-6
 description: >
   VCS operations reference for GitLab and GitHub: CLI commands (glab/gh),
   label taxonomy, issue templates, dynamic project resolution.

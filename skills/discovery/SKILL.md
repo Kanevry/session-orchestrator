@@ -4,6 +4,7 @@ user-invocable: false
 tags: [quality, discovery, probes, issues]
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
+model-preference-cursor: claude-sonnet-4-6
 description: >
   Systematic quality discovery and issue detection. Runs modular probes
   adapted to the project's tech stack, presents findings interactively

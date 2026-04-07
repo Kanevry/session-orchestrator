@@ -1,0 +1,222 @@
+---
+description: "When the user types /discovery or requests quality analysis, code audit, or issue detection"
+globs: ""
+alwaysApply: false
+---
+
+# Discovery — Quality Analysis & Issue Detection
+
+Systematic quality discovery that runs modular probes adapted to the project's tech stack, presents findings interactively, and creates VCS issues for confirmed problems.
+
+## Invocation
+
+- **Standalone** (`/discovery [scope]`): Full flow with interactive triage
+- **Embedded** (from session-end): Phases 0-3 only, return structured findings
+
+Scope accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, or comma-separated like `code,session`.
+
+## Phase 1: Stack Detection
+
+Detect the project's tech stack via marker file checks:
+
+| Marker File(s) | Activates |
+|----------------|-----------|
+| `package.json` | JS/TS probes |
+| `tsconfig.json` | TypeScript probes |
+| `requirements.txt` / `pyproject.toml` | Python probes |
+| `Dockerfile` / `docker-compose.yml` | Container probes |
+| `.github/workflows/` | GitHub CI probes |
+| `.gitlab-ci.yml` | GitLab CI probes |
+| `next.config.*` / `nuxt.config.*` | SSR probes |
+| `tailwind.config.*` | Tailwind probes |
+
+Report: "Discovery: [N] probes active across [categories]. Stack: [detected]."
+
+### Exclude Paths (always apply)
+
+`node_modules/`, `.git/`, `dist/`, `build/`, `.next/`, `.nuxt/`, `coverage/`
+
+## Phase 2: Probe Execution
+
+Run probes **sequentially** (Cursor has no parallel agents). Group by category.
+
+### Available Probe Categories
+
+**Code probes** (any project with source files):
+- `hardcoded-values` — Secrets, hardcoded URLs, magic numbers
+- `orphaned-annotations` — TODO/FIXME/HACK without linked VCS issues
+- `dead-code` — Unused exports, unused dependencies (JS/TS)
+- `ai-slop` — Filler phrases, over-documentation, hallucinated imports
+- `type-safety-gaps` — `any` types, `@ts-ignore`, non-null assertions (TypeScript)
+- `test-coverage-gaps` — Source files without corresponding test files
+- `test-anti-patterns` — Empty assertions, excessive mocking, snapshot abuse
+- `security-basics` — eval(), dangerouslySetInnerHTML, SQL injection, permissive CORS
+
+**Infra probes** (when CI/Docker markers found):
+- CI configuration issues, Dockerfile anti-patterns, deployment health
+
+**UI probes** (when frontend frameworks detected):
+- Accessibility gaps, responsive design issues, component anti-patterns
+
+**Arch probes** (any project):
+- Circular dependencies, complexity hotspots, deep nesting
+
+**Session probes** (when `.orchestrator/` exists):
+- Session metric anomalies, recurring failures, stale learnings
+
+### Probe Execution Pattern
+
+For each active probe:
+1. Run the detection commands (Grep, Glob, Bash read-only)
+2. For each match, record a finding:
+   ```
+   FINDING:
+     probe: <probe_name>
+     category: <category>
+     severity: <critical|high|medium|low>
+     file_path: <absolute path>
+     line_number: <number>
+     matched_text: <exact text from tool output>
+     title: <short title>
+     description: <1-2 sentence description>
+     recommended_fix: <concrete fix suggestion>
+   ```
+3. If a probe's activation condition is not met, skip with note
+4. If a probe command fails, skip gracefully and continue
+
+**CRITICAL**: Do NOT fabricate findings. Only report what tool output confirms.
+
+### Key Detection Patterns
+
+| Probe | Severity | Pattern |
+|-------|----------|---------|
+| Hardcoded secrets | Critical | `(password\|api_key\|secret\|token)\s*[:=]\s*["'][^"']+["']` (exclude test/env/fixtures) |
+| eval usage | High | `eval\s*\(` |
+| XSS (React) | High | `dangerouslySetInnerHTML` |
+| XSS (DOM) | High | `innerHTML\s*=` |
+| SQL injection | High | `` `[^`]*SELECT[^`]*\$\{`` |
+| any type | Medium | `:\s*any\b` or `as\s+any\b` |
+| TS suppression | Medium | `@ts-ignore` |
+| AI filler | Medium | `(as you can see\|it's worth noting\|needless to say)` |
+| Over-documented params | Medium | `@param\s+(\w+)\s+[-]\s*(the\s+)?\1` |
+
+## Phase 3: Verification & Scoring
+
+After all probes complete:
+
+### 3.1 Verify Each Finding
+
+For EACH finding:
+1. Read the file at `file_path:line_number`
+2. Confirm `matched_text` appears at or near that line (+/-3 lines tolerance)
+3. If NOT confirmed, discard as false positive
+
+Report: "Verification: N confirmed, M discarded as false positives"
+
+### 3.2 Confidence Scoring
+
+Score each finding (0-100):
+
+| Factor | Low (+0) | Medium (+10) | High (+20) |
+|--------|----------|-------------|------------|
+| Pattern specificity | Generic (URL, TODO) | Moderate (orphaned annotation) | Specific (API key regex, eval()) |
+| File context | Test/example/docs | Utility/config/scripts | Production source/API handler |
+| Historical signal | Previously dismissed | No prior data | Recurring issue |
+
+Start at 40 baseline, add factor scores. Critical severity findings get minimum 70.
+
+### 3.3 Deduplication
+
+Two findings are duplicates if: same `file_path` AND overlapping line range (+/-5 lines) AND different probes. Keep the higher severity finding.
+
+### 3.4 Apply Thresholds
+
+Remove findings below configured severity and confidence thresholds (default confidence: 60).
+
+## Phase 4: Interactive Triage (Standalone Only)
+
+### Step 1: Summary Table
+
+```
+## Discovery Results
+
+Probes run: [N] | Findings verified: [N] | False positives discarded: [N]
+
+| Category | Critical | High | Medium | Low | Total |
+|----------|----------|------|--------|-----|-------|
+| Code     | ...      | ...  | ...    | ... | ...   |
+| Infra    | ...      | ...  | ...    | ... | ...   |
+```
+
+### Step 2: Critical + High Findings — Review Individually
+
+For each Critical or High finding, present to the user:
+
+```
+[CRITICAL] (confidence: 85) hardcoded-values: API key found in src/config.ts:42
+
+<file context with +/-3 lines>
+
+Recommended fix: <suggestion>
+
+Options:
+1. Create issue (critical)
+2. Adjust priority
+3. Dismiss — intentional
+4. Dismiss — false positive
+```
+
+### Step 3: Medium + Low Findings — Review Batched
+
+Group by category, present summary:
+
+```
+[N] medium/low findings in [category]:
+1. [title] — [file_path]:[line] ([severity])
+2. [title] — [file_path]:[line] ([severity])
+
+Options:
+1. Accept all (Recommended) — create issues for all
+2. Review individually
+3. Dismiss all
+```
+
+### Step 4: Batch Confirmation
+
+Before creating issues, confirm the total count with the user.
+
+## Phase 5: Issue Creation
+
+For each approved finding:
+
+1. Format issue with: title, description, severity, file location, recommended fix
+2. Detect VCS platform (GitLab: `glab`, GitHub: `gh`)
+3. Create issue:
+   - **GitLab**: `glab issue create --title "[Discovery] <title>" --label "type:discovery,priority:<level>" --description "<body>"`
+   - **GitHub**: `gh issue create --title "[Discovery] <title>" --label "type:discovery,priority:<level>" --body "<body>"`
+4. Brief pause between creations for rate limiting
+
+### Final Report
+
+```
+## Discovery Report
+
+- Probes run: [N] across [categories]
+- Verified: [N] (false positives: [M])
+- User approved: [N]
+- Issues created: [N]
+
+| # | Title | Priority | Probe |
+|---|-------|----------|-------|
+| <IID> | <title> | <priority> | <probe> |
+```
+
+## Critical Rules
+
+- **NEVER** fabricate findings — every finding must come from tool output with verifiable evidence
+- **NEVER** create issues without user approval (standalone mode)
+- **ALWAYS** verify findings by re-reading the file at the reported line
+- **ALWAYS** present evidence (file path, line number, actual content) with every finding
+- If a probe command fails, skip gracefully, continue with others
+- If in embedded mode, stop after Phase 3, return findings as structured data
+- Default exclude paths always apply

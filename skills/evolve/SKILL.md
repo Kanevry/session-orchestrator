@@ -4,6 +4,7 @@ user-invocable: false
 tags: [learning, intelligence, meta]
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
+model-preference-cursor: claude-sonnet-4-6
 description: >
   Extract session patterns into reusable learnings. Three modes: analyze (extract from session history),
   review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl.

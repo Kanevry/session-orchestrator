@@ -1,0 +1,239 @@
+---
+description: "When executing session plan waves via /go command — task sequencing, quality checks, progress tracking"
+globs: ""
+alwaysApply: false
+---
+
+# Wave Execution (Cursor Adaptation)
+
+> **CRITICAL**: Cursor does NOT have an `Agent()` tool. All wave tasks execute **sequentially in the current session**. You are both the coordinator AND the implementer.
+
+## Pre-Execution
+
+Before starting the first wave:
+
+1. **Clean working directory**: Run `git status --short` — commit or stash any uncommitted changes
+2. **Capture session baseline**:
+   ```bash
+   SESSION_START_REF=$(git rev-parse HEAD)
+   ```
+   Keep this ref for the entire session — needed for simplification pass and final diff.
+3. **Confirm the agreed plan** is still valid (no new critical issues since planning)
+
+### Initialize STATE.md
+
+Create `.cursor/STATE.md` with this format:
+
+```yaml
+---
+schema-version: 1
+session-type: feature|deep|housekeeping
+branch: <current branch>
+issues: [<issue numbers from plan>]
+started_at: <ISO 8601 timestamp>
+status: active
+current-wave: 0
+total-waves: <from session plan>
+---
+```
+
+```markdown
+## Current Wave
+
+Wave 0 — Initializing
+
+## Wave History
+
+(none yet)
+
+## Deviations
+
+(none yet)
+```
+
+Create `.cursor/` directory with `mkdir -p .cursor` if needed.
+
+## Wave Loop
+
+For each wave in the session plan:
+
+### Step 1: Write Scope Manifest
+
+Before starting each wave, write `.cursor/wave-scope.json`:
+
+```json
+{
+  "wave": 1,
+  "role": "<role>",
+  "enforcement": "warn",
+  "allowedPaths": ["<paths from agent specs in session plan>"],
+  "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
+}
+```
+
+Rules:
+- `allowedPaths` is the UNION of all task file scopes for this wave
+- For **Discovery** waves: set `allowedPaths` to `[]` — Discovery is READ-ONLY
+- For **Quality** waves (Phase 1 — Simplification): set `allowedPaths` to production files changed this session (exclude test files)
+- For **Quality** waves (Phase 2 — Test/Review): set `allowedPaths` to test file patterns only
+
+### Step 2: Execute Tasks Sequentially
+
+For each task in the wave:
+1. Read the task description and acceptance criteria
+2. Implement the task (you are the implementer, not a dispatcher)
+3. After completing each task, report status:
+   ```
+   Task "[description]": done|partial|failed — [1-line summary]
+   ```
+4. If a task fails or you get stuck, note what went wrong and move to the next task
+
+**DO NOT commit during wave execution** — commits happen at session end.
+
+### Step 3: Run Incremental Quality Checks
+
+After completing ALL tasks in the wave:
+
+- After **Discovery** waves: no verification needed (read-only)
+- After **Impl-Core** waves: run `typecheck` and test changed files
+- After **Impl-Polish** waves: run `typecheck`, test changed files, and verify integration
+- After **Quality** waves: run Full Gate checks (typecheck + test + lint — all must pass)
+- After **Finalization**: run `git status` to verify clean state
+
+### Step 4: Self-Review
+
+Check your implementation against the acceptance criteria for each task:
+- Did you implement what was specified?
+- Did you modify only the allowed files?
+- Are there any regressions in existing functionality?
+- Do the changes follow project conventions?
+
+### Step 5: Update STATE.md
+
+After each wave completes:
+
+1. **Frontmatter**: set `current-wave` to the completed wave number
+2. **`## Current Wave`**: replace with next wave info
+3. **`## Wave History`**: append:
+   ```
+   ### Wave N — <Role>
+   - Task "[description]": done|partial|failed — [files changed] — [1-line note]
+   - Task "[description]": done|partial|failed — [files changed] — [1-line note]
+   ```
+4. **`## Deviations`**: if the plan was adapted, append:
+   ```
+   - [<ISO timestamp>] Wave N: <what changed and why>
+   ```
+
+### Step 6: Report Wave Status
+
+After each wave, provide a status report:
+
+```
+## Wave [N] ([Role]) Complete
+
+- Task 1: [done/partial/failed] — [1-line summary]
+- Task 2: [done/partial/failed] — [1-line summary]
+- Tests: [passing/failing] | TypeScript: [0 errors / N errors]
+- Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
+```
+
+### Step 7: Adapt Plan (if needed)
+
+After reviewing wave results, decide:
+- **On track**: proceed to next wave as planned
+- **Minor issues**: add fix tasks to the next wave
+- **Major blocker**: STOP and inform the user, propose revised plan
+- **Scope change**: document WHY, adjust remaining waves, inform user
+
+## Quality Wave
+
+The Quality wave has two phases:
+
+### Phase 1: Simplification Pass
+
+1. Identify all files changed this session:
+   ```bash
+   git diff --name-only $SESSION_START_REF..HEAD
+   ```
+2. Filter to production files only (exclude `*.test.*`, `*.spec.*`, `__tests__/`)
+3. If no production files changed, skip to Phase 2
+4. Review each changed production file for AI-generated patterns:
+   - Remove unnecessary try-catch around non-throwing operations
+   - Delete over-documentation (params that repeat the name, returns that say "the result")
+   - Replace re-implemented stdlib functions with standard alternatives
+   - Simplify redundant boolean logic (if/else returning true/false, double negation)
+   - **DO NOT change functionality**
+
+### Phase 2: Full Gate Quality Checks
+
+Run all quality checks:
+- `typecheck` (tsgo --noEmit or tsc --noEmit)
+- `test` (pnpm test --run or configured test command)
+- `lint` (pnpm lint or configured lint command)
+
+All must pass before proceeding.
+
+## Circuit Breaker
+
+**If you get stuck in a fix-retry loop (same error appearing 3+ times):**
+
+1. STOP immediately
+2. Report to the user:
+   ```
+   CIRCUIT BREAKER: Stuck on [error description].
+   Attempted [N] times. Same error persists.
+
+   Options:
+   1. Narrow scope and retry with a different approach
+   2. Skip this task and continue with remaining waves
+   3. Abort session
+   ```
+3. Wait for user decision before proceeding
+
+**Spiral indicators** (detect these in your own work):
+- Same file edited 3+ times without progress
+- Same error message appearing repeatedly
+- Reverting your own changes
+
+## Session Type Behavior
+
+### Housekeeping Sessions
+- Execute tasks serially, 1-2 tasks at a time
+- No scope enforcement (skip wave-scope.json)
+- Run Baseline quality checks after all tasks complete
+- End with a single commit summarizing all housekeeping work
+
+### Feature Sessions
+- Full wave execution with all roles
+- Balance between implementation speed and quality
+
+### Deep Sessions
+- Full wave execution with extra emphasis on Discovery and Quality
+- May include security audits, performance profiling, architecture refactoring
+
+## Completion
+
+After the final wave completes successfully:
+1. Delete `.cursor/wave-scope.json` (cleanup)
+2. Report final status to the user
+3. Suggest running `/close` to finalize the session
+4. **DO NOT auto-commit** — `/close` handles that with proper verification
+
+## Error Recovery
+
+| Situation | Action |
+|-----------|--------|
+| Tests fail after wave | Diagnose and fix, don't skip |
+| TypeScript errors introduced | Track count, fix by Quality wave |
+| New critical issue discovered | Inform user, add to remaining waves if fits scope |
+| Edits to wrong files | Revert via git, redo with correct scope |
+| Stuck in loop | Trigger circuit breaker (see above) |
+
+## Anti-Patterns
+
+- **NEVER** skip inter-wave review — quality degrades exponentially
+- **NEVER** commit during wave execution — coordinator commits at session end
+- **NEVER** continue to next wave if previous wave has unresolved failures
+- **NEVER** let wave execution run without reporting progress to the user
+- **NEVER** modify files outside the wave's allowedPaths scope

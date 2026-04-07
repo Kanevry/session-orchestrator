@@ -13,6 +13,10 @@ detect_platform() {
     SO_PLATFORM="codex"
     return
   fi
+  if [[ -n "${CURSOR_RULES_DIR:-}" ]]; then
+    SO_PLATFORM="cursor"
+    return
+  fi
 
   # Slow path: walk up from CWD looking for plugin marker directories
   local dir
@@ -24,6 +28,10 @@ detect_platform() {
     fi
     if [[ -d "$dir/.codex-plugin" ]]; then
       SO_PLATFORM="codex"
+      return
+    fi
+    if [[ -d "$dir/.cursor/rules" ]]; then
+      SO_PLATFORM="cursor"
       return
     fi
     dir="$(dirname "$dir")"
@@ -41,6 +49,10 @@ resolve_plugin_root() {
   fi
   if [[ "$SO_PLATFORM" == "codex" && -n "${CODEX_PLUGIN_ROOT:-}" && -d "$CODEX_PLUGIN_ROOT" ]]; then
     SO_PLUGIN_ROOT="$CODEX_PLUGIN_ROOT"
+    return
+  fi
+  if [[ "$SO_PLATFORM" == "cursor" && -n "${CURSOR_RULES_DIR:-}" && -d "$CURSOR_RULES_DIR" ]]; then
+    SO_PLUGIN_ROOT="$CURSOR_RULES_DIR"
     return
   fi
 
@@ -69,6 +81,10 @@ resolve_project_dir() {
     SO_PROJECT_DIR="$CODEX_PROJECT_DIR"
     return
   fi
+  if [[ -n "${CURSOR_PROJECT_DIR:-}" ]]; then
+    SO_PROJECT_DIR="$CURSOR_PROJECT_DIR"
+    return
+  fi
 
   # Walk up from CWD looking for platform markers
   local dir
@@ -77,6 +93,7 @@ resolve_project_dir() {
   case "$SO_PLATFORM" in
     claude) config_file="CLAUDE.md" ;;
     codex)  config_file="AGENTS.md" ;;
+    cursor) config_file="CLAUDE.md" ;;
     *)      config_file="CLAUDE.md" ;;
   esac
 
@@ -96,6 +113,7 @@ resolve_state_dir() {
   case "$SO_PLATFORM" in
     claude) SO_STATE_DIR=".claude" ;;
     codex)  SO_STATE_DIR=".codex" ;;
+    cursor) SO_STATE_DIR=".cursor" ;;
     *)      SO_STATE_DIR=".claude" ;;
   esac
 }
@@ -105,6 +123,7 @@ resolve_config_file() {
   case "$SO_PLATFORM" in
     claude) SO_CONFIG_FILE="CLAUDE.md" ;;
     codex)  SO_CONFIG_FILE="AGENTS.md" ;;
+    cursor) SO_CONFIG_FILE="CLAUDE.md" ;;
     *)      SO_CONFIG_FILE="CLAUDE.md" ;;
   esac
 }

@@ -4,6 +4,7 @@ user-invocable: false
 tags: [orchestration, planning, waves, agents]
 model-preference: opus
 model-preference-codex: gpt-5.4
+model-preference-cursor: claude-opus-4-6
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
   Decomposes agreed tasks into configurable waves (default 5) with optimal agent assignment,

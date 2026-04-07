@@ -1,0 +1,128 @@
+---
+description: "When running quality checks — typecheck, test, lint — during development or session execution"
+globs: ""
+alwaysApply: false
+---
+
+# Quality Gates
+
+Four quality gate variants for different session phases. Commands are read from Session Config in `CLAUDE.md` (field defaults shown below).
+
+## Config Fields
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `test-command` | `pnpm test --run` | Set to `skip` to disable |
+| `typecheck-command` | `tsgo --noEmit` | Set to `skip` to disable |
+| `lint-command` | `pnpm lint` | Set to `skip` to disable |
+
+## Variant 1: Baseline
+
+**When**: Session start (Phase 3)
+**Purpose**: Quick health check — non-blocking.
+
+```bash
+{typecheck-command} 2>&1 | tail -5
+{test-command} 2>&1 | tail -5
+```
+
+- Report results but do NOT block the session
+- Store error counts as the session baseline for later comparison
+
+## Variant 2: Incremental
+
+**When**: After implementation waves (Impl-Core, Impl-Polish)
+**Purpose**: Verify implementation did not break anything.
+
+```bash
+# Run tests on changed files only
+{test-command} -- <changed-test-files>
+
+# Full typecheck (always full — partial typecheck is unreliable)
+{typecheck-command}
+```
+
+- Report failures but do NOT block wave progression
+- If issues found, add fix tasks to the next wave automatically
+
+## Variant 3: Full Gate
+
+**When**: Session end (Phase 2) — before committing
+**Purpose**: Final quality gate — BLOCKING.
+
+```bash
+# 1. Typecheck — must produce 0 errors
+{typecheck-command}
+
+# 2. Tests — must pass (exit code 0)
+{test-command}
+
+# 3. Lint — errors NOT OK, warnings OK
+{lint-command}
+
+# 4. Debug artifact scan
+grep -rn 'console\.log\|debugger\|TODO: remove' \
+  --include='*.ts' --include='*.tsx' --include='*.js' \
+  src/ lib/ 2>/dev/null || true
+```
+
+**Rules**:
+- Do NOT commit if any check fails
+- Fix quick issues (<2 min) inline
+- For longer fixes: create a `priority:high` issue and exclude affected files from commit
+
+## Variant 4: Per-File
+
+**When**: Session review (reviewer agent)
+**Purpose**: Targeted check on specific changed files.
+
+```bash
+# Run tests for specific files
+{test-command} -- <specific-file-paths>
+
+# Full typecheck
+{typecheck-command}
+```
+
+- Report per-file pass/fail status
+- Used by reviewers to annotate findings
+
+## Decision Table
+
+| Phase | Variant | Blocking? | Scope |
+|-------|---------|-----------|-------|
+| Session start | Baseline | No | Quick health check |
+| After impl wave | Incremental | No | Changed files + full typecheck |
+| Before commit (/close) | Full Gate | **Yes** | All checks, all files |
+| Review | Per-File | No | Specific files |
+
+## Graceful Degradation
+
+Handle missing tools without failing:
+
+- `command not found` for typecheck → skip, note "No TypeScript configured"
+- `command not found` for test → skip, note "No test runner configured"
+- `command not found` for lint → skip, note "No linter configured"
+- Non-TypeScript projects: set `typecheck-command: skip` in Session Config
+
+Always continue with remaining checks — never abort because one tool is missing.
+
+## Script Alternative
+
+If the Session Orchestrator plugin is installed, prefer the script for structured JSON output:
+
+```bash
+# Baseline
+bash "$SO_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant baseline
+
+# Incremental
+bash "$SO_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant incremental --files file1.ts,file2.ts
+
+# Full Gate
+bash "$SO_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant full-gate
+
+# Per-File
+bash "$SO_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant per-file --files specific-file.ts
+```
+
+Exit codes: 0=pass, 1=error, 2=gate-failed.

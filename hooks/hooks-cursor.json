@@ -1,0 +1,14 @@
+{
+  "_comment": "Cursor IDE hook mapping reference. Configure hooks in Cursor Settings > Hooks.",
+  "_note": "Cursor hooks fire at different lifecycle points than Claude Code. See docs/cursor-setup.md for details.",
+  "hooks": {
+    "afterFileEdit": {
+      "script": "hooks/enforce-scope.sh",
+      "note": "Post-hoc scope warning — Cursor fires AFTER the edit (not before). Cannot prevent out-of-scope edits, only warn."
+    },
+    "beforeShellExecution": {
+      "script": "hooks/enforce-commands.sh",
+      "note": "Blocks dangerous commands before shell execution. Direct equivalent of Claude Code's PreToolUse Bash hook."
+    }
+  }
+}

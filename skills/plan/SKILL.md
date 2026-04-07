@@ -4,6 +4,7 @@ user-invocable: false
 tags: [planning, prd, requirements, research]
 model-preference: opus
 model-preference-codex: gpt-5.4
+model-preference-cursor: claude-opus-4-6
 description: >
   Structured project planning and PRD generation with three modes:
   new (project kickoff with repo scaffolding), feature (compact feature PRD),

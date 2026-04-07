@@ -2,18 +2,19 @@
 
 ## Resolving the Plugin Root
 
-`$CLAUDE_PLUGIN_ROOT` (Claude Code) or `$CODEX_PLUGIN_ROOT` (Codex CLI) may not be set (depends on how hooks/skills are loaded). Resolve the script path with this fallback chain:
+`$CLAUDE_PLUGIN_ROOT` (Claude Code), `$CODEX_PLUGIN_ROOT` (Codex CLI), or `$CURSOR_RULES_DIR` (Cursor IDE) may not be set (depends on how hooks/skills are loaded). Resolve the script path with this fallback chain:
 
-1. If `$CLAUDE_PLUGIN_ROOT` or `$CODEX_PLUGIN_ROOT` is set and non-empty, use it.
-2. Otherwise, search for the plugin install location (includes both Claude Code and Codex paths):
+1. If `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` is set and non-empty, use it.
+2. Otherwise, search for the plugin install location (includes Claude Code, Codex, and Cursor paths):
    ```bash
-   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}"
+   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CURSOR_RULES_DIR:-}}}"
    if [[ -z "$PLUGIN_ROOT" ]]; then
-     # Check common install locations (Claude Code + Codex CLI)
+     # Check common install locations (Claude Code + Codex CLI + Cursor IDE)
      for candidate in \
        "$HOME/Projects/session-orchestrator" \
        "$HOME/.claude/plugins/session-orchestrator" \
        "$HOME/.codex/plugins/session-orchestrator" \
+       "$HOME/.cursor/plugins/session-orchestrator" \
        "$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "")")")" \
      ; do
        if [[ -n "$candidate" && -f "$candidate/scripts/parse-config.sh" ]]; then
@@ -46,7 +47,7 @@ fi
 
 ## Fallback
 
-If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex CLI), depending on which platform is active.
+If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI), depending on which platform is active.
 
 ## Learning Expiry Semantics
 

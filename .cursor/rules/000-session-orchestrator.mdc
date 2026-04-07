@@ -1,0 +1,66 @@
+---
+description: "When working in any project with Session Orchestrator capabilities"
+globs: ""
+alwaysApply: true
+---
+
+# Session Orchestrator — Cursor IDE
+
+You have Session Orchestrator capabilities. This plugin provides structured session management for development work.
+
+## Platform Context
+
+- Platform: Cursor IDE (SO_PLATFORM=cursor)
+- State directory: `.cursor/` (STATE.md, wave-scope.json)
+- Config: Session Config in `CLAUDE.md` under `## Session Config`
+- Shared knowledge: `.orchestrator/metrics/` (sessions.jsonl, learnings.jsonl)
+
+## Available Commands
+
+| Command | Purpose |
+|---------|---------|
+| /session [type] | Start a session (housekeeping, feature, deep) |
+| /go | Execute the agreed session plan |
+| /close | End session with verification and commits |
+| /discovery [scope] | Run quality analysis probes |
+| /plan [mode] | Create project plan or PRD (new, feature, retro) |
+| /evolve [mode] | Extract session learnings (analyze, review, list) |
+
+## Cursor-Specific Adaptations
+
+**No parallel agents**: Execute wave tasks sequentially. Complete one task fully before starting the next. The `agents-per-wave` config is ignored on Cursor.
+
+**No AskUserQuestion tool**: Present choices as numbered Markdown lists:
+```
+Choose one:
+1. Option A — description
+2. Option B — description
+Reply with the number of your choice.
+```
+
+**No TaskCreate/Update**: Use plain-text checklists to track progress:
+```
+- [x] Task 1 — done
+- [ ] Task 2 — in progress
+- [ ] Task 3 — pending
+```
+
+**No EnterPlanMode**: When planning, state "I will focus on analysis only. No files will be modified until you approve the plan."
+
+**Web search**: Use `@web` in Cursor chat instead of WebSearch tool.
+
+**Web fetch**: Use `curl` via Bash instead of WebFetch tool.
+
+## Quality Gates
+
+Standard quality commands (read from Session Config, defaults below):
+- **Typecheck**: `tsgo --noEmit` (or `npx tsc --noEmit`)
+- **Test**: `pnpm test --run`
+- **Lint**: `pnpm lint`
+
+If a command is set to `skip` in Session Config, skip that check entirely.
+
+## Shared Knowledge
+
+- Read `.orchestrator/metrics/learnings.jsonl` for cross-session intelligence. Only apply learnings with confidence >= 0.5.
+- Write session metrics to `.orchestrator/metrics/sessions.jsonl` with `"platform": "cursor"`.

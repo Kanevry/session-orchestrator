@@ -1,0 +1,145 @@
+---
+description: "When checking service health, CI pipeline status, endpoint availability, or cross-repo status"
+globs: ""
+alwaysApply: false
+---
+
+# Ecosystem Health Check
+
+Monitor health across configured service endpoints, CI pipelines, and critical issues. Automatically invoked during session-start when ecosystem-health is enabled in Session Config.
+
+## Session Config Fields
+
+This skill reads from the project's `## Session Config` section:
+
+- **`health-endpoints`** -- list of `{name, url}` objects for service health checks
+- **`cross-repos`** -- list of related repositories for critical issue scanning
+
+Both fields are optional. The skill degrades gracefully when either is missing.
+
+---
+
+## 1. Service Health
+
+Read `health-endpoints` from Session Config. If not configured or empty:
+
+> "No health endpoints configured in Session Config. Add `health-endpoints` to enable service monitoring."
+
+Skip this section and proceed to CI Pipeline Status.
+
+### Health Check Procedure
+
+For each configured endpoint:
+
+```bash
+# Example config:
+#   health-endpoints:
+#     - name: API
+#       url: https://api.example.com/health
+#     - name: Worker
+#       url: http://worker:8080/healthz
+
+# Basic check
+curl -sf <url> 2>/dev/null && echo "<name>: UP" || echo "<name>: DOWN"
+
+# If endpoint returns JSON with a "status" field, extract it:
+curl -sf <url> 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(f'<name>: {d.get(\"status\",\"OK\")}')
+" 2>/dev/null || echo "<name>: DOWN"
+```
+
+Generate check commands dynamically from config. Never hardcode service names or URLs.
+
+### Status Classification
+
+| Status | Meaning |
+|--------|---------|
+| **UP** | Endpoint responded successfully |
+| **DOWN** | Endpoint unreachable or returned error |
+| **DEGRADED** | Endpoint responded but reported unhealthy status in JSON body |
+
+---
+
+## 2. CI Pipeline Status
+
+Query the latest pipeline/workflow runs for the current repo. Report the 3 most recent runs.
+
+### VCS Detection
+
+Detect the VCS platform per the VCS Auto-Detection section of the gitlab-ops rule. Then use the appropriate CLI:
+
+```bash
+# GitLab
+glab pipeline list --per-page 3
+
+# GitHub
+gh run list --limit 3
+```
+
+Report each run with: status (success/failed/pending), branch, and timestamp.
+
+---
+
+## 3. Critical Issues
+
+Read `cross-repos` from Session Config. If not configured or empty:
+
+> "No cross-repos configured in Session Config. Add `cross-repos` to enable cross-project issue scanning."
+
+Skip this section.
+
+### Cross-Repo Issue Scan
+
+For each repo in `cross-repos`:
+
+1. Resolve project ID or owner/repo slug (see gitlab-ops Dynamic Project Resolution)
+2. Query open issues with `priority:critical` or `priority:high` labels (limit 5 per repo)
+3. Collect and report results across all configured repos
+
+```bash
+# GitLab
+glab api "projects/<PROJECT_ID>/issues?labels=priority:critical,priority:high&state=opened&per_page=5"
+
+# GitHub
+gh issue list --repo <owner/repo> --label "priority:critical" --limit 5
+gh issue list --repo <owner/repo> --label "priority:high" --limit 5
+```
+
+---
+
+## 4. Health Report Format
+
+Present as a compact dashboard:
+
+```
+## Ecosystem Health
+
+| Service | Status |
+|---------|--------|
+| API     | UP     |
+| Worker  | DOWN   |
+| DB      | UP     |
+
+CI Pipeline: green (last 3 runs passed)
+Critical Issues: 2 across 3 repos
+
+### Attention Required
+- Worker service is DOWN
+- 2 critical issues in cross-repos (see details below)
+```
+
+### Conditional Sections
+
+- If no `health-endpoints` configured: omit the service table entirely
+- If no `cross-repos` configured: omit the critical issues section
+- Only show "Attention Required" if any service is DOWN/DEGRADED or critical issue count > 0
+
+### Status Indicators
+
+| Indicator | Condition |
+|-----------|-----------|
+| All clear | All services UP, CI green, no critical issues |
+| Warning | Any service DEGRADED or CI pending |
+| Alert | Any service DOWN, CI failed, or critical issues exist |

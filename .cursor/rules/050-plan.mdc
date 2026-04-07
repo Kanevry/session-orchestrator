@@ -1,0 +1,284 @@
+---
+description: "When the user types /plan or asks to create a project plan, feature PRD, or retrospective"
+globs: ""
+alwaysApply: false
+---
+
+# Plan — Structured Project Planning & PRD Generation
+
+Three planning modes with a shared research-driven Q&A engine. Each mode follows the pattern: **research -> questions -> design -> document**.
+
+## Mode Selection
+
+Parse the user's input to determine the mode:
+
+- **`/plan new`** — Project kickoff: scaffolding, architecture decisions, initial setup
+- **`/plan feature`** — Feature PRD: requirements gathering, compact scope, implementation plan
+- **`/plan retro`** — Retrospective: data-driven analysis of recent work, learnings extraction
+
+If no mode specified, ask the user:
+
+```
+Which planning mode?
+
+1. new — Project kickoff (full PRD, repo setup, issue creation)
+2. feature — Feature PRD (compact scope, acceptance criteria, issues)
+3. retro — Retrospective (metrics analysis, reflection, improvement actions)
+```
+
+## Prerequisites
+
+Read Session Config from CLAUDE.md. Required field: `plan-baseline-path`. If missing, stop with error.
+
+## Shared Q&A Engine
+
+Every question wave follows the same pattern. This is the core mechanic across all three modes.
+
+### Step 1: Pre-Question Research
+
+Before each Q&A wave, perform research **sequentially** (Cursor has no parallel agents):
+
+1. **Market/online context** — Search for relevant market data, best practices, competitor analysis, or technical patterns depending on the questions to be asked
+2. **Baseline analysis** — Read projects-baseline templates, rules, and scripts at the configured `plan-baseline-path` to discover available options
+3. **Repo context** — Analyze the current repository for existing patterns, file structure, dependencies, and conventions (skip for `/plan new` wave 1)
+
+### Step 2: Question Presentation
+
+Synthesize research into **5 questions per wave**. Present with options:
+
+- **Option 1 is ALWAYS the recommendation**, marked with `(Recommended)`
+- Each option includes Pros/Cons drawn from the research
+- Include an "Other" option when custom input makes sense
+
+Example:
+```
+## Architecture (Wave 1, Q1)
+
+Which project archetype fits best?
+
+1. nextjs-saas (Recommended) — Pro: Full SaaS stack with auth, payments. Con: Heavier setup.
+2. express-service — Pro: Lightweight API. Con: No frontend.
+3. docker-service — Pro: Maximum flexibility. Con: More manual setup.
+4. Other — Describe your preferred archetype.
+```
+
+### Step 3: Adaptive Depth
+
+After each wave, assess whether to continue:
+- **Answers are clear** — proceed to document generation
+- **Answers reveal complexity** — add another wave with targeted follow-ups
+- **User aborts early** — proceed with answers gathered so far
+
+Maximum waves per mode: `/plan new` starts with 3 (max 5), `/plan feature` starts with 1 (max 5), `/plan retro` starts with 1 (max 5).
+
+### Step 4: Answer Tracking
+
+After each wave, output a recap:
+```
+## Answers So Far (Wave N/M)
+1. Archetype: nextjs-saas
+2. Visibility: internal
+3. Audience: B2B customers
+...
+```
+
+---
+
+## Mode: new — Project Kickoff
+
+### Wave 1 — Core Decisions (5 questions)
+
+**Research first:**
+- List available project archetypes from `$BASELINE_PATH/templates/`
+- Search for market context related to the project idea
+- Check ecosystem (`~/Projects/`) for conflicts and reuse opportunities
+
+**Questions:**
+1. Project archetype (from baseline templates)
+2. Visibility (internal / private / public-OSS)
+3. Target audience
+4. Core problem being solved
+5. GitLab group
+
+### Wave 2 — Technical Details (5 questions, dynamic per archetype)
+
+**Research first:**
+- Read archetype config from `$BASELINE_PATH/templates/{archetype}/`
+- Search for best practices with the chosen tech stack
+- Check ecosystem for shared patterns
+
+**Questions:**
+1. Tech stack decisions (e.g., Supabase vs alternative DB)
+2. Design style (for frontend archetypes — read `styles/` directory)
+3. External integrations (APIs, services, payment providers)
+4. Performance requirements
+5. Security requirements
+
+### Wave 3 — Business & Scope (5 questions)
+
+**Research first:**
+- Analyze archetype failure modes and risks
+- Check ecosystem dependency compatibility
+- Research success benchmarks for comparable products
+
+**Questions:**
+1. MVP scope (Shape Up appetite: 1 week / 2 weeks / 6 weeks)
+2. Success criteria (SMART format — Claude proposes draft, user refines)
+3. Known risks and mitigations
+4. Post-launch plan (monitoring, rollback, feedback)
+5. Ecosystem dependencies
+
+### Document Generation
+
+1. Read PRD template (8-section full PRD)
+2. Fill ALL sections — no TBD or placeholder content:
+   - Executive Summary, Problem & Context, Target Audience
+   - Solution & Scope (drives issue creation), Success Criteria
+   - Technical Architecture, Risks & Dependencies, Post-Launch Plan
+3. Save to `{plan-prd-location}/YYYY-MM-DD-{project-name}.md`
+
+### PRD Review
+
+Dispatch a self-review checking 6 criteria:
+1. **Completeness** — all sections filled
+2. **Consistency** — no internal contradictions
+3. **Clarity** — implementable by a developer from this document alone
+4. **Scope** — focused on one project
+5. **YAGNI** — no unrequested features
+6. **SMART metrics** — success criteria are measurable
+
+Max 3 revision iterations. Then present to user for approval.
+
+### Repo Setup (after PRD approval)
+
+1. Run `$BASELINE_PATH/scripts/setup-project.sh` with mapped choices
+2. Verify repo creation via `glab repo view`
+3. Adjust visibility if needed
+4. Populate CLAUDE.md with Session Config
+5. Commit PRD to the new repo
+
+### Issue Creation
+
+- **Epic**: project name + brief description
+- **Sub-issues**: one per MVP feature from PRD Section 4 (Solution & Scope)
+- Auto-prioritize: dependencies (critical/high), core MVP (high), nice-to-haves (medium/low)
+- Present to user for confirmation before creating
+- Create via VCS CLI with dependency links
+
+---
+
+## Mode: feature — Feature PRD
+
+### Wave 1 — Feature Core (5 questions)
+
+**Research first:**
+- Analyze codebase for related patterns (Glob, Grep)
+- Check VCS for related open issues and recent MRs/PRs
+- Search for best practices for this feature type
+
+**Questions:**
+1. What to build (open-ended, Claude suggests structure)
+2. Why now (business driver, user feedback, technical necessity)
+3. Who uses it (existing personas or new audience)
+4. Scope (MVP appetite + explicit exclusions — push for "what is NOT in this feature")
+5. Dependencies (on existing issues, features, other repos)
+
+### Wave 2 — Technical Deep Dive (conditional)
+
+> Only trigger if Wave 1 reveals: multiple subsystems affected, unclear integration points, significant architectural decisions, or user explicitly requests deeper analysis.
+
+**Research first:** Deep-read affected source files, trace call paths, check test patterns, research technical approaches.
+
+**Questions:**
+1. Architecture decisions (2-3 approaches with trade-offs)
+2. Integration points (API changes, new endpoints)
+3. Data model changes (DB migrations, schema changes)
+4. Edge cases (error handling, backwards compatibility)
+5. Performance impact (query complexity, caching needs)
+
+### Document Generation
+
+1. Read compact PRD template (5 sections)
+2. Fill all sections:
+   - Problem & Motivation (from Q1 + Q2)
+   - Solution & Scope (from Q4, explicit In-Scope / Out-of-Scope)
+   - Acceptance Criteria (Given/When/Then scenarios from answers)
+   - Technical Notes (from Wave 2 or Wave 1 research)
+   - Risks & Dependencies (from Q5 + edge cases)
+3. Save to `{plan-prd-location}/YYYY-MM-DD-{feature-slug}.md`
+
+### PRD Review & Issue Creation
+
+- Same review process as `/plan new` (6 criteria, max 3 iterations)
+- **Epic**: feature name + one-line purpose
+- **Sub-issues**: one per acceptance criterion group (not per individual scenario)
+- Auto-prioritize: dependencies first, core happy-path (high), edge cases (medium/low)
+- Present to user, create via VCS CLI
+
+---
+
+## Mode: retro — Data-Driven Retrospective
+
+### Phase 1: Data Collection (Automatic, No User Input)
+
+Gather all data before asking questions:
+
+1. **Session metrics** — Read `.orchestrator/metrics/sessions.jsonl`:
+   - Total sessions, average duration, type distribution
+   - Average completion rate, carryover rate
+   - Agent success rate, spiral rate
+2. **Git analysis**:
+   ```bash
+   git log --oneline -50
+   git log --format="%H" --since="2 weeks ago" | xargs -I{} git diff-tree --no-commit-id --name-only -r {} | sort | uniq -c | sort -rn | head -20
+   ```
+   Record: commit frequency, top 20 change hotspots
+3. **Open issues** — Query VCS CLI for overdue, blocked, and stale issues
+4. **Trend analysis** — Compare last 5 sessions vs sessions 6-10 (if available)
+
+Present a data summary dashboard before proceeding.
+
+### Wave 1 — What Went Well / What Didn't (5 questions)
+
+**Research first:**
+- Read session memory files for accomplishments and frustrations
+- Analyze git log patterns (large commits, hotfixes, reverts)
+- Categorize open issues by theme
+
+**Questions:**
+1. Highlights — Top 3 data-backed successes (confirm/reorder/add own)
+2. Blockers — Top 3 data-backed problems with root causes
+3. Carryover — Unfinished issues from recent sessions (still relevant? cancel? reprioritize?)
+4. Process — Session structure assessment based on observed patterns
+5. Surprises — Open-ended, present data anomalies as starters
+
+### Wave 2 — Improvements (conditional)
+
+> Only trigger if Wave 1 reveals: significant blockers, process issues, or user requests actions.
+
+**Questions:**
+1. Improvement actions — 3-5 concrete improvements with expected impact and effort
+2. Priority — Rank selected improvements
+3. Ownership — When to tackle each (next session / spread / assign)
+4. Baseline changes — Propose template/script/rule changes if recurring issues (3+ sessions)
+5. Session Config changes — Propose config adjustments if warranted
+
+### Artifacts
+
+1. **Retro document** — Save to `{plan-retro-location}/YYYY-MM-DD-retro.md`
+2. **Improvement issues** — One VCS issue per agreed improvement
+3. **Update learnings** — Append to `.orchestrator/metrics/learnings.jsonl` (confidence 0.5 for new, +0.15 confirm, -0.2 contradict)
+4. **Baseline updates** — Only if user explicitly confirms
+
+---
+
+## Critical Rules
+
+- **NEVER skip the Q&A phase** — even with a detailed brief, validate through structured questions. The Q&A surfaces blind spots.
+- **NEVER assume baseline templates** — always read from the configured `plan-baseline-path`
+- **ALWAYS research before asking** — perform research before every Q&A wave
+- **ALWAYS mark the first option as recommended** with `(Recommended)`
+- **ALWAYS save documents before creating issues** — the PRD/retro document is the source of truth
+- **NEVER leave PRD sections with TBD or placeholder content** — make a best-effort recommendation if data is insufficient
+- **NEVER create issues without user confirmation**
+- **NEVER include internal paths, IPs, or infrastructure details in output documents**

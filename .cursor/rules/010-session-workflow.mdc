@@ -1,0 +1,145 @@
+---
+description: "When the user types /session, starts a development session, types /go to execute, or /close to end a session"
+globs: ""
+alwaysApply: false
+---
+
+# Session Workflow
+
+Three-phase workflow: Start -> Execute -> Close.
+
+## Phase 1: Session Start (`/session [type]`)
+
+Session types:
+- **housekeeping** — git cleanup, docs, CI health, dependency updates
+- **feature** — implementation of issues/features
+- **deep** — thorough work requiring extended focus
+
+### Step 1: Read Session Config
+
+Parse `## Session Config` from project's `CLAUDE.md`. Store as `$CONFIG`.
+
+### Step 2: Session Continuity
+
+If `persistence` is enabled, check `.cursor/STATE.md`:
+- `status: active` — crashed session. Ask: "Found unfinished session. Resume or start fresh?"
+- `status: paused` — intentional pause. Offer to resume or start fresh.
+- `status: completed` — note summary for context, continue normally.
+- Missing — first session, continue normally.
+
+### Step 3: Git Analysis
+
+Run in parallel:
+```bash
+# Branch state
+git branch -a && git log --oneline -20
+
+# Unpushed/uncommitted work
+git status --short
+git log origin/main..HEAD --oneline
+
+# Stale branches (no commits in 7+ days)
+git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:relative)' refs/heads/
+```
+
+### Step 4: VCS Deep Dive
+
+Query open issues, recent closures, milestones, MRs/PRs, CI status:
+```bash
+# GitLab
+glab issue list --per-page 50
+glab issue list --closed --per-page 10
+glab mr list --per-page 20
+
+# GitHub
+gh issue list --limit 50
+gh pr list --limit 20
+```
+
+Group issues by priority (critical/high first) and session-type relevance.
+
+### Step 5: Environment Check
+
+```bash
+# Quality baseline (non-blocking)
+{typecheck-command} 2>&1 | tail -5
+{test-command} 2>&1 | tail -5
+```
+
+Check SSOT file freshness. Flag files older than 5 days.
+
+### Step 6: Project Intelligence
+
+If `.orchestrator/metrics/learnings.jsonl` exists, surface active learnings:
+- Fragile files, effective sizing, recurring issues, scope guidance
+- Only apply learnings with confidence > 0.3 and not expired
+
+### Step 7: Present Findings
+
+Present a structured Session Overview with:
+- Git state summary
+- Issue recommendations (grouped by priority)
+- Quality baseline results
+- Project intelligence insights
+- Recommended focus areas
+
+Ask the user to confirm scope before proceeding.
+
+---
+
+## Phase 2: Session Execution (`/go`)
+
+### Step 1: Create Wave Plan
+
+Distribute tasks across waves (see `030-wave-execution.mdc` for full details on roles, scope manifests, and quality checks).
+
+### Step 2: Execute Sequentially
+
+On Cursor, execute all tasks one by one (no parallel agents). For each task:
+1. State what you are doing and which wave/role it belongs to
+2. Execute the task fully
+3. Report status with checklist update
+4. Run incremental quality checks after implementation waves
+5. Move to next task
+
+### Step 3: Update STATE.md
+
+If persistence is enabled, update `.cursor/STATE.md` after each wave with wave status, files changed, and quality check results.
+
+---
+
+## Phase 3: Session End (`/close`)
+
+### Step 1: Plan Verification
+
+For each planned item:
+- **Done**: Verify with `git diff`, confirm acceptance criteria met
+- **Partially done**: Create carryover issue with `[Carryover]` prefix
+- **Not started**: Document why, ensure issue stays open
+- **Emergent work**: Document unplanned tasks that were completed
+
+### Step 2: Full Quality Gate (BLOCKING)
+
+```bash
+# All must pass before committing
+{typecheck-command}    # 0 errors required
+{test-command}         # exit code 0 required
+{lint-command}         # errors NOT OK, warnings OK
+
+# Check for debug artifacts
+grep -rn 'console\.log\|debugger\|TODO: remove' --include='*.ts' --include='*.tsx' src/
+```
+
+Do NOT commit if any check fails. Fix quick issues (<2 min) inline. For longer fixes, create a `priority:high` issue.
+
+### Step 3: Commit and Push
+
+Stage specific files, commit with Conventional Commit format, push to origin. Mirror to GitHub if configured.
+
+### Step 4: Session Metrics
+
+If persistence is enabled, append session metrics to `.orchestrator/metrics/sessions.jsonl` with `"platform": "cursor"`. Include: session_id, session_type, timestamps, wave/file counts, and effectiveness stats (planned/completed/carryover/completion_rate).
+
+### Step 5: Cleanup
+
+Remove `.cursor/wave-scope.json` and update `.cursor/STATE.md` with `status: completed`.
