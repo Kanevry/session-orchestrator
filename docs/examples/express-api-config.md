@@ -7,11 +7,9 @@ This example shows Session Config for a backend API project using Express.js, ho
 ```
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 4
 - **waves:** 5
 - **ssot-files:** [docs/API-STATUS.md, .claude/STATE.md]
-- **cli-tools:** [glab, docker]
 - **ecosystem-health:** true
 - **vcs:** gitlab
 - **gitlab-host:** gitlab.company.com

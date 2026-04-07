@@ -2,7 +2,6 @@
 
 ## Session Config
 
-session-types: [feature, deep]
 agents-per-wave: 8
 test-command: yarn test
 enforcement: warn

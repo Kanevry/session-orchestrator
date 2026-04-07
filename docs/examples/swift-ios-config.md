@@ -7,7 +7,6 @@ This example shows a minimal Session Config for a Swift iOS project. Session Orc
 ```
 ## Session Config
 
-- **session-types:** [feature, housekeeping]
 - **agents-per-wave:** 3
 - **waves:** 3
 - **vcs:** github

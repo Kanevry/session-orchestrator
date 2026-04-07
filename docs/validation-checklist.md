@@ -460,7 +460,6 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 
 **Expected behavior:**
 - `vcs: github` forces all VCS operations through `gh` CLI, even if the remote URL could be ambiguous
-- `cli-tools: [gh]` is verified present during session-start Phase 1; missing tools are flagged as warnings
 - `issue-limit: 25` caps issue queries — `gh issue list --limit 25` (not the default 50)
 - `recent-commits: 15` limits git log output — `git log -15` (not the default 20)
 - `stale-branch-days: 5` flags branches with no commits in 5+ days as stale (not the default 7)

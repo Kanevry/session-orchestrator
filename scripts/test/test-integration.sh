@@ -495,7 +495,6 @@ Some instructions here.
 
 ## Session Config
 
-session-types: feature, deep, housekeeping
 agents-per-wave: 8
 waves: 3
 persistence: true
@@ -510,9 +509,6 @@ AGEOF
 agents_json=$(bash "$PARSE_CONFIG" "$AGENTS_TMPDIR/AGENTS.md" 2>/dev/null)
 agents_exit=$?
 assert_eq "7a: AGENTS.md parse exits 0" "0" "$agents_exit"
-
-agents_types=$(echo "$agents_json" | jq -r '."session-types" | join(",")')
-assert_eq "7b: AGENTS.md session-types" "feature,deep,housekeeping" "$agents_types"
 
 agents_apw=$(echo "$agents_json" | jq -r '."agents-per-wave"')
 assert_eq "7c: AGENTS.md agents-per-wave" "8" "$agents_apw"

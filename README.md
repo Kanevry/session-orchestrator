@@ -211,13 +211,11 @@ Add to each repo's `CLAUDE.md`:
 ```markdown
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **pencil:** path/to/design.pen
 - **cross-repos:** [related-repo-1, related-repo-2]
 - **ssot-files:** [.claude/STATUS.md]
-- **cli-tools:** [glab, vercel, supabase]
 - **mirror:** github
 - **ecosystem-health:** true
 - **vcs:** github|gitlab (default: auto-detect)

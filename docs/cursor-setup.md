@@ -34,7 +34,6 @@ Cursor reads CLAUDE.md natively — no separate config file needed! Add a `## Se
 ```markdown
 ## Session Config
 
-session-types: feature, deep, housekeeping
 agents-per-wave: 6
 waves: 5
 persistence: true

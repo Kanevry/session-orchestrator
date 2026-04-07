@@ -7,7 +7,6 @@ The format is identical to the `## Session Config` section in `CLAUDE.md` for Cl
 
 ## Session Config
 
-session-types: feature, deep, housekeeping
 agents-per-wave: 6
 waves: 5
 recent-commits: 20

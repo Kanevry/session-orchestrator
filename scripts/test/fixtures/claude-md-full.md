@@ -4,7 +4,6 @@ Some project description with code examples and documentation.
 
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 4
 - **waves:** 3
 - **recent-commits:** 15
@@ -12,7 +11,6 @@ Some project description with code examples and documentation.
 - **vcs:** github
 - **gitlab-host:** gitlab.example.com
 - **mirror:** github
-- **cli-tools:** [gh, vercel]
 - **cross-repos:** [project-a, project-b]
 - **pencil:** designs/main.pen
 - **ecosystem-health:** true

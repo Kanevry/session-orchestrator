@@ -22,20 +22,20 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || C
 [[ "$TOOL_NAME" != "Bash" ]] && exit 0
 [[ -z "$COMMAND" ]] && exit 0
 
-# Locate wave-scope manifest
-find_project_root() {
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
-  if [[ -n "${CODEX_PROJECT_DIR:-}" && -d "${CODEX_PROJECT_DIR}/.codex" ]]; then echo "$CODEX_PROJECT_DIR"; return; fi
-  if [[ -n "${CURSOR_PROJECT_DIR:-}" && -d "${CURSOR_PROJECT_DIR}/.cursor" ]]; then echo "$CURSOR_PROJECT_DIR"; return; fi
-  local dir
-  dir="$(pwd)"
-  while [[ "$dir" != "/" ]]; do
-    if [[ -f "$dir/.claude/wave-scope.json" || -f "$dir/.codex/wave-scope.json" || -f "$dir/.cursor/wave-scope.json" ]]; then echo "$dir"; return; fi
-    dir="$(dirname "$dir")"
-  done
-  pwd
+# Source platform detection
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../scripts/lib/platform.sh" 2>/dev/null || {
+  # Fallback: if platform.sh not found via relative path, try plugin root
+  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    source "$CLAUDE_PLUGIN_ROOT/scripts/lib/platform.sh"
+  elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
+    source "$CODEX_PLUGIN_ROOT/scripts/lib/platform.sh"
+  else
+    # Ultimate fallback: inline minimal detection
+    SO_PROJECT_DIR="$(pwd)"
+  fi
 }
-PROJECT_ROOT="$(find_project_root)"
+PROJECT_ROOT="$SO_PROJECT_DIR"
 if [[ -f "$PROJECT_ROOT/.cursor/wave-scope.json" ]]; then
   SCOPE_FILE="$PROJECT_ROOT/.cursor/wave-scope.json"
 elif [[ -f "$PROJECT_ROOT/.codex/wave-scope.json" ]]; then

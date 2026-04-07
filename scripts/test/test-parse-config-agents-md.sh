@@ -35,7 +35,6 @@ cat > "$FIXTURE_DIR/AGENTS.md" << 'MDEOF'
 
 ## Session Config
 
-session-types: feature, deep
 agents-per-wave: 4
 waves: 3
 persistence: true
@@ -51,11 +50,7 @@ agents_json=$(bash "$PARSE_CONFIG" "$FIXTURE_DIR/AGENTS.md" 2>/dev/null)
 agents_exit=$?
 assert_eq "1: AGENTS.md parse exits 0" "0" "$agents_exit"
 
-# 2: session-types contains feature and deep
-types_csv=$(echo "$agents_json" | jq -r '."session-types" | join(",")')
-assert_eq "2: session-types" "feature,deep" "$types_csv"
-
-# 3: agents-per-wave is 4
+# 2: agents-per-wave is 4
 apw=$(echo "$agents_json" | jq -r '."agents-per-wave"')
 assert_eq "3: agents-per-wave is 4" "4" "$apw"
 
@@ -83,7 +78,6 @@ cat > "$AUTO_DIR/AGENTS.md" << 'MDEOF'
 
 ## Session Config
 
-session-types: housekeeping
 agents-per-wave: 2
 waves: 1
 persistence: false
@@ -96,9 +90,6 @@ MDEOF
 auto_json=$(cd "$AUTO_DIR" && SO_CONFIG_FILE=AGENTS.md bash "$PARSE_CONFIG" 2>/dev/null)
 auto_exit=$?
 assert_eq "8a: auto-detect AGENTS.md exits 0" "0" "$auto_exit"
-
-auto_types=$(echo "$auto_json" | jq -r '."session-types" | join(",")')
-assert_eq "8b: auto-detect session-types" "housekeeping" "$auto_types"
 
 auto_apw=$(echo "$auto_json" | jq -r '."agents-per-wave"')
 assert_eq "8c: auto-detect agents-per-wave" "2" "$auto_apw"

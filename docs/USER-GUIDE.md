@@ -57,7 +57,6 @@ Open your project's `CLAUDE.md` and add a `## Session Config` section. A minimal
 ```markdown
 ## Session Config
 
-- **session-types:** [feature]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **vcs:** github
@@ -199,13 +198,11 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 ```markdown
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **pencil:** designs/app.pen
 - **cross-repos:** [api-service, shared-lib]
 - **ssot-files:** [.claude/STATUS.md]
-- **cli-tools:** [glab, vercel, supabase]
 - **mirror:** github
 - **ecosystem-health:** true
 - **vcs:** gitlab
@@ -229,13 +226,11 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `session-types` | list | `[feature]` | Which session types this repo supports. Controls what `/session <type>` accepts. |
 | `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than 5 days. |
-| `cli-tools` | list | none | CLI tools available in this project (e.g., `glab`, `vercel`, `supabase`, `stripe`). Informs the orchestrator what commands it can use. |
 | `mirror` | string | `none` | Mirror target after push. Set to `github` to automatically push to a GitHub remote after every session commit. |
 | `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. |
 | `vcs` | string | auto-detect | Version control platform: `github` or `gitlab`. Auto-detected from git remote URL if not set. |
@@ -982,7 +977,6 @@ The `agents-per-wave` config value always caps the maximum.
 ```markdown
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **vcs:** github
@@ -991,7 +985,6 @@ The `agents-per-wave` config value always caps the maximum.
 - **pencil:** designs/app.pen
 - **cross-repos:** [other-repo]
 - **ssot-files:** [.claude/STATUS.md]
-- **cli-tools:** [gh, vercel]
 - **ecosystem-health:** true
 - **health-endpoints:** [{name: "API", url: "https://api.example.com/health"}]
 - **special:** "Run migrations before testing"

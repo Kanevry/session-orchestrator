@@ -48,10 +48,6 @@ echo "--- Test Group 1: Full Config ---"
 
 FULL="$FIXTURES/claude-md-full.md"
 
-assert_eq "full: session-types" \
-  '["housekeeping","feature","deep"]' \
-  "$(parse_json_field "$FULL" "session-types")"
-
 assert_eq "full: agents-per-wave" \
   "4" \
   "$(parse_field "$FULL" "agents-per-wave")"
@@ -191,10 +187,6 @@ echo ""
 echo "--- Test Group 4: Plain Format ---"
 
 PLAIN="$FIXTURES/claude-md-plain-format.md"
-
-assert_eq "plain: session-types" \
-  '["feature","deep"]' \
-  "$(parse_json_field "$PLAIN" "session-types")"
 
 assert_eq "plain: agents-per-wave" \
   "8" \

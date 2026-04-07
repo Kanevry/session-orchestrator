@@ -9,12 +9,10 @@ Every field is set explicitly (many to non-default values) so that tests can ver
 ```
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **cross-repos:** []
 - **ssot-files:** [STATUS.md]
-- **cli-tools:** [gh]
 - **mirror:** none
 - **ecosystem-health:** false
 - **vcs:** github
@@ -49,7 +47,6 @@ Each field is set to a specific value for testing. The table below explains what
 
 | Field | Value | Default | What it tests |
 |-------|-------|---------|---------------|
-| `session-types` | `[housekeeping, feature, deep]` | same | All three types are available; test each one to verify role mapping |
 | `agents-per-wave` | `6` | `6` | Agent dispatch cap. Verify no wave exceeds 6 agents regardless of complexity tier |
 | `waves` | `5` | `5` | Full 5-wave layout: Discovery, Impl-Core, Impl-Polish, Quality, Finalization — one role per wave |
 
@@ -59,7 +56,6 @@ Each field is set to a specific value for testing. The table below explains what
 |-------|-------|---------|---------------|
 | `cross-repos` | `[]` | `[]` | Empty list: session-start Phase 4 should be skipped cleanly without errors |
 | `ssot-files` | `[STATUS.md]` | n/a | SSOT freshness check against `ssot-freshness-days` (set to 3 below) |
-| `cli-tools` | `[gh]` | n/a | GitHub CLI; used for issue queries, PR status, CI checks |
 | `mirror` | `none` | `none` | No mirror push at session-end Phase 4.4 |
 | `ecosystem-health` | `false` | `false` | Health monitoring disabled; session-start should skip health endpoint checks |
 | `vcs` | `github` | auto-detect | Explicit VCS; forces `gh` CLI usage even if remote could be ambiguous |
@@ -186,7 +182,7 @@ These scenarios map config fields to observable behaviors during a full `/sessio
 
 ### Scenario 9: VCS and threshold integration
 
-**Fields exercised:** `vcs`, `cli-tools`, `issue-limit`, `recent-commits`, `stale-branch-days`, `stale-issue-days`
+**Fields exercised:** `vcs`, `issue-limit`, `recent-commits`, `stale-branch-days`, `stale-issue-days`
 
 - Session-start uses `gh` CLI for all VCS operations
 - Issue queries fetch at most 25 issues

@@ -9,13 +9,11 @@ Add this to your project's `CLAUDE.md`:
 ```
 ## Session Config
 
-- **session-types:** [housekeeping, feature, deep]
 - **agents-per-wave:** 6
 - **waves:** 5
 - **pencil:** designs/app.pen
 - **cross-repos:** [shared-ui-library]
 - **ssot-files:** [.claude/STATUS.md]
-- **cli-tools:** [vercel, gh]
 - **mirror:** none
 - **ecosystem-health:** true
 - **vcs:** github

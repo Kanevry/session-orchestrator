@@ -29,7 +29,6 @@ Add a `## Session Config` section to your project's `AGENTS.md`. The format is i
 ```markdown
 ## Session Config
 
-session-types: feature, deep, housekeeping
 agents-per-wave: 6
 waves: 5
 persistence: true
@@ -91,6 +90,18 @@ Both platforms share knowledge via `.orchestrator/metrics/`:
 - `learnings.jsonl` -- Cross-session intelligence
 
 This means you can switch between Claude Code and Codex CLI on the same project and both will benefit from accumulated learnings.
+
+## Platform Limitations
+
+### Agent Specialization
+
+Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-specialist, ui-developer, security-reviewer) with specialized prompts for each role. Codex CLI maps all implementation tasks to the generic `wave-worker` role, which means:
+
+- All agents share the same base prompt and capabilities
+- Domain-specific instructions (e.g., test quality rules, security review patterns) are included in the task prompt rather than the agent definition
+- The practical impact is minimal for most tasks — the task prompt carries the specialization
+
+**Workaround:** Create project-level agents in `.codex/agents/` with domain-specific TOML files. These take precedence over plugin-level agents during dispatch.
 
 ## Troubleshooting
 

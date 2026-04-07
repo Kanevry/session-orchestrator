@@ -345,10 +345,8 @@ V_ECO_HEALTH=$(json_boolean "ecosystem-health" "false")
 V_DISC_CLOSE=$(json_boolean "discovery-on-close" "false")
 
 # List fields
-V_SESSION_TYPES=$(json_list "session-types" "[feature]")
 V_CROSS_REPOS=$(json_list "cross-repos")
 V_SSOT_FILES=$(json_list "ssot-files")
-V_CLI_TOOLS=$(json_list "cli-tools")
 V_DISC_PROBES=$(json_list "discovery-probes" "[all]")
 V_DISC_EXCLUDE=$(json_list "discovery-exclude-paths" "[]")
 V_HEALTH_EP=$(json_list "health-endpoints")
@@ -366,7 +364,6 @@ V_MAX_TURNS=$(json_max_turns)
 
 # Assemble final JSON using jq for correctness
 jq -n \
-  --argjson session_types "$V_SESSION_TYPES" \
   --argjson agents_per_wave "$V_AGENTS_PER_WAVE" \
   --argjson waves "$V_WAVES" \
   --argjson recent_commits "$V_RECENT_COMMITS" \
@@ -374,7 +371,6 @@ jq -n \
   --argjson vcs "$V_VCS" \
   --argjson gitlab_host "$V_GITLAB_HOST" \
   --argjson mirror "$V_MIRROR" \
-  --argjson cli_tools "$V_CLI_TOOLS" \
   --argjson cross_repos "$V_CROSS_REPOS" \
   --argjson pencil "$V_PENCIL" \
   --argjson ecosystem_health "$V_ECO_HEALTH" \
@@ -405,7 +401,6 @@ jq -n \
   --argjson plan_retro_location "$V_PLAN_RETRO" \
   --argjson agent_mapping "$V_AGENT_MAPPING" \
   '{
-    "session-types": $session_types,
     "agents-per-wave": $agents_per_wave,
     "waves": $waves,
     "recent-commits": $recent_commits,
@@ -413,7 +408,6 @@ jq -n \
     "vcs": $vcs,
     "gitlab-host": $gitlab_host,
     "mirror": $mirror,
-    "cli-tools": $cli_tools,
     "cross-repos": $cross_repos,
     "pencil": $pencil,
     "ecosystem-health": $ecosystem_health,

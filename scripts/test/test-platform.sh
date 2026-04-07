@@ -160,6 +160,118 @@ result=$(
 )
 assert_eq "12: Shared dir for Cursor is .orchestrator" ".orchestrator" "$result"
 
+# ---------------------------------------------------------------------------
+# Slow-path tests: marker directory detection (no env vars)
+# ---------------------------------------------------------------------------
+
+# 13: Claude slow path — .claude-plugin/ marker in CWD
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_13="$MASTER_TMPDIR/t13"
+  mkdir -p "$TMPDIR_13/.claude-plugin"
+  cd "$TMPDIR_13"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "13: Claude slow path via .claude-plugin marker" "claude" "$result"
+
+# 14: Codex slow path — .codex-plugin/ marker in CWD
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_14="$MASTER_TMPDIR/t14"
+  mkdir -p "$TMPDIR_14/.codex-plugin"
+  cd "$TMPDIR_14"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "14: Codex slow path via .codex-plugin marker" "codex" "$result"
+
+# 15: Cursor slow path — .cursor/rules/ marker in CWD
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_15="$MASTER_TMPDIR/t15"
+  mkdir -p "$TMPDIR_15/.cursor/rules"
+  cd "$TMPDIR_15"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "15: Cursor slow path via .cursor/rules marker" "cursor" "$result"
+
+# 16: Walk-up from subdirectory — Claude
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_16="$MASTER_TMPDIR/t16"
+  mkdir -p "$TMPDIR_16/.claude-plugin"
+  mkdir -p "$TMPDIR_16/src/components"
+  cd "$TMPDIR_16/src/components"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "16: Walk-up from subdir detects Claude marker" "claude" "$result"
+
+# 17: Walk-up from subdirectory — Codex
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_17="$MASTER_TMPDIR/t17"
+  mkdir -p "$TMPDIR_17/.codex-plugin"
+  mkdir -p "$TMPDIR_17/src/components"
+  cd "$TMPDIR_17/src/components"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "17: Walk-up from subdir detects Codex marker" "codex" "$result"
+
+# 18: Walk-up from subdirectory — Cursor
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_18="$MASTER_TMPDIR/t18"
+  mkdir -p "$TMPDIR_18/.cursor/rules"
+  mkdir -p "$TMPDIR_18/src/components"
+  cd "$TMPDIR_18/src/components"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "18: Walk-up from subdir detects Cursor marker" "cursor" "$result"
+
+# 19: Priority — closest marker wins (child .claude-plugin beats parent .codex-plugin)
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_19="$MASTER_TMPDIR/t19"
+  mkdir -p "$TMPDIR_19/.codex-plugin"
+  mkdir -p "$TMPDIR_19/child/.claude-plugin"
+  cd "$TMPDIR_19/child"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "19: Closest marker wins (claude over parent codex)" "claude" "$result"
+
+# 20: No markers defaults to claude
+result=$(
+  unset CLAUDE_PLUGIN_ROOT 2>/dev/null || true
+  unset CODEX_PLUGIN_ROOT 2>/dev/null || true
+  unset CURSOR_RULES_DIR 2>/dev/null || true
+  TMPDIR_20="$MASTER_TMPDIR/t20"
+  mkdir -p "$TMPDIR_20"
+  cd "$TMPDIR_20"
+  source "$PLATFORM_LIB"
+  echo "$SO_PLATFORM"
+)
+assert_eq "20: No markers defaults to claude" "claude" "$result"
+
 # ===========================================================================
 echo ""
 echo "==========================================="

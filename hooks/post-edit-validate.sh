@@ -29,19 +29,20 @@ case "$FILE_PATH" in
   *) exit 0 ;;
 esac
 
-find_project_root() {
-  [[ -n "${CURSOR_PROJECT_DIR:-}" && -d "${CURSOR_PROJECT_DIR}/.cursor" ]] && { echo "$CURSOR_PROJECT_DIR"; return; }
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
-  if [[ -n "${CODEX_PROJECT_DIR:-}" && -d "${CODEX_PROJECT_DIR}/.codex" ]]; then echo "$CODEX_PROJECT_DIR"; return; fi
-  local dir
-  dir="$(pwd)"
-  while [[ "$dir" != "/" ]]; do
-    if [[ -d "$dir/.cursor" || -d "$dir/.claude" || -d "$dir/.codex" ]]; then echo "$dir"; return; fi
-    dir="$(dirname "$dir")"
-  done
-  pwd
+# Source platform detection
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../scripts/lib/platform.sh" 2>/dev/null || {
+  # Fallback: if platform.sh not found via relative path, try plugin root
+  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    source "$CLAUDE_PLUGIN_ROOT/scripts/lib/platform.sh"
+  elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
+    source "$CODEX_PLUGIN_ROOT/scripts/lib/platform.sh"
+  else
+    # Ultimate fallback: inline minimal detection
+    SO_PROJECT_DIR="$(pwd)"
+  fi
 }
-PROJECT_ROOT="$(find_project_root)"
+PROJECT_ROOT="$SO_PROJECT_DIR"
 
 REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
 

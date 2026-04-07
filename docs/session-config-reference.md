@@ -14,7 +14,6 @@ The format and all fields are identical on both platforms. The section header mu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `session-types` | list | `[feature]` | Which session types this repo supports. Controls what `/session <type>` accepts. |
 | `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. |
 | `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
@@ -28,7 +27,6 @@ The format and all fields are identical on both platforms. The section header mu
 | `vcs` | string | auto-detect | Version control platform: `github` or `gitlab`. Auto-detected from git remote URL if not set. |
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
 | `mirror` | string | `none` | Mirror target after push. Set to `github` to automatically push to a GitHub remote after every session commit. |
-| `cli-tools` | list | none | CLI tools available in this project (e.g., `glab`, `vercel`, `supabase`, `stripe`). Informs the orchestrator what commands it can use. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. |
