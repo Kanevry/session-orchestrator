@@ -59,7 +59,7 @@ if [[ -z "$TYPECHECK_CMD" ]]; then
   fi
 fi
 if [[ -z "$TYPECHECK_CMD" ]]; then
-  echo '{"check":"typecheck","status":"skip","file":"'"$REL_PATH"'","reason":"no typecheck command found"}' >&2
+  jq -nc --arg file "$REL_PATH" --arg reason "no typecheck command found" '{"check":"typecheck","status":"skip","file":$file,"reason":$reason}' >&2
   exit 0
 fi
 
@@ -84,6 +84,6 @@ END_MS=$(now_ms)
 DURATION_MS=$(( END_MS - START_MS ))
 [[ "$DURATION_MS" -lt 0 ]] && DURATION_MS=0
 
-echo '{"check":"typecheck","status":"'"$STATUS"'","file":"'"$REL_PATH"'","duration_ms":'"$DURATION_MS"'}' >&2
+jq -nc --arg file "$REL_PATH" --arg status "$STATUS" --argjson ms "$DURATION_MS" '{"check":"typecheck","status":$status,"file":$file,"duration_ms":$ms}' >&2
 
 exit 0

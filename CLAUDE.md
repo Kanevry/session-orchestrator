@@ -35,3 +35,14 @@ Skills are loaded by Claude Code from the plugin directory — no build step nee
 - Intelligent agent dispatch: project agents > plugin agents > general-purpose
 - Agent-mapping Session Config for explicit role-to-agent binding
 - Model selection matrix (haiku/sonnet/opus per task type)
+
+## Session Config
+
+persistence: true
+enforcement: warn
+recent-commits: 20
+test-command: bash tests/test-*.sh
+typecheck-command: false
+lint-command: false
+stale-branch-days: 7
+plugin-freshness-days: 30
