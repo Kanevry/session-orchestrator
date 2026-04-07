@@ -20,7 +20,7 @@ variant they need and execute the commands inline.
 
 ## Session Config Fields
 
-Read these from the project's `## Session Config` section in CLAUDE.md:
+Read these from the project's `## Session Config` section in CLAUDE.md (Claude Code / Cursor) or AGENTS.md (Codex CLI):
 
 - **`test-command`** — Custom test command. Default: `pnpm test --run`
 - **`typecheck-command`** — Custom typecheck command. Default: `tsgo --noEmit`
@@ -39,6 +39,11 @@ Commands:
 
 Behavior: Report results but do NOT block the session. Capture error counts and store them
 as the session baseline for later comparison.
+
+**Script output schema (Baseline):**
+```json
+{"variant": "baseline", "typecheck": {"status": "pass|fail|skip", "output": "string"}, "test": {"status": "pass|fail|skip", "output": "string"}}
+```
 
 ## Variant 2: Incremental
 
@@ -101,6 +106,11 @@ Commands:
 
 Behavior: Report per-file pass/fail status. The reviewer uses these results to annotate
 its review output.
+
+**Script output schema (Per-File):**
+```json
+{"variant": "per-file", "typecheck": {"status": "pass|fail|skip"}, "test": {"status": "pass|fail|skip"}, "files": ["string"]}
+```
 
 ## Graceful Degradation
 

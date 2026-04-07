@@ -60,7 +60,14 @@ Standard quality commands (read from Session Config, defaults below):
 
 If a command is set to `skip` in Session Config, skip that check entirely.
 
+## Agent Dispatch
+
+Agents are resolved in priority order: project agents (`.cursor/agents/`) > plugin agents (`agents/`) > general-purpose. Use the `agent-mapping` Session Config field to bind roles explicitly to specific agents.
+
+See `.orchestrator/metrics/model-selection.md` for model choice guidance (haiku/sonnet/opus per task type).
+
 ## Shared Knowledge
 
 - Read `.orchestrator/metrics/learnings.jsonl` for cross-session intelligence. Only apply learnings with confidence >= 0.5.
 - Write session metrics to `.orchestrator/metrics/sessions.jsonl` with `"platform": "cursor"`.
+- Metrics directory: `.orchestrator/metrics/` (not `.claude/metrics/`).

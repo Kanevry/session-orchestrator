@@ -11,22 +11,36 @@ description: >
   dependency ordering, and inter-wave checkpoints. Activated by session-start after Q&A phase completes.
 ---
 
+> **Platform Note:** Project agents live in `<state-dir>/agents/` where `<state-dir>` is `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). On Cursor IDE, parallel agent dispatch is not available — present wave tasks as a sequential execution list instead. See `skills/_shared/platform-tools.md`.
+
 # Session Plan Skill
 
 ## Purpose
 
 Transform the agreed session scope (from session-start Q&A) into an executable wave plan (using role-based assignment) with specific agent assignments, file scopes, and acceptance criteria per task.
 
+## Input: Session Scope
+
+This skill receives the agreed session scope from session-start. The scope includes:
+- **Issue list**: VCS issue numbers and titles selected by the user
+- **Session type**: housekeeping, feature, or deep
+- **Recommended focus**: the option the user selected in session-start Phase 7
+- **Session Config**: parsed JSON from `parse-config.sh`
+
+These are passed via the conversation context (not a file). Parse the preceding session-start output to extract the agreed scope.
+
 ## Step 1: Task Decomposition
 
-0. **Check for resume context**: If `.claude/STATE.md` exists with `status: active` or `status: paused`, read it to understand:
+0. **Check for resume context**: > Skip if `persistence` is `false` in Session Config.
+   If `<state-dir>/STATE.md` exists with `status: active` or `status: paused`, read it to understand:
    - Which waves were completed in the prior session
    - Which agents completed, which were partial/failed
    - What deviations were logged
    - Use this to avoid re-doing completed work and to prioritize carryover tasks
    If no STATE.md or `status: completed`, proceed with fresh planning.
 
-0.5. **Read project intelligence**: If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
+0.5. **Read project intelligence**: > Skip if `persistence` is `false` in Session Config.
+   If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
    - **Fragile files**: if any planned task touches a known fragile file, note it as a warning in the agent spec
    - **Effective sizing**: use historical sizing data to inform Step 3 complexity scoring
    - **Recurring issues**: pre-populate risk mitigation with known issue patterns
@@ -43,7 +57,7 @@ For each agreed task/issue:
 
 Before assigning tasks to waves, discover available agents for this session:
 
-1. **Scan for project-level agents**: Glob `.claude/agents/*.md` (Claude Code / Cursor) or `.codex/agents/*.md` (Codex CLI)
+1. **Scan for project-level agents**: Glob `<state-dir>/agents/*.md` (`.claude/agents/*.md` for Claude Code, `.codex/agents/*.md` for Codex CLI, `.cursor/agents/*.md` for Cursor IDE)
    - Read each file's YAML frontmatter: extract `name` and `description`
    - Filter out non-agent reference files (skip files with `description` containing "Reference documentation" or "NOT an executable agent")
    - Build a list of available project agents with their names and capabilities
@@ -54,8 +68,13 @@ Before assigning tasks to waves, discover available agents for this session:
    - Example: `agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect }`
    - If present, these explicit mappings take priority over auto-matching
 
+   **Validation:** If `agent-mapping` specifies an agent name, verify the agent exists:
+   - For project agents: check `<state-dir>/agents/<name>.md` exists
+   - For plugin agents: check the agent is registered (contains `:` separator)
+   - If the agent doesn't exist: warn the user and fall back to auto-discovery for that role
+
 3. **Build Agent Registry** (resolution priority):
-   - **Priority 1**: Project agents (from `.claude/agents/`) — matched by name
+   - **Priority 1**: Project agents (from `<state-dir>/agents/` — see Platform Note) — matched by name
    - **Priority 2**: Plugin agents (`session-orchestrator:code-implementer`, `session-orchestrator:test-writer`, `session-orchestrator:ui-developer`, `session-orchestrator:db-specialist`, `session-orchestrator:security-reviewer`)
    - **Priority 3**: `general-purpose` (fallback)
 

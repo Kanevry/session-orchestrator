@@ -68,11 +68,35 @@ Group issues by priority (critical/high first) and session-type relevance.
 
 Check SSOT file freshness. Flag files older than 5 days.
 
-### Step 6: Project Intelligence
+**Plugin freshness**: Check the session-orchestrator plugin's last commit date. If older than `plugin-freshness-days` (default: 30) days, flag a non-blocking warning in the overview.
 
-If `.orchestrator/metrics/learnings.jsonl` exists, surface active learnings:
+### Step 5.5: Pattern Recognition
+
+Look across gathered data for:
+- **Blocking chains**: issues blocked by other issues
+- **Quick wins**: low-effort issues closable alongside main work
+- **Synergies**: issues sharing code paths that can be combined
+
+### Step 5.6: Memory Recall
+
+> Skip if `persistence` is `false`.
+
+1. Look for session memory files at `~/.claude/projects/<project>/memory/session-*.md`
+2. Read the 2–3 most recent files (newest first)
+3. Extract: accomplishments, carryovers, patterns or warnings
+4. Surface under **Previous Sessions** in the overview
+
+### Step 5.7: Project Intelligence
+
+> Skip if `persistence` is `false` or `learnings.jsonl` does not exist.
+
+Read `.orchestrator/metrics/learnings.jsonl` and surface active learnings (confidence > 0.3, not expired):
 - Fragile files, effective sizing, recurring issues, scope guidance
-- Only apply learnings with confidence > 0.3 and not expired
+- Config field: `learning-expiry-days` (default: 30) controls expiry window
+
+**Effectiveness analysis** (requires 5+ sessions in `sessions.jsonl`):
+- Completion rate trend, discovery probe value, carryover pattern
+- If fewer than 5 sessions: "Effectiveness analysis: not enough data yet ([N]/5 sessions)."
 
 ### Step 7: Present Findings
 
@@ -80,10 +104,11 @@ Present a structured Session Overview with:
 - Git state summary
 - Issue recommendations (grouped by priority)
 - Quality baseline results
-- Project intelligence insights
+- Previous sessions context (if available)
+- Project intelligence insights (learnings + effectiveness if 5+ sessions)
 - Recommended focus areas
 
-Ask the user to confirm scope before proceeding.
+On Cursor, present scope confirmation as a numbered Markdown list (no AskUserQuestion tool). Ask the user to confirm scope before proceeding.
 
 ---
 

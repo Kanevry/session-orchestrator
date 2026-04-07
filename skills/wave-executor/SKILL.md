@@ -25,7 +25,7 @@ You are the **coordinator**. You do NOT implement — you orchestrate. Your job:
 
 ## Platform Note
 
-> State files live in the platform's native directory: `.claude/` for Claude Code, `.codex/` for Codex CLI. All references to `.claude/` below should use the platform's state directory. Shared metrics (sessions.jsonl, learnings.jsonl) live in `.orchestrator/metrics/` — both platforms read and write there. See `skills/_shared/platform-tools.md` for tool mappings.
+> State files live in the platform's native directory: `.claude/` for Claude Code, `.codex/` for Codex CLI, `.cursor/` for Cursor IDE. All references to `.claude/` below should use the platform's state directory. Shared metrics (sessions.jsonl, learnings.jsonl) live in `.orchestrator/metrics/` — both platforms read and write there. See `skills/_shared/platform-tools.md` for tool mappings.
 
 ## Pre-Execution Check
 
@@ -56,7 +56,7 @@ Store this value for use throughout the session — it is needed by the simplifi
 
 > Skip this section entirely if `persistence: false`.
 
-Before dispatching Wave 1, write `.claude/STATE.md` with YAML frontmatter and Markdown body:
+Before dispatching Wave 1, write `<state-dir>/STATE.md` with YAML frontmatter and Markdown body:
 
 ```yaml
 ---
@@ -85,7 +85,7 @@ Wave 0 — Initializing
 (none yet)
 ```
 
-Create the `.claude/` directory if needed (`mkdir -p .claude`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
+Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 
 > **Ownership:** STATE.md is owned by the wave-executor. Only the wave-executor writes to it (initialization + post-wave updates). session-end reads it for metrics extraction and sets `status: completed`. session-start reads it only for continuity checks (Phase 0.5). No other skill should write to STATE.md.
 
@@ -109,7 +109,7 @@ For each agent in this wave:
       - What to do (specific, measurable)
       - Which files to read/modify (exact paths)
       - Acceptance criteria (how to verify done)
-      - Relevant patterns from .claude/rules/
+      - Relevant patterns from <state-dir>/rules/
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
       >",
@@ -146,6 +146,14 @@ For each agent in this wave:
 - **Finalization** → direct execution (no subagent needed)
 
 Dispatch via Codex's multi-agent system — describe the task and specify the agent role. The prompts remain identical across platforms.
+
+**Cursor IDE:** No Agent() tool available. Execute wave tasks sequentially within the current Composer session:
+1. For each task in the wave, implement it fully (you are both coordinator AND implementer)
+2. After completing each task, report status inline
+3. Run incremental quality checks after all tasks in the wave complete
+4. Proceed to the next wave
+
+The `agents-per-wave` config is ignored on Cursor — all work is sequential. Session-reviewer dispatch is deferred to session-end (Phase 1.8).
 
 > **Timeout note:** Agent timeout is controlled by `maxTurns` from `circuit-breaker.md`, not by a time-based timeout. Claude Code's built-in turn limit provides the safety net. There is no need to set explicit time-based timeouts on agent dispatch.
 
@@ -186,6 +194,8 @@ After ALL agents in the wave complete:
    - The session-reviewer checks changed files against the plan and reports PASS/WARN/FAIL per category (implementation, tests, TypeScript, security, silent failures, test depth, type design, issues).
    - If the session-reviewer reports **WARN or FAIL** findings: add fix tasks to the next wave's agent assignments (feed into step 3 — Adapt Plan).
    - After the **Quality** wave: dispatch the session-reviewer with **full session scope** (all files changed since session start, not just the current wave). Use `git diff --name-only $SESSION_START_REF..HEAD` to provide the complete changed files list.
+   - Include `SESSION_START_REF` (captured in Pre-Wave 1) in the session-reviewer prompt so it can compute the full changed files list independently.
+   - **Relationship to session-end Phase 1.8:** Wave-level session-reviewer runs provide incremental feedback during execution. Session-end Phase 1.8 runs a final comprehensive review of ALL changes. Both are complementary — wave reviews catch issues early, session-end review is the final quality gate.
    - **Discovery** and **Finalization** waves: skip session-reviewer dispatch — Discovery is read-only and Finalization is a final git status check only.
    - This is complementary to the incremental verification in step 4 — the session-reviewer provides deeper analysis (security, silent failures, test depth, type design) that automated checks do not cover.
 6. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
@@ -249,7 +259,7 @@ After reviewing wave results, adjust the next wave's agent count based on perfor
 
 > Skip if `persistence: false`.
 
-After each wave completes and before the progress update, update `.claude/STATE.md`:
+After each wave completes and before the progress update, update `<state-dir>/STATE.md`:
 
 1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input)
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
@@ -283,8 +293,8 @@ After each wave, provide a brief status:
 
 Before each wave dispatch:
 
-1. **Write `.claude/wave-scope.json`** with the wave's scope:
-   > (Platform-specific: `.claude/wave-scope.json` on Claude Code, `.codex/wave-scope.json` on Codex CLI)
+1. **Write `<state-dir>/wave-scope.json`** with the wave's scope:
+   > (Platform-specific: `.claude/wave-scope.json` on Claude Code, `.codex/wave-scope.json` on Codex CLI, `.cursor/wave-scope.json` on Cursor IDE)
    ```json
    {
      "wave": N,
@@ -294,15 +304,15 @@ Before each wave dispatch:
      "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
    }
    ```
-2. Validate by piping through `bash "$CLAUDE_PLUGIN_ROOT/scripts/validate-wave-scope.sh"`. If validation fails (exit 1), fix the JSON based on stderr errors and retry.
+2. Validate by piping through `bash "$PLUGIN_ROOT/scripts/validate-wave-scope.sh"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. `allowedPaths` is the UNION of all agent file scopes for this wave
 4. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
 5. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
    > **Defense in depth:** The empty `allowedPaths` enforcement hook is the PRIMARY barrier (blocks Write/Edit at the tool level). The prompt instruction is a SECONDARY safeguard. If jq is unavailable (enforcement set to `off`), the prompt instruction becomes the ONLY barrier — log a warning in this case.
 6. For **Quality** role waves, use two-phase scope enforcement:
-   - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, delete `.claude/wave-scope.json`.
-   - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `.claude/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.
-7. After the final wave completes, delete `.claude/wave-scope.json` (cleanup)
+   - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, **delete** `<state-dir>/wave-scope.json` before proceeding to Phase 2.
+   - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `<state-dir>/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.
+7. After the final wave completes, delete `<state-dir>/wave-scope.json` (cleanup)
 
 ## Circuit Breaker & Worktree Isolation
 
@@ -315,7 +325,7 @@ Each agent prompt MUST include:
 1. **Clear scope boundary**: "You are working on [X]. Do NOT modify files outside [paths]."
 2. **Full context**: file paths, current code structure, issue description
 3. **Acceptance criteria**: measurable definition of done
-4. **Rule references**: "Follow patterns in .claude/rules/[relevant].md"
+4. **Rule references**: "Follow patterns in <state-dir>/rules/[relevant].md"
 5. **Testing expectation**: "Write tests for your changes" or "Run existing tests"
 6. **Commit instruction**: "Do NOT commit. The coordinator handles commits."
 7. **Turn limit**: Include the maxTurns instruction from `circuit-breaker.md`

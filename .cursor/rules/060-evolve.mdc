@@ -10,9 +10,23 @@ Extract patterns from session history into reusable learnings. Three modes of op
 
 ## Prerequisites
 
-- Persistence must be enabled in Session Config (`persistence: true`)
+- **Persistence gate**: `persistence: true` must be set in Session Config. If not, abort: "Learnings require persistence to be enabled in Session Config."
 - Session history must exist at `.orchestrator/metrics/sessions.jsonl`
 - Learnings are stored at `.orchestrator/metrics/learnings.jsonl`
+- Config field: `learning-expiry-days` (default: 30) — controls `expires_at` for new and updated learnings
+
+## Cursor Adaptation
+
+**No AskUserQuestion tool on Cursor.** Present all choices as numbered Markdown lists:
+```
+Which learnings should be saved?
+
+1. [fragile-file] src/lib/auth.ts — Changed in 4 of last 5 sessions (confidence: 0.5 new)
+2. [scope-guidance] optimal-scope-per-session-type — 3 issues/session works well (+0.15 update)
+3. Skip all — do not save any learnings
+
+Reply with the number(s) of your choice.
+```
 
 ## Mode Selection
 
@@ -74,7 +88,7 @@ For each extracted pattern, check if a learning with same `type` + `subject` exi
 
 ### Step 4: Present to User
 
-Present extracted patterns for confirmation. Let the user select which to save. Include a "Skip all" option.
+Present extracted patterns as a numbered Markdown list (see Cursor Adaptation above). Let the user select which to save. Include a "Skip all" option.
 
 If user skips or selects nothing: "No learnings saved."
 
@@ -117,7 +131,7 @@ Summary: N active learnings (M high confidence, K expiring soon)
 
 ### Step 2: Interactive Management
 
-Offer these operations:
+Present as a numbered Markdown list (see Cursor Adaptation above):
 - **Boost confidence** — select learnings to boost (+0.15, cap 1.0)
 - **Reduce confidence** — select learnings to reduce (-0.2)
 - **Delete specific learnings** — remove selected entries

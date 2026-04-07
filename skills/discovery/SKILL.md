@@ -76,6 +76,8 @@ Report: "Discovery: [N] probes active across [categories]. Stack: [detected]. Th
 
 Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max 5 agents):
 
+> **Cursor IDE:** No Agent() tool available. Run probes sequentially within the current session — one category at a time. Complete each category's analysis before moving to the next.
+
 - **Code probes agent**: Runs all activated code probes (hardcoded-values, orphaned-annotations, dead-code, ai-slop, type-safety-gaps, test-coverage-gaps, test-anti-patterns, security-basics)
 - **Infra probes agent**: Runs all activated infra probes
 - **UI probes agent**: Runs all activated UI probes
@@ -168,29 +170,18 @@ Group remaining findings by category for Phase 4 presentation.
 
 If in embedded mode (called from session-end): STOP HERE. Return structured findings to the caller using this schema:
 
-**Findings array** — one entry per verified finding:
-```json
-[{
-  "probe": "<probe name>",
-  "category": "<code|infra|ui|arch|session>",
-  "severity": "<critical|high|medium|low>",
-  "confidence": <0-100>,
-  "file_path": "<path>",
-  "line_number": <N>,
-  "title": "<short title>",
-  "description": "<detailed description>"
-}]
-```
-
-**Stats object** — summary of the discovery run:
+**Embedded mode return schema:**
 ```json
 {
-  "probes_run": <N>,
-  "findings_raw": <N>,
-  "findings_verified": <N>,
-  "false_positives": <N>,
-  "by_category": {
-    "<category>": {"findings": <N>, "actioned": <N>}
+  "findings": [
+    {"probe": "string", "category": "string", "severity": "critical|high|medium|low", "confidence": 0-100, "file": "string", "line": number, "description": "string", "recommendation": "string"}
+  ],
+  "stats": {
+    "probes_run": number,
+    "findings_raw": number,
+    "verified": number,
+    "false_positives": number,
+    "by_category": {"<category>": {"findings": number}}
   }
 }
 ```

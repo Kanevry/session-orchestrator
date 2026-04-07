@@ -1,6 +1,7 @@
 {
   "_comment": "Cursor IDE hook mapping reference. Configure hooks in Cursor Settings > Hooks.",
   "_note": "Cursor hooks fire at different lifecycle points than Claude Code. See docs/cursor-setup.md for details.",
+  "_limitation": "SessionStart greeting (session-start skill) is NOT available on Cursor. Cursor has no conversation-start lifecycle event equivalent to Claude Code's UserPromptSubmit hook. Session initialisation must be triggered manually.",
   "hooks": {
     "afterFileEdit": {
       "script": "hooks/enforce-scope.sh",

@@ -4,7 +4,7 @@
 
 ### Probe: gap-analysis
 
-**Activation:** Active session exists (session plan in CLAUDE.md or memory).
+**Activation:** Active session exists (session plan in CLAUDE.md or AGENTS.md or memory).
 
 **Detection Method:**
 
@@ -161,7 +161,7 @@ Issues Involved:
 
 ### Probe: claude-md-audit
 
-**Activation:** CLAUDE.md exists in project root.
+**Activation:** CLAUDE.md or AGENTS.md exists in project root.
 
 **Detection Method:**
 
@@ -169,7 +169,7 @@ Issues Involved:
 ```bash
 # Check if ## Session Config section exists
 Grep pattern: ^## Session Config
-  --glob "CLAUDE.md"
+  --glob "{CLAUDE,AGENTS}.md"
 
 # If section exists, validate referenced paths:
 # Extract file paths from Session Config values (pencil, cross-repos, ssot-files)
@@ -180,8 +180,8 @@ test -e <path>
 
 2. Rules freshness:
 ```bash
-# List all .claude/rules/ files
-Glob pattern: ".claude/rules/*.md"
+# List all <state-dir>/rules/ files
+Glob pattern: "<state-dir>/rules/*.md"
 
 # For each rule file:
 # a) Extract key identifiers (function names, file paths, patterns mentioned)
@@ -220,7 +220,7 @@ print('\n'.join(sorted(deps)))
 
 **Evidence Format:**
 ```
-File: CLAUDE.md (or .claude/rules/<name>.md)
+File: CLAUDE.md or AGENTS.md (or <state-dir>/rules/<name>.md)
 Issue: missing-session-config | invalid-path-reference | stale-rule | stale-claude-md | phantom-technology | undocumented-dependency
 Detail: <specific finding>
 Referenced: <what was referenced>
@@ -235,7 +235,7 @@ Actual: <what was found or NOT found>
 wc -l CLAUDE.md
 
 # Flag if > 150 lines (warning) or > 250 lines (high)
-# Identify sections > 30 lines that could move to .claude/rules/ or .claude/docs/
+# Identify sections > 30 lines that could move to <state-dir>/rules/ or <state-dir>/docs/
 # Check for inline code blocks > 10 lines (should be in separate files)
 ```
 
@@ -267,7 +267,7 @@ find .claude/ -type f -mtime +90 2>/dev/null | head -10
 ```bash
 # Hash the ## Session Config section across repos
 # If cross-repos is configured, compare CLAUDE.md patterns
-# Flag identical sections that could be consolidated into ~/.claude/CLAUDE.md or .claude/rules/
+# Flag identical sections that could be consolidated into ~/.claude/CLAUDE.md or <state-dir>/rules/
 ```
 
 **Evidence Format (token efficiency):**

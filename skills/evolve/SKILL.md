@@ -10,6 +10,8 @@ description: >
   review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl.
 ---
 
+> **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
+
 # Evolve Skill
 
 ## Phase 0: Config & Data Loading
@@ -90,7 +92,7 @@ For each of the 5 learning types, apply these heuristics:
 
 #### 5. deviation-pattern (type: `deviation-pattern`)
 
-- Read `.claude/STATE.md` if it exists and check `## Deviations` section
+- Read `<state-dir>/STATE.md` if it exists and check `## Deviations` section
 - Cross-reference with session duration vs planned waves
 - Subject = pattern name (e.g., "scope-creep-in-feature-sessions", "underestimated-complexity")
 
@@ -154,9 +156,10 @@ For confirmed learnings, use atomic rewrite strategy:
    - `source_session`: session ID from which the pattern was extracted
    - `created_at`: current ISO 8601 date
    - `expires_at`: current date + `learning-expiry-days` (default: 30) (ISO 8601)
-5. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
-6. **Consolidate duplicates:** if same `type` + `subject` appears more than once, keep the entry with highest confidence
-7. Write entire result back to `.orchestrator/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
+5. **Verify write**: Read back the first line of the written file to confirm valid JSON. If read-back fails or is not valid JSON, report error to user.
+6. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
+7. **Consolidate duplicates:** if same `type` + `subject` appears more than once, keep the entry with highest confidence
+8. Write entire result back to `.orchestrator/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 

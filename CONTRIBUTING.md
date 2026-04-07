@@ -469,6 +469,38 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 3. **Never hardcode `.claude/`** in new scripts — always use `$SO_STATE_DIR`
 4. **Check all three env vars** for project root: `$CLAUDE_PROJECT_DIR`, `$CODEX_PROJECT_DIR`, `$CURSOR_PROJECT_DIR`
 
+## Scripts & Testing
+
+### Script Infrastructure
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/parse-config.sh` | Parse Session Config from CLAUDE.md/AGENTS.md into validated JSON |
+| `scripts/run-quality-gate.sh` | Run quality gate checks (4 variants: baseline, incremental, full-gate, per-file) |
+| `scripts/validate-wave-scope.sh` | Validate wave-scope.json before enforcement hooks consume it |
+| `scripts/token-audit.sh` | Cross-project token efficiency audit |
+| `scripts/cursor-install.sh` | Install Cursor rules via symlinks |
+| `scripts/lib/platform.sh` | Platform detection — exports SO_PLATFORM, SO_STATE_DIR, SO_CONFIG_FILE |
+| `scripts/lib/common.sh` | Shared utilities — die(), warn(), find_project_root() |
+| `scripts/lib/worktree.sh` | Git worktree helpers for isolated agent work |
+
+### Running Tests
+
+```bash
+bash scripts/test/run-all.sh    # Run all test suites
+bash scripts/test/test-parse-config.sh  # Run specific suite
+```
+
+Test files are in `scripts/test/`. Each `test-*.sh` file is self-contained with setup/teardown. Add new tests by creating `scripts/test/test-<name>.sh` following existing patterns.
+
+### Platform Variables
+
+Scripts use these environment variables (set by `platform.sh`):
+- `SO_PLATFORM`: `claude` | `codex` | `cursor`
+- `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor`
+- `SO_CONFIG_FILE`: `CLAUDE.md` | `AGENTS.md`
+- `SO_SHARED_DIR`: `.orchestrator` (all platforms)
+
 ## Pull Request Guidelines
 
 - **One logical change per PR.** Do not bundle unrelated skill changes.

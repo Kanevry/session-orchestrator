@@ -6,23 +6,22 @@ alwaysApply: false
 
 # Wave Execution (Cursor Adaptation)
 
-> **CRITICAL**: Cursor does NOT have an `Agent()` tool. All wave tasks execute **sequentially in the current session**. You are both the coordinator AND the implementer.
+> **CRITICAL**: Cursor does NOT have an `Agent()` tool. All wave tasks execute **sequentially in the current Composer session**. You are both the coordinator AND the implementer. Agent dispatch (3-tier resolution: project > plugin > general-purpose) is NOT applicable — follow the role's agent-prompt patterns directly.
+
+> **State directory**: All state files live in `.cursor/` (STATE.md, wave-scope.json).
 
 ## Pre-Execution
 
-Before starting the first wave:
+Before starting Wave 1:
 
-1. **Clean working directory**: Run `git status --short` — commit or stash any uncommitted changes
-2. **Capture session baseline**:
-   ```bash
-   SESSION_START_REF=$(git rev-parse HEAD)
-   ```
-   Keep this ref for the entire session — needed for simplification pass and final diff.
-3. **Confirm the agreed plan** is still valid (no new critical issues since planning)
+1. `git status --short` — commit or stash any uncommitted changes
+2. Capture baseline: `SESSION_START_REF=$(git rev-parse HEAD)` — keep for the whole session
+3. Confirm the agreed plan is still valid
+4. Read `persistence` from Session Config (default: `true`)
 
-### Initialize STATE.md
+### Initialize STATE.md (if persistence enabled)
 
-Create `.cursor/STATE.md` with this format:
+Create `.cursor/STATE.md` (`mkdir -p .cursor` if needed):
 
 ```yaml
 ---
@@ -51,83 +50,98 @@ Wave 0 — Initializing
 (none yet)
 ```
 
-Create `.cursor/` directory with `mkdir -p .cursor` if needed.
-
 ## Wave Loop
 
 For each wave in the session plan:
 
 ### Step 1: Write Scope Manifest
 
-Before starting each wave, write `.cursor/wave-scope.json`:
+Write `.cursor/wave-scope.json` before each wave. Set `enforcement: warn` — Cursor's afterFileEdit hook is post-hoc (warns only, cannot block):
 
 ```json
 {
   "wave": 1,
   "role": "<role>",
   "enforcement": "warn",
-  "allowedPaths": ["<paths from agent specs in session plan>"],
+  "allowedPaths": ["<union of all task file scopes for this wave>"],
   "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
 }
 ```
 
-Rules:
-- `allowedPaths` is the UNION of all task file scopes for this wave
-- For **Discovery** waves: set `allowedPaths` to `[]` — Discovery is READ-ONLY
-- For **Quality** waves (Phase 1 — Simplification): set `allowedPaths` to production files changed this session (exclude test files)
-- For **Quality** waves (Phase 2 — Test/Review): set `allowedPaths` to test file patterns only
+Role-specific scope rules:
+- **Discovery**: `allowedPaths: []` — READ-ONLY, do not edit files
+- **Quality Phase 1 (Simplification)**: production files changed this session only (no test files)
+- **Quality Phase 2 (Tests)**: test file patterns only (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
+
+Validate with: `bash "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.sh"` — fix JSON if it exits 1.
 
 ### Step 2: Execute Tasks Sequentially
 
 For each task in the wave:
 1. Read the task description and acceptance criteria
-2. Implement the task (you are the implementer, not a dispatcher)
-3. After completing each task, report status:
+2. Implement the task fully (you are the implementer)
+3. Report status after each task:
    ```
    Task "[description]": done|partial|failed — [1-line summary]
    ```
-4. If a task fails or you get stuck, note what went wrong and move to the next task
+4. If stuck, note the blocker and move to the next task
 
-**DO NOT commit during wave execution** — commits happen at session end.
+**DO NOT commit during wave execution** — `/close` handles commits.
 
 ### Step 3: Run Incremental Quality Checks
 
-After completing ALL tasks in the wave:
+After ALL tasks in the wave complete:
 
-- After **Discovery** waves: no verification needed (read-only)
-- After **Impl-Core** waves: run `typecheck` and test changed files
-- After **Impl-Polish** waves: run `typecheck`, test changed files, and verify integration
-- After **Quality** waves: run Full Gate checks (typecheck + test + lint — all must pass)
-- After **Finalization**: run `git status` to verify clean state
+| Role | Quality check |
+|------|--------------|
+| Discovery | None (read-only) |
+| Impl-Core | typecheck + test changed files |
+| Impl-Polish | typecheck + test changed files + integration verification |
+| Quality | Full Gate: typecheck + test + lint — all must pass |
+| Finalization | `git status` — verify clean state |
 
-### Step 4: Self-Review
+### Step 4: Quality Wave — Simplification Pass
 
-Check your implementation against the acceptance criteria for each task:
-- Did you implement what was specified?
-- Did you modify only the allowed files?
-- Are there any regressions in existing functionality?
-- Do the changes follow project conventions?
+At the START of the Quality wave, before running tests:
 
-### Step 5: Update STATE.md
+1. `git diff --name-only $SESSION_START_REF..HEAD` — list files changed this session
+2. Filter to production files (exclude `*.test.*`, `*.spec.*`, `__tests__/`). If none, skip.
+3. Review each production file for AI-generated patterns and apply targeted cleanup:
+   - Remove unnecessary try-catch around non-throwing operations
+   - Delete over-documentation (params that restate the name, returns that say "the result")
+   - Replace re-implemented stdlib functions with standard alternatives
+   - Simplify redundant boolean logic (if/else returning true/false, double negation)
+   - **Do NOT change functionality**
+4. After simplification, run Full Gate quality checks (typecheck + test + lint)
 
-After each wave completes:
+**Note:** Session-reviewer cannot be dispatched as a subagent on Cursor. Quality review is deferred to session-end Phase 1.8. In-wave quality relies on incremental checks + this simplification pass.
 
-1. **Frontmatter**: set `current-wave` to the completed wave number
+### Step 5: Update STATE.md (if persistence enabled)
+
+After each wave:
+
+1. **Frontmatter**: update `current-wave` to the completed wave number
 2. **`## Current Wave`**: replace with next wave info
 3. **`## Wave History`**: append:
    ```
    ### Wave N — <Role>
    - Task "[description]": done|partial|failed — [files changed] — [1-line note]
-   - Task "[description]": done|partial|failed — [files changed] — [1-line note]
    ```
-4. **`## Deviations`**: if the plan was adapted, append:
+4. **`## Deviations`**: if plan was adapted, append:
    ```
    - [<ISO timestamp>] Wave N: <what changed and why>
    ```
 
-### Step 6: Report Wave Status
+### Step 6: Capture Wave Metrics (if persistence enabled)
 
-After each wave, provide a status report:
+Record after each wave:
+- `wave_number`, `role`, `agent_count` (always 1 on Cursor), `files_changed`
+- Per-task results: `{description, status: done|partial|failed}`
+- `quality_check`: pass/fail/skipped
+
+This data is written to `.orchestrator/metrics/sessions.jsonl` by session-end.
+
+### Step 7: Report Wave Status
 
 ```
 ## Wave [N] ([Role]) Complete
@@ -138,48 +152,23 @@ After each wave, provide a status report:
 - Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
-### Step 7: Adapt Plan (if needed)
+### Step 8: Adapt Plan (if needed)
 
-After reviewing wave results, decide:
 - **On track**: proceed to next wave as planned
 - **Minor issues**: add fix tasks to the next wave
-- **Major blocker**: STOP and inform the user, propose revised plan
+- **Major blocker**: STOP — inform the user, propose revised plan
 - **Scope change**: document WHY, adjust remaining waves, inform user
 
-## Quality Wave
+## Agent-Mapping Config (Reference Only)
 
-The Quality wave has two phases:
-
-### Phase 1: Simplification Pass
-
-1. Identify all files changed this session:
-   ```bash
-   git diff --name-only $SESSION_START_REF..HEAD
-   ```
-2. Filter to production files only (exclude `*.test.*`, `*.spec.*`, `__tests__/`)
-3. If no production files changed, skip to Phase 2
-4. Review each changed production file for AI-generated patterns:
-   - Remove unnecessary try-catch around non-throwing operations
-   - Delete over-documentation (params that repeat the name, returns that say "the result")
-   - Replace re-implemented stdlib functions with standard alternatives
-   - Simplify redundant boolean logic (if/else returning true/false, double negation)
-   - **DO NOT change functionality**
-
-### Phase 2: Full Gate Quality Checks
-
-Run all quality checks:
-- `typecheck` (tsgo --noEmit or tsc --noEmit)
-- `test` (pnpm test --run or configured test command)
-- `lint` (pnpm lint or configured lint command)
-
-All must pass before proceeding.
+If Session Config includes `agent-mapping`, use it to determine which role's prompt patterns to follow for each task type (e.g., `db-specialist` patterns for DB tasks). On Cursor this is reference only — no actual agent dispatch occurs.
 
 ## Circuit Breaker
 
-**If you get stuck in a fix-retry loop (same error appearing 3+ times):**
+**If the same error appears 3+ times:**
 
 1. STOP immediately
-2. Report to the user:
+2. Report:
    ```
    CIRCUIT BREAKER: Stuck on [error description].
    Attempted [N] times. Same error persists.
@@ -189,36 +178,24 @@ All must pass before proceeding.
    2. Skip this task and continue with remaining waves
    3. Abort session
    ```
-3. Wait for user decision before proceeding
+3. Wait for user decision
 
-**Spiral indicators** (detect these in your own work):
-- Same file edited 3+ times without progress
-- Same error message appearing repeatedly
-- Reverting your own changes
+**Spiral indicators**: same file edited 3+ times without progress, same error repeating, reverting own changes.
 
 ## Session Type Behavior
 
-### Housekeeping Sessions
-- Execute tasks serially, 1-2 tasks at a time
-- No scope enforcement (skip wave-scope.json)
-- Run Baseline quality checks after all tasks complete
-- End with a single commit summarizing all housekeeping work
-
-### Feature Sessions
-- Full wave execution with all roles
-- Balance between implementation speed and quality
-
-### Deep Sessions
-- Full wave execution with extra emphasis on Discovery and Quality
-- May include security audits, performance profiling, architecture refactoring
+| Type | Behavior |
+|------|----------|
+| Housekeeping | Serial tasks, no wave-scope.json, Baseline QC at end, single commit via /close |
+| Feature | Full 5-role wave execution, incremental QC |
+| Deep | Full 5-role wave execution, extra emphasis on Discovery and Quality roles |
 
 ## Completion
 
-After the final wave completes successfully:
-1. Delete `.cursor/wave-scope.json` (cleanup)
+After the final (Finalization) wave:
+1. Delete `.cursor/wave-scope.json`
 2. Report final status to the user
-3. Suggest running `/close` to finalize the session
-4. **DO NOT auto-commit** — `/close` handles that with proper verification
+3. Suggest running `/close` — do NOT auto-commit
 
 ## Error Recovery
 
@@ -226,14 +203,14 @@ After the final wave completes successfully:
 |-----------|--------|
 | Tests fail after wave | Diagnose and fix, don't skip |
 | TypeScript errors introduced | Track count, fix by Quality wave |
-| New critical issue discovered | Inform user, add to remaining waves if fits scope |
+| New critical issue discovered | Inform user, add to remaining waves if in scope |
 | Edits to wrong files | Revert via git, redo with correct scope |
 | Stuck in loop | Trigger circuit breaker (see above) |
 
 ## Anti-Patterns
 
 - **NEVER** skip inter-wave review — quality degrades exponentially
-- **NEVER** commit during wave execution — coordinator commits at session end
-- **NEVER** continue to next wave if previous wave has unresolved failures
-- **NEVER** let wave execution run without reporting progress to the user
-- **NEVER** modify files outside the wave's allowedPaths scope
+- **NEVER** commit during wave execution — `/close` handles that
+- **NEVER** continue to next wave with unresolved failures
+- **NEVER** execute without reporting progress to the user
+- **NEVER** modify files outside the wave's `allowedPaths`
