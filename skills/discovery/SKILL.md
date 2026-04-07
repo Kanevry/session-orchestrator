@@ -3,6 +3,7 @@ name: discovery
 user-invocable: false
 tags: [quality, discovery, probes, issues]
 model-preference: sonnet
+model-preference-codex: gpt-5.4-mini
 description: >
   Systematic quality discovery and issue detection. Runs modular probes
   adapted to the project's tech stack, presents findings interactively
@@ -208,7 +209,7 @@ Before presenting findings for triage, separate by confidence threshold:
 
 ### 4.1 Present High-Confidence Findings
 
-Present findings using AskUserQuestion -- NEVER plain text options.
+Present findings using AskUserQuestion -- NEVER plain text options. On Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists.
 
 Include confidence scores in the presentation:
 ```
@@ -237,7 +238,7 @@ Probes run: [N] | Findings verified: [N] | False positives discarded: [N]
 
 ### Step 2: Critical + High Findings -- Review Individually
 
-For each Critical or High finding, use AskUserQuestion:
+For each Critical or High finding, use AskUserQuestion (on Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists):
 
 ```
 AskUserQuestion({
@@ -254,11 +255,11 @@ AskUserQuestion({
 })
 ```
 
-If user selects "Adjust priority", ask which priority with another AskUserQuestion.
+If user selects "Adjust priority", ask which priority with another AskUserQuestion. On Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists.
 
 ### Step 3: Medium + Low Findings -- Review Batched
 
-Group remaining findings by category. For each category with medium/low findings:
+Group remaining findings by category. For each category with medium/low findings (on Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists):
 
 ```
 AskUserQuestion({
@@ -278,7 +279,7 @@ If "Review individually" selected, walk through each like Step 2.
 
 ### Step 4: Batch Confirmation
 
-Before creating any issues:
+Before creating any issues (on Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists):
 
 ```
 AskUserQuestion({
@@ -340,7 +341,7 @@ For each approved finding:
 - **NEVER** fabricate findings -- every finding must come from tool output with verifiable evidence
 - **NEVER** create issues without user approval (standalone mode)
 - **ALWAYS** verify findings by re-reading the file at the reported line (Phase 3)
-- **ALWAYS** use AskUserQuestion for triage decisions -- never plain text options
+- **ALWAYS** use AskUserQuestion for triage decisions -- never plain text options (On Codex CLI, use numbered lists as AskUserQuestion is not available)
 - **ALWAYS** reference gitlab-ops for VCS operations -- never duplicate CLI logic inline
 - If a probe command fails or tool is unavailable, skip gracefully, continue with others
 - If in embedded mode, stop after Phase 3, return findings as structured data

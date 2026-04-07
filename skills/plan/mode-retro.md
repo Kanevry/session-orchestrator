@@ -11,7 +11,7 @@ Gather ALL data before asking questions. No user input. Present a dashboard when
 
 ### 1.1 Session Metrics
 
-Read `.claude/metrics/sessions.jsonl`. Extract per entry:
+Read `.orchestrator/metrics/sessions.jsonl`. Extract per entry:
 
 - `session_type`, `started_at`, `completed_at`, `duration_seconds`
 - `effectiveness.completion_rate`, `effectiveness.planned_issues`, `effectiveness.completed`, `effectiveness.carryover`
@@ -142,7 +142,7 @@ Skip if Wave 2 was not triggered.
 
 ### 3.3 Update Learnings
 
-Append new patterns to `.claude/metrics/learnings.jsonl`. Use the same JSONL schema as session-end writes (see session-end/SKILL.md for canonical field reference):
+Append new patterns to `.orchestrator/metrics/learnings.jsonl`. Use the same JSONL schema as session-end writes (see session-end/SKILL.md for canonical field reference):
 
 ```json
 {

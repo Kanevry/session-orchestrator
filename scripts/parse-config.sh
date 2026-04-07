@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# parse-config.sh — Parse ## Session Config from CLAUDE.md and output validated JSON
+# parse-config.sh — Parse ## Session Config from CLAUDE.md or AGENTS.md and output validated JSON
 # Part of Session Orchestrator v2.0
 #
-# Usage: parse-config.sh [path/to/CLAUDE.md]
-#   If no path given, finds project root and uses its CLAUDE.md.
+# Usage: parse-config.sh [path/to/CLAUDE.md|AGENTS.md]
+#   If no path given, finds project root and uses its CLAUDE.md (or AGENTS.md).
 #
 # Output: Single JSON object to stdout with ALL config fields (defaults applied).
 # Exit codes: 0 success, 1 error (message to stderr)
@@ -23,13 +23,22 @@ require_jq
 KV_FILE="$(mktemp "${TMPDIR:-/tmp}/parse-config.XXXXXX")"
 trap 'rm -f "$KV_FILE"' EXIT
 
-# Resolve CLAUDE.md path
+# Resolve config file path (CLAUDE.md or AGENTS.md)
 if [[ -n "${1:-}" ]]; then
   CLAUDE_MD="$1"
   [[ -f "$CLAUDE_MD" ]] || die "File not found: $CLAUDE_MD"
 else
   PROJECT_ROOT="$(find_project_root)"
-  CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
+  # Prefer $SO_CONFIG_FILE (set by platform.sh), then CLAUDE.md, then AGENTS.md
+  if [[ -n "${SO_CONFIG_FILE:-}" && -f "$PROJECT_ROOT/$SO_CONFIG_FILE" ]]; then
+    CLAUDE_MD="$PROJECT_ROOT/$SO_CONFIG_FILE"
+  elif [[ -f "$PROJECT_ROOT/CLAUDE.md" ]]; then
+    CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
+  elif [[ -f "$PROJECT_ROOT/AGENTS.md" ]]; then
+    CLAUDE_MD="$PROJECT_ROOT/AGENTS.md"
+  else
+    CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
+  fi
 fi
 
 # Extract ## Session Config section (between header and next ## or EOF)

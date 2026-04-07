@@ -25,17 +25,23 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || C
 # Locate wave-scope manifest
 find_project_root() {
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  if [[ -n "${CODEX_PROJECT_DIR:-}" && -d "${CODEX_PROJECT_DIR}/.codex" ]]; then echo "$CODEX_PROJECT_DIR"; return; fi
   local dir
   dir="$(pwd)"
   while [[ "$dir" != "/" ]]; do
-    if [[ -f "$dir/.claude/wave-scope.json" ]]; then echo "$dir"; return; fi
+    if [[ -f "$dir/.claude/wave-scope.json" || -f "$dir/.codex/wave-scope.json" ]]; then echo "$dir"; return; fi
     dir="$(dirname "$dir")"
   done
   pwd
 }
 PROJECT_ROOT="$(find_project_root)"
-SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
-[[ ! -f "$SCOPE_FILE" ]] && exit 0
+if [[ -f "$PROJECT_ROOT/.codex/wave-scope.json" ]]; then
+  SCOPE_FILE="$PROJECT_ROOT/.codex/wave-scope.json"
+elif [[ -f "$PROJECT_ROOT/.claude/wave-scope.json" ]]; then
+  SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
+else
+  exit 0
+fi
 
 # Enforcement level from wave-scope.json. Default "strict" to fail-closed.
 # The wave-executor MUST always write this field explicitly.

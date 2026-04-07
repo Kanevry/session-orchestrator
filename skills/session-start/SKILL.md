@@ -3,6 +3,7 @@ name: session-start
 user-invocable: false
 tags: [orchestration, initialization, analysis, alignment]
 model-preference: opus
+model-preference-codex: gpt-5.4
 description: >
   Full session initialization for any project repo. Autonomously analyzes git state,
   VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents
@@ -24,7 +25,9 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 
 > Skip this phase if `persistence` config is `false`.
 
-Check for `.claude/STATE.md` in the project root:
+Check for `<state-dir>/STATE.md` in the project root:
+
+> Where `<state-dir>` is `.claude/` under Claude Code or `.codex/` under Codex CLI. See `skills/_shared/platform-tools.md` for details.
 
 1. **STATE.md exists** — read it and inspect the `status` field:
    - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started_at]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
@@ -32,14 +35,14 @@ Check for `.claude/STATE.md` in the project root:
    - `status: completed` — previous session ended cleanly. Note the summary for context (what was done, what was deferred) but continue with normal initialization.
 2. **STATE.md does not exist** — first session or persistence was previously off. Continue normally.
 
-Also read `.claude/STATUS.md` if it exists for additional project-level context.
+Also read `<state-dir>/STATUS.md` if it exists for additional project-level context.
 
 ## Phase 0.6: Metrics Initialization
 
 > Skip if `persistence` config is `false`.
 
-1. Ensure `.claude/metrics/` directory exists in the project root (create if missing)
-2. If `.claude/metrics/sessions.jsonl` exists, count lines to determine number of previous sessions
+1. Ensure '.orchestrator/metrics/' directory exists in the project root (create if missing). For backward compatibility, also check '.claude/metrics/'
+2. If '.orchestrator/metrics/sessions.jsonl' exists, count lines to determine number of previous sessions (also check `.claude/metrics/sessions.jsonl` as fallback)
 3. Store the count for display in Phase 7 — this feeds the Historical Trends section
 
 ## Phase 1: Git Analysis (parallel)
@@ -108,9 +111,9 @@ Surface context from previous sessions:
 
 ## Phase 5.6: Project Intelligence
 
-> Skip if `persistence` config is `false` or `.claude/metrics/learnings.jsonl` does not exist.
+> Skip if `persistence` config is `false` or `.orchestrator/metrics/learnings.jsonl` does not exist (also check legacy fallback `.claude/metrics/learnings.jsonl`).
 
-Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence > 0.3, not expired):
+Read `.orchestrator/metrics/learnings.jsonl` (or `.claude/metrics/learnings.jsonl` as legacy fallback) and surface active learnings (confidence > 0.3, not expired):
 
 1. Group learnings by type:
    - **Fragile files**: "These files have been problematic: [list with confidence scores]"
@@ -129,9 +132,9 @@ Read `.claude/metrics/learnings.jsonl` and surface active learnings (confidence 
 
 3. **Effectiveness analysis** (requires 5+ sessions in `sessions.jsonl`):
 
-   > Skip if `.claude/metrics/sessions.jsonl` does not exist or has fewer than 5 entries.
+   > Skip if `.orchestrator/metrics/sessions.jsonl` does not exist or has fewer than 5 entries.
 
-   Read `.claude/metrics/sessions.jsonl` and compute:
+   Read `.orchestrator/metrics/sessions.jsonl` and compute:
    - **Completion rate trend**: average `effectiveness.completion_rate` over last 5 sessions
      - If < 0.6: "Completion rate is [X]%. Consider reducing scope or using deep sessions."
      - If > 0.9: "Consistently high completion. Current scope sizing works well."

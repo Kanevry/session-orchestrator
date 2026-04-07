@@ -3,6 +3,7 @@ name: wave-executor
 user-invocable: false
 tags: [orchestration, execution, agents, waves]
 model-preference: sonnet
+model-preference-codex: gpt-5.4-mini
 description: >
   Executes the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
   quality checks, plan adaptation, and progress tracking. Core orchestration engine for
@@ -20,6 +21,10 @@ You are the **coordinator**. You do NOT implement — you orchestrate. Your job:
 4. Adapt the plan if needed
 5. Dispatch the next wave
 6. Repeat until all waves complete
+
+## Platform Note
+
+> State files live in the platform's native directory: `.claude/` for Claude Code, `.codex/` for Codex CLI. All references to `.claude/` below should use the platform's state directory. Shared metrics (sessions.jsonl, learnings.jsonl) live in `.orchestrator/metrics/` — both platforms read and write there. See `skills/_shared/platform-tools.md` for tool mappings.
 
 ## Pre-Execution Check
 
@@ -110,6 +115,18 @@ For each agent in this wave:
 
 **CRITICAL: `run_in_background: false`** — You MUST wait for ALL agents to complete before proceeding. NEVER use `run_in_background: true` during wave execution. Dispatch all agents in a single message for maximum parallelism, then wait.
 
+#### Platform-Specific Dispatch
+
+**Claude Code:** Use the `Agent` tool as shown above with `subagent_type: "general-purpose"` (or `"Explore"` for Discovery waves, `"session-orchestrator:session-reviewer"` for quality review).
+
+**Codex CLI:** Codex uses typed agent roles defined in `.codex-plugin/agents/`. Map wave roles to Codex agents:
+- **Discovery** waves → `explorer` agent (read-only)
+- **Impl-Core / Impl-Polish** waves → `wave-worker` agent (workspace-write)
+- **Quality** review → `session-reviewer` agent (read-only)
+- **Finalization** → direct execution (no subagent needed)
+
+Dispatch via Codex's multi-agent system — describe the task and specify the agent role. The prompts remain identical across platforms.
+
 > **Timeout note:** Agent timeout is controlled by `maxTurns` from `circuit-breaker.md`, not by a time-based timeout. Claude Code's built-in turn limit provides the safety net. There is no need to set explicit time-based timeouts on agent dispatch.
 
 ### 2. Review Agent Outputs
@@ -165,6 +182,7 @@ After ALL agents in the wave complete:
       - MAJOR MISMATCH → **PAUSE wave execution**:
         1. Report specific mismatches to user
         2. AskUserQuestion: "Continue as-is", "Revise plan for remaining waves", "Abort session"
+           > If AskUserQuestion is unavailable (Codex CLI), present as numbered list.
         3. If "Revise" → re-run session-plan for remaining waves only
         4. If "Abort" → mark remaining waves as DEFERRED, proceed to session-end
    
@@ -246,6 +264,7 @@ After each wave, provide a brief status:
 Before each wave dispatch:
 
 1. **Write `.claude/wave-scope.json`** with the wave's scope:
+   > (Platform-specific: `.claude/wave-scope.json` on Claude Code, `.codex/wave-scope.json` on Codex CLI)
    ```json
    {
      "wave": N,

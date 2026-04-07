@@ -3,6 +3,7 @@ name: gitlab-ops
 user-invocable: false
 tags: [reference, vcs, gitlab, github, issues]
 model-preference: sonnet
+model-preference-codex: gpt-5.4-mini
 description: >
   VCS operations reference for GitLab and GitHub: CLI commands (glab/gh),
   label taxonomy, issue templates, dynamic project resolution.

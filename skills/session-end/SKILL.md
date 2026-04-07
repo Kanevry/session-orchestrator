@@ -3,6 +3,7 @@ name: session-end
 user-invocable: false
 tags: [orchestration, verification, commits, issues]
 model-preference: sonnet
+model-preference-codex: gpt-5.4-mini
 description: >
   Full session close-out: verifies all planned work against the agreed plan, creates issues
   for gaps, runs quality gates, commits cleanly, mirrors to GitHub, and produces a session
@@ -10,6 +11,8 @@ description: >
 ---
 
 # Session End Skill
+
+> **Platform Note:** State files (STATE.md, wave-scope.json) live in `.claude/` (Claude Code) or `.codex/` (Codex CLI). Shared metrics live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
 
 ## Phase 1: Plan Verification
 
@@ -95,6 +98,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
    {
      "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
      "session_type": "<type>",
+     "platform": "<claude|codex>",
      "started_at": "<ISO 8601>",
      "completed_at": "<ISO 8601>",
      "duration_seconds": N,
@@ -147,6 +151,8 @@ Finalize session metrics by reading the wave data accumulated during execution:
 ### 1.8 Session Review
 
 Dispatch the session-reviewer agent to verify implementation quality before the quality gate:
+
+> On Codex CLI, dispatch via the `session-reviewer` agent role defined in `.codex-plugin/agents/session-reviewer.toml`.
 
 1. Invoke `subagent_type: "session-orchestrator:session-reviewer"` with:
    - **Scope**: all files changed this session (from `git diff --name-only` against the base branch)
@@ -225,7 +231,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 - **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?
 - **Deviation patterns**: read the `## Deviations` section from `.claude/STATE.md` — were there plan adaptations? What triggered them? Extract as `deviation-pattern` type if a pattern emerges across sessions (e.g., "scope expansion during Impl-Core is common for this project")
 
-**Learning format** (append each as one JSONL line to `.claude/metrics/learnings.jsonl`):
+**Learning format** (append each as one JSONL line to `.orchestrator/metrics/learnings.jsonl`):
 ```json
 {
   "id": "<uuid-v4>",
@@ -241,7 +247,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 ```
 
 **Confidence updates for existing learnings:**
-Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
+Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
 - If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0) and reset `expires_at` to current date + `learning-expiry-days` (default: 30)
 - If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
 - If no existing match: note as a new learning with confidence 0.5
@@ -258,7 +264,7 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
    "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
 3. This is a suggestion only — not blocking
-4. **Write learnings** to `.claude/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
+4. **Write learnings** to `.orchestrator/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
    a. Read all existing lines from `learnings.jsonl` (if exists)
    b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0 AND reset `expires_at` to current date + `learning-expiry-days` (default: 30); contradicted: -0.2)
    c. Append new learnings from Phase 3.5a (those with no existing match)
@@ -271,8 +277,8 @@ Before writing new learnings, read `.claude/metrics/learnings.jsonl` and check f
 
 > Gate: Only run if `persistence` is enabled in Session Config.
 
-1. Ensure `.claude/metrics/` directory exists: `mkdir -p .claude/metrics`
-2. Append the prepared JSONL entry (from Phase 1.7) as a single line to `.claude/metrics/sessions.jsonl`
+1. Ensure `.orchestrator/metrics/` directory exists: `mkdir -p .claude/metrics`
+2. Append the prepared JSONL entry (from Phase 1.7) as a single line to `.orchestrator/metrics/sessions.jsonl`
    > **Concurrent write safety**: Use shell `>>` append for the single JSONL line — this is atomic on POSIX systems for writes under PIPE_BUF (typically 4096 bytes). Do NOT read-modify-write the file.
 3. Create the file if it does not exist
 4. Verify: read back the last line to confirm valid JSON
@@ -352,8 +358,8 @@ Present to the user:
 - Mirror: [synced/skipped]
 - Enforcement: [N violations blocked / M warnings] (or "N/A" if enforcement off)
 - Circuit breaker: [N agents hit limits, M spirals detected] (or "none")
-- Metrics written to: `.claude/metrics/sessions.jsonl`
-- Learnings: [N] new, [M] confirmed, [K] contradicted/expired — written to `.claude/metrics/learnings.jsonl`
+- Metrics written to: `.orchestrator/metrics/sessions.jsonl`
+- Learnings: [N] new, [M] confirmed, [K] contradicted/expired — written to `.orchestrator/metrics/learnings.jsonl`
 
 ### Next Session Recommendations
 - Priority: [what should be tackled next]

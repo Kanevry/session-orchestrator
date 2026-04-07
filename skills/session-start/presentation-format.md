@@ -26,7 +26,7 @@ Based on priority, synergies, and session type, I recommend:
 [Pros/cons for each, clear recommendation with WHY]
 
 ## Historical Trends (last 5 sessions)
-> Only show if 2+ sessions exist in `.claude/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
+> Only show if 2+ sessions exist in `.orchestrator/metrics/sessions.jsonl`. Otherwise: "Not enough history for trends (need 2+)."
 > Read the last 5 lines from `sessions.jsonl`, parse each as JSON, and display most recent first (by `completed_at` timestamp). If fewer than 5 sessions exist, show all available.
 
 | Session | Type | Duration | Waves | Agents | Files Changed |
@@ -62,3 +62,5 @@ AskUserQuestion({
 ```
 
 Always include your recommendation as the first option with "(Recommended)" in the label.
+
+> **Codex CLI fallback:** If the AskUserQuestion tool is not available (e.g., on Codex CLI), present the same options as a numbered Markdown list and ask the user to respond with their choice number. Include "(Recommended)" on the first option.

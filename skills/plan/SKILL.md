@@ -3,6 +3,7 @@ name: plan
 user-invocable: false
 tags: [planning, prd, requirements, research]
 model-preference: opus
+model-preference-codex: gpt-5.4
 description: >
   Structured project planning and PRD generation with three modes:
   new (project kickoff with repo scaffolding), feature (compact feature PRD),
@@ -37,6 +38,10 @@ Plan-specific fields (also parse these): `plan-default-visibility`, `plan-prd-lo
 Store all values for use in subsequent phases. Expand `~` in paths to the full home directory.
 
 If no `## Session Config` section exists at all, stop and report: "Error: No Session Config section found in CLAUDE.md. The `/plan` skill requires at minimum `plan-baseline-path` to be configured."
+
+> **Platform Note:** This skill uses `AskUserQuestion` extensively. On Codex CLI where this tool is unavailable, present all choices as numbered Markdown lists with "(Recommended)" on the first option. The user responds with their choice number. See `skills/_shared/platform-tools.md`.
+
+> On Codex CLI, Explore agents map to the `explorer` agent role. See `skills/_shared/platform-tools.md`.
 
 ## Phase 1: Mode Router
 

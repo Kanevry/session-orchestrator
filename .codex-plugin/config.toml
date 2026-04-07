@@ -1,0 +1,20 @@
+# Session Orchestrator — Codex CLI Plugin Config
+# Equivalent of .claude-plugin/plugin.json for OpenAI Codex CLI
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[features]
+multi_agent = true
+
+[agents.session-reviewer]
+description = "Inter-wave quality gate agent — verifies implementation correctness, test coverage, TypeScript health, security, and issue tracking"
+config_file = "agents/session-reviewer.toml"
+
+[agents.wave-worker]
+description = "Implementation agent for wave execution — handles feature work, bug fixes, and refactoring"
+config_file = "agents/wave-worker.toml"
+
+[agents.explorer]
+description = "Read-only codebase explorer — gathers evidence, traces execution paths, analyzes patterns"
+config_file = "agents/explorer.toml"

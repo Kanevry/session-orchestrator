@@ -14,8 +14,9 @@ This guide explains how to extend and modify the Session Orchestrator plugin for
 8. [Modifying Existing Skills](#modifying-existing-skills)
 9. [Session Config Convention](#session-config-convention)
 10. [Label Taxonomy](#label-taxonomy)
-11. [Pull Request Guidelines](#pull-request-guidelines)
-12. [Code of Conduct](#code-of-conduct)
+11. [Platform Abstraction](#platform-abstraction)
+12. [Pull Request Guidelines](#pull-request-guidelines)
+13. [Code of Conduct](#code-of-conduct)
 
 ---
 
@@ -404,6 +405,40 @@ When adding new configurable behavior:
 The standard label taxonomy is defined in the **Label Taxonomy** section of `skills/gitlab-ops/SKILL.md`. This is the single source of truth for all label definitions.
 
 When your skill or agent interacts with VCS labels, reference the gitlab-ops taxonomy. If you need to add a new label category, add it to gitlab-ops first, then use it in your skill.
+
+## Platform Abstraction
+
+Session Orchestrator supports both Claude Code and Codex CLI. When contributing, follow these guidelines to maintain cross-platform compatibility:
+
+### File Location Conventions
+
+| Category | Location | Notes |
+|----------|----------|-------|
+| Plugin manifests | `.claude-plugin/` and `.codex-plugin/` | Platform-specific, separate files |
+| Skills | `skills/` | Shared — one SKILL.md serves both platforms |
+| Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md |
+| Hooks (Claude Code) | `hooks/hooks.json` | Uses `$CLAUDE_PLUGIN_ROOT` |
+| Hooks (Codex) | `hooks/hooks-codex.json` | Uses `$CODEX_PLUGIN_ROOT` |
+| Agents (Claude Code) | `agents/` | Markdown format |
+| Agents (Codex) | `.codex-plugin/agents/` | TOML format |
+| Shell scripts | `scripts/` | Shared — use `$SO_*` variables from `platform.sh` |
+
+### Writing Platform-Portable Skills
+
+1. **Reference `skills/_shared/platform-tools.md`** for tool mappings between platforms
+2. **Add `model-preference-codex`** to SKILL.md frontmatter alongside `model-preference`
+3. **AskUserQuestion**: Always add a Codex fallback note: "On Codex CLI, present as numbered list"
+4. **Agent dispatch**: Document both Claude Code (`Agent()` tool) and Codex (agent roles) patterns
+5. **State paths**: Use `<state-dir>/` instead of hardcoding `.claude/`
+6. **Metrics paths**: Use `.orchestrator/metrics/` (shared) for learnings and sessions
+7. **Config file**: Reference "Session Config in CLAUDE.md or AGENTS.md" — not just CLAUDE.md
+
+### Writing Platform-Portable Shell Scripts
+
+1. **Source `platform.sh`**: `source "$(dirname "${BASH_SOURCE[0]}")/../lib/platform.sh"` (or `|| true` for graceful fallback)
+2. **Use `$SO_*` variables**: `$SO_PLATFORM`, `$SO_PLUGIN_ROOT`, `$SO_STATE_DIR`, `$SO_CONFIG_FILE`, `$SO_SHARED_DIR`
+3. **Never hardcode `.claude/`** in new scripts — always use `$SO_STATE_DIR`
+4. **Check both env vars**: `$CLAUDE_PROJECT_DIR` and `$CODEX_PROJECT_DIR` for project root resolution
 
 ## Pull Request Guidelines
 

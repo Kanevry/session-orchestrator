@@ -14,7 +14,7 @@
 
 ## Metrics
 
-> Auto-generated from `.claude/metrics/sessions.jsonl`. Do not edit manually.
+> Auto-generated from `.orchestrator/metrics/sessions.jsonl`. Do not edit manually.
 
 | Metric | Value | Trend |
 |--------|-------|-------|

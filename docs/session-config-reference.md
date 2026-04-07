@@ -3,6 +3,13 @@
 > Canonical field reference for Session Config. All skills reference this file instead of maintaining inline copies.
 > Users: see `docs/USER-GUIDE.md` Section 4 for examples and usage guidance.
 
+## Config File Location
+
+- **Claude Code**: Add `## Session Config` to your project's `CLAUDE.md`
+- **Codex CLI**: Add `## Session Config` to your project's `AGENTS.md`
+
+The format and all fields are identical on both platforms. The section header must be exactly `## Session Config`.
+
 ## Session Structure
 
 | Field | Type | Default | Description |

@@ -3,6 +3,7 @@ name: session-plan
 user-invocable: false
 tags: [orchestration, planning, waves, agents]
 model-preference: opus
+model-preference-codex: gpt-5.4
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
   Decomposes agreed tasks into configurable waves (default 5) with optimal agent assignment,
@@ -24,7 +25,7 @@ Transform the agreed session scope (from session-start Q&A) into an executable w
    - Use this to avoid re-doing completed work and to prioritize carryover tasks
    If no STATE.md or `status: completed`, proceed with fresh planning.
 
-0.5. **Read project intelligence**: If `.claude/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
+0.5. **Read project intelligence**: If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
    - **Fragile files**: if any planned task touches a known fragile file, note it as a warning in the agent spec
    - **Effective sizing**: use historical sizing data to inform Step 3 complexity scoring
    - **Recurring issues**: pre-populate risk mitigation with known issue patterns

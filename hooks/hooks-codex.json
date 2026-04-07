@@ -1,0 +1,51 @@
+{
+  "_comment": "Codex CLI hooks equivalent of hooks.json. Enable hooks in ~/.codex/config.toml: [hooks] enabled = true",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-alpha.13 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CODEX_PLUGIN_ROOT/hooks/enforce-scope.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CODEX_PLUGIN_ROOT/hooks/enforce-commands.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CODEX_PLUGIN_ROOT/hooks/post-edit-validate.sh\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

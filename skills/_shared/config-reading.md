@@ -2,17 +2,18 @@
 
 ## Resolving the Plugin Root
 
-`$CLAUDE_PLUGIN_ROOT` may not be set (depends on how hooks/skills are loaded). Resolve the script path with this fallback chain:
+`$CLAUDE_PLUGIN_ROOT` (Claude Code) or `$CODEX_PLUGIN_ROOT` (Codex CLI) may not be set (depends on how hooks/skills are loaded). Resolve the script path with this fallback chain:
 
-1. If `$CLAUDE_PLUGIN_ROOT` is set and non-empty, use it.
-2. Otherwise, search for the plugin install location:
+1. If `$CLAUDE_PLUGIN_ROOT` or `$CODEX_PLUGIN_ROOT` is set and non-empty, use it.
+2. Otherwise, search for the plugin install location (includes both Claude Code and Codex paths):
    ```bash
-   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}"
    if [[ -z "$PLUGIN_ROOT" ]]; then
-     # Check common install locations
+     # Check common install locations (Claude Code + Codex CLI)
      for candidate in \
        "$HOME/Projects/session-orchestrator" \
        "$HOME/.claude/plugins/session-orchestrator" \
+       "$HOME/.codex/plugins/session-orchestrator" \
        "$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "")")")" \
      ; do
        if [[ -n "$candidate" && -f "$candidate/scripts/parse-config.sh" ]]; then
@@ -45,11 +46,11 @@ fi
 
 ## Fallback
 
-If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading CLAUDE.md manually per `docs/session-config-reference.md`.
+If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex CLI), depending on which platform is active.
 
 ## Learning Expiry Semantics
 
-Learnings in `.claude/metrics/learnings.jsonl` follow this lifecycle:
+Learnings in `.orchestrator/metrics/learnings.jsonl` (preferred) or `.claude/metrics/learnings.jsonl` (legacy fallback) follow this lifecycle:
 
 - **Created**: `confidence: 0.5`, `expires_at`: current date + `learning-expiry-days` (default: 30)
 - **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset

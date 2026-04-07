@@ -3,9 +3,10 @@ name: evolve
 user-invocable: false
 tags: [learning, intelligence, meta]
 model-preference: sonnet
+model-preference-codex: gpt-5.4-mini
 description: >
   Extract session patterns into reusable learnings. Three modes: analyze (extract from session history),
-  review (edit/manage existing learnings), list (display active learnings). Manages .claude/metrics/learnings.jsonl.
+  review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl.
 ---
 
 # Evolve Skill
@@ -20,7 +21,7 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 
 Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with message:
 
-> "Learnings require persistence to be enabled in Session Config. Add `persistence: true` to your Session Config block in CLAUDE.md."
+> "Learnings require persistence to be enabled in Session Config. Add `persistence: true` to your Session Config block (CLAUDE.md for Claude Code, AGENTS.md for Codex CLI)."
 
 ### 0.3 Determine Mode
 
@@ -31,8 +32,8 @@ Read mode from `$ARGUMENTS`:
 
 ### 0.4 Load Data
 
-1. Read `.claude/metrics/sessions.jsonl` (session history) — if it does not exist, warn: "No session history found. Run at least one session first."
-2. Read `.claude/metrics/learnings.jsonl` if it exists (current learnings)
+1. Read `.orchestrator/metrics/sessions.jsonl` (session history) — if it does not exist, warn: "No session history found. Run at least one session first."
+2. Read `.orchestrator/metrics/learnings.jsonl` if it exists (current learnings)
 3. Count existing learnings, note any where `expires_at` < current date (expired)
 
 ## Phase 1: Mode Dispatch
@@ -50,7 +51,7 @@ Extract learnings from session history.
 
 ### Step 2.1: Read Session Data
 
-- Read all entries from `.claude/metrics/sessions.jsonl`
+- Read all entries from `.orchestrator/metrics/sessions.jsonl`
 - Parse each JSONL line as JSON
 - Sort by `completed_at` descending (most recent first)
 - If no sessions found, abort: "No session data available. Complete at least one session before running evolve."
@@ -107,6 +108,8 @@ For each extracted pattern, check if a learning with same `type` + `subject` alr
 
 Present extracted patterns to the user for confirmation. Use AskUserQuestion with `multiSelect: true`:
 
+> On Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list.
+
 ```
 AskUserQuestion({
   questions: [{
@@ -134,7 +137,7 @@ If user selects "Skip all" or selects nothing, abort gracefully: "No learnings s
 
 For confirmed learnings, use atomic rewrite strategy:
 
-1. Read ALL existing lines from `.claude/metrics/learnings.jsonl` (if exists) into memory
+1. Read ALL existing lines from `.orchestrator/metrics/learnings.jsonl` (if exists) into memory
 2. Apply confidence updates for confirmed existing learnings:
    - Increment confidence by +0.15
    - Cap at 1.0
@@ -152,7 +155,7 @@ For confirmed learnings, use atomic rewrite strategy:
    - `expires_at`: current date + `learning-expiry-days` (default: 30) (ISO 8601)
 5. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
 6. **Consolidate duplicates:** if same `type` + `subject` appears more than once, keep the entry with highest confidence
-7. Write entire result back to `.claude/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
+7. Write entire result back to `.orchestrator/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
@@ -164,7 +167,7 @@ Interactive management of existing learnings.
 
 ### Step 3.1: Load Learnings
 
-- Read `.claude/metrics/learnings.jsonl`
+- Read `.orchestrator/metrics/learnings.jsonl`
 - If file does not exist or is empty: "No learnings found. Run `/evolve analyze` first."
 - Parse each line as JSON
 
@@ -188,6 +191,8 @@ Summary: N active learnings (M high confidence, K expiring soon)
 
 Use AskUserQuestion with options:
 
+> On Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list.
+
 ```
 AskUserQuestion({
   questions: [{
@@ -205,6 +210,8 @@ AskUserQuestion({
 ```
 
 If user selects "Boost confidence", "Reduce confidence", "Delete specific learnings", or "Extend expiry", present a follow-up AskUserQuestion with `multiSelect: true` listing all learnings by `# | type | subject` so the user can select which ones to modify.
+
+> On Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list.
 
 ### Step 3.4: Apply Changes
 
@@ -230,7 +237,7 @@ Simple read-only display.
 
 ### Step 4.1: Load and Display
 
-- Read `.claude/metrics/learnings.jsonl`
+- Read `.orchestrator/metrics/learnings.jsonl`
 - If file does not exist: "No learnings yet. Run `/evolve analyze` to extract patterns from session history."
 - Parse each line as JSON
 
@@ -271,7 +278,7 @@ N active learnings (M high confidence, K expiring soon)
 
 - **NEVER** modify `learnings.jsonl` without reading it first — race condition prevention
 - **NEVER** skip the deduplication check — duplicates degrade the intelligence system
-- **NEVER** write learnings without user confirmation — always present via AskUserQuestion first
+- **NEVER** write learnings without user confirmation — always present via AskUserQuestion first (on Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list)
 - **ALWAYS** use uuid-v4 for new learning IDs (generate via `uuidgen` or equivalent bash command)
 - **ALWAYS** set `expires_at` to current date + `learning-expiry-days` from config (default: 30) for new learnings
 - **ALWAYS** present findings to user before writing — no silent writes
@@ -280,7 +287,7 @@ N active learnings (M high confidence, K expiring soon)
 
 ## Anti-Patterns
 
-- **DO NOT** write learnings without user confirmation — always present via AskUserQuestion first
+- **DO NOT** write learnings without user confirmation — always present via AskUserQuestion first (on Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list)
 - **DO NOT** append to `learnings.jsonl` — always use atomic rewrite (read all, modify, write all)
 - **DO NOT** create duplicate learnings — always check type + subject match first
 - **DO NOT** set confidence above 1.0 or forget to cap it

@@ -31,10 +31,11 @@ esac
 
 find_project_root() {
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}/.claude" ]]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  if [[ -n "${CODEX_PROJECT_DIR:-}" && -d "${CODEX_PROJECT_DIR}/.codex" ]]; then echo "$CODEX_PROJECT_DIR"; return; fi
   local dir
   dir="$(pwd)"
   while [[ "$dir" != "/" ]]; do
-    if [[ -d "$dir/.claude" ]]; then echo "$dir"; return; fi
+    if [[ -d "$dir/.claude" || -d "$dir/.codex" ]]; then echo "$dir"; return; fi
     dir="$(dirname "$dir")"
   done
   pwd
@@ -45,7 +46,7 @@ REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
 
 # Resolve typecheck command: config → tsgo → tsc → npx tsc
 TYPECHECK_CMD=""
-CONFIG_SCRIPT="${CLAUDE_PLUGIN_ROOT:-}/scripts/parse-config.sh"
+CONFIG_SCRIPT="${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}/scripts/parse-config.sh"
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CONFIG_SCRIPT" ]]; then
   TYPECHECK_CMD=$(bash "$CONFIG_SCRIPT" "typecheck-command" 2>/dev/null) || TYPECHECK_CMD=""
 fi

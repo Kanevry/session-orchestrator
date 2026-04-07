@@ -3,22 +3,53 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0--alpha.13-orange.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![Codex CLI](https://img.shields.io/badge/Codex_CLI-Compatible-green.svg)](https://developers.openai.com/codex/cli)
 
-Claude Code plugin for session-level orchestration — project planning, wave execution, VCS integration, quality gates.
+Session orchestration plugin for Claude Code and Codex CLI — project planning, wave execution, VCS integration, quality gates.
 
-> [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's agentic coding CLI. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
+> [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex CLI](https://developers.openai.com/codex/cli) are agentic coding CLIs. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
 
 ## Install
+
+### Claude Code
 
 ```bash
 # Add as a Claude Code plugin
 claude plugin add github:Kanevry/session-orchestrator
 ```
 
+### Codex CLI
+
+```bash
+# 1. Clone to a local directory
+git clone https://github.com/Kanevry/session-orchestrator.git ~/.codex/plugins/session-orchestrator
+
+# 2. Add Session Config to your project's AGENTS.md
+# See docs/templates/AGENTS-session-config.md for the template
+
+# 3. Enable hooks (optional, experimental)
+# Add to .codex/config.toml: [features] hooks = true
+```
+
 ## Prerequisites
 
-- **Claude Code** — [Anthropic's agentic coding CLI](https://docs.anthropic.com/en/docs/claude-code)
-- **jq** (recommended) — required for scope and command enforcement hooks. Install via `brew install jq` (macOS) or `apt install jq` (Linux). Without jq, enforcement hooks allow all operations.
+- **Claude Code** or **Codex CLI** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex CLI](https://developers.openai.com/codex/cli)
+- **jq** (recommended) — required for scope and command enforcement hooks
+
+### Platform Support
+
+| Feature | Claude Code | Codex CLI |
+|---------|------------|-----------|
+| All 6 commands | Native slash commands | Instruction-based |
+| Parallel agents | Agent tool | Multi-agent roles |
+| Session persistence | .claude/STATE.md | .codex/STATE.md |
+| Shared knowledge | .orchestrator/metrics/ | .orchestrator/metrics/ |
+| Scope enforcement | PreToolUse hooks | Hooks (experimental) |
+| AskUserQuestion | Native tool | Numbered list fallback |
+| Quality gates | Full | Full |
+| Design alignment | Pencil integration | Pencil integration |
+
+Both platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.sh`.
 
 ## Why Session Orchestrator
 
@@ -219,6 +250,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
 - **1 Agent**: session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
+- `.codex-plugin/` — Codex CLI plugin manifest (`config.toml`) + 3 agent role definitions (explorer, wave-worker, session-reviewer)
 - `scripts/` — 4 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, token-audit) + shared lib + 151 tests
 
 ## Documentation
