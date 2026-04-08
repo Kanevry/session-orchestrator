@@ -1,26 +1,6 @@
 ---
 name: test-writer
-description: >
-  Use this agent for writing unit tests, integration tests, and improving test coverage.
-  Creates test files following project conventions and testing patterns.
-
-  <example>
-  Context: Quality wave needs tests for newly implemented features.
-  user: "Write tests for the invoice service"
-  assistant: "I'll dispatch the test-writer agent to create comprehensive tests for the invoice service."
-  <commentary>
-  Test creation after implementation ensures coverage without slowing down the impl agents.
-  </commentary>
-  </example>
-
-  <example>
-  Context: Coverage gap identified during quality review.
-  user: "Add edge case tests for the authentication flow"
-  assistant: "I'll use the test-writer to add targeted edge case tests for authentication."
-  <commentary>
-  Filling specific coverage gaps requires understanding both the code and its failure modes.
-  </commentary>
-  </example>
+description: Use this agent for writing unit tests, integration tests, and improving test coverage. Creates test files following project conventions and testing patterns. <example>Context: Quality wave needs tests for newly implemented features. user: "Write tests for the invoice service" assistant: "I'll dispatch the test-writer agent to create comprehensive tests for the invoice service." <commentary>Test creation after implementation ensures coverage without slowing down the impl agents.</commentary></example> <example>Context: Coverage gap identified during quality review. user: "Add edge case tests for the authentication flow" assistant: "I'll use the test-writer to add targeted edge case tests for authentication." <commentary>Filling specific coverage gaps requires understanding both the code and its failure modes.</commentary></example>
 model: sonnet
 color: yellow
 tools: Read, Edit, Write, Glob, Grep, Bash

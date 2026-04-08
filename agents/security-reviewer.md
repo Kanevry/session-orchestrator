@@ -1,26 +1,6 @@
 ---
 name: security-reviewer
-description: >
-  Use this agent for security analysis — OWASP checks, authentication flows, input validation,
-  authorization, and vulnerability assessment. Read-only analysis with actionable findings.
-
-  <example>
-  Context: Quality wave includes security review of new endpoints.
-  user: "Review the new API endpoints for security vulnerabilities"
-  assistant: "I'll dispatch the security-reviewer agent to audit the new endpoints."
-  <commentary>
-  Security review after implementation catches auth gaps, injection risks, and missing validation.
-  </commentary>
-  </example>
-
-  <example>
-  Context: Pre-deployment security check.
-  user: "Run a security audit on the authentication changes"
-  assistant: "I'll use the security-reviewer to verify the auth changes are secure."
-  <commentary>
-  Auth changes are high-risk — dedicated security review prevents vulnerabilities in production.
-  </commentary>
-  </example>
+description: Use this agent for security analysis — OWASP checks, authentication flows, input validation, authorization, and vulnerability assessment. Read-only analysis with actionable findings. <example>Context: Quality wave includes security review of new endpoints. user: "Review the new API endpoints for security vulnerabilities" assistant: "I'll dispatch the security-reviewer agent to audit the new endpoints." <commentary>Security review after implementation catches auth gaps, injection risks, and missing validation.</commentary></example> <example>Context: Pre-deployment security check. user: "Run a security audit on the authentication changes" assistant: "I'll use the security-reviewer to verify the auth changes are secure." <commentary>Auth changes are high-risk — dedicated security review prevents vulnerabilities in production.</commentary></example>
 model: sonnet
 color: red
 tools: Read, Grep, Glob, Bash

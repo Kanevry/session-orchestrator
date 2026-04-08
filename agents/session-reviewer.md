@@ -1,27 +1,6 @@
 ---
 name: session-reviewer
-description: >
-  Use this agent between waves or at session end to verify work quality against the
-  session plan. Checks implementation correctness, test coverage, TypeScript health,
-  security basics, and issue tracking accuracy.
-
-  <example>
-  Context: Impl-Core wave is complete, coordinator needs quality check before Impl-Polish.
-  user: "Impl-Core wave done, review before continuing"
-  assistant: "I'll dispatch the session-reviewer to verify Impl-Core outputs."
-  <commentary>
-  Inter-wave quality gate ensures issues are caught early, not at session end.
-  </commentary>
-  </example>
-
-  <example>
-  Context: Session end, verifying all work before committing.
-  user: "/close"
-  assistant: "Running session-reviewer to verify all session work before committing."
-  <commentary>
-  Final quality gate before any code is committed.
-  </commentary>
-  </example>
+description: Use this agent between waves or at session end to verify work quality against the session plan. Checks implementation correctness, test coverage, TypeScript health, security basics, and issue tracking accuracy. <example>Context: Impl-Core wave is complete, coordinator needs quality check before Impl-Polish. user: "Impl-Core wave done, review before continuing" assistant: "I'll dispatch the session-reviewer to verify Impl-Core outputs." <commentary>Inter-wave quality gate ensures issues are caught early, not at session end.</commentary></example> <example>Context: Session end, verifying all work before committing. user: "/close" assistant: "Running session-reviewer to verify all session work before committing." <commentary>Final quality gate before any code is committed.</commentary></example>
 model: sonnet
 color: cyan
 tools: Read, Grep, Glob, Bash
