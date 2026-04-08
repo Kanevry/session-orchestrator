@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Source event bus library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../scripts/lib/events.sh" 2>/dev/null || true
+
 # Read full stdin
 INPUT=$(cat)
 
@@ -43,5 +47,9 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 jq -nc --arg ts "$TIMESTAMP" --argjson wave "$WAVE" \
   '{"event":"stop","timestamp":$ts,"wave":$wave}' \
   >> "$METRICS_DIR/sessions.jsonl"
+
+# Emit event to Clank Event Bus
+STOP_PAYLOAD=$(jq -nc --argjson wave "$WAVE" '{"wave":$wave}' 2>/dev/null) || STOP_PAYLOAD='{}'
+so_emit_event "orchestrator.session.stopped" "$STOP_PAYLOAD" 2>/dev/null || true
 
 exit 0

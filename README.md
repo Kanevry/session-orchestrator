@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0--alpha.14-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0--beta.1-green.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex CLI](https://img.shields.io/badge/Codex_CLI-Compatible-green.svg)](https://developers.openai.com/codex/cli)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
@@ -271,9 +271,10 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **10 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve
 - **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
 - **6 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer (generic base agents) + session-reviewer (inter-wave quality gate)
-- **Hooks**: SessionStart notification + PreToolUse enforcement (scope + commands)
+- **Hooks**: SessionStart notification + Clank Event Bus integration + PreToolUse enforcement (scope + commands)
+- **Output Styles**: 3 styles (session-report, wave-summary, finding-report) for consistent reporting
 - `.codex-plugin/` — Codex CLI plugin manifest (`config.toml`) + 3 agent role definitions (explorer, wave-worker, session-reviewer)
-- `scripts/` — 4 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, token-audit) + shared lib + 151 tests
+- `scripts/` — 5 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit) + shared lib + 184 tests
 
 ## Documentation
 

@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Source event bus library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../scripts/lib/events.sh" 2>/dev/null || true
+
 # Read full stdin
 INPUT=$(cat)
 
@@ -33,5 +37,9 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 jq -nc --arg ts "$TIMESTAMP" --arg agent "$AGENT" \
   '{"event":"subagent_stop","timestamp":$ts,"agent":$agent}' \
   >> "$METRICS_DIR/sessions.jsonl"
+
+# Emit event to Clank Event Bus
+AGENT_PAYLOAD=$(jq -nc --arg agent "$AGENT" '{"agent":$agent}' 2>/dev/null) || AGENT_PAYLOAD='{}'
+so_emit_event "orchestrator.agent.stopped" "$AGENT_PAYLOAD" 2>/dev/null || true
 
 exit 0

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.1] - 2026-04-08 — Beta Release
+
+### Added
+- **Clank Event Bus integration** (GL#53) — `scripts/lib/events.sh` with `so_emit_event()` function for async event emission to Clank's Event Bus (`events.gotzendorfer.at/api/events`). Bearer-auth via `CLANK_EVENT_SECRET`, graceful degradation when unconfigured.
+- **SessionStart event hook** — `hooks/on-session-start.sh` emits `orchestrator.session.started` with platform and project context
+- **Stop/SubagentStop event emission** — existing hooks now emit `orchestrator.session.stopped` and `orchestrator.agent.stopped` events
+- **Output Styles** (GL#56) — 3 output style definitions (`output-styles/session-report.md`, `wave-summary.md`, `finding-report.md`) for consistent session reporting format
+- **test-events.sh** — 12 assertions covering event library loading, graceful degradation, hook integration, and registration
+
+### Changed
+- hooks.json + hooks-codex.json: SessionStart now includes async event notification hook
+- Plugin version: alpha.15 → beta.1
+- Tests: 172+ → 184+ passing (12 new event bus assertions)
+
+### Closed
+- GL#53 (HTTP Hooks — reimplemented as Clank Event Bus integration)
+- GL#56 (Output Styles)
+- GL#47 (Epic: Plugin API Alignment — all sub-issues resolved)
+
 ## [2.0.0-alpha.15] - 2026-04-08 — Plugin API Alignment
 
 ### Added
