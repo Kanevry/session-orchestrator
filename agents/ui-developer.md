@@ -23,7 +23,7 @@ description: >
   </example>
 model: sonnet
 color: magenta
-tools: ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
+tools: Read, Edit, Write, Glob, Grep, Bash
 ---
 
 # UI Developer Agent

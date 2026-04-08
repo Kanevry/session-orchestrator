@@ -24,7 +24,7 @@ description: >
   </example>
 model: sonnet
 color: cyan
-tools: ["Read", "Grep", "Glob", "Bash"]
+tools: Read, Grep, Glob, Bash
 ---
 
 # Session Quality Reviewer

@@ -23,7 +23,7 @@ description: >
   </example>
 model: sonnet
 color: blue
-tools: ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
+tools: Read, Edit, Write, Glob, Grep, Bash
 ---
 
 # Database Specialist Agent

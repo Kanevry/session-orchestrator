@@ -23,7 +23,7 @@ description: >
   </example>
 model: sonnet
 color: red
-tools: ["Read", "Grep", "Glob", "Bash"]
+tools: Read, Grep, Glob, Bash
 ---
 
 # Security Reviewer Agent
