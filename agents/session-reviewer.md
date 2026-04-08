@@ -23,7 +23,6 @@ description: >
   </commentary>
   </example>
 model: sonnet
-color: cyan
 tools: ["Read", "Grep", "Glob", "Bash"]
 ---
 
