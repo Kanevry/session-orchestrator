@@ -1,6 +1,6 @@
 {
   "name": "session-orchestrator",
-  "version": "2.0.0-alpha.14",
+  "version": "2.0.0-alpha.15",
   "description": "Session-level orchestration — wave planning, VCS integration, quality gates, persistence, and safety checks",
   "author": {
     "name": "Bernhard Goetzendorfer",
@@ -10,5 +10,9 @@
   "homepage": "https://gotzendorfer.at/en/session-orchestrator",
   "repository": "https://github.com/Kanevry/session-orchestrator",
   "license": "MIT",
-  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"]
+  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"],
+  "commands": "./commands",
+  "agents": "./agents",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
 }

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.15] - 2026-04-08 — Plugin API Alignment
+
+### Added
+- **plugin.json component paths** — `commands`, `agents`, `hooks`, `mcpServers` fields per Plugin API spec
+- **validate-plugin.sh** (GL#48) — 18-check validation script: manifest schema, component path resolution, hooks JSON, agent frontmatter, mcpServers validity
+- **test-validate-plugin.sh** — 17 assertions covering valid plugin, missing fields, invalid JSON, broken paths, bad frontmatter
+- **Stop hook** (GL#52) — `hooks/on-stop.sh` persists session state to metrics on unexpected exit
+- **SubagentStop hook** (GL#52) — `hooks/on-subagent-stop.sh` logs agent completion for wave-executor metrics
+- **MCP Server skeleton** (GL#54) — `.mcp.json` + `scripts/mcp-server.sh` exposing `session_config` and `session_metrics` tools via JSON-RPC 2.0 stdio
+
+### Changed
+- **Issue triage** (GL#60) — verified all 14 epic issues against actual Plugin API docs: 6 closed (not in API), 2 deferred, 4 implemented, 1 epic tracking
+- hooks.json + hooks-codex.json now include `Stop` and `SubagentStop` event types
+- Tests: 155 → 172+ passing (17 new validate-plugin assertions)
+
+### Closed (not in Plugin API)
+- GL#49 (`userConfig`), GL#50 (`CLAUDE_PLUGIN_DATA`), GL#51 (agent extended frontmatter), GL#55 (`bin/` auto-PATH), GL#57 (skill `paths`), GL#58 (LLM hook types)
+
+### Deferred
+- GL#53 (HTTP hooks), GL#56 (output styles)
+
 ## [2.0.0-alpha.14] - 2026-04-07 — Cross-Platform + Housekeeping
 
 ### Added
