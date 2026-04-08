@@ -29,21 +29,17 @@ Agent files live in `agents/` as Markdown with YAML frontmatter. Required fields
 ```yaml
 ---
 name: kebab-case-name          # 3-50 chars, lowercase + hyphens only
-description: >                 # MUST include triggering conditions + <example> blocks
-  Use this agent when [conditions].
-  <example>
-  Context: ...
-  user: "..."
-  assistant: "..."
-  <commentary>Why this agent is appropriate</commentary>
-  </example>
+description: Use this agent when [conditions]. <example>Context: ... user: "..." assistant: "..." <commentary>Why this agent is appropriate</commentary></example>
 model: inherit                 # inherit | sonnet | opus | haiku
 color: blue                    # blue | cyan | green | yellow | magenta | red
 tools: Read, Grep, Glob, Bash  # COMMA-SEPARATED STRING, not JSON array!
 ---
 ```
 
-**Critical**: `tools` MUST be a comma-separated string (`Read, Edit, Write`), NOT a JSON array (`["Read", "Edit"]`). JSON arrays cause Zod validation failure ("agents: Invalid input").
+**Critical pitfalls** (cause "agents: Invalid input" validation failure):
+- `tools` MUST be a comma-separated string (`Read, Edit, Write`), NOT a JSON array (`["Read", "Edit"]`)
+- `description` MUST be a single-line inline string, NOT a YAML block scalar (`>` or `|`). Put `<example>` blocks inline.
+- All 4 fields (name, description, model, color) are required. `tools` is optional.
 
 Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-dev/skills/agent-development/SKILL.md
 
