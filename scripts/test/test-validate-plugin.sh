@@ -120,7 +120,7 @@ echo "=== Test Group 7: Valid semver variants ==="
 cat > "$MOCK_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "test-plugin",
-  "version": "2.0.0-alpha.14"
+  "version": "2.0.0-beta.1"
 }
 JSON
 
