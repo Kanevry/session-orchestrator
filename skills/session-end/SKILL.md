@@ -288,6 +288,11 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
 
 ### 4.1 Stage Changes
 - **Stage files individually**: `git add <file>` — NEVER `git add .` or `git add -A`
+- **Always stage these session artifacts** (if modified):
+  - `.orchestrator/metrics/sessions.jsonl` (session summary from Phase 3.7)
+  - `.orchestrator/metrics/learnings.jsonl` (learnings from Phase 3.6)
+  - `<state-dir>/STATE.md` (session state, if persistence enabled)
+  - Any files created or modified by wave agents
 - Review staged changes: `git diff --cached` — verify every change is from THIS session
 - If you see changes you did NOT make, ask the user (parallel session awareness)
 

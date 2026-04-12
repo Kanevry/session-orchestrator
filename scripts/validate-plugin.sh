@@ -103,16 +103,33 @@ fi
 echo ""
 echo "--- Check 4: component paths ---"
 
+# Conventional auto-discovery locations (used when plugin.json omits the field)
+CONVENTIONAL_COMMANDS="commands"
+CONVENTIONAL_AGENTS="agents"
+CONVENTIONAL_HOOKS="hooks/hooks.json"
+# .mcp.json is optional — absence is not a failure
+
 check_component_path() {
   local field="$1"
+  local conventional="$2"        # relative path under PLUGIN_ROOT for auto-discovery
+  local optional="${3:-false}"   # "true" → missing is a PASS, not a FAIL
   local rel_path
   rel_path="$(jq -r ".$field // empty" "$PLUGIN_JSON")"
 
   if [[ -z "$rel_path" ]]; then
-    pass "$field not specified (optional, skipped)"
+    # Auto-discover: check conventional location on disk
+    local abs_path="$PLUGIN_ROOT/$conventional"
+    if [[ -e "$abs_path" ]]; then
+      pass "$field auto-discovered at: ./$conventional"
+    elif [[ "$optional" == "true" ]]; then
+      pass "$field not found at conventional location (optional, skipped)"
+    else
+      fail "$field not found at conventional location: ./$conventional"
+    fi
     return
   fi
 
+  # plugin.json has the field — validate it (existing behavior)
   # Paths must start with ./
   if [[ "$rel_path" != ./* ]]; then
     fail "$field path does not start with ./: $rel_path"
@@ -128,10 +145,10 @@ check_component_path() {
   fi
 }
 
-check_component_path "commands"
-check_component_path "agents"
-check_component_path "hooks"
-check_component_path "mcpServers"
+check_component_path "commands"   "$CONVENTIONAL_COMMANDS"
+check_component_path "agents"     "$CONVENTIONAL_AGENTS"
+check_component_path "hooks"      "$CONVENTIONAL_HOOKS"
+check_component_path "mcpServers" ".mcp.json" "true"
 
 # ============================================================================
 # Check 5: hooks file is valid JSON (if it's a .json file)
@@ -141,6 +158,7 @@ echo "--- Check 5: hooks JSON validity ---"
 
 HOOKS_PATH="$(jq -r '.hooks // empty' "$PLUGIN_JSON")"
 if [[ -n "$HOOKS_PATH" && "$HOOKS_PATH" == *.json ]]; then
+  # plugin.json specifies a hooks path — validate it
   HOOKS_ABS="$PLUGIN_ROOT/${HOOKS_PATH#./}"
   if [[ -f "$HOOKS_ABS" ]]; then
     if jq empty "$HOOKS_ABS" 2>/dev/null; then
@@ -152,7 +170,17 @@ if [[ -n "$HOOKS_PATH" && "$HOOKS_PATH" == *.json ]]; then
     fail "hooks file not found (already reported above)"
   fi
 else
-  pass "hooks is not a JSON file or not specified (skipped)"
+  # Fall back to conventional location: hooks/hooks.json
+  HOOKS_ABS="$PLUGIN_ROOT/$CONVENTIONAL_HOOKS"
+  if [[ -f "$HOOKS_ABS" ]]; then
+    if jq empty "$HOOKS_ABS" 2>/dev/null; then
+      pass "hooks file is valid JSON (auto-discovered at ./$CONVENTIONAL_HOOKS)"
+    else
+      fail "hooks file is not valid JSON: ./$CONVENTIONAL_HOOKS"
+    fi
+  else
+    pass "hooks is not a JSON file or not specified (skipped)"
+  fi
 fi
 
 # ============================================================================
@@ -163,6 +191,7 @@ echo "--- Check 5b: mcpServers JSON validity ---"
 
 MCP_PATH="$(jq -r '.mcpServers // empty' "$PLUGIN_JSON")"
 if [[ -n "$MCP_PATH" && "$MCP_PATH" == *.json ]]; then
+  # plugin.json specifies an mcpServers path — validate it
   MCP_ABS="$PLUGIN_ROOT/${MCP_PATH#./}"
   if [[ -f "$MCP_ABS" ]]; then
     if jq empty "$MCP_ABS" 2>/dev/null; then
@@ -174,7 +203,17 @@ if [[ -n "$MCP_PATH" && "$MCP_PATH" == *.json ]]; then
     fail "mcpServers file not found (already reported above)"
   fi
 else
-  pass "mcpServers is not a JSON file or not specified (skipped)"
+  # Fall back to conventional location: .mcp.json (optional)
+  MCP_ABS="$PLUGIN_ROOT/.mcp.json"
+  if [[ -f "$MCP_ABS" ]]; then
+    if jq empty "$MCP_ABS" 2>/dev/null; then
+      pass "mcpServers file is valid JSON (auto-discovered at ./.mcp.json)"
+    else
+      fail "mcpServers file is not valid JSON: ./.mcp.json"
+    fi
+  else
+    pass "mcpServers not found at conventional location (optional, skipped)"
+  fi
 fi
 
 # ============================================================================
@@ -186,9 +225,16 @@ echo "--- Check 6: agent frontmatter ---"
 AGENTS_PATH="$(jq -r '.agents // empty' "$PLUGIN_JSON")"
 if [[ -n "$AGENTS_PATH" ]]; then
   AGENTS_DIR="$PLUGIN_ROOT/${AGENTS_PATH#./}"
-  if [[ -d "$AGENTS_DIR" ]]; then
+else
+  # Auto-discover conventional location
+  AGENTS_DIR="$PLUGIN_ROOT/$CONVENTIONAL_AGENTS"
+fi
+
+validate_agents_dir() {
+  local dir="$1"
+  if [[ -d "$dir" ]]; then
     AGENT_COUNT=0
-    for agent_file in "$AGENTS_DIR"/*.md; do
+    for agent_file in "$dir"/*.md; do
       [[ -f "$agent_file" ]] || continue
       ((AGENT_COUNT++)) || true
       agent_name="$(basename "$agent_file")"
@@ -222,11 +268,15 @@ if [[ -n "$AGENTS_PATH" ]]; then
       fail "agents directory is empty (no .md files)"
     fi
   else
-    fail "agents path is not a directory: $AGENTS_PATH"
+    if [[ -n "$AGENTS_PATH" ]]; then
+      fail "agents path is not a directory: $AGENTS_PATH"
+    else
+      fail "agents directory not found at conventional location: ./$CONVENTIONAL_AGENTS"
+    fi
   fi
-else
-  pass "agents path not specified (skipped)"
-fi
+}
+
+validate_agents_dir "$AGENTS_DIR"
 
 # ============================================================================
 # Check 7: Command .md files exist
@@ -237,23 +287,29 @@ echo "--- Check 7: command files ---"
 COMMANDS_PATH="$(jq -r '.commands // empty' "$PLUGIN_JSON")"
 if [[ -n "$COMMANDS_PATH" ]]; then
   COMMANDS_DIR="$PLUGIN_ROOT/${COMMANDS_PATH#./}"
-  if [[ -d "$COMMANDS_DIR" ]]; then
-    CMD_COUNT=0
-    for cmd_file in "$COMMANDS_DIR"/*.md; do
-      [[ -f "$cmd_file" ]] || continue
-      ((CMD_COUNT++)) || true
-    done
+else
+  # Auto-discover conventional location
+  COMMANDS_DIR="$PLUGIN_ROOT/$CONVENTIONAL_COMMANDS"
+fi
 
-    if [[ $CMD_COUNT -gt 0 ]]; then
-      pass "commands directory contains $CMD_COUNT .md files"
-    else
-      fail "commands directory is empty (no .md files)"
-    fi
+if [[ -d "$COMMANDS_DIR" ]]; then
+  CMD_COUNT=0
+  for cmd_file in "$COMMANDS_DIR"/*.md; do
+    [[ -f "$cmd_file" ]] || continue
+    ((CMD_COUNT++)) || true
+  done
+
+  if [[ $CMD_COUNT -gt 0 ]]; then
+    pass "commands directory contains $CMD_COUNT .md files"
   else
-    fail "commands path is not a directory: $COMMANDS_PATH"
+    fail "commands directory is empty (no .md files)"
   fi
 else
-  pass "commands path not specified (skipped)"
+  if [[ -n "$COMMANDS_PATH" ]]; then
+    fail "commands path is not a directory: $COMMANDS_PATH"
+  else
+    fail "commands directory not found at conventional location: ./$CONVENTIONAL_COMMANDS"
+  fi
 fi
 
 # ============================================================================

@@ -117,6 +117,21 @@ assert_exit "invalid version exits 1" "1" bash "$VALIDATE" "$MOCK_DIR"
 echo ""
 echo "=== Test Group 7: Valid semver variants ==="
 
+# Create conventional auto-discovery structure so checks 4-7 pass
+mkdir -p "$MOCK_DIR/agents" "$MOCK_DIR/commands" "$MOCK_DIR/hooks"
+cat > "$MOCK_DIR/agents/test-agent.md" <<'AGENT'
+---
+name: test-agent
+description: A test agent
+model: sonnet
+color: blue
+---
+
+Agent instructions here.
+AGENT
+echo "# test command" > "$MOCK_DIR/commands/test.md"
+echo '[]' > "$MOCK_DIR/hooks/hooks.json"
+
 cat > "$MOCK_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "test-plugin",
@@ -139,12 +154,13 @@ assert_exit "plain semver exits 0" "0" bash "$VALIDATE" "$MOCK_DIR"
 echo ""
 echo "=== Test Group 8: Broken component paths ==="
 
+# Use explicit paths pointing to directories that do not exist
 cat > "$MOCK_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "test-plugin",
   "version": "1.0.0",
-  "commands": "./commands",
-  "agents": "./agents"
+  "commands": "./nonexistent-commands",
+  "agents": "./nonexistent-agents"
 }
 JSON
 
@@ -154,19 +170,8 @@ assert_exit "non-existent component paths exits 1" "1" bash "$VALIDATE" "$MOCK_D
 echo ""
 echo "=== Test Group 9: Valid component paths ==="
 
-mkdir -p "$MOCK_DIR/commands" "$MOCK_DIR/agents"
-echo "# test command" > "$MOCK_DIR/commands/test.md"
-cat > "$MOCK_DIR/agents/test-agent.md" <<'AGENT'
----
-name: test-agent
-description: A test agent
-model: sonnet
-color: blue
----
-
-Agent instructions here.
-AGENT
-
+# agents/ and commands/ already exist from Test Group 7 setup
+# Add hooks/hooks.json so the auto-discovered hooks check passes too
 cat > "$MOCK_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "test-plugin",
