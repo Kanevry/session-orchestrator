@@ -46,7 +46,7 @@ mkdir -p "$METRICS_DIR"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 jq -nc --arg ts "$TIMESTAMP" --argjson wave "$WAVE" \
   '{"event":"stop","timestamp":$ts,"wave":$wave}' \
-  >> "$METRICS_DIR/sessions.jsonl"
+  >> "$METRICS_DIR/events.jsonl"
 
 # Emit event to Clank Event Bus
 STOP_PAYLOAD=$(jq -nc --argjson wave "$WAVE" '{"wave":$wave}' 2>/dev/null) || STOP_PAYLOAD='{}'

@@ -84,7 +84,7 @@ Skills are the core logic units. Each skill is a Markdown file with YAML frontma
 - Skills can invoke other skills (e.g., `session-start` invokes `session-plan`)
 - A skill directory may contain supporting files (e.g., `soul.md` alongside `SKILL.md`)
 
-**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`, `plan`
+**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`, `plan`, `evolve`, `vault-sync` (design brief)
 
 ### Commands (`commands/<name>.md`)
 

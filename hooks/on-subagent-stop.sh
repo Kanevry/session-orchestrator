@@ -36,7 +36,7 @@ mkdir -p "$METRICS_DIR"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 jq -nc --arg ts "$TIMESTAMP" --arg agent "$AGENT" \
   '{"event":"subagent_stop","timestamp":$ts,"agent":$agent}' \
-  >> "$METRICS_DIR/sessions.jsonl"
+  >> "$METRICS_DIR/events.jsonl"
 
 # Emit event to Clank Event Bus
 AGENT_PAYLOAD=$(jq -nc --arg agent "$AGENT" '{"agent":$agent}' 2>/dev/null) || AGENT_PAYLOAD='{}'
