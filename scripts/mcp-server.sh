@@ -134,7 +134,10 @@ tool_session_metrics() {
 
   local metrics_file="$project_root/.orchestrator/metrics/sessions.jsonl"
   if [[ ! -f "$metrics_file" ]]; then
-    respond "$id" "$(text_content "No metrics found (file does not exist: $metrics_file)")"
+    metrics_file="$project_root/.claude/metrics/sessions.jsonl"
+  fi
+  if [[ ! -f "$metrics_file" ]]; then
+    respond "$id" "$(text_content "No metrics found (checked .orchestrator/metrics/ and .claude/metrics/)")"
     return
   fi
 

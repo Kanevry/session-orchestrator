@@ -262,6 +262,44 @@ validate_agents_dir() {
       else
         fail "$agent_name: missing frontmatter fields: ${missing_fields[*]}"
       fi
+
+      # ------------------------------------------------------------------
+      # Format validation (only when fields are present)
+      # ------------------------------------------------------------------
+
+      # description: must be an inline value, not a YAML block scalar (> or |)
+      if echo "$frontmatter" | grep -qE "^description:"; then
+        desc_val=$(echo "$frontmatter" | grep -E "^description:" | sed 's/^description: *//')
+        if [[ "$desc_val" =~ ^[\>\|] ]]; then
+          fail "$agent_name: description must be an inline string, not a YAML block scalar (got: '$desc_val')"
+        fi
+      fi
+
+      # model: must be one of inherit | sonnet | opus | haiku
+      if echo "$frontmatter" | grep -qE "^model:"; then
+        model_val=$(echo "$frontmatter" | grep -E "^model:" | sed 's/^model: *//')
+        if ! echo "$model_val" | grep -qE "^(inherit|sonnet|opus|haiku)$"; then
+          fail "$agent_name: model must be one of inherit|sonnet|opus|haiku (got: '$model_val')"
+        fi
+      fi
+
+      # color: must be one of blue | cyan | green | yellow | magenta | red
+      if echo "$frontmatter" | grep -qE "^color:"; then
+        color_val=$(echo "$frontmatter" | grep -E "^color:" | sed 's/^color: *//')
+        if ! echo "$color_val" | grep -qE "^(blue|cyan|green|yellow|magenta|red)$"; then
+          fail "$agent_name: color must be one of blue|cyan|green|yellow|magenta|red (got: '$color_val')"
+        fi
+      fi
+
+      # tools: optional — but when present must be a comma-separated string, not a JSON array or YAML block scalar
+      if echo "$frontmatter" | grep -qE "^tools:"; then
+        tools_val=$(echo "$frontmatter" | grep -E "^tools:" | sed 's/^tools: *//')
+        if [[ "$tools_val" =~ ^\[ ]]; then
+          fail "$agent_name: tools must be a comma-separated string, not a JSON array (got: '$tools_val')"
+        elif [[ "$tools_val" =~ ^[\>\|] ]]; then
+          fail "$agent_name: tools must be a comma-separated string, not a YAML block scalar (got: '$tools_val')"
+        fi
+      fi
     done
 
     if [[ $AGENT_COUNT -eq 0 ]]; then

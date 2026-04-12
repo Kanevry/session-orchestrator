@@ -42,7 +42,7 @@ Before starting the first wave (Discovery role):
    - `waves`: empty array (populated after each wave)
    This object lives in memory during execution — it is written to disk by session-end.
 
-## Pre-Wave 1: Capture Session Start Ref
+## Pre-Wave 1a: Capture Session Start Ref
 
 Before dispatching Wave 1, capture the current commit as the session baseline:
 
@@ -52,7 +52,7 @@ SESSION_START_REF=$(git rev-parse HEAD)
 
 Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts.
 
-## Pre-Wave 1: Initialize STATE.md
+## Pre-Wave 1b: Initialize STATE.md
 
 > Skip this section entirely if `persistence: false`.
 
@@ -116,6 +116,7 @@ For each agent in this wave:
     subagent_type: "<from session plan>",   // resolved agent type
     run_in_background: false   // CRITICAL: always false — wait for completion
   })
+      - Turn budget and status reporting: "You have a maximum of [maxTurns] turns for this task. If you cannot complete within this budget, report STATUS: partial with what was accomplished and what remains. At the end of your work, report STATUS: done (all acceptance criteria met) or STATUS: partial (some criteria unmet — list which ones)."
 ```
 
 **Resolution chain** (if the plan does not specify `subagent_type` for an agent):
@@ -174,6 +175,7 @@ After ALL agents in the wave complete:
      3. Dispatch 1-2 simplification agents with:
         - Changed file list (production files only — exclude `*.test.*`, `*.spec.*`, `__tests__/`)
         - Reference: `slop-patterns.md` from the discovery skill directory — include the actual patterns in the agent prompt
+        To include the patterns: read `skills/discovery/slop-patterns.md` and paste the full content into the agent prompt under a "## Slop Patterns Reference" heading. Do NOT ask the agent to read the file itself — include it inline so the agent has zero-dependency context.
         - Reference: project's CLAUDE.md conventions
         - Instruction: "Review each changed file for AI-generated code patterns. Apply targeted simplifications: remove unnecessary try-catch around non-throwing operations, delete over-documentation (params that repeat the name, returns that say 'the result'), replace re-implemented stdlib functions with standard alternatives, simplify redundant boolean logic (if/else returning true/false, double negation, explicit boolean comparisons). Do NOT change functionality. Do NOT touch files you weren't given. Do NOT commit."
         - Tools: Read, Edit, Grep, Glob
@@ -306,12 +308,22 @@ Before each wave dispatch:
    ```
 2. Validate by piping through `bash "$PLUGIN_ROOT/scripts/validate-wave-scope.sh"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. `allowedPaths` is the UNION of all agent file scopes for this wave
+   To compute `allowedPaths`: read each agent's specification from the session plan. Each agent lists its "Files:" scope (e.g., `skills/session-end/SKILL.md`, `scripts/*.sh`). Collect all file paths and glob patterns from all agents in this wave into a single flat array. Deduplicate entries. If an agent's scope uses globs (e.g., `scripts/*.sh`), include the glob pattern as-is — the enforcement hook resolves globs at check time.
 4. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
 5. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
    > **Defense in depth:** The empty `allowedPaths` enforcement hook is the PRIMARY barrier (blocks Write/Edit at the tool level). The prompt instruction is a SECONDARY safeguard. If jq is unavailable (enforcement set to `off`), the prompt instruction becomes the ONLY barrier — log a warning in this case.
 6. For **Quality** role waves, use two-phase scope enforcement:
    - **Phase 1 (Simplification)**: Before dispatching simplification agents, set `allowedPaths` to the production files changed this session (`git diff --name-only $SESSION_START_REF..HEAD`, excluding test files). After simplification agents complete, **delete** `<state-dir>/wave-scope.json` before proceeding to Phase 2.
    - **Phase 2 (Test/Review)**: Before dispatching test and review agents, regenerate `<state-dir>/wave-scope.json` with `allowedPaths` restricted to test file patterns (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, plus test config files). Quality test/review agents must not modify production source code.
+
+   **Phase transition sequence:**
+   1. Compute production file list: `git diff --name-only $SESSION_START_REF..HEAD | grep -v -E '\.(test|spec)\.' | grep -v '__tests__/'`
+   2. If no production files → skip Phase 1 entirely, proceed to Phase 2 (write test-only wave-scope.json)
+   3. Write Phase 1 wave-scope.json with production file allowedPaths
+   4. Dispatch simplification agents, wait for completion
+   5. Delete `<state-dir>/wave-scope.json`
+   6. Write Phase 2 wave-scope.json with test file allowedPaths (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
+   7. Dispatch test/review agents
 7. After the final wave completes, delete `<state-dir>/wave-scope.json` (cleanup)
 
 ## Circuit Breaker & Worktree Isolation
@@ -339,10 +351,10 @@ Each agent prompt MUST NOT include:
 
 ### Housekeeping Sessions
 
-Housekeeping sessions bypass the wave dispatch loop:
+Housekeeping sessions use a simplified single-wave execution model instead of the multi-wave role-based dispatch:
 
 1. Initialize STATE.md as normal (`session-type: housekeeping`, `total-waves: 1`)
-2. Do NOT create `wave-scope.json` — no scope enforcement for housekeeping tasks
+2. Do NOT create `wave-scope.json` — scope enforcement is not needed for low-risk housekeeping tasks
 3. Dispatch tasks serially with 1-2 agents per task
 4. Run Baseline quality checks after all tasks complete (not between tasks)
 5. Skip session-reviewer dispatch — housekeeping changes are low-risk

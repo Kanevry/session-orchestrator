@@ -251,16 +251,17 @@ test -f .claudeignore
 find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' | wc -l
 ```
 
-7. Token efficiency — .claude directory hygiene:
+7. Token efficiency — state directory hygiene:
 ```bash
-# Check .claude/ total size
-du -sh .claude/ 2>/dev/null
+# Check state directory total size (platform-aware: .claude/, .codex/, .cursor/)
+STATE_DIR="${SO_STATE_DIR:-.claude}"
+du -sh "$STATE_DIR/" 2>/dev/null
 
 # Flag if > 10MB
 # Check for stale directories: backups/, screenshots/, temp-*
 # Check for files not modified in > 90 days
-find .claude/ -maxdepth 1 -type d -name "backups" -o -name "screenshots" -o -name "temp-*" 2>/dev/null
-find .claude/ -type f -mtime +90 2>/dev/null | head -10
+find "$STATE_DIR/" -maxdepth 1 -type d -name "backups" -o -name "screenshots" -o -name "temp-*" 2>/dev/null
+find "$STATE_DIR/" -type f -mtime +90 2>/dev/null | head -10
 ```
 
 8. Token efficiency — duplicate pattern detection:
@@ -272,12 +273,12 @@ find .claude/ -type f -mtime +90 2>/dev/null | head -10
 
 **Evidence Format (token efficiency):**
 ```
-File: CLAUDE.md (or .claude/)
-Issue: oversized-claude-md | missing-claudeignore | bloated-claude-dir | stale-claude-artifacts | duplicate-patterns
+File: CLAUDE.md (or <state-dir>/)
+Issue: oversized-claude-md | missing-claudeignore | bloated-state-dir | stale-state-artifacts | duplicate-patterns
 Detail: <specific finding>
 Current: <size/count>
 Threshold: <limit>
 Recommendation: <action>
 ```
 
-**Default Severity:** Medium (oversized CLAUDE.md, missing .claudeignore), Low (stale artifacts, duplicate patterns), High (.claude dir > 50MB).
+**Default Severity:** Medium (oversized CLAUDE.md, missing .claudeignore), Low (stale artifacts, duplicate patterns), High (state dir > 50MB).

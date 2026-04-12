@@ -22,10 +22,12 @@ For each wave, define agents with:
 
 | Session Type | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
 |-------------|-----------|-----------|-------------|---------|-------------|
-| housekeeping | 2 | 2 | 1 | 1 | 1 |
+| housekeeping | — | 1-6* | — | — | — |
 | feature | 4-6 | 6 | 4-6 | 4 | 2 |
 | deep | 6-8 | 6-10 | 6-8 | 6 | 2-4 |
 
 Read `agents-per-wave` from Session Config to cap the maximum.
 
 > **Note:** For feature and deep sessions, prefer the complexity-based agent counts from Step 3. This table provides defaults when complexity scoring is skipped (housekeeping) or as a fallback.
+
+> \* Housekeeping sessions use single-wave serial execution (see wave-executor). Agent counts are for the single consolidated wave, not per-role.

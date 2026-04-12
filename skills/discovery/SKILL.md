@@ -179,9 +179,11 @@ If in embedded mode (called from session-end): STOP HERE. Return structured find
   "stats": {
     "probes_run": number,
     "findings_raw": number,
-    "verified": number,
+    "findings_verified": number,
     "false_positives": number,
-    "by_category": {"<category>": {"findings": number}}
+    "user_dismissed": 0,
+    "issues_created": 0,
+    "by_category": {"<category>": {"findings": number, "actioned": 0}}
   }
 }
 ```

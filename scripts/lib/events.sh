@@ -22,7 +22,8 @@ fi
 #   CLANK_EVENT_URL    — Override event bus URL (optional, defaults to https://events.gotzendorfer.at)
 so_emit_event() {
   local event_type="${1:?so_emit_event requires event_type as first argument}"
-  local payload="${2:-{\}}"
+  local payload
+  payload="${2:-{}}"
   local base_url="${CLANK_EVENT_URL:-https://events.gotzendorfer.at}"
 
   # Graceful skip: no secret → no events
@@ -42,7 +43,7 @@ so_emit_event() {
       --arg type "$event_type" \
       --arg source "session-orchestrator" \
       --argjson payload "$payload" \
-      '{"event_type":$type,"source":$source,"payload":$payload}')
+      '{"event_type":$type,"source":$source,"payload":$payload}') || return 0
   else
     body=$(printf '{"event_type":"%s","source":"session-orchestrator","payload":%s}' \
       "$event_type" "$payload")
