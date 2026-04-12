@@ -44,6 +44,23 @@ bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/pro
 # Session Config goes in CLAUDE.md (Cursor reads it natively)
 ```
 
+## Quick Start
+
+```bash
+# 1. Install the plugin
+claude plugin add github:Kanevry/session-orchestrator
+
+# 2. Add Session Config to your project's CLAUDE.md
+echo -e "\n## Session Config\n\ntest-command: pnpm test --run" >> CLAUDE.md
+
+# 3. Run a session
+/session feature     # Analyzes project, picks issues, proposes wave plan
+/go                  # Executes across 5 parallel waves
+/close               # Verifies, commits, pushes
+```
+
+See [Usage](#usage) for all 6 commands and [User Guide](docs/USER-GUIDE.md) for the full walkthrough.
+
 ## Prerequisites
 
 - **Claude Code**, **Codex CLI**, or **Cursor IDE** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex CLI](https://developers.openai.com/codex/cli) | [Cursor IDE](https://cursor.com)

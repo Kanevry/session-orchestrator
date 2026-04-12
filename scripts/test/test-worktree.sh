@@ -27,7 +27,7 @@ assert_eq() {
 TEST_REPO="$MASTER_TMPDIR/test-repo"
 mkdir -p "$TEST_REPO"
 git init "$TEST_REPO" >/dev/null 2>&1
-(cd "$TEST_REPO" && git commit --allow-empty -m "initial commit" >/dev/null 2>&1)
+(cd "$TEST_REPO" && git config user.name "Test" && git config user.email "test@test.com" && git commit --allow-empty -m "initial commit" >/dev/null 2>&1)
 
 # Override TMPDIR so worktrees land inside our temp dir
 export TMPDIR="$MASTER_TMPDIR"
