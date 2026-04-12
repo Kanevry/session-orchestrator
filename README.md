@@ -268,7 +268,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 
 ## Components
 
-- **10 Skills**: session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve
+- **11 Skills** (10 implemented + 1 design brief): session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync
 - **6 Commands**: /session, /go, /close, /discovery, /plan, /evolve
 - **6 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer (generic base agents) + session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + Clank Event Bus integration + PreToolUse enforcement (scope + commands)

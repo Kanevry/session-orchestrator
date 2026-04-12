@@ -118,7 +118,11 @@ For each task from Step 1, assign exactly one role. Use these signal-to-role map
 - If a task is "fix something from a previous session" (not from this session's Impl-Core) → classify as **Impl-Core** (it is new work for this session).
 - If a task is "write tests for new feature code being built this session" → classify as **Quality** (not Impl-Core). Tests run after implementation.
 - If unsure between Impl-Core and Impl-Polish → if the task is on the critical path (other tasks depend on it), it is **Impl-Core**. If independent polish, it is **Impl-Polish**.
-- Housekeeping sessions: skip role classification — all tasks go into a single consolidated wave (see wave-executor Session Type Behavior).
+- Housekeeping sessions: skip Steps 1.8, 2, and 3 — all tasks go into a single consolidated wave:
+  - No role classification — all tasks treated as generic housekeeping work
+  - Agent count: fixed at 1-2 per task (from wave-template.md housekeeping row), capped by `agents-per-wave`
+  - File-scope deconfliction (Step 3.5) still applies within the single wave
+  - Wave plan output uses: `### Wave 1: Housekeeping ([N agents])`
 
 Record the assigned role next to each task before proceeding to Step 2.
 
@@ -149,9 +153,13 @@ Map roles to the configured wave count:
 
 When roles are combined into a single wave, agents from both roles execute in that wave. The combined wave inherits the more restrictive verification level.
 
+**Cross-role constraint in combined waves:** Tasks from different roles within a combined wave CANNOT be merged into a single agent (different scope permissions — e.g., Discovery is read-only, Impl-Core has write access). If the combined wave exceeds `agents-per-wave`, defer the lower-priority role's tasks: in W1=Discovery+Impl-Core, defer Impl-Core tasks to the next applicable wave. In W2=Impl-Polish+Quality, defer Quality tasks to a separate phase within the same wave.
+
 > Example: When Discovery+Impl-Core are combined (3-wave config), the wave runs Incremental quality checks (Impl-Core's level) rather than no verification (Discovery's level).
 
 **Splitting criteria for 6+ waves**: When Impl-Core or Impl-Polish span multiple waves, split by module or dependency boundary. Tasks with shared file dependencies go in the same wave; tasks touching independent modules go in separate waves. If no clear boundary exists, split by task count (distribute evenly).
+
+**Empty roles:** If a role has 0 tasks, skip its wave entirely. Do NOT dispatch an empty wave. Remaining waves retain their original role names but are renumbered sequentially (e.g., if Discovery has 0 tasks and waves=5: W1=Impl-Core, W2=Impl-Polish, W3=Quality, W4=Finalization). Update `total-waves` in the plan output to reflect the actual wave count.
 
 ### Role Details
 
@@ -233,8 +241,11 @@ For each role's wave, distribute its classified tasks across the allocated agent
 1. **Group by file affinity**: Tasks touching the same files or the same directory MUST go to the same agent (prevents parallel merge conflicts).
 2. **One task per agent** (preferred): If task count ≤ agent count, assign one task per agent. Leave unused agent slots empty — do not invent tasks to fill them.
 3. **Merge small tasks**: If task count > agent count, merge the smallest tasks (by file count) that share a directory. Never merge tasks that touch different top-level modules.
-4. **Split large tasks**: If a single task touches 6+ files across 3+ directories, split it by directory boundary into sub-tasks for separate agents. Each sub-agent gets a clear file-boundary scope with no overlap.
-5. **File-scope deconfliction**: After assignment, verify that NO two agents in the same wave modify the same file. If overlap exists, either move the overlapping task to a later wave (Impl-Polish) or merge the two agents into one.
+4. **Split large tasks**: If a single task touches 6+ files across 3+ directories, split it by **immediate parent directory** boundary into sub-tasks for separate agents. Each parent directory becomes a separate sub-task scope, even if all parents fall under a single top-level source directory. Each sub-agent gets a clear file-boundary scope with no overlap.
+5. **File-scope deconfliction**: After assignment, verify that NO two agents in the same wave modify the same file. If overlap exists, apply this resolution:
+  - If both tasks share >50% of their file scope → merge them into one agent
+  - If the overlapping task is NOT on the critical path (no downstream dependencies) → move it to Impl-Polish
+  - If both are on the critical path → merge into one agent and note in Risk Mitigation
 
 **Constraint check:** If the final agent count for any wave exceeds `agents-per-wave` from `$CONFIG`, either merge more tasks or defer lower-priority tasks to Impl-Polish. Log any such adjustments in Risk Mitigation.
 
@@ -303,6 +314,7 @@ Present the plan in this format:
 ### Execution Config
 - Waves: [N] | Agents-per-wave cap: [M] | Isolation: [worktree|none|auto]
 - Enforcement: [strict|warn|off] | Max turns: [N per session type]
+- Persistence: [true|false] | Pencil: [path|none]
 - Parallel dispatch: All agents within each wave execute simultaneously via Agent() tool
 - Total agents planned: [sum across all waves]
 

@@ -145,7 +145,7 @@ For confirmed learnings, use atomic rewrite strategy:
    - Increment confidence by +0.15
    - Cap at 1.0
    - Reset `expires_at` to current date + `learning-expiry-days` (default: 30)
-3. Apply confidence decrements for contradicted learnings (-0.2)
+3. Apply confidence decrements for contradicted learnings (-0.2) — do NOT reset `expires_at` for contradicted learnings (let them decay naturally)
 4. Append new learnings with:
    - `id`: generate a uuid-v4 (use `uuidgen` or equivalent)
    - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`

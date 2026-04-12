@@ -61,7 +61,7 @@ Example config in CLAUDE.md:
 agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect, ui: ui-designer, security: security-auditor, compliance: austrian-compliance }
 ```
 
-When `agent-mapping` is not present, session-plan falls back to auto-discovery (scanning `.claude/agents/` and matching task descriptions against agent descriptions).
+When `agent-mapping` is not present, session-plan falls back to auto-discovery (scanning the platform's agents directory (`<state-dir>/agents/`) and matching task descriptions against agent descriptions).
 
 ## Fallback
 
@@ -69,12 +69,16 @@ If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall
 
 ## Learning Expiry Semantics
 
-Learnings in `.orchestrator/metrics/learnings.jsonl` (preferred) or `.claude/metrics/learnings.jsonl` (legacy fallback) follow this lifecycle:
+Learnings in `.orchestrator/metrics/learnings.jsonl` (preferred, platform-independent) or `<state-dir>/metrics/learnings.jsonl` (legacy fallback, where `<state-dir>` is `.claude/`, `.codex/`, or `.cursor/` per platform) follow this lifecycle:
 
 - **Created**: `confidence: 0.5`, `expires_at`: current date + `learning-expiry-days` (default: 30)
 - **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset
-- **Contradicted** (evidence against): `confidence -= 0.2`
+- **Contradicted** (evidence against): `confidence -= 0.2` — do NOT reset `expires_at` (let the learning decay naturally if contradicted)
 - **Expired**: `expires_at < current date` — removed on next write
 - **Dead**: `confidence <= 0.0` — removed on next write
+
+**Expiration check semantics:** Compare `expires_at` by date portion only (ignore time-of-day) to avoid intra-day jitter. When writing `expires_at`, set it to `<current_date>T00:00:00Z + learning-expiry-days` (midnight UTC).
+
+**Confidence bounds enforcement:** After EVERY increment or decrement, clamp confidence to [0.0, 1.0]. A learning at 0.95 confirmed becomes 1.0 (not 1.10). A learning at 0.1 contradicted becomes 0.0 and is pruned.
 
 Cleanup (pruning expired + deduplicating by type+subject) runs on EVERY write to `learnings.jsonl`, in both session-end and evolve skills.

@@ -42,8 +42,8 @@ Also read `<state-dir>/STATUS.md` if it exists for additional project-level cont
 
 > Skip if `persistence` config is `false`.
 
-1. Ensure '.orchestrator/metrics/' directory exists in the project root (create if missing). For backward compatibility, also check '.claude/metrics/'
-2. If '.orchestrator/metrics/sessions.jsonl' exists, count lines to determine number of previous sessions (also check `.claude/metrics/sessions.jsonl` as fallback)
+1. Ensure '.orchestrator/metrics/' directory exists in the project root (create if missing). For backward compatibility with pre-v2.0 sessions, also check the platform's legacy metrics directory (`<state-dir>/metrics/` where `<state-dir>` is `.claude/`, `.codex/`, or `.cursor/` per platform).
+2. If '.orchestrator/metrics/sessions.jsonl' exists, count lines to determine number of previous sessions. If not found, check `<state-dir>/metrics/sessions.jsonl` as a platform-specific legacy fallback.
 3. Store the count for display in Phase 7 — this feeds the Historical Trends section
 
 ## Phase 1: Git Analysis (parallel)
@@ -113,9 +113,9 @@ Surface context from previous sessions:
 
 ## Phase 5.6: Project Intelligence
 
-> Skip if `persistence` config is `false` or `.orchestrator/metrics/learnings.jsonl` does not exist (also check legacy fallback `.claude/metrics/learnings.jsonl`).
+> Skip if `persistence` config is `false` or `.orchestrator/metrics/learnings.jsonl` does not exist (also check legacy fallback `<state-dir>/metrics/learnings.jsonl`).
 
-Read `.orchestrator/metrics/learnings.jsonl` (or `.claude/metrics/learnings.jsonl` as legacy fallback) and surface active learnings (confidence > 0.3, not expired):
+Read `.orchestrator/metrics/learnings.jsonl` (or `<state-dir>/metrics/learnings.jsonl` as legacy fallback) and surface active learnings (confidence > 0.3, not expired):
 
 1. Group learnings by type:
    - **Fragile files**: "These files have been problematic: [list with confidence scores]"

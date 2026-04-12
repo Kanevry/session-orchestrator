@@ -213,7 +213,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 
 **Expected behavior:**
 - Learnings are extracted during session-end Phase 3.5a (Learning Extraction)
-- Each learning is a single JSONL line with fields: `id` (UUID), `type`, `subject`, `insight`, `evidence`, `confidence` (0.5 for new), `source_session`, `created_at`, `expires_at` (+90 days)
+- Each learning is a single JSONL line with fields: `id` (UUID), `type`, `subject`, `insight`, `evidence`, `confidence` (0.5 for new), `source_session`, `created_at`, `expires_at` (+`learning-expiry-days` days, default: 30)
 - Learning types: `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`
 - On second session, existing learnings with matching `type` + `subject` get confidence updates (+0.15 if confirmed, -0.2 if contradicted)
 - Learnings with confidence <= 0.0 are removed; expired learnings are pruned at close

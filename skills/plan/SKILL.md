@@ -36,7 +36,9 @@ After parsing, verify that `plan-baseline-path` is not null: `echo "$CONFIG" | j
 
 Plan-specific fields (also parse these): `plan-default-visibility`, `plan-prd-location`, `plan-retro-location`, `vcs`
 
-Store all values for use in subsequent phases. Expand `~` in paths to the full home directory.
+Store all values for use in subsequent phases.
+
+**Path expansion:** Expand `~` to `$HOME` in `plan-baseline-path`, `plan-prd-location`, and `plan-retro-location`. Verify expanded paths exist. If `plan-baseline-path` doesn't exist, warn: "Baseline path not found at [path]. `/plan new` repo scaffolding will be unavailable."
 
 If no `## Session Config` section exists at all, stop and report: "Error: No Session Config section found in CLAUDE.md. The `/plan` skill requires at minimum `plan-baseline-path` to be configured."
 
@@ -297,9 +299,9 @@ If user selects "Adjust priorities" or "Remove issues", handle the adjustments i
 
 For each approved issue:
 
-1. Create via VCS CLI:
-   - **GitLab**: `glab issue create --title "[Plan] <title>" --label "<labels>" --description "<body>"`
-   - **GitHub**: `gh issue create --title "[Plan] <title>" --label "<labels>" --body "<body>"`
+1. Create via VCS CLI using comma-separated labels in a single `--label` flag:
+   - **GitLab**: `glab issue create --title "[Plan] <title>" --label "type:feature,priority:high,status:ready" --description "<body>"`
+   - **GitHub**: `gh issue create --title "[Plan] <title>" --label "type:feature,priority:high,status:ready" --body "<body>"`
 2. Brief pause (1s) between creations for rate limiting
 3. After all issues are created, set dependency links:
    - **GitLab**: use `glab api` to set `blocks`/`is-blocked-by` relations

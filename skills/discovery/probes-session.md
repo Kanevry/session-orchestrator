@@ -268,7 +268,7 @@ find "$STATE_DIR/" -type f -mtime +90 2>/dev/null | head -10
 ```bash
 # Hash the ## Session Config section across repos
 # If cross-repos is configured, compare CLAUDE.md patterns
-# Flag identical sections that could be consolidated into ~/.claude/CLAUDE.md or <state-dir>/rules/
+# Flag identical sections that could be consolidated into per-project rules at `<state-dir>/rules/`
 ```
 
 **Evidence Format (token efficiency):**

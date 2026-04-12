@@ -34,13 +34,29 @@ Before starting the first wave (Discovery role):
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
 4. **Verify `jq` is installed** — run `command -v jq`. If not found, warn the user: "⚠ jq is not installed. Scope and command enforcement hooks will be DISABLED. Install jq (`brew install jq` / `apt install jq`) to enable security enforcement." Do NOT proceed with waves until user acknowledges.
-5. **Read Session Config**: Parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`. Extract: `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto), `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null). If the session-plan output contains an "Execution Config" section, extract values from there instead of re-parsing.
+5. **Read Session Config**: Parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`. Extract these fields:
+   - `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto)
+   - `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null)
+   
+   **Execution Config shortcut:** If the session-plan output contains an `### Execution Config` section, its execution-level fields (waves, agents-per-wave, isolation, enforcement, max-turns) take precedence over `$CONFIG`. Session-level fields (persistence, pencil) always come from `$CONFIG`. If the Execution Config section is missing, use `$CONFIG` alone.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
    - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
    - `session_type`: from Session Config
    - `started_at`: ISO 8601 timestamp
    - `waves`: empty array (populated after each wave)
    This object lives in memory during execution — it is written to disk by session-end.
+
+## Pre-Execution: User Instructions
+
+If the user provided additional instructions with `/go` (e.g., `/go focus on API endpoints`), apply them as a priority modifier:
+
+1. **Incorporate into agent prompts**: Add a "**Priority Focus:**" section to each agent's prompt that includes the user's instructions verbatim
+2. **Do NOT override the plan**: User instructions adjust emphasis within the existing plan, they do not replace it. If the instructions conflict with the plan, note the conflict and follow the plan.
+
+Example: If user said `/go focus on API endpoints`, each agent prompt includes:
+```
+**Priority Focus (from user):** focus on API endpoints
+```
 
 ## Pre-Wave 1a: Capture Session Start Ref
 
@@ -93,6 +109,12 @@ Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before wri
 
 For each wave, resolve its assigned role(s) from the session plan's role-to-wave mapping:
 
+**Empty waves:** If the session plan shows a wave with 0 agents (role had no tasks), skip it entirely:
+1. Log in progress update: `## Wave [N] ([Role]) — Skipped (no tasks)`
+2. Update STATE.md: increment `current-wave`, add to Wave History: `### Wave N — [Role] (skipped, no tasks)`
+3. Proceed to next wave immediately
+4. Do NOT write wave-scope.json for skipped waves
+
 ### 1. Dispatch Agents
 
 Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
@@ -144,7 +166,7 @@ For each agent in this wave:
 
 **Codex CLI:** Codex uses typed agent roles defined in `.codex-plugin/agents/`. Map wave roles to Codex agents:
 - **Discovery** waves → `explorer` agent (read-only)
-- **Impl-Core / Impl-Polish** waves → `wave-worker` agent (workspace-write), or project-specific agents if defined in `.codex/agents/`
+- **Impl-Core / Impl-Polish** waves → `wave-worker` agent (workspace-write), or project-specific agents if defined in the platform's agents directory (`.claude/agents/`, `.codex/agents/`, or `.cursor/agents/`)
 - **Quality** review → `session-reviewer` agent (read-only)
 - **Finalization** → direct execution (no subagent needed)
 

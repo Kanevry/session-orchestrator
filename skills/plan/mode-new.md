@@ -208,7 +208,16 @@ Score each issue using three factors:
 
 Use taxonomy from `setup-gitlab-groups.sh`:
 
-- **priority:** P0 (critical), P1 (high), P2 (medium), P3 (low)
+**Priority mapping for VCS labels:**
+| Categorization | VCS Label |
+|---|---|
+| P0 (critical path, blocking) | `priority:critical` |
+| P1 (high impact, needed soon) | `priority:high` |
+| P2 (medium, can wait) | `priority:medium` |
+| P3 (nice-to-have) | `priority:low` |
+
+Always use the `priority:<level>` format in VCS CLI commands, not P0/P1/P2/P3.
+
 - **type:** feature, enhancement, bug, chore, docs
 - **status:** `status:ready`
 - **area:** relevant domain label
@@ -228,12 +237,11 @@ Use AskUserQuestion to present the full issue structure:
 ```bash
 # Create epic
 glab issue create --title "$EPIC_TITLE" --description "$EPIC_DESC" \
-  --label "type:epic" --label "priority:$PRIORITY" --milestone "$MILESTONE"
+  --label "type:epic,priority:$PRIORITY" --milestone "$MILESTONE"
 
 # Create sub-issues
 glab issue create --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
-  --label "type:feature" --label "priority:$PRIORITY" --label "status:ready" \
-  --label "area:$AREA" --label "appetite:$APPETITE"
+  --label "type:feature,priority:$PRIORITY,status:ready,area:$AREA,appetite:$APPETITE"
 ```
 
 ### Step 6: Set dependency links

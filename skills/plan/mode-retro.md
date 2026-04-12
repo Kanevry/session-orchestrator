@@ -76,7 +76,7 @@ Dispatch 3 Explore agents in parallel before Wave 1:
 
 ```
 Agent({ subagent_type: "Explore", description: "Read session memory files",
-  prompt: "Read session-*.md in ~/.claude/projects/<project>/memory/. Summarize: accomplishments, frustrations, scope changes, patterns." })
+  prompt: "Read session memory files for retrospective context. On Claude Code: read session-*.md in ~/.claude/projects/<project>/memory/. On Codex CLI and Cursor IDE: skip this research — session memory is not available. Summarize: accomplishments, frustrations, scope changes, patterns." })
 
 Agent({ subagent_type: "Explore", description: "Analyze git log patterns",
   prompt: "Analyze git log (2 weeks). Identify: large commits (>20 files), hotfix patterns, reverts, frequency distribution." })

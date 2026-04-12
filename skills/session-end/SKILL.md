@@ -46,14 +46,21 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 
 Check if `discovery-on-close` is `true` in Session Config. If not configured or `false`, skip this section.
 
-When enabled, invoke the discovery skill in **embedded mode**:
-- Run discovery Phases 0-3 only (Config, Stack Detection, Probe Execution, Verification & Scoring)
-- Scope: `session` probes always run; additional probes per `discovery-probes` config
-- Collect verified findings from the discovery skill output
-- Parse the discovery output for the **findings array** and **stats object** (schema defined in discovery skill Phase 3.6)
+When enabled, invoke the discovery skill in **embedded mode** by dispatching an Explore agent:
+```
+Agent({
+  description: "Discovery embedded scan",
+  prompt: "Run discovery probes in embedded mode. Scope: session probes + discovery-probes config. Return findings and stats as a JSON object in a markdown code fence. Do NOT run Phase 4 (triage) or Phase 5 (issue creation) — return after Phase 3.",
+  subagent_type: "Explore",
+  run_in_background: false
+})
+```
+On Codex CLI / Cursor IDE: execute probes sequentially within the current context (no Agent dispatch).
+- Collect verified findings from the discovery output
+- Parse the discovery output for the **findings** array and **stats** object (see Parsing callout below)
 - Store the stats object for Phase 1.7 metrics collection (`discovery_stats` field)
 
-> **Parsing discovery output:** When discovery runs in embedded mode, it returns two data structures: (1) a **findings array** — JSON array of objects with `probe`, `category`, `severity`, `confidence`, `title`, `description` fields; (2) a **stats object** — JSON with `probes_run`, `findings_raw`, `findings_verified`, `false_positives`, `by_category`. Extract these from the discovery agent's output. Store stats as `discovery_stats` in session metrics (Phase 1.7).
+> **Parsing discovery output:** Search for the first ` ```json ` block in the discovery output. The JSON contains: (1) a **findings** array — objects with `probe`, `category`, `severity`, `confidence`, `file`, `line`, `description`, `recommendation` fields; (2) a **stats** object — with `probes_run`, `findings_raw`, `findings_verified`, `false_positives`, `user_dismissed`, `issues_created`, `by_category`. If JSON parsing fails, log a warning and skip Phase 1.5 — do NOT fail the session close. Store stats as `discovery_stats` in session metrics (Phase 1.7).
 - Incorporate findings into issue management:
   - Findings with severity `critical` or `high` → create issues immediately (Phase 5)
   - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
@@ -208,7 +215,7 @@ If STATE.md doesn't exist, skip this subsection.
 
 ### 3.5 Session Memory
 
-> Gate: Only run if `persistence` is enabled in Session Config.
+> Gate: Only run if `persistence` is enabled in Session Config AND platform is Claude Code (session memory at `~/.claude/projects/` is Claude Code-only). Learnings (Phase 3.5a) and metrics (Phase 3.7) still write to `.orchestrator/metrics/` on all platforms.
 
 1. Create `~/.claude/projects/<project>/memory/session-<YYYY-MM-DD>.md` with:
    - Frontmatter: `name`, `description` (1-line summary), `type: project`
@@ -253,7 +260,9 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
 - If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
 - If no existing match: note as a new learning with confidence 0.5
 
-**File I/O strategy:** Track all updates in memory during extraction. Do NOT modify `learnings.jsonl` here — Phase 3.6 handles the actual file write. Pass the list of new/updated learnings to Phase 3.6.
+**File I/O strategy:** Track all updates in memory during extraction. Do NOT modify `learnings.jsonl` here — Phase 3.6 handles the actual file write. Pass these data structures to Phase 3.6:
+- `confidence_updates`: list of `{id: "<existing_learning_id>", operation: "confirm"|"contradict"}`
+- `new_learnings`: list of complete learning objects (all JSONL fields per the format above)
 
 **Subject matching:** Match on exact `type` + `subject` string equality. For `fragile-file`, `subject` is the file path. For other types, use a short canonical identifier (e.g., `type-errors-in-api`, `scope-too-large`, `missing-imports`).
 
@@ -327,6 +336,17 @@ git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || ech
 1. **Close resolved issues**: Use the issue close and note commands per the "Common CLI Commands" section of the gitlab-ops skill. Note: some VCS platforms require separate note and close commands.
 2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
 3. **Create carryover issues**: for partially-done work (from Phase 1.2), use the issue create command with appropriate labels
+
+#### Discovery Issue Creation (if discovery ran in Phase 1.5)
+
+For each finding with severity `critical` or `high` from Phase 1.5:
+1. Create a VCS issue using the detected platform CLI:
+   - Title: `[Discovery] <description>` (truncated to 70 chars)
+   - Body: `**Probe:** <probe>\n**File:** <file>:<line>\n**Severity:** <severity>\n**Confidence:** <confidence>%\n**Recommendation:** <recommendation>`
+   - Labels: `type:discovery`, `priority:<severity>` (critical→critical, high→high)
+2. Log each created issue ID for the Final Report
+3. Update `discovery_stats.issues_created` count
+
 4. **Create gap issues**: for newly-discovered problems
 5. **Update milestones**: if milestone progress changed
 
