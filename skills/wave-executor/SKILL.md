@@ -34,7 +34,7 @@ Before starting the first wave (Discovery role):
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
 4. **Verify `jq` is installed** — run `command -v jq`. If not found, warn the user: "⚠ jq is not installed. Scope and command enforcement hooks will be DISABLED. Install jq (`brew install jq` / `apt install jq`) to enable security enforcement." Do NOT proceed with waves until user acknowledges.
-5. Read `persistence` from Session Config (default: `true`)
+5. **Read Session Config**: Parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`. Extract: `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto), `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null). If the session-plan output contains an "Execution Config" section, extract values from there instead of re-parsing.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
    - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
    - `session_type`: from Session Config
@@ -96,6 +96,8 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 ### 1. Dispatch Agents
 
 Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
+
+Read each wave's dispatch metadata from the session plan header (e.g., `(4 agents, parallel, isolation: worktree)`). Pass the `isolation` value to each Agent() tool call per `circuit-breaker.md`. If the plan does not specify isolation, read from `$CONFIG.isolation` (default: `auto` = worktree for feature/deep, none for housekeeping). Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
 
 #### Agent-Type Resolution
 

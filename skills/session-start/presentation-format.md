@@ -16,6 +16,11 @@
 - Plugin: [fresh / ⚠ N days without update]
 - Metrics: [N previous sessions tracked | no history yet]
 
+## Session Config (active)
+- Waves: [N] | Agents/wave: [M] | Isolation: [worktree|none|auto]
+- Enforcement: [strict|warn|off] | Max turns: [N|auto]
+- Persistence: [true|false] | Agent mapping: [configured roles|auto-discovery]
+
 ## Recommended Focus
 Based on priority, synergies, and session type, I recommend:
 

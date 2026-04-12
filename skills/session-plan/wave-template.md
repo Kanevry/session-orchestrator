@@ -18,6 +18,8 @@ For each wave, define agents with:
 - `Isolation: worktree` means the wave-executor will pass `isolation: "worktree"` to the Agent tool, giving each agent its own git worktree copy
 - `MaxTurns` is enforced via the agent prompt — wave-executor includes a turn limit instruction in each agent's prompt
 
+> **Deconfliction rule:** Before finalizing agent specs for a wave, verify that no two agents in the same wave list overlapping `Files:` paths. If overlap is found, either merge the agents into one or move one task to a later wave. Two agents editing the same file in parallel causes merge conflicts that require manual resolution.
+
 ## Agent Count by Session Type
 
 | Session Type | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |

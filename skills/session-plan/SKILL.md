@@ -29,6 +29,21 @@ This skill receives the agreed session scope from session-start. The scope inclu
 
 These are passed via the conversation context (not a file). Parse the preceding session-start output to extract the agreed scope.
 
+## Step 0: Read Session Config
+
+Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
+
+Extract these fields for planning:
+- `waves` (default: 5) — number of execution waves
+- `agents-per-wave` (default: 6, may have session-type overrides per `config-reading.md`) — max parallel agents per wave
+- `isolation` (default: auto) — `worktree` / `none` / `auto` (auto = worktree for feature/deep, none for housekeeping)
+- `enforcement` (default: warn) — `strict` / `warn` / `off`
+- `max-turns` (default: auto) — agent turn budget (auto = housekeeping: 8, feature: 15, deep: 25)
+- `agent-mapping` (optional) — explicit role-to-agent bindings
+- `persistence` (default: true) — whether to use STATE.md and learnings
+
+> **Fallback:** If session-start already output a `## Session Config (active)` block in the conversation context, extract values from there to avoid a redundant parse. If not present in context, parse independently.
+
 ## Step 1: Task Decomposition
 
 0. **Check for resume context**: > Skip if `persistence` is `false` in Session Config.
@@ -85,6 +100,27 @@ Before assigning tasks to waves, discover available agents for this session:
    - Record the resolved `subagent_type` for each task
 
 > **No agents found?** If no project agents exist and plugin agents are available, use plugin agents. If neither, fall back to `general-purpose` for all tasks. The system works at every level.
+
+## Step 1.8: Task-to-Role Classification
+
+For each task from Step 1, assign exactly one role. Use these signal-to-role mappings:
+
+| Signal in task | Role | Examples |
+|---|---|---|
+| Needs codebase understanding before changes; audit, explore, verify assumptions, check existing coverage | **Discovery** | "Audit auth flow", "Check test coverage for module X", "Identify affected modules" |
+| New feature code, new API endpoints, DB schema changes, primary UI components, new modules | **Impl-Core** | "Add /api/users endpoint", "Create migration for invoices table", "Implement auth middleware" |
+| Bug fixes from prior waves, secondary features, integration work, edge cases, polish of existing code | **Impl-Polish** | "Fix pagination edge case", "Integrate payment with billing", "Handle error states in form" |
+| Write/update tests, lint fixes, security review, code simplification, type errors | **Quality** | "Add tests for auth module", "Fix TypeScript errors", "Security audit of new API" |
+| Documentation updates, issue cleanup, commit preparation, SSOT refresh, changelog | **Finalization** | "Update README", "Close resolved issues", "Write session handover notes" |
+
+**Disambiguation rules:**
+- If a task involves BOTH exploration AND implementation → split it: Discovery agent reads/validates, Impl-Core agent implements. Create two separate task entries.
+- If a task is "fix something from a previous session" (not from this session's Impl-Core) → classify as **Impl-Core** (it is new work for this session).
+- If a task is "write tests for new feature code being built this session" → classify as **Quality** (not Impl-Core). Tests run after implementation.
+- If unsure between Impl-Core and Impl-Polish → if the task is on the critical path (other tasks depend on it), it is **Impl-Core**. If independent polish, it is **Impl-Polish**.
+- Housekeeping sessions: skip role classification — all tasks go into a single consolidated wave (see wave-executor Session Type Behavior).
+
+Record the assigned role next to each task before proceeding to Step 2.
 
 ## Step 2: Wave Assignment
 
@@ -189,6 +225,19 @@ The `agents-per-wave` Session Config value caps the maximum regardless of tier.
 
 If project intelligence (learnings) suggests different sizing based on historical data, prefer the historical recommendation over the formula.
 
+## Step 3.5: Task-to-Agent Distribution
+
+For each role's wave, distribute its classified tasks across the allocated agent count from Step 3:
+
+**Distribution algorithm:**
+1. **Group by file affinity**: Tasks touching the same files or the same directory MUST go to the same agent (prevents parallel merge conflicts).
+2. **One task per agent** (preferred): If task count ≤ agent count, assign one task per agent. Leave unused agent slots empty — do not invent tasks to fill them.
+3. **Merge small tasks**: If task count > agent count, merge the smallest tasks (by file count) that share a directory. Never merge tasks that touch different top-level modules.
+4. **Split large tasks**: If a single task touches 6+ files across 3+ directories, split it by directory boundary into sub-tasks for separate agents. Each sub-agent gets a clear file-boundary scope with no overlap.
+5. **File-scope deconfliction**: After assignment, verify that NO two agents in the same wave modify the same file. If overlap exists, either move the overlapping task to a later wave (Impl-Polish) or merge the two agents into one.
+
+**Constraint check:** If the final agent count for any wave exceeds `agents-per-wave` from `$CONFIG`, either merge more tasks or defer lower-priority tasks to Impl-Polish. Log any such adjustments in Risk Mitigation.
+
 ## Step 4: Agent Specification
 
 > **Template Reference:** See `wave-template.md` in this skill directory for the agent specification format, isolation settings, and count tables.
@@ -211,20 +260,23 @@ Before presenting the plan:
 Present the plan in this format:
 
 ```
-## Wave Plan (Session: [type], [N] waves)
+## Wave Plan (Session: [type], [N] waves, isolation: [worktree|none])
 
-### Wave 1: Discovery ([N agents])
+### Wave 1: Discovery ([N agents], parallel, read-only)
 - Agent 1: [task] → [files] → [acceptance criteria] → `subagent_type: Explore`
 ...
+- File scope overlap: none (read-only wave)
 
-### Wave 2: Impl-Core ([N agents])
+### Wave 2: Impl-Core ([N agents], parallel, isolation: [worktree|none])
 - Agent 1: [task] → [files] → [acceptance criteria] → `subagent_type: [resolved agent]`
 ...
+- File scope overlap: [none | list conflicting files and which agents]
 
-### Wave 3: Impl-Polish ([N agents])
+### Wave 3: Impl-Polish ([N agents], parallel, isolation: [worktree|none])
 ...
+- File scope overlap: [none | list]
 
-### Wave 4: Quality ([N agents])
+### Wave 4: Quality ([N agents], parallel, isolation: [worktree|none])
 ...
 
 ### Wave 5: Finalization ([N agents])
@@ -247,6 +299,12 @@ Present the plan in this format:
 
 ### Risk Mitigation
 - [identified risks and how each wave handles them]
+
+### Execution Config
+- Waves: [N] | Agents-per-wave cap: [M] | Isolation: [worktree|none|auto]
+- Enforcement: [strict|warn|off] | Max turns: [N per session type]
+- Parallel dispatch: All agents within each wave execute simultaneously via Agent() tool
+- Total agents planned: [sum across all waves]
 
 Ready to execute? Use /go to begin.
 ```
