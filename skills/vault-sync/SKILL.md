@@ -1,15 +1,78 @@
 ---
 name: vault-sync
-description: DESIGN BRIEF -- Future helper skill for validating and syncing project vault contents (markdown knowledge base) at session boundaries and during wave execution. Spec only; not yet implemented.
+description: Validates vault frontmatter (Zod schema) and wiki-link integrity. Phase 1: hard gate at session-end. Used by session-end skill to block close on invalid vault state.
 ---
 
 # Vault Sync Skill
 
 ## Status
 
-STATUS: DESIGN BRIEF -- NOT YET IMPLEMENTED (as of 2026-04-11)
+STATUS: PHASE 1 IMPLEMENTED (2026-04-13). Session-End hard gate (section 3.1) operational. Phase 2 (wave-executor incremental, 3.2) and Phase 3 (evolve advisory, 3.3) not yet implemented.
 
-This file is a contract for a future implementation session. It captures the design decisions for a 3-layer vault validation architecture where the vault concept was prototyped end-to-end in a reference project but the session-orchestrator integration layer was deliberately deferred. The reference validator runs locally via `pnpm vault:validate`, and a CI job enforces it on every push. What is missing is the continuous in-session check described below. Treat every section as a commitment: when this skill is implemented, it must match this spec or the spec must be updated first.
+## Implementation
+
+Phase 1 ships a self-contained validator that reads every `.md` file under `VAULT_DIR`, parses YAML frontmatter, validates against the canonical `vaultFrontmatterSchema`, and flags dangling wiki-links as warnings.
+
+### Files
+
+- `validator.mjs` — Node.js ESM validator. Uses `zod` + `yaml` npm packages. Reads `VAULT_DIR` (env or default cwd), walks the tree, skipping `node_modules/`, `.git/`, `.obsidian/`, `90-archive/`. For each `.md`: parses frontmatter, validates against the inline Zod schema, extracts `[[wiki-links]]`, verifies each target resolves. Emits JSON report on stdout.
+- `validator.sh` — Thin POSIX wrapper. Resolves `VAULT_DIR` from arg 1 or env, self-bootstraps deps via `pnpm install --silent` on first run, execs the Node validator. Session-end and other callers use this entry point.
+- `package.json` — Declares `zod` (`^3.24.0`, matching projects-baseline) and `yaml` (`^2.5.0`) as deps. `pnpm-lock.yaml` is committed; `node_modules/` is gitignored.
+- `tests/validator.bats` — 16 BATS cases covering clean vaults, broken frontmatter, missing required fields, dangling links, no-vault skipping, README-style files, nested directories, and archive/obsidian exclusion.
+- `tests/fixtures/` — Seven fixture vaults matching each test scenario.
+
+### Schema source
+
+The inline Zod schema is vendored from the canonical source at `projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts`. The skill is intentionally self-contained (no monorepo workspace dependency), so the schema is duplicated with a header comment pointing at the SSOT. Drift is to be caught by a future smoke test that imports the canonical schema and diffs the shape — NOT YET IMPLEMENTED. Until that test exists, any change to the canonical schema must be mirrored here in the same commit.
+
+### How session-end invokes it
+
+```
+VAULT_DIR=/path/to/vault bash ~/Projects/session-orchestrator/skills/vault-sync/validator.sh
+```
+
+- Exit `0` — vault valid (or skipped because no vault exists / no .md files). Warnings may still be present in the JSON report.
+- Exit `1` — one or more validation errors. Session-end surfaces them in the quality gate report and refuses to close.
+- Exit `2` — infrastructure error (missing `node`, missing `validator.mjs`, cannot bootstrap deps).
+
+JSON output shape (stdout):
+
+```json
+{
+  "status": "ok|invalid|skipped",
+  "vault_dir": "...",
+  "files_checked": N,
+  "files_skipped_no_frontmatter": N,
+  "errors": [{"file": "...", "path": "frontmatter.id", "message": "..."}],
+  "warnings": [{"file": "...", "type": "dangling-wiki-link", "message": "..."}]
+}
+```
+
+Opt-in `--check-expires` flag downgrades expired notes to warnings; default off (Phase 1 leaves freshness for the Phase 3 evolve advisory).
+
+### CLI Flags
+
+The validator (both `validator.mjs` and the `validator.sh` wrapper) accepts:
+
+- `--mode <hard|warn|off>` — gate severity. `hard` (default) exits 1 on any frontmatter/schema error. `warn` exits 0 but still populates the `errors` array in the JSON output so callers can surface them as warnings. `off` short-circuits to `status: "skipped-mode-off"` — useful during onboarding when the gate is enabled but the vault is not yet clean.
+- `--exclude <glob>` — repeatable. Glob patterns (relative to `VAULT_DIR`, POSIX-style forward slashes) matching files to skip. Supports `**` (any number of segments), `*` (any chars except `/`), and `?` (single char except `/`). Excluded files are counted in `excluded_count` and contribute nothing to `errors`/`warnings`. Example: `--exclude "**/_MOC.md" --exclude "**/README.md"`.
+- `--check-expires` — flag expired notes (`expires:` date in the past) as warnings. Default off.
+
+Environment variables:
+
+- `VAULT_DIR` — directory to scan. Defaults to `$PWD`. Can also be passed as the first positional argument to `validator.sh`.
+
+Example invocation:
+
+```bash
+VAULT_DIR=~/Projects/vault bash validator.sh \
+  --mode warn \
+  --exclude "**/_MOC.md" \
+  --exclude "**/_overview.md" \
+  --exclude "**/README.md"
+```
+
+The JSON output always includes the `mode` and `excluded_count` fields when the validator runs past the mode-off / no-vault short-circuits.
 
 ## Purpose
 

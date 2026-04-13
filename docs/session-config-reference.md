@@ -79,6 +79,27 @@ The format and all fields are identical on both platforms. The section header mu
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
 
+## Vault Sync
+
+Opt-in configuration for the `vault-sync` quality gate at session-end (see `skills/vault-sync/SKILL.md`). The gate validates YAML frontmatter against the canonical `vaultFrontmatterSchema` and flags dangling wiki-links across a markdown knowledge base. Projects without a vault leave these fields unset and are unaffected.
+
+All fields live under a top-level `vault-sync` object, e.g. in `CLAUDE.md`:
+
+```yaml
+vault-sync:
+  enabled: true
+  mode: warn
+  vault-dir: .
+  exclude: [ "**/_MOC.md", "**/_overview.md", "**/README.md" ]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vault-sync.enabled` | boolean | `false` | If true, session-end runs the vault-sync validator as part of Phase 2 Quality Gate. When false (or missing), the gate is skipped silently. |
+| `vault-sync.mode` | string | `warn` | Gate severity. `hard` blocks session close on frontmatter/schema errors. `warn` reports errors in the quality gate report but does not block. `off` bypasses the validator entirely (useful during onboarding when `enabled` is flipped on but the vault is not yet clean). Dangling wiki-links are always warnings regardless of mode. |
+| `vault-sync.vault-dir` | string | project root (`$PWD`) | Directory to scan for `.md` files. Passed to the validator via `VAULT_DIR`. Accepts absolute or project-relative paths. |
+| `vault-sync.exclude` | list of glob strings | `[]` | File patterns to skip during validation (e.g. `**/_MOC.md`, `**/README.md`, `**/_overview.md`). Legitimate index files that do not carry full note frontmatter should be listed here. Matching files are counted in `excluded_count` but are not validated. Supports `**`, `*`, and `?` wildcards (fnmatch-style). |
+
 ## Defaults
 
 If no `## Session Config` section exists in CLAUDE.md, skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

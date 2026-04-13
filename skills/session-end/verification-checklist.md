@@ -11,6 +11,7 @@ Run ALL checks — do NOT skip any:
 2. **Git status**: `git status` → understand all changes
 3. **Uncommitted changes**: everything should be staged for commit
 4. **No debug artifacts**: search for `console.log`, `debugger`, `TODO: remove` in changed files
+5. **Vault validation** (opt-in via `vault-sync.enabled`): run the `vault-sync` validator per SKILL.md Phase 2.1. In `hard` mode, validation errors block the session close; in `warn` mode they are surfaced in the quality gate report but do not block; in `off` mode the gate is bypassed. Dangling wiki-links are always warnings only.
 
 If any check fails:
 - Fix it if quick (<2 min)
