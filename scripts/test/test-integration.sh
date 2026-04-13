@@ -237,6 +237,48 @@ assert_eq "2g: chain validate->enforce-cmd rm -rf -> exit 2" "2" "$chain_exit"
 
 # ===========================================================================
 echo ""
+echo "=== Group 2h: Fail-closed when jq is missing ==="
+# ===========================================================================
+
+# Create a restricted PATH directory that has bash but NOT jq
+JQ_MISSING_DIR="$MASTER_TMPDIR/no_jq_bin"
+mkdir -p "$JQ_MISSING_DIR"
+for cmd in bash cat echo env dirname basename; do
+  src=$(command -v "$cmd" 2>/dev/null) && [ -n "$src" ] && ln -sf "$src" "$JQ_MISSING_DIR/" 2>/dev/null || true
+done
+
+# 2h-1: enforce-scope.sh exits 2 when jq is missing
+scope_exit=0
+echo '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/test/src/foo.ts"}}' \
+  | env PATH="$JQ_MISSING_DIR" bash "$ENFORCE_SCOPE" > /dev/null 2>&1 || scope_exit=$?
+assert_eq "2h: jq missing: enforce-scope exits 2 (deny)" "2" "$scope_exit"
+
+# 2h-2: enforce-commands.sh exits 2 when jq is missing
+cmd_exit=0
+echo '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' \
+  | env PATH="$JQ_MISSING_DIR" bash "$ENFORCE_COMMANDS" > /dev/null 2>&1 || cmd_exit=$?
+assert_eq "2h: jq missing: enforce-commands exits 2 (deny)" "2" "$cmd_exit"
+
+# 2h-3: enforce-scope.sh deny output contains permissionDecision
+scope_output=""
+scope_exit=0
+scope_output=$(echo '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/test/src/foo.ts"}}' \
+  | env PATH="$JQ_MISSING_DIR" bash "$ENFORCE_SCOPE" 2>/dev/null) || scope_exit=$?
+scope_has_decision=0
+echo "$scope_output" | grep -q '"permissionDecision"' || scope_has_decision=1
+assert_eq "2h: jq missing: enforce-scope output contains permissionDecision" "0" "$scope_has_decision"
+
+# 2h-4: enforce-commands.sh deny output contains permissionDecision
+cmd_output=""
+cmd_exit=0
+cmd_output=$(echo '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' \
+  | env PATH="$JQ_MISSING_DIR" bash "$ENFORCE_COMMANDS" 2>/dev/null) || cmd_exit=$?
+cmd_has_decision=0
+echo "$cmd_output" | grep -q '"permissionDecision"' || cmd_has_decision=1
+assert_eq "2h: jq missing: enforce-commands output contains permissionDecision" "0" "$cmd_has_decision"
+
+# ===========================================================================
+echo ""
 echo "=== Group 3: Glob Pattern Matching ==="
 # ===========================================================================
 

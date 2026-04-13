@@ -15,5 +15,32 @@ jobs:
       - name: Install jq
         run: sudo apt-get install -y jq
 
+      - name: Verify environment
+        run: |
+          echo "=== Checking bash ==="
+          bash --version | head -1
+          bash_version=$(bash -c 'echo ${BASH_VERSINFO[0]}')
+          if [ "$bash_version" -lt 4 ]; then
+            echo "ERROR: bash 4+ required, found bash $bash_version"
+            exit 1
+          fi
+
+          echo "=== Checking git ==="
+          git --version
+          git config --global user.name "CI"
+          git config --global user.email "ci@test.com"
+
+          echo "=== Checking jq ==="
+          jq --version
+
+          echo "=== Checking temp directory ==="
+          tmpdir=$(mktemp -d)
+          [ -d "$tmpdir" ] && rm -rf "$tmpdir" || { echo "ERROR: mktemp failed"; exit 1; }
+
+          echo "=== Checking /tmp writability ==="
+          touch /tmp/ci-write-test && rm /tmp/ci-write-test || { echo "ERROR: /tmp is not writable"; exit 1; }
+
+          echo "=== All environment checks passed ==="
+
       - name: Run test suite
         run: bash scripts/test/run-all.sh

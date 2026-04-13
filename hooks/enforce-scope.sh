@@ -14,10 +14,10 @@ set -euo pipefail
 # Read full stdin
 INPUT=$(cat)
 
-# Check jq available — graceful degradation
+# Check jq available — fail-closed: deny all edits if jq is missing
 if ! command -v jq &>/dev/null; then
-  echo "WARNING: enforce-scope: jq not installed — ALL file edits allowed without scope checking. Install jq to enable enforcement." >&2
-  exit 0
+  echo '{"permissionDecision":"deny","reason":"enforce-scope: jq not installed — cannot verify file scope. Install jq to enable enforcement."}'
+  exit 2
 fi
 
 # Parse tool name and file path from hook input (fallback on malformed JSON)

@@ -9,10 +9,10 @@ set -euo pipefail
 
 INPUT=$(cat)
 
-# Graceful degradation: if jq is not available, allow everything
+# Fail-closed: if jq is not available, deny all commands
 if ! command -v jq &>/dev/null; then
-  echo "WARNING: enforce-commands: jq not installed — ALL commands allowed without restriction. Install jq to enable enforcement." >&2
-  exit 0
+  echo '{"permissionDecision":"deny","reason":"enforce-commands: jq not installed — cannot verify command safety. Install jq to enable enforcement."}'
+  exit 2
 fi
 
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || TOOL_NAME=""
