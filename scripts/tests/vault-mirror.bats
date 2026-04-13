@@ -532,6 +532,73 @@ EOF
   [ -f "$TMPVAULT/40-learnings/helloworld.md" ]
 }
 
+# ── 8. Field validation — skipped-invalid ─────────────────────────────────────
+# Entries missing required fields emit a skipped-invalid action and do not
+# cause a non-zero exit — processing continues for remaining lines.
+
+@test "learning entry missing required field emits skipped-invalid" {
+  # Learning entry without the required 'insight' field
+  cat > "$TMPJSONL" <<'EOF'
+{"id":"a1b2c3d4-0001-4000-8000-000000000001","type":"architectural","subject":"cross-repo-deep-session","evidence":"some evidence","confidence":0.9,"source_session":"session-2026-04-13","created_at":"2026-04-13T10:00:00Z"}
+EOF
+
+  run --separate-stderr node "$MIRROR" --vault-dir "$TMPVAULT" --source "$TMPJSONL" --kind learning
+
+  [ "$status" -eq 0 ]
+  local action
+  action=$(get_field "$output" '.action')
+  [ "$action" = "skipped-invalid" ]
+}
+
+@test "session entry missing agent_summary emits skipped-invalid" {
+  # Session entry without the required 'agent_summary' field
+  cat > "$TMPJSONL" <<'EOF'
+{"session_id":"session-2026-04-13","session_type":"feature","platform":"claude-code","started_at":"2026-04-13T08:00:00Z","completed_at":"2026-04-13T10:00:00Z","duration_seconds":7200,"total_waves":3,"total_agents":6,"total_files_changed":12,"waves":[{"wave":1,"role":"Planning","agent_count":1,"files_changed":2,"quality":"ok"}],"effectiveness":{"planned_issues":3,"completed":3,"carryover":0,"emergent":1,"completion_rate":1.0}}
+EOF
+
+  run --separate-stderr node "$MIRROR" --vault-dir "$TMPVAULT" --source "$TMPJSONL" --kind session
+
+  [ "$status" -eq 0 ]
+  local action
+  action=$(get_field "$output" '.action')
+  [ "$action" = "skipped-invalid" ]
+}
+
+# ── 9. Dry-run mkdir guard ─────────────────────────────────────────────────────
+# In --dry-run mode the target directory must NOT be created.
+
+@test "dry-run does not create target directory" {
+  make_learning_jsonl "$TMPJSONL"
+
+  # TMPVAULT exists but 40-learnings/ does NOT exist inside it
+  [ ! -d "$TMPVAULT/40-learnings" ]
+
+  node "$MIRROR" --vault-dir "$TMPVAULT" --source "$TMPJSONL" --kind learning --dry-run >/dev/null
+
+  # Directory must still not exist after dry-run
+  [ ! -d "$TMPVAULT/40-learnings" ]
+}
+
+# ── 10. session_id slug fallback ───────────────────────────────────────────────
+# A session_id that is not a valid slug (contains uppercase or special chars)
+# must fall back to session-<first8-uuid> derived from the raw session_id.
+
+@test "session_id with special chars uses slug fallback" {
+  # session_id "A1B2C3D4-0001-4000-8000-000000000001" contains uppercase — not a valid slug
+  # isValidSlug fails (uppercase), so fallback: session-<uuidPrefix8> = session-A1B2C3D4
+  cat > "$TMPJSONL" <<'EOF'
+{"session_id":"A1B2C3D4-0001-4000-8000-000000000001","session_type":"feature","platform":"claude-code","started_at":"2026-04-13T08:00:00Z","completed_at":"2026-04-13T10:00:00Z","duration_seconds":7200,"total_waves":3,"total_agents":6,"total_files_changed":12,"agent_summary":{"complete":5,"partial":1,"failed":0,"spiral":0},"waves":[{"wave":1,"role":"Planning","agent_count":1,"files_changed":2,"quality":"ok"}],"effectiveness":{"planned_issues":3,"completed":3,"carryover":0,"emergent":1,"completion_rate":1.0}}
+EOF
+
+  run node "$MIRROR" --vault-dir "$TMPVAULT" --source "$TMPJSONL" --kind session
+
+  [ "$status" -eq 0 ]
+  # The file must NOT be named after the literal session_id
+  [ ! -f "$TMPVAULT/50-sessions/A1B2C3D4-0001-4000-8000-000000000001.md" ]
+  # The fallback file must exist at the derived slug path
+  [ -f "$TMPVAULT/50-sessions/session-A1B2C3D4.md" ]
+}
+
 # ── CLI argument validation ────────────────────────────────────────────────────
 
 @test "missing --vault-dir: exits 1" {

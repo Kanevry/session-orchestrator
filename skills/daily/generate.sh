@@ -14,7 +14,10 @@
 #
 # Exit codes:
 #   0 — created OR already-exists (idempotent)
-#   1 — error (missing 03-daily/, missing template, write failure)
+#   1 — unexpected runtime failure (set -e)
+#   2 — infra error: template file missing
+#   3 — config error: VAULT_DIR does not exist
+#   4 — vault structure error: 03-daily/ missing
 
 set -euo pipefail
 
@@ -24,21 +27,21 @@ TEMPLATE="${SCRIPT_DIR}/templates/daily.md.tpl"
 # ── Resolve VAULT_DIR ──────────────────────────────────────────────────────
 : "${VAULT_DIR:=$PWD}"
 
+if [[ ! -f "$TEMPLATE" ]]; then
+  echo "error: template not found: $TEMPLATE" >&2
+  exit 2
+fi
+
 if [[ ! -d "$VAULT_DIR" ]]; then
   echo "error: VAULT_DIR does not exist: $VAULT_DIR" >&2
-  exit 1
+  exit 3
 fi
 
 DAILY_DIR="$VAULT_DIR/03-daily"
 if [[ ! -d "$DAILY_DIR" ]]; then
   echo "error: 03-daily/ not found in vault: $DAILY_DIR" >&2
   echo "hint: run this skill from inside the Meta-Vault, or set VAULT_DIR." >&2
-  exit 1
-fi
-
-if [[ ! -f "$TEMPLATE" ]]; then
-  echo "error: template not found: $TEMPLATE" >&2
-  exit 1
+  exit 4
 fi
 
 # ── Compute date / weekday ─────────────────────────────────────────────────
@@ -61,8 +64,13 @@ TARGET="$DAILY_DIR/${DATE}.md"
 
 # ── Idempotency check ──────────────────────────────────────────────────────
 if [[ -f "$TARGET" ]]; then
-  echo "Daily note already exists: $TARGET"
-  exit 0
+  # corrupt file guard: 0-byte or missing YAML frontmatter opener → re-create
+  if [[ ! -s "$TARGET" ]] || [[ "$(head -c 3 "$TARGET")" != "---" ]]; then
+    rm -f "$TARGET"
+  else
+    echo "Daily note already exists: $TARGET"
+    exit 0
+  fi
 fi
 
 # ── Render template ────────────────────────────────────────────────────────

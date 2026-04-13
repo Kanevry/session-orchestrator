@@ -388,7 +388,7 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
        fi
      else
        # Parse the destination path from the script's JSON output (one JSON line per action)
-       VM_DEST=$(echo "$VM_OUTPUT" | jq -r 'select(.action == "written") | .dest' 2>/dev/null | head -1)
+       VM_DEST=$(echo "$VM_OUTPUT" | jq -r 'select(.action == "created" or .action == "updated") | .path' 2>/dev/null | head -1)
        if [[ -n "$VM_DEST" ]]; then
          echo "Mirrored session summary to $VM_DEST"
        fi
@@ -405,7 +405,7 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
    | `true` | `warn`  | Run mirror; on failure surface a warning but do NOT block close |
    | `true` | `strict` | Run mirror; on failure block session close with an error message |
 
-   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","dest":"<path>"}` — the step above surfaces this output so the user can see the result.
+   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-invalid` (entry failed required-field validation).
 
 ## Phase 4: Commit & Push
 

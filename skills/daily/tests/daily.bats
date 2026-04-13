@@ -65,16 +65,44 @@ today() {
   [ "$hash1" = "$hash2" ]
 }
 
-@test "missing 03-daily/ directory: exit 1 with clear error" {
+@test "missing 03-daily/ directory: exit 4 with clear error" {
   # $TMPVAULT exists but has no 03-daily subdir
   run env VAULT_DIR="$TMPVAULT" bash "$GENERATE"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 4 ]
   [[ "$output" == *"03-daily"* ]]
 }
 
-@test "missing VAULT_DIR entirely: exit 1" {
+@test "missing VAULT_DIR entirely: exit 3" {
   run env VAULT_DIR="/nonexistent/path/does/not/exist-xyz" bash "$GENERATE"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 3 ]
+}
+
+@test "corrupt file (0 bytes) triggers re-creation" {
+  mkdir -p "$TMPVAULT/03-daily"
+  # Create empty target file at today's expected path
+  touch "$TMPVAULT/03-daily/$(today).md"
+  [ ! -s "$TMPVAULT/03-daily/$(today).md" ]
+  run env VAULT_DIR="$TMPVAULT" bash "$GENERATE"
+  [ "$status" -eq 0 ]
+  # File must now be non-empty and have valid frontmatter
+  [ -s "$TMPVAULT/03-daily/$(today).md" ]
+  local first3
+  first3=$(head -c 3 "$TMPVAULT/03-daily/$(today).md")
+  [ "$first3" = "---" ]
+}
+
+@test "corrupt file (no frontmatter) triggers re-creation" {
+  mkdir -p "$TMPVAULT/03-daily"
+  # Write garbage content with no YAML frontmatter opener
+  printf 'not-yaml\nsome garbage content\n' > "$TMPVAULT/03-daily/$(today).md"
+  run env VAULT_DIR="$TMPVAULT" bash "$GENERATE"
+  [ "$status" -eq 0 ]
+  # File must now start with --- (valid frontmatter)
+  local first3
+  first3=$(head -c 3 "$TMPVAULT/03-daily/$(today).md")
+  [ "$first3" = "---" ]
+  # And must contain the expected id field
+  grep -qF "id: daily-$(today)" "$TMPVAULT/03-daily/$(today).md"
 }
 
 @test "generated file validates against vault-sync schema (hard mode, exit 0)" {

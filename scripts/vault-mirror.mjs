@@ -29,7 +29,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
-import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -147,6 +147,13 @@ function parseFrontmatter(content) {
 // ── Markdown generators ───────────────────────────────────────────────────────
 
 function generateLearningNote(entry, slug) {
+  const REQUIRED_LEARNING_FIELDS = ['id', 'type', 'subject', 'insight', 'evidence', 'confidence', 'source_session', 'created_at'];
+  for (const field of REQUIRED_LEARNING_FIELDS) {
+    if (entry[field] == null) {
+      throw new Error(`vault-mirror: learning entry missing required field '${field}' (id=${entry.id ?? '<no id>'})`);
+    }
+  }
+
   const { id, type, subject, insight, evidence, confidence, source_session, created_at, expires_at } = entry;
 
   const status = confidence > 0.8 ? 'verified' : 'draft';
@@ -190,6 +197,13 @@ ${evidence}
 }
 
 function generateSessionNote(entry) {
+  const REQUIRED_SESSION_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'total_waves', 'total_agents', 'total_files_changed', 'agent_summary', 'waves', 'effectiveness'];
+  for (const field of REQUIRED_SESSION_FIELDS) {
+    if (entry[field] == null) {
+      throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
+    }
+  }
+
   const {
     session_id,
     session_type,
@@ -205,9 +219,19 @@ function generateSessionNote(entry) {
     effectiveness,
   } = entry;
 
+  if (typeof effectiveness !== 'object' || effectiveness === null) {
+    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${session_id})`);
+  }
+  if (typeof agent_summary !== 'object' || agent_summary === null) {
+    throw new Error(`vault-mirror: session entry missing nested field 'agent_summary' (session_id=${session_id})`);
+  }
+  if (!Array.isArray(waves)) {
+    throw new Error(`vault-mirror: session entry missing nested field 'waves' (session_id=${session_id})`);
+  }
+
   const created = toDate(started_at);
   const updated = toDate(completed_at);
-  const durationMin = Math.round(duration_seconds / 60);
+  const durationMin = Math.round((duration_seconds ?? 0) / 60);
   const { planned_issues, completed, carryover, emergent, completion_rate } = effectiveness;
   const ratePercent = Math.round(completion_rate * 100) + '%';
   const { complete, partial, failed, spiral } = agent_summary;
@@ -279,7 +303,7 @@ async function processLearning(entry, lineNum) {
   }
 
   const targetDir = join(resolve(vaultDir), '40-learnings');
-  mkdirSync(targetDir, { recursive: true });
+  if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   let targetPath = join(targetDir, `${slug}.md`);
 
@@ -351,10 +375,15 @@ async function processLearning(entry, lineNum) {
 }
 
 async function processSession(entry, lineNum) {
-  const { session_id } = entry;
+  const { session_id: rawSessionId } = entry;
+
+  // Validate session_id as a filesystem-safe slug; fall back to a uuid-derived slug if not
+  const session_id = isValidSlug(rawSessionId)
+    ? rawSessionId
+    : `session-${uuidPrefix8(rawSessionId || randomUUID())}`;
 
   const targetDir = join(resolve(vaultDir), '50-sessions');
-  mkdirSync(targetDir, { recursive: true });
+  if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   const targetPath = join(targetDir, `${session_id}.md`);
 
@@ -413,12 +442,18 @@ async function main() {
     crlfDelay: Infinity,
   });
 
+  // Collect all lines first, then process sequentially to avoid mkdirSync/writeFileSync races
+  const lines = [];
+  for await (const line of rl) {
+    lines.push(line);
+  }
+
   let lineNum = 0;
 
-  rl.on('line', async (line) => {
+  for (const line of lines) {
     lineNum++;
     const trimmed = line.trim();
-    if (!trimmed) return;
+    if (!trimmed) continue;
 
     let entry;
     try {
@@ -435,12 +470,20 @@ async function main() {
         await processSession(entry, lineNum);
       }
     } catch (err) {
+      // Validation errors (missing required fields) → per-entry skip, not a global failure
+      if (err.message.startsWith('vault-mirror:')) {
+        process.stderr.write(`${err.message}\n`);
+        const entryId = entry.id ?? entry.session_id ?? null;
+        process.stdout.write(
+          JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
+        );
+        continue;
+      }
+      // Unexpected filesystem errors → fatal
       process.stderr.write(`vault-mirror: filesystem error on line ${lineNum}: ${err.message}\n`);
       process.exit(2);
     }
-  });
-
-  await once(rl, 'close');
+  }
 }
 
 main().catch((err) => {

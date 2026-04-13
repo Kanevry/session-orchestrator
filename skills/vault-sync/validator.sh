@@ -52,4 +52,4 @@ fi
 
 # ── Execute validator ──────────────────────────────────────────────────────
 export VAULT_DIR
-exec node "$VALIDATOR_MJS" --json "$@"
+exec node "$VALIDATOR_MJS" "$@"

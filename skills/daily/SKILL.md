@@ -31,14 +31,36 @@ vault-sync validator trivial.
 ## Prerequisites
 
 - Must be invoked from inside a Meta-Vault root (cwd contains `03-daily/`) OR
-  with the `VAULT_DIR` environment variable pointing at the vault.
+  with `VAULT_DIR` resolved to the vault path (see Resolution Order below).
 - `03-daily/` must already exist — the skill fails fast if it does not.
 - `bash` + `sed` + `date` (always available on macOS/Linux).
 
+### VAULT_DIR Resolution Order
+
+1. `vault-integration.vault-dir` in Session Config (highest precedence)
+2. `VAULT_DIR` environment variable
+3. `$PWD` (fallback when neither is set)
+
+Claude must read Session Config and export `VAULT_DIR` before calling
+`generate.sh`. The canonical pattern (mirrors `session-end` and `evolve`):
+
+```bash
+CONFIG=$(cat .orchestrator/session-config.yaml | yq -o json)
+VM_DIR=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-dir" // empty')
+: "${VM_DIR:=$VAULT_DIR}"
+VAULT_DIR="$VM_DIR" bash /path/to/skills/daily/generate.sh
+```
+
+`generate.sh` itself reads only `VAULT_DIR` (pure bash, no Config parser).
+
 ## Algorithm
 
-1. **Resolve `VAULT_DIR`.** Read the `VAULT_DIR` env var; fall back to `$PWD`.
-   Fail with exit 1 if `VAULT_DIR/03-daily/` does not exist.
+1. **Resolve `VAULT_DIR`.** Check `vault-integration.vault-dir` in Session
+   Config first; fall back to the `VAULT_DIR` env var; then `$PWD`. The
+   config field takes precedence — see Prerequisites for the canonical
+   resolution snippet. `generate.sh` then validates: template exists (exit 2
+   if not), vault dir exists (exit 3 if not), `03-daily/` exists (exit 4 if
+   not).
 2. **Compute today's date.** `date +%Y-%m-%d` — ISO 8601 date-only, respecting
    the system timezone (the user is in Vienna, so `Europe/Vienna` via system TZ).
 3. **Target path.** `$VAULT_DIR/03-daily/YYYY-MM-DD.md`.
@@ -67,6 +89,17 @@ The deterministic path is implemented in `generate.sh` (pure bash). An
 LLM-driven fallback is unnecessary: daily-note creation is a 100%
 mechanical transform and a shell script is faster, cheaper, and more
 reliable than an LLM round-trip. Recommended invocation:
+
+```bash
+# Resolve vault dir from Session Config first, env var as fallback:
+CONFIG=$(cat .orchestrator/session-config.yaml | yq -o json)
+VM_DIR=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-dir" // empty')
+: "${VM_DIR:=$VAULT_DIR}"
+VAULT_DIR="$VM_DIR" bash ~/Projects/session-orchestrator/skills/daily/generate.sh
+```
+
+Or, if `VAULT_DIR` is already set in the environment and Session Config has
+no `vault-integration.vault-dir` override:
 
 ```bash
 VAULT_DIR=~/Projects/vault bash ~/Projects/session-orchestrator/skills/daily/generate.sh
@@ -118,16 +151,22 @@ of this skill, not of the vault that consumes it.
 
 ## Idempotency Guarantee
 
-Running `generate.sh` twice on the same day is a no-op:
+Running `generate.sh` twice on the same day is a no-op when the existing
+file is valid:
 
 1. The first run creates `$VAULT_DIR/03-daily/YYYY-MM-DD.md`.
-2. The second run detects the existing file via `[[ -f "$TARGET" ]]`,
-   prints `Daily note already exists: <path>`, and exits 0.
+2. The second run finds the file, confirms it is non-empty and starts with
+   `---\n` (valid YAML frontmatter opener), prints
+   `Daily note already exists: <path>`, and exits 0.
 
-The file is **never** re-rendered. This matters because the user edits the
-daily note throughout the day (ticking checkboxes, filling in the Scratch
-section, etc.) and re-invoking `/daily` from anywhere — a later session, a
-different tool, a keybind — must not destroy that work.
+If the existing file is 0 bytes or lacks the `---\n` opener (e.g. a previous
+run crashed between the `$TARGET.tmp` write and the `mv`), the corrupt file
+is removed and the note is re-created cleanly.
+
+The file is **never** re-rendered when intact. This matters because the user
+edits the daily note throughout the day (ticking checkboxes, filling in the
+Scratch section, etc.) and re-invoking `/daily` from anywhere — a later
+session, a different tool, a keybind — must not destroy that work.
 
 Verified by `tests/daily.bats` test 5: hash-compares the file before and after
 a second `generate.sh` invocation.
@@ -148,6 +187,16 @@ a second `generate.sh` invocation.
 - **DO NOT add `sed`-unsafe characters to the template.** The placeholders use
   `|` as the sed delimiter; if you add a `|` to any substituted value, sed
   will break. Keep substitutions plain.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (created) or idempotent skip (already exists and valid) |
+| 1 | Unexpected runtime failure (`set -e` caught an unhandled error) |
+| 2 | Infra error: template file not found at `$SCRIPT_DIR/templates/daily.md.tpl` |
+| 3 | Config error: `VAULT_DIR` does not exist as a directory |
+| 4 | Vault structure error: `$VAULT_DIR/03-daily/` directory is missing |
 
 ## Files
 

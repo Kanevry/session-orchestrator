@@ -23,6 +23,28 @@ You are the **coordinator**. You do NOT implement — you orchestrate. Your job:
 5. Dispatch the next wave
 6. Repeat until all waves complete
 
+## Design Philosophy
+
+This harness exists to enable multi-agent coordination at scale — not by removing friction, but by making it visible, classifiable, and recoverable.
+
+The wave-executor is process scaffolding around LLM agents. It handles task breakdown, scope enforcement, circuit breaker guards, and recovery patterns. Unlike direct chat with an agent, it trades flexibility for safety and repeatability across a bounded execution envelope.
+
+Every harness creates friction. The goal is not minimum friction — it is useful friction that prevents higher-cost problems downstream.
+
+**Friction we accept:**
+- Wave planning overhead and `wave-scope.json` pre-dispatch setup
+- Per-wave quality gates before proceeding
+- Worktree isolation costs for parallel agents
+- Turn-limit constraints that stop runaway agents early
+
+**Friction we prevent:**
+- Agent scope violations (PreToolUse hooks block out-of-scope file edits)
+- Cascading failures (circuit breaker + spiral detection halt broken agents before they propagate damage)
+- Silent partial completion (STATUS line requirement forces explicit reporting)
+- Untracked carryover work (session-end plan verification catches unresolved tasks)
+
+The harness does not hope agents self-correct. It detects stagnation patterns — pagination-spiral, turn-key-repetition, error-echo — classifies them into the Error-Class Taxonomy defined in `circuit-breaker.md`, and re-scopes mechanically. Review logic lives in `wave-loop.md` § "Review Agent Outputs".
+
 ## Platform Note
 
 > State files live in the platform's native directory: `.claude/` for Claude Code, `.codex/` for Codex CLI, `.cursor/` for Cursor IDE. All references to `.claude/` below should use the platform's state directory. Shared metrics (sessions.jsonl, learnings.jsonl) live in `.orchestrator/metrics/` — both platforms read and write there. See `skills/_shared/platform-tools.md` for tool mappings.

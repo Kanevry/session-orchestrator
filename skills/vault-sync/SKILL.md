@@ -114,23 +114,40 @@ Layer B is the continuous freshness layer. Its job is to run inside normal sessi
 
 ## Inputs
 
-- **Environment variables**:
-  - `VAULT_ROOT` (default: `<project-root>/vault`)
-  - `VAULT_VALIDATOR_CMD` (default: `pnpm vault:validate`)
-- **Session Config** -- optional `vault-sync` section:
-  - `enabled: true|false` (default: `true` if `VAULT_ROOT` exists, else `false`)
-  - `strict: true|false` (default: `true`; when `false`, errors downgrade to warnings in Layer B)
-  - `full-validation-threshold: N` (files above this trigger incremental instead of full even in session-end; default: `500`)
-  - `network-source-check: true|false` (default: `false`; controls the opt-in URL probe in Layer C)
-- **Runtime context**: current git HEAD, session-start ref (for incremental diff in wave-executor)
+### Phase 1 (implemented)
+
+- **Environment variable**:
+  - `VAULT_DIR` — directory to scan for `.md` files. Defaults to `$PWD`. Can also be passed as the first positional argument to `validator.sh`.
+- **Session Config** — optional `vault-sync` section in `CLAUDE.md`:
+  - `vault-sync.enabled: true|false` (default: `false`; when `false`, the gate is skipped silently)
+  - `vault-sync.mode: hard|warn|off` (default: `warn` via Session Config; `hard` blocks session close on errors, `warn` reports but does not block, `off` short-circuits to `status: skipped-mode-off`. Note: `validator.sh` invoked directly without `--mode` defaults to `hard` — the `warn` default applies only when dispatched by session-end.)
+  - `vault-sync.vault-dir: <path>` (default: project root `$PWD`; passed to the validator via `VAULT_DIR`)
+  - `vault-sync.exclude: [<glob>, ...]` (default: `[]`; repeatable glob patterns — files matching any pattern are counted in `excluded_count` but not validated)
+
+### Future Phases (not yet implemented)
+
+The following fields are planned for Phase 2/3 but are not consumed by the current validator:
+
+- `full-validation-threshold: N` — files above this count trigger incremental mode instead of full scan (Phase 2, wave-executor)
+- `network-source-check: true|false` — opt-in URL probe for source whitelist enforcement (Phase 3, evolve advisory)
+- **Runtime context**: current git HEAD, session-start ref (for incremental diff in wave-executor, Phase 2)
 
 ## Outputs
 
-- **Return value**: JSON object with the shape:
+- **Return value**: JSON object emitted to stdout with the shape:
+  ```json
+  {
+    "status": "ok|invalid|skipped|skipped-mode-off",
+    "mode": "hard|warn|off",
+    "vault_dir": "<absolute path>",
+    "files_checked": N,
+    "excluded_count": N,
+    "files_skipped_no_frontmatter": N,
+    "errors": [{ "file": "<relative path>", "path": "<frontmatter field path>", "message": "<description>" }],
+    "warnings": [{ "file": "<relative path>", "type": "dangling-wiki-link|expired", "message": "<description>" }]
+  }
   ```
-  { ok: boolean, scanned: number, validated: number, skipped: number, errors: FileError[] }
-  ```
-  where `FileError = { path, rule, severity, message, line?, suggestedFix? }`.
+  When the validator short-circuits early (no vault directory, no `.md` files, or `mode: off`), the `files_checked`, `excluded_count`, and `files_skipped_no_frontmatter` fields may be omitted or zero. In `warn` mode, `errors` is still populated but `status` is `"ok"` so callers can surface findings without blocking.
 - **Exit codes**:
   - `0` -- vault is valid (or scan was skipped for a legitimate reason)
   - `1` -- validation errors (one or more files failed a rule)
