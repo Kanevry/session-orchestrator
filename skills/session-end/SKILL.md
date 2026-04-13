@@ -206,6 +206,8 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 ### 3.4 Update STATE.md
 
+> **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` only — no other fields.
+
 > Gate: Only run if `persistence` is enabled in Session Config and `<state-dir>/STATE.md` exists.
 1. Set frontmatter `status: completed`
 2. Record final wave count and completion time in the frontmatter
@@ -397,6 +399,7 @@ Present to the user:
 
 | File | Purpose |
 |------|---------|
+| `plan-verification.md` | Phase 1 plan verification and metrics collection |
 | `verification-checklist.md` | Phase 2 quality gate checklist and checks |
 
 ## Anti-Patterns

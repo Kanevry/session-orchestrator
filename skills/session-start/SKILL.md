@@ -30,6 +30,11 @@ Check for `<state-dir>/STATE.md` in the project root:
 
 > Where `<state-dir>` is `.claude/` under Claude Code or `.codex/` under Codex CLI. See `skills/_shared/platform-tools.md` for details.
 
+> **Ownership Reference:** See `skills/_shared/state-ownership.md` for the STATE.md ownership contract, schema, and guards.
+
+Before reading STATE.md contents, validate the branch field:
+- If STATE.md's `branch` does not match `git rev-parse --abbrev-ref HEAD`, log: "⚠ STATE.md from branch [X], current branch is [Y] — treating as stale." Skip to step 2 (treat as if STATE.md does not exist).
+
 1. **STATE.md exists** — read it and inspect the `status` field:
    - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started_at]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
    - `status: paused` — session was intentionally paused. Use AskUserQuestion to offer resuming from the pause point or starting fresh.

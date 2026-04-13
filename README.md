@@ -291,7 +291,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **Hooks**: SessionStart notification + Clank Event Bus integration + PreToolUse enforcement (scope + commands)
 - **Output Styles**: 3 styles (session-report, wave-summary, finding-report) for consistent reporting
 - `.codex-plugin/` — Codex CLI plugin manifest (`config.toml`) + 3 agent role definitions (explorer, wave-worker, session-reviewer)
-- `scripts/` — 5 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit) + shared lib + 184 tests
+- `scripts/` — 5 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit) + shared lib + 328 tests
 
 ## Documentation
 

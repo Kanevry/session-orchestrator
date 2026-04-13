@@ -10,7 +10,7 @@ description: >
   review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl.
 ---
 
-> **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
+> **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics live in `.orchestrator/metrics/` (v2) with fallback to `<state-dir>/metrics/` for pre-v2.0 legacy data. See `skills/_shared/platform-tools.md`.
 
 # Evolve Skill
 
@@ -35,8 +35,8 @@ Read mode from `$ARGUMENTS`:
 
 ### 0.4 Load Data
 
-1. Read `.orchestrator/metrics/sessions.jsonl` (session history) — if it does not exist, warn: "No session history found. Run at least one session first."
-2. Read `.orchestrator/metrics/learnings.jsonl` if it exists (current learnings)
+1. Read `.orchestrator/metrics/sessions.jsonl` (session history). If it does not exist, check `<state-dir>/metrics/sessions.jsonl` as a legacy fallback (where `<state-dir>` is `.claude/`, `.codex/`, or `.cursor/` per platform). If neither exists, warn: "No session history found. Run at least one session first."
+2. Read `.orchestrator/metrics/learnings.jsonl` if it exists. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
 3. Count existing learnings, note any where `expires_at` < current date (expired)
 
 ## Phase 1: Mode Dispatch
@@ -54,7 +54,7 @@ Extract learnings from session history.
 
 ### Step 2.1: Read Session Data
 
-- Read all entries from `.orchestrator/metrics/sessions.jsonl`
+- Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 0.4 fallback)
 - Parse each JSONL line as JSON
 - Sort by `completed_at` descending (most recent first)
 - If no sessions found, abort: "No session data available. Complete at least one session before running evolve."
@@ -91,6 +91,8 @@ For each of the 5 learning types, apply these heuristics:
 - Subject = `optimal-scope-per-session-type`
 
 #### 5. deviation-pattern (type: `deviation-pattern`)
+
+> **Ownership Reference:** See `skills/_shared/state-ownership.md`. evolve has read-only access to STATE.md.
 
 - Read `<state-dir>/STATE.md` if it exists and check `## Deviations` section
 - Cross-reference with session duration vs planned waves
@@ -140,7 +142,7 @@ If user selects "Skip all" or selects nothing, abort gracefully: "No learnings s
 
 For confirmed learnings, use atomic rewrite strategy:
 
-1. Read ALL existing lines from `.orchestrator/metrics/learnings.jsonl` (if exists) into memory
+1. Read ALL existing lines from `.orchestrator/metrics/learnings.jsonl` (if exists) into memory. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback. If legacy data is found, it will be migrated to the v2 path on write (step 8).
 2. Apply confidence updates for confirmed existing learnings:
    - Increment confidence by +0.15
    - Cap at 1.0
@@ -171,8 +173,8 @@ Interactive management of existing learnings.
 
 ### Step 3.1: Load Learnings
 
-- Read `.orchestrator/metrics/learnings.jsonl`
-- If file does not exist or is empty: "No learnings found. Run `/evolve analyze` first."
+- Read `.orchestrator/metrics/learnings.jsonl`. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
+- If neither exists or both are empty: "No learnings found. Run `/evolve analyze` first."
 - Parse each line as JSON
 
 ### Step 3.2: Display Learnings
@@ -241,8 +243,8 @@ Simple read-only display.
 
 ### Step 4.1: Load and Display
 
-- Read `.orchestrator/metrics/learnings.jsonl`
-- If file does not exist: "No learnings yet. Run `/evolve analyze` to extract patterns from session history."
+- Read `.orchestrator/metrics/learnings.jsonl`. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
+- If neither exists: "No learnings yet. Run `/evolve analyze` to extract patterns from session history."
 - Parse each line as JSON
 
 ### Step 4.2: Formatted Output
