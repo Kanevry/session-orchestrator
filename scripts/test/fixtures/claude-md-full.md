@@ -34,6 +34,7 @@ Some project description with code examples and documentation.
 - **enforcement:** strict
 - **enforcement-gates:** { path-guard: true, command-guard: false, post-edit-validate: true }
 - **reasoning-output:** true
+- **grounding-check:** false
 - **isolation:** worktree
 - **max-turns:** 15
 - **plan-baseline-path:** ~/Projects/projects-baseline

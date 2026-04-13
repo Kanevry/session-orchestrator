@@ -395,6 +395,7 @@ V_PERSISTENCE=$(json_boolean "persistence" "true")
 V_ECO_HEALTH=$(json_boolean "ecosystem-health" "false")
 V_DISC_CLOSE=$(json_boolean "discovery-on-close" "false")
 V_REASONING_OUTPUT=$(json_boolean "reasoning-output" "false")
+V_GROUNDING_CHECK=$(json_boolean "grounding-check" "true")
 
 # List fields
 V_CROSS_REPOS=$(json_list "cross-repos")
@@ -455,6 +456,7 @@ jq -n \
   --argjson agent_mapping "$V_AGENT_MAPPING" \
   --argjson enforcement_gates "$V_ENFORCEMENT_GATES" \
   --argjson reasoning_output "$V_REASONING_OUTPUT" \
+  --argjson grounding_check "$V_GROUNDING_CHECK" \
   '{
     "agents-per-wave": $agents_per_wave,
     "waves": $waves,
@@ -493,5 +495,6 @@ jq -n \
     "plan-retro-location": $plan_retro_location,
     "agent-mapping": $agent_mapping,
     "enforcement-gates": $enforcement_gates,
-    "reasoning-output": $reasoning_output
+    "reasoning-output": $reasoning_output,
+    "grounding-check": $grounding_check
   }'

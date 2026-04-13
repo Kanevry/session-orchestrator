@@ -75,3 +75,46 @@ The coordinator determines each agent's status after the wave completes:
    - After all agents merged, run incremental quality checks
    - Document any conflict resolutions in the wave progress update
 4. **Fallback**: If worktree creation fails (e.g., git state issue), fall back to shared directory with a warning logged.
+
+## Stagnation Patterns
+
+> Detection rules for the coordinator to apply during post-wave review (step 2 of `wave-loop.md`). All three patterns are LLM heuristics, not executable code — the coordinator interprets them contextually based on agent output and tool-call history.
+
+### 1. Pagination Spiral
+
+**Indicator:** An agent issues 3+ `Read` or `Grep` calls against the same file path with only `offset`, `limit`, `start_line`, or `end_line` arguments changing — and produces no `Edit` or `Write` between them.
+
+**Example:** `Read(file=foo.ts, offset=0)` → `Read(file=foo.ts, offset=200)` → `Read(file=foo.ts, offset=400)` with no edits in between.
+
+**Action:** Mark agent as STAGNANT. In the next dispatch, narrow scope to specific line ranges or function names so the agent does not need to page through the file.
+
+### 2. Turn-Key Repetition
+
+Serialize each tool call into a comparable "turn key" of the form `<tool>:<primary_args>` and **strip pagination args** (`offset`, `limit`, `start_line`, `end_line`, `number`) before comparing. Three identical consecutive turn keys = stagnation.
+
+**Example:** `Bash:pnpm test` → `Bash:pnpm test` → `Bash:pnpm test` with no other tool calls between them — the agent is re-running the same command without changing anything.
+
+**Action:** Mark agent as SPIRAL per the existing recovery protocol (revert changes, narrow scope, re-dispatch). Same handling as the existing per-file spiral detection in the Circuit Breaker section.
+
+### 3. Error Echo
+
+Same error message returned 3 times, with the agent attempting the same fix (or a trivial variant) each time.
+
+**Example:** `Edit failed: old_string not found in file` → agent re-reads the file → tries `Edit` with the same `old_string` → fails the same way → repeats.
+
+**Action:** Mark agent as FAILED. Escalate to next wave with the error context and a hint that the agent's mental model of the file is wrong (the file does not contain what the agent thinks it contains).
+
+### Decision Table
+
+| Pattern | Indicator | Action |
+|---------|-----------|--------|
+| Pagination Spiral | 3+ Read/Grep on same file with only pagination args, no Edit between | STAGNANT — re-dispatch with line-range scope |
+| Turn-Key Repetition | 3 identical consecutive turn keys (pagination-stripped) | SPIRAL — revert, narrow, re-dispatch |
+| Error Echo | Same error 3x, same fix attempted | FAILED — escalate with error context |
+
+### Detection Discipline
+
+- These checks run during step 2 of `wave-loop.md` ("Review Agent Outputs"), per agent, after the wave completes — not during the agent's execution.
+- Two different agents reading the same file is **not** a spiral. That is coordination across agents, not stagnation within an agent.
+- A legitimate sequential read of a large file (e.g., reading lines 1-200, then 200-400 to gather full context for an upcoming edit) is **not** a pagination spiral if the agent eventually edits the file. The pattern triggers only when paging continues without ever producing an edit.
+- These patterns are heuristics. When in doubt, prefer false negatives (let the agent finish) over false positives (kill productive work).

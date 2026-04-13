@@ -134,6 +134,11 @@ assert_eq "full: reasoning-output" \
   "true" \
   "$(parse_field "$FULL" "reasoning-output")"
 
+# grounding-check (#81)
+assert_eq "full: grounding-check" \
+  "false" \
+  "$(parse_field "$FULL" "grounding-check")"
+
 # ============================================================================
 # Test Group 2: Minimal Config (claude-md-minimal.md)
 # ============================================================================
@@ -177,6 +182,11 @@ assert_eq "minimal: enforcement-gates (default null)" \
 assert_eq "minimal: reasoning-output (default false)" \
   "false" \
   "$(parse_field "$MINIMAL" "reasoning-output")"
+
+# grounding-check (#81)
+assert_eq "minimal: grounding-check (default true)" \
+  "true" \
+  "$(parse_field "$MINIMAL" "grounding-check")"
 
 # ============================================================================
 # Test Group 3: Partial Config (claude-md-partial.md)

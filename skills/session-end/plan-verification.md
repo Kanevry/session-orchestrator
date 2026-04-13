@@ -10,6 +10,41 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 - Confirm acceptance criteria are met
 - Mark as completed
 
+### 1.1a File-Level Grounding
+
+> Gate: skip this entire sub-phase if `grounding-check: false` in Session Config (default: `true`). Informational — does NOT block the session close on its own.
+
+Compare the files the plan said would be touched against the files actually changed in the session. Catches both **scope creep** (files changed that were not in any agent's prompt scope) and **incomplete coverage** (files in the plan that were never edited).
+
+1. **Planned files** = union of all file paths from agent prompt scopes across all waves. Source: STATE.md Wave History, falling back to the original session plan's per-agent "Files:" specs. Glob patterns are expanded against the working tree at session-start time.
+2. **Actual files** = `git diff --name-only $SESSION_START_REF..HEAD`, where `$SESSION_START_REF` comes from the `session-start-ref` field in STATE.md frontmatter. If the field is missing (older session), fall back to `git diff --name-only origin/main...HEAD`.
+3. **Compute discrepancies:**
+   - **Touched** = files in both Planned and Actual
+   - **Unplanned (scope creep)** = files in Actual but not in Planned
+   - **Untouched (incomplete coverage)** = files in Planned but not in Actual
+4. **Noise reduction filters** (apply before reporting):
+   - Test files (`*.test.*`, `*.spec.*`, `**/__tests__/**`) corresponding to a touched production file are reclassified as expected (not scope creep)
+   - Generated/lock files (`pnpm-lock.yaml`, `*.lock`, `dist/**`, `node_modules/**`) are excluded from both planned and actual sets
+   - The `.claude/`, `.codex/`, and `.cursor/` state directories are excluded — they are session artifacts, not code
+5. **Report** in the verification output:
+   ```
+   File-level grounding:
+   - Planned: N files
+   - Touched: N files (X% coverage)
+   - Unplanned (scope creep): N files [list first 5]
+   - Untouched (planned but not edited): N files [list first 5]
+   ```
+6. **Append to session metrics** (`grounding` field in the Phase 1.7 JSONL entry):
+   ```json
+   "grounding": {
+     "planned": N,
+     "touched": N,
+     "unplanned": N,
+     "untouched": N
+   }
+   ```
+   The metrics field is conditional on `grounding-check: true` — when the gate is off, omit the field entirely (do not write `null`).
+
 ### 1.2 Partially Done Items
 - Document what was completed and what remains
 - Create a VCS issue for the remaining work with:

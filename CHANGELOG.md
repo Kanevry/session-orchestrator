@@ -13,12 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-gate enforcement toggles** (GL#77) — new `enforcement-gates` Session Config field. Object with boolean values for `path-guard`, `command-guard`, `post-edit-validate`. Missing entries default to enabled. Wave-scope.json gains optional `gates` field; `gate_enabled()` in hardening.sh drives skip logic.
 - **Actionable suggestions in hook denials** (GL#78) — `enforce-scope.sh` and `enforce-commands.sh` now include a context-aware suggestion in their denial reason (e.g., force-push denial points to `--force-with-lease`; scope violation lists the allowed paths and next steps).
 - **STATE:/PLAN: structured reasoning** (GL#79) — new `reasoning-output` Session Config field (boolean, default `false`). When enabled, wave-executor appends a STATE/PLAN transparency block to every agent prompt. Opt-in — adds prompt overhead.
+- **Stagnation patterns** (GL#80) — `circuit-breaker.md` documents three new pagination-aware patterns (Pagination Spiral, Turn-Key Repetition, Error Echo) with a decision table mapping each to a recovery action. `wave-loop.md` step 2 hooks the per-agent check into the existing post-wave review. Detection is heuristic (LLM-applied), not executable code. Detection discipline explicitly notes that two different agents reading the same file is coordination, not stagnation.
+- **File-level grounding verification** (GL#81) — `plan-verification.md` § 1.1a compares planned files (union of agent prompt scopes) against actual files (`git diff --name-only $SESSION_START_REF..HEAD`) and reports scope creep + incomplete coverage. Adds a `grounding` field to session metrics JSONL. Gated by the new `grounding-check` Session Config field (boolean, default `true`). Informational only — does not block session close. `wave-loop.md` step 2 also gains a per-wave variant (bullet 3b) using each wave's pre-dispatch HEAD snapshot.
+- **test-stagnation.sh** + **test-grounding.sh** — 27 new assertions covering content structure of the new sections, parse-config round-trip for `grounding-check`, error-path for invalid values, and structural ordering (1.1 < 1.1a < 1.2).
 
 ### Changed
 - `hooks/enforce-scope.sh`, `hooks/enforce-commands.sh`, `hooks/post-edit-validate.sh` refactored to source `scripts/lib/hardening.sh`. Behavior is unchanged in the default configuration; new behavior surfaces only when `enforcement-gates` or `reasoning-output` are set.
 - `scripts/validate-wave-scope.sh` now validates the optional `gates` field (must be an object of booleans).
-- `scripts/parse-config.sh` adds `enforcement-gates` and `reasoning-output` fields; `json_bool_object()` helper coerces string values to real JSON booleans.
-- `docs/session-config-reference.md` documents both new fields in the Session & Enforcement section.
+- `scripts/parse-config.sh` adds `enforcement-gates`, `reasoning-output`, and `grounding-check` fields; `json_bool_object()` helper coerces string values to real JSON booleans.
+- `docs/session-config-reference.md` documents the new fields in the Persistence & Safety section.
 - `.mcp.json` now falls back to `git rev-parse --show-toplevel` when `$CLAUDE_PLUGIN_ROOT` is unset, allowing local development inside this repo to connect the MCP server without reinstalling as a plugin.
 
 ### Sanitized
@@ -28,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.gitignore` updated accordingly.
 
 ### Tests
-- 328 → 367 passing (33 new in test-hardening.sh, 6 new in test-parse-config.sh).
+- 328 → 396 passing (33 new in test-hardening.sh, 6 new in test-parse-config.sh, 15 new in test-stagnation.sh, 12 new in test-grounding.sh — including 3 invalid-value error-path assertions, +2 in test-parse-config.sh for `grounding-check`).
 
 ## [2.0.0-beta.1] - 2026-04-08 — Beta Release
 
