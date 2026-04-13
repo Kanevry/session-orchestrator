@@ -9,7 +9,7 @@ description: DESIGN BRIEF -- Future helper skill for validating and syncing proj
 
 STATUS: DESIGN BRIEF -- NOT YET IMPLEMENTED (as of 2026-04-11)
 
-This file is a contract for a future implementation session. It captures the design decisions made in BuchhaltGenie Session 2026-04-11, where the vault concept was prototyped end-to-end but the session-orchestrator integration layer was deliberately deferred. The actual validator already runs locally in BuchhaltGenie via `pnpm vault:validate`, and a GitLab CI job enforces it on every push. What is missing is the continuous in-session check described below. Treat every section as a commitment: when this skill is implemented, it must match this spec or the spec must be updated first.
+This file is a contract for a future implementation session. It captures the design decisions for a 3-layer vault validation architecture where the vault concept was prototyped end-to-end in a reference project but the session-orchestrator integration layer was deliberately deferred. The reference validator runs locally via `pnpm vault:validate`, and a CI job enforces it on every push. What is missing is the continuous in-session check described below. Treat every section as a commitment: when this skill is implemented, it must match this spec or the spec must be updated first.
 
 ## Purpose
 
@@ -17,11 +17,11 @@ A "project vault" is a markdown-based knowledge base living under `vault/` at th
 
 Automated validation is therefore mandatory, not optional. The vault needs four kinds of checks: frontmatter schema conformance, wiki-link integrity, source whitelist enforcement (especially for regulated content like `austrian-law` that must cite only approved government URLs), and freshness (`expires` date in the past). Session-orchestrator is the right home for the in-session layer because every project with a vault will eventually want this, and session lifecycle hooks (wave boundaries, session end, evolve) are exactly the points where drift becomes visible.
 
-The vault story in BG Session 2026-04-11 converged on a 3-layer architecture:
+The reference architecture is 3 layers:
 
-- **Layer A: local git hooks** (pre-commit, pre-push) -- IMPLEMENTED in BG. Fast, fail-early, blocks bad commits.
+- **Layer A: local git hooks** (pre-commit, pre-push) -- IMPLEMENTED in reference project. Fast, fail-early, blocks bad commits.
 - **Layer B: session-orchestrator:vault-sync skill** (THIS SPEC) -- PENDING. Continuous freshness inside normal session flow.
-- **Layer C: remote CI job** -- IMPLEMENTED in BG `.gitlab-ci.yml`. Final gate, catches anything the other two miss.
+- **Layer C: remote CI job** -- IMPLEMENTED in reference project's `.gitlab-ci.yml`. Final gate, catches anything the other two miss.
 
 Layer B is the continuous freshness layer. Its job is to run inside normal session flow without requiring developers to remember to validate. If Layers A and C are the bookends, Layer B is the spine.
 
@@ -92,7 +92,7 @@ Layer B is the continuous freshness layer. Its job is to run inside normal sessi
 
 1. Should incremental mode include wiki-link validation across the FULL vault, or only the files touched in this wave? Cross-reference bugs can hide in untouched files (note X suddenly has no backlinks because note Y was renamed), which argues for full scan. Performance argues for incremental. Probably hybrid: incremental for schema + touched-file links, full for the backlink graph.
 2. Should the skill auto-fix trivial issues (missing `created:` date, tag case normalization, trailing whitespace) or always error out and leave fixes to humans? Auto-fix is convenient but risky inside an AI-driven session because it writes to files that agents are simultaneously editing.
-3. How does this skill integrate with a future pgvector embeddings pipeline (Phase 6 in the BG vault roadmap)? Should it trigger re-embedding of changed notes, or stay strictly validation-only and leave embedding to a separate skill?
+3. How does this skill integrate with a future pgvector embeddings pipeline (a later roadmap phase)? Should it trigger re-embedding of changed notes, or stay strictly validation-only and leave embedding to a separate skill?
 4. Should validation failures in wave-executor block the NEXT wave from starting, or only be reported as a fix task? Blocking is safer but reduces parallelism; reporting is faster but risks compounding errors across waves.
 5. What is the contract for projects that have no vault at all? Skip silently (current default) or require an explicit `vault-sync.enabled: false` opt-out in Session Config? Silent skip is user-friendly but masks misconfiguration.
 6. How do we handle multi-repo vaults -- e.g. a monorepo where each package has its own `vault/`, or a project that references a sibling repo's vault via a git submodule? Is there a single `VAULT_ROOT` or a list?
@@ -101,11 +101,11 @@ Layer B is the continuous freshness layer. Its job is to run inside normal sessi
 
 ## References
 
-- `/Users/bernhardgoetzendorfer/Projects/BuchhaltGenie/scripts/vault/validate.ts` -- reference implementation of the validator (Layer A/C entry point)
-- `/Users/bernhardgoetzendorfer/Projects/BuchhaltGenie/scripts/vault/schema.ts` -- frontmatter schema (Zod)
-- `/Users/bernhardgoetzendorfer/Projects/BuchhaltGenie/.husky/pre-commit` STEP 3.1 -- Layer A local gate example
-- `/Users/bernhardgoetzendorfer/Projects/BuchhaltGenie/.gitlab-ci.yml` `vault:validate` job -- Layer C remote gate example
-- `/Users/bernhardgoetzendorfer/Projects/BuchhaltGenie/vault/_meta/frontmatter-schema.md` -- human-readable schema doc
+- `<project>/scripts/vault/validate.ts` -- reference implementation of the validator (Layer A/C entry point)
+- `<project>/scripts/vault/schema.ts` -- frontmatter schema (Zod)
+- `<project>/.husky/pre-commit` STEP 3.1 -- Layer A local gate example
+- `<project>/.gitlab-ci.yml` `vault:validate` job -- Layer C remote gate example
+- `<project>/vault/_meta/frontmatter-schema.md` -- human-readable schema doc
 
 ## Implementation Roadmap
 

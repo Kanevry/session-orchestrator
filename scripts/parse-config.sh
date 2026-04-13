@@ -293,6 +293,57 @@ json_object() {
   echo "$json_obj"
 }
 
+# json_bool_object — like json_object but coerces string values "true"/"false"
+# to real JSON booleans. Used for `enforcement-gates` where each gate is a flag.
+# Unknown values default to true (fail-open for unknown gates, consistent with
+# hardening.sh gate_enabled behavior).
+json_bool_object() {
+  local key="$1"
+  local val
+  val="$(get_val "$key" "__NULL__")"
+
+  if [[ "$val" == "__NULL__" || "$val" == "none" ]]; then
+    echo "null"
+    return
+  fi
+
+  val="$(echo "$val" | sed 's/^[[:space:]]*{//;s/}[[:space:]]*$//')"
+  val="$(echo "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+  if [[ -z "$val" ]]; then
+    echo "null"
+    return
+  fi
+
+  local json_obj="{"
+  local first=1
+  local pair
+  while IFS= read -r pair; do
+    pair="$(echo "$pair" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$pair" ]] && continue
+    local okey oval bval
+    okey="$(echo "$pair" | sed 's/:.*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    oval="$(echo "$pair" | sed 's/^[^:]*://' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    [[ -z "$okey" ]] && continue
+    case "$oval" in
+      true) bval="true" ;;
+      false) bval="false" ;;
+      *)
+        die "Invalid enforcement-gates value for '$okey': '$oval' (must be true or false)"
+        ;;
+    esac
+    if (( first )); then
+      first=0
+    else
+      json_obj="${json_obj},"
+    fi
+    json_obj="${json_obj}$(jq -n --arg k "$okey" --argjson v "$bval" '{($k): $v}' | sed 's/^{//;s/}$//')"
+  done <<< "$(echo "$val" | tr ',' '\n')"
+  json_obj="${json_obj}}"
+
+  echo "$json_obj"
+}
+
 # max-turns accepts a positive integer or the literal "auto"
 json_max_turns() {
   local val
@@ -343,6 +394,7 @@ V_DISC_CONF=$(json_integer "discovery-confidence-threshold" "60")
 V_PERSISTENCE=$(json_boolean "persistence" "true")
 V_ECO_HEALTH=$(json_boolean "ecosystem-health" "false")
 V_DISC_CLOSE=$(json_boolean "discovery-on-close" "false")
+V_REASONING_OUTPUT=$(json_boolean "reasoning-output" "false")
 
 # List fields
 V_CROSS_REPOS=$(json_list "cross-repos")
@@ -358,6 +410,7 @@ V_DISC_SEV=$(json_enum "discovery-severity-threshold" "low" "critical" "high" "m
 
 # Object fields
 V_AGENT_MAPPING=$(json_object "agent-mapping")
+V_ENFORCEMENT_GATES=$(json_bool_object "enforcement-gates")
 
 # Special field
 V_MAX_TURNS=$(json_max_turns)
@@ -400,6 +453,8 @@ jq -n \
   --argjson plan_prd_location "$V_PLAN_PRD" \
   --argjson plan_retro_location "$V_PLAN_RETRO" \
   --argjson agent_mapping "$V_AGENT_MAPPING" \
+  --argjson enforcement_gates "$V_ENFORCEMENT_GATES" \
+  --argjson reasoning_output "$V_REASONING_OUTPUT" \
   '{
     "agents-per-wave": $agents_per_wave,
     "waves": $waves,
@@ -436,5 +491,7 @@ jq -n \
     "plan-default-visibility": $plan_default_visibility,
     "plan-prd-location": $plan_prd_location,
     "plan-retro-location": $plan_retro_location,
-    "agent-mapping": $agent_mapping
+    "agent-mapping": $agent_mapping,
+    "enforcement-gates": $enforcement_gates,
+    "reasoning-output": $reasoning_output
   }'

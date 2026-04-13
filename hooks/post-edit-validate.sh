@@ -12,9 +12,13 @@ set -euo pipefail
 
 INPUT=$(cat)
 
-# graceful degradation — jq required for JSON parsing
-if ! command -v jq &>/dev/null; then
-  echo "WARNING: post-edit-validate: jq not installed — skipping typecheck." >&2
+HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck disable=SC1091
+source "$HOOK_SCRIPT_DIR/../scripts/lib/hardening.sh"
+
+# Warn mode — this is informational and must never block
+if ! require_jq "post-edit-validate" warn; then
   exit 0
 fi
 
@@ -29,20 +33,14 @@ case "$FILE_PATH" in
   *) exit 0 ;;
 esac
 
-# Source platform detection
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../scripts/lib/platform.sh" 2>/dev/null || {
-  # Fallback: if platform.sh not found via relative path, try plugin root
-  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-    source "$CLAUDE_PLUGIN_ROOT/scripts/lib/platform.sh"
-  elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
-    source "$CODEX_PLUGIN_ROOT/scripts/lib/platform.sh"
-  else
-    # Ultimate fallback: inline minimal detection
-    SO_PROJECT_DIR="$(pwd)"
-  fi
-}
-PROJECT_ROOT="$SO_PROJECT_DIR"
+source_platform "$HOOK_SCRIPT_DIR"
+PROJECT_ROOT="${SO_PROJECT_DIR:-$(pwd)}"
+
+# Per-gate toggle (#77) — skip this hook if post-edit-validate is disabled
+SCOPE_FILE=$(find_scope_file "$PROJECT_ROOT")
+if [[ -n "$SCOPE_FILE" ]]; then
+  gate_enabled "$SCOPE_FILE" "post-edit-validate" || exit 0
+fi
 
 REL_PATH="${FILE_PATH#"$PROJECT_ROOT"/}"
 

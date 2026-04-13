@@ -4,7 +4,7 @@ Shared reference for session-plan and wave-executor when determining which model
 
 ## Priority Order
 
-1. **Agent definition** — if the agent `.md` file has a `model:` frontmatter field, use it (e.g., BuchhaltGenie's `austrian-compliance` specifies `opus`)
+1. **Agent definition** — if the agent `.md` file has a `model:` frontmatter field, use it (e.g., a domain-specific `compliance-reviewer` agent might specify `opus`)
 2. **Task-type matrix** — use the table below based on what the agent will do
 3. **Wave role default** — if neither of the above applies
 

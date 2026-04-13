@@ -116,6 +116,24 @@ assert_eq "full: stale-issue-days" \
   "14" \
   "$(parse_field "$FULL" "stale-issue-days")"
 
+# enforcement-gates (#77)
+assert_eq "full: enforcement-gates.path-guard" \
+  "true" \
+  "$(bash "$PARSE_CONFIG" "$FULL" 2>/dev/null | jq -r '.["enforcement-gates"]["path-guard"]')"
+
+assert_eq "full: enforcement-gates.command-guard" \
+  "false" \
+  "$(bash "$PARSE_CONFIG" "$FULL" 2>/dev/null | jq -r '.["enforcement-gates"]["command-guard"]')"
+
+assert_eq "full: enforcement-gates.post-edit-validate" \
+  "true" \
+  "$(bash "$PARSE_CONFIG" "$FULL" 2>/dev/null | jq -r '.["enforcement-gates"]["post-edit-validate"]')"
+
+# reasoning-output (#79)
+assert_eq "full: reasoning-output" \
+  "true" \
+  "$(parse_field "$FULL" "reasoning-output")"
+
 # ============================================================================
 # Test Group 2: Minimal Config (claude-md-minimal.md)
 # ============================================================================
@@ -151,6 +169,14 @@ assert_eq "minimal: max-turns (default)" \
 assert_eq "minimal: vcs (default null)" \
   "null" \
   "$(parse_field "$MINIMAL" "vcs")"
+
+assert_eq "minimal: enforcement-gates (default null)" \
+  "null" \
+  "$(parse_field "$MINIMAL" "enforcement-gates")"
+
+assert_eq "minimal: reasoning-output (default false)" \
+  "false" \
+  "$(parse_field "$MINIMAL" "reasoning-output")"
 
 # ============================================================================
 # Test Group 3: Partial Config (claude-md-partial.md)

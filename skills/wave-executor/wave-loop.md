@@ -41,6 +41,25 @@ For each agent in this wave:
       - Turn budget and status reporting: "You have a maximum of [maxTurns] turns for this task. If you cannot complete within this budget, report STATUS: partial with what was accomplished and what remains. At the end of your work, report STATUS: done (all acceptance criteria met) or STATUS: partial (some criteria unmet — list which ones)."
 ```
 
+#### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
+
+When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.
+
+```
+## Reasoning format
+
+Before every meaningful tool call, emit two single-line markers so the coordinator can trace your thinking:
+
+  STATE: <one-line summary of what you currently know about the task — files read, constraints, blockers>
+  PLAN:  <one-line summary of what you are about to do and why>
+
+Rules:
+- Keep each line under ~160 characters. Do not nest markdown or code blocks inside these lines.
+- Emit them together, STATE first then PLAN, immediately before the tool call they describe.
+- Skip them for trivial read-back tool calls (e.g., re-reading a file you just wrote). Do not spam them.
+- These markers DO NOT replace your normal text output — they supplement it. Continue writing normal progress updates.
+```
+
 **Resolution chain** (if the plan does not specify `subagent_type` for an agent):
 
 1. **Discovery waves** → `"Explore"` (always, read-only)
@@ -222,9 +241,11 @@ Before each wave dispatch:
      "role": "<role>",
      "enforcement": "<from Session Config, default: warn>",
      "allowedPaths": ["<from agent specs in session plan>"],
-     "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
+     "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."],
+     "gates": "<copy of enforcement-gates from Session Config, or omit if unset>"
    }
    ```
+   The `gates` field (optional) mirrors `enforcement-gates` from Session Config (#77). When present, hooks check each gate individually via `gate_enabled()`. Missing gate entries default to enabled, preserving default behavior.
 2. Validate by piping through `bash "$PLUGIN_ROOT/scripts/validate-wave-scope.sh"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. `allowedPaths` is the UNION of all agent file scopes for this wave
    To compute `allowedPaths`: read each agent's specification from the session plan. Each agent lists its "Files:" scope (e.g., `skills/session-end/SKILL.md`, `scripts/*.sh`). Collect all file paths and glob patterns from all agents in this wave into a single flat array. Deduplicate entries. If an agent's scope uses globs (e.g., `scripts/*.sh`), include the glob pattern as-is — the enforcement hook resolves globs at check time.

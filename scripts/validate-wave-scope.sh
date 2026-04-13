@@ -131,6 +131,25 @@ validate_blocked_commands() {
   fi
 }
 
+validate_gates() {
+  local input="$1"
+  local gates_type
+  gates_type=$(echo "$input" | jq -r 'if has("gates") then (.gates | type) else "missing" end' 2>/dev/null) || gates_type="missing"
+  [[ "$gates_type" == "missing" ]] && return 0  # gates is optional
+
+  if [[ "$gates_type" != "object" ]]; then
+    echo "gates must be an object, got type: $gates_type"
+    return
+  fi
+
+  # Each gate value must be a boolean
+  local bad_gates
+  bad_gates=$(echo "$input" | jq -r '.gates | to_entries | map(select((.value | type) != "boolean")) | map(.key) | join(", ")')
+  if [[ -n "$bad_gates" ]]; then
+    echo "gates values must be booleans, invalid entries: $bad_gates"
+  fi
+}
+
 validate() {
   local input="$1"
   local error_output
@@ -140,6 +159,7 @@ validate() {
   error_output=$(validate_required_fields "$input")
   error_output+=$(printf '\n%s' "$(validate_allowed_paths "$input")")
   error_output+=$(printf '\n%s' "$(validate_blocked_commands "$input")")
+  error_output+=$(printf '\n%s' "$(validate_gates "$input")")
 
   # Strip leading/trailing blank lines
   error_output=$(echo "$error_output" | sed '/^$/d')

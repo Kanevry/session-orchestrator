@@ -9,84 +9,59 @@ set -euo pipefail
 
 INPUT=$(cat)
 
-# Fail-closed: if jq is not available, deny all commands
-if ! command -v jq &>/dev/null; then
-  echo '{"permissionDecision":"deny","reason":"enforce-commands: jq not installed — cannot verify command safety. Install jq to enable enforcement."}'
-  exit 2
-fi
+HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck disable=SC1091
+source "$HOOK_SCRIPT_DIR/../scripts/lib/hardening.sh"
+
+require_jq "enforce-commands"
 
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || TOOL_NAME=""
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || COMMAND=""
 
-# Only validate Bash tool calls
 [[ "$TOOL_NAME" != "Bash" ]] && exit 0
 [[ -z "$COMMAND" ]] && exit 0
 
-# Source platform detection
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../scripts/lib/platform.sh" 2>/dev/null || {
-  # Fallback: if platform.sh not found via relative path, try plugin root
-  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-    source "$CLAUDE_PLUGIN_ROOT/scripts/lib/platform.sh"
-  elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
-    source "$CODEX_PLUGIN_ROOT/scripts/lib/platform.sh"
-  else
-    # Ultimate fallback: inline minimal detection
-    SO_PROJECT_DIR="$(pwd)"
-  fi
-}
-PROJECT_ROOT="$SO_PROJECT_DIR"
-if [[ -f "$PROJECT_ROOT/.cursor/wave-scope.json" ]]; then
-  SCOPE_FILE="$PROJECT_ROOT/.cursor/wave-scope.json"
-elif [[ -f "$PROJECT_ROOT/.codex/wave-scope.json" ]]; then
-  SCOPE_FILE="$PROJECT_ROOT/.codex/wave-scope.json"
-elif [[ -f "$PROJECT_ROOT/.claude/wave-scope.json" ]]; then
-  SCOPE_FILE="$PROJECT_ROOT/.claude/wave-scope.json"
-else
-  exit 0
-fi
+source_platform "$HOOK_SCRIPT_DIR"
+PROJECT_ROOT="${SO_PROJECT_DIR:-$(pwd)}"
 
-# Enforcement level from wave-scope.json. Default "strict" to fail-closed.
-# The wave-executor MUST always write this field explicitly.
-ENFORCEMENT=$(jq -r '.enforcement // "strict"' "$SCOPE_FILE" 2>/dev/null) || ENFORCEMENT="strict"
+SCOPE_FILE=$(find_scope_file "$PROJECT_ROOT")
+[[ -z "$SCOPE_FILE" ]] && exit 0
+
+# Per-gate toggle (#77) — skip this hook if command-guard is disabled
+gate_enabled "$SCOPE_FILE" "command-guard" || exit 0
+
+ENFORCEMENT=$(get_enforcement_level "$SCOPE_FILE")
 [[ "$ENFORCEMENT" == "off" ]] && exit 0
 
-# Check command against blocked patterns (word-boundary match).
-# Each blockedCommands entry is matched as a literal string (not regex) with
-# word boundaries: the pattern must appear at the start of the command or after
-# whitespace, and end at the end of the command or before whitespace. This
-# prevents partial matches (e.g., "rm" won't match "format").
+# Check configured blocked patterns
 while IFS= read -r pattern; do
   [[ -z "$pattern" ]] && continue
-  if [[ "$COMMAND" =~ (^|[[:space:]])"$pattern"([[:space:]]|$) ]]; then
+  if command_matches_blocked "$COMMAND" "$pattern"; then
     case "$ENFORCEMENT" in
       strict)
-        jq -nc --arg pat "$pattern" --arg cmd "$COMMAND" \
-          '{"permissionDecision":"deny","reason":"Blocked command: \($pat) found in: \($cmd)"}'
-        exit 2
+        SUGGESTION=$(suggest_for_command_block "$pattern")
+        emit_deny "Blocked command: $pattern found in: $COMMAND" "$SUGGESTION"
         ;;
       warn)
-        echo "⚠ enforce-commands: blocked pattern '$pattern' found in command — proceeding (warn mode)" >&2
-        exit 0
+        emit_warn "enforce-commands: blocked pattern '$pattern' found in command — proceeding (warn mode)"
         ;;
     esac
   fi
 done < <(jq -r '.blockedCommands[]? // empty' "$SCOPE_FILE" 2>/dev/null)
 
-# Fallback: if wave-scope.json had no blockedCommands, enforce minimum safety blocklist
+# Fallback safety list when blockedCommands is empty
 BLOCKED_COUNT=$(jq -r '.blockedCommands | length // 0' "$SCOPE_FILE" 2>/dev/null) || BLOCKED_COUNT=0
 if [[ "$BLOCKED_COUNT" -eq 0 ]]; then
   for pattern in "rm -rf" "git push --force" "git reset --hard" "DROP TABLE" "git checkout -- ."; do
-    if [[ "$COMMAND" =~ (^|[[:space:]])"$pattern"([[:space:]]|$) ]]; then
+    if command_matches_blocked "$COMMAND" "$pattern"; then
       case "$ENFORCEMENT" in
         strict)
-          jq -nc --arg pat "$pattern" --arg cmd "$COMMAND" \
-            '{"permissionDecision":"deny","reason":"Blocked by fallback safety list: \($pat) found in: \($cmd)"}'
-          exit 2
+          SUGGESTION=$(suggest_for_command_block "$pattern")
+          emit_deny "Blocked by fallback safety list: $pattern found in: $COMMAND" "$SUGGESTION"
           ;;
         warn)
-          echo "⚠ enforce-commands: fallback blocklist pattern '$pattern' found in command — proceeding (warn mode)" >&2
-          exit 0
+          emit_warn "enforce-commands: fallback blocklist pattern '$pattern' found in command — proceeding (warn mode)"
           ;;
       esac
     fi

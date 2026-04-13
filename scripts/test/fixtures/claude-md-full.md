@@ -32,6 +32,8 @@ Some project description with code examples and documentation.
 - **persistence:** false
 - **memory-cleanup-threshold:** 3
 - **enforcement:** strict
+- **enforcement-gates:** { path-guard: true, command-guard: false, post-edit-validate: true }
+- **reasoning-output:** true
 - **isolation:** worktree
 - **max-turns:** 15
 - **plan-baseline-path:** ~/Projects/projects-baseline

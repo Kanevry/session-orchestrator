@@ -23,3 +23,9 @@ Thumbs.db
 # Cursor IDE runtime state (session orchestrator)
 .cursor/STATE.md
 .cursor/wave-scope.json
+
+# Per-project session metrics (local-only observability data)
+.orchestrator/metrics/*.jsonl
+
+# Internal design specs (kept locally, not for public repo)
+docs/specs/
