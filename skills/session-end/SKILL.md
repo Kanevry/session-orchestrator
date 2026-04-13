@@ -101,7 +101,13 @@ Finalize session metrics by reading the wave data accumulated during execution:
    - `total_agents`: sum of agents across all waves
    - `total_files_changed`: unique files changed across entire session (from `git diff --stat`)
    - `agent_summary`: `{complete: N, partial: N, failed: N, spiral: N}`
-3. Prepare the JSONL entry (written in Phase 3.7):
+3. Read stagnation events from `.orchestrator/metrics/events.jsonl` filtered by `event == "stagnation_detected"` AND `session == <session_id>`. If the file does not exist or contains no matching entries, treat as zero events (omit the field per the rule below) — do NOT fail the session close. Aggregate into `stagnation_events`:
+   - `total`: count of matching events
+   - `by_pattern`: count by `pattern` value (omit zero-valued keys)
+   - `by_error_class`: count by `error_class` value (omit zero-valued keys; omit entire sub-object if all events lack error_class)
+   - `files`: unique list of non-null `file` values (deduplicated)
+   - **Omit the entire `stagnation_events` field if `total == 0`** (keeps historical entries clean).
+4. Prepare the JSONL entry (written in Phase 3.7):
    ```json
    {
      "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
@@ -145,6 +151,12 @@ Finalize session metrics by reading the wave data accumulated during execution:
        "carryover": N,
        "emergent": N,
        "completion_rate": 0.0
+     },
+     "stagnation_events": {
+       "total": N,
+       "by_pattern": {"error-echo": N, "turn-key-repetition": N, "pagination-spiral": N},
+       "by_error_class": {"edit-format-friction": N, "scope-denied": N, "command-blocked": N, "other": N},
+       "files": ["<relative path>", "..."]
      }
    }
    ```
@@ -155,6 +167,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 > - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 3.6 for schema). When discovery runs in **embedded mode** (Phases 0-3 only), `user_dismissed`, `issues_created`, and `actioned` per category will always be `0` — embedded mode does not perform user triage (Phase 4) or issue creation (Phase 5).
 > - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
 > - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
+> - `stagnation_events`: populated ONLY when ≥1 stagnation event was logged to `events.jsonl` during this session. When `total == 0`, the field is omitted from the JSONL entry.
 
 ### 1.8 Session Review
 
@@ -245,7 +258,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 ```json
 {
   "id": "<uuid-v4>",
-  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern",
+  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern|stagnation-class-frequency",
   "subject": "<what the learning is about>",
   "insight": "<the actionable insight>",
   "evidence": "<what happened this session>",

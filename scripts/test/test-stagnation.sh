@@ -3,6 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CB_FILE="$SCRIPT_DIR/../../skills/wave-executor/circuit-breaker.md"
+WL_FILE="$SCRIPT_DIR/../../skills/wave-executor/wave-loop.md"
+SE_FILE="$SCRIPT_DIR/../../skills/session-end/SKILL.md"
+EV_FILE="$SCRIPT_DIR/../../skills/evolve/SKILL.md"
 
 PASS=0
 FAIL=0
@@ -107,6 +110,56 @@ else
   echo "  FAIL: 12: line ordering check — Worktree Isolation=$WORKTREE_LINE, Stagnation Patterns=$STAGNATION_LINE"
   ((FAIL++)) || true
 fi
+
+# ===========================================================================
+echo "--- #84 stagnation telemetry ---"
+# ===========================================================================
+
+# circuit-breaker.md: Error-Class Taxonomy
+assert_contains "circuit-breaker: Error-Class Taxonomy heading" \
+  "Error-Class Taxonomy" "$CB_FILE"
+
+assert_contains "circuit-breaker: edit-format-friction class" \
+  "edit-format-friction" "$CB_FILE"
+
+assert_contains "circuit-breaker: scope-denied class" \
+  "scope-denied" "$CB_FILE"
+
+assert_contains "circuit-breaker: command-blocked class" \
+  "command-blocked" "$CB_FILE"
+
+assert_contains "circuit-breaker: other fallback class" \
+  '`other`' "$CB_FILE"
+
+# wave-loop.md: stagnation event-write rule
+assert_contains "wave-loop: Stagnation event-write heading" \
+  "Stagnation event-write" "$WL_FILE"
+
+assert_contains "wave-loop: stagnation_detected event name" \
+  "stagnation_detected" "$WL_FILE"
+
+assert_contains "wave-loop: events.jsonl path" \
+  "events.jsonl" "$WL_FILE"
+
+# session-end/SKILL.md: stagnation aggregation
+assert_contains "session-end: stagnation_events field" \
+  "stagnation_events" "$SE_FILE"
+
+assert_contains "session-end: by_pattern sub-field" \
+  "by_pattern" "$SE_FILE"
+
+assert_contains "session-end: by_error_class sub-field" \
+  "by_error_class" "$SE_FILE"
+
+assert_contains "session-end: learning-type enum includes stagnation-class-frequency" \
+  "stagnation-class-frequency" "$SE_FILE"
+
+# evolve/SKILL.md: sixth learning type
+assert_contains "evolve: 6 learning types header" \
+  "6 learning types" "$EV_FILE"
+
+assert_contains "evolve: stagnation-class-frequency heading" \
+  "stagnation-class-frequency" "$EV_FILE"
 
 # ===========================================================================
 echo "==========================================="

@@ -104,13 +104,22 @@ Same error message returned 3 times, with the agent attempting the same fix (or 
 
 **Action:** Mark agent as FAILED. Escalate to next wave with the error context and a hint that the agent's mental model of the file is wrong (the file does not contain what the agent thinks it contains).
 
+**Error-Class Taxonomy:** When Error-Echo fires, the coordinator classifies the error into exactly one of:
+
+- `edit-format-friction` — error text contains `old_string not found`, `not unique`, or whitespace-related mismatches.
+- `scope-denied` — hook exit code 2 / scope-violation message from `enforce-wave-scope.sh`.
+- `command-blocked` — denial from `enforce-commands.sh` (blocked command list).
+- `other` — fallback when none of the above match.
+
+The `error_class` value is used by the stagnation event-write rule in `wave-loop.md` § "Review Agent Outputs".
+
 ### Decision Table
 
-| Pattern | Indicator | Action |
-|---------|-----------|--------|
-| Pagination Spiral | 3+ Read/Grep on same file with only pagination args, no Edit between | STAGNANT — re-dispatch with line-range scope |
-| Turn-Key Repetition | 3 identical consecutive turn keys (pagination-stripped) | SPIRAL — revert, narrow, re-dispatch |
-| Error Echo | Same error 3x, same fix attempted | FAILED — escalate with error context |
+| Pattern | Indicator | Action | Error Class |
+|---------|-----------|--------|-------------|
+| Pagination Spiral | 3+ Read/Grep on same file with only pagination args, no Edit between | STAGNANT — re-dispatch with line-range scope | N/A |
+| Turn-Key Repetition | 3 identical consecutive turn keys (pagination-stripped) | SPIRAL — revert, narrow, re-dispatch | N/A |
+| Error Echo | Same error 3x, same fix attempted | FAILED — escalate with error context | see taxonomy above |
 
 ### Detection Discipline
 

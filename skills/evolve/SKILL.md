@@ -61,7 +61,7 @@ Extract learnings from session history.
 
 ### Step 2.2: Pattern Extraction
 
-For each of the 5 learning types, apply these heuristics:
+For each of the 6 learning types, apply these heuristics:
 
 #### 1. fragile-file (type: `fragile-file`)
 
@@ -98,9 +98,18 @@ For each of the 5 learning types, apply these heuristics:
 - Cross-reference with session duration vs planned waves
 - Subject = pattern name (e.g., "scope-creep-in-feature-sessions", "underestimated-complexity")
 
+#### 6. stagnation-class-frequency (type: `stagnation-class-frequency`)
+
+- Read `stagnation_events` from the most recent 5 sessions in `sessions.jsonl` (skip sessions lacking the field — they predate #84).
+- For each `(file, error_class)` pair appearing in ≥2 sessions, extract a candidate:
+  - Subject = `<file>:<error_class>` (e.g., `skills/wave-executor/wave-loop.md:edit-format-friction`)
+  - Insight = "File <X> has <error_class> stagnation in <N> recent sessions — candidate for pre-edit grounding (#85)."
+  - Evidence = "<N> sessions with stagnation_events for this file/class"
+- These learnings feed #85 (pre-edit grounding injection) when it ships — high-frequency pairs trigger grounding.
+
 ### Step 2.2b: Zero Patterns Check
 
-If no patterns were extracted across all 5 types, report: "No patterns found in session history. This can happen with very few sessions or sessions that lack detailed wave/agent data." and skip to end (do not proceed to AskUserQuestion).
+If no patterns were extracted across all 6 types, report: "No patterns found in session history. This can happen with very few sessions or sessions that lack detailed wave/agent data." and skip to end (do not proceed to AskUserQuestion).
 
 ### Step 2.3: Deduplicate Against Existing Learnings
 
@@ -150,7 +159,7 @@ For confirmed learnings, use atomic rewrite strategy:
 3. Apply confidence decrements for contradicted learnings (-0.2) — do NOT reset `expires_at` for contradicted learnings (let them decay naturally)
 4. Append new learnings with:
    - `id`: generate a uuid-v4 (use `uuidgen` or equivalent)
-   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`
+   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`
    - `subject`: the pattern subject
    - `insight`: human-readable description of the pattern
    - `evidence`: specific data points that support the pattern

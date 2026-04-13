@@ -104,6 +104,15 @@ After ALL agents in the wave complete:
 2. **Check for conflicts**: did two agents modify the same file? → manual merge needed
 3. **Check for failures**: did any agent report errors or blockers?
 3a. **Apply stagnation patterns** (per agent): review each agent's tool-call sequence against the three patterns in `circuit-breaker.md` § Stagnation Patterns — Pagination Spiral, Turn-Key Repetition, Error Echo. Mark each agent STAGNANT/SPIRAL/FAILED accordingly; recovery feeds into step 3 (Adapt Plan). Two different agents reading the same file is coordination, not stagnation.
+
+**Stagnation event-write** (gated on `persistence: true`): when any stagnation pattern fires for an agent during this step, append one line to `.orchestrator/metrics/events.jsonl` using shell `>>` (atomic for lines under PIPE_BUF):
+
+```json
+{"event":"stagnation_detected","timestamp":"<ISO 8601 UTC>","session":"<session_id>","wave":N,"agent":"<subagent_type>","pattern":"pagination-spiral|turn-key-repetition|error-echo","error_class":"<taxonomy value — omit field entirely if pattern is not error-echo>","file":"<relative path from project root, or null if not applicable>","occurrences":N}
+```
+
+Assign `error_class` using the taxonomy defined in `circuit-breaker.md` § "3. Error Echo" → Error-Class Taxonomy. For non-error-echo patterns, omit the `error_class` field. Paths are relative to the project root. `occurrences` is the count of pattern repetitions detected (minimum 3 per the trigger threshold).
+
 3b. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Skip the entire check when `grounding-check: false`.
 4. **Run incremental verification** (per the quality-gates skill, based on the wave's role):
    - After **Discovery**: no verification needed (read-only)
