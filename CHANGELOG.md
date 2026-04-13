@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Tests
+
+## [2.0.0-beta.2] - 2026-04-13
+
+### Added
 - **Shared hardening module** (GL#76) — `scripts/lib/hardening.sh` with pure, independently-testable helpers (`require_jq`, `source_platform`, `find_scope_file`, `get_enforcement_level`, `gate_enabled`, `path_matches_pattern`, `command_matches_blocked`, `emit_deny`, `emit_warn`, `suggest_for_*`). All three enforcement hooks now source this module instead of duplicating logic.
 - **test-hardening.sh** — 33 assertions covering path matching (directory prefix, `**`, single-segment glob, exact), command word-boundary matching, scope-file discovery, enforcement-level parsing, gate toggles, and suggestion content.
 - **Per-gate enforcement toggles** (GL#77) — new `enforcement-gates` Session Config field. Object with boolean values for `path-guard`, `command-guard`, `post-edit-validate`. Missing entries default to enabled. Wave-scope.json gains optional `gates` field; `gate_enabled()` in hardening.sh drives skip logic.
@@ -15,7 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **STATE:/PLAN: structured reasoning** (GL#79) — new `reasoning-output` Session Config field (boolean, default `false`). When enabled, wave-executor appends a STATE/PLAN transparency block to every agent prompt. Opt-in — adds prompt overhead.
 - **Stagnation patterns** (GL#80) — `circuit-breaker.md` documents three new pagination-aware patterns (Pagination Spiral, Turn-Key Repetition, Error Echo) with a decision table mapping each to a recovery action. `wave-loop.md` step 2 hooks the per-agent check into the existing post-wave review. Detection is heuristic (LLM-applied), not executable code. Detection discipline explicitly notes that two different agents reading the same file is coordination, not stagnation.
 - **File-level grounding verification** (GL#81) — `plan-verification.md` § 1.1a compares planned files (union of agent prompt scopes) against actual files (`git diff --name-only $SESSION_START_REF..HEAD`) and reports scope creep + incomplete coverage. Adds a `grounding` field to session metrics JSONL. Gated by the new `grounding-check` Session Config field (boolean, default `true`). Informational only — does not block session close. `wave-loop.md` step 2 also gains a per-wave variant (bullet 3b) using each wave's pre-dispatch HEAD snapshot.
+- **Stagnation telemetry + error-echo classification** (GL#84) — `session-end` now emits per-agent stagnation events to `events.jsonl` with `pattern` + `error_class` fields; `evolve` accumulates these into `stagnation-class-frequency` learnings. `circuit-breaker.md` adds an Error-Class Taxonomy (scope-denied, command-denied, edit-format-friction, test-reality-gap, state-read-failure, unknown) with worked examples.
+- **Design Philosophy section in wave-executor** (GL#82) — 200-word framing between Execution Model and Platform Note explaining why friction is intentional; references `circuit-breaker.md` + `wave-loop.md`.
+- **Stagnation-class-frequency learning type** (GL#83) — shipped in `skills/evolve/SKILL.md:103-110` (redundant with #84 telemetry; issue closed as already-implemented in b238135).
 - **test-stagnation.sh** + **test-grounding.sh** — 27 new assertions covering content structure of the new sections, parse-config round-trip for `grounding-check`, error-path for invalid values, and structural ordering (1.1 < 1.1a < 1.2).
+- **vault-mirror skipped-invalid action** — new action type emitted when a JSONL entry fails field validation (C2 hardening); prevents silent data loss during auto-sync to the Meta-Vault.
+- **daily skill corrupt-file guard** — detects 0-byte or frontmatter-less daily notes and re-creates them; distinct exit codes 2/3/4 for file-missing / corrupt / frontmatter-invalid.
 
 ### Changed
 - `hooks/enforce-scope.sh`, `hooks/enforce-commands.sh`, `hooks/post-edit-validate.sh` refactored to source `scripts/lib/hardening.sh`. Behavior is unchanged in the default configuration; new behavior surfaces only when `enforcement-gates` or `reasoning-output` are set.
@@ -23,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/parse-config.sh` adds `enforcement-gates`, `reasoning-output`, and `grounding-check` fields; `json_bool_object()` helper coerces string values to real JSON booleans.
 - `docs/session-config-reference.md` documents the new fields in the Persistence & Safety section.
 - `.mcp.json` now falls back to `git rev-parse --show-toplevel` when `$CLAUDE_PLUGIN_ROOT` is unset, allowing local development inside this repo to connect the MCP server without reinstalling as a plugin.
+- `skills/vault-sync/SKILL.md` — Outputs/Inputs sections rewritten to match `validator.mjs` impl; vestigial `--json` flag removed from `validator.sh`.
+- `skills/daily/SKILL.md` — documented VAULT_DIR Session Config resolution; added Exit codes table.
+- `skills/wave-executor/SKILL.md` — added Design Philosophy section (200w) with harness-friction framing.
+
+### Fixed
+- **vault-mirror C2 field validation** — malformed JSONL lines now produce `skipped-invalid` actions instead of crashing the sync loop.
+- **vault-mirror C3 readline race** — switched to `for await` collect-then-sequential to prevent out-of-order Markdown writes on large JSONL streams.
+- **vault-mirror C4 dry-run mkdir** — removed unconditional `mkdirSync` that leaked directories during `--dry-run`; guarded behind write-mode.
+- **vault-mirror H3/H4** — nested null-checks + `session_id` slug validation with uuid fallback.
+- **session-end C1 broken jq selector** — `.dest` / `written` action selector never matched; corrected to `.path` / `created|updated`. Action list extended with `skipped-invalid`.
+- **daily skill** — 0-byte and frontmatter-less daily notes now re-create cleanly instead of propagating corrupt state.
 
 ### Sanitized
 - Public-surface cleanup: `skills/vault-sync/SKILL.md` and `skills/_shared/model-selection.md` no longer reference private project names or absolute user paths.
@@ -32,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 - 328 → 396 passing (33 new in test-hardening.sh, 6 new in test-parse-config.sh, 15 new in test-stagnation.sh, 12 new in test-grounding.sh — including 3 invalid-value error-path assertions, +2 in test-parse-config.sh for `grounding-check`).
+- Bats: `daily.bats` 8 → 10, `vault-mirror.bats` 36 → 40 (+6 assertions across the vault stack).
 
 ## [2.0.0-beta.1] - 2026-04-08 — Beta Release
 
