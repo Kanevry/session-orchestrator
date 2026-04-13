@@ -416,6 +416,16 @@ V_ENFORCEMENT_GATES=$(json_bool_object "enforcement-gates")
 # Special field
 V_MAX_TURNS=$(json_max_turns)
 
+# vault-integration block — read sub-keys directly from Session Config section.
+# Users add these as flat indented yaml under a `vault-integration:` header.
+# Key names must be unique within the Session Config to avoid collision with
+# other blocks (vault-sync uses the same sub-key names but is read separately
+# by the session-end skill from CLAUDE.md directly).
+# These defaults are applied when the block is absent or keys are missing.
+VI_ENABLED=$(json_boolean "enabled" "false")
+VI_VAULT_DIR=$(json_string "vault-dir")
+VI_MODE=$(json_enum "mode" "warn" "warn" "strict" "off")
+
 # Assemble final JSON using jq for correctness
 jq -n \
   --argjson agents_per_wave "$V_AGENTS_PER_WAVE" \
@@ -457,6 +467,9 @@ jq -n \
   --argjson enforcement_gates "$V_ENFORCEMENT_GATES" \
   --argjson reasoning_output "$V_REASONING_OUTPUT" \
   --argjson grounding_check "$V_GROUNDING_CHECK" \
+  --argjson vi_enabled "$VI_ENABLED" \
+  --argjson vi_vault_dir "$VI_VAULT_DIR" \
+  --argjson vi_mode "$VI_MODE" \
   '{
     "agents-per-wave": $agents_per_wave,
     "waves": $waves,
@@ -496,5 +509,10 @@ jq -n \
     "agent-mapping": $agent_mapping,
     "enforcement-gates": $enforcement_gates,
     "reasoning-output": $reasoning_output,
-    "grounding-check": $grounding_check
+    "grounding-check": $grounding_check,
+    "vault-integration": {
+      "enabled": $vi_enabled,
+      "vault-dir": $vi_vault_dir,
+      "mode": $vi_mode
+    }
   }'

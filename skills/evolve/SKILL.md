@@ -52,6 +52,8 @@ Route based on mode:
 
 Extract learnings from session history.
 
+> **Vault Integration:** If `vault-integration.enabled` is `true` in Session Config, confirmed learnings are mirrored to the configured Obsidian vault after the atomic write (Step 2.5, step 9). See `docs/session-config-reference.md` for the `vault-integration` config block.
+
 ### Step 2.1: Read Session Data
 
 - Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 0.4 fallback)
@@ -171,6 +173,27 @@ For confirmed learnings, use atomic rewrite strategy:
 6. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
 7. **Consolidate duplicates:** if same `type` + `subject` appears more than once, keep the entry with highest confidence
 8. Write entire result back to `.orchestrator/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
+9. **Vault mirror (conditional):** Check `$CONFIG."vault-integration".enabled` via jq. If the field is missing or `false`, skip this step entirely — skill behavior is unchanged.
+
+   If `enabled` is `true`:
+
+   a. Check `$CONFIG."vault-integration".mode`. If `mode` is `off`, skip the mirror invocation (treat as disabled). If `mode` is absent, default to `warn`.
+
+   b. Resolve the vault directory: use `$CONFIG."vault-integration"."vault-dir"` if non-null, otherwise fall back to the `$VAULT_DIR` environment variable. If neither is set, emit a warning and skip.
+
+   c. Invoke the mirror script:
+      ```bash
+      node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
+        --vault-dir "<vault-dir>" \
+        --source .orchestrator/metrics/learnings.jsonl \
+        --kind learning
+      ```
+
+   d. Handle the exit code according to `mode`:
+      - `warn` (default): on non-zero exit, surface a warning in evolve output (e.g. "Warning: vault mirror failed — learnings saved locally but not mirrored.") but do NOT fail the skill.
+      - `strict`: on non-zero exit, fail the skill immediately and report the error to the user.
+
+   e. On success (exit 0), report: "Mirrored N learnings to `<vault-dir>/40-learnings/`."
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
