@@ -44,12 +44,14 @@ Based on priority, synergies, and session type, I recommend:
 - [ ] Issues to triage/close: [list]
 
 ## Questions
-[Use AskUserQuestion tool — NOT plain text options]
+[Use AskUserQuestion on Claude Code, numbered Markdown options on Codex/Cursor]
 ```
 
 ## AskUserQuestion Usage
 
-**MANDATORY: Use the AskUserQuestion tool** to present options to the user. Do NOT write options as plain text in your response. The AskUserQuestion tool provides a structured UI with clickable options that is far superior to text-based A/B/C lists.
+**MANDATORY:** Present structured options to the user.
+- Claude Code: use the AskUserQuestion tool.
+- Codex CLI / Cursor IDE: use a numbered Markdown list and ask the user to reply with the choice number.
 
 Example:
 ```

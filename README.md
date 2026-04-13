@@ -19,17 +19,11 @@ Session orchestration plugin for Claude Code, Codex CLI, and Cursor IDE — proj
 claude plugin add github:Kanevry/session-orchestrator
 ```
 
-### Codex CLI
+### Codex
 
 ```bash
-# 1. Clone to a local directory
-git clone https://github.com/Kanevry/session-orchestrator.git ~/.codex/plugins/session-orchestrator
-
-# 2. Add Session Config to your project's AGENTS.md
-# See docs/templates/AGENTS-session-config.md for the template
-
-# 3. Enable hooks (optional, experimental)
-# Add to .codex/config.toml: [features] hooks = true
+git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+bash ~/Projects/session-orchestrator/scripts/codex-install.sh
 ```
 
 ### Cursor IDE
@@ -50,8 +44,8 @@ bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/pro
 # 1. Install the plugin
 claude plugin add github:Kanevry/session-orchestrator
 
-# 2. Add Session Config to your project's CLAUDE.md
-echo -e "\n## Session Config\n\ntest-command: pnpm test --run" >> CLAUDE.md
+# 2. Add Session Config to your project's instruction file
+echo -e "\n## Session Config\n\ntest-command: pnpm test --run" >> AGENTS.md
 
 # 3. Run a session
 /session feature     # Analyzes project, picks issues, proposes wave plan
@@ -70,7 +64,7 @@ See [Usage](#usage) for all 6 commands and [User Guide](docs/USER-GUIDE.md) for 
 
 | Feature | Claude Code | Codex CLI | Cursor IDE |
 |---------|------------|-----------|------------|
-| All 6 commands | Native slash commands | Instruction-based | Rules-based (.mdc) |
+| All 6 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only |
 | Session persistence | .claude/STATE.md | .codex/STATE.md | .cursor/STATE.md |
 | Shared knowledge | .orchestrator/metrics/ | .orchestrator/metrics/ | .orchestrator/metrics/ |
@@ -290,7 +284,8 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - **6 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer (generic base agents) + session-reviewer (inter-wave quality gate)
 - **Hooks**: SessionStart notification + Clank Event Bus integration + PreToolUse enforcement (scope + commands)
 - **Output Styles**: 3 styles (session-report, wave-summary, finding-report) for consistent reporting
-- `.codex-plugin/` — Codex CLI plugin manifest (`config.toml`) + 3 agent role definitions (explorer, wave-worker, session-reviewer)
+- `.codex-plugin/` — Codex plugin manifest (`plugin.json`) + compatibility config + 3 agent role definitions
+- `scripts/codex-install.sh` — installs into the active Codex desktop plugin catalog or falls back to a local marketplace
 - `scripts/` — 5 deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit) + shared lib + 328 tests
 
 ## Documentation

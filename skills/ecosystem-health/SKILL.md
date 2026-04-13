@@ -15,12 +15,12 @@ description: >
 
 ## Session Config Fields Used
 
-This skill reads from the project's `## Session Config` section in CLAUDE.md:
+This skill reads from the project's `## Session Config` section in the platform instruction file:
 
 - **`health-endpoints`** — list of `{name, url}` objects for service health checks
 - **`cross-repos`** — list of related repositories for critical issue scanning
 
-Both fields are optional. The skill degrades gracefully when either is missing.
+Both fields are optional. The skill degrades gracefully when either is missing. On Codex this means `AGENTS.md`; on Claude/Cursor it means `CLAUDE.md`.
 
 ## Service Health
 

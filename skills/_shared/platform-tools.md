@@ -23,7 +23,7 @@ These tools have the same name and behavior on all platforms. Cursor IDE uses eq
 | Function | Claude Code | Codex CLI | Cursor IDE |
 |----------|------------|-----------|------------|
 | Present choices to user | `AskUserQuestion` tool with structured options | Numbered Markdown list as plain text, wait for user reply | Numbered Markdown list (same as Codex) |
-| Dispatch subagent | `Agent({ description, prompt, subagent_type })` | Describe the task; Codex routes to defined agent roles (explorer, wave-worker, session-reviewer) via `/agent` | Sequential execution — no parallel subagents. Execute tasks one by one within a single session. |
+| Dispatch subagent | `Agent({ description, prompt, subagent_type })` | Delegate via Codex subagents / typed roles (`explorer`, `worker`) when available; otherwise execute sequentially in the main session | Sequential execution — no parallel subagents. Execute tasks one by one within a single session. |
 | Track tasks | `TaskCreate` / `TaskUpdate` / `TaskList` | Plain-text checklist in response context | Plain-text checklist (same as Codex) |
 | Enter plan mode | `EnterPlanMode` / `ExitPlanMode` tools | `/plan` slash command (prompt-level, not tool-based) | Instruction-based: "Focus on analysis and planning. Do not modify files until the user approves." |
 | Web search | `WebSearch` tool | Built-in web search (invoke via instruction) | `@web` in Cursor chat |
@@ -57,11 +57,11 @@ Agent({
 })
 ```
 
-**On Codex CLI:**
-Describe the agent task in detail. Codex routes to the appropriate agent role:
+**On Codex CLI / Codex Desktop:**
+Delegate the task in detail using the available Codex subagent mechanism when it exists. Map work to these roles:
 - **explorer** — read-only evidence gathering (maps to Claude Code's `Explore` subagent)
-- **wave-worker** — implementation tasks (maps to Claude Code's `general-purpose` subagent)
-- **session-reviewer** — quality review (maps to Claude Code's `session-orchestrator:session-reviewer`)
+- **worker** — implementation tasks (maps to Claude Code's `general-purpose` subagent)
+- **session-reviewer** — quality review when a dedicated review role is available; otherwise perform the review in the main session
 
 **On Cursor IDE:**
 No Agent() tool or typed agent roles. Execute wave tasks sequentially within the active Composer session. After completing each task, report status and move to the next. Parallel execution is not possible — `agents-per-wave` config is ignored on Cursor.

@@ -1,6 +1,5 @@
 ---
 description: Extract session patterns into reusable learnings
-allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion
 argument-hint: "[analyze|review|list]"
 ---
 

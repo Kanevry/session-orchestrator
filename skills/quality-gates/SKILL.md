@@ -139,16 +139,16 @@ Prefer `scripts/run-quality-gate.sh` for deterministic execution with structured
 
 ```bash
 # Baseline (session-start)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant baseline --config "$CONFIG"
+bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.sh" --variant baseline --config "$CONFIG"
 
 # Incremental (wave-executor)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant incremental --config "$CONFIG" --files changed-file1.ts,changed-file2.ts
+bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.sh" --variant incremental --config "$CONFIG" --files changed-file1.ts,changed-file2.ts
 
 # Full Gate (session-end)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF"
+bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.sh" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF"
 
 # Per-File (session-reviewer)
-bash "$CLAUDE_PLUGIN_ROOT/scripts/run-quality-gate.sh" --variant per-file --config "$CONFIG" --files specific-file.ts
+bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.sh" --variant per-file --config "$CONFIG" --files specific-file.ts
 ```
 
 The script handles graceful degradation (missing tools → skip), structured JSON output matching the schemas above, and proper exit codes (0=pass, 1=error, 2=gate-failed).

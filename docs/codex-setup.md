@@ -1,24 +1,22 @@
-# Codex CLI Setup Guide
+# Codex Setup Guide
 
-Guide for using Session Orchestrator with OpenAI's Codex CLI.
+Guide for using Session Orchestrator with OpenAI Codex.
 
 ## Prerequisites
 
-- [Codex CLI](https://developers.openai.com/codex/cli) installed and configured
+- Codex installed and configured
 - jq installed (`brew install jq` / `apt install jq`)
 - A project repository with git initialized
 
 ## Installation
 
-### Option 1: Clone as local plugin
+### Option 1: Home-local plugin
 ```bash
-git clone https://github.com/Kanevry/session-orchestrator.git ~/.codex/plugins/session-orchestrator
+git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+bash ~/Projects/session-orchestrator/scripts/codex-install.sh
 ```
 
-### Option 2: Project-local
-```bash
-git clone https://github.com/Kanevry/session-orchestrator.git .codex/plugins/session-orchestrator
-```
+The installer auto-detects the active Codex desktop plugin catalog at `~/.codex/.tmp/plugins` and falls back to a home-local marketplace when that catalog is not present.
 
 ## Configuration
 
@@ -37,13 +35,14 @@ enforcement: warn
 
 See `docs/templates/AGENTS-session-config.md` for a complete template.
 
-### 2. Enable Multi-Agent Support
+### 2. What the installer does
 
-Add to your `.codex/config.toml`:
-```toml
-[features]
-multi_agent = true
-```
+- Copies the plugin bundle into the active Codex plugin store
+- Registers `session-orchestrator` in the matching marketplace JSON
+- Enables the plugin in `~/.codex/config.toml`
+- Prints the final restart hint
+
+Restart Codex after running the installer so the command index refreshes.
 
 ### 3. Agent Roles (Optional)
 
@@ -52,19 +51,13 @@ Copy the agent definitions from `.codex-plugin/agents/` to your project's `.code
 cp -r path/to/session-orchestrator/.codex-plugin/agents/ .codex/agents/
 ```
 
-### 4. Hooks (Experimental)
+### 4. Hooks (Optional)
 
-Codex hooks are experimental. To enable:
-```toml
-[features]
-hooks = true
-```
-
-Copy `hooks/hooks-codex.json` to `.codex/hooks.json`.
+The plugin manifest points Codex at `hooks/hooks-codex.json`. If your Codex build supports plugin hooks, they are loaded from the manifest. If your build still expects a project-level hook file, copy `hooks/hooks-codex.json` to the appropriate local hook config.
 
 ## Usage
 
-Commands work the same as in Claude Code:
+After restart, the plugin exposes these commands:
 - `/session [housekeeping|feature|deep]` -- Start a session
 - `/go` -- Execute the agreed plan
 - `/close` -- End session with verification
@@ -74,10 +67,10 @@ Commands work the same as in Claude Code:
 
 ## Key Differences from Claude Code
 
-| Aspect | Claude Code | Codex CLI |
+| Aspect | Claude Code | Codex |
 |--------|------------|-----------|
 | Interactive choices | AskUserQuestion tool | Numbered Markdown lists |
-| Agent dispatch | Agent() tool | Multi-agent roles (explorer, wave-worker, session-reviewer) |
+| Agent dispatch | Agent() tool | Codex subagents / typed roles |
 | State directory | .claude/ | .codex/ |
 | Config file | CLAUDE.md | AGENTS.md |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
@@ -105,7 +98,7 @@ Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-spe
 
 ## Troubleshooting
 
-- **Commands not recognized**: Ensure AGENTS.md has the Session Config section
-- **Hooks not firing**: Check that hooks are enabled in config.toml
-- **Agent dispatch fails**: Verify multi_agent is enabled and agent TOMLs are in place
+- **Commands not recognized**: Re-run `bash scripts/codex-install.sh`, then restart Codex completely
+- **Hooks not firing**: Verify your Codex build supports plugin hooks or copy `hooks/hooks-codex.json` into your local hook config
+- **Agent dispatch fails**: Verify Codex subagent support is available in your build and the agent TOMLs exist in `.codex-plugin/agents/`
 - **jq not found**: Install jq for scope enforcement hooks

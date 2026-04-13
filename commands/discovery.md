@@ -1,6 +1,5 @@
 ---
 description: Systematic quality discovery and issue detection
-allowed-tools: Bash, Read, Glob, Grep, Agent, AskUserQuestion, TaskCreate, TaskUpdate
 argument-hint: "[all|code|infra|ui|arch|session]"
 ---
 

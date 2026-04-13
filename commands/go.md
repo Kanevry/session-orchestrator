@@ -1,6 +1,5 @@
 ---
 description: Approve session plan and begin wave execution
-allowed-tools: "*"
 argument-hint: "[optional instructions]"
 ---
 

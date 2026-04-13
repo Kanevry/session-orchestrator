@@ -175,14 +175,14 @@ Read `.orchestrator/metrics/learnings.jsonl` (or `<state-dir>/metrics/learnings.
 **For `housekeeping` sessions:**
 - Focus on git cleanup, documentation currency, CI health
 - Skip deep research — prioritize operational tasks
-- Run token efficiency check: `bash "$CLAUDE_PLUGIN_ROOT/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
+- Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
 
 ## Phase 7: Structured Presentation & Q&A
 
 Read `presentation-format.md` in this skill directory for the output structure, templates, and AskUserQuestion examples.
 
 Present your findings following that structure. Key rules:
-- **MANDATORY: Use the AskUserQuestion tool** — not plain text options
+- **MANDATORY: Use a structured choice flow** — AskUserQuestion on Claude Code, numbered Markdown options on Codex/Cursor
 - Always include your recommendation as the first option with "(Recommended)" in the label
 
 ## Phase 8: Handoff to Session Plan

@@ -14,6 +14,7 @@
        "$HOME/Projects/session-orchestrator" \
        "$HOME/.claude/plugins/session-orchestrator" \
        "$HOME/.codex/plugins/session-orchestrator" \
+       "$HOME/plugins/session-orchestrator" \
        "$HOME/.cursor/plugins/session-orchestrator" \
        "$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "")")")" \
      ; do
@@ -58,7 +59,7 @@ fi
 AGENT_MAPPING=$(echo "$CONFIG" | jq -r '."agent-mapping" // empty')
 ```
 
-Example config in CLAUDE.md:
+Example config in the project instruction file:
 ```yaml
 agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect, ui: ui-designer, security: security-auditor, compliance: austrian-compliance }
 ```

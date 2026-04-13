@@ -1,6 +1,5 @@
 ---
 description: Plan a new project, feature, or retrospective with structured requirement gathering
-allowed-tools: Bash, Read, Glob, Grep, Agent, AskUserQuestion, TaskCreate, TaskUpdate, WebSearch, WebFetch, Write, Edit
 argument-hint: [new|feature|retro]
 ---
 
