@@ -1,6 +1,6 @@
 # Example: Integration Test Config (v2.0 Full Coverage)
 
-This is a reference Session Config block designed to exercise **every v2.0 feature** of session-orchestrator. Add this to the `CLAUDE.md` of a test repository to validate the full lifecycle: `/session feature` -> `/go` -> `/close`.
+This is a reference Session Config block designed to exercise **every v2.0 feature** of session-orchestrator. Add this to the Session Config host file of a test repository (`CLAUDE.md` on Claude Code, `AGENTS.md` on Codex) to validate the full lifecycle: `/session feature` -> `/go` -> `/close`.
 
 Every field is set explicitly (many to non-default values) so that tests can verify the orchestrator reads and applies each one rather than falling back to defaults.
 

@@ -4,7 +4,7 @@ This example shows Session Config for a typical Next.js project with Vercel depl
 
 ## Session Config
 
-Add this to your project's `CLAUDE.md`:
+Add this to your project's Session Config host file (`CLAUDE.md` on Claude Code, `AGENTS.md` on Codex):
 
 ```
 ## Session Config

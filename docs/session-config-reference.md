@@ -6,7 +6,7 @@
 ## Config File Location
 
 - **Claude Code**: Add `## Session Config` to your project's `CLAUDE.md`
-- **Codex CLI**: Add `## Session Config` to your project's `AGENTS.md`
+- **Codex**: Add `## Session Config` to your project's `AGENTS.md`
 
 The format and all fields are identical on both platforms. The section header must be exactly `## Session Config`.
 
@@ -83,7 +83,7 @@ The format and all fields are identical on both platforms. The section header mu
 
 Opt-in configuration for the `vault-sync` quality gate at session-end (see `skills/vault-sync/SKILL.md`). The gate validates YAML frontmatter against the canonical `vaultFrontmatterSchema` and flags dangling wiki-links across a markdown knowledge base. Projects without a vault leave these fields unset and are unaffected.
 
-All fields live under a top-level `vault-sync` object, e.g. in `CLAUDE.md`:
+All fields live under a top-level `vault-sync` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
 ```yaml
 vault-sync:
@@ -104,7 +104,7 @@ vault-sync:
 
 Opt-in configuration for the `vault-mirror` auto-sync that writes learnings and session summaries into the Meta-Vault after each session (see `scripts/vault-mirror.mjs`). When enabled, the session-end skill invokes the mirror script after writing JSONL metrics, and the evolve skill mirrors new learnings after each learning atomic-rewrite. Projects without a vault leave these fields unset and are unaffected.
 
-All fields live under a top-level `vault-integration` object, e.g. in `CLAUDE.md`:
+All fields live under a top-level `vault-integration` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
 ```yaml
 vault-integration:
@@ -121,4 +121,4 @@ vault-integration:
 
 ## Defaults
 
-If no `## Session Config` section exists in CLAUDE.md, skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.
+If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

@@ -82,13 +82,13 @@ Both platforms share knowledge via `.orchestrator/metrics/`:
 - `sessions.jsonl` -- Session history (both platforms write here)
 - `learnings.jsonl` -- Cross-session intelligence
 
-This means you can switch between Claude Code and Codex CLI on the same project and both will benefit from accumulated learnings.
+This means you can switch between Claude Code and Codex on the same project and both will benefit from accumulated learnings.
 
 ## Platform Limitations
 
 ### Agent Specialization
 
-Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-specialist, ui-developer, security-reviewer) with specialized prompts for each role. Codex CLI maps all implementation tasks to the generic `wave-worker` role, which means:
+Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-specialist, ui-developer, security-reviewer) with specialized prompts for each role. Codex maps all implementation tasks to the generic `wave-worker` role, which means:
 
 - All agents share the same base prompt and capabilities
 - Domain-specific instructions (e.g., test quality rules, security review patterns) are included in the task prompt rather than the agent definition

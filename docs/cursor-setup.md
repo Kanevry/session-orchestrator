@@ -88,7 +88,7 @@ All platforms share knowledge via `.orchestrator/metrics/`:
 - `sessions.jsonl` — Session history (all platforms write here with a `platform` field)
 - `learnings.jsonl` — Cross-session intelligence
 
-Switch freely between Claude Code, Codex CLI, and Cursor on the same project — all benefit from accumulated learnings.
+Switch freely between Claude Code, Codex, and Cursor on the same project — all benefit from accumulated learnings.
 
 ## Troubleshooting
 

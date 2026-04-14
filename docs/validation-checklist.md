@@ -7,7 +7,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
 ## 1. Full Session Lifecycle (`/session feature` -> `/go` -> `/close`)
 
 **What to test:**
-- Run `/session feature` in a test repo with the full integration test config in CLAUDE.md
+- Run `/session feature` in a test repo with the full integration test config in the platform config host file (`CLAUDE.md` on Claude Code, `AGENTS.md` on Codex)
 - Verify session-start reads every Session Config field and reflects them in the Session Overview
 - Approve the plan, run `/go` to execute waves, then `/close` to finalize
 - Confirm the cycle completes end-to-end without errors
@@ -366,7 +366,7 @@ Full lifecycle validation checklist for session-orchestrator v2.0. Each item map
   - The list of all files changed in this session (`git diff --name-only $SESSION_START_REF..HEAD`), filtered to production files only
   - Test files (`*.test.*`, `*.spec.*`, `__tests__/`) are excluded from the simplification target list
   - Reference to `slop-patterns.md` patterns from the discovery skill directory — actual patterns included in the agent prompt
-  - Reference to the project's CLAUDE.md conventions
+  - Reference to the project's config host file conventions (`CLAUDE.md` / `AGENTS.md`)
   - Tools limited to: Read, Edit, Grep, Glob
   - Model: sonnet
 - After simplification agents complete, Quality wave proceeds to dispatch test/review agents

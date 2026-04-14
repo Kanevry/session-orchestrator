@@ -3,12 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0--beta.2-green.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
-[![Codex CLI](https://img.shields.io/badge/Codex_CLI-Compatible-green.svg)](https://developers.openai.com/codex/cli)
+[![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
 
-Session orchestration plugin for Claude Code, Codex CLI, and Cursor IDE — project planning, wave execution, VCS integration, quality gates.
+Session orchestration plugin for Claude Code, Codex, and Cursor IDE — project planning, wave execution, VCS integration, quality gates.
 
-> [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and [Cursor IDE](https://cursor.com) are agentic coding tools. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
+> [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://developers.openai.com/codex/), and [Cursor IDE](https://cursor.com) are agentic coding tools. This plugin adds structured session management on top — turning ad-hoc agent interactions into repeatable, quality-gated engineering workflows. No runtime code. Pure Markdown.
 
 ## Install
 
@@ -40,29 +40,45 @@ bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/pro
 
 ## Quick Start
 
+### Claude Code
+
 ```bash
-# 1. Install the plugin
 claude plugin add github:Kanevry/session-orchestrator
+```
 
-# 2. Add Session Config to your project's instruction file
-echo -e "\n## Session Config\n\ntest-command: pnpm test --run" >> AGENTS.md
+Add Session Config to `CLAUDE.md`, then run:
 
-# 3. Run a session
-/session feature     # Analyzes project, picks issues, proposes wave plan
-/go                  # Executes across 5 parallel waves
-/close               # Verifies, commits, pushes
+```text
+/session feature
+/go
+/close
+```
+
+### Codex
+
+```bash
+git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+bash ~/Projects/session-orchestrator/scripts/codex-install.sh
+```
+
+Add Session Config to `AGENTS.md`, restart Codex, then run:
+
+```text
+/session feature
+/go
+/close
 ```
 
 See [Usage](#usage) for all 6 commands and [User Guide](docs/USER-GUIDE.md) for the full walkthrough.
 
 ## Prerequisites
 
-- **Claude Code**, **Codex CLI**, or **Cursor IDE** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex CLI](https://developers.openai.com/codex/cli) | [Cursor IDE](https://cursor.com)
+- **Claude Code**, **Codex**, or **Cursor IDE** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [Codex](https://developers.openai.com/codex/) | [Cursor IDE](https://cursor.com)
 - **jq** (recommended) — required for scope and command enforcement hooks
 
 ### Platform Support
 
-| Feature | Claude Code | Codex CLI | Cursor IDE |
+| Feature | Claude Code | Codex | Cursor IDE |
 |---------|------------|-----------|------------|
 | All 6 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only |
@@ -73,7 +89,7 @@ See [Usage](#usage) for all 6 commands and [User Guide](docs/USER-GUIDE.md) for 
 | Quality gates | Full | Full | Full |
 | Design alignment | Pencil integration | Pencil integration | Pencil integration |
 
-All platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.sh`. See setup guides: [Codex CLI](docs/codex-setup.md) | [Cursor IDE](docs/cursor-setup.md).
+All platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.sh`. See setup guides: [Codex](docs/codex-setup.md) | [Cursor IDE](docs/cursor-setup.md).
 
 ## Why Session Orchestrator
 

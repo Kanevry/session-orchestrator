@@ -1,6 +1,6 @@
 # Session Orchestrator — AGENTS.md Template
 
-Add this section to your project's `AGENTS.md` file for Codex CLI session orchestration.
+Add this section to your project's `AGENTS.md` file for Codex session orchestration.
 The format is identical to the `## Session Config` section in `CLAUDE.md` for Claude Code.
 
 ---

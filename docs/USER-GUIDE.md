@@ -1,6 +1,6 @@
 # Session Orchestrator — User Guide
 
-Session Orchestrator is a Claude Code plugin that brings structured, wave-based development sessions to any project. It handles session planning, parallel agent execution, VCS integration, quality gates, and session close-out — so you can focus on deciding *what* to build while it orchestrates *how*.
+Session Orchestrator is a Claude Code and Codex plugin that brings structured, wave-based development sessions to any project. It handles session planning, parallel agent execution, VCS integration, quality gates, and session close-out — so you can focus on deciding *what* to build while it orchestrates *how*.
 
 ---
 
@@ -32,6 +32,8 @@ Session Orchestrator is a Claude Code plugin that brings structured, wave-based 
 
 ### Install the plugin
 
+#### Claude Code
+
 From a local path:
 
 ```bash
@@ -50,9 +52,26 @@ After installation, starting Claude Code will display:
 🎯 Session Orchestrator v2.0.0-beta.2 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
 ```
 
+#### Codex
+
+Clone the repository, then run the installer from the plugin root:
+
+```bash
+git clone https://github.com/Kanevry/session-orchestrator.git
+cd session-orchestrator
+bash scripts/codex-install.sh
+```
+
+Then fully restart Codex and open a new session. The commands become available in the restarted app. For desktop-specific details and troubleshooting, see `docs/codex-setup.md`.
+
 ### Add Session Config to your project
 
-Open your project's `CLAUDE.md` and add a `## Session Config` section. A minimal configuration looks like this:
+Open your project's Session Config host file and add a `## Session Config` section:
+
+- `CLAUDE.md` on Claude Code
+- `AGENTS.md` on Codex
+
+A minimal configuration looks like this:
 
 ```markdown
 ## Session Config
@@ -191,7 +210,10 @@ Best for: complex backend work, security audits, database refactoring, architect
 
 > **Skill authors:** The authoritative field reference used by all skills is [`docs/session-config-reference.md`](session-config-reference.md). Update that file when adding or changing Session Config fields.
 
-Add a `## Session Config` section to your project's `CLAUDE.md` to configure how Session Orchestrator behaves in that repository.
+Add a `## Session Config` section to your project's Session Config host file to configure how Session Orchestrator behaves in that repository:
+
+- `CLAUDE.md` on Claude Code
+- `AGENTS.md` on Codex
 
 ### Example
 
@@ -261,7 +283,7 @@ Add a `## Session Config` section to your project's `CLAUDE.md` to configure how
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
 | `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 
-> **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in CLAUDE.md which may be committed to version control. Use header-based auth or separate secret management instead.
+> **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in your config host file (`CLAUDE.md` / `AGENTS.md`) which may be committed to version control. Use header-based auth or separate secret management instead.
 
 ### Minimal Config
 
@@ -579,7 +601,7 @@ If any check fails and cannot be quickly fixed, the orchestrator creates a `prio
 
 Session Orchestrator includes bash scripts for critical workflow paths. These provide deterministic, testable alternatives to agent-interpreted instructions:
 
-- `scripts/parse-config.sh` — Parses `## Session Config` from CLAUDE.md, outputs validated JSON with all 36 fields and defaults applied. Run: `bash "$CLAUDE_PLUGIN_ROOT/scripts/parse-config.sh" [path/to/CLAUDE.md]`
+- `scripts/parse-config.sh` — Parses `## Session Config` from a config host file, outputs validated JSON with all 36 fields and defaults applied. Run: `bash scripts/parse-config.sh [path/to/CLAUDE.md|AGENTS.md]`
 - `scripts/run-quality-gate.sh` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
 - `scripts/validate-wave-scope.sh` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
 
@@ -972,7 +994,7 @@ The `agents-per-wave` config value always caps the maximum.
 /evolve list           Display active learnings
 ```
 
-### Session Config (add to CLAUDE.md)
+### Session Config (add to `CLAUDE.md` or `AGENTS.md`)
 
 ```markdown
 ## Session Config
@@ -1104,13 +1126,22 @@ This usually means the CLI tool is not authenticated or is pointing at the wrong
 Verify the plugin structure is intact:
 
 ```bash
-ls /path/to/session-orchestrator/.claude-plugin/plugin.json
+ls /path/to/session-orchestrator/.codex-plugin/plugin.json
 ```
 
-The `plugin.json` must exist and contain valid JSON with `name`, `version`, and `description` fields. If you installed from a local path, try reinstalling:
+The plugin manifest must exist and contain valid JSON with `name`, `version`, and `description` fields. If you installed from a local path, try reinstalling.
+
+Claude Code:
 
 ```bash
 claude plugin install /path/to/session-orchestrator
+```
+
+Codex:
+
+```bash
+cd /path/to/session-orchestrator
+bash scripts/codex-install.sh
 ```
 
 ### "tsgo: command not found"
@@ -1139,9 +1170,9 @@ If you configured `pencil` but design reviews are not running:
 
 ### Session Config not being read
 
-The orchestrator looks for a `## Session Config` section in your project's `CLAUDE.md`. Ensure:
+The orchestrator looks for a `## Session Config` section in your project's config host file. Ensure:
 
-- The file is named exactly `CLAUDE.md` (case-sensitive) and is in the project root
+- The file is named exactly `CLAUDE.md` on Claude Code or `AGENTS.md` on Codex, and is in the project root
 - The section heading is exactly `## Session Config`
 - Fields use the exact format: `- **field-name:** value`
 
