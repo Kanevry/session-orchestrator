@@ -15,6 +15,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+## [2.0.0-beta.4] - 2026-04-15
+
+Epic #87 — learnings-system efficiency package. Four targeted changes to the cross-session intelligence layer that restore the original design intent: surface the most useful learnings, let irrelevant ones fade naturally, retire the legacy split-brain file, and make the whole thing transparent. Empirical baseline from the BuchhaltGenie consumer repo (85 active learnings, ~13.6k tokens at every session-start) motivated the bundle. All 14 script test suites remain green; integration fixtures grew from 76 to 107 assertions.
+
+### Added
+- feat(session-start): rank and cap learnings injection — sort active learnings by confidence, slice to `learnings-surface-top-n` (default 15). Reduces Phase 5.6 token consumption on mature consumer repos. Configurable via Session Config key. Addresses Epic #87 / Issue #88. (#88)
+- feat(session-end): passive confidence decay for untouched learnings — subtract `learning-decay-rate` (default `0.05`) from every learning not confirmed, contradicted, or newly-appended this session. Applied before the existing prune step. `0.0` opts out. A learning starting at `0.5` survives ~10 untouched sessions. Addresses Epic #87 / Issue #89. (#89)
+- feat(session-start): "Surface health" sub-section in Project Intelligence — shows active/surfaced/suppressed counts, confidence distribution (high/medium/low), oldest surfaced entry, source file, vault mirror status. Prints an advisory when suppressed > surfaced. Addresses Epic #87 / Issue #91. (#91)
+
+### Fixed
+- fix(session-start): retire legacy `<state-dir>/metrics/learnings.jsonl` fallback — Phase 5.6 and `_shared/config-reading.md` now read ONLY the canonical `.orchestrator/metrics/learnings.jsonl`. Consumer repos with leftover legacy entries should run `scripts/migrate-legacy-learnings.sh` once. Addresses Epic #87 / Issue #90. (#90)
+
+  **MIGRATION**: in each consumer repo, run:
+
+      bash <plugin>/scripts/migrate-legacy-learnings.sh
+
+  where `<plugin>` is the session-orchestrator plugin directory. The script is idempotent, produces a `.bak` copy of any legacy file it touches, and emits a one-line JSON summary on stdout.
+
+### Tests
+- Added 31 integration-test assertions across 4 new fixture groups in `scripts/test/test-integration.sh`: Group 8 (cap+rank, #88, 6 assertions incl. equal-confidence tiebreaker), Group 9 (passive decay, #89, 3 assertions incl. IEEE-754 tolerance), Group 10 (surface health, #91, 8 assertions incl. positive + negative advisory), Group 11 (migration helper, #90, 13 assertions incl. empty-canonical, malformed-legacy, idempotency).
+- Added `json_float()` helper to `scripts/parse-config.sh` with regex + awk-based bounds validation (`0.0 ≤ x < 1.0` via strict-less-than max), covered by existing `test-parse-config.sh` suite.
+
 ## [2.0.0-beta.3] - 2026-04-15
 
 Documentation patch release. No runtime code changes — all 16 script test suites remain green. End users and contributors can now successfully install the plugin through Claude Code for the first time since #14 shipped.

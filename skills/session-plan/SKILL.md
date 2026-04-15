@@ -55,7 +55,7 @@ Extract these fields for planning:
    If no STATE.md or `status: completed`, proceed with fresh planning.
 
 0.5. **Read project intelligence**: > Skip if `persistence` is `false` in Session Config.
-   If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired) and apply:
+   If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired). Sort by `confidence` DESC (tiebreaker: `created_at` DESC) and slice to the first `learnings-surface-top-n` entries (default 15) before applying the four categories below. If the top-N slice is empty, skip the categories.
    - **Fragile files**: if any planned task touches a known fragile file, note it as a warning in the agent spec
    - **Effective sizing**: use historical sizing data to inform Step 3 complexity scoring
    - **Recurring issues**: pre-populate risk mitigation with known issue patterns

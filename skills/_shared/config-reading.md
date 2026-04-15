@@ -72,11 +72,14 @@ If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall
 
 ## Learning Expiry Semantics
 
-Learnings in `.orchestrator/metrics/learnings.jsonl` (preferred, platform-independent) or `<state-dir>/metrics/learnings.jsonl` (legacy fallback, where `<state-dir>` is `.claude/`, `.codex/`, or `.cursor/` per platform) follow this lifecycle:
+Learnings live exclusively in `.orchestrator/metrics/learnings.jsonl`. The pre-`2.0.0-beta.4` location `<state-dir>/metrics/learnings.jsonl` is no longer read; consumers with leftover entries should run `scripts/migrate-legacy-learnings.sh` once.
+
+The learning lifecycle states are:
 
 - **Created**: `confidence: 0.5`, `expires_at`: current date + `learning-expiry-days` (default: 30)
 - **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset
 - **Contradicted** (evidence against): `confidence -= 0.2` — do NOT reset `expires_at` (let the learning decay naturally if contradicted)
+- **Decayed** (untouched this session): `confidence -= learning-decay-rate` (from Session Config, default `0.05`). Applied at session-end after touched-set update, before prune. Clamped to 0.0. Does NOT reset `expires_at`.
 - **Expired**: `expires_at < current date` — removed on next write
 - **Dead**: `confidence <= 0.0` — removed on next write
 

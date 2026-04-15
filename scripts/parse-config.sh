@@ -156,6 +156,35 @@ json_integer() {
   echo "$val"
 }
 
+json_float() {
+  local key="$1" default="$2" min="${3:-}" max="${4:-}"
+  local val
+  val="$(get_val "$key" "$default")"
+
+  if ! echo "$val" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    die "Invalid float for '$key': '$val' (expected non-negative number)"
+  fi
+
+  # Bounds check via awk (bash cannot do float comparison)
+  if [[ -n "$min" ]]; then
+    local below_min
+    below_min="$(awk -v v="$val" -v m="$min" 'BEGIN { print (v < m) ? "1" : "0" }')"
+    if [[ "$below_min" == "1" ]]; then
+      die "Float '$key' value '$val' is below minimum '$min'"
+    fi
+  fi
+
+  if [[ -n "$max" ]]; then
+    local above_max
+    above_max="$(awk -v v="$val" -v m="$max" 'BEGIN { print (v >= m) ? "1" : "0" }')"
+    if [[ "$above_max" == "1" ]]; then
+      die "Float '$key' value '$val' must be less than '$max'"
+    fi
+  fi
+
+  jq -n --arg v "$val" '$v | tonumber'
+}
+
 json_boolean() {
   local key="$1" default="$2"
   local val
@@ -496,6 +525,8 @@ V_SSOT_FRESH=$(json_integer "ssot-freshness-days" "5")
 V_PLUGIN_FRESH=$(json_integer "plugin-freshness-days" "30")
 V_MEM_CLEANUP=$(json_integer "memory-cleanup-threshold" "5")
 V_LEARNING_EXPIRY=$(json_integer "learning-expiry-days" "30")
+V_LEARNINGS_TOP_N=$(json_integer "learnings-surface-top-n" "15")
+V_LEARNING_DECAY=$(json_float "learning-decay-rate" "0.05" "0.0" "1.0")
 V_DISC_CONF=$(json_integer "discovery-confidence-threshold" "60")
 
 # Boolean fields
@@ -571,6 +602,8 @@ jq -n \
   --argjson persistence "$V_PERSISTENCE" \
   --argjson memory_cleanup_threshold "$V_MEM_CLEANUP" \
   --argjson learning_expiry_days "$V_LEARNING_EXPIRY" \
+  --argjson learnings_surface_top_n "$V_LEARNINGS_TOP_N" \
+  --argjson learning_decay_rate "$V_LEARNING_DECAY" \
   --argjson enforcement "$V_ENFORCEMENT" \
   --argjson isolation "$V_ISOLATION" \
   --argjson max_turns "$V_MAX_TURNS" \
@@ -615,6 +648,8 @@ jq -n \
     "persistence": $persistence,
     "memory-cleanup-threshold": $memory_cleanup_threshold,
     "learning-expiry-days": $learning_expiry_days,
+    "learnings-surface-top-n": $learnings_surface_top_n,
+    "learning-decay-rate": $learning_decay_rate,
     "enforcement": $enforcement,
     "isolation": $isolation,
     "max-turns": $max_turns,

@@ -339,10 +339,19 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
    a. Read all existing lines from `learnings.jsonl` (if exists)
    b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0 AND reset `expires_at` to current date + `learning-expiry-days` (default: 30); contradicted: -0.2)
    c. Append new learnings from Phase 3.5a (those with no existing match)
-   d. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
-   e. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence
-   f. Write the entire result back to `learnings.jsonl` (atomic rewrite with `>`, not append with `>>`)
-   g. If no existing file and no new learnings: skip
+   d. **Passive decay (#89)** — for every existing learning NOT touched this session (i.e., not in the set of learnings confirmed or contradicted in Phase 3.5a, and not newly appended in step c), subtract `learning-decay-rate` (from Session Config, default `0.05`) from its `confidence`. Clamp to 0.0 (do not produce negative values). The prune step in `e` will remove any entry that fell to `confidence <= 0.0`. Decay does NOT reset `expires_at` — let decayed entries continue to age naturally. If `learning-decay-rate` is `0.0`, skip this step entirely (opt-out).
+
+      | Sessions since last touch | Confidence (starting 0.5, decay 0.05) | Status |
+      |---|---|---|
+      | 0 | 0.50 | active |
+      | 5 | 0.25 | active |
+      | 9 | 0.05 | active |
+      | 10 | 0.00 | pruned next write |
+
+   e. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
+   f. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence
+   g. Write the entire result back to `learnings.jsonl` (atomic rewrite with `>`, not append with `>>`)
+   h. If no existing file and no new learnings: skip
 
 ### 3.7 Write Session Metrics
 
