@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+## [2.0.0-beta.3] - 2026-04-15
+
+Documentation patch release. No runtime code changes — all 16 script test suites remain green. End users and contributors can now successfully install the plugin through Claude Code for the first time since #14 shipped.
+
+### Changed
+- **Marketplace identifier** renamed from `session-orchestrator` to `kanevry` in `.claude-plugin/marketplace.json`. The plugin name itself remains `session-orchestrator`; this change only affects the suffix after `@` in the install command, so it reads `session-orchestrator@kanevry` instead of the redundant `session-orchestrator@session-orchestrator`. Existing local installs that registered the old marketplace name can remove it with `/plugin marketplace remove session-orchestrator` and re-add.
+- **Version string audit** — bumped every `2.0.0-beta.2` reference in sync: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, `hooks/hooks.json`, `hooks/hooks-codex.json`, `scripts/mcp-server.sh`, `README.md` version badge, `docs/USER-GUIDE.md` banner example, `CONTRIBUTING.md` hook example. Applies the version-string-drift learning from the beta.2 release-cut.
+
+### Fixed
+- **Install instructions** across `README.md`, `docs/USER-GUIDE.md`, and `CONTRIBUTING.md` referenced non-existent `claude plugin add` / `claude plugin install` shell commands. Claude Code has no such CLI — plugins install exclusively via the slash commands `/plugin marketplace add <source>` and `/plugin install <name>@<marketplace>` inside a running session. End users following the previous instructions could not install the plugin at all. Docs now show the correct slash-command flow for both GitHub and local-clone installs. This is a follow-up to #14, whose original fix in commit 802d821 introduced the incorrect commands.
+
 ## [2.0.0-beta.2] - 2026-04-13
 
 ### Added

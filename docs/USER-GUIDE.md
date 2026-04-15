@@ -34,22 +34,26 @@ Session Orchestrator is a Claude Code and Codex plugin that brings structured, w
 
 #### Claude Code
 
-From a local path:
+Claude Code installs plugins through slash commands inside a running session. There is no `claude plugin` shell CLI — run these commands in the Claude Code prompt:
 
-```bash
-claude plugin install /path/to/session-orchestrator
+**From GitHub (recommended for end users):**
+
+```text
+/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry
 ```
 
-Or from the Claude Code plugin marketplace:
+**From a local clone (for contributors or offline work):**
 
-```bash
-claude plugin install session-orchestrator
+```text
+/plugin marketplace add /absolute/path/to/session-orchestrator
+/plugin install session-orchestrator@kanevry
 ```
 
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-beta.2 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
+🎯 Session Orchestrator v2.0.0-beta.3 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
 ```
 
 #### Codex
@@ -1131,10 +1135,11 @@ ls /path/to/session-orchestrator/.codex-plugin/plugin.json
 
 The plugin manifest must exist and contain valid JSON with `name`, `version`, and `description` fields. If you installed from a local path, try reinstalling.
 
-Claude Code:
+Claude Code (run inside a Claude Code session, not in your shell):
 
-```bash
-claude plugin install /path/to/session-orchestrator
+```text
+/plugin marketplace add /absolute/path/to/session-orchestrator
+/plugin install session-orchestrator@kanevry
 ```
 
 Codex:

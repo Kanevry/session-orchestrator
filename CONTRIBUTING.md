@@ -44,11 +44,14 @@ The user workflow is:
    git clone https://github.com/Kanevry/session-orchestrator.git
    ```
 
-2. **Install as a local plugin:**
+2. **Install as a local plugin** — run these slash commands inside a Claude Code session (not in your shell):
 
-   ```bash
-   claude plugin install /path/to/session-orchestrator
+   ```text
+   /plugin marketplace add /absolute/path/to/your/clone
+   /plugin install session-orchestrator@kanevry
    ```
+
+   Use the absolute path to your clone. After the install confirmation, reload Claude Code so the commands register.
 
 3. **Test your changes:**
 
@@ -141,7 +144,7 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v2.0.0-beta.2 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
+            "command": "echo '🎯 Session Orchestrator v2.0.0-beta.3 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
             "async": false
           }
         ]

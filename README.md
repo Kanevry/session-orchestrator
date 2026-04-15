@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0--beta.2-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0--beta.3-green.svg)](CHANGELOG.md)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
@@ -14,9 +14,20 @@ Session orchestration plugin for Claude Code, Codex, and Cursor IDE — project 
 
 ### Claude Code
 
-```bash
-# Add as a Claude Code plugin
-claude plugin add github:Kanevry/session-orchestrator
+Run these two slash commands **inside** Claude Code (they are not shell commands — there is no `claude plugin` CLI):
+
+```text
+/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry
+```
+
+The first command registers this repository as a marketplace (named `kanevry`), the second installs the plugin from it. Reload Claude Code so the slash commands (`/session`, `/go`, `/close`, …) become available.
+
+Prefer installing from a local clone? Use an absolute path instead of the `owner/repo` shorthand:
+
+```text
+/plugin marketplace add /absolute/path/to/session-orchestrator
+/plugin install session-orchestrator@kanevry
 ```
 
 ### Codex
@@ -42,11 +53,7 @@ bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/pro
 
 ### Claude Code
 
-```bash
-claude plugin add github:Kanevry/session-orchestrator
-```
-
-Add Session Config to `CLAUDE.md`, then run:
+After installing the plugin (see [Install](#install)), add a `## Session Config` section to your project's `CLAUDE.md`, then run:
 
 ```text
 /session feature
