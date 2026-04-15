@@ -49,7 +49,7 @@ handle_initialize() {
     "capabilities": {"tools": {}},
     "serverInfo": {
       "name": "session-orchestrator",
-      "version": "2.0.0-beta.4"
+      "version": "2.0.0-beta.5"
     }
   }')
   respond "$id" "$result"
