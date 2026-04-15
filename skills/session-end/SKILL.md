@@ -107,7 +107,12 @@ Finalize session metrics by reading the wave data accumulated during execution:
    - `by_error_class`: count by `error_class` value (omit zero-valued keys; omit entire sub-object if all events lack error_class)
    - `files`: unique list of non-null `file` values (deduplicated)
    - **Omit the entire `stagnation_events` field if `total == 0`** (keeps historical entries clean).
-4. Prepare the JSONL entry (written in Phase 3.7):
+4. Read grounding events from `.orchestrator/metrics/events.jsonl` filtered by `event == "grounding_injected"` AND `session == <session_id>`. If the file does not exist or contains no matching entries, treat as zero events (omit the field per the rule below) — do NOT fail the session close. Aggregate into `grounding_injections`:
+   - `count`: total number of matching events
+   - `files`: deduplicated list of unique file paths from the events (sort alphabetically)
+   - `total_lines`: sum of `lines` field across all events
+   - **Omit the entire `grounding_injections` field if `count == 0`** (matches stagnation_events pattern to keep historical entries clean).
+5. Prepare the JSONL entry (written in Phase 3.7):
    ```json
    {
      "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
@@ -152,6 +157,11 @@ Finalize session metrics by reading the wave data accumulated during execution:
        "emergent": N,
        "completion_rate": 0.0
      },
+     "grounding_injections": {
+       "count": N,
+       "files": ["..."],
+       "total_lines": M
+     },
      "stagnation_events": {
        "total": N,
        "by_pattern": {"error-echo": N, "turn-key-repetition": N, "pagination-spiral": N},
@@ -168,6 +178,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 > - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
 > - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
 > - `stagnation_events`: populated ONLY when ≥1 stagnation event was logged to `events.jsonl` during this session. When `total == 0`, the field is omitted from the JSONL entry.
+> - `grounding_injections`: populated ONLY when ≥1 `grounding_injected` event was logged to `events.jsonl` during this session. When `count == 0`, the field is omitted from the JSONL entry.
 
 ### 1.8 Session Review
 

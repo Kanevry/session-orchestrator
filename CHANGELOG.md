@@ -8,12 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- feat(wave-executor): pre-dispatch grounding injection — prepend a line-numbered GROUNDING block to each agent's prompt for any file in the agent's scope that has recent `edit-format-friction` stagnation history (from #84 telemetry). Reduces Edit-tool retry loops by giving agents stable line-number references. Per-agent scope, capped at `grounding-injection-max-files` (default 3). Helper script `scripts/compute-grounding-injection.sh` (new); gated on `persistence: true`. Addresses Harness Problem gap G3. (#85)
+- feat(session-end): aggregate `grounding_injected` events into sessions.jsonl as `grounding_injections: {count, files, total_lines}`. Omitted when `count == 0`. (#85)
+- config: `grounding-injection-max-files` (integer, default `3`) — cap files injected per agent; set `0` to disable the feature. (#85)
 
 ### Changed
 
 ### Fixed
 
 ### Tests
+- test-integration.sh Group 12 (#85): 15 new assertions covering config default/override/disable, helper early-exit, match-and-emit, cap behavior with `grounding_capped=true`, and PERSISTENCE=false no-event-write path. Total integration assertions 107 → 122.
 
 ## [2.0.0-beta.4] - 2026-04-15
 

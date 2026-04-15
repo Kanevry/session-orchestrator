@@ -526,6 +526,7 @@ V_PLUGIN_FRESH=$(json_integer "plugin-freshness-days" "30")
 V_MEM_CLEANUP=$(json_integer "memory-cleanup-threshold" "5")
 V_LEARNING_EXPIRY=$(json_integer "learning-expiry-days" "30")
 V_LEARNINGS_TOP_N=$(json_integer "learnings-surface-top-n" "15")
+V_GROUNDING_INJECTION_MAX=$(json_integer "grounding-injection-max-files" "3")
 V_LEARNING_DECAY=$(json_float "learning-decay-rate" "0.05" "0.0" "1.0")
 V_DISC_CONF=$(json_integer "discovery-confidence-threshold" "60")
 
@@ -614,6 +615,7 @@ jq -n \
   --argjson agent_mapping "$V_AGENT_MAPPING" \
   --argjson enforcement_gates "$V_ENFORCEMENT_GATES" \
   --argjson reasoning_output "$V_REASONING_OUTPUT" \
+  --argjson grounding_injection_max_files "$V_GROUNDING_INJECTION_MAX" \
   --argjson grounding_check "$V_GROUNDING_CHECK" \
   --argjson vi_enabled "$VI_ENABLED" \
   --argjson vi_vault_dir "$VI_VAULT_DIR" \
@@ -660,6 +662,7 @@ jq -n \
     "agent-mapping": $agent_mapping,
     "enforcement-gates": $enforcement_gates,
     "reasoning-output": $reasoning_output,
+    "grounding-injection-max-files": $grounding_injection_max_files,
     "grounding-check": $grounding_check,
     "vault-integration": {
       "enabled": $vi_enabled,

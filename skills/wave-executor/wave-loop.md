@@ -41,6 +41,42 @@ For each agent in this wave:
       - Turn budget and status reporting: "You have a maximum of [maxTurns] turns for this task. If you cannot complete within this budget, report STATUS: partial with what was accomplished and what remains. At the end of your work, report STATUS: done (all acceptance criteria met) or STATUS: partial (some criteria unmet — list which ones)."
 ```
 
+#### Pre-Dispatch Grounding Injection (#85)
+
+Before dispatching each agent, prepend a line-numbered GROUNDING block to its prompt for any file in the agent's scope that has recent edit-format-friction history. This helps the agent reference edits by line number instead of re-matching exact character spans, reducing Edit-tool retry loops.
+
+**Gate:** `$CONFIG."grounding-injection-max-files" > 0` AND `$CONFIG.persistence == true`. When either condition is false, skip the entire step.
+
+**Per-agent scope** (not per-wave): each agent's file scope comes from its specification in the session plan — the same source used for computing the wave's `allowedPaths` union (see `## Scope Manifest` § 3). An agent with narrow scope gets grounding only for files it will touch.
+
+**Invocation:** for each agent about to be dispatched, call:
+
+    AGENT_FILES="$(printf '%s\n' "${agent_file_scope[@]}")" \
+    SESSIONS_JSONL=".orchestrator/metrics/sessions.jsonl" \
+    EVENTS_JSONL=".orchestrator/metrics/events.jsonl" \
+    MAX_FILES="$(echo "$CONFIG" | jq -r '."grounding-injection-max-files"')" \
+    SESSION_ID="<session_id>" WAVE="$wave_num" AGENT_TYPE="<subagent_type>" \
+    PERSISTENCE="$(echo "$CONFIG" | jq -r '.persistence')" \
+    bash "$PLUGIN_ROOT/scripts/compute-grounding-injection.sh"
+
+Capture stdout as `$GROUNDING_BLOCK`. If empty, dispatch the agent unchanged (legacy behavior).
+
+**Prompt assembly:** when `$GROUNDING_BLOCK` is non-empty, prepend to the agent prompt:
+
+    <GROUNDING_BLOCK>
+
+    Use line numbers above to describe edits precisely instead of re-matching character spans. If a line has changed since this snapshot, re-read the file before editing.
+
+    ---
+
+    <original prompt>
+
+The helper emits one `grounding_injected` event per injected file to `.orchestrator/metrics/events.jsonl`. The helper never returns non-zero; any failure (missing jq, missing events.jsonl, unreadable file) results in silent no-op so wave dispatch is never blocked.
+
+**Fallback for agents without explicit file scope:** if the session plan's agent specification does not list a "Files:" scope for an agent, fall back to the wave-level `allowedPaths` (from `wave-scope.json`). If that is also empty, skip injection for that agent.
+
+**Relationship to `### 3b. File-level grounding`:** this pre-dispatch feature is DIFFERENT from the post-wave file-level grounding check. Pre-dispatch grounding injects file content into agent prompts (prevents friction). Post-wave grounding verifies agents stayed within their planned scope (detects scope creep). The two features share no code and run at different times.
+
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
 When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.
@@ -113,7 +149,7 @@ After ALL agents in the wave complete:
 
 Assign `error_class` using the taxonomy defined in `circuit-breaker.md` § "3. Error Echo" → Error-Class Taxonomy. For non-error-echo patterns, omit the `error_class` field. Paths are relative to the project root. `occurrences` is the count of pattern repetitions detected (minimum 3 per the trigger threshold).
 
-3b. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Skip the entire check when `grounding-check: false`.
+3b. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Not to be confused with pre-dispatch grounding injection (§ Pre-Dispatch Grounding Injection above): that feature is per-agent and runs before dispatch to prevent friction; this check is per-wave and runs after dispatch to detect scope creep. Skip the entire check when `grounding-check: false`.
 4. **Run incremental verification** (per the quality-gates skill, based on the wave's role):
    - After **Discovery**: no verification needed (read-only)
    - After **Impl-Core**: Incremental quality checks per quality-gates (test changed files, typecheck)
