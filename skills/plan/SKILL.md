@@ -28,7 +28,15 @@ description: >
 
 Before anything else, read and internalize `soul.md` in this skill directory. It defines WHO you are — a Product Strategist who drives planning outcomes through structured research and decisive recommendations. Every interaction in this skill should reflect this identity. You are not a generic assistant; you are an opinionated product leader who backs every recommendation with data.
 
-## Phase 0: Read Session Config
+## Phase 0: Bootstrap Gate
+
+Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+
+<HARD-GATE>
+Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
+</HARD-GATE>
+
+## Phase 1: Read Session Config
 
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
@@ -46,7 +54,7 @@ If no `## Session Config` section exists at all, stop and report: "Error: No Ses
 
 > On Codex CLI, Explore agents map to the `explorer` agent role. See `skills/_shared/platform-tools.md`.
 
-## Phase 1: Mode Router
+## Phase 2: Mode Router
 
 Parse `$ARGUMENTS` to determine the planning mode:
 
@@ -71,13 +79,13 @@ AskUserQuestion({
 })
 ```
 
-After mode selection, proceed to Phase 2 with the chosen mode.
+After mode selection, proceed to Phase 3 with the chosen mode.
 
-## Phase 2: Q&A Engine (Shared Core)
+## Phase 3: Q&A Engine (Shared Core)
 
 This is the distinctive mechanic shared by all three modes. Every question wave follows the same pattern: research first, then ask.
 
-### 2.1 Pre-Question Research
+### 3.1 Pre-Question Research
 
 Before each Q&A wave, dispatch 2-3 `Agent()` tool calls in a single message (parallel execution) with `subagent_type: "Explore"`:
 
@@ -98,7 +106,7 @@ Agent({ subagent_type: "Explore", description: "Analyze repo context",
 
 Wait for ALL agents to complete before proceeding. Use `run_in_background: false` for all agents.
 
-### 2.2 Question Presentation
+### 3.2 Question Presentation
 
 Synthesize research results into 5 questions per wave. Split across 2 AskUserQuestion calls (3+2 or 4+1) to stay within the 4-question-per-call limit.
 
@@ -132,7 +140,7 @@ AskUserQuestion({ questions: [
 ]})
 ```
 
-### 2.3 Adaptive Depth
+### 3.3 Adaptive Depth
 
 Each mode defines a starting wave count:
 - `/plan new` — start with 3 waves minimum
@@ -142,11 +150,11 @@ Each mode defines a starting wave count:
 Maximum across all modes: 5 waves.
 
 After each wave, assess whether to continue:
-- **Answers are clear and unambiguous** — all key decisions made, no open questions remain. Stop Q&A, proceed to Phase 3.
+- **Answers are clear and unambiguous** — all key decisions made, no open questions remain. Stop Q&A, proceed to Phase 4.
 - **Answers reveal complexity** — multiple subsystems, unclear requirements, conflicting constraints, or new concerns surfaced. Add another wave with targeted follow-up questions.
-- **User aborts early** — if the user says "Enough questions, generate the PRD" or similar, proceed directly to Phase 3 with the answers gathered so far.
+- **User aborts early** — if the user says "Enough questions, generate the PRD" or similar, proceed directly to Phase 4 with the answers gathered so far.
 
-### 2.4 Answer Tracking
+### 3.4 Answer Tracking
 
 Maintain a running summary of all answers across waves. After each wave, output a brief recap:
 
@@ -160,24 +168,24 @@ Maintain a running summary of all answers across waves. After each wave, output 
 
 This ensures transparency and allows the user to correct any misunderstanding before the next wave.
 
-## Phase 3: Document Generation
+## Phase 4: Document Generation
 
 After Q&A completes, generate the output document.
 
-### 3.1 Read Template
+### 4.1 Read Template
 
 Select the template based on mode:
 - `/plan new` — read `prd-full-template.md` in this skill directory (8-section full PRD)
 - `/plan feature` — read `prd-feature-template.md` in this skill directory (5-section compact PRD)
 - `/plan retro` — read `retro-template.md` in this skill directory (retrospective document)
 
-### 3.2 Fill Template
+### 4.2 Fill Template
 
 Fill every template section with gathered answers. Use the research agent outputs to enrich sections beyond what the user explicitly stated — add technical details, risk analysis, and architecture sketches derived from the baseline and repo analysis.
 
 Do NOT leave any section with TBD, placeholder, or empty content. If a section cannot be filled from gathered data, make a best-effort recommendation and mark it with `<!-- REVIEW: inferred from research, confirm with stakeholders -->`.
 
-### 3.3 Save Document
+### 4.3 Save Document
 
 Write the document to the configured location:
 - PRDs → `{plan-prd-location}/YYYY-MM-DD-{project-or-feature-name}.md`
@@ -187,9 +195,9 @@ Use today's date. Derive the name slug from the project name (for new) or featur
 
 Ensure the target directory exists (create with `mkdir -p` if needed) before writing.
 
-## Phase 4: PRD Review (skip for retro mode)
+## Phase 5: PRD Review (skip for retro mode)
 
-### 4.1 Dispatch Reviewer
+### 5.1 Dispatch Reviewer
 
 Dispatch a reviewer subagent: read `prd-reviewer-prompt.md` in this skill directory for review instructions. Pass the full PRD content to the reviewer.
 
@@ -201,7 +209,7 @@ The reviewer checks 6 criteria:
 5. **YAGNI** — no unrequested features or gold-plating
 6. **SMART metrics** — success criteria are Specific, Measurable, Achievable, Relevant, Time-bound
 
-### 4.2 Revision Loop
+### 5.2 Revision Loop
 
 If any criterion is FAIL:
 1. Read the reviewer's feedback
@@ -225,7 +233,7 @@ AskUserQuestion({
 })
 ```
 
-### 4.3 User Review Gate
+### 5.3 User Review Gate
 
 After the reviewer passes (or user accepts), present the final PRD:
 
@@ -245,16 +253,16 @@ AskUserQuestion({
 
 If user requests changes, apply them, save the updated document, and re-present for approval. No limit on user-requested revisions.
 
-## Phase 5: Issue Creation (all modes)
+## Phase 6: Issue Creation (all modes)
 
-### 5.1 Derive Issue Structure
+### 6.1 Derive Issue Structure
 
 Determine Epic and sub-issues based on mode:
 - **`/plan new`** — derive from PRD Section 4 (Solution & Scope). Each major scope item becomes a sub-issue. Group under an Epic named after the project.
 - **`/plan feature`** — derive from PRD Section 3 (Acceptance Criteria). Each Given/When/Then block becomes a sub-issue. Group under an Epic named after the feature.
 - **`/plan retro`** — derive from the improvement actions in the reflection phase. Each action becomes an issue (no Epic wrapper unless 5+ actions).
 
-### 5.2 Auto-Prioritize
+### 6.2 Auto-Prioritize
 
 Score each issue using three factors:
 
@@ -271,7 +279,7 @@ Assign labels from the standard taxonomy:
 - `area:<inferred from content>` (e.g., `area:api`, `area:frontend`, `area:infra`)
 - For `/plan new`: add `appetite:<1w|2w|6w>` and `mvp-phase` labels where applicable
 
-### 5.3 User Review
+### 6.3 User Review
 
 Present the full issue structure via AskUserQuestion before creating anything:
 
@@ -293,7 +301,7 @@ AskUserQuestion({
 
 If user selects "Adjust priorities" or "Remove issues", handle the adjustments interactively and re-present.
 
-### 5.4 Create Issues
+### 6.4 Create Issues
 
 > **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill. Use CLI commands per the "Common CLI Commands" section.
 
@@ -307,7 +315,7 @@ For each approved issue:
    - **GitLab**: use `glab api` to set `blocks`/`is-blocked-by` relations
    - **GitHub**: note dependencies in issue body (GitHub lacks native blocking)
 
-### 5.5 Final Report
+### 6.5 Final Report
 
 ```
 ## Plan Complete

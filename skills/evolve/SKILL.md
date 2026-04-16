@@ -14,54 +14,62 @@ description: >
 
 # Evolve Skill
 
-## Phase 0: Config & Data Loading
+## Phase 0: Bootstrap Gate
 
-### 0.1 Read Session Config
+Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+
+<HARD-GATE>
+Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
+</HARD-GATE>
+
+## Phase 1: Config & Data Loading
+
+### 1.1 Read Session Config
 
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
-### 0.2 Check Persistence
+### 1.2 Check Persistence
 
 Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with message:
 
 > "Learnings require persistence to be enabled in Session Config. Add `persistence: true` to your Session Config block (CLAUDE.md for Claude Code, AGENTS.md for Codex CLI)."
 
-### 0.3 Determine Mode
+### 1.3 Determine Mode
 
 Read mode from `$ARGUMENTS`:
 - If empty or not provided, default to `analyze`
 - Valid modes: `analyze`, `review`, `list`
 - If invalid mode provided, report error and list valid modes
 
-### 0.4 Load Data
+### 1.4 Load Data
 
 1. Read `.orchestrator/metrics/sessions.jsonl` (session history). If it does not exist, check `<state-dir>/metrics/sessions.jsonl` as a legacy fallback (where `<state-dir>` is `.claude/`, `.codex/`, or `.cursor/` per platform). If neither exists, warn: "No session history found. Run at least one session first."
 2. Read `.orchestrator/metrics/learnings.jsonl` if it exists. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
 3. Count existing learnings, note any where `expires_at` < current date (expired)
 
-## Phase 1: Mode Dispatch
+## Phase 2: Mode Dispatch
 
 Route based on mode:
-- `analyze` → Phase 2
-- `review` → Phase 3
-- `list` → Phase 4
+- `analyze` → Phase 3
+- `review` → Phase 4
+- `list` → Phase 5
 
 ---
 
-## Phase 2: Analyze Mode (default)
+## Phase 3: Analyze Mode (default)
 
 Extract learnings from session history.
 
-> **Vault Integration:** If `vault-integration.enabled` is `true` in Session Config, confirmed learnings are mirrored to the configured Obsidian vault after the atomic write (Step 2.5, step 9). See `docs/session-config-reference.md` for the `vault-integration` config block.
+> **Vault Integration:** If `vault-integration.enabled` is `true` in Session Config, confirmed learnings are mirrored to the configured Obsidian vault after the atomic write (Step 3.5, step 9). See `docs/session-config-reference.md` for the `vault-integration` config block.
 
-### Step 2.1: Read Session Data
+### Step 3.1: Read Session Data
 
-- Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 0.4 fallback)
+- Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
 - Parse each JSONL line as JSON
 - Sort by `completed_at` descending (most recent first)
 - If no sessions found, abort: "No session data available. Complete at least one session before running evolve."
 
-### Step 2.2: Pattern Extraction
+### Step 3.2: Pattern Extraction
 
 For each of the 6 learning types, apply these heuristics:
 
@@ -109,18 +117,18 @@ For each of the 6 learning types, apply these heuristics:
   - Evidence = "<N> sessions with stagnation_events for this file/class"
 - These learnings feed #85 (pre-edit grounding injection) when it ships — high-frequency pairs trigger grounding.
 
-### Step 2.2b: Zero Patterns Check
+### Step 3.2b: Zero Patterns Check
 
 If no patterns were extracted across all 6 types, report: "No patterns found in session history. This can happen with very few sessions or sessions that lack detailed wave/agent data." and skip to end (do not proceed to AskUserQuestion).
 
-### Step 2.3: Deduplicate Against Existing Learnings
+### Step 3.3: Deduplicate Against Existing Learnings
 
 For each extracted pattern, check if a learning with same `type` + `subject` already exists in `learnings.jsonl`:
 
 - **If exists:** propose confidence update (+0.15 if confirmed by new evidence, -0.2 if contradicted)
 - **If new:** propose as new learning with confidence 0.5
 
-### Step 2.4: Present Findings via AskUserQuestion
+### Step 3.4: Present Findings via AskUserQuestion
 
 Present extracted patterns to the user for confirmation. Use AskUserQuestion with `multiSelect: true`:
 
@@ -149,7 +157,7 @@ AskUserQuestion({
 
 If user selects "Skip all" or selects nothing, abort gracefully: "No learnings saved."
 
-### Step 2.5: Write Confirmed Learnings
+### Step 3.5: Write Confirmed Learnings
 
 For confirmed learnings, use atomic rewrite strategy:
 
@@ -199,17 +207,17 @@ Report: "Saved N new learnings, updated M existing. Total active: K."
 
 ---
 
-## Phase 3: Review Mode
+## Phase 4: Review Mode
 
 Interactive management of existing learnings.
 
-### Step 3.1: Load Learnings
+### Step 4.1: Load Learnings
 
 - Read `.orchestrator/metrics/learnings.jsonl`. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
 - If neither exists or both are empty: "No learnings found. Run `/evolve analyze` first."
 - Parse each line as JSON
 
-### Step 3.2: Display Learnings
+### Step 4.2: Display Learnings
 
 Present a formatted table grouped by type:
 
@@ -225,7 +233,7 @@ Present a formatted table grouped by type:
 Summary: N active learnings (M high confidence, K expiring soon)
 ```
 
-### Step 3.3: Interactive Management
+### Step 4.3: Interactive Management
 
 Use AskUserQuestion with options:
 
@@ -251,9 +259,9 @@ If user selects "Boost confidence", "Reduce confidence", "Delete specific learni
 
 > On Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list.
 
-### Step 3.4: Apply Changes
+### Step 4.4: Apply Changes
 
-Use the same atomic rewrite strategy as Phase 2, Step 2.5:
+Use the same atomic rewrite strategy as Phase 3, Step 3.5:
 
 1. Read all lines from `learnings.jsonl`
 2. Apply the selected operation to selected learnings:
@@ -269,17 +277,17 @@ Report: "Updated N learnings. Total active: K."
 
 ---
 
-## Phase 4: List Mode
+## Phase 5: List Mode
 
 Simple read-only display.
 
-### Step 4.1: Load and Display
+### Step 5.1: Load and Display
 
 - Read `.orchestrator/metrics/learnings.jsonl`. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback.
 - If neither exists: "No learnings yet. Run `/evolve analyze` to extract patterns from session history."
 - Parse each line as JSON
 
-### Step 4.2: Formatted Output
+### Step 5.2: Formatted Output
 
 Display a formatted table grouped by type:
 
@@ -299,7 +307,7 @@ Display a formatted table grouped by type:
 (repeat for each type that has entries)
 ```
 
-### Step 4.3: Summary
+### Step 5.3: Summary
 
 Display summary line:
 

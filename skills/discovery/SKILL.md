@@ -18,12 +18,20 @@ description: >
 
 Two modes of operation:
 
-- **Standalone** (`/discovery [scope]`): Full 5-phase flow with interactive triage (Phases 0-5)
-- **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-3 only, returns structured findings to session-end
+- **Standalone** (`/discovery [scope]`): Full 6-phase flow with interactive triage (Phases 0-6)
+- **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-4 only, returns structured findings to session-end
 
 The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, or comma-separated like `code,session`.
 
-## Phase 0: Read Session Config
+## Phase 0: Bootstrap Gate
+
+Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+
+<HARD-GATE>
+Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
+</HARD-GATE>
+
+## Phase 1: Read Session Config
 
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
@@ -32,7 +40,7 @@ Discovery-relevant fields (parse these specifically):
 - `test-command`, `typecheck-command`, `lint-command`
 - `pencil`, `vcs`, `cross-repos`, `stale-issue-days`
 
-## Phase 1: Stack Detection & Probe Activation
+## Phase 2: Stack Detection & Probe Activation
 
 Detect the project's tech stack via marker file checks. Use Glob and run checks in parallel:
 
@@ -72,7 +80,7 @@ Add any paths from `discovery-exclude-paths` in Session Config.
 
 Report: "Discovery: [N] probes active across [categories]. Stack: [detected]. Threshold: [severity]."
 
-## Phase 2: Probe Execution
+## Phase 3: Probe Execution
 
 Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max 5 agents):
 
@@ -112,15 +120,15 @@ CRITICAL: `run_in_background: false` for all agents.
 
 Skip categories with no activated probes (don't dispatch empty agents).
 
-## Phase 3: Verification & Scoring
+## Phase 4: Verification & Scoring
 
 After all probe agents complete:
 
-### 3.1 Parse Findings
+### 4.1 Parse Findings
 
 Collect all `FINDING:` blocks from agent outputs into a unified findings list.
 
-### 3.2 Verification Pass
+### 4.2 Verification Pass
 
 For EACH finding:
 1. Read the file at `file_path:line_number` using the Read tool
@@ -128,7 +136,7 @@ For EACH finding:
 3. If NOT confirmed, discard with note "false positive -- text not found at reported location"
 4. Report: "Verification: N confirmed, M discarded as false positives"
 
-### 3.2a Confidence Scoring
+### 4.2a Confidence Scoring
 
 For each verified finding, assign a confidence score (0-100) based on three factors:
 
@@ -146,9 +154,9 @@ For each verified finding, assign a confidence score (0-100) based on three fact
 
 **Threshold:** Read `discovery-confidence-threshold` from Session Config (default: 60). If not configured, use 60.
 
-Annotate each finding with its confidence score for Phase 4 presentation.
+Annotate each finding with its confidence score for Phase 5 presentation.
 
-### 3.3 Deduplication
+### 4.3 Deduplication
 
 Two findings are duplicates if:
 - Same `file_path` AND
@@ -157,16 +165,16 @@ Two findings are duplicates if:
 
 Keep the higher severity finding. Merge descriptions.
 
-### 3.4 Apply Thresholds
+### 4.4 Apply Thresholds
 
 1. **Severity filter:** Remove findings below `discovery-severity-threshold` from Session Config.
 2. **Confidence filter:** Remove findings with confidence score below `discovery-confidence-threshold` (default: 60). Log filtered-out findings: "Auto-dismissed N low-confidence findings (below threshold [T]). Use `discovery-confidence-threshold: 0` to see all."
 
-### 3.5 Group by Category
+### 4.5 Group by Category
 
-Group remaining findings by category for Phase 4 presentation.
+Group remaining findings by category for Phase 5 presentation.
 
-### 3.6 Embedded Mode Exit
+### 4.6 Embedded Mode Exit
 
 If in embedded mode (called from session-end): STOP HERE. Return structured findings to the caller using this schema:
 
@@ -188,11 +196,11 @@ If in embedded mode (called from session-end): STOP HERE. Return structured find
 }
 ```
 
-Present both as structured data in your final output. Do not proceed to Phase 4.
+Present both as structured data in your final output. Do not proceed to Phase 5.
 
-## Phase 4: Interactive Triage (Standalone Mode Only)
+## Phase 5: Interactive Triage (Standalone Mode Only)
 
-### 4.0 Auto-Defer Low-Confidence Findings
+### 5.0 Auto-Defer Low-Confidence Findings
 
 Before presenting findings for triage, separate by confidence threshold:
 
@@ -201,7 +209,7 @@ Before presenting findings for triage, separate by confidence threshold:
    "Auto-deferred [N] low-confidence findings (score < [threshold]). Review with `/discovery --include-deferred`."
 3. List auto-deferred findings in a collapsed section (not interactive — informational only)
 
-### 4.1 Present High-Confidence Findings
+### 5.1 Present High-Confidence Findings
 
 Present findings using AskUserQuestion -- NEVER plain text options. On Codex CLI where AskUserQuestion is unavailable, present as numbered Markdown lists.
 
@@ -289,9 +297,9 @@ AskUserQuestion({
 })
 ```
 
-## Phase 5: Issue Creation & Report
+## Phase 6: Issue Creation & Report
 
-### 5.1 Issue Creation
+### 6.1 Issue Creation
 
 > **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.
 > Use CLI commands per the "Common CLI Commands" section.
@@ -305,7 +313,7 @@ For each approved finding:
    - **GitHub**: `gh issue create --title "[Discovery] <title>" --label "type:discovery,priority:<level>,area:<area>,status:ready" --body "<body>"`
 4. Brief pause (1s) between creations for rate limiting
 
-### 5.2 Final Report
+### 6.2 Final Report
 
 ```
 ## Discovery Report
@@ -334,27 +342,27 @@ For each approved finding:
 
 - **NEVER** fabricate findings -- every finding must come from tool output with verifiable evidence
 - **NEVER** create issues without user approval (standalone mode)
-- **ALWAYS** verify findings by re-reading the file at the reported line (Phase 3)
+- **ALWAYS** verify findings by re-reading the file at the reported line (Phase 4)
 - **ALWAYS** use AskUserQuestion for triage decisions -- never plain text options (On Codex CLI, use numbered lists as AskUserQuestion is not available)
 - **ALWAYS** reference gitlab-ops for VCS operations -- never duplicate CLI logic inline
 - If a probe command fails or tool is unavailable, skip gracefully, continue with others
-- If in embedded mode, stop after Phase 3, return findings as structured data
+- If in embedded mode, stop after Phase 4, return findings as structured data
 - Respect `discovery-severity-threshold` -- filter before presenting to user
 - Default exclude paths always apply: `node_modules/`, `.git/`, `dist/`, `build/`, `.next/`, `.nuxt/`, `coverage/`
 
-## Phase 6: Capture Discovery Stats (Standalone Mode Only)
+## Phase 7: Capture Discovery Stats (Standalone Mode Only)
 
 > This phase runs only in standalone mode. Embedded mode returns findings to the caller.
 
-After Phase 5 (Issue Creation) completes, prepare discovery statistics for session metrics:
+After Phase 6 (Issue Creation) completes, prepare discovery statistics for session metrics:
 
 1. Count totals from the triage results:
    - `probes_run`: number of probes that were activated and executed
    - `findings_raw`: total findings before verification
-   - `findings_verified`: findings that passed Phase 3.2 verification
+   - `findings_verified`: findings that passed Phase 4.2 verification
    - `false_positives`: findings discarded during verification
-   - `user_dismissed`: findings the user declined during Phase 4 triage
-   - `issues_created`: issues created in Phase 5
+   - `user_dismissed`: findings the user declined during Phase 5 triage
+   - `issues_created`: issues created in Phase 6
    - `by_category`: per-category breakdown of findings and actioned items
 
 2. Report stats summary:

@@ -49,6 +49,16 @@ The harness does not hope agents self-correct. It detects stagnation patterns �
 
 > State files live in the platform's native directory: `.claude/` for Claude Code, `.codex/` for Codex CLI, `.cursor/` for Cursor IDE. All references to `.claude/` below should use the platform's state directory. Shared metrics (sessions.jsonl, learnings.jsonl) live in `.orchestrator/metrics/` — both platforms read and write there. See `skills/_shared/platform-tools.md` for tool mappings.
 
+## Phase 0: Bootstrap Gate
+
+Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to the Pre-Execution Check.
+
+> **Session-start only:** This gate check runs ONCE at the start of `/go` execution — before the first wave. It does NOT run before each wave step. Repeating the check per wave would add latency with no safety benefit, since `bootstrap.lock` is immutable within a session.
+
+<HARD-GATE>
+Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
+</HARD-GATE>
+
 ## Pre-Execution Check
 
 Before starting the first wave (Discovery role):

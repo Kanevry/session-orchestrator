@@ -7,24 +7,25 @@ Session Orchestrator is a Claude Code and Codex plugin that brings structured, w
 ## Table of Contents
 
 1. [Quick Start](#1-quick-start)
-2. [Commands Reference](#2-commands-reference)
-3. [Session Types](#3-session-types)
-4. [Session Config Reference](#4-session-config-reference)
-5. [The Wave Pattern](#5-the-wave-pattern)
-6. [Workflow Walkthrough](#6-workflow-walkthrough)
-7. [VCS Integration](#7-vcs-integration)
-8. [Quality Gates](#8-quality-gates)
-9. [Design-Code Alignment (Pencil Integration)](#9-design-code-alignment-pencil-integration)
-10. [Ecosystem Health](#10-ecosystem-health)
-11. [Quality Discovery](#11-quality-discovery)
-12. [Session Persistence](#12-session-persistence)
-13. [Safety Features](#13-safety-features)
-14. [Session Metrics](#14-session-metrics)
-15. [Cross-Session Learning](#15-cross-session-learning)
-16. [Adaptive Wave Sizing](#16-adaptive-wave-sizing)
-17. [Cheat Sheet](#17-cheat-sheet)
-18. [FAQ](#18-faq)
-19. [Troubleshooting](#19-troubleshooting)
+2. [Bootstrap Gate](#2-bootstrap-gate)
+3. [Commands Reference](#3-commands-reference)
+4. [Session Types](#4-session-types)
+5. [Session Config Reference](#5-session-config-reference)
+6. [The Wave Pattern](#6-the-wave-pattern)
+7. [Workflow Walkthrough](#7-workflow-walkthrough)
+8. [VCS Integration](#8-vcs-integration)
+9. [Quality Gates](#9-quality-gates)
+10. [Design-Code Alignment (Pencil Integration)](#10-design-code-alignment-pencil-integration)
+11. [Ecosystem Health](#11-ecosystem-health)
+12. [Quality Discovery](#12-quality-discovery)
+13. [Session Persistence](#13-session-persistence)
+14. [Safety Features](#14-safety-features)
+15. [Session Metrics](#15-session-metrics)
+16. [Cross-Session Learning](#16-cross-session-learning)
+17. [Adaptive Wave Sizing](#17-adaptive-wave-sizing)
+18. [Cheat Sheet](#18-cheat-sheet)
+19. [FAQ](#19-faq)
+20. [Troubleshooting](#20-troubleshooting)
 
 ---
 
@@ -97,7 +98,116 @@ The orchestrator researches your project state autonomously, presents findings w
 
 ---
 
-## 2. Commands Reference
+## 2. Bootstrap Gate
+
+The Bootstrap Gate ensures every repository has a minimal structure before any orchestrator command runs. It exists because LLMs will rationalize their way past soft warnings in empty repos — Codex was observed bypassing the `/plan` Phase-0 abort entirely by falling back to "pragmatic paths", leaving repos unstructured. The gate replaces soft warnings with a state-file-backed, non-bypassable check that works identically on Claude Code, Codex, and Cursor.
+
+### When the gate runs
+
+Phase 0 of every orchestrator skill — `/session`, `/go`, `/close`, `/plan`, `/discovery`, and `/evolve` — checks for three conditions before doing anything else:
+
+1. A `CLAUDE.md` (or `AGENTS.md` on Codex) exists in the project root
+2. That file contains a `## Session Config` section
+3. `.orchestrator/bootstrap.lock` is committed to the repository
+
+If all three are present, the gate passes silently in under a second. If any are missing, the bootstrap flow starts.
+
+### What happens in an empty repo
+
+When the gate triggers, the orchestrator:
+
+1. Reads your first prompt to infer what kind of project this is
+2. Recommends an intensity tier (see below) with one sentence of rationale
+3. Asks you to confirm with a single yes/no question (or choose a different tier)
+4. Runs the bootstrap flow for your tier
+5. Commits `.orchestrator/bootstrap.lock` and exits
+
+You then re-run your original command and proceed normally. The gate never fires again for this repo unless you delete the lock file.
+
+### The three tiers
+
+Tiers are cumulative — Standard includes everything Fast does, Deep includes everything Standard does.
+
+#### Fast — demos, spikes, prototypes
+
+Suitable for: a Glücksrad demo, a weekend prototype, a proof-of-concept you may throw away.
+
+Sets up:
+- Minimal `CLAUDE.md` with `## Session Config` (3-4 fields)
+- `.orchestrator/bootstrap.lock`
+
+No VCS issues, no PRD, no test scaffolding required.
+
+#### Standard — MVPs, internal tools, small SaaS
+
+Suitable for: a small SaaS product, an internal admin tool, a personal project you intend to maintain.
+
+Sets up everything in Fast, plus:
+- Standard `CLAUDE.md` with full Session Config
+- Baseline directory structure per archetype
+- VCS labels created (`priority:*`, `status:*`, `type:*`)
+- Initial `STATUS.md` SSOT file
+
+#### Deep — customer-facing systems, team repos, production
+
+Suitable for: a customer-facing product, a shared team repository, anything with SLAs or compliance requirements.
+
+Sets up everything in Standard, plus:
+- Full PRD scaffolding in `docs/prd/`
+- CI configuration baseline
+- Security policy stub
+- Comprehensive label taxonomy
+- `CONTRIBUTING.md` with session workflow conventions
+
+### Public path (no local baseline)
+
+If you do not have a local `projects-baseline` directory configured, the gate falls back to plugin-bundled minimal templates. Five archetypes are available:
+
+| Archetype | Use for |
+|-----------|---------|
+| `_minimal` | Any project not matching a specific archetype |
+| `static-html` | Static sites, landing pages |
+| `node-minimal` | Node.js scripts, CLI tools, Express APIs |
+| `nextjs-minimal` | Next.js applications |
+| `python-uv` | Python projects using uv |
+
+On Claude Code, `claude init` generates a baseline and then the gate proceeds normally. On Codex and Cursor, the plugin-bundled templates are used directly.
+
+### The `/bootstrap` command
+
+You can also run the bootstrap flow explicitly, outside of any session:
+
+```
+/bootstrap                    # Auto-detect tier from project context
+/bootstrap --fast             # Force Fast tier
+/bootstrap --standard         # Force Standard tier
+/bootstrap --deep             # Force Deep tier
+/bootstrap --upgrade standard # Upgrade an existing Fast repo to Standard
+/bootstrap --retroactive      # Bootstrap an existing repo without resetting it
+```
+
+`--retroactive` is the recommended path for existing repos that predate the Bootstrap Gate — it adds the missing `CLAUDE.md` structure and lock file without touching your existing code or configuration.
+
+### Anti-bureaucracy promise
+
+- **Normal flow:** exactly 1 question (tier confirmation)
+- **Ambiguous public path:** maximum 2 questions (archetype selection + tier confirmation)
+- The gate is idempotent — re-running it on an already-bootstrapped repo is a no-op
+- `.orchestrator/bootstrap.lock` is the mechanical truth — no external service, no network call
+
+### Troubleshooting: retroactively bootstrapping an existing repo
+
+If you have an existing repo that was created before the Bootstrap Gate and every orchestrator command now stops at Phase 0:
+
+```
+/bootstrap --retroactive
+```
+
+This adds the required structure around your existing files without modifying them. It takes under a minute.
+
+---
+
+## 3. Commands Reference
 
 Session Orchestrator provides five commands:
 
@@ -163,11 +273,11 @@ Structured requirement gathering, PRD generation, and issue creation. Accepts on
 
 `/plan` runs outside of sessions. Its output (PRD + issues) feeds into the next `/session`, which picks from those issues and executes them. You can skip `/plan` entirely and create issues manually — sessions work with any existing issues.
 
-**Requires:** `plan-baseline-path` in Session Config (for `/plan new` repo scaffolding). Not required for `/plan feature` or `/plan retro`.
+**Optional:** `plan-baseline-path` in Session Config (for `/plan new` repo scaffolding from your own baseline). When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Not required for `/plan feature` or `/plan retro`.
 
 ---
 
-## 3. Session Types
+## 4. Session Types
 
 ### Housekeeping
 
@@ -210,7 +320,7 @@ Best for: complex backend work, security audits, database refactoring, architect
 
 ---
 
-## 4. Session Config Reference
+## 5. Session Config Reference
 
 > **Skill authors:** The authoritative field reference used by all skills is [`docs/session-config-reference.md`](session-config-reference.md). Update that file when adding or changing Session Config fields.
 
@@ -278,7 +388,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
-| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Required for `/plan` skill. Error if missing when `/plan` is invoked. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Only required if you want to scaffold from your own baseline during `/plan new`. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
@@ -303,7 +413,7 @@ See [examples](examples/) for project-specific configurations (Next.js, Express 
 
 ---
 
-## 5. The Wave Pattern
+## 6. The Wave Pattern
 
 Feature and deep sessions execute work in structured waves, each assigned one of 5 roles. Each wave has a specific purpose, and agents within a wave run in parallel.
 
@@ -368,7 +478,7 @@ Between each wave, the orchestrator:
 
 ---
 
-## 6. Workflow Walkthrough
+## 7. Workflow Walkthrough
 
 Here is what happens step by step when you run a full feature session.
 
@@ -473,7 +583,7 @@ The orchestrator:
 
 ---
 
-## 7. VCS Integration
+## 8. VCS Integration
 
 Session Orchestrator works with both GitHub and GitLab. It manages issues, merge requests / pull requests, labels, milestones, and CI status throughout the session.
 
@@ -535,7 +645,7 @@ The orchestrator pushes to the `github` remote after every session commit. The r
 
 ---
 
-## 8. Quality Gates
+## 9. Quality Gates
 
 Session Orchestrator enforces quality at two levels: inter-wave checks during execution, and a full quality gate at session end.
 
@@ -613,7 +723,7 @@ All scripts require `jq`. Run `bash scripts/test/run-all.sh` to verify the test 
 
 ---
 
-## 9. Design-Code Alignment (Pencil Integration)
+## 10. Design-Code Alignment (Pencil Integration)
 
 If your project uses Pencil (`.pen`) design files, the orchestrator can automatically compare your implementation against the design after each implementation wave.
 
@@ -662,7 +772,7 @@ Pencil integration is entirely optional. If no `pencil` path is configured, desi
 
 ---
 
-## 10. Ecosystem Health
+## 11. Ecosystem Health
 
 For projects with deployed services or multiple related repositories, the orchestrator can check ecosystem health at session start.
 
@@ -710,7 +820,7 @@ If `health-endpoints` is not configured, the service table is omitted. If `cross
 
 ---
 
-## 11. Quality Discovery
+## 12. Quality Discovery
 
 The `/discovery` command runs systematic quality probes to find issues that don't have VCS issues yet.
 
@@ -761,7 +871,7 @@ discovery-confidence-threshold: 60   # default; raise to reduce noise
 
 ---
 
-## 12. Session Persistence
+## 13. Session Persistence
 
 Session Orchestrator persists session state so you can resume after crashes, pauses, or context window exhaustion.
 
@@ -789,7 +899,7 @@ Set `persistence: false` in your Session Config to disable STATE.md writing and 
 
 ---
 
-## 13. Safety Features
+## 14. Safety Features
 
 ### Scope Enforcement
 
@@ -837,7 +947,7 @@ Set `isolation: none` to disable worktrees (all agents work in the main working 
 
 ---
 
-## 14. Session Metrics
+## 15. Session Metrics
 
 Session Orchestrator tracks metrics across sessions to provide historical trends and inform future planning.
 
@@ -873,7 +983,7 @@ These metrics are only displayed once enough session history exists; projects wi
 
 ---
 
-## 15. Cross-Session Learning
+## 16. Cross-Session Learning
 
 The learning system captures patterns from completed sessions and surfaces them in future sessions as "Project Intelligence."
 
@@ -944,7 +1054,7 @@ Read-only display of all active learnings with confidence scores and expiry date
 
 ---
 
-## 16. Adaptive Wave Sizing
+## 17. Adaptive Wave Sizing
 
 Instead of fixed agent counts, the orchestrator scores session complexity and adjusts agent allocation dynamically.
 
@@ -975,7 +1085,7 @@ The `agents-per-wave` config value always caps the maximum.
 
 ---
 
-## 17. Cheat Sheet
+## 18. Cheat Sheet
 
 ### Commands
 
@@ -1048,7 +1158,7 @@ Finalization    Documentation, issues, commits
 
 ---
 
-## 18. FAQ
+## 19. FAQ
 
 ### Can I use this with GitHub?
 
@@ -1100,7 +1210,7 @@ No. `/plan` runs outside of sessions. The session scope is locked after `/sessio
 
 ---
 
-## 19. Troubleshooting
+## 20. Troubleshooting
 
 ### "glab: command not found" or "gh: command not found"
 

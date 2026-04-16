@@ -15,6 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+## [2.0.0-beta.6] — 2026-04-16
+
+Issue #98 (Epic) — Bootstrap Gate. Addresses the "LLM rationalizes past hard-stops" problem: in a new empty repo, Codex bypassed the `/plan` skill's Phase-0 abort by falling back to "pragmatic paths", leaving the repo unstructured. The gate is a state-file-backed, cross-platform (Claude Code / Codex / Cursor), non-bypassable replacement. All 20 test suites pass.
+
+### Added — Bootstrap Gate (Epic #98)
+
+- **Non-bypassable Bootstrap Gate** (`skills/_shared/bootstrap-gate.md`) runs in Phase 0 of every orchestrator skill (`/plan`, `/session`, `/go`, `/close`, `/discovery`, `/evolve`). If a repo lacks `CLAUDE.md` + `## Session Config` + `.orchestrator/bootstrap.lock`, the gate invokes a new bootstrap flow.
+- **Three intensity tiers** — Fast (demos/spikes), Standard (MVPs/products), Deep (production/team). Each tier is a strict superset of the previous. LLM recommends tier from first user prompt; user confirms with one question.
+- **Public path** for users without a local `projects-baseline`: `claude init` (Claude Code) or plugin-bundled minimal templates (Codex, Cursor). Five archetypes: `_minimal`, `static-html`, `node-minimal`, `nextjs-minimal`, `python-uv`.
+- **Anti-bureaucracy guardrails** — exactly 1 question in normal flow, max 2 in ambiguous public path; idempotent gate check; committed `.orchestrator/bootstrap.lock` as mechanical truth.
+- **New `/bootstrap` command** with `--fast`/`--standard`/`--deep`/`--upgrade <tier>`/`--retroactive` flags.
+- **Six new test scripts** covering gate-check, tiers, upgrade, public path, idempotency, red-team.
+
+### Changed
+
+- Phase 0 Bootstrap Gate prepended to all 6 orchestrator skills (`plan`, `session-start`, `wave-executor`, `session-end`, `discovery`, `evolve`).
+
+### Security
+
+- Sanitized placeholder substitution in `skills/bootstrap/public-fallback.md` (Python argv, not sed string interpolation).
+- Explicit file enumeration for `git add` in all bootstrap templates (no `git add -A`).
+- Redacted `glab api` / `gh api` error output to prevent token leakage.
+- Follow-up issues #108 (LOW security) and #109 (MEDIUM+LOW tech-debt) filed for remaining hardening.
+
+### Motivation
+
+Addresses the "LLM rationalizes past hard-stops" problem: in a new empty repo, Codex bypassed the `/plan` skill's Phase-0 abort by falling back to "pragmatic paths", leaving the repo unstructured. The gate is a state-file-backed, cross-platform (Claude Code / Codex / Cursor), non-bypassable replacement.
+
 ## [2.0.0-beta.5] - 2026-04-15
 
 Issue #85 — pre-dispatch grounding injection for friction-prone files. Direct translation of the Hashline idea from the *Harness Problem* abgleich (gap G3) to wave-executor's layer: when an agent's scope includes a file with recent `edit-format-friction` stagnation history (from #84 telemetry), the agent prompt is prepended with a line-numbered view of that file so the agent references lines stably instead of re-matching character spans. Per-agent scope, capped at `grounding-injection-max-files` (default 3), gated on `persistence: true`. All 14 script test suites remain green; integration fixtures grew from 107 to 122 assertions.
