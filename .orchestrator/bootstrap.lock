@@ -1,0 +1,6 @@
+# .orchestrator/bootstrap.lock
+version: 1
+tier: deep
+archetype: null
+timestamp: 2026-04-16T09:30:35Z
+source: retroactive
