@@ -6,6 +6,7 @@
 
 SCRIPT_DIR="${BATS_TEST_DIRNAME}/.."
 SCRIPT="${SCRIPT_DIR}/validator.sh"
+VALIDATOR_MJS="${SCRIPT_DIR}/validator.mjs"
 FIXTURES="${BATS_TEST_DIRNAME}/fixtures"
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -209,4 +210,38 @@ get_field() {
   local n
   n=$(get_field "$output" '.files_checked')
   [ "$n" = "2" ]
+}
+
+# ── Issue #19: vault-dir guard (isVaultDir) ────────────────────────────────
+
+@test "fail-fast: no VAULT_DIR, cwd not a vault -> exit 2 with actionable error" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "cd '$tmpdir' && node '$VALIDATOR_MJS'"
+  rm -rf "$tmpdir"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"VAULT_DIR is not set"* ]]
+}
+
+@test "happy-path-no-env: no VAULT_DIR, cwd is a vault (_meta/ present) -> exit 0, JSON on stdout" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  mkdir -p "$tmpdir/_meta"
+  # Copy a valid .md note so the validator has something to check
+  cp "$FIXTURES/clean-vault/hello-world.md" "$tmpdir/hello-world.md"
+  run bash -c "cd '$tmpdir' && node '$VALIDATOR_MJS'"
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq . >/dev/null
+}
+
+@test "warn-but-continue: VAULT_DIR set to a non-vault dir -> warning on stderr, not exit 2" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  # tmpdir has no vault markers
+  run bash -c "VAULT_DIR='$tmpdir' node '$VALIDATOR_MJS' 2>&1"
+  rm -rf "$tmpdir"
+  # Must not exit 2 (explicit override is respected)
+  [ "$status" -ne 2 ]
+  [[ "$output" == *"lacks vault markers"* ]]
 }

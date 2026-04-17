@@ -33,7 +33,7 @@ VAULT_DIR=/path/to/vault bash ~/Projects/session-orchestrator/skills/vault-sync/
 
 - Exit `0` — vault valid (or skipped because no vault exists / no .md files). Warnings may still be present in the JSON report.
 - Exit `1` — one or more validation errors. Session-end surfaces them in the quality gate report and refuses to close.
-- Exit `2` — infrastructure error (missing `node`, missing `validator.mjs`, cannot bootstrap deps).
+- Exit `2` — invalid invocation or infrastructure error. Two cases: (a) `VAULT_DIR` is not set and `cwd` does not look like a Meta-Vault (no `_meta/`, no `.obsidian/`, no `CLAUDE.md` with `## Session Config` + `vault-sync:` block) — actionable error printed to stderr; (b) infrastructure error (missing `node`, missing `validator.mjs`, cannot bootstrap deps). In both cases no JSON is emitted to stdout.
 
 JSON output shape (stdout):
 
@@ -151,7 +151,7 @@ The following fields are planned for Phase 2/3 but are not consumed by the curre
 - **Exit codes**:
   - `0` -- vault is valid (or scan was skipped for a legitimate reason)
   - `1` -- validation errors (one or more files failed a rule)
-  - `2` -- infrastructure error (validator command not found, `VAULT_ROOT` missing when `enabled: true`, validator crashed)
+  - `2` -- invalid invocation (VAULT_DIR unset + cwd not a vault) or infrastructure error (validator command not found, validator crashed). No JSON emitted to stdout in this case.
 - **Surface points**:
   - Layer B (wave-executor): inline in the wave progress output, next to typecheck / lint results
   - Layer A (session-end): in the quality gate report, same format as other gates
