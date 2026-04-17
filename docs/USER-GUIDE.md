@@ -54,7 +54,7 @@ Claude Code installs plugins through slash commands inside a running session. Th
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0-beta.6 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
+🎯 Session Orchestrator v2.0.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
 ```
 
 #### Codex
