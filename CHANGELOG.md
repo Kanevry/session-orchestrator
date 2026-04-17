@@ -7,13 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-04-17
+
+First stable release of the 2.x line. Bundles six betas worth of work into a single stable cut.
+
 ### Added
+- **Bootstrap Gate** (beta.6): non-bypassable Phase-0 check that prevents orchestrator skills from running against unstructured repos. Three tiers (Fast/Standard/Deep), committed `.orchestrator/bootstrap.lock`, new `/bootstrap` command with `--fast`/`--standard`/`--deep`/`--upgrade`/`--retroactive` flags.
+- **Pre-dispatch grounding injection** (beta.5): prepends line-numbered GROUNDING blocks to agent prompts for files with recent `edit-format-friction` stagnation history, reducing Edit-tool retry loops. Per-agent scope, capped at `grounding-injection-max-files` (default 3), gated on `persistence: true`.
+- **Learnings-system efficiency** (beta.4): ranked cap on surfaced learnings (`learnings-surface-top-n`, default 15), passive confidence decay for untouched entries, surface-health telemetry in session-start, and retirement of the legacy split-brain `metrics/learnings.jsonl` path.
+- **Scope and command enforcement hardening** (beta.2): shared `scripts/lib/hardening.sh` module with per-gate toggles (`enforcement-gates`), actionable denial suggestions, stagnation pattern detection (Pagination Spiral, Turn-Key Repetition, Error Echo), and file-level grounding verification (`grounding-check`).
+- **Stagnation telemetry** (beta.2): session-end emits per-agent stagnation events with `pattern` and `error_class` fields; evolve accumulates these into `stagnation-class-frequency` learnings. Error-Class Taxonomy covers six classes.
+- **Clank Event Bus integration** (beta.1): async event emission for session start, stop, and agent stop events via `scripts/lib/events.sh`. Graceful degradation when unconfigured.
+- **Wave execution foundation** (alpha series): role-based wave assignment, adaptive sizing from complexity scoring, cross-session learning system, worktree isolation, circuit breaker with maxTurns and spiral detection, session persistence via STATE.md, PreToolUse enforcement hooks, and deterministic config parsing in `scripts/parse-config.sh`.
 
 ### Changed
+- Marketplace install identifier is `session-orchestrator@kanevry` (renamed from the redundant `session-orchestrator@session-orchestrator` in beta.3).
+- Phase 0 of every orchestrator skill (`/plan`, `/session`, `/go`, `/close`, `/discovery`, `/evolve`) now runs the Bootstrap Gate before any other work.
+- Cross-session learnings are now ranked by confidence and capped before injection; entries that go untouched across sessions decay gradually rather than staying at full weight indefinitely.
 
-### Fixed
+### Security
+- Placeholder substitution in bootstrap public-fallback templates uses Python `argv`, not `sed` string interpolation, to prevent injection via repo names.
+- Explicit file enumeration for `git add` in all bootstrap templates; no `git add -A` in generated commit steps.
+- `glab api` and `gh api` error output is redacted to prevent token leakage in hook logs.
+- Scope enforcement defaults to fail-closed (`strict`) when the `enforcement` field is absent from `wave-scope.json`.
+- `CLAUDE_PROJECT_DIR` is validated to contain a `.claude/` directory before being trusted by enforcement hooks.
 
-### Tests
+### Migration
+- Consumer repos with a legacy `<state-dir>/metrics/learnings.jsonl` file should run `bash <plugin>/scripts/migrate-legacy-learnings.sh` once after upgrading. The script is idempotent and produces a `.bak` copy of anything it touches.
+- The plugin install command changed in beta.3: use `/plugin marketplace add <source>` and `/plugin install session-orchestrator@kanevry` inside a running Claude Code session. There is no `claude plugin` shell command.
 
 ## [2.0.0-beta.6] — 2026-04-16
 
