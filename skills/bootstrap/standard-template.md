@@ -587,6 +587,77 @@ indent_size = 2
 
 ---
 
+## Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline
+
+This step is OPT-IN and only executes when ALL of the following are true:
+- `baseline-ref` is present in Session Config (e.g., `baseline-ref: main`)
+- `GITLAB_TOKEN` env var is set
+- The session-orchestrator plugin includes `scripts/lib/fetch-baseline.sh`
+
+When triggered, this step pulls the canonical `.claude/rules/*.md` and (optionally) `.claude/agents/*.md` files directly from the baseline GitLab project (project 52 by default) into the new repo, then writes `.claude/.baseline-fetch.lock` recording the fetch.
+
+Without this step, rules arrive in the repo via Clank's weekly baseline sync MRs (the legacy path). This step short-circuits that delay so a freshly-bootstrapped repo starts with current rules immediately.
+
+**Implementation:**
+
+```bash
+BASELINE_REF=$(echo "$CONFIG" | jq -r '."baseline-ref" // empty')
+BASELINE_PROJECT_ID=$(echo "$CONFIG" | jq -r '."baseline-project-id" // "52"')
+
+if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -f "$PLUGIN_ROOT/scripts/lib/fetch-baseline.sh" ]]; then
+  source "$PLUGIN_ROOT/scripts/lib/fetch-baseline.sh"
+
+  # Default rule manifest — superset will harmlessly 404 individual files
+  # if the baseline ever drops one (cache will keep last-known-good).
+  RULES_MANIFEST=$(mktemp)
+  cat > "$RULES_MANIFEST" <<MANIFEST
+.claude/rules/development.md
+.claude/rules/security.md
+.claude/rules/security-web.md
+.claude/rules/security-compliance.md
+.claude/rules/testing.md
+.claude/rules/test-quality.md
+.claude/rules/frontend.md
+.claude/rules/backend.md
+.claude/rules/backend-data.md
+.claude/rules/infrastructure.md
+.claude/rules/swift.md
+.claude/rules/mvp-scope.md
+.claude/rules/cli-design.md
+.claude/rules/parallel-sessions.md
+.claude/rules/ai-agent.md
+.claude/rules/claude-code-usage.md
+MANIFEST
+
+  echo "Fetching canonical rules from baseline (project $BASELINE_PROJECT_ID, ref $BASELINE_REF)…"
+  # fetch_baseline_files_batch writes successful paths to $BASELINE_FETCH_SUCCESS_LOG.
+  # Default location is $RULES_MANIFEST.success — override only if you need a custom path.
+  if fetch_baseline_files_batch "$BASELINE_PROJECT_ID" "$BASELINE_REF" "$RULES_MANIFEST" "$REPO_ROOT"; then
+    SUCCESS_LOG="${BASELINE_FETCH_SUCCESS_LOG:-${RULES_MANIFEST}.success}"
+    if [[ -s "$SUCCESS_LOG" ]]; then
+      FETCHED_JSON=$(jq -R . < "$SUCCESS_LOG" | jq -s .)
+      write_baseline_fetch_lock "$REPO_ROOT/.claude/.baseline-fetch.lock" \
+        "$BASELINE_PROJECT_ID" "$BASELINE_REF" "$FETCHED_JSON"
+      echo "Wrote .claude/.baseline-fetch.lock ($(wc -l < "$SUCCESS_LOG" | tr -d ' ') files)"
+    else
+      echo "WARNING: batch reported success but produced empty success log; lock not written" >&2
+    fi
+    rm -f "$SUCCESS_LOG"
+  else
+    echo "WARNING: baseline fetch failed; rules will arrive via Clank sync MRs (legacy path)" >&2
+  fi
+  rm -f "$RULES_MANIFEST"
+else
+  echo "Skipping baseline fetch: baseline-ref not configured or GITLAB_TOKEN unset (legacy Clank-sync path)"
+fi
+```
+
+**Failure handling:** If the fetch fails, this step DOES NOT abort bootstrap. The repo still has its scaffold; rules will arrive via the legacy Clank weekly sync MR. The user is informed via stderr.
+
+**Idempotency:** Re-running bootstrap on an existing repo will overwrite `.claude/rules/*.md` files. Local edits to baseline rules in a repo will be lost on re-fetch — this is intentional (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched).
+
+---
+
 ## Step 6: Write bootstrap.lock (Standard)
 
 Write `.orchestrator/bootstrap.lock`:
@@ -614,7 +685,7 @@ cd "$REPO_ROOT"
 BOOTSTRAP_FILES=(
   CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock
   package.json pyproject.toml tsconfig.json eslint.config.mjs .prettierrc
-  .editorconfig src/ tests/
+  .editorconfig src/ tests/ .claude/
 )
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
 for _f in "${BOOTSTRAP_FILES[@]}"; do

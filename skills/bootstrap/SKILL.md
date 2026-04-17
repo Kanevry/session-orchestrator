@@ -232,9 +232,60 @@ Follow the template's instructions precisely. The template is responsible for cr
 **Platform note for CLAUDE.md generation:**
 When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the full platform-specific CLAUDE.md generation logic (claude init path for Claude Code; `_minimal` template synthesis for Codex/Cursor). When `PATH_TYPE = private`, use the baseline scripts at `$BASELINE_PATH`.
 
+## Phase 3.5: (Optional) Rules-Fetch Bridge
+
+> Closes session-orchestrator issue #110.
+
+After the tier template completes scaffolding (Phase 3), the Standard and Deep templates run an optional rules-fetch step that pulls canonical `.claude/rules/*.md` (and optionally `.claude/agents/*.md`) directly from the baseline GitLab project. The step is opt-in and only fires when:
+
+- `baseline-ref` is present in Session Config
+- `GITLAB_TOKEN` env var is set
+- `scripts/lib/fetch-baseline.sh` is present in the plugin
+
+When triggered, the step:
+
+1. Sources `scripts/lib/fetch-baseline.sh` (defines `fetch_baseline_file`, `fetch_baseline_files_batch`, `write_baseline_fetch_lock`)
+2. Fetches each rule listed in a default manifest from the configured `baseline-project-id` (default `52`) at the configured `baseline-ref`
+3. Writes `.claude/.baseline-fetch.lock` recording what was fetched
+4. Populates `.claude/.baseline-cache/` for offline fallback on subsequent invocations
+
+When the fetch fails (network error, auth, missing file), bootstrap **does not abort**. Rules will arrive in the repo via Clank's weekly baseline sync MRs (the legacy path). A warning is printed.
+
+**Why opt-in:** Repos without `baseline-ref` continue to receive rules via the existing Clank sync flow. The fetch bridge is a faster on-demand alternative for newly-bootstrapped repos that want current rules immediately.
+
+**Local edits:** Re-running bootstrap with `baseline-ref` set will overwrite `.claude/rules/*.md` (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched, not overwritten).
+
+See `standard-template.md` (Step S99) and `deep-template.md` (Step D99) for the implementation, and `docs/session-config-reference.md` for the `baseline-ref` and `baseline-project-id` field definitions.
+
+### `.claude/.baseline-fetch.lock` Schema
+
+The lock file is committed to git and records what was fetched.
+
+```yaml
+# .claude/.baseline-fetch.lock
+version: 1
+project_id: 52
+baseline_ref: main
+fetched_at: 2026-04-17T13:42:00Z   # ISO 8601 UTC
+files:
+  - .claude/rules/development.md
+  - .claude/rules/security.md
+  - .claude/rules/...
+```
+
+| Field | Description |
+|---|---|
+| `version` | Lock file schema version. Currently `1`. |
+| `project_id` | GitLab project ID the files were fetched from. |
+| `baseline_ref` | The git ref (branch/tag/SHA) at fetch time. |
+| `fetched_at` | ISO 8601 UTC timestamp. |
+| `files` | List of fetched file paths (relative to repo root). |
+
+---
+
 ## Phase 4: Write bootstrap.lock
 
-After all template files are written and committed, write `.orchestrator/bootstrap.lock`:
+After all template files are written and committed, write `.orchestrator/bootstrap.lock` (and, if the rules-fetch bridge ran, also `.claude/.baseline-fetch.lock` — see Phase 3.5):
 
 ```yaml
 # .orchestrator/bootstrap.lock
@@ -270,3 +321,4 @@ If invoked directly via `/bootstrap`: report the created files list and stop.
 - **NEVER ask more than 2 questions** — even if the user's intent is unclear, make a best-effort recommendation and let the user correct via `/bootstrap --upgrade` later.
 - **ALWAYS commit** — bootstrap ends with a git commit. The lock file is part of that commit.
 - **ALWAYS check for retroactive flag** — if `--retroactive` is in `$ARGUMENTS`, skip all scaffolding and jump directly to writing `bootstrap.lock` (tier inferred from existing file inventory, fallback: `fast`).
+- **NEVER abort bootstrap on rules-fetch failure** — rules-fetch is opt-in and best-effort. The legacy Clank sync path is the safety net.
