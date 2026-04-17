@@ -3,34 +3,15 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TMPDIRS=()
+
+# shellcheck source=helpers/bootstrap-helpers.sh
+source "$(dirname "$0")/helpers/bootstrap-helpers.sh"
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------
-# Helpers
+# Helpers (local)
 # --------------------------------------------------------------------------
-
-assert_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    echo "  PASS: $label"
-    PASS=$(( PASS + 1 ))
-  else
-    echo "  FAIL: $label"
-    echo "    expected: $expected"
-    echo "    actual:   $actual"
-    FAIL=$(( FAIL + 1 ))
-  fi
-}
-
-assert_file_exists() {
-  local label="$1" file="$2"
-  if [[ -f "$file" ]]; then
-    echo "  PASS: $label"
-    PASS=$(( PASS + 1 ))
-  else
-    echo "  FAIL: $label — file not found: $file"
-    FAIL=$(( FAIL + 1 ))
-  fi
-}
 
 assert_file_absent() {
   local label="$1" file="$2"
@@ -52,26 +33,6 @@ lock_source() {
   local lock_file="$1"
   grep "^source:" "$lock_file" | awk '{print $2}'
 }
-
-# --------------------------------------------------------------------------
-# Tempdir setup + cleanup
-# --------------------------------------------------------------------------
-
-TMPDIRS=()
-
-make_tempdir() {
-  local d
-  d="$(mktemp -d)"
-  TMPDIRS+=("$d")
-  echo "$d"
-}
-
-cleanup() {
-  for d in "${TMPDIRS[@]+"${TMPDIRS[@]}"}"; do
-    rm -rf "$d"
-  done
-}
-trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Tier rank helpers — used for downgrade detection

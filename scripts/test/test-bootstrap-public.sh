@@ -3,23 +3,15 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TMPDIRS=()
+
+# shellcheck source=helpers/bootstrap-helpers.sh
+source "$(dirname "$0")/helpers/bootstrap-helpers.sh"
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------
-# Helpers
+# Helpers (local)
 # --------------------------------------------------------------------------
-
-assert_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    echo "  PASS: $label"
-    ((++PASS))
-  else
-    echo "  FAIL: $label"
-    echo "    expected: $expected"
-    echo "    actual:   $actual"
-    ((++FAIL))
-  fi
-}
 
 assert_contains() {
   local label="$1" needle="$2" haystack="$3"
@@ -30,31 +22,6 @@ assert_contains() {
     echo "  FAIL: $label"
     echo "    expected to contain: $needle"
     echo "    actual: $haystack"
-    ((++FAIL))
-  fi
-}
-
-assert_file_exists() {
-  local label="$1" path="$2"
-  if [[ -e "$path" ]]; then
-    echo "  PASS: $label"
-    ((++PASS))
-  else
-    echo "  FAIL: $label"
-    echo "    file not found: $path"
-    ((++FAIL))
-  fi
-}
-
-assert_file_not_contains() {
-  local label="$1" needle="$2" file="$3"
-  if ! grep -qF "$needle" "$file" 2>/dev/null; then
-    echo "  PASS: $label"
-    ((++PASS))
-  else
-    echo "  FAIL: $label"
-    echo "    file should not contain: $needle"
-    echo "    file: $file"
     ((++FAIL))
   fi
 }
@@ -140,26 +107,6 @@ resolve_template_dir() {
     *)              TMPL_DIR="" ;;
   esac
 }
-
-# --------------------------------------------------------------------------
-# Tempdir setup + cleanup
-# --------------------------------------------------------------------------
-
-TMPDIRS=()
-
-make_tempdir() {
-  local d
-  d="$(mktemp -d)"
-  TMPDIRS+=("$d")
-  echo "$d"
-}
-
-cleanup() {
-  for d in "${TMPDIRS[@]+"${TMPDIRS[@]}"}"; do
-    rm -rf "$d"
-  done
-}
-trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Scenario A: plan-baseline-path key absent → public path

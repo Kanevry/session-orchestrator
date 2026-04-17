@@ -3,34 +3,15 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TMPDIRS=()
+
+# shellcheck source=helpers/bootstrap-helpers.sh
+source "$(dirname "$0")/helpers/bootstrap-helpers.sh"
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------
-# Helpers
+# Helpers (local)
 # --------------------------------------------------------------------------
-
-assert_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    echo "  PASS: $label"
-    PASS=$(( PASS + 1 ))
-  else
-    echo "  FAIL: $label"
-    echo "    expected: $expected"
-    echo "    actual:   $actual"
-    FAIL=$(( FAIL + 1 ))
-  fi
-}
-
-assert_file_exists() {
-  local label="$1" file="$2"
-  if [[ -f "$file" ]]; then
-    echo "  PASS: $label"
-    PASS=$(( PASS + 1 ))
-  else
-    echo "  FAIL: $label — file not found: $file"
-    FAIL=$(( FAIL + 1 ))
-  fi
-}
 
 assert_file_absent() {
   local label="$1" file="$2"
@@ -52,26 +33,6 @@ lock_source() {
   local lock_file="$1"
   grep "^source:" "$lock_file" | awk '{print $2}'
 }
-
-# --------------------------------------------------------------------------
-# Tempdir setup + cleanup
-# --------------------------------------------------------------------------
-
-TMPDIRS=()
-
-make_tempdir() {
-  local d
-  d="$(mktemp -d)"
-  TMPDIRS+=("$d")
-  echo "$d"
-}
-
-cleanup() {
-  for d in "${TMPDIRS[@]+"${TMPDIRS[@]}"}"; do
-    rm -rf "$d"
-  done
-}
-trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Helper: simulate Fast tier scaffold
@@ -305,6 +266,67 @@ assert_file_exists "3: feature_request.md exists"            "$REPO_3/.github/IS
 assert_file_exists "3: pull_request_template.md exists"      "$REPO_3/.github/pull_request_template.md"
 
 assert_eq          "3: lock tier = deep"                     "deep" "$(lock_tier "$LOCK_3")"
+
+# --------------------------------------------------------------------------
+# Scenario 3b: Deep tier with vcs: none — VCS-specific files MUST be absent
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 3b: Deep tier (vcs: none) — no VCS-specific files ---"
+
+simulate_deep_no_vcs() {
+  local root="$1"
+  simulate_standard "$root"
+
+  # Overwrite lock with deep tier
+  cat > "$root/.orchestrator/bootstrap.lock" <<EOF
+version: 1
+tier: deep
+archetype: node-minimal
+timestamp: 2026-04-16T09:00:00Z
+source: plugin-template
+EOF
+
+  # Overwrite CLAUDE.md with vcs: none
+  cat > "$root/CLAUDE.md" <<'EOF'
+# test-repo
+
+Test project.
+
+## Session Config
+
+project-name: test-repo
+vcs: none
+EOF
+
+  # Deep tier with vcs: none must NOT create any VCS-specific files.
+  # (No .github/**, no .gitlab-ci.yml)
+  # Only CHANGELOG.md and other non-VCS deep files are written.
+  cat > "$root/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+EOF
+}
+
+REPO_3B="$(make_tempdir)"
+simulate_deep_no_vcs "$REPO_3B"
+
+LOCK_3B="$REPO_3B/.orchestrator/bootstrap.lock"
+
+assert_eq          "3b: lock tier = deep"                              "deep"  "$(lock_tier "$LOCK_3B")"
+
+# VCS-specific files must be absent
+assert_file_absent "3b: no .github/workflows/ci.yml (vcs: none)"      "$REPO_3B/.github/workflows/ci.yml"
+assert_file_absent "3b: no .github/CODEOWNERS (vcs: none)"            "$REPO_3B/.github/CODEOWNERS"
+assert_file_absent "3b: no .github/ISSUE_TEMPLATE/ dir"               "$REPO_3B/.github/ISSUE_TEMPLATE/bug_report.md"
+assert_file_absent "3b: no .github/pull_request_template.md"          "$REPO_3B/.github/pull_request_template.md"
+assert_file_absent "3b: no .gitlab-ci.yml (vcs: none)"                "$REPO_3B/.gitlab-ci.yml"
+
+# Non-VCS deep files must still be present
+assert_file_exists "3b: CLAUDE.md exists"                             "$REPO_3B/CLAUDE.md"
+assert_file_exists "3b: CHANGELOG.md exists"                          "$REPO_3B/CHANGELOG.md"
+assert_file_exists "3b: package.json exists (inherited from Standard)" "$REPO_3B/package.json"
+assert_file_exists "3b: bootstrap.lock exists"                         "$LOCK_3B"
 
 # --------------------------------------------------------------------------
 # Summary

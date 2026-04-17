@@ -3,23 +3,15 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TMPDIRS=()
+
+# shellcheck source=helpers/bootstrap-helpers.sh
+source "$(dirname "$0")/helpers/bootstrap-helpers.sh"
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------
-# Helpers
+# Helpers (local)
 # --------------------------------------------------------------------------
-
-assert_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    echo "  PASS: $label"
-    ((++PASS))
-  else
-    echo "  FAIL: $label"
-    echo "    expected: $expected"
-    echo "    actual:   $actual"
-    ((++FAIL))
-  fi
-}
 
 # Gate check function — implements the algorithm from skills/_shared/bootstrap-gate.md
 # Sets GATE_STATUS (OPEN | CLOSED) and GATE_REASON in the caller's scope.
@@ -58,26 +50,6 @@ gate_check() {
   GATE_STATUS="OPEN"
   GATE_REASON=""
 }
-
-# --------------------------------------------------------------------------
-# Tempdir setup + cleanup
-# --------------------------------------------------------------------------
-
-TMPDIRS=()
-
-make_tempdir() {
-  local d
-  d="$(mktemp -d)"
-  TMPDIRS+=("$d")
-  echo "$d"
-}
-
-cleanup() {
-  for d in "${TMPDIRS[@]+"${TMPDIRS[@]}"}"; do
-    rm -rf "$d"
-  done
-}
-trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Scenario A: Empty tempdir — no CLAUDE.md → GATE_CLOSED / no-claude-md
