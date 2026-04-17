@@ -77,10 +77,50 @@ The format and all fields are identical on both platforms. The section header mu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `baseline-ref` | string (git ref) or null | null | Git ref (branch, tag, or SHA) on the baseline GitLab project from which to fetch canonical `.claude/rules/*.md` and `.claude/agents/*.md` during `/bootstrap`. When null, rules arrive via Clank's weekly baseline sync MRs (legacy path). See [baseline-ref](#baseline-ref) below. |
+| `baseline-project-id` | string or number | `"52"` | GitLab project ID of the baseline repository. Defaults to `"52"` (`infrastructure/projects-baseline`). Has no effect when `baseline-ref` is unset. See [baseline-project-id](#baseline-project-id) below. |
 | `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Previously required for `/plan new` repo scaffolding; now only required if you want to scaffold from your own baseline. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
+
+### baseline-ref
+
+- **Type:** string (git ref) | null
+- **Default:** null
+- **Used by:** bootstrap (rules-fetch bridge)
+
+The git ref (branch name, tag, or commit SHA) on the baseline GitLab project from which to fetch canonical `.claude/rules/*.md` and `.claude/agents/*.md` during `/bootstrap`. When set, the rules-fetch bridge runs as a post-scaffold step.
+
+When `null` (the default), rules arrive in the repo via Clank's weekly baseline sync MRs (the legacy path). Setting `baseline-ref: main` short-circuits that delay so a freshly-bootstrapped repo starts with current rules immediately.
+
+Pin to a specific SHA for reproducible bootstraps:
+```yaml
+baseline-ref: a1b2c3d4
+```
+
+Or float on a branch for always-current rules:
+```yaml
+baseline-ref: main
+```
+
+Requires:
+- `GITLAB_TOKEN` env var set with read scope on the baseline project
+- `scripts/lib/fetch-baseline.sh` present in the session-orchestrator plugin
+
+If the fetch fails (network error, auth error, missing file), bootstrap continues without aborting — rules will arrive via the legacy Clank sync path. A warning is printed.
+
+See: session-orchestrator issue #110, projects-baseline `docs/REPO-STATUS.md`.
+
+### baseline-project-id
+
+- **Type:** string | number
+- **Default:** `"52"` (infrastructure/projects-baseline on gitlab.gotzendorfer.at)
+- **Used by:** bootstrap (rules-fetch bridge)
+
+The numeric GitLab project ID of the baseline repository. Defaults to `"52"` which corresponds to `infrastructure/projects-baseline`. Override only when adopting this plugin against a different baseline source.
+
+Used together with `baseline-ref`. Has no effect when `baseline-ref` is unset.
 
 ## Vault Sync
 

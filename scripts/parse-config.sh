@@ -509,6 +509,8 @@ V_PENCIL=$(json_string "pencil")
 V_TEST_CMD=$(json_string "test-command" "pnpm test --run")
 V_TYPECHECK_CMD=$(json_string "typecheck-command" "tsgo --noEmit")
 V_LINT_CMD=$(json_string "lint-command" "pnpm lint")
+V_BASELINE_REF=$(json_string "baseline-ref")
+V_BASELINE_PROJECT_ID=$(json_string "baseline-project-id")
 V_PLAN_BASELINE=$(json_string "plan-baseline-path")
 V_PLAN_VISIBILITY=$(json_string "plan-default-visibility" "internal")
 V_PLAN_PRD=$(json_string "plan-prd-location" "docs/prd/")
@@ -608,6 +610,8 @@ jq -n \
   --argjson enforcement "$V_ENFORCEMENT" \
   --argjson isolation "$V_ISOLATION" \
   --argjson max_turns "$V_MAX_TURNS" \
+  --argjson baseline_ref "$V_BASELINE_REF" \
+  --argjson baseline_project_id "$V_BASELINE_PROJECT_ID" \
   --argjson plan_baseline_path "$V_PLAN_BASELINE" \
   --argjson plan_default_visibility "$V_PLAN_VISIBILITY" \
   --argjson plan_prd_location "$V_PLAN_PRD" \
@@ -655,6 +659,8 @@ jq -n \
     "enforcement": $enforcement,
     "isolation": $isolation,
     "max-turns": $max_turns,
+    "baseline-ref": $baseline_ref,
+    "baseline-project-id": $baseline_project_id,
     "plan-baseline-path": $plan_baseline_path,
     "plan-default-visibility": $plan_default_visibility,
     "plan-prd-location": $plan_prd_location,

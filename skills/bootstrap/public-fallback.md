@@ -24,6 +24,8 @@ Decision logic (evaluated in order — first match wins):
 
 Set `PATH_TYPE = private | public`. Do not report this detection to the user — it is silent.
 
+> **Note on rules-fetch (Phase 3.5 of SKILL.md):** The optional rules-fetch step runs regardless of `PATH_TYPE`. Both private (with `plan-baseline-path` set) and public (without it) repos can opt into the fetch by setting `baseline-ref` in Session Config. The fetch is independent of how the initial scaffold was generated.
+
 ---
 
 ## Private Path

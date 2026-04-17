@@ -164,8 +164,58 @@ function isExcluded(relPath) {
   return false;
 }
 
+// ── Vault marker detection ──────────────────────────────────────────────────
+// Returns true if dir contains at least one recognized vault marker:
+//   1. _meta/ directory
+//   2. CLAUDE.md containing both "## Session Config" and "vault-sync:"
+//   3. .obsidian/ directory
+function isVaultDir(dir) {
+  if (existsSync(join(dir, '_meta')) && statSync(join(dir, '_meta')).isDirectory()) return true;
+  if (existsSync(join(dir, '.obsidian')) && statSync(join(dir, '.obsidian')).isDirectory()) return true;
+  const claudeMd = join(dir, 'CLAUDE.md');
+  if (existsSync(claudeMd)) {
+    try {
+      const content = readFileSync(claudeMd, 'utf8');
+      if (content.includes('## Session Config') && content.includes('vault-sync:')) return true;
+    } catch {
+      // unreadable CLAUDE.md — not a vault marker
+    }
+  }
+  return false;
+}
+
 // ── Resolve vault dir ───────────────────────────────────────────────────────
-const vaultDir = resolve(process.env.VAULT_DIR || process.cwd());
+let vaultDir;
+if (process.env.VAULT_DIR) {
+  vaultDir = resolve(process.env.VAULT_DIR);
+  // Only warn when the directory exists but lacks vault markers.
+  // Non-existent dirs are handled further down by the existsSync guard (status: skipped).
+  if (existsSync(vaultDir) && statSync(vaultDir).isDirectory() && !isVaultDir(vaultDir)) {
+    process.stderr.write(
+      'vault-sync: warning: VAULT_DIR set but directory lacks vault markers (_meta/, CLAUDE.md with vault-sync, or .obsidian/)\n',
+    );
+  }
+} else {
+  const cwd = process.cwd();
+  if (isVaultDir(cwd)) {
+    vaultDir = resolve(cwd);
+  } else {
+    process.stderr.write(
+      [
+        'vault-sync: error: VAULT_DIR is not set and the current working directory does not look like a Meta-Vault.',
+        '',
+        'Expected one of the following in cwd:',
+        '  - _meta/ directory',
+        "  - CLAUDE.md with a '## Session Config' and 'vault-sync:' block",
+        '  - .obsidian/ directory',
+        '',
+        'Fix: set VAULT_DIR to the vault root, or cd into the vault before running.',
+        '',
+      ].join('\n'),
+    );
+    process.exit(2);
+  }
+}
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',

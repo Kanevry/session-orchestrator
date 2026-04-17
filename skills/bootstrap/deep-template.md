@@ -455,6 +455,16 @@ If the call fails, log the structured message above and continue. Raw API respon
 
 ---
 
+## Step D99: (Optional) Baseline Fetch — Inherited from Standard
+
+Standard-template Step S99 already executed as part of "Step 1–8: Execute Standard Tier" above. No additional fetch action is needed here.
+
+If S99 ran successfully, `.claude/rules/*.md` and `.claude/.baseline-fetch.lock` are already written to `$REPO_ROOT`. These files are included in the Deep commit at Step D8 via the `.claude/` entry in `BOOTSTRAP_FILES`.
+
+If S99 was skipped (no `baseline-ref` or no `GITLAB_TOKEN`), that skip state is already logged; rules will arrive via the legacy Clank weekly sync MR path.
+
+---
+
 ## Step D7: Write bootstrap.lock (Deep)
 
 Write `.orchestrator/bootstrap.lock`:
@@ -482,7 +492,7 @@ BOOTSTRAP_FILES=(
   CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock
   package.json pyproject.toml tsconfig.json eslint.config.mjs .prettierrc
   .editorconfig src/ tests/ CHANGELOG.md CODEOWNERS
-  .gitlab/ .github/
+  .gitlab/ .github/ .claude/
 )
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
 for _f in "${BOOTSTRAP_FILES[@]}"; do
