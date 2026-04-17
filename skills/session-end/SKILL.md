@@ -52,27 +52,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 
 ### 1.5 Discovery Scan (if enabled)
 
-Check if `discovery-on-close` is `true` in Session Config. If not configured or `false`, skip this section.
-
-When enabled, invoke the discovery skill in **embedded mode** by dispatching an Explore agent:
-```
-Agent({
-  description: "Discovery embedded scan",
-  prompt: "Run discovery probes in embedded mode. Scope: session probes + discovery-probes config. Return findings and stats as a JSON object in a markdown code fence. Do NOT run Phase 5 (triage) or Phase 6 (issue creation) — return after Phase 4.",
-  subagent_type: "Explore",
-  run_in_background: false
-})
-```
-On Codex CLI / Cursor IDE: execute probes sequentially within the current context (no Agent dispatch).
-- Collect verified findings from the discovery output
-- Parse the discovery output for the **findings** array and **stats** object (see Parsing callout below)
-- Store the stats object for Phase 1.7 metrics collection (`discovery_stats` field)
-
-> **Parsing discovery output:** Search for the first ` ```json ` block in the discovery output. The JSON contains: (1) a **findings** array — objects with `probe`, `category`, `severity`, `confidence`, `file`, `line`, `description`, `recommendation` fields; (2) a **stats** object — with `probes_run`, `findings_raw`, `findings_verified`, `false_positives`, `user_dismissed`, `issues_created`, `by_category`. If JSON parsing fails, log a warning and skip Phase 1.5 — do NOT fail the session close. Store stats as `discovery_stats` in session metrics (Phase 1.7).
-- Incorporate findings into issue management:
-  - Findings with severity `critical` or `high` → create issues immediately (Phase 5)
-  - Findings with severity `medium` or `low` → list in the Final Report under "Discovery Findings (deferred)"
-- Report: "Discovery scan: [N] findings ([X] critical/high → issues, [Y] medium/low → deferred)"
+Read `skills/session-end/discovery-scan.md` for embedded discovery dispatch and findings triage.
 
 ### 1.6 Safety Review
 
@@ -95,98 +75,7 @@ Review safety metrics from the session. This is informational — it does NOT bl
 
 ### 1.7 Metrics Collection
 
-> Gate: Only run if `persistence` is enabled in Session Config.
-
-Finalize session metrics by reading the wave data accumulated during execution:
-
-1. Read `<state-dir>/STATE.md` Wave History to extract per-wave data: agent counts, statuses, files changed
-
-> **Graceful degradation:** If STATE.md is missing expected fields (no Wave History, missing frontmatter keys, malformed YAML), degrade gracefully: report what is available, skip metrics fields that cannot be parsed. Do NOT fail the session close because STATE.md is incomplete — a crashed session may leave partial STATE.md behind.
-
-2. Compute session totals:
-   - `total_duration_seconds`: from `started_at` to now (ISO 8601 diff)
-   - `total_waves`: count of completed waves
-   - `total_agents`: sum of agents across all waves
-   - `total_files_changed`: unique files changed across entire session (from `git diff --stat`)
-   - `agent_summary`: `{complete: N, partial: N, failed: N, spiral: N}`
-3. Read stagnation events from `.orchestrator/metrics/events.jsonl` filtered by `event == "stagnation_detected"` AND `session == <session_id>`. If the file does not exist or contains no matching entries, treat as zero events (omit the field per the rule below) — do NOT fail the session close. Aggregate into `stagnation_events`:
-   - `total`: count of matching events
-   - `by_pattern`: count by `pattern` value (omit zero-valued keys)
-   - `by_error_class`: count by `error_class` value (omit zero-valued keys; omit entire sub-object if all events lack error_class)
-   - `files`: unique list of non-null `file` values (deduplicated)
-   - **Omit the entire `stagnation_events` field if `total == 0`** (keeps historical entries clean).
-4. Read grounding events from `.orchestrator/metrics/events.jsonl` filtered by `event == "grounding_injected"` AND `session == <session_id>`. If the file does not exist or contains no matching entries, treat as zero events (omit the field per the rule below) — do NOT fail the session close. Aggregate into `grounding_injections`:
-   - `count`: total number of matching events
-   - `files`: deduplicated list of unique file paths from the events (sort alphabetically)
-   - `total_lines`: sum of `lines` field across all events
-   - **Omit the entire `grounding_injections` field if `count == 0`** (matches stagnation_events pattern to keep historical entries clean).
-5. Prepare the JSONL entry (written in Phase 3.7):
-   ```json
-   {
-     "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
-     "session_type": "<type>",
-     "platform": "<claude|codex>",
-     "started_at": "<ISO 8601>",
-     "completed_at": "<ISO 8601>",
-     "duration_seconds": N,
-     "total_waves": N,
-     "total_agents": N,
-     "total_files_changed": N,
-     "agent_summary": {"complete": N, "partial": N, "failed": N, "spiral": N},
-     "waves": [
-       {"wave": 1, "role": "Discovery", "agent_count": N, "files_changed": N, "quality": "pass|fail|skip"},
-       ...
-     ],
-     "discovery_stats": {
-       "probes_run": N,
-       "findings_raw": N,
-       "findings_verified": N,
-       "false_positives": N,
-       "user_dismissed": N,
-       "issues_created": N,
-       "by_category": {
-         "code": {"findings": N, "actioned": N},
-         "infra": {"findings": N, "actioned": N},
-         "ui": {"findings": N, "actioned": N},
-         "arch": {"findings": N, "actioned": N},
-         "session": {"findings": N, "actioned": N}
-       }
-     },
-     "review_stats": {
-       "total_findings": N,
-       "high_confidence": N,
-       "auto_fixed": N,
-       "manual_required": N
-     },
-     "effectiveness": {
-       "planned_issues": N,
-       "completed": N,
-       "carryover": N,
-       "emergent": N,
-       "completion_rate": 0.0
-     },
-     "grounding_injections": {
-       "count": N,
-       "files": ["..."],
-       "total_lines": M
-     },
-     "stagnation_events": {
-       "total": N,
-       "by_pattern": {"error-echo": N, "turn-key-repetition": N, "pagination-spiral": N},
-       "by_error_class": {"edit-format-friction": N, "scope-denied": N, "command-blocked": N, "other": N},
-       "files": ["<relative path>", "..."]
-     }
-   }
-   ```
-
-> The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
-
-> **Conditional fields:**
-> - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 4.6 for schema). When discovery runs in **embedded mode** (Phases 0-4 only), `user_dismissed`, `issues_created`, and `actioned` per category will always be `0` — embedded mode does not perform user triage (Phase 5) or issue creation (Phase 6).
-> - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
-> - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
-> - `stagnation_events`: populated ONLY when ≥1 stagnation event was logged to `events.jsonl` during this session. When `total == 0`, the field is omitted from the JSONL entry.
-> - `grounding_injections`: populated ONLY when ≥1 `grounding_injected` event was logged to `events.jsonl` during this session. When `count == 0`, the field is omitted from the JSONL entry.
+Read `skills/session-end/metrics-collection.md` for JSONL schema and conditional field rules.
 
 ### 1.8 Session Review
 
@@ -209,49 +98,7 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 
 ### 2.1 Vault Validation (if configured)
 
-Projects that maintain an Obsidian-style markdown vault can opt-in to a frontmatter + wiki-link validation gate at session close. This is gated on the `vault-sync.enabled` config flag (default `false`) — projects without a vault are unaffected. When enabled, the gate reads three more config fields (`vault-sync.mode`, `vault-sync.vault-dir`, `vault-sync.exclude`) and invokes the `vault-sync` validator. See `docs/session-config-reference.md` for field semantics, and `skills/vault-sync/SKILL.md` for the validator contract.
-
-**Gate:** Only run this subsection if `$CONFIG | jq -r '."vault-sync".enabled // false'` is `true`. If `false` or missing, skip silently.
-
-**Invocation pattern** (exact bash contract — keep in sync with `skills/vault-sync/validator.sh`):
-
-```bash
-# Read config (defaults: mode=warn, vault-dir=$PWD, exclude=[])
-VS_ENABLED=$(echo "$CONFIG" | jq -r '."vault-sync".enabled // false')
-if [[ "$VS_ENABLED" == "true" ]]; then
-  VS_MODE=$(echo "$CONFIG" | jq -r '."vault-sync".mode // "warn"')
-  VS_DIR=$(echo "$CONFIG" | jq -r '."vault-sync"."vault-dir" // empty')
-  : "${VS_DIR:=$PWD}"
-
-  # Build --exclude args from the config array (one flag per entry)
-  VS_EXCLUDE_ARGS=()
-  while IFS= read -r pat; do
-    [[ -z "$pat" ]] && continue
-    VS_EXCLUDE_ARGS+=(--exclude "$pat")
-  done < <(echo "$CONFIG" | jq -r '."vault-sync".exclude // [] | .[]')
-
-  # Invoke validator; capture JSON on stdout and exit code
-  VS_JSON=$(VAULT_DIR="$VS_DIR" bash "$PLUGIN_ROOT/skills/vault-sync/validator.sh" \
-    --mode "$VS_MODE" "${VS_EXCLUDE_ARGS[@]}" 2>/dev/null) || VS_EXIT=$?
-  VS_EXIT="${VS_EXIT:-0}"
-
-  VS_STATUS=$(echo "$VS_JSON" | jq -r '.status')
-  VS_ERR_COUNT=$(echo "$VS_JSON" | jq -r '.errors | length')
-  VS_WARN_COUNT=$(echo "$VS_JSON" | jq -r '.warnings | length')
-fi
-```
-
-**Reporting rules:**
-
-- **`mode: off`** — validator reports `status: skipped-mode-off`; include a single line "Vault validation: skipped (mode=off)" in the quality gate report and move on. Never blocks.
-- **`mode: warn`** — validator always exits 0. If `.errors | length > 0`, surface the error list in the report under "Vault validation warnings (mode=warn)" with file + path + message for each entry. Also list any `.warnings` (dangling wiki-links) in the same section. Never blocks close, but remind the user that flipping to `mode: hard` would have blocked on N files.
-- **`mode: hard`** — validator exits 1 on errors. On exit 1: BLOCK the session close, surface the full error list in the quality gate report, and instruct the user to (a) fix the offending frontmatter, (b) add the file pattern to `vault-sync.exclude` if it is a legitimate index file (e.g. `_MOC.md`, `_overview.md`), or (c) temporarily set `vault-sync.mode: warn` while backfilling frontmatter across the vault. On exit 0 with warnings: include them in the report but do not block.
-- **Exit 2** (infra error — missing `node`, `pnpm`, or `validator.mjs`) — treat as a skipped gate with a loud warning ("Vault validation: infrastructure error — <reason>"). Do NOT block the session close on infra failures; the goal is to surface configuration problems, not to wedge sessions when Node is unavailable.
-
-**Success line format** (when `errors: [] && warnings: []`):
-```
-Vault validation: ok (N files checked, M excluded, mode=<mode>)
-```
+Read `skills/session-end/vault-operations.md` for validator bash contract and reporting matrix.
 
 ## Phase 3: Documentation Updates
 
@@ -306,134 +153,13 @@ If STATE.md doesn't exist, skip this subsection.
    - Under a `## Sessions` heading (create if missing), add:
      `- [Session <date>](session-<date>.md) — <one-line summary>`
 
-### 3.5a Learning Extraction
+### 3.5a Learning Extraction + 3.6 Memory Cleanup & Learnings Write
 
-> Gate: Only run if `persistence` is enabled in Session Config.
-
-Analyze the completed session to extract reusable learnings for future sessions.
-
-**What to extract:**
-- **Fragile files**: use `git log --name-only --format="" $SESSION_START_REF..HEAD | sort | uniq -c | sort -rn | head -10` to find files changed most frequently across commits this session. Files appearing in 3+ commits are candidates for fragile-file learnings. Cross-reference with `<state-dir>/STATE.md` Wave History to correlate with specific waves.
-- **Effective sizing**: actual agent count vs. planned — what worked for this complexity level
-- **Recurring issues**: same issue type appearing across waves (e.g., type errors, missing imports)
-- **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?
-- **Deviation patterns**: read the `## Deviations` section from `<state-dir>/STATE.md` — were there plan adaptations? What triggered them? Extract as `deviation-pattern` type if a pattern emerges across sessions (e.g., "scope expansion during Impl-Core is common for this project")
-
-**Learning format** (append each as one JSONL line to `.orchestrator/metrics/learnings.jsonl`):
-```json
-{
-  "id": "<uuid-v4>",
-  "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern|stagnation-class-frequency",
-  "subject": "<what the learning is about>",
-  "insight": "<the actionable insight>",
-  "evidence": "<what happened this session>",
-  "confidence": 0.5,
-  "source_session": "<session_id>",
-  "created_at": "<ISO 8601>",
-  "expires_at": "<ISO 8601 + learning-expiry-days (default: 30)>"
-}
-```
-
-**Confidence updates for existing learnings:**
-Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
-- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0) and reset `expires_at` to current date + `learning-expiry-days` (default: 30)
-- If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
-- If no existing match: note as a new learning with confidence 0.5
-
-**File I/O strategy:** Track all updates in memory during extraction. Do NOT modify `learnings.jsonl` here — Phase 3.6 handles the actual file write. Pass these data structures to Phase 3.6:
-- `confidence_updates`: list of `{id: "<existing_learning_id>", operation: "confirm"|"contradict"}`
-- `new_learnings`: list of complete learning objects (all JSONL fields per the format above)
-
-**Subject matching:** Match on exact `type` + `subject` string equality. For `fragile-file`, `subject` is the file path. For other types, use a short canonical identifier (e.g., `type-errors-in-api`, `scope-too-large`, `missing-imports`).
-
-### 3.6 Memory Cleanup & Learnings Write
-
-> Gate: Only run if `persistence` is enabled in Session Config.
-
-1. Count session memory files matching `session-*.md` in the memory directory
-2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
-   "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
-3. This is a suggestion only — not blocking
-4. **Write learnings** to `.orchestrator/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
-   a. Read all existing lines from `learnings.jsonl` (if exists)
-   b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0 AND reset `expires_at` to current date + `learning-expiry-days` (default: 30); contradicted: -0.2)
-   c. Append new learnings from Phase 3.5a (those with no existing match)
-   d. **Passive decay (#89)** — for every existing learning NOT touched this session (i.e., not in the set of learnings confirmed or contradicted in Phase 3.5a, and not newly appended in step c), subtract `learning-decay-rate` (from Session Config, default `0.05`) from its `confidence`. Clamp to 0.0 (do not produce negative values). The prune step in `e` will remove any entry that fell to `confidence <= 0.0`. Decay does NOT reset `expires_at` — let decayed entries continue to age naturally. If `learning-decay-rate` is `0.0`, skip this step entirely (opt-out).
-
-      | Sessions since last touch | Confidence (starting 0.5, decay 0.05) | Status |
-      |---|---|---|
-      | 0 | 0.50 | active |
-      | 5 | 0.25 | active |
-      | 9 | 0.05 | active |
-      | 10 | 0.00 | pruned next write |
-
-   e. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
-   f. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence
-   g. Write the entire result back to `learnings.jsonl` (atomic rewrite with `>`, not append with `>>`)
-   h. If no existing file and no new learnings: skip
+Read `skills/session-end/learning-patterns.md` for extraction heuristics, confidence updates, passive decay, and JSONL write procedure.
 
 ### 3.7 Write Session Metrics
 
-> Gate: Only run if `persistence` is enabled in Session Config.
->
-> This step writes the session JSONL entry, verifies it, then optionally mirrors the session summary to the configured Obsidian vault via `scripts/vault-mirror.mjs`.
-
-1. Ensure `.orchestrator/metrics/` directory exists: `mkdir -p .orchestrator/metrics`
-2. Append the prepared JSONL entry (from Phase 1.7) as a single line to `.orchestrator/metrics/sessions.jsonl`
-   > **Concurrent write safety**: Use shell `>>` append for the single JSONL line — this is atomic on POSIX systems for writes under PIPE_BUF (typically 4096 bytes). Do NOT read-modify-write the file.
-3. Create the file if it does not exist
-4. Verify: read back the last line to confirm valid JSON
-5. **Vault Mirror** — mirror the session entry to the Obsidian vault (if configured):
-
-   ```bash
-   VM_ENABLED=$(echo "$CONFIG" | jq -r '."vault-integration".enabled // false')
-   VM_MODE=$(echo "$CONFIG" | jq -r '."vault-integration".mode // "warn"')
-
-   if [[ "$VM_ENABLED" == "true" && "$VM_MODE" != "off" ]]; then
-     # Resolve vault directory: config field takes precedence, env var as fallback
-     VM_DIR=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-dir" // empty')
-     : "${VM_DIR:=$VAULT_DIR}"
-
-     VM_OUTPUT=$(node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
-       --vault-dir "$VM_DIR" \
-       --source .orchestrator/metrics/sessions.jsonl \
-       --kind session 2>&1)
-     VM_EXIT=$?
-
-     # Surface script output so user can see skipped-handwritten results
-     if [[ -n "$VM_OUTPUT" ]]; then
-       echo "$VM_OUTPUT"
-     fi
-
-     if [[ $VM_EXIT -ne 0 ]]; then
-       if [[ "$VM_MODE" == "strict" ]]; then
-         echo "ERROR: vault-mirror failed (exit $VM_EXIT) — session close blocked (vault-integration.mode=strict)"
-         echo "Fix the vault mirror issue or set vault-integration.mode: warn to downgrade to a warning."
-         exit 1
-       else
-         # mode: warn (default) — surface warning but do not block
-         echo "WARNING: vault-mirror exited $VM_EXIT — session metrics were NOT mirrored to the vault. Set vault-integration.mode: strict to block on this error."
-       fi
-     else
-       # Parse the destination path from the script's JSON output (one JSON line per action)
-       VM_DEST=$(echo "$VM_OUTPUT" | jq -r 'select(.action == "created" or .action == "updated") | .path' 2>/dev/null | head -1)
-       if [[ -n "$VM_DEST" ]]; then
-         echo "Mirrored session summary to $VM_DEST"
-       fi
-     fi
-   fi
-   ```
-
-   **Behaviour matrix:**
-
-   | `enabled` | `mode`  | Result |
-   |-----------|---------|--------|
-   | `false` or missing | any | Skip entirely — no-op, no output |
-   | `true` | `off`   | Skip entirely — no-op, no output |
-   | `true` | `warn`  | Run mirror; on failure surface a warning but do NOT block close |
-   | `true` | `strict` | Run mirror; on failure block session close with an error message |
-
-   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-invalid` (entry failed required-field validation).
+Read `skills/session-end/session-metrics-write.md` for JSONL append, vault-mirror invocation, and behavior matrix.
 
 ## Phase 4: Commit & Push
 
@@ -541,6 +267,11 @@ Present to the user:
 |------|---------|
 | `plan-verification.md` | Phase 1 plan verification and metrics collection |
 | `verification-checklist.md` | Phase 2 quality gate checklist and checks |
+| `discovery-scan.md` | Phase 1.5 embedded discovery dispatch and findings triage |
+| `metrics-collection.md` | Phase 1.7 JSONL schema and conditional field rules |
+| `vault-operations.md` | Phase 2.1 validator bash contract and reporting matrix |
+| `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
+| `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 
 ## Anti-Patterns
 

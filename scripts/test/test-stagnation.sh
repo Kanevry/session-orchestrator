@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CB_FILE="$SCRIPT_DIR/../../skills/wave-executor/circuit-breaker.md"
 WL_FILE="$SCRIPT_DIR/../../skills/wave-executor/wave-loop.md"
 SE_FILE="$SCRIPT_DIR/../../skills/session-end/SKILL.md"
+SE_METRICS_FILE="$SCRIPT_DIR/../../skills/session-end/metrics-collection.md"
+SE_LEARNING_FILE="$SCRIPT_DIR/../../skills/session-end/learning-patterns.md"
 EV_FILE="$SCRIPT_DIR/../../skills/evolve/SKILL.md"
 
 PASS=0
@@ -141,18 +143,19 @@ assert_contains "wave-loop: stagnation_detected event name" \
 assert_contains "wave-loop: events.jsonl path" \
   "events.jsonl" "$WL_FILE"
 
-# session-end/SKILL.md: stagnation aggregation
+# session-end/metrics-collection.md: stagnation aggregation
 assert_contains "session-end: stagnation_events field" \
-  "stagnation_events" "$SE_FILE"
+  "stagnation_events" "$SE_METRICS_FILE"
 
 assert_contains "session-end: by_pattern sub-field" \
-  "by_pattern" "$SE_FILE"
+  "by_pattern" "$SE_METRICS_FILE"
 
 assert_contains "session-end: by_error_class sub-field" \
-  "by_error_class" "$SE_FILE"
+  "by_error_class" "$SE_METRICS_FILE"
 
+# session-end/learning-patterns.md: learning type enum
 assert_contains "session-end: learning-type enum includes stagnation-class-frequency" \
-  "stagnation-class-frequency" "$SE_FILE"
+  "stagnation-class-frequency" "$SE_LEARNING_FILE"
 
 # evolve/SKILL.md: sixth learning type
 assert_contains "evolve: 6 learning types header" \
