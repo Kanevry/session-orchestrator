@@ -3,25 +3,17 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TMPDIRS=()
 
 PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-# --------------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------------
+# shellcheck source=helpers/bootstrap-helpers.sh
+source "$(dirname "$0")/helpers/bootstrap-helpers.sh"
+trap cleanup EXIT
 
-assert_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    echo "  PASS: $label"
-    PASS=$(( PASS + 1 ))
-  else
-    echo "  FAIL: $label"
-    echo "    expected: $expected"
-    echo "    actual:   $actual"
-    FAIL=$(( FAIL + 1 ))
-  fi
-}
+# --------------------------------------------------------------------------
+# Helpers (local)
+# --------------------------------------------------------------------------
 
 assert_le() {
   local label="$1" max="$2" actual="$3"
@@ -67,15 +59,6 @@ gate_check() {
   fi
   GATE_STATUS="OPEN"; GATE_REASON=""
 }
-
-# --------------------------------------------------------------------------
-# Tempdir setup + cleanup
-# --------------------------------------------------------------------------
-
-TMPDIRS=()
-make_tempdir() { local d; d="$(mktemp -d)"; TMPDIRS+=("$d"); echo "$d"; }
-cleanup() { for d in "${TMPDIRS[@]+"${TMPDIRS[@]}"}"; do rm -rf "$d"; done; }
-trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Scenario A: bootstrap-gate.md contains HARD-GATE tag with required phrases

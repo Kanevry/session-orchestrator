@@ -36,7 +36,22 @@ After `public-fallback.md` completes CLAUDE.md generation, continue to Step 2b t
 
 Use the baseline scripts at `$BASELINE_PATH` as directed by the baseline's own documentation. Proceed with baseline-driven CLAUDE.md generation, then continue to Step 2b.
 
-**Step 2b: Verify Session Config block.** After writing or updating CLAUDE.md, confirm it contains `## Session Config` and at minimum `project-name` and `vcs`. If either is missing, add them.
+**Step 2b: Verify Session Config block.** After writing or updating CLAUDE.md, check for the sentinel string `## Session Config`:
+
+```bash
+if grep -q "^## Session Config" CLAUDE.md; then
+  echo "Session Config block confirmed."
+else
+  # Sentinel absent — claude init did NOT populate the file (or wrote minimal content).
+  # Fall back to plugin-template generation: append Session Config with project-name and vcs.
+  echo "## Session Config" >> CLAUDE.md
+  echo "" >> CLAUDE.md
+  echo "project-name: <PROJECT_NAME>" >> CLAUDE.md
+  echo "vcs: <VCS>" >> CLAUDE.md
+fi
+```
+
+If `## Session Config` is present, confirm `project-name` and `vcs` keys exist within it. If either is missing, add them.
 
 **Config file selection by platform:**
 - Claude Code → `CLAUDE.md`
@@ -137,8 +152,8 @@ source: <claude-init | plugin-template>
 ```
 
 Set `source`:
-- `claude-init` if `claude init` ran successfully in Step 2
-- `plugin-template` otherwise
+- `claude-init` if CLAUDE.md contained `## Session Config` before Step 2b's sentinel check (i.e., `claude init` populated it)
+- `plugin-template` if the sentinel was absent and the fallback path wrote the block
 
 ## Step 6: Initial Git Commit
 
