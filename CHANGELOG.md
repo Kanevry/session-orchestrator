@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- session-start: reset STATE.md to idle when previous session completed — clears `current-wave`, sets `status: idle`, demotes `## Wave History` into `## Previous Session`, and empties `## Deviations`. Only triggers on the `completed` branch; `active`/`paused` paths remain user-interactive via AskUserQuestion. Prevents a fresh session from appearing "already completed". (closes infrastructure/projects-baseline#159)
+
 ## [2.0.0] - 2026-04-17
 
 First stable release of the 2.x line. Bundles six betas worth of work into a single stable cut.
