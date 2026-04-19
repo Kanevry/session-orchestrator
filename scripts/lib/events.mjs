@@ -38,7 +38,7 @@ export function eventsFilePath() {
  */
 export async function emitEvent(type, payload = {}) {
   // Build the JSONL record: ts + event come first, payload spreads last.
-  const record = { ts: new Date().toISOString(), event: type, ...payload };
+  const record = { timestamp: new Date().toISOString(), event: type, ...payload };
   const line = JSON.stringify(record) + '\n';
 
   // Ensure .orchestrator/metrics/ exists before appending.

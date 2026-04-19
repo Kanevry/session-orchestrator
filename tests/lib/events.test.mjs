@@ -82,13 +82,13 @@ describe('emitEvent — JSONL output', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('appended line contains ts in ISO 8601 format', async () => {
+  it('appended line contains timestamp in ISO 8601 format', async () => {
     const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
     await emitEvent('test.event', { foo: 'bar' });
     const fp = eventsFilePath();
     const content = await readFile(fp, 'utf8');
     const record = JSON.parse(content.trim().split('\n')[0]);
-    expect(record.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+    expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
   });
 
   it('appended line contains event field equal to the type argument', async () => {
