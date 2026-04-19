@@ -38,7 +38,9 @@ function runDriver(mode, args = [], stdinData = '') {
     encoding: 'utf8',
     timeout: 8000,
   });
-  if (result.error) throw result.error;
+  // EPIPE is expected when the child exits before we finish writing stdin
+  // (e.g. the 1 MB byte-guard test). Any other error is genuine.
+  if (result.error && result.error.code !== 'EPIPE') throw result.error;
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status };
 }
 
