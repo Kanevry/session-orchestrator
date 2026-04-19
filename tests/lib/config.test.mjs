@@ -100,7 +100,8 @@ describe('parseSessionConfig', () => {
         'enforcement', 'isolation', 'max-turns', 'baseline-ref', 'baseline-project-id',
         'plan-baseline-path', 'plan-default-visibility', 'plan-prd-location',
         'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
-        'grounding-injection-max-files', 'grounding-check', 'vault-integration', 'vault-sync',
+        'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
+        'vault-integration', 'vault-sync',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
@@ -157,6 +158,11 @@ describe('parseSessionConfig', () => {
     it('defaults grounding-check to true', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
       expect(config['grounding-check']).toBe(true);
+    });
+
+    it('defaults allow-destructive-ops to false', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['allow-destructive-ops']).toBe(false);
     });
   });
 
@@ -395,6 +401,25 @@ describe('parseSessionConfig', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
       expect(config['vault-sync'].enabled).toBe(false);
       expect(config['vault-sync'].exclude).toEqual([]);
+    });
+  });
+
+  describe('allow-destructive-ops', () => {
+    it('defaults to false when not present in config', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['allow-destructive-ops']).toBe(false);
+    });
+
+    it('parses allow-destructive-ops: true', () => {
+      const content = `## Session Config\n\nallow-destructive-ops: true\n`;
+      const config = parseSessionConfig(content);
+      expect(config['allow-destructive-ops']).toBe(true);
+    });
+
+    it('parses explicit allow-destructive-ops: false', () => {
+      const content = `## Session Config\n\nallow-destructive-ops: false\n`;
+      const config = parseSessionConfig(content);
+      expect(config['allow-destructive-ops']).toBe(false);
     });
   });
 });

@@ -122,6 +122,7 @@ V_ECO_HEALTH=$(json_boolean "ecosystem-health" "false")
 V_DISC_CLOSE=$(json_boolean "discovery-on-close" "false")
 V_REASONING_OUTPUT=$(json_boolean "reasoning-output" "false")
 V_GROUNDING_CHECK=$(json_boolean "grounding-check" "true")
+V_ALLOW_DESTRUCTIVE=$(json_boolean "allow-destructive-ops" "false")
 
 # List fields
 V_CROSS_REPOS=$(json_list "cross-repos")
@@ -205,6 +206,7 @@ jq -n \
   --argjson reasoning_output "$V_REASONING_OUTPUT" \
   --argjson grounding_injection_max_files "$V_GROUNDING_INJECTION_MAX" \
   --argjson grounding_check "$V_GROUNDING_CHECK" \
+  --argjson allow_destructive_ops "$V_ALLOW_DESTRUCTIVE" \
   --argjson vi_enabled "$VI_ENABLED" \
   --argjson vi_vault_dir "$VI_VAULT_DIR" \
   --argjson vi_mode "$VI_MODE" \
@@ -254,6 +256,7 @@ jq -n \
     "reasoning-output": $reasoning_output,
     "grounding-injection-max-files": $grounding_injection_max_files,
     "grounding-check": $grounding_check,
+    "allow-destructive-ops": $allow_destructive_ops,
     "vault-integration": {
       "enabled": $vi_enabled,
       "vault-dir": $vi_vault_dir,

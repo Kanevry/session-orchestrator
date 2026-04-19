@@ -531,6 +531,7 @@ export function parseSessionConfig(mdContent) {
   const discoveryOnClose = _coerceBoolean(kv, 'discovery-on-close', false);
   const reasoningOutput = _coerceBoolean(kv, 'reasoning-output', false);
   const groundingCheck = _coerceBoolean(kv, 'grounding-check', true);
+  const allowDestructiveOps = _coerceBoolean(kv, 'allow-destructive-ops', false);
 
   // List fields
   const crossRepos = _coerceList(kv, 'cross-repos', undefined);
@@ -602,6 +603,7 @@ export function parseSessionConfig(mdContent) {
     'reasoning-output': reasoningOutput,
     'grounding-injection-max-files': groundingInjectionMaxFiles,
     'grounding-check': groundingCheck,
+    'allow-destructive-ops': allowDestructiveOps,
     'vault-integration': vaultIntegration,
     'vault-sync': vaultSync,
   };
