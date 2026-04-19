@@ -77,6 +77,36 @@ The helper emits one `grounding_injected` event per injected file to `.orchestra
 
 **Relationship to `### 3b. File-level grounding`:** this pre-dispatch feature is DIFFERENT from the post-wave file-level grounding check. Pre-dispatch grounding injects file content into agent prompts (prevents friction). Post-wave grounding verifies agents stayed within their planned scope (detects scope creep). The two features share no code and run at different times.
 
+#### Pre-Dispatch Untracked-Overlap Check (#180)
+
+Claude Code's Agent tool with `isolation: "worktree"` syncs the agent's worktree back into the coordinator's working tree on completion. If the coordinator holds untracked files inside the agent's scope, the sync silently overwrites them — observed as data loss in the 2026-04-19 deep-drift-check session (4 files, ~700 LoC wiped). See issue #180.
+
+**Apply this check only when dispatching with `isolation: "worktree"`.** For `isolation: "none"` or coordinator-direct execution, skip — there is no merge-back to worry about.
+
+For each worktree-isolated agent about to be dispatched:
+
+```js
+import { checkUntrackedOverlap } from '$PLUGIN_ROOT/scripts/lib/pre-dispatch-check.mjs';
+
+const result = checkUntrackedOverlap({
+  scope: agentFileScope,        // same array used for `allowedPaths`
+  cwd: process.cwd(),
+  mode: 'warn',                 // 'warn' (default) | 'block' | 'off'
+});
+
+if (result.decision === 'block') {
+  // Refuse dispatch. Report result.message to the user.
+  // Ask: commit the files, stash them, or rerun with mode=warn to acknowledge.
+} else if (result.decision === 'warn') {
+  // Print result.message to the wave progress update.
+  // Dispatch proceeds, but the coordinator has an audit trail if data loss occurs.
+}
+```
+
+The helper is stdlib-only and cross-platform. `mode=block` is recommended when the coordinator holds uncommitted work of non-trivial size in the agent's scope — it trades a friction prompt for the guarantee that the merge-back cannot silently overwrite. `mode=warn` keeps the historical behavior and simply records the risk. `mode=off` short-circuits entirely.
+
+This is a downstream backstop: the underlying worktree merge-back strategy lives in the Claude Code harness and is outside this plugin's control. The correct fix (preserve untracked coordinator files during merge-back) must come upstream. Until then, this check is the only defense.
+
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
 When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.
