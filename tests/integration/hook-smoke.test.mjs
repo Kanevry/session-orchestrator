@@ -14,7 +14,7 @@
  * Issues: #140–#142 (hook implementations), #143–#145 (test migration wave)
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -93,6 +93,16 @@ async function readEvents(projectDir) {
 // ---------------------------------------------------------------------------
 
 const tmpDirs = [];
+let origRegistryDir;
+
+beforeEach(async () => {
+  // Isolate session registry writes so on-session-start.mjs / on-stop.mjs never
+  // touch the real user's ~/.config/session-orchestrator/ during tests (#168).
+  origRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
+  const registryTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-smoke-registry-'));
+  process.env.SO_SESSION_REGISTRY_DIR = registryTmp;
+  tmpDirs.push(registryTmp);
+});
 
 async function mkTempProject() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-smoke-test-'));
@@ -107,6 +117,8 @@ async function mkTempProject() {
 }
 
 afterEach(async () => {
+  if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+  else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
   for (const d of tmpDirs.splice(0)) {
     await fs.rm(d, { recursive: true, force: true });
   }
