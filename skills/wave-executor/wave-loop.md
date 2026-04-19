@@ -282,13 +282,26 @@ Before each wave dispatch:
 
 1. **Write `<state-dir>/wave-scope.json`** with the wave's scope:
    > (Platform-specific: `.claude/wave-scope.json` on Claude Code, `.codex/wave-scope.json` on Codex CLI, `.cursor/wave-scope.json` on Cursor IDE)
+
+   **Deriving `blockedCommands` (policy-file-first, #155):** Before writing `wave-scope.json`, extract the blocked patterns from the consolidated policy file:
+   ```bash
+   BLOCKED=$(jq -c '[.rules[] | select(.severity == "block") | .pattern]' .orchestrator/policy/blocked-commands.json)
+   ```
+   Use `$BLOCKED` as the `blockedCommands` value in `wave-scope.json`.
+
+   **Fallback:** If `.orchestrator/policy/blocked-commands.json` is missing (pre-#155 repo), use the legacy hardcoded array and log a warning in the wave progress update:
+   ```bash
+   BLOCKED='["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]'
+   # Warning: policy file .orchestrator/policy/blocked-commands.json not found — using legacy hardcoded blocklist
+   ```
+
    ```json
    {
      "wave": N,
      "role": "<role>",
      "enforcement": "<from Session Config, default: warn>",
      "allowedPaths": ["<from agent specs in session plan>"],
-     "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."],
+     "blockedCommands": "<derived dynamically from .orchestrator/policy/blocked-commands.json (severity: block rules); falls back to legacy 5-element array if policy file absent>",
      "gates": "<copy of enforcement-gates from Session Config, or omit if unset>"
    }
    ```

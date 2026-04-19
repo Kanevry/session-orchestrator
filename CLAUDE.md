@@ -7,13 +7,29 @@ Claude Code plugin for session-level orchestration. This is a **plugin repo** �
 - `skills/` — 13 skills (bootstrap, session-start, session-plan, wave-executor, session-end, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, daily)
 - `commands/` — 7 commands (/session, /go, /close, /discovery, /plan, /evolve, /bootstrap)
 - `agents/` — 6 agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer)
-- `hooks/` — 5 event hooks: SessionStart (banner + init), PreToolUse (scope enforcement + command guard), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events)
+- `hooks/` — 6 event matchers covering 7 hook handlers: SessionStart (banner + init), PreToolUse/Edit|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events)
+- `.orchestrator/policy/` — runtime policy files (e.g. `blocked-commands.json`, 13 rules for destructive-command guard)
+- `.claude/rules/` — always-on contributor rules (e.g. `parallel-sessions.md`)
 
 ## Development
 
 Edit skills directly. Test by running `/session feature` in any project repo.
 
 Skills are loaded by Claude Code from the plugin directory — no build step needed.
+
+## Destructive-Command Guard
+
+`hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands in the main session (alongside subagent waves). Policy lives in `.orchestrator/policy/blocked-commands.json` (13 rules). Bypass per-session via Session Config:
+
+```yaml
+allow-destructive-ops: true
+```
+
+Rule source of truth: `.claude/rules/parallel-sessions.md` (PSA-003). See issue #155.
+
+## Rules
+
+- `.claude/rules/parallel-sessions.md` — PSA-001/002/003/004 parallel-session discipline. Vendored to all consumer repos via bootstrap (issue #155).
 
 ## Key Conventions
 

@@ -587,6 +587,25 @@ indent_size = 2
 
 ---
 
+## Step 3a: Install Parallel-Sessions Rule
+
+Write the vendored rule from `$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md` to `$REPO_ROOT/.claude/rules/parallel-sessions.md`.
+
+Idempotency:
+- Missing → create
+- Exists and byte-identical → skip silently
+- Exists and differs → overwrite (vendored is canonical)
+
+Shell:
+```bash
+mkdir -p "$REPO_ROOT/.claude/rules"
+cp "$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md" "$REPO_ROOT/.claude/rules/parallel-sessions.md"
+```
+
+Why: PSA-003 destructive-command safeguards require every consumer repo to carry the rule. See issue #155.
+
+Note: This step runs before S99. If S99 executes and fetches a newer version of `parallel-sessions.md` from the baseline, the baseline version wins (S99 overwrites by design — acceptable).
+
 ## Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline
 
 This step is OPT-IN and only executes when ALL of the following are true:
@@ -702,15 +721,16 @@ After the commit succeeds, output a concise summary of all files created (Fast +
 
 ```
 Bootstrap (standard, <archetype>) complete. Created:
-  CLAUDE.md (or AGENTS.md)           — Session Config with project-name, vcs
-  .gitignore                          — stack-appropriate rules
-  README.md                           — expanded with Installation, Usage, Dev
-  .editorconfig                       — consistent editor settings
-  <manifest file>                     — e.g., package.json / pyproject.toml
-  <tsconfig.json>                     — if JS/TS archetype
-  <eslint.config.mjs + .prettierrc>  — if JS/TS archetype
-  <tests/sanity.test.ts or equiv>     — sanity test
-  .orchestrator/bootstrap.lock        — version: 1, tier: standard
+  CLAUDE.md (or AGENTS.md)             — Session Config with project-name, vcs
+  .gitignore                            — stack-appropriate rules
+  README.md                             — expanded with Installation, Usage, Dev
+  .editorconfig                         — consistent editor settings
+  <manifest file>                       — e.g., package.json / pyproject.toml
+  <tsconfig.json>                       — if JS/TS archetype
+  <eslint.config.mjs + .prettierrc>    — if JS/TS archetype
+  <tests/sanity.test.ts or equiv>       — sanity test
+  .claude/rules/parallel-sessions.md   — vendored PSA rule (issue #155)
+  .orchestrator/bootstrap.lock          — version: 1, tier: standard
 Committed: "chore: bootstrap (standard)"
 ```
 

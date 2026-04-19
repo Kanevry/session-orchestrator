@@ -124,6 +124,23 @@ build/
 
 Note: `.orchestrator/` is NOT gitignored — `bootstrap.lock` must be committed. Only the platform state dirs (`.claude/`, `.codex/`, `.cursor/`) are excluded.
 
+## Step 3a: Install Parallel-Sessions Rule
+
+Write the vendored rule from `$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md` to `$REPO_ROOT/.claude/rules/parallel-sessions.md`.
+
+Idempotency:
+- Missing → create
+- Exists and byte-identical → skip silently
+- Exists and differs → overwrite (vendored is canonical)
+
+Shell:
+```bash
+mkdir -p "$REPO_ROOT/.claude/rules"
+cp "$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md" "$REPO_ROOT/.claude/rules/parallel-sessions.md"
+```
+
+Why: PSA-003 destructive-command safeguards require every consumer repo to carry the rule. See issue #155.
+
 ## Step 4: Generate README.md
 
 ```markdown
@@ -161,7 +178,7 @@ Stage all created files and commit:
 
 ```bash
 cd "$REPO_ROOT"
-BOOTSTRAP_FILES=(CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock)
+BOOTSTRAP_FILES=(CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock .claude/rules/parallel-sessions.md)
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
 for _f in "${BOOTSTRAP_FILES[@]}"; do
   [[ -e "$_f" ]] && git add -- "$_f"
@@ -177,10 +194,11 @@ After the commit succeeds, output a concise summary:
 
 ```
 Bootstrap (fast) complete. Created:
-  CLAUDE.md (or AGENTS.md)  — Session Config with project-name, vcs
-  .gitignore                 — <stack>-appropriate minimal rules
-  README.md                  — one-line stub
-  .orchestrator/bootstrap.lock — version: 1, tier: fast
+  CLAUDE.md (or AGENTS.md)              — Session Config with project-name, vcs
+  .gitignore                            — <stack>-appropriate minimal rules
+  README.md                             — one-line stub
+  .claude/rules/parallel-sessions.md   — vendored PSA rule (issue #155)
+  .orchestrator/bootstrap.lock          — version: 1, tier: fast
 Committed: "chore: bootstrap (fast)"
 ```
 

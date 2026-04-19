@@ -455,6 +455,25 @@ If the call fails, log the structured message above and continue. Raw API respon
 
 ---
 
+## Step 3a: Install Parallel-Sessions Rule
+
+Write the vendored rule from `$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md` to `$REPO_ROOT/.claude/rules/parallel-sessions.md`.
+
+Idempotency:
+- Missing → create
+- Exists and byte-identical → skip silently
+- Exists and differs → overwrite (vendored is canonical)
+
+Shell:
+```bash
+mkdir -p "$REPO_ROOT/.claude/rules"
+cp "$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md" "$REPO_ROOT/.claude/rules/parallel-sessions.md"
+```
+
+Why: PSA-003 destructive-command safeguards require every consumer repo to carry the rule. See issue #155.
+
+Note: This step runs before D99. If D99 (via inherited S99) executes and fetches a newer version of `parallel-sessions.md` from the baseline, the baseline version wins (S99 overwrites by design — acceptable).
+
 ## Step D99: (Optional) Baseline Fetch — Inherited from Standard
 
 Standard-template Step S99 already executed as part of "Step 1–8: Execute Standard Tier" above. No additional fetch action is needed here.
@@ -519,6 +538,7 @@ Bootstrap (deep, <archetype>) complete. Created:
   <tsconfig.json>                       — if JS/TS archetype
   <eslint.config.mjs + .prettierrc>    — if JS/TS archetype
   <tests/sanity.test.ts or equiv>       — sanity test
+  .claude/rules/parallel-sessions.md   — vendored PSA rule (issue #155)
   CHANGELOG.md                          — initial entry
   CODEOWNERS (or .github/CODEOWNERS)   — placeholder owner
   <.gitlab-ci.yml or .github/workflows/ci.yml> — CI pipeline
