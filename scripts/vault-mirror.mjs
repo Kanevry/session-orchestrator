@@ -116,7 +116,7 @@ function truncateAtWord(str, maxLen) {
 
 /** Determine if a YAML title value needs quoting (contains : # or starts with -). */
 function yamlQuoteIfNeeded(value) {
-  if (/[:#{}\[\],&*?|<>=!%@`]/.test(value) || value.startsWith('-') || value.startsWith('"')) {
+  if (/[:#{}[\],&*?|<>=!%@`]/.test(value) || value.startsWith('-') || value.startsWith('"')) {
     return `"${value.replace(/"/g, '\\"')}"`;
   }
   return value;
@@ -149,12 +149,12 @@ function parseFrontmatter(content) {
 function generateLearningNote(entry, slug) {
   const REQUIRED_LEARNING_FIELDS = ['id', 'type', 'subject', 'insight', 'evidence', 'confidence', 'source_session', 'created_at'];
   for (const field of REQUIRED_LEARNING_FIELDS) {
-    if (entry[field] == null) {
+    if (entry[field] === null || entry[field] === undefined) {
       throw new Error(`vault-mirror: learning entry missing required field '${field}' (id=${entry.id ?? '<no id>'})`);
     }
   }
 
-  const { id, type, subject, insight, evidence, confidence, source_session, created_at, expires_at } = entry;
+  const { id: _id, type, subject: _subject, insight, evidence, confidence, source_session, created_at, expires_at } = entry;
 
   const status = confidence > 0.8 ? 'verified' : 'draft';
   const created = toDate(created_at);
@@ -199,7 +199,7 @@ ${evidence}
 function generateSessionNote(entry) {
   const REQUIRED_SESSION_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'total_waves', 'total_agents', 'total_files_changed', 'agent_summary', 'waves', 'effectiveness'];
   for (const field of REQUIRED_SESSION_FIELDS) {
-    if (entry[field] == null) {
+    if (entry[field] === null || entry[field] === undefined) {
       throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
     }
   }
@@ -293,7 +293,7 @@ function emitAction(action, filePath, fileKind, id) {
 
 // ── Core processing ───────────────────────────────────────────────────────────
 
-async function processLearning(entry, lineNum) {
+async function processLearning(entry, _lineNum) {
   const { id: entryId, subject, created_at } = entry;
 
   // Derive slug
@@ -374,7 +374,7 @@ async function processLearning(entry, lineNum) {
   emitAction('created', targetPath, kind, slug);
 }
 
-async function processSession(entry, lineNum) {
+async function processSession(entry, _lineNum) {
   const { session_id: rawSessionId } = entry;
 
   // Validate session_id as a filesystem-safe slug; fall back to a uuid-derived slug if not

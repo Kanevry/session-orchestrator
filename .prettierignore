@@ -1,0 +1,5 @@
+node_modules/
+.orchestrator/
+docs/
+package-lock.json
+*.md
