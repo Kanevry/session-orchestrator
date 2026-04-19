@@ -282,3 +282,57 @@ Recommendation: <action>
 ```
 
 **Default Severity:** Medium (oversized CLAUDE.md, missing .claudeignore), Low (stale artifacts, duplicate patterns), High (state dir > 50MB).
+
+---
+
+### Probe: cross-repo-duplicate-implementation
+
+**Activation:** Discovery finding recommends implementing something that lives in a known plugin repo (session-orchestrator, projects-baseline, claude-code-skills). Specifically: the finding mentions a path under `session-orchestrator/skills/`, `session-orchestrator/scripts/`, or `session-orchestrator/hooks/`, OR proposes creating a new skill/script whose name could already be in flight upstream.
+
+**Motivation:** A discovery finding that says "implement skill X" is only useful if X does not already exist on the plugin repo. Without a cross-repo check, a consumer repo can spend hours rebuilding work that already sits in an open MR or on a feature branch. First observed in the vault session on 2026-04-19 (session-orchestrator issue #179): vault#58 was filed ~7 h after the feature already existed as MR !11 — the next vault session began rebuilding the same work from scratch before catching the duplication mid-wave.
+
+**Detection Method:**
+
+```bash
+# Identify the plugin repo project path. Prefer the Session Config `cross-repos`
+# entry that points at session-orchestrator; fall back to the hardcoded default.
+PLUGIN_REPO="${SO_PLUGIN_REPO:-infrastructure/session-orchestrator}"
+
+# SKILL_NAME is extracted from the finding text (path segment after skills/,
+# or the proposed new skill name).
+SKILL_NAME="<extracted from finding>"
+
+# 1) Open MRs whose title mentions the skill/script name.
+glab mr list --repo "$PLUGIN_REPO" --state opened 2>/dev/null \
+  | grep -i "$SKILL_NAME"
+
+# 2) Feature branches matching `feat/<skill>` or containing the name.
+glab api "projects/${PLUGIN_REPO//\//%2F}/repository/branches?search=$SKILL_NAME" 2>/dev/null \
+  | jq -r '.[].name' 2>/dev/null
+
+# 3) Recently closed issues referencing the skill/script name.
+glab issue list --repo "$PLUGIN_REPO" --closed --search "$SKILL_NAME" 2>/dev/null | head -10
+
+# If any query returns a match → flag as pre-existing-work.
+# If glab is offline / unauthenticated → degrade to SKIP with evidence note, do not fabricate findings.
+```
+
+**Evidence Format:**
+```
+Finding (original): <discovery finding that triggered this probe>
+Cross-repo target: <PLUGIN_REPO>
+Candidate name: <SKILL_NAME>
+Matches:
+  - MR !NN <title>  (opened <date>)          # when open MR matches
+  - branch feat/<name>  (last commit <date>) # when branch matches
+  - issue #NN <title>  (closed <date>)       # when closed issue matches
+Recommendation: STOP before opening a new issue — inspect the existing work. If
+  duplicate, close this finding with a reference. If complementary, scope the
+  new issue against the existing implementation.
+```
+
+**Default Severity:** High when an open MR or active feature branch matches (wasted work is imminent); Medium when only closed issues match (historical context).
+
+**Dependencies:** Requires `glab` (GitLab CLI) for the three queries; `gh` equivalent for GitHub-hosted plugin repos. Auto-degrade to SKIP with a note when CLI unavailable or unauthenticated — never fabricate matches.
+
+**Scope:** Runs after any other probe surfaces a finding of the form "add/create/implement [skill|script|hook] …" that could live in the plugin repo. Not a standalone probe — it validates other probes' output before a new issue is filed.
