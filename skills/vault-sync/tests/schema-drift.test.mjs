@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -21,6 +21,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Paths relative to this test file
 const SYNC_SCRIPT = join(__dirname, '../../../scripts/sync-vault-schema.mjs');
 const VALIDATOR_MJS = join(__dirname, '../validator.mjs');
+const CANONICAL = join(
+  __dirname,
+  '../../../../projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts',
+);
+// Tests below shell out to sync-vault-schema.mjs, which by default reads
+// the canonical schema from a sibling projects-baseline checkout. In CI
+// (and on any contributor machine without that checkout) the canonical
+// file is absent, so we skip these integration tests. The schema-drift
+// CI stage runs the script directly against a freshly cloned canonical.
+const HAS_CANONICAL = existsSync(CANONICAL);
 
 const SENTINEL_BEGIN = 'BEGIN GENERATED SCHEMA';
 const SENTINEL_END = 'END GENERATED SCHEMA';
@@ -46,7 +56,7 @@ function runScript(args = []) {
   }
 }
 
-describe('sync-vault-schema.mjs', () => {
+describe.skipIf(!HAS_CANONICAL)('sync-vault-schema.mjs', () => {
   it('idempotency — running --write twice produces no diff between runs', () => {
     // Read validator.mjs before any writes
     const before = readFileSync(VALIDATOR_MJS, 'utf-8');
@@ -82,10 +92,7 @@ describe('sync-vault-schema.mjs', () => {
     const fakeCanonical = join(tmpDir, 'vault-frontmatter.ts');
 
     // Read the real canonical and alter it: change .max(128) to .max(256) for id
-    const realCanonical = readFileSync(
-      join(__dirname, '../../../../projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts'),
-      'utf-8',
-    );
+    const realCanonical = readFileSync(CANONICAL, 'utf-8');
     const altered = realCanonical.replace('.max(128)', '.max(256)');
     writeFileSync(fakeCanonical, altered, 'utf-8');
 

@@ -29,9 +29,8 @@ variables:
 # Shared setup anchor — npm install on alpine
 # ---------------------------------------------------------------------------
 .node-setup: &node-setup
-  image: node:${NODE_VERSION}-alpine
+  image: node:${NODE_VERSION}
   before_script:
-    - apk add --no-cache git
     - npm ci
   cache:
     key:
