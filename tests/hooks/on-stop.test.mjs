@@ -18,7 +18,7 @@
  *   8. webhook fetch called when CLANK_EVENT_SECRET is set
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -116,8 +116,20 @@ async function readAllEvents(projectDir) {
 // ---------------------------------------------------------------------------
 
 const tmpDirs = [];
+let origRegistryDir;
+
+beforeEach(async () => {
+  // Isolate session registry for every test (#169) so deregisterSelf never
+  // touches the real user's ~/.config/session-orchestrator/sessions/active/.
+  origRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
+  const registryTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'on-stop-registry-'));
+  process.env.SO_SESSION_REGISTRY_DIR = registryTmp;
+  tmpDirs.push(registryTmp);
+});
 
 afterEach(async () => {
+  if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+  else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
   for (const d of tmpDirs.splice(0)) {
     await fs.rm(d, { recursive: true, force: true });
   }
@@ -126,6 +138,30 @@ afterEach(async () => {
 async function track(dir) {
   tmpDirs.push(dir);
   return dir;
+}
+
+async function writeHeartbeat(sessionId) {
+  const active = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+  await fs.mkdir(active, { recursive: true });
+  const now = new Date().toISOString();
+  await fs.writeFile(
+    path.join(active, `${sessionId}.json`),
+    JSON.stringify({
+      session_id: sessionId,
+      pid: process.pid,
+      repo_name: 'demo',
+      branch: 'main',
+      started_at: now,
+      last_heartbeat: now,
+      status: 'active',
+      current_wave: 0,
+    }),
+  );
+}
+
+async function registryFiles() {
+  const active = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+  return (await fs.readdir(active).catch(() => [])).filter((n) => n.endsWith('.json'));
 }
 
 // ---------------------------------------------------------------------------
@@ -426,5 +462,95 @@ describe('SubagentStop with missing agent_name', { timeout: 15000 }, () => {
     const record = await readLastEvent(dir);
     expect(record.event).toBe('subagent_stop');
     expect(record.agent).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Session registry deregister (v3.1.0 #169)
+// ---------------------------------------------------------------------------
+
+describe('session registry deregister (#169)', { timeout: 15000 }, () => {
+  it('removes the active heartbeat file when session_id comes via stdin', async () => {
+    const dir = await track(await mkGitDir());
+    await writeHeartbeat('stop-via-stdin');
+    expect(await registryFiles()).toContain('stop-via-stdin.json');
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'stop-via-stdin' }),
+    });
+
+    expect(await registryFiles()).not.toContain('stop-via-stdin.json');
+  });
+
+  it('falls back to .orchestrator/current-session.json when stdin has no session_id', async () => {
+    const dir = await track(await mkGitDir());
+    await writeHeartbeat('stop-via-fallback');
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: 'stop-via-fallback', source: 'generated' }),
+    );
+
+    await runHook({ projectDir: dir, stdin: '' });
+
+    expect(await registryFiles()).not.toContain('stop-via-fallback.json');
+  });
+
+  it('is a no-op when no session_id is resolvable — never throws, exits 0', async () => {
+    const dir = await track(await mkGitDir());
+    // No heartbeat, no current-session.json, no stdin session_id.
+    const result = await runHook({ projectDir: dir, stdin: '' });
+    expect(result.code).toBe(0);
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('stop');
+    expect(record.session_id).toBeUndefined();
+  });
+
+  it('is idempotent — removing a missing heartbeat still exits 0', async () => {
+    const dir = await track(await mkGitDir());
+    // session_id provided but no heartbeat file exists.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'never-registered' }),
+    });
+    expect(result.code).toBe(0);
+    const record = await readLastEvent(dir);
+    expect(record.session_id).toBe('never-registered');
+  });
+
+  it('does not touch unrelated peer heartbeats', async () => {
+    const dir = await track(await mkGitDir());
+    await writeHeartbeat('self');
+    await writeHeartbeat('peer-one');
+    await writeHeartbeat('peer-two');
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'self' }),
+    });
+
+    const remaining = await registryFiles();
+    expect(remaining.sort()).toEqual(['peer-one.json', 'peer-two.json']);
+  });
+
+  it('prefers stdin session_id over current-session.json fallback', async () => {
+    const dir = await track(await mkGitDir());
+    await writeHeartbeat('stdin-wins');
+    await writeHeartbeat('fallback-loses');
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: 'fallback-loses' }),
+    );
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'stdin-wins' }),
+    });
+
+    const remaining = await registryFiles();
+    expect(remaining).toContain('fallback-loses.json');
+    expect(remaining).not.toContain('stdin-wins.json');
   });
 });
