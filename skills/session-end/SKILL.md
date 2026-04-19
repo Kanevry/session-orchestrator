@@ -135,12 +135,22 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 ### 3.4 Update STATE.md
 
-> **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` only — no other fields.
+> **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` plus the optional `updated` timestamp (#184) — no other fields.
 
 > Gate: Only run if `persistence` is enabled in Session Config and `<state-dir>/STATE.md` exists.
 1. Set frontmatter `status: completed`
 2. Record final wave count and completion time in the frontmatter
-3. Keep the file as a record — do NOT delete it (next session-start reads it)
+3. Touch `updated: <ISO 8601 UTC>` in the frontmatter (issue #184). Use `scripts/lib/state-md.mjs` → `touchUpdatedField` for safety:
+   ```bash
+   node --input-type=module -e "
+   import {readFileSync, writeFileSync} from 'node:fs';
+   import {touchUpdatedField} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   const p = '<state-dir>/STATE.md';
+   writeFileSync(p, touchUpdatedField(readFileSync(p, 'utf8'), new Date().toISOString()));
+   "
+   ```
+   Silent no-op if the file has no frontmatter.
+4. Keep the file as a record — do NOT delete it (next session-start reads it)
 
 If STATE.md doesn't exist, skip this subsection.
 

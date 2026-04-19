@@ -10,6 +10,37 @@
 
 The format and all fields are identical on both platforms. The section header must be exactly `## Session Config`.
 
+## Schema Validation (#182)
+
+The 7 mandatory fields enforced by `scripts/lib/config-schema.mjs` are:
+
+| Field | Rule |
+|-------|------|
+| `test-command` | non-empty string |
+| `typecheck-command` | non-empty string |
+| `lint-command` | non-empty string |
+| `agents-per-wave` | integer ≥ 2 (or object with `default` ≥ 2) |
+| `waves` | integer ≥ 3 |
+| `persistence` | boolean |
+| `enforcement` | one of `strict` / `warn` / `off` |
+
+Validation runs automatically via `scripts/parse-config.sh` → `scripts/validate-config.mjs`. Behavior is driven by the `enforcement` field itself:
+
+- `enforcement: off` → skip validation entirely
+- `enforcement: warn` → print errors to stderr, still emit config (exit 0)
+- `enforcement: strict` → print errors to stderr, suppress output, exit 1
+
+Bypass via `SO_SKIP_CONFIG_VALIDATION=1`. Missing fields can be patched into an existing config file via `/bootstrap --retroactive`.
+
+## Policy Files
+
+Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
+
+| File | Schema | Purpose |
+|------|--------|---------|
+| `blocked-commands.json` | inline | Destructive-command guard rules (#155). |
+| `quality-gates.json` | `quality-gates.schema.json` | Canonical test/typecheck/lint commands (#183). Overrides the `test-command` / `typecheck-command` / `lint-command` Session Config fields when present. |
+
 ## Session Structure
 
 | Field | Type | Default | Description |
@@ -39,9 +70,9 @@ The format and all fields are identical on both platforms. The section header mu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `test-command` | string | `pnpm test --run` | Custom test command. Used by quality gates for all test invocations. |
-| `typecheck-command` | string | `tsgo --noEmit` | Custom TypeScript check command. Set to `skip` for non-TS projects. |
-| `lint-command` | string | `pnpm lint` | Custom lint command. Used by the Full Gate quality check at session end. |
+| `test-command` | string | `pnpm test --run` | Custom test command. Used by quality gates for all test invocations. Overridden by `.orchestrator/policy/quality-gates.json` when present (#183). |
+| `typecheck-command` | string | `tsgo --noEmit` | Custom TypeScript check command. Set to `skip` for non-TS projects. Overridden by policy file when present. |
+| `lint-command` | string | `pnpm lint` | Custom lint command. Used by the Full Gate quality check at session end. Overridden by policy file when present. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than `ssot-freshness-days`. |
 | `ssot-freshness-days` | integer | `5` | Days before an SSOT file is flagged as stale during session start. |
 | `plugin-freshness-days` | integer | `30` | Days before the plugin itself is flagged as potentially outdated. |

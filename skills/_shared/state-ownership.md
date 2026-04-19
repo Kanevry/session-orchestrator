@@ -8,15 +8,26 @@
 ```yaml
 ---
 schema-version: 1
-session-type: feature|deep|housekeeping
+session-type: feature|deep|housekeeping|none
 branch: <current branch>
 issues: [<issue numbers>]
 started_at: <ISO 8601 with timezone>
-status: active|paused|completed
+status: active|paused|completed|idle
 current-wave: <N>
 total-waves: <N>
+# Optional fields (schema-version 1, additive for backward-compat):
+updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
+session: <session-id>        # <branch>-<YYYY-MM-DD>-<HHmm>, set Pre-Wave 1b
+session-start-ref: <sha>     # git ref at session start
 ---
 ```
+
+### Required vs. optional fields
+
+- `schema-version`, `session-type`, `branch`, `issues`, `started_at`, `status`, `current-wave`, `total-waves` — **required** in every session-owned STATE.md.
+- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence.
+
+The `session-type: none` + `status: idle` combination is used only for bootstrap-scaffolded placeholder files (no active session).
 
 ### Body Sections
 

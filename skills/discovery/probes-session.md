@@ -336,3 +336,55 @@ Recommendation: STOP before opening a new issue — inspect the existing work. I
 **Dependencies:** Requires `glab` (GitLab CLI) for the three queries; `gh` equivalent for GitHub-hosted plugin repos. Auto-degrade to SKIP with a note when CLI unavailable or unauthenticated — never fabricate matches.
 
 **Scope:** Runs after any other probe surfaces a finding of the form "add/create/implement [skill|script|hook] …" that could live in the plugin repo. Not a standalone probe — it validates other probes' output before a new issue is filed.
+
+---
+
+### Probe: state-md-staleness
+
+**Activation:** `<state-dir>/STATE.md` exists AND Session Config `persistence: true`.
+
+**Detection Method:**
+
+Read STATE.md frontmatter and compare `updated` timestamp against today. The `updated` field is optional (added in #184, schema-version 1). When absent, fall back to file mtime.
+
+```bash
+STATE_FILE="$(git rev-parse --show-toplevel)/.claude/STATE.md"
+[[ -f "$STATE_FILE" ]] || exit 0
+# Prefer the frontmatter `updated:` field; fall back to file mtime.
+UPDATED="$(node --input-type=module -e "
+import {readFileSync} from 'node:fs';
+import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+try {
+  const p = parseStateMd(readFileSync('$STATE_FILE', 'utf8'));
+  if (p && p.frontmatter.updated) process.stdout.write(p.frontmatter.updated);
+} catch {}
+" 2>/dev/null)"
+if [[ -z "$UPDATED" ]]; then
+  # Fallback: file mtime (cross-platform)
+  UPDATED_EPOCH=$(stat -f %m "$STATE_FILE" 2>/dev/null || stat -c %Y "$STATE_FILE" 2>/dev/null)
+else
+  UPDATED_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$UPDATED" +%s 2>/dev/null \
+    || date -d "$UPDATED" +%s 2>/dev/null)
+fi
+NOW_EPOCH=$(date +%s)
+AGE_DAYS=$(( (NOW_EPOCH - UPDATED_EPOCH) / 86400 ))
+```
+
+**Thresholds:**
+- `AGE_DAYS >= 7` → **warn** ("stale — last updated N days ago")
+- `2 <= AGE_DAYS < 7` → **info** ("stale-ish — last updated N days ago")
+- `AGE_DAYS < 2` → no finding
+
+**Evidence Format:**
+
+```
+File: <state-dir>/STATE.md
+Issue: state-md-staleness
+Detail: STATE.md last updated <UPDATED> (<AGE_DAYS> days ago)
+Source: <frontmatter.updated | file-mtime-fallback>
+Recommendation: Run /session to refresh state, or delete the file if work has been abandoned.
+```
+
+**Default Severity:** Medium when `AGE_DAYS >= 7` (warn); Low when `2 <= AGE_DAYS < 7` (info).
+
+**Rationale (#184):** Consumer repos with long-dormant STATE.md files risk the next session-start resuming a ghost session. The probe surfaces this before it becomes a resume-prompt surprise. Uses the optional `updated` frontmatter field introduced in #184; degrades to file mtime for backward compatibility.

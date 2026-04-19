@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Bash to Node.js (zx 8) migration. Epic #124. Foundation landed first (session 2026-04-18), then 5 libs + 2 security-critical hooks (session 2026-04-19).
 
+### Added — harness-retro Wave 1 (2026-04-19, Epic #181)
+
+Promotes validated patterns from advanced consumer repos into bootstrap defaults.
+
+- `scripts/lib/config-schema.mjs` + `scripts/validate-config.mjs` (#182): plain-JS Session Config validator (no zod dep). Enforces 7 mandatory fields (`test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`). Wired into `scripts/parse-config.sh` with enforcement-aware behavior (off|warn|strict). Bypass via `SO_SKIP_CONFIG_VALIDATION=1`.
+- Bootstrap canonical config block: `_minimal/CLAUDE.md.tmpl` + `fast-template.md` + `public-fallback.md` now emit all 7 mandatory fields on every tier.
+- Bootstrap `--retroactive` config-field patcher (#182): fills missing mandatory fields with package-manager-aware defaults during retroactive adoption.
+- `.orchestrator/policy/quality-gates.schema.json` + `quality-gates.example.json` + `scripts/lib/quality-gates-policy.mjs` (#183): JSON-Schema policy for canonical test/typecheck/lint commands. Readable from Node (`loadQualityGatesPolicy`, `resolveCommand`) and Bash (`scripts/run-quality-gate.sh` policy-first `extract_command`).
+- `scripts/lib/package-manager.mjs` (#183): lockfile-based detection (`pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` / `package-lock.json`) + per-PM default command triads. Null falls back to npm (most portable).
+- `skills/bootstrap/standard-template.md` Step 6.5 (#183): bootstrap writes `.orchestrator/policy/quality-gates.json` with package-manager-aware defaults. Idempotent — never overwrites user edits.
+- `skills/bootstrap/standard-template.md` Step 6.6 + `skills/bootstrap/STATE.md.template` (#184): bootstrap scaffolds an idle STATE.md placeholder.
+- `scripts/lib/state-md.mjs` (#184): hand-rolled YAML-subset frontmatter helpers (`parseStateMd`, `serializeStateMd`, `touchUpdatedField`, `readCurrentTask`). Never throws.
+- STATE.md schema v1 extended with 3 optional fields: `updated`, `session`, `session-start-ref`. Backward-compat for files that omit them.
+- `skills/session-start/SKILL.md` Phase 1.5: current-task banner from STATE.md. Phase 4: command-availability check before quality baseline.
+- `skills/session-end/SKILL.md` Phase 3.4: touches `updated: <ISO>` on session close.
+- `skills/discovery/probes-session.md`: new `state-md-staleness` probe (warn >7d, info 2-7d) reading optional `updated` frontmatter with file-mtime fallback.
+- vitest coverage: +68 tests across `tests/lib/{config-schema,quality-gates-policy,package-manager,state-md}.test.mjs` and `tests/integration/parse-config-validator.test.mjs`. Total suite: 546 pass, 10 skipped.
+
 ### Added — libs + hooks session (2026-04-19)
 - `scripts/lib/io.mjs` (#131): hook stdin/stdout helpers. `readStdin()` with 5 s AbortController timeout + 1 MB byte guard, `emitAllow`/`emitDeny`/`emitWarn`/`emitSystemMessage` matching the Claude Code hook I/O contract (exit 2 for deny, 0 for allow, single-line JSON on stdout). Pure Node stdlib, no external deps.
 - `scripts/lib/events.mjs` (#133): JSONL append to `.orchestrator/metrics/events.jsonl` via `fs.promises.appendFile` + optional fire-and-forget webhook POST via native `fetch` with `AbortSignal.timeout(3000)` when `CLANK_EVENT_SECRET` is set. Network errors swallowed; graceful skip when env var unset.
