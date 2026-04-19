@@ -76,6 +76,11 @@ schema-drift-check:
   stage: verify
   interruptible: true
   timeout: 10m
+  # TODO: flip to false once projects-baseline (#52) has this project on
+  # its CI/CD Job Token inbound allowlist. Until then, the git clone
+  # returns 403 and the job fails by design — but we do not want a
+  # missing admin config to block every MR, so the failure is non-blocking.
+  allow_failure: true
   needs:
     - test
   script:
