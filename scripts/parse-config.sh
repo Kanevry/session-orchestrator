@@ -164,8 +164,15 @@ VS_BLOCK_JSON=$(parse_vault_sync "$CLAUDE_MD")
 # placement convention. Consumed by session-end Phase 2.2.
 DC_BLOCK_JSON=$(parse_drift_check "$CLAUDE_MD")
 
-# Assemble final JSON using jq for correctness
-jq -n \
+# Assemble final JSON using jq for correctness.
+# After assembly, optionally validate against the Session Config schema
+# (scripts/lib/config-schema.mjs via scripts/validate-config.mjs).
+# Behavior is driven by the `enforcement` field inside the config itself:
+#   - "off"    → skip validation
+#   - "warn"   → print errors to stderr, still emit config (exit 0)
+#   - "strict" → print errors to stderr, suppress output, exit 1
+# If node is unavailable, validation is skipped silently.
+ASSEMBLED_JSON="$(jq -n \
   --argjson agents_per_wave "$V_AGENTS_PER_WAVE" \
   --argjson waves "$V_WAVES" \
   --argjson recent_commits "$V_RECENT_COMMITS" \
@@ -269,4 +276,11 @@ jq -n \
     },
     "vault-sync": $vs_block,
     "drift-check": $dc_block
-  }'
+  }')"
+
+VALIDATOR="$SCRIPT_DIR/validate-config.mjs"
+if command -v node >/dev/null 2>&1 && [[ -f "$VALIDATOR" ]] && [[ "${SO_SKIP_CONFIG_VALIDATION:-}" != "1" ]]; then
+  printf '%s' "$ASSEMBLED_JSON" | node "$VALIDATOR"
+else
+  printf '%s\n' "$ASSEMBLED_JSON"
+fi
