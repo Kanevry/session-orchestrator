@@ -11,8 +11,8 @@
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.sh\"",
-            "timeout": 3,
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.mjs\"",
+            "timeout": 5,
             "async": true
           }
         ]
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.sh\"",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.mjs\"",
             "timeout": 5
           }
         ]
@@ -34,7 +34,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.sh\"",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs\"",
             "timeout": 5
           }
         ]
@@ -46,8 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-validate.sh\"",
-            "timeout": 2
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-validate.mjs\"",
+            "timeout": 5
           }
         ]
       }
@@ -58,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.sh\"",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
             "timeout": 5
           }
         ]
@@ -70,8 +75,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/on-subagent-stop.sh\"",
-            "timeout": 3
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
+            "timeout": 5
           }
         ]
       }
