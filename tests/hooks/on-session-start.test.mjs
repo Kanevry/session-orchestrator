@@ -204,6 +204,48 @@ describe('CLANK_EVENT_SECRET absent — no webhook', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// Host banner (v3.1.0 #164)
+// ---------------------------------------------------------------------------
+
+describe('host banner (v3.1.0 #164)', { timeout: 15000 }, () => {
+  it('emits a systemMessage JSON line with host banner when no config present (default enabled)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir });
+    expect(result.code).toBe(0);
+    const systemLines = result.stdout
+      .split('\n')
+      .filter((l) => l.trim().startsWith('{'))
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+    const banner = systemLines.find((l) => l.systemMessage);
+    expect(banner).toBeDefined();
+    expect(banner.systemMessage).toMatch(/^🖥️\s+Host:/);
+    expect(banner.systemMessage).toMatch(/📊\s+Resources:/);
+  });
+
+  it('suppresses the banner when enable-host-banner: false is present in CLAUDE.md', async () => {
+    const dir = await mkProjectTracked();
+    await fs.writeFile(
+      path.join(dir, 'CLAUDE.md'),
+      '# Test\n\n## Session Config\n\nenable-host-banner: false\n',
+      'utf8',
+    );
+    const result = await runHook({ projectDir: dir });
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toMatch(/systemMessage/);
+  });
+
+  it('includes host_class and resource fields on the emitted event', async () => {
+    const dir = await mkProjectTracked();
+    await runHook({ projectDir: dir });
+    const [evt] = await readEvents(dir);
+    expect(evt.host_class).toMatch(/^(macos|linux|windows|freebsd)/);
+    expect(typeof evt.ram_free_gb).toBe('number');
+    expect(typeof evt.cpu_load_pct).toBe('number');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Project-dir resolution
 // ---------------------------------------------------------------------------
 
