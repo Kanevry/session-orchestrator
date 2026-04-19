@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "rationale": "Centralized quality-gate commands. Consumed by scripts/run-quality-gate.sh and the quality-gates skill. Package-manager-aware defaults are written by bootstrap; hand-edit to customize test/typecheck/lint invocations across the project.",
+  "commands": {
+    "typecheck": { "command": "npm run typecheck", "required": true },
+    "lint": { "command": "npm run lint", "required": true },
+    "test": {
+      "command": "npm test",
+      "required": true,
+      "variants": {
+        "incremental": "npm test --",
+        "watch": "npm run test:watch"
+      }
+    }
+  }
+}

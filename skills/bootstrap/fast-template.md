@@ -43,15 +43,28 @@ if grep -q "^## Session Config" CLAUDE.md; then
   echo "Session Config block confirmed."
 else
   # Sentinel absent — claude init did NOT populate the file (or wrote minimal content).
-  # Fall back to plugin-template generation: append Session Config with project-name and vcs.
-  echo "## Session Config" >> CLAUDE.md
-  echo "" >> CLAUDE.md
-  echo "project-name: <PROJECT_NAME>" >> CLAUDE.md
-  echo "vcs: <VCS>" >> CLAUDE.md
+  # Fall back to plugin-template generation: append canonical Session Config block
+  # (issue #182: 7 mandatory fields enforced by scripts/lib/config-schema.mjs).
+  cat >> CLAUDE.md <<'EOF'
+
+## Session Config
+
+project-name: <PROJECT_NAME>
+vcs: <VCS>
+persistence: true
+enforcement: warn   # strict | warn | off
+waves: 5
+agents-per-wave: 6
+test-command: <detect per package-manager>
+typecheck-command: <detect>
+lint-command: <detect>
+recent-commits: 20
+stale-branch-days: 7
+EOF
 fi
 ```
 
-If `## Session Config` is present, confirm `project-name` and `vcs` keys exist within it. If either is missing, add them.
+If `## Session Config` is present, confirm the 7 mandatory fields (per issue #182, enforced by `scripts/lib/config-schema.mjs`) plus `project-name` and `vcs` are present. Mandatory: `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`. If any are missing, append them.
 
 **Config file selection by platform:**
 - Claude Code → `CLAUDE.md`

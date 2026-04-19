@@ -509,6 +509,7 @@ Stage all created files and commit:
 cd "$REPO_ROOT"
 BOOTSTRAP_FILES=(
   CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock
+  .orchestrator/policy/quality-gates.json
   package.json pyproject.toml tsconfig.json eslint.config.mjs .prettierrc
   .editorconfig src/ tests/ CHANGELOG.md CODEOWNERS
   .gitlab/ .github/ .claude/
@@ -539,12 +540,14 @@ Bootstrap (deep, <archetype>) complete. Created:
   <eslint.config.mjs + .prettierrc>    — if JS/TS archetype
   <tests/sanity.test.ts or equiv>       — sanity test
   .claude/rules/parallel-sessions.md   — vendored PSA rule (issue #155)
+  .claude/STATE.md                      — idle placeholder (issue #184)
   CHANGELOG.md                          — initial entry
   CODEOWNERS (or .github/CODEOWNERS)   — placeholder owner
   <.gitlab-ci.yml or .github/workflows/ci.yml> — CI pipeline
   <issue templates>                     — Bug + Feature templates
   <MR/PR template>                      — Default merge/pull request template
   .orchestrator/bootstrap.lock          — version: 1, tier: deep
+  .orchestrator/policy/quality-gates.json — test/typecheck/lint commands (issue #183)
   Branch protection on main             — via glab/gh api (result logged above)
 Committed: "chore: bootstrap (deep)"
 ```

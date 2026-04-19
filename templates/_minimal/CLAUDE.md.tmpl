@@ -22,13 +22,15 @@
 
 ## Session Config
 
-persistence: true
-enforcement: warn
-vcs: {{VCS}}
 project-name: {{PROJECT_NAME}}
-plan-baseline-path: {{PLAN_BASELINE_PATH}}
+vcs: {{VCS}}
+persistence: true
+enforcement: warn   # strict | warn | off
+waves: 5
+agents-per-wave: 6
 test-command: {{TEST_COMMAND}}
 typecheck-command: {{TYPECHECK_COMMAND}}
 lint-command: {{LINT_COMMAND}}
+plan-baseline-path: {{PLAN_BASELINE_PATH}}
 recent-commits: 20
 stale-branch-days: 7

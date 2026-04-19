@@ -63,6 +63,23 @@ Reset rules — applies ONLY on the `completed` branch. Do NOT perform this rese
 
 Rationale: `/close` intentionally keeps STATE.md as a record so the next session-start can read it. This reset completes that contract by demoting the record before new session state is written, so a fresh session never appears "already completed".
 
+### Current-Task Banner (#184)
+
+After the continuity checks above, render a one-line banner showing the current task from STATE.md. This gives the user an immediate "where am I" signal before the rest of the session overview loads.
+
+```bash
+node --input-type=module -e "
+import {readFileSync} from 'node:fs';
+import {readCurrentTask} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+try {
+  const t = readCurrentTask(readFileSync('<state-dir>/STATE.md', 'utf8'));
+  if (t) console.log('Current task: ' + t.description);
+} catch {}
+"
+```
+
+Skip silently when STATE.md is absent or unreadable. The banner is informational, not load-bearing.
+
 Also read `<state-dir>/STATUS.md` if it exists for additional project-level context.
 
 ## Phase 1.6: Metrics Initialization
@@ -104,7 +121,11 @@ Group issues by:
 ## Phase 4: SSOT & Environment Check
 
 1. **SSOT freshness**: for each file in `ssot-files` config, check last modified date. Flag if older than `ssot-freshness-days` (default: 5) days.
-2. **Quality baseline**: Run Baseline quality checks per the quality-gates skill. Read `test-command`, `typecheck-command`, and `lint-command` from Session Config (defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`). Report results but do not block the session.
+2. **Quality baseline**: Run Baseline quality checks per the quality-gates skill. Commands are resolved in this order (issue #183):
+   a. `.orchestrator/policy/quality-gates.json` — preferred source when present.
+   b. Session Config `test-command` / `typecheck-command` / `lint-command` — fallback.
+   c. Hardcoded defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`.
+   Before running, perform a **command-availability check**: for each resolved command, extract the binary (first token) and run `command -v <binary>`. If absent, skip that check and log `⚠ Quality baseline: <binary> not found — skipping <variant>`. Report results but do not block the session.
 3. **Pencil design status**: if `pencil` is configured, verify the `.pen` file exists at the configured path. Report: "Pencil design configured at [path] — design-code alignment reviews will run after Impl-Core and Impl-Polish waves." If file not found, warn: "Pencil path configured but file not found at [path]."
 4. **Plugin freshness**: Determine the session-orchestrator plugin directory (navigate up from this skill's base directory to the plugin root). Run `git -C <plugin-dir> log -1 --format="%ci"` to get the last commit date. If older than `plugin-freshness-days` (default: 30) days, flag a warning in the Session Overview: `"⚠ Session Orchestrator plugin last updated [N] days ago — consider pulling the latest version."` Non-blocking — present in overview, don't halt.
 
