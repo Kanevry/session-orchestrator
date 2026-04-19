@@ -31,6 +31,9 @@ variables:
 .node-setup: &node-setup
   image: node:${NODE_VERSION}
   before_script:
+    # jq is required by scripts/parse-config.sh, which is shelled out to
+    # by tests/lib/config.test.mjs for bash↔node parity verification.
+    - apt-get update -qq && apt-get install -y --no-install-recommends jq
     - npm ci
   cache:
     key:
