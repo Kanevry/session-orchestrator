@@ -5,11 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]: 3.0.0-dev (Windows native foundation wave)
+## [Unreleased]: 3.0.0-dev (Windows native foundation + libs + hooks waves)
 
-Bash to Node.js (zx 8) migration kicks off. Epic #124. Foundation landed; hooks and test migration follow in subsequent sessions.
+Bash to Node.js (zx 8) migration. Epic #124. Foundation landed first (session 2026-04-18), then 5 libs + 2 security-critical hooks (session 2026-04-19).
 
-### Added
+### Added — libs + hooks session (2026-04-19)
+- `scripts/lib/io.mjs` (#131): hook stdin/stdout helpers. `readStdin()` with 5 s AbortController timeout + 1 MB byte guard, `emitAllow`/`emitDeny`/`emitWarn`/`emitSystemMessage` matching the Claude Code hook I/O contract (exit 2 for deny, 0 for allow, single-line JSON on stdout). Pure Node stdlib, no external deps.
+- `scripts/lib/events.mjs` (#133): JSONL append to `.orchestrator/metrics/events.jsonl` via `fs.promises.appendFile` + optional fire-and-forget webhook POST via native `fetch` with `AbortSignal.timeout(3000)` when `CLANK_EVENT_SECRET` is set. Network errors swallowed; graceful skip when env var unset.
+- `scripts/lib/worktree.mjs` (#134): zx-based cross-platform git worktree helpers. `os.tmpdir()` replaces `${TMPDIR:-/tmp}`, `path.join` throughout for Windows separator safety, retry-once pattern in `createWorktree`, best-effort `removeWorktree` (always resolves, warns on uncommitted changes), `listWorktrees`, `cleanupAllWorktrees`.
+- `scripts/lib/hardening.mjs` (#135): env/runtime checks (`assertNodeVersion`, `assertDepInstalled`, `checkEnvironment`) plus scope/pattern primitives used by the Wave 3 hooks (`findScopeFile`, `getEnforcementLevel`, `gateEnabled`, `pathMatchesPattern`, `commandMatchesBlocked`, `suggestForScopeViolation`, `suggestForCommandBlock`). Scope expanded beyond the original issue to absorb hook-primitive helpers — documented in the commit trailer.
+- `scripts/lib/common.mjs` (#136): shared utilities (`makeTmpPath`, `utcTimestamp`, `epochMs`, `readJson`, `writeJson`, `appendJsonl`). Async `fs.promises`, auto-creates parent directories via recursive `mkdir`.
+- `hooks/enforce-scope.mjs` (#137): PreToolUse hook blocking Edit/Write outside `wave-scope.json` `allowedPaths`. Node port of `hooks/enforce-scope.sh` with SECURITY-REQ-01..08 from security pre-review addressed: top-level try/catch emits `emitDeny` on any unhandled error (never exit 1), `fs.realpath` on file + ancestor-walk fallback for non-existent targets prevents symlink-escape, Windows backslash normalization before glob matching, relative `file_path` resolved against project root (not CWD), scope file read once per invocation.
+- `hooks/enforce-commands.mjs` (#138): PreToolUse hook blocking dangerous Bash commands. Shell-operator-aware word boundary (catches `ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`, `` `rm -rf /` ``, `$(rm -rf /)`) plus quote-boundary (catches `psql -c "DROP TABLE …"`). Fallback blocklist expanded: adds `git push -f` short form and `drop table` lowercase variant that the Bash predecessor missed.
+- vitest coverage for Wave 2–3 artifacts: 179 tests across `tests/lib/{io,events,worktree,hardening,common}.test.mjs` and `tests/hooks/{enforce-scope,enforce-commands}.test.mjs`. Includes F-01 shell-operator-bypass regression block, F-02 symlink-escape regression (skipIf win32), 10-row `pathMatchesPattern` parity table, and 8-row `commandMatchesBlocked` parity table from the migration baseline spec. Total suite: 343 tests pass, 10 pre-existing skipped, 0 failed.
+
+### Fixed — libs + hooks session
+- `scripts/lib/worktree.mjs`: replaced 5 `$.nothrow($\`…\`)` call sites with the `nothrow` named export — in zx v8 `$.nothrow` is a boolean property, not callable; the original code threw `TypeError` on every cleanup path.
+- `scripts/lib/hardening.mjs:commandMatchesBlocked`: extended boundary class from `\s` to `[\s;|&(){}`'"]`. Previously `ls;rm -rf /` bypassed the blocklist because the semicolon wasn't a boundary char; `psql -c "DROP TABLE …"` bypassed because the quote wasn't either. Both are now caught (7 regression tests).
+
+### Also on this branch (parallel non-session commits)
+Three vault-sync commits (`a76e180`, `e3c8e47`, `82be589`) landed alongside the v3 libs/hooks session. Scope: managed-mirror Zod schema sync with a drift gate, BEGIN/END sentinels on vendored schema, GitLab CI pipeline (`test` + `schema-drift-check` stages), and learning-provenance decoupling from session-file lifecycle. Not part of the `[131,133,134,135,136,137,138]` session plan — documented here for traceability. Requires a one-time `projects-baseline` CI/CD Token Access allowlist for `infrastructure/session-orchestrator` before the first pipeline run.
+
+### Added — foundation wave (2026-04-18)
 - `.gitattributes` (#125): cross-platform EOL rules. LF for `.sh`, `.md`, `.json`, `.yaml`, `.mjs`; CRLF for `.ps1`; `* text=auto` fallback. Prevents autocrlf breakage on Windows checkouts.
 - `package.json` + `package-lock.json` (#126): plugin-root Node 20+ manifest with `type: "module"`, zx ^8.1.0 dep, ESLint v9, Prettier v3, and vitest ^2 devDeps. `npm ci`-installable. Version bumped to `3.0.0-dev`.
 - ESLint v9 flat config + Prettier (#127): `eslint.config.js` with @eslint/js recommended, Node 20 globals, project rules (`no-unused-vars` with `_`-prefix allowlist, `prefer-const`, `no-var`, `eqeqeq`). `.prettierrc` uses single quotes, 100 columns, LF. `.prettierignore` excludes `*.md` because skill files have intentional formatting. Baseline green, `lint:fix` idempotent.
@@ -19,9 +36,13 @@ Bash to Node.js (zx 8) migration kicks off. Epic #124. Foundation landed; hooks 
 - `scripts/lib/config.mjs` (#132): Node port of `parse-config.sh` + `config-yaml-parser.sh` + `config-json-coercion.sh` combined into one module with private coercion helpers. CRLF-tolerant input, native JSON (no jq shellout). Byte-exact parity against the `.sh` version on the project's own `CLAUDE.md`.
 - vitest coverage for foundation libs: 142 tests across `tests/lib/{platform,path-utils,config}.test.mjs` plus 5 fixtures under `tests/fixtures/`. `path-utils` tests cover every documented CWE-23 vector and are falsification-verified. `config` tests include a subprocess-bash parity diff gated on non-Windows.
 
-### Fixed
+### Fixed — foundation wave
 - session-start: reset STATE.md to idle when previous session completed. Clears `current-wave`, sets `status: idle`, demotes `## Wave History` into `## Previous Session`, and empties `## Deviations`. Only triggers on the `completed` branch; `active` and `paused` paths remain user-interactive via AskUserQuestion. Prevents a fresh session from appearing "already completed". (closes infrastructure/projects-baseline#159)
 - Pre-v3 `.mjs` lint baseline: removed an unused `fileURLToPath` import, replaced `== null` with explicit `=== null || === undefined`, prefixed intentionally-unused destructures and params with `_`, cleaned a `no-useless-escape`. `npm run lint` is now idempotent on the full tree.
+
+### Migration — still pending
+- Hook wiring (`hooks.json` → `.mjs`) is still on the bash files. `enforce-scope.mjs` + `enforce-commands.mjs` are implemented and tested but not yet activated — that lands with #142 in a later session.
+- 3 lower-priority hook migrations remain (`post-edit-validate`, `on-session-start`, `on-stop`) — issues #139–#141.
 
 ### Migration
 - Developer prerequisite: Node 20+ and `npm ci` after clone. Existing bash test suite (`scripts/test/run-all.sh`) continues to work on Unix while the foundation stabilizes; Windows users run `npm test` only.
