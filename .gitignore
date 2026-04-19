@@ -16,6 +16,7 @@ Thumbs.db
 .claude/wave-scope.json
 .claude/metrics/
 .claude/worktrees/
+.claude/*.lock
 
 # Codex CLI runtime state (session orchestrator)
 .codex/STATE.md
