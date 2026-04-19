@@ -133,3 +133,130 @@ parse_vault_sync() {
     --argjson excl "$vs_exclude_json" \
     '{enabled:$en, mode:$mode, "vault-dir":$dir, exclude:$excl}'
 }
+
+# parse_drift_check — extract the top-level `drift-check:` YAML block from
+# CLAUDE.md / AGENTS.md (same placement convention as vault-sync: typically
+# inside a markdown code fence outside the `## Session Config` section).
+#
+# Defaults: enabled=false, mode="warn", include-paths=["CLAUDE.md","_meta/**/*.md"],
+# all four per-check flags default to true.
+#
+# Supported sub-keys:
+#   enabled: true|false
+#   mode:    hard|warn|off
+#   include-paths:
+#     - "glob-1"
+#     - glob-2
+#   check-path-resolver: true|false
+#   check-project-count-sync: true|false
+#   check-issue-reference-freshness: true|false
+#   check-session-file-existence: true|false
+parse_drift_check() {
+  local file="$1"
+  local block
+  block="$(awk '
+    /^drift-check:[[:space:]]*$/ { in_block = 1; next }
+    in_block {
+      if ($0 !~ /^[[:space:]]/) exit
+      print
+    }
+  ' "$file" 2>/dev/null)"
+
+  if [[ -z "$block" ]]; then
+    echo '{"enabled":false,"mode":"warn","include-paths":["CLAUDE.md","_meta/**/*.md"],"check-path-resolver":true,"check-project-count-sync":true,"check-issue-reference-freshness":true,"check-session-file-existence":true}'
+    return
+  fi
+
+  local dc_enabled="false" dc_mode="warn"
+  local dc_chk_path="true" dc_chk_count="true" dc_chk_issue="true" dc_chk_sess="true"
+  local tmp_incl
+  tmp_incl="$(mktemp "${TMPDIR:-/tmp}/dc-incl.XXXXXX")"
+  local in_include=0
+
+  while IFS= read -r line; do
+    local clean
+    clean="$(echo "$line" | sed 's/[[:space:]]*#.*$//;s/[[:space:]]*$//')"
+    [[ -z "$clean" ]] && continue
+
+    if echo "$clean" | grep -qE '^[[:space:]]+-[[:space:]]+'; then
+      if (( in_include )); then
+        local item
+        item="$(echo "$clean" | sed -e 's/^[[:space:]]*-[[:space:]]*//' \
+                                    -e 's/^"\(.*\)"$/\1/' \
+                                    -e "s/^'\(.*\)'\$/\1/")"
+        [[ -n "$item" ]] && printf '%s\n' "$item" >> "$tmp_incl"
+      fi
+      continue
+    fi
+
+    in_include=0
+
+    if echo "$clean" | grep -qE '^[[:space:]]+[a-zA-Z_-]+:'; then
+      local k v
+      k="$(echo "$clean" | sed -E 's/^[[:space:]]+([a-zA-Z_-]+):.*/\1/')"
+      v="$(echo "$clean" | sed -E 's/^[[:space:]]+[a-zA-Z_-]+:[[:space:]]*//')"
+      v="$(echo "$v" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
+
+      case "$k" in
+        enabled)
+          case "$(echo "$v" | tr '[:upper:]' '[:lower:]')" in
+            true)  dc_enabled="true" ;;
+            false) dc_enabled="false" ;;
+          esac
+          ;;
+        mode)
+          case "$v" in
+            hard|warn|off) dc_mode="$v" ;;
+          esac
+          ;;
+        include-paths)
+          [[ -z "$v" ]] && in_include=1
+          ;;
+        check-path-resolver)
+          case "$(echo "$v" | tr '[:upper:]' '[:lower:]')" in
+            true) dc_chk_path="true" ;; false) dc_chk_path="false" ;;
+          esac
+          ;;
+        check-project-count-sync)
+          case "$(echo "$v" | tr '[:upper:]' '[:lower:]')" in
+            true) dc_chk_count="true" ;; false) dc_chk_count="false" ;;
+          esac
+          ;;
+        check-issue-reference-freshness)
+          case "$(echo "$v" | tr '[:upper:]' '[:lower:]')" in
+            true) dc_chk_issue="true" ;; false) dc_chk_issue="false" ;;
+          esac
+          ;;
+        check-session-file-existence)
+          case "$(echo "$v" | tr '[:upper:]' '[:lower:]')" in
+            true) dc_chk_sess="true" ;; false) dc_chk_sess="false" ;;
+          esac
+          ;;
+      esac
+    fi
+  done <<< "$block"
+
+  local dc_include_json='["CLAUDE.md","_meta/**/*.md"]'
+  if [[ -s "$tmp_incl" ]]; then
+    dc_include_json="$(jq -R -s 'split("\n") | map(select(length>0))' < "$tmp_incl")"
+  fi
+  rm -f "$tmp_incl"
+
+  jq -n \
+    --argjson en "$dc_enabled" \
+    --arg mode "$dc_mode" \
+    --argjson incl "$dc_include_json" \
+    --argjson chk_path "$dc_chk_path" \
+    --argjson chk_count "$dc_chk_count" \
+    --argjson chk_issue "$dc_chk_issue" \
+    --argjson chk_sess "$dc_chk_sess" \
+    '{
+       enabled: $en,
+       mode: $mode,
+       "include-paths": $incl,
+       "check-path-resolver": $chk_path,
+       "check-project-count-sync": $chk_count,
+       "check-issue-reference-freshness": $chk_issue,
+       "check-session-file-existence": $chk_sess
+     }'
+}

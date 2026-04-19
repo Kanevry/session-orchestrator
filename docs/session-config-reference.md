@@ -144,6 +144,35 @@ vault-sync:
 | `vault-sync.vault-dir` | string | project root (`$PWD`) | Directory to scan for `.md` files. Passed to the validator via `VAULT_DIR`. Accepts absolute or project-relative paths. |
 | `vault-sync.exclude` | list of glob strings | `[]` | File patterns to skip during validation (e.g. `**/_MOC.md`, `**/README.md`, `**/_overview.md`). Legitimate index files that do not carry full note frontmatter should be listed here. Matching files are counted in `excluded_count` but are not validated. Supports `**`, `*`, and `?` wildcards (fnmatch-style). |
 
+## CLAUDE.md Drift Check
+
+Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drift-check/SKILL.md`). Four checks run against top-level repo docs: (1) absolute paths in CLAUDE.md / _meta resolve on disk, (2) hardcoded `01-projects/` count claims match the actual folder count, (3) issue references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) are not closed, (4) `50-sessions/YYYY-MM-DD-*.md` references exist on disk. Complementary to `vault-sync`: that gate validates frontmatter inside the vault tree; this gate validates narrative claims in top-level docs.
+
+All fields live under a top-level `drift-check` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+drift-check:
+  enabled: true
+  mode: warn
+  include-paths:
+    - CLAUDE.md
+    - _meta/**/*.md
+  check-path-resolver: true
+  check-project-count-sync: true
+  check-issue-reference-freshness: true
+  check-session-file-existence: true
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `drift-check.enabled` | boolean | `false` | If true, session-end runs the drift checker as part of Phase 2.2. When false (or missing), the gate is skipped silently. |
+| `drift-check.mode` | string | `warn` | Gate severity. `hard` blocks session close on any drift. `warn` reports drift in the quality gate report but does not block. `off` bypasses the checker entirely. |
+| `drift-check.include-paths` | list of strings | `["CLAUDE.md", "_meta/**/*.md"]` | Files to scan. Supports exact paths and `<dir>/**/*.<ext>` directory-recursive patterns (relative to repo root). |
+| `drift-check.check-path-resolver` | boolean | `true` | Enable Check 1: every absolute `/Users/…` path in scope files must resolve via `existsSync`. Code-fence blocks are skipped. |
+| `drift-check.check-project-count-sync` | boolean | `true` | Enable Check 2: hardcoded `(N registered)` / `(N projects)` claims must match the actual `01-projects/*/` count. Auto-skipped if no `01-projects/` directory exists. |
+| `drift-check.check-issue-reference-freshness` | boolean | `true` | Enable Check 3: `#NN` references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) must be open per `glab issue view`. Auto-skipped if `glab` is not on PATH or origin repo cannot be detected. |
+| `drift-check.check-session-file-existence` | boolean | `true` | Enable Check 4: every `50-sessions/YYYY-MM-DD-*.md` reference must exist on disk at `<vault>/50-sessions/<file>`. |
+
 ## Vault Integration
 
 Opt-in configuration for the `vault-mirror` auto-sync that writes learnings and session summaries into the Meta-Vault after each session (see `scripts/vault-mirror.mjs`). When enabled, the session-end skill invokes the mirror script after writing JSONL metrics, and the evolve skill mirrors new learnings after each learning atomic-rewrite. Projects without a vault leave these fields unset and are unaffected.

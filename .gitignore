@@ -31,3 +31,5 @@ Thumbs.db
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
+.orchestrator/host.json
+.orchestrator/current-session.json

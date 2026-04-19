@@ -100,6 +100,10 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 
 Read `skills/session-end/vault-operations.md` for validator bash contract and reporting matrix.
 
+### 2.2 CLAUDE.md Drift Check (if configured)
+
+Read `skills/session-end/drift-operations.md` for checker bash contract and reporting matrix. Complements 2.1: vault-sync validates frontmatter inside the vault tree; drift-check validates narrative claims (paths, counts, issue refs, session-file refs) in top-level repo docs.
+
 ## Phase 3: Documentation Updates
 
 ### 3.0 Defensive Cleanup
@@ -270,6 +274,7 @@ Present to the user:
 | `discovery-scan.md` | Phase 1.5 embedded discovery dispatch and findings triage |
 | `metrics-collection.md` | Phase 1.7 JSONL schema and conditional field rules |
 | `vault-operations.md` | Phase 2.1 validator bash contract and reporting matrix |
+| `drift-operations.md` | Phase 2.2 drift-checker bash contract and reporting matrix |
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 
