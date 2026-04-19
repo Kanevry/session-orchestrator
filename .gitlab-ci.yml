@@ -1,0 +1,102 @@
+# GitLab CI/CD — session-orchestrator
+# Version: 1.1 | 2026-04-19
+#
+# Pipeline: test → verify (schema-drift-check)
+#
+# Why GitLab CI rather than GitHub Actions:
+#   The canonical vault-frontmatter schema lives in a *private* GitLab repo
+#   (gitlab.gotzendorfer.at/infrastructure/projects-baseline, project ID 52).
+#   Cross-project access during CI requires same-instance authentication via
+#   CI_JOB_TOKEN — a mechanism only available within the same GitLab instance.
+#   GitHub Actions has no equivalent for private GitLab resources, so the
+#   schema-drift gate must live here.
+#
+# GitHub Actions mirror:
+#   .github/workflows/test.yml intentionally runs a *subset* of CI: lint,
+#   typecheck, and the bash + vitest test suites (no schema-drift check).
+#   Leave that file untouched — it serves the public GitHub mirror only.
+
+stages:
+  - test
+  - verify
+
+variables:
+  NODE_VERSION: "22"
+  # Bump to bust stale CI cache
+  CI_CACHE_VERSION: "v2"
+
+# ---------------------------------------------------------------------------
+# Shared setup anchor — npm install on alpine
+# ---------------------------------------------------------------------------
+.node-setup: &node-setup
+  image: node:${NODE_VERSION}
+  before_script:
+    # jq is required by scripts/parse-config.sh, which is shelled out to
+    # by tests/lib/config.test.mjs for bash↔node parity verification.
+    - apt-get update -qq && apt-get install -y --no-install-recommends jq
+    - npm ci
+  cache:
+    key:
+      prefix: ${CI_CACHE_VERSION}
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+
+# ---------------------------------------------------------------------------
+# Stage: test
+# ---------------------------------------------------------------------------
+
+test:
+  <<: *node-setup
+  stage: test
+  interruptible: true
+  timeout: 15m
+  script:
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Stage: verify
+#
+# REQUIRES: projects-baseline (project ID 52) must list this project
+# (infrastructure/session-orchestrator) in its CI/CD Job Token inbound
+# allowlist. Without this, the git clone below will return HTTP 401.
+#
+# How to configure:
+#   projects-baseline → Settings → CI/CD → Token Access →
+#   "Allow CI job tokens from the following projects to access this project" →
+#   Add: infrastructure/session-orchestrator
+# ---------------------------------------------------------------------------
+
+schema-drift-check:
+  <<: *node-setup
+  stage: verify
+  interruptible: true
+  timeout: 10m
+  # TODO: flip to false once projects-baseline (#52) has this project on
+  # its CI/CD Job Token inbound allowlist. Until then, the git clone
+  # returns 403 and the job fails by design — but we do not want a
+  # missing admin config to block every MR, so the failure is non-blocking.
+  allow_failure: true
+  needs:
+    - test
+  script:
+    # Clone the canonical schema source from the same GitLab instance.
+    # CI_JOB_TOKEN provides scoped read-only access when the allowlist is
+    # configured (see comment block above this job).
+    - >
+      git clone --depth 1
+      "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/infrastructure/projects-baseline.git"
+      /tmp/projects-baseline
+    # Run the drift-check — exits 0 if in sync, 1 if the local vendored copy
+    # has diverged from the canonical schema. Diff is emitted to stderr.
+    - >
+      node scripts/sync-vault-schema.mjs
+      --check
+      --canonical /tmp/projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

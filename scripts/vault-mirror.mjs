@@ -164,7 +164,8 @@ function generateLearningNote(entry, slug) {
   const titleRaw = truncateAtWord(insight, 80);
   const title = yamlQuoteIfNeeded(titleRaw);
 
-  const tags = `[learning/${type}, status/${status}, source/${source_session}]`;
+  const sourceTag = source_session.replace(/\./g, '-');
+  const tags = `[learning/${type}, status/${status}, source/${sourceTag}]`;
 
   // Check if expires has a value; it's optional in schema
   const expiresLine = expires ? `expires: ${expires}\n` : '';
@@ -184,7 +185,7 @@ ${expiresLine}_generator: ${GENERATOR_MARKER}
 
 - **Type:** ${type}
 - **Confidence:** ${confidence}
-- **Source session:** [[50-sessions/${source_session}]]
+- **Source session:** ${source_session}
 
 ## Insight
 

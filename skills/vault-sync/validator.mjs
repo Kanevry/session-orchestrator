@@ -9,14 +9,26 @@
  * there is no vault to validate.
  *
  * ── Schema drift ────────────────────────────────────────────────────────────
- * The Zod schema below is duplicated INLINE from the canonical source:
+ * The Zod schema below is auto-vendored from the canonical source:
  *   projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts
  * This skill is intentionally self-contained (no workspace dependency on the
- * shared monorepo package), so the schema is vendored here. Drift between the
- * two is expected to be caught by a smoke test (see tests/) that re-exports
- * the canonical schema and diffs the shape — NOT YET IMPLEMENTED.
+ * shared monorepo package), so the schema is vendored here via the managed
+ * sync script: scripts/sync-vault-schema.mjs
  *
- * When the canonical schema changes, update this file in lockstep.
+ * To update after a canonical change, run:
+ *   node scripts/sync-vault-schema.mjs --write
+ * then commit the resulting validator.mjs diff.
+ *
+ * The schema block below is fenced by a pair of sentinel comments managed by
+ * sync-vault-schema.mjs. DO NOT edit between them by hand — any manual edit
+ * will be overwritten on the next --write run and will cause --check to report
+ * drift.
+ *
+ * Drift is gated by tests/schema-drift.test.mjs (5 scenarios: idempotency,
+ * --check clean, --check drift, missing canonical, sentinel presence) and
+ * by the GitLab CI pipeline which runs --check mode against a freshly-cloned
+ * canonical to catch any out-of-band edits.
+ *
  * 2026-04-13: tagPathRegex added for Obsidian nested-tag support (e.g. meta/schema).
  * ────────────────────────────────────────────────────────────────────────────
  */
@@ -27,8 +39,11 @@ import { z } from 'zod';
 import YAML from 'yaml';
 
 // ── Inline vendored schema (mirrors projects-baseline vault-frontmatter.ts) ──
+// ── BEGIN GENERATED SCHEMA (sync-vault-schema.mjs) — do not edit between sentinels ──
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 const tagPathRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/;
+
 const isoDateRegex =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
@@ -43,7 +58,15 @@ const vaultNoteTypeSchema = z.enum([
   'session',
 ]);
 
-const vaultNoteStatusSchema = z.enum(['draft', 'active', 'verified', 'archived']);
+const vaultNoteStatusSchema = z.enum([
+  'draft',
+  'active',
+  'verified',
+  'archived',
+  'production',
+  'mvp',
+  'idea',
+]);
 
 const vaultFrontmatterSchema = z
   .object({
@@ -75,6 +98,7 @@ const vaultFrontmatterSchema = z
     aliases: z.array(z.string().min(1).max(200)).optional(),
   })
   .passthrough();
+// ── END GENERATED SCHEMA ──
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
