@@ -58,7 +58,15 @@ const vaultNoteTypeSchema = z.enum([
   'session',
 ]);
 
-const vaultNoteStatusSchema = z.enum(['draft', 'active', 'verified', 'archived']);
+const vaultNoteStatusSchema = z.enum([
+  'draft',
+  'active',
+  'verified',
+  'archived',
+  'production',
+  'mvp',
+  'idea',
+]);
 
 const vaultFrontmatterSchema = z
   .object({
