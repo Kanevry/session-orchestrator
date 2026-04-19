@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "rationale": "Main-session destructive-command guard (#155). Consolidated blocklist for pre-bash hook + wave-executor wave-scope.",
+  "rules": [
+    {
+      "id": "git-reset-hard",
+      "pattern": "git reset --hard",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Hard reset permanently discards staged and committed work that may belong to another parallel session (#155 incident). Blocked unconditionally per PSA-003 to prevent cross-session data loss."
+    },
+    {
+      "id": "git-reset-mixed",
+      "pattern": "git reset --mixed",
+      "severity": "warn",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Mixed reset unstages changes silently and can discard parallel-session work from the index. Warn so the coordinator can confirm intent before proceeding."
+    },
+    {
+      "id": "git-reset-soft",
+      "pattern": "git reset --soft",
+      "severity": "warn",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Soft reset moves HEAD and may reorder commits from concurrent sessions. Warn to surface the operation to the coordinator for explicit approval."
+    },
+    {
+      "id": "git-checkout-discard",
+      "pattern": "git checkout --",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Discards uncommitted file changes that another session may be actively building. Blocked per PSA-003 to protect in-progress work."
+    },
+    {
+      "id": "git-clean-force",
+      "pattern": "git clean -f",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Force-clean deletes untracked files that may be unfinished output from a parallel session. Blocked unconditionally per PSA-003."
+    },
+    {
+      "id": "git-clean-force-d",
+      "pattern": "git clean -fd",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Force-clean including directories amplifies the blast radius of git-clean-force, removing entire untracked directory trees. Blocked per PSA-003."
+    },
+    {
+      "id": "git-stash-any",
+      "pattern": "git stash",
+      "severity": "warn",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Stashing captures another session's uncommitted changes into a stash they cannot find, effectively hiding their work. Warn to confirm the coordinator owns all affected changes."
+    },
+    {
+      "id": "rm-rf-destructive",
+      "pattern": "rm -rf",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155", "wave-executor-baseline"],
+      "rationale": "Recursive force-removal can destroy project files or another session's work with no recovery path. Blocked except for safe paths (.orchestrator/tmp, node_modules) which the pre-bash hook evaluates separately."
+    },
+    {
+      "id": "git-push-force",
+      "pattern": "git push --force",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155", "#138-SECURITY-REQ-07"],
+      "rationale": "Force-push rewrites shared remote history, permanently discarding commits from other sessions or collaborators. Blocked unconditionally per PSA-003 and SECURITY-REQ-07."
+    },
+    {
+      "id": "git-push-force-short",
+      "pattern": "git push -f",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155", "#138-SECURITY-REQ-07"],
+      "rationale": "Short-flag alias for git push --force; same destructive effect on remote history. Blocked for full parity with git-push-force per SECURITY-REQ-07."
+    },
+    {
+      "id": "git-push-force-with-lease",
+      "pattern": "git push --force-with-lease",
+      "severity": "warn",
+      "allow-override-flag": null,
+      "sources": ["PSA-003", "#155"],
+      "rationale": "Safer than bare force-push but still rewrites remote history if the lease condition is met. Warn so the coordinator confirms this is the intended recovery action."
+    },
+    {
+      "id": "sql-drop-table-upper",
+      "pattern": "DROP TABLE",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["wave-executor-baseline", "#155"],
+      "rationale": "Uppercase DROP TABLE is an irreversible DDL operation that destroys database schema and data. Blocked as part of the wave-executor baseline destructive-command guard."
+    },
+    {
+      "id": "sql-drop-table-lower",
+      "pattern": "drop table",
+      "severity": "block",
+      "allow-override-flag": null,
+      "sources": ["wave-executor-baseline", "#155"],
+      "rationale": "Lowercase alias for DROP TABLE; same irreversible DDL destruction. Blocked to ensure case-insensitive SQL issued via shell (e.g., psql -c) is caught by commandMatchesBlocked()."
+    }
+  ]
+}
