@@ -5,10 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased]: 3.0.0-dev (Windows native foundation wave)
+
+Bash to Node.js (zx 8) migration kicks off. Epic #124. Foundation landed; hooks and test migration follow in subsequent sessions.
+
+### Added
+- `.gitattributes` (#125): cross-platform EOL rules. LF for `.sh`, `.md`, `.json`, `.yaml`, `.mjs`; CRLF for `.ps1`; `* text=auto` fallback. Prevents autocrlf breakage on Windows checkouts.
+- `package.json` + `package-lock.json` (#126): plugin-root Node 20+ manifest with `type: "module"`, zx ^8.1.0 dep, ESLint v9, Prettier v3, and vitest ^2 devDeps. `npm ci`-installable. Version bumped to `3.0.0-dev`.
+- ESLint v9 flat config + Prettier (#127): `eslint.config.js` with @eslint/js recommended, Node 20 globals, project rules (`no-unused-vars` with `_`-prefix allowlist, `prefer-const`, `no-var`, `eqeqeq`). `.prettierrc` uses single quotes, 100 columns, LF. `.prettierignore` excludes `*.md` because skill files have intentional formatting. Baseline green, `lint:fix` idempotent.
+- CI matrix for ubuntu, macos, and windows-latest (#128): `.github/workflows/test.yml` extends to a 3-OS matrix with `fail-fast: false`. Preserves v2.0 hardenings (least-privilege `permissions`, `timeout-minutes`, SHA-pinned actions). Adds concurrency group, conditional typecheck (gated on `.mjs` existence), jq install per-OS, vitest placeholder for Wave 4.
+- `scripts/lib/platform.mjs` (#129): Node port of `platform.sh` with Windows-safe filesystem walk (`path.parse(dir).root` replaces the Bash `/`-terminator that breaks on `C:\`). New exports: `SO_OS`, `SO_IS_WINDOWS`, `SO_IS_WSL`, `SO_PATH_SEP` alongside the six existing IDE/project constants. Five named helper functions for callers that need to re-detect.
+- `scripts/lib/path-utils.mjs` (#130): CWE-23-safe pure path helpers backing the forthcoming `enforce-scope.mjs`. Rejects null bytes, empty strings, UNC paths (Windows), prefix-match confusion, cross-drive escapes. Locale-stable case normalization via `toLocaleLowerCase('en-US')` to avoid Turkish-I-style regressions. Exports a documented `CWE_23_ATTACK_PATTERNS` taxonomy for test self-check.
+- `scripts/lib/config.mjs` (#132): Node port of `parse-config.sh` + `config-yaml-parser.sh` + `config-json-coercion.sh` combined into one module with private coercion helpers. CRLF-tolerant input, native JSON (no jq shellout). Byte-exact parity against the `.sh` version on the project's own `CLAUDE.md`.
+- vitest coverage for foundation libs: 142 tests across `tests/lib/{platform,path-utils,config}.test.mjs` plus 5 fixtures under `tests/fixtures/`. `path-utils` tests cover every documented CWE-23 vector and are falsification-verified. `config` tests include a subprocess-bash parity diff gated on non-Windows.
 
 ### Fixed
-- session-start: reset STATE.md to idle when previous session completed — clears `current-wave`, sets `status: idle`, demotes `## Wave History` into `## Previous Session`, and empties `## Deviations`. Only triggers on the `completed` branch; `active`/`paused` paths remain user-interactive via AskUserQuestion. Prevents a fresh session from appearing "already completed". (closes infrastructure/projects-baseline#159)
+- session-start: reset STATE.md to idle when previous session completed. Clears `current-wave`, sets `status: idle`, demotes `## Wave History` into `## Previous Session`, and empties `## Deviations`. Only triggers on the `completed` branch; `active` and `paused` paths remain user-interactive via AskUserQuestion. Prevents a fresh session from appearing "already completed". (closes infrastructure/projects-baseline#159)
+- Pre-v3 `.mjs` lint baseline: removed an unused `fileURLToPath` import, replaced `== null` with explicit `=== null || === undefined`, prefixed intentionally-unused destructures and params with `_`, cleaned a `no-useless-escape`. `npm run lint` is now idempotent on the full tree.
+
+### Migration
+- Developer prerequisite: Node 20+ and `npm ci` after clone. Existing bash test suite (`scripts/test/run-all.sh`) continues to work on Unix while the foundation stabilizes; Windows users run `npm test` only.
+- No user-visible breakage yet. Hook migrations in later waves will require `npm install` in the plugin directory before hooks fire.
 
 ## [2.0.0] - 2026-04-17
 

@@ -15,6 +15,7 @@ Thumbs.db
 .claude/STATE.md
 .claude/wave-scope.json
 .claude/metrics/
+.claude/worktrees/
 
 # Codex CLI runtime state (session orchestrator)
 .codex/STATE.md
@@ -29,3 +30,4 @@ Thumbs.db
 
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
+.orchestrator/session-notes/

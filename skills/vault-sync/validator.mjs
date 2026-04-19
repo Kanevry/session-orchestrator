@@ -23,7 +23,6 @@
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import YAML from 'yaml';
 
@@ -127,7 +126,7 @@ for (let i = 0; i < args.length; i++) {
 // Operates on POSIX-style forward-slash relative paths.
 function globToRegExp(glob) {
   // Normalise input
-  let g = glob.replace(/\\/g, '/');
+  const g = glob.replace(/\\/g, '/');
   let re = '^';
   for (let i = 0; i < g.length; i++) {
     const c = g[i];
