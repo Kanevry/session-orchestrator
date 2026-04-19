@@ -22,6 +22,8 @@ export default [
         clearInterval: "readonly",
         setImmediate: "readonly",
         clearImmediate: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly",
       },
     },
     rules: {
