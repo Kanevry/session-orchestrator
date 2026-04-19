@@ -160,6 +160,10 @@ VI_MODE=$(json_enum "mode" "warn" "warn" "strict" "off")
 # `$CONFIG | jq -r '."vault-sync".enabled'` and friends.
 VS_BLOCK_JSON=$(parse_vault_sync "$CLAUDE_MD")
 
+# drift-check block — standalone top-level YAML block, mirrors vault-sync
+# placement convention. Consumed by session-end Phase 2.2.
+DC_BLOCK_JSON=$(parse_drift_check "$CLAUDE_MD")
+
 # Assemble final JSON using jq for correctness
 jq -n \
   --argjson agents_per_wave "$V_AGENTS_PER_WAVE" \
@@ -211,6 +215,7 @@ jq -n \
   --argjson vi_vault_dir "$VI_VAULT_DIR" \
   --argjson vi_mode "$VI_MODE" \
   --argjson vs_block "$VS_BLOCK_JSON" \
+  --argjson dc_block "$DC_BLOCK_JSON" \
   '{
     "agents-per-wave": $agents_per_wave,
     "waves": $waves,
@@ -262,5 +267,6 @@ jq -n \
       "vault-dir": $vi_vault_dir,
       "mode": $vi_mode
     },
-    "vault-sync": $vs_block
+    "vault-sync": $vs_block,
+    "drift-check": $dc_block
   }'
