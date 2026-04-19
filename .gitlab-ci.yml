@@ -1,5 +1,5 @@
 # GitLab CI/CD — session-orchestrator
-# Version: 1.0 | 2026-04-19
+# Version: 1.1 | 2026-04-19
 #
 # Pipeline: test → verify (schema-drift-check)
 #
@@ -22,28 +22,24 @@ stages:
 
 variables:
   NODE_VERSION: "22"
-  PNPM_VERSION: "10"
   # Bump to bust stale CI cache
-  CI_CACHE_VERSION: "v1"
+  CI_CACHE_VERSION: "v2"
 
 # ---------------------------------------------------------------------------
-# Shared setup anchor — pnpm install on alpine
+# Shared setup anchor — npm install on alpine
 # ---------------------------------------------------------------------------
 .node-setup: &node-setup
   image: node:${NODE_VERSION}-alpine
   before_script:
     - apk add --no-cache git
-    - corepack enable
-    - corepack prepare pnpm@${PNPM_VERSION} --activate
-    - pnpm config set store-dir .pnpm-store
-    - pnpm install --frozen-lockfile
+    - npm ci
   cache:
     key:
       prefix: ${CI_CACHE_VERSION}
       files:
-        - pnpm-lock.yaml
+        - package-lock.json
     paths:
-      - .pnpm-store/
+      - node_modules/
 
 # ---------------------------------------------------------------------------
 # Stage: test
@@ -55,7 +51,7 @@ test:
   interruptible: true
   timeout: 15m
   script:
-    - pnpm test
+    - npm test
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
