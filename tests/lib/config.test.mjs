@@ -101,6 +101,7 @@ describe('parseSessionConfig', () => {
         'plan-baseline-path', 'plan-default-visibility', 'plan-prd-location',
         'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
+        'resource-awareness', 'enable-host-banner', 'resource-thresholds',
         'vault-integration', 'vault-sync',
       ];
       for (const key of expectedKeys) {
@@ -163,6 +164,27 @@ describe('parseSessionConfig', () => {
     it('defaults allow-destructive-ops to false', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
       expect(config['allow-destructive-ops']).toBe(false);
+    });
+
+    it('defaults resource-awareness to true', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['resource-awareness']).toBe(true);
+    });
+
+    it('defaults enable-host-banner to true', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['enable-host-banner']).toBe(true);
+    });
+
+    it('defaults resource-thresholds to canonical values', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['resource-thresholds']).toEqual({
+        'ram-free-min-gb': 4,
+        'ram-free-critical-gb': 2,
+        'cpu-load-max-pct': 80,
+        'concurrent-sessions-warn': 5,
+        'ssh-no-docker': true,
+      });
     });
   });
 
@@ -420,6 +442,56 @@ describe('parseSessionConfig', () => {
       const content = `## Session Config\n\nallow-destructive-ops: false\n`;
       const config = parseSessionConfig(content);
       expect(config['allow-destructive-ops']).toBe(false);
+    });
+  });
+
+  describe('resource-awareness + env-aware block (v3.1.0 #166)', () => {
+    it('parses resource-awareness: false', () => {
+      const content = `## Session Config\n\nresource-awareness: false\n`;
+      const config = parseSessionConfig(content);
+      expect(config['resource-awareness']).toBe(false);
+    });
+
+    it('parses enable-host-banner: false', () => {
+      const content = `## Session Config\n\nenable-host-banner: false\n`;
+      const config = parseSessionConfig(content);
+      expect(config['enable-host-banner']).toBe(false);
+    });
+
+    it('parses resource-thresholds sub-keys with custom values', () => {
+      const content = [
+        '## Session Config',
+        '',
+        'resource-thresholds:',
+        '  ram-free-min-gb: 8',
+        '  ram-free-critical-gb: 3',
+        '  cpu-load-max-pct: 70',
+        '  concurrent-sessions-warn: 3',
+        '  ssh-no-docker: false',
+        '',
+      ].join('\n');
+      const config = parseSessionConfig(content);
+      expect(config['resource-thresholds']).toEqual({
+        'ram-free-min-gb': 8,
+        'ram-free-critical-gb': 3,
+        'cpu-load-max-pct': 70,
+        'concurrent-sessions-warn': 3,
+        'ssh-no-docker': false,
+      });
+    });
+
+    it('resource-thresholds sub-keys fall back to defaults when partial', () => {
+      const content = [
+        '## Session Config',
+        '',
+        'resource-thresholds:',
+        '  concurrent-sessions-warn: 2',
+        '',
+      ].join('\n');
+      const config = parseSessionConfig(content);
+      expect(config['resource-thresholds']['concurrent-sessions-warn']).toBe(2);
+      expect(config['resource-thresholds']['ram-free-min-gb']).toBe(4);
+      expect(config['resource-thresholds']['ssh-no-docker']).toBe(true);
     });
   });
 });

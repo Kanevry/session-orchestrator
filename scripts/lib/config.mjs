@@ -437,6 +437,23 @@ function _parseVaultIntegration(kv) {
 }
 
 // ---------------------------------------------------------------------------
+// Internal: resource-thresholds sub-keys from Session Config KV map
+// ---------------------------------------------------------------------------
+
+// Sub-key names are deliberately unique across all blocks (no collision with
+// vault-integration / vault-sync) because they are flattened into the same KV
+// map by the Session Config parser. See the A5 note in parse-config.sh.
+function _parseResourceThresholds(kv) {
+  return {
+    'ram-free-min-gb': _coerceInteger(kv, 'ram-free-min-gb', 4),
+    'ram-free-critical-gb': _coerceInteger(kv, 'ram-free-critical-gb', 2),
+    'cpu-load-max-pct': _coerceInteger(kv, 'cpu-load-max-pct', 80),
+    'concurrent-sessions-warn': _coerceInteger(kv, 'concurrent-sessions-warn', 5),
+    'ssh-no-docker': _coerceBoolean(kv, 'ssh-no-docker', true),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -532,6 +549,8 @@ export function parseSessionConfig(mdContent) {
   const reasoningOutput = _coerceBoolean(kv, 'reasoning-output', false);
   const groundingCheck = _coerceBoolean(kv, 'grounding-check', true);
   const allowDestructiveOps = _coerceBoolean(kv, 'allow-destructive-ops', false);
+  const resourceAwareness = _coerceBoolean(kv, 'resource-awareness', true);
+  const enableHostBanner = _coerceBoolean(kv, 'enable-host-banner', true);
 
   // List fields
   const crossRepos = _coerceList(kv, 'cross-repos', undefined);
@@ -554,6 +573,9 @@ export function parseSessionConfig(mdContent) {
 
   // vault-integration sub-keys
   const vaultIntegration = _parseVaultIntegration(kv);
+
+  // resource-thresholds sub-keys (v3.1.0 env-aware — issue #166)
+  const resourceThresholds = _parseResourceThresholds(kv);
 
   // vault-sync: parsed from full content (can live outside Session Config)
   const vaultSync = _parseVaultSync(mdContent);
@@ -604,6 +626,9 @@ export function parseSessionConfig(mdContent) {
     'grounding-injection-max-files': groundingInjectionMaxFiles,
     'grounding-check': groundingCheck,
     'allow-destructive-ops': allowDestructiveOps,
+    'resource-awareness': resourceAwareness,
+    'enable-host-banner': enableHostBanner,
+    'resource-thresholds': resourceThresholds,
     'vault-integration': vaultIntegration,
     'vault-sync': vaultSync,
   };

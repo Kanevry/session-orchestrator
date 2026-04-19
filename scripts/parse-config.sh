@@ -123,6 +123,17 @@ V_DISC_CLOSE=$(json_boolean "discovery-on-close" "false")
 V_REASONING_OUTPUT=$(json_boolean "reasoning-output" "false")
 V_GROUNDING_CHECK=$(json_boolean "grounding-check" "true")
 V_ALLOW_DESTRUCTIVE=$(json_boolean "allow-destructive-ops" "false")
+V_RESOURCE_AWARE=$(json_boolean "resource-awareness" "true")
+V_ENABLE_HOST_BANNER=$(json_boolean "enable-host-banner" "true")
+
+# resource-thresholds block (v3.1.0 env-aware — issue #166).
+# Sub-key names are deliberately unique across all blocks (no collision with
+# vault-integration / vault-sync) because they flatten into the same KV map.
+V_RT_RAM_MIN=$(json_integer "ram-free-min-gb" "4")
+V_RT_RAM_CRIT=$(json_integer "ram-free-critical-gb" "2")
+V_RT_CPU_MAX=$(json_integer "cpu-load-max-pct" "80")
+V_RT_CONC_WARN=$(json_integer "concurrent-sessions-warn" "5")
+V_RT_SSH_NO_DOCKER=$(json_boolean "ssh-no-docker" "true")
 
 # List fields
 V_CROSS_REPOS=$(json_list "cross-repos")
@@ -207,6 +218,13 @@ jq -n \
   --argjson grounding_injection_max_files "$V_GROUNDING_INJECTION_MAX" \
   --argjson grounding_check "$V_GROUNDING_CHECK" \
   --argjson allow_destructive_ops "$V_ALLOW_DESTRUCTIVE" \
+  --argjson resource_awareness "$V_RESOURCE_AWARE" \
+  --argjson enable_host_banner "$V_ENABLE_HOST_BANNER" \
+  --argjson rt_ram_min "$V_RT_RAM_MIN" \
+  --argjson rt_ram_crit "$V_RT_RAM_CRIT" \
+  --argjson rt_cpu_max "$V_RT_CPU_MAX" \
+  --argjson rt_conc_warn "$V_RT_CONC_WARN" \
+  --argjson rt_ssh_no_docker "$V_RT_SSH_NO_DOCKER" \
   --argjson vi_enabled "$VI_ENABLED" \
   --argjson vi_vault_dir "$VI_VAULT_DIR" \
   --argjson vi_mode "$VI_MODE" \
@@ -257,6 +275,15 @@ jq -n \
     "grounding-injection-max-files": $grounding_injection_max_files,
     "grounding-check": $grounding_check,
     "allow-destructive-ops": $allow_destructive_ops,
+    "resource-awareness": $resource_awareness,
+    "enable-host-banner": $enable_host_banner,
+    "resource-thresholds": {
+      "ram-free-min-gb": $rt_ram_min,
+      "ram-free-critical-gb": $rt_ram_crit,
+      "cpu-load-max-pct": $rt_cpu_max,
+      "concurrent-sessions-warn": $rt_conc_warn,
+      "ssh-no-docker": $rt_ssh_no_docker
+    },
     "vault-integration": {
       "enabled": $vi_enabled,
       "vault-dir": $vi_vault_dir,

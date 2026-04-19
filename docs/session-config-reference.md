@@ -74,6 +74,31 @@ The format and all fields are identical on both platforms. The section header mu
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
 | `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 
+## Environment Awareness (v3.1.0)
+
+Introduced by Epic #157 / issue #166. Lets session-start sense the host (RAM, CPU, SSH, peer sessions) and adapt wave planning accordingly. All fields are opt-in defaults — a project without this block behaves identically to v3.0.0.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `resource-awareness` | boolean | `true` | Master toggle for the env-aware runtime. When `false`, skips Phase 4.5 adaptive wave sizing and the host banner. |
+| `enable-host-banner` | boolean | `true` | Whether `hooks/on-session-start.mjs` emits the host + resource banner at the top of every session. Set `false` to silence. |
+| `resource-thresholds` | object | see below | Numeric thresholds that drive Phase 4.5 adaptive rules. Unset sub-keys fall back to defaults. Sub-keys: `ram-free-min-gb`, `ram-free-critical-gb`, `cpu-load-max-pct`, `concurrent-sessions-warn`, `ssh-no-docker`. |
+
+### resource-thresholds
+
+Sub-key defaults:
+
+```yaml
+resource-thresholds:
+  ram-free-min-gb: 4            # below this, cap agents-per-wave at 2
+  ram-free-critical-gb: 2       # below this, recommend coordinator-direct
+  cpu-load-max-pct: 80          # sustained above this, cap agents-per-wave at 2
+  concurrent-sessions-warn: 5   # warn when host has this many Claude sessions
+  ssh-no-docker: true           # when session is over SSH, steer the plan away from Docker-based tests
+```
+
+Rationale: originated from the 2026-04-19 incident where 8 parallel Claude sessions on one Mac caused a hard freeze. The adaptive rules cap concurrent agent load when the host is under pressure, before a wave ever spawns subagents. See Epic #157 and Sub-Epic #158.
+
 ## Planning
 
 | Field | Type | Default | Description |
