@@ -24,6 +24,9 @@ export default [
         clearImmediate: "readonly",
         AbortController: "readonly",
         AbortSignal: "readonly",
+        Response: "readonly",
+        Request: "readonly",
+        Headers: "readonly",
       },
     },
     rules: {
