@@ -7,7 +7,7 @@
  * Part of v3.0.0 migration (Epic #124, issue #134).
  */
 
-import { $, ProcessOutput } from 'zx';
+import { $, nothrow, ProcessOutput } from 'zx';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,8 +67,8 @@ export async function createWorktree(suffix, baseRef = 'HEAD') {
     await $`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
   } catch {
     // Branch or worktree may already exist from a previous failed run — force-cleanup and retry.
-    await $.nothrow($`git worktree remove ${wtPath} --force`);
-    await $.nothrow($`git branch -D ${branch}`);
+    await nothrow($`git worktree remove ${wtPath} --force`);
+    await nothrow($`git branch -D ${branch}`);
 
     try {
       await $`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
@@ -125,11 +125,11 @@ export async function removeWorktree(wtPath) {
   }
 
   // Remove worktree (force so it works even with dirty state).
-  await $.nothrow($`git worktree remove ${wtPath} --force`);
+  await nothrow($`git worktree remove ${wtPath} --force`);
 
   // Clean up the temporary branch (best-effort).
   if (branch) {
-    await $.nothrow($`git branch -D ${branch}`);
+    await nothrow($`git branch -D ${branch}`);
   }
 }
 
@@ -208,5 +208,5 @@ export async function cleanupAllWorktrees() {
     // Best-effort — swallow any unexpected errors.
   }
 
-  await $.nothrow($`git worktree prune`);
+  await nothrow($`git worktree prune`);
 }

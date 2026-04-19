@@ -213,9 +213,11 @@ export function pathMatchesPattern(relPath, pattern) {
 }
 
 /**
- * Test whether a command string contains a blocked pattern with word boundaries.
+ * Test whether a command string contains a blocked pattern with shell-aware boundaries.
  *
- * Match rule: `(^|\s)<escaped pattern>(\s|$)`.
+ * Match rule: boundary characters are whitespace OR shell operators
+ * (`;`, `|`, `&`, `(`, `)`, `{`, `}`, backtick). This catches bypass attempts
+ * like `ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`, `` `rm -rf /` ``.
  * Case-sensitive.
  *
  * @param {string} command — full command string
@@ -225,7 +227,10 @@ export function pathMatchesPattern(relPath, pattern) {
 export function commandMatchesBlocked(command, pattern) {
   if (!pattern) return false;
   const escaped = pattern.replace(/[.*+?|[\](){}\\^$]/g, '\\$&');
-  return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(command);
+  // Boundary class: whitespace + shell operators (; | & ( ) { } backtick).
+  // A blocked pattern is detected if preceded/followed by any of these or by start/end of string.
+  const boundary = '[\\s;|&(){}`]';
+  return new RegExp(`(^|${boundary})${escaped}(${boundary}|$)`).test(command);
 }
 
 /**
