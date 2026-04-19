@@ -13,6 +13,42 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 3. Proceed to next wave immediately
 4. Do NOT write wave-scope.json for skipped waves
 
+### 0.5. Pre-Dispatch Resource Gate (#193)
+
+Before dispatching agents, the coordinator runs a resource gate to decide whether the wave should proceed as planned, reduce its agent count, or escalate to coordinator-direct. Gated on `$CONFIG["resource-awareness"]` (default: true).
+
+```js
+import {evaluateWaveResourceGate, formatGateReport} from "scripts/lib/wave-resource-gate.mjs";
+
+const gate = await evaluateWaveResourceGate({
+  config: $CONFIG,
+  plannedAgents: <wave's planned agent count>,
+  waveRole: "<Discovery|Impl-Core|Impl-Polish|Quality|Finalization>"
+});
+```
+
+**Act on the decision:**
+
+| Decision | Coordinator action |
+|----------|---------------------|
+| `proceed` | Dispatch at `gate.agents` (= `plannedAgents`). Include `gate.reasons` in the wave progress update (informational). |
+| `reduce` | Dispatch at `gate.agents` (< `plannedAgents`). Log the reduction as a deviation in STATE.md. Include `gate.reasons` in the wave progress update. |
+| `coordinator-direct` | Do NOT dispatch subagents. Coordinator executes the wave's tasks directly. Log as a deviation in STATE.md. Continue to `### 1. Dispatch Agents` only for stagnation-pattern detection wording — the section's execution is skipped. |
+
+Reasons MUST appear in the wave's progress update under a "Resource gate:" bullet. Measurements (RAM free GB, CPU %, concurrent sessions) appear verbatim so the user can trust the decision.
+
+Probe failures never block a wave — the gate returns `proceed` with a "probe failed (ignored)" reason and the wave continues at the planned count. A config without `resource-thresholds` (legacy pre-#166) returns `proceed` with `"resource-thresholds missing from config — gate skipped"` — a defensive fallback so the gate never crashes the dispatch loop.
+
+**STATE.md deviation contract (#193):** when the gate returns `reduce` or `coordinator-direct`, append a single timestamped entry to `## Deviations` in `<state-dir>/STATE.md`. Use this exact format so future sessions and the evolve skill can mine for hardware-pattern learnings:
+
+```
+- [<ISO 8601 UTC>] Wave N resource-gate <reduce|coordinator-direct>: <gate.reasons[0]>. Measurements: ramFreeGb=<N>, cpuLoadPct=<N>, concurrentSessions=<N>. Planned agents=<M>, dispatched=<gate.agents>.
+```
+
+Skip the deviation entry on `proceed`, even when `concurrentSessions` warns — informational reasons belong in the wave progress update, not in deviations.
+
+---
+
 ### 1. Dispatch Agents
 
 Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
