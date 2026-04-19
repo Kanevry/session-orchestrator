@@ -215,9 +215,10 @@ export function pathMatchesPattern(relPath, pattern) {
 /**
  * Test whether a command string contains a blocked pattern with shell-aware boundaries.
  *
- * Match rule: boundary characters are whitespace OR shell operators
- * (`;`, `|`, `&`, `(`, `)`, `{`, `}`, backtick). This catches bypass attempts
- * like `ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`, `` `rm -rf /` ``.
+ * Match rule: boundary characters are whitespace, shell operators
+ * (`;`, `|`, `&`, `(`, `)`, `{`, `}`, backtick), or string quotes (`'`, `"`).
+ * Catches bypasses like `ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`,
+ * `` `rm -rf /` ``, and `psql -c "DROP TABLE …"` (quoted SQL-in-shell).
  * Case-sensitive.
  *
  * @param {string} command — full command string
@@ -227,9 +228,8 @@ export function pathMatchesPattern(relPath, pattern) {
 export function commandMatchesBlocked(command, pattern) {
   if (!pattern) return false;
   const escaped = pattern.replace(/[.*+?|[\](){}\\^$]/g, '\\$&');
-  // Boundary class: whitespace + shell operators (; | & ( ) { } backtick).
-  // A blocked pattern is detected if preceded/followed by any of these or by start/end of string.
-  const boundary = '[\\s;|&(){}`]';
+  // Boundary: whitespace + shell operators + quotes. Matches at start/end too.
+  const boundary = '[\\s;|&(){}`\'"]';
   return new RegExp(`(^|${boundary})${escaped}(${boundary}|$)`).test(command);
 }
 
