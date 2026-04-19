@@ -558,6 +558,11 @@ export function parseSessionConfig(mdContent) {
   const discoveryProbes = _coerceList(kv, 'discovery-probes', '[all]');
   const discoveryExcludePaths = _coerceList(kv, 'discovery-exclude-paths', '[]');
   const healthEndpoints = _coerceList(kv, 'health-endpoints', undefined);
+  const worktreeExclude = _coerceList(
+    kv,
+    'worktree-exclude',
+    '[node_modules, dist, build, .next, .nuxt, coverage, .cache, .turbo, .vercel, out]'
+  );
 
   // Enum fields
   const enforcement = _coerceEnum(kv, 'enforcement', 'warn', ['strict', 'warn', 'off']);
@@ -629,6 +634,7 @@ export function parseSessionConfig(mdContent) {
     'resource-awareness': resourceAwareness,
     'enable-host-banner': enableHostBanner,
     'resource-thresholds': resourceThresholds,
+    'worktree-exclude': worktreeExclude,
     'vault-integration': vaultIntegration,
     'vault-sync': vaultSync,
   };

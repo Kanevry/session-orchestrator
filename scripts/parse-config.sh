@@ -141,6 +141,7 @@ V_SSOT_FILES=$(json_list "ssot-files")
 V_DISC_PROBES=$(json_list "discovery-probes" "[all]")
 V_DISC_EXCLUDE=$(json_list "discovery-exclude-paths" "[]")
 V_HEALTH_EP=$(json_list "health-endpoints")
+V_WORKTREE_EXCLUDE=$(json_list "worktree-exclude" "[node_modules, dist, build, .next, .nuxt, coverage, .cache, .turbo, .vercel, out]")
 
 # Enum fields
 V_ENFORCEMENT=$(json_enum "enforcement" "warn" "strict" "warn" "off")
@@ -225,6 +226,7 @@ jq -n \
   --argjson rt_cpu_max "$V_RT_CPU_MAX" \
   --argjson rt_conc_warn "$V_RT_CONC_WARN" \
   --argjson rt_ssh_no_docker "$V_RT_SSH_NO_DOCKER" \
+  --argjson worktree_exclude "$V_WORKTREE_EXCLUDE" \
   --argjson vi_enabled "$VI_ENABLED" \
   --argjson vi_vault_dir "$VI_VAULT_DIR" \
   --argjson vi_mode "$VI_MODE" \
@@ -284,6 +286,7 @@ jq -n \
       "concurrent-sessions-warn": $rt_conc_warn,
       "ssh-no-docker": $rt_ssh_no_docker
     },
+    "worktree-exclude": $worktree_exclude,
     "vault-integration": {
       "enabled": $vi_enabled,
       "vault-dir": $vi_vault_dir,

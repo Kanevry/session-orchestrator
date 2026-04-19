@@ -102,7 +102,7 @@ describe('parseSessionConfig', () => {
         'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
         'resource-awareness', 'enable-host-banner', 'resource-thresholds',
-        'vault-integration', 'vault-sync',
+        'worktree-exclude', 'vault-integration', 'vault-sync',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
@@ -423,6 +423,28 @@ describe('parseSessionConfig', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
       expect(config['vault-sync'].enabled).toBe(false);
       expect(config['vault-sync'].exclude).toEqual([]);
+    });
+  });
+
+  describe('worktree-exclude (issue #192)', () => {
+    it('defaults worktree-exclude to canonical 10-pattern list', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['worktree-exclude']).toEqual([
+        'node_modules', 'dist', 'build', '.next', '.nuxt',
+        'coverage', '.cache', '.turbo', '.vercel', 'out',
+      ]);
+    });
+
+    it('parses worktree-exclude: [custom, list]', () => {
+      const content = `## Session Config\n\nworktree-exclude: [custom, list]\n`;
+      const config = parseSessionConfig(content);
+      expect(config['worktree-exclude']).toEqual(['custom', 'list']);
+    });
+
+    it('parses empty worktree-exclude: [] to empty array (feature disabled)', () => {
+      const content = `## Session Config\n\nworktree-exclude: []\n`;
+      const config = parseSessionConfig(content);
+      expect(config['worktree-exclude']).toEqual([]);
     });
   });
 

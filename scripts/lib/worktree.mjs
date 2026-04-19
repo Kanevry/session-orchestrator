@@ -11,6 +11,22 @@ import { $, nothrow, ProcessOutput } from 'zx';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { readConfigFile, parseSessionConfig } from './config.mjs';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Default list of top-level directory names to exclude from new worktrees.
+ * Issue #192 — skip build artifacts to reduce RAM spikes on memory-constrained
+ * sessions. Can be overridden per-call via options.excludePatterns or via
+ * Session Config `worktree-exclude`.
+ */
+const DEFAULT_EXCLUDE_PATTERNS = [
+  'node_modules', 'dist', 'build', '.next', '.nuxt',
+  'coverage', '.cache', '.turbo', '.vercel', 'out',
+];
 
 // Do not spam stdout/stderr with git command echoes.
 $.verbose = false;
@@ -55,9 +71,14 @@ function _worktreeInfo(suffix) {
  *
  * @param {string} suffix   Unique suffix for the branch (e.g. "wave2-agent1").
  * @param {string} [baseRef="HEAD"]  Git ref to base the worktree on.
+ * @param {{ excludePatterns?: string[] }} [options={}]
+ *   Optional configuration.
+ *   - `excludePatterns`: list of top-level directory names to remove after
+ *     worktree creation. Overrides the Session Config `worktree-exclude` value
+ *     and the hardcoded default. Pass `[]` to disable all exclusions.
  * @returns {Promise<string>}  Absolute path to the created worktree.
  */
-export async function createWorktree(suffix, baseRef = 'HEAD') {
+export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
   const { branch, wtPath } = _worktreeInfo(suffix);
 
   // Ensure parent directory exists — path.join + recursive mkdir is cross-platform.
@@ -81,7 +102,76 @@ export async function createWorktree(suffix, baseRef = 'HEAD') {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Exclude build artifacts (issue #192)
+  // -------------------------------------------------------------------------
+
+  // Resolve exclude patterns: explicit options > Session Config > hardcoded default.
+  let excludePatterns;
+  if (options.excludePatterns !== undefined) {
+    excludePatterns = options.excludePatterns;
+  } else {
+    // Attempt to read from Session Config; fall back to hardcoded default.
+    try {
+      const content = await readConfigFile(process.cwd());
+      const config = parseSessionConfig(content);
+      const fromConfig = config['worktree-exclude'];
+      excludePatterns = Array.isArray(fromConfig) ? fromConfig : DEFAULT_EXCLUDE_PATTERNS;
+    } catch {
+      excludePatterns = DEFAULT_EXCLUDE_PATTERNS;
+    }
+  }
+
+  await applyWorktreeExcludes(wtPath, excludePatterns);
+
   return wtPath;
+}
+
+// ---------------------------------------------------------------------------
+// applyWorktreeExcludes
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove top-level directories matching `patterns` from a worktree path.
+ * Pure fs operation — no git, no zx. Exported for unit testing (issue #192).
+ *
+ * @param {string} wtPath  Absolute path to the worktree root.
+ * @param {string[]} patterns  Top-level directory names to remove.
+ * @returns {Promise<void>}
+ */
+export async function applyWorktreeExcludes(wtPath, patterns) {
+  if (!patterns || patterns.length === 0) return;
+
+  let anyRemoved = false;
+  let allFailed = true;
+
+  for (const pattern of patterns) {
+    const targetPath = path.join(wtPath, pattern);
+    let dirExists = false;
+    try {
+      const stat = await fs.stat(targetPath);
+      dirExists = stat.isDirectory();
+    } catch {
+      // Pattern does not exist — silently skip.
+      allFailed = false; // not a failure, just absent
+      continue;
+    }
+
+    if (dirExists) {
+      try {
+        await fs.rm(targetPath, { recursive: true, force: true });
+        process.stderr.write(`[worktree] excluded: ${pattern}\n`);
+        anyRemoved = true;
+        allFailed = false;
+      } catch {
+        // Individual removal failure — continue with remaining patterns.
+      }
+    }
+  }
+
+  if (anyRemoved === false && allFailed) {
+    process.stderr.write(`[worktree] WARNING: all pattern removals failed for worktree at ${wtPath}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, access, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, access, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -278,4 +278,78 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
     expect(await exists(wt1)).toBe(false);
     expect(await exists(wt2)).toBe(false);
   }, 30000);
+});
+
+// ---------------------------------------------------------------------------
+// applyWorktreeExcludes unit tests (issue #192)
+// ---------------------------------------------------------------------------
+//
+// Design note: these tests call applyWorktreeExcludes() directly against a
+// plain temporary directory — no git, no zx. This avoids the vitest/zx
+// subprocess interaction issues that arise when createWorktree() (which calls
+// nothrow() internally) and a second describe block both run in the same
+// vitest worker thread.
+
+describe.sequential('applyWorktreeExcludes (issue #192)', () => {
+  let applyWorktreeExcludes;
+
+  beforeAll(async () => {
+    ({ applyWorktreeExcludes } = await import('../../scripts/lib/worktree.mjs'));
+  });
+
+  /**
+   * Create a temporary directory pre-seeded with the given sub-directory
+   * names, run callback with its path, then remove it.
+   * Uses plain Node.js fs — no git involved.
+   */
+  async function withStagingDir(seedDirs, callback) {
+    const stagingDir = await realpath(await mkdtemp(path.join(tmpdir(), 'so-excl-test-')));
+    for (const dir of seedDirs) {
+      await mkdir(path.join(stagingDir, dir), { recursive: true });
+    }
+    try {
+      await callback(stagingDir);
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true });
+    }
+  }
+
+  it('removes node_modules and dist but preserves src', async () => {
+    await withStagingDir(['node_modules', 'dist', 'src'], async (dir) => {
+      await applyWorktreeExcludes(dir, ['node_modules', 'dist', 'build', '.next', '.nuxt',
+        'coverage', '.cache', '.turbo', '.vercel', 'out']);
+      expect(await exists(path.join(dir, 'src'))).toBe(true);
+      expect(await exists(path.join(dir, 'node_modules'))).toBe(false);
+      expect(await exists(path.join(dir, 'dist'))).toBe(false);
+    });
+  });
+
+  it('custom patterns — only-me removed, node_modules kept', async () => {
+    await withStagingDir(['only-me', 'node_modules'], async (dir) => {
+      await applyWorktreeExcludes(dir, ['only-me']);
+      expect(await exists(path.join(dir, 'only-me'))).toBe(false);
+      expect(await exists(path.join(dir, 'node_modules'))).toBe(true);
+    });
+  });
+
+  it('empty patterns array — node_modules preserved (feature disabled)', async () => {
+    await withStagingDir(['node_modules'], async (dir) => {
+      await applyWorktreeExcludes(dir, []);
+      expect(await exists(path.join(dir, 'node_modules'))).toBe(true);
+    });
+  });
+
+  it('non-existent patterns are silently skipped — resolves without throwing', async () => {
+    await withStagingDir([], async (dir) => {
+      await expect(applyWorktreeExcludes(dir, ['does-not-exist'])).resolves.toBeUndefined();
+    });
+  });
+
+  it('nested directories are NOT recursed — src/node_modules survives', async () => {
+    await withStagingDir(['src/node_modules'], async (dir) => {
+      await applyWorktreeExcludes(dir, ['node_modules']);
+      // Top-level node_modules does not exist; src/node_modules must survive.
+      expect(await exists(path.join(dir, 'src', 'node_modules'))).toBe(true);
+    });
+  });
 });
