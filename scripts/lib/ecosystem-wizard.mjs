@@ -11,15 +11,9 @@
  * CLI entry: node scripts/lib/ecosystem-wizard.mjs --repo-root <path> [--dry-run]
  */
 
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  createInterface,
-} from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createInterface as rlCreateInterface } from 'node:readline';
+import { createInterface } from 'node:readline';
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -413,7 +407,7 @@ export async function runEcosystemWizard({ repoRoot, answers, dryRun = false } =
     pipelinesRaw = answers.pipelines ?? '';
     labelsRaw = answers.criticalIssueLabels ?? '';
   } else {
-    const rl = rlCreateInterface({ input: process.stdin, output: process.stdout });
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
     const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
 
     process.stdout.write(
