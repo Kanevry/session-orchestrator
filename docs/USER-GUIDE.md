@@ -715,11 +715,11 @@ If any check fails and cannot be quickly fixed, the orchestrator creates a `prio
 
 Session Orchestrator includes bash scripts for critical workflow paths. These provide deterministic, testable alternatives to agent-interpreted instructions:
 
-- `scripts/parse-config.sh` — Parses `## Session Config` from a config host file, outputs validated JSON with all 36 fields and defaults applied. Run: `bash scripts/parse-config.sh [path/to/CLAUDE.md|AGENTS.md]`
+- `scripts/parse-config.mjs` — Parses `## Session Config` from a config host file, outputs validated JSON with all 40+ fields and defaults applied. Run: `node scripts/parse-config.mjs [path/to/CLAUDE.md|AGENTS.md]`
 - `scripts/run-quality-gate.sh` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
 - `scripts/validate-wave-scope.sh` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
 
-All scripts require `jq`. Run `bash scripts/test/run-all.sh` to verify the test suite (94 tests).
+Run `npm test` to execute the vitest suite.
 
 ---
 

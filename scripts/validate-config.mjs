@@ -9,7 +9,7 @@
  *   - invalid + "strict"→ errors to stderr, no stdout, exit 1
  *   - malformed JSON    → error to stderr, no stdout, exit 1
  *
- * Used by scripts/parse-config.sh as an optional validation gate.
+ * Used by scripts/parse-config.mjs as an optional validation gate.
  */
 
 import { validateSessionConfig, formatErrors } from './lib/config-schema.mjs';

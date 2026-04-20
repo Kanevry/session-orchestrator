@@ -24,7 +24,7 @@ The 7 mandatory fields enforced by `scripts/lib/config-schema.mjs` are:
 | `persistence` | boolean |
 | `enforcement` | one of `strict` / `warn` / `off` |
 
-Validation runs automatically via `scripts/parse-config.sh` → `scripts/validate-config.mjs`. Behavior is driven by the `enforcement` field itself:
+Validation runs automatically via `scripts/parse-config.mjs` → `scripts/validate-config.mjs`. Behavior is driven by the `enforcement` field itself:
 
 - `enforcement: off` → skip validation entirely
 - `enforcement: warn` → print errors to stderr, still emit config (exit 0)

@@ -1,8 +1,9 @@
 /**
  * config.mjs — Session Config reader for CLAUDE.md / AGENTS.md.
  *
- * Produces behavior parity with scripts/parse-config.sh (plus its helper libs
- * config-yaml-parser.sh and config-json-coercion.sh). Windows + CRLF safe.
+ * Implements the Session Config parser consumed by scripts/parse-config.mjs (the v3
+ * entry point). Originally ported from parse-config.sh (v2) plus its helper libs
+ * config-yaml-parser.sh and config-json-coercion.sh. Windows + CRLF safe.
  *
  * Part of v3.0.0 migration (Epic #124, issue #132).
  */

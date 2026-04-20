@@ -59,16 +59,16 @@ tools: Read, Grep, Glob, Bash  # COMMA-SEPARATED STRING, not JSON array!
 
 Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-dev/skills/agent-development/SKILL.md
 
-## v3.0 Migration (in progress)
+## v3.0 Migration
 
-Bash → Node.js (zx 8) migration for native Windows support. Epic #124. Current
-branch: `feat/windows-native-v3`. Foundation wave (issues #125–#130, #132) landed;
-hook migrations (#137–#142) and test migration (#143–#145) pending in future
-sessions.
+Bash → Node.js migration for native Windows support. Epic #124 complete:
+foundation (#125–#130, #132), hooks (#137–#142), tests (#143–#145), and legacy
+cleanup (#151). Legacy `.sh` scripts under `hooks/`, `scripts/lib/` (except
+`common.sh`, retained for install tooling), and `scripts/test/` have been
+removed. Entry point is `scripts/parse-config.mjs`.
 
 Development prerequisite: **Node 20+**. Run `npm ci` after cloning. Test with
-`npm test` (vitest) plus `bash scripts/test/run-all.sh` (legacy shell suite —
-will be retired in a later wave). Lint: `npm run lint`.
+`npm test` (vitest). Lint: `npm run lint`.
 
 ## v2.0 Features
 

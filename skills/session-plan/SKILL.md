@@ -25,7 +25,7 @@ This skill receives the agreed session scope from session-start. The scope inclu
 - **Issue list**: VCS issue numbers and titles selected by the user
 - **Session type**: housekeeping, feature, or deep
 - **Recommended focus**: the option the user selected in session-start Phase 7
-- **Session Config**: parsed JSON from `parse-config.sh`
+- **Session Config**: parsed JSON from `parse-config.mjs`
 
 These are passed via the conversation context (not a file). Parse the preceding session-start output to extract the agreed scope.
 

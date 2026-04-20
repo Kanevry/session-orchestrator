@@ -21,6 +21,7 @@ See [`docs/migration-v3.md`](docs/migration-v3.md) for the step-by-step upgrade 
 
 ### Added
 
+- **`scripts/parse-config.mjs`** — thin Node.js CLI wrapper over `scripts/lib/config.mjs`. Replaces `scripts/parse-config.sh` as the entry point for parsing `## Session Config` from `CLAUDE.md`/`AGENTS.md`. Same file-resolution order (arg → `SO_CONFIG_FILE` → `CLAUDE.md` → `AGENTS.md`), same validation gate via `validate-config.mjs`, same `SO_SKIP_CONFIG_VALIDATION=1` bypass. Byte-parity with the legacy shell script confirmed via `diff` on the repo's own `CLAUDE.md`. Issue #151.
 - **Native Windows support** — no WSL or Git-Bash required. All file paths use `path.join`, all tmp paths use `os.tmpdir()`, filesystem walks terminate at drive roots via `path.parse(dir).root`, and glob matching normalizes backslashes before comparison. CRLF-tolerant config parsing and `.gitattributes` EOL rules prevent autocrlf breakage on Windows checkouts.
 - **GitHub Actions CI matrix** across `ubuntu-latest`, `macos-latest`, and `windows-latest` (`.github/workflows/test.yml`) with `fail-fast: false`, concurrency grouping, and per-OS `jq` install steps.
 - **Vitest test framework** (`npm test`) replacing the `bats` shell harness. 533+ tests across `tests/lib/`, `tests/hooks/`, and `tests/integration/` with byte-exact parity checks against the retired Bash implementations.

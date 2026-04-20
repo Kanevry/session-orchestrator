@@ -104,7 +104,7 @@ describe('parseSessionConfig', () => {
         'plan-baseline-path', 'plan-default-visibility', 'plan-prd-location',
         'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
-        'vault-integration', 'vault-sync',
+        'vault-integration', 'vault-sync', 'drift-check',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
@@ -212,15 +212,15 @@ describe('parseSessionConfig', () => {
 
   describe('parity with parse-config.sh', () => {
     it.skipIf(process.platform === 'win32')(
-      'produces JSON matching bash parse-config.sh output on CLAUDE.md (sorted keys)',
+      'produces JSON matching node parse-config.mjs output on CLAUDE.md (sorted keys)',
       () => {
         const claudeMdPath = join(WORKTREE_ROOT, 'CLAUDE.md');
         const claudeMdContent = readFileSync(claudeMdPath, 'utf8');
 
-        // Run bash parse-config.sh
+        // Run node parse-config.mjs
         const result = spawnSync(
-          'bash',
-          [join(WORKTREE_ROOT, 'scripts/parse-config.sh'), claudeMdPath],
+          'node',
+          [join(WORKTREE_ROOT, 'scripts/parse-config.mjs'), claudeMdPath],
           { encoding: 'utf8', timeout: 10000 }
         );
 
@@ -228,7 +228,7 @@ describe('parseSessionConfig', () => {
           throw result.error;
         }
         if (result.status !== 0) {
-          throw new Error(`parse-config.sh failed (exit ${result.status}): ${result.stderr}`);
+          throw new Error(`parse-config.mjs failed (exit ${result.status}): ${result.stderr}`);
         }
 
         const bashJson = JSON.parse(result.stdout);
@@ -250,7 +250,7 @@ describe('parseSessionConfig', () => {
             }
           }
           throw new Error(
-            `config.mjs diverged from parse-config.sh:\n${diffs.join('\n')}`
+            `config.mjs diverged from parse-config.mjs:\n${diffs.join('\n')}`
           );
         }
 

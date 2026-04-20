@@ -97,7 +97,7 @@ Under `scripts/lib/`. Each module is a focused concern and exports only what cal
 | **`io.mjs`** | Hook stdin/stdout helpers matching the Claude Code contract | `readStdin`, `emitAllow`, `emitDeny`, `emitWarn`, `emitSystemMessage` |
 | **`platform.mjs`** | OS + editor detection | `SO_OS`, `SO_IS_WINDOWS`, `SO_IS_WSL`, `SO_PATH_SEP`, `SO_STATE_DIR`, `detectPlatform()` |
 | **`path-utils.mjs`** | CWE-23-safe path helpers (null-byte rejection, UNC block, cross-drive escape, locale-stable casing) | `normalizeForMatching`, `isWithin`, `CWE_23_ATTACK_PATTERNS` |
-| **`config.mjs`** | CRLF-tolerant Session Config parser (byte-exact parity with legacy `parse-config.sh`) | `parseConfig`, `readSessionConfig` |
+| **`config.mjs`** | CRLF-tolerant Session Config parser (originally parse-config.sh in v2; byte-exact parity preserved) | `parseConfig`, `readSessionConfig` |
 | **`config-schema.mjs`** | Plain-JS validator for the 7 mandatory Session Config fields | `validateConfig`, `MANDATORY_FIELDS` |
 | **`events.mjs`** | Append to `.orchestrator/metrics/events.jsonl` + optional webhook POST | `emitEvent`, `appendEvent` |
 | **`worktree.mjs`** | zx-based git worktree helpers with cross-platform paths | `createWorktree`, `removeWorktree`, `listWorktrees`, `cleanupAllWorktrees` |

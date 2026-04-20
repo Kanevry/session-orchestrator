@@ -203,8 +203,8 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
 6. **Patch Session Config (#182).** Run the validator against the current `## Session Config` block; append any missing mandatory fields with defaults. The 7 mandatory fields (per `scripts/lib/config-schema.mjs`) are: `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
 
    ```bash
-   CONFIG_OUT="$(bash "$PLUGIN_ROOT/scripts/parse-config.sh" 2>&1 >/dev/null)"
-   # parse-config.sh emits validation warnings to stderr when enforcement=warn.
+   CONFIG_OUT="$(node "$PLUGIN_ROOT/scripts/parse-config.mjs" 2>&1 >/dev/null)"
+   # parse-config.mjs emits validation warnings to stderr when enforcement=warn.
    # Grep for 'must be' lines (issued by validate-config.mjs) to detect missing fields.
    MISSING_FIELDS="$(echo "$CONFIG_OUT" | grep -oE '(test-command|typecheck-command|lint-command|agents-per-wave|waves|persistence|enforcement)' | sort -u || true)"
    if [[ -n "$MISSING_FIELDS" ]]; then

@@ -2,7 +2,7 @@
  * Session Config validator — plain-JS schema enforcement (no zod dependency).
  *
  * Consumed by scripts/validate-config.mjs (CLI wrapper) and indirectly by
- * scripts/parse-config.sh when enforcement is warn|strict.
+ * scripts/parse-config.mjs when enforcement is warn|strict.
  *
  * Pure function: accepts the parsed config JSON, returns a result object.
  * Never throws. Never mutates input.

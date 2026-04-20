@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 // fileURLToPath, not .pathname — Windows returns `/D:/...` via .pathname, which
 // resolve() then mangles to `D:\D:\...`.
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const SCRIPT = join(REPO_ROOT, 'scripts', 'parse-config.sh');
+const SCRIPT = join(REPO_ROOT, 'scripts', 'parse-config.mjs');
 
 function runParseConfig(cwd) {
-  const result = execFileSync('bash', [SCRIPT], {
+  const result = execFileSync('node', [SCRIPT], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -21,7 +21,7 @@ function runParseConfig(cwd) {
 
 function runParseConfigCaptureStderr(cwd) {
   try {
-    const output = execFileSync('bash', [SCRIPT], {
+    const output = execFileSync('node', [SCRIPT], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -36,7 +36,7 @@ function runParseConfigCaptureStderr(cwd) {
   }
 }
 
-describe('parse-config.sh → validate-config.mjs integration (#182)', () => {
+describe('parse-config.mjs → validate-config.mjs integration (#182)', () => {
   let sandbox;
   beforeEach(() => {
     sandbox = mkdtempSync(join(tmpdir(), 'pc-'));
@@ -104,7 +104,7 @@ waves: 5
 agents-per-wave: 6
 `
     );
-    const result = execFileSync('bash', [SCRIPT], {
+    const result = execFileSync('node', [SCRIPT], {
       cwd: sandbox,
       encoding: 'utf8',
       env: { ...process.env, SO_SKIP_CONFIG_VALIDATION: '1' },
@@ -112,5 +112,26 @@ agents-per-wave: 6
     });
     const parsed = JSON.parse(result);
     expect(parsed.waves).toBe(5);
+  });
+
+  it('SO_CONFIG_FILE overrides the default config-file preference', () => {
+    // Create BOTH CLAUDE.md and AGENTS.md; SO_CONFIG_FILE must pick AGENTS.md.
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      `## Session Config\n\npersistence: true\nenforcement: warn\nwaves: 3\n`
+    );
+    writeFileSync(
+      join(sandbox, 'AGENTS.md'),
+      `## Session Config\n\npersistence: true\nenforcement: warn\nwaves: 9\n`
+    );
+    const result = execFileSync('node', [SCRIPT], {
+      cwd: sandbox,
+      encoding: 'utf8',
+      env: { ...process.env, SO_CONFIG_FILE: 'AGENTS.md' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const parsed = JSON.parse(result);
+    // If SO_CONFIG_FILE was honored, waves=9 (from AGENTS.md). If ignored, waves=3 (from CLAUDE.md).
+    expect(parsed.waves).toBe(9);
   });
 });
