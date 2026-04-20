@@ -14,14 +14,17 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '../../scripts/lib/config.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const WORKTREE_ROOT = new URL('../../', import.meta.url).pathname;
-const FIXTURES = new URL('../fixtures/', import.meta.url).pathname;
+// fileURLToPath, not .pathname — Windows returns `/D:/...` via .pathname, which
+// resolve() then mangles to `D:\D:\...`.
+const WORKTREE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const FIXTURES = fileURLToPath(new URL('../fixtures/', import.meta.url));
 
 function readFixture(name) {
   return readFileSync(join(FIXTURES, name), 'utf8');

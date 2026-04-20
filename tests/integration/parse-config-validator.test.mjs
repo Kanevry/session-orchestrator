@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = resolve(new URL('../..', import.meta.url).pathname);
+// fileURLToPath, not .pathname — Windows returns `/D:/...` via .pathname, which
+// resolve() then mangles to `D:\D:\...`.
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'parse-config.sh');
 
 function runParseConfig(cwd) {
