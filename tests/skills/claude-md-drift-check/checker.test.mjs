@@ -13,7 +13,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+
+// checker.mjs emits `file` fields using path.relative, which uses the runtime's
+// path.sep. Normalize to forward slashes in assertions for Windows portability.
+const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 
 const CHECKER = resolve(process.cwd(), 'skills/claude-md-drift-check/checker.mjs');
 
@@ -232,7 +236,7 @@ describe('include-paths globbing', () => {
     expect(j.files_scanned).toBe(1);
     const errs = j.errors.filter((e) => e.check === 'path-resolver');
     expect(errs.length).toBe(1);
-    expect(errs[0].file).toBe('_meta/sub/notes.md');
+    expect(forwardSlashes(errs[0].file)).toBe('_meta/sub/notes.md');
   });
 
   it('honors explicit --include-path overrides', () => {

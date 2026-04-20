@@ -144,8 +144,10 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   it('listWorktrees main worktree path matches the repo directory', async () => {
     const wts = await listWorktrees();
     const main = wts[0];
-    // Normalise both sides so symlinks / trailing slash don't trip us up.
-    expect(main.path).toBe(repoDir);
+    // Normalise path separators — git worktree --porcelain emits forward
+    // slashes on Windows while Node's realpath returns backslashes.
+    const norm = (s) => s.replaceAll(path.sep, '/');
+    expect(norm(main.path)).toBe(norm(repoDir));
   }, 15000);
 
   it('listWorktrees main worktree has a non-empty branch field', async () => {

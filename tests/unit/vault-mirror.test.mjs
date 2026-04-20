@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+
+// vault-mirror emits relative paths using the runtime's path.sep, so normalize
+// to forward slashes in assertions for Windows portability (Unix no-op).
+const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
@@ -97,7 +101,7 @@ describe('vault-mirror CLI', () => {
     expect(line.action).toBe('created');
     expect(line.kind).toBe('session');
     expect(line.id).toBe('session-2026-04-13');
-    expect(line.path).toBe('50-sessions/session-2026-04-13.md');
+    expect(forwardSlashes(line.path)).toBe('50-sessions/session-2026-04-13.md');
 
     const filePath = join(vaultDir, '50-sessions', 'session-2026-04-13.md');
     const content = readFileSync(filePath, 'utf8');
@@ -183,6 +187,6 @@ describe('vault-mirror CLI', () => {
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
-    expect(line.path).toBe('40-learnings/cross-repo-deep-session.md');
+    expect(forwardSlashes(line.path)).toBe('40-learnings/cross-repo-deep-session.md');
   });
 });
