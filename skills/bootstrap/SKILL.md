@@ -279,6 +279,10 @@ Follow the template's instructions precisely. The template is responsible for cr
 **Platform note for CLAUDE.md generation:**
 When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the full platform-specific CLAUDE.md generation logic (claude init path for Claude Code; `_minimal` template synthesis for Codex/Cursor). When `PATH_TYPE = private`, use the baseline scripts at `$BASELINE_PATH`.
 
+## Phase 3.4: Vault-Registration Prompt (#190)
+
+Standard and Deep tier templates include Step 5.5 / D5.5 which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step.
+
 ## Phase 3.5: (Optional) Rules-Fetch Bridge
 
 > Closes session-orchestrator issue #110.

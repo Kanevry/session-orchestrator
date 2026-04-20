@@ -606,6 +606,20 @@ Why: PSA-003 destructive-command safeguards require every consumer repo to carry
 
 Note: This step runs before S99. If S99 executes and fetches a newer version of `parallel-sessions.md` from the baseline, the baseline version wins (S99 overwrites by design — acceptable).
 
+## Step 3b: Initialize .orchestrator/metrics/ (#185)
+
+Create the metrics directory and an empty learnings file so the `/evolve` skill and discovery probes have a write target from day one:
+
+```bash
+mkdir -p "$REPO_ROOT/.orchestrator/metrics"
+[[ -f "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl" ]] || \
+  : > "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl"
+```
+
+**Idempotent.** Re-running bootstrap does not overwrite an existing file.
+
+**Gitignore guidance:** Do NOT add `.orchestrator/metrics/*.jsonl` to `.gitignore`. The files are intentionally visible in version control — they carry project learnings and session history that future contributors benefit from.
+
 ## Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline
 
 This step is OPT-IN and only executes when ALL of the following are true:
@@ -674,6 +688,50 @@ fi
 **Failure handling:** If the fetch fails, this step DOES NOT abort bootstrap. The repo still has its scaffold; rules will arrive via the legacy Clank weekly sync MR. The user is informed via stderr.
 
 **Idempotency:** Re-running bootstrap on an existing repo will overwrite `.claude/rules/*.md` files. Local edits to baseline rules in a repo will be lost on re-fetch — this is intentional (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched).
+
+---
+
+## Step 5.5: Vault-Registration Prompt (Product Repos) (#190)
+
+If this repo shows product-repo signals (framework dep + personas/content dir + product env vars), offer to register a vault entry in Session Config.
+
+**Detection (via `scripts/lib/product-repo-detect.mjs`):**
+
+```bash
+node --input-type=module -e "
+import { detectProductRepo, hasVaultConfig } from '${PLUGIN_ROOT}/scripts/lib/product-repo-detect.mjs';
+const result = detectProductRepo({ repoRoot: process.cwd() });
+const already = hasVaultConfig('$REPO_ROOT/CLAUDE.md') || hasVaultConfig('$REPO_ROOT/AGENTS.md');
+if (!result.isProductRepo || already) process.exit(0);
+process.stdout.write(JSON.stringify(result, null, 2));
+process.exit(10);  // signal: prompt user
+"
+```
+
+When the script exits 10 (product signals detected, no vault yet): prompt the user:
+
+> Repo appears to carry product data (framework: \<detected>, signals: \<list>). Create vault registration in Session Config? [Y/n]
+
+**On Y (default):** Append the following block to the `## Session Config` section of CLAUDE.md:
+
+```yaml
+vault:
+  path: ${VAULT_PATH:-$HOME/Projects/vault}
+  product-domain: <prompt user for a short domain tag, e.g. "buchhaltung", "lead-gen">
+  persona-db: <optional: path to persona data file, blank if N/A>
+```
+
+**On N:** skip silently. The detection may re-run on next bootstrap; idempotency comes from `hasVaultConfig` — once `vault:` exists in Session Config, the prompt is skipped.
+
+**Examples from real repos:**
+
+| Repo | Framework | Signals | Vault Entry |
+|------|-----------|---------|-------------|
+| BuchhaltGenie | Next.js | supabase, stripe, personas/ | `product-domain: buchhaltung` |
+| LeadPipeDACH | Next.js | stripe, posthog | `product-domain: lead-gen` |
+| GotzendorferAT | Nuxt | postgres, sentry | `product-domain: portfolio` |
+
+**Idempotent.** If CLAUDE.md already has a `vault:` key inside Session Config, the prompt is skipped.
 
 ---
 
