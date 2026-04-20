@@ -32,7 +32,6 @@ const NAME_RE = /^[a-z][a-z0-9-]{2,49}$/;
  * Preserves raw string values so the validator can detect JSON-array tools
  * and block-scalar descriptions without normalising them away.
  *
- * @param {string} contents - raw file contents
  * @returns {{ ok: true, frontmatter: Record<string,string>, body: string }
  *          |{ ok: false, errors: Array<{path: string, rule: string, message: string}> }}
  */
@@ -76,7 +75,7 @@ export function parseAgentFrontmatter(contents) {
     }
 
     const idx = line.indexOf(':');
-    if (idx === -1) continue; // skip malformed lines gracefully
+    if (idx === -1) continue;
     const key = line.slice(0, idx).trim();
     if (key === '') continue;
     const value = line.slice(idx + 1).trim();

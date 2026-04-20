@@ -281,7 +281,7 @@ When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the fu
 
 ## Phase 3.4: Vault-Registration Prompt (#190)
 
-Standard and Deep tier templates include Step 5.5 / D5.5 which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step.
+Standard and Deep tier templates include Step 5.5 (standard) / D6.6 (deep) which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step.
 
 ## Phase 3.5: (Optional) Rules-Fetch Bridge
 

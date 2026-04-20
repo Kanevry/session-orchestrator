@@ -20,7 +20,7 @@ const FRAMEWORK_DEPS = [
 const PRODUCT_ENV_PATTERNS = [
   /^SUPABASE_URL=/m,
   /^SUPABASE_ANON_KEY=/m,
-  /^STRIPE_[A-Z_]+=/ ,
+  /^STRIPE_[A-Z_]+=/m,
   /^(NEXT_PUBLIC_)?AUTH0_[A-Z_]+=/m,
   /^(NEXT_PUBLIC_)?CLERK_[A-Z_]+=/m,
   /^(NEXT_PUBLIC_)?FIREBASE_[A-Z_]+=/m,
@@ -42,7 +42,6 @@ const CONTENT_DIRS = ['src/lib/personas', 'src/content', 'content', 'src/data/pe
  * }}
  */
 export function detectProductRepo({ repoRoot } = {}) {
-  // 1) framework detection
   let framework = null;
   const pkgPath = join(repoRoot, 'package.json');
   if (existsSync(pkgPath)) {
@@ -64,10 +63,8 @@ export function detectProductRepo({ repoRoot } = {}) {
     }
   }
 
-  // 2) content dirs
   const contentDirs = CONTENT_DIRS.filter((d) => existsSync(join(repoRoot, d)));
 
-  // 3) env var matches
   const productEnvMatches = [];
   const envPath = join(repoRoot, '.env.local.example');
   if (existsSync(envPath)) {
@@ -112,16 +109,10 @@ export function hasVaultConfig(configFilePath) {
   } catch {
     return false;
   }
-  // Locate Session Config block and scan for vault:.
-  // Capture everything from the Session Config heading up to (but not including)
-  // the next ## heading, or the end of the string. Use a two-step approach:
-  // 1) find the start offset of the Session Config section
-  // 2) find the next ## heading after it (or end of string)
+  // Scan only within the Session Config section (bounded by the next ## heading).
   const startMatch = text.match(/^## Session Config[ \t]*(?:\r?\n|$)/m);
   if (!startMatch || startMatch.index === undefined) return false;
-  const blockStart = startMatch.index + startMatch[0].length;
-  const afterBlock = text.slice(blockStart);
-  // Find the start of the next level-2 heading
+  const afterBlock = text.slice(startMatch.index + startMatch[0].length);
   const nextHeadingMatch = afterBlock.match(/^## /m);
   const blockContent = nextHeadingMatch
     ? afterBlock.slice(0, nextHeadingMatch.index)

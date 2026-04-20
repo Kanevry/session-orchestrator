@@ -14,7 +14,6 @@ import { join } from 'node:path';
  * Returns an object with all key:value pairs found. Unknown fields are
  * preserved. Comment lines and blank lines are ignored. Values are trimmed.
  *
- * @param {string} contents - raw file contents
  * @returns {Record<string, string>}
  */
 export function parseBootstrapLock(contents) {
@@ -23,7 +22,6 @@ export function parseBootstrapLock(contents) {
   const result = {};
   for (const raw of contents.split('\n')) {
     const line = raw.trim();
-    // Skip comments and blank lines
     if (!line || line.startsWith('#')) continue;
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
@@ -85,15 +83,15 @@ export function checkBootstrapLockFreshness({
     };
   }
 
-  // Prefer the explicit bootstrapped-at field; fall back to timestamp for legacy locks
+  // Fall back to legacy `timestamp` field for pre-#186 locks.
   const bootstrappedAt = parsed['bootstrapped-at'] || parsed['timestamp'] || null;
   const pluginVersion = parsed['plugin-version'] || null;
 
   let ageDays = null;
   if (bootstrappedAt) {
-    const parsed_ts = Date.parse(bootstrappedAt);
-    if (!Number.isNaN(parsed_ts)) {
-      ageDays = Math.floor((now - parsed_ts) / 86400000);
+    const ts = Date.parse(bootstrappedAt);
+    if (!Number.isNaN(ts)) {
+      ageDays = Math.floor((now - ts) / 86400000);
     }
   }
 
@@ -102,7 +100,6 @@ export function checkBootstrapLockFreshness({
     typeof pluginVersion === 'string' &&
     pluginVersion !== currentPluginVersion;
 
-  // Tiered severity
   let severity = 'info';
   if (versionMismatch) severity = 'warn';
   if (ageDays !== null && ageDays >= 30) severity = 'warn';

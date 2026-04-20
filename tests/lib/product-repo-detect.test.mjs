@@ -160,6 +160,17 @@ describe('detectProductRepo', () => {
     expect(result.isProductRepo).toBe(true);
     expect(result.signals.envVars).toBe(true);
   });
+
+  it('detects STRIPE_* on a non-first line (multiline flag regression)', () => {
+    const repoRoot = tmp();
+    writeFileSync(
+      join(repoRoot, '.env.local.example'),
+      '# Payment provider\nNODE_ENV=development\nSTRIPE_SECRET_KEY=sk_test\n',
+    );
+    const result = detectProductRepo({ repoRoot });
+    expect(result.productEnvMatches.some((m) => m.startsWith('STRIPE_'))).toBe(true);
+    expect(result.signals.envVars).toBe(true);
+  });
 });
 
 describe('hasVaultConfig', () => {
