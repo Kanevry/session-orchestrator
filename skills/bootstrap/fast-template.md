@@ -179,6 +179,8 @@ tier: fast
 archetype: null
 timestamp: <current ISO 8601 UTC — e.g., 2026-04-16T09:30:00Z>
 source: <claude-init | plugin-template>
+plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/package.json .version field>
+bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 ```
 
 Set `source`:

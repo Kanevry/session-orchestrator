@@ -688,6 +688,8 @@ tier: standard
 archetype: <CONFIRMED_ARCHETYPE>
 timestamp: <current ISO 8601 UTC — e.g., 2026-04-16T09:30:00Z>
 source: <claude-init | plugin-template | projects-baseline>
+plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/package.json .version field>
+bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 ```
 
 Set `source` using the same logic as fast-template Step 5:
@@ -743,6 +745,19 @@ fi
 ```
 
 On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per the platform state-directory convention.
+
+## Step 6.7: .claude/agents/ Scaffold (#189)
+
+Copy the opinionated agent templates into the consumer repo:
+
+```bash
+mkdir -p "$REPO_ROOT/.claude/agents"
+cp "$PLUGIN_ROOT/skills/bootstrap/templates/agents/"*.md "$REPO_ROOT/.claude/agents/"
+```
+
+This scaffolds 3 opinionated agents (`project-discovery`, `project-code-review`, `project-quality-gate`) following CLAUDE.md Agent Authoring Rules. Consumer repos should edit descriptions/bodies to match project specifics — but keep the frontmatter structure intact (validated by `agent-frontmatter-invalid` probe).
+
+**Idempotency:** Existing files under `.claude/agents/` are not overwritten — skip any file that already exists.
 
 ## Step 7: Initial Git Commit
 

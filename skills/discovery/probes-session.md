@@ -388,3 +388,102 @@ Recommendation: Run /session to refresh state, or delete the file if work has be
 **Default Severity:** Medium when `AGE_DAYS >= 7` (warn); Low when `2 <= AGE_DAYS < 7` (info).
 
 **Rationale (#184):** Consumer repos with long-dormant STATE.md files risk the next session-start resuming a ghost session. The probe surfaces this before it becomes a resume-prompt surprise. Uses the optional `updated` frontmatter field introduced in #184; degrades to file mtime for backward compatibility.
+
+---
+
+### Probe: bootstrap-lock-freshness
+
+**Activation:** Every session-start on a bootstrapped repo (`.orchestrator/bootstrap.lock` exists).
+
+**Motivation:** Plugin upgrades between releases can change templates/rules/hooks that an older lock does not reflect. Silent drift between harness version and repo scaffold. All 6/6 Advanced-adoption repos have the lock but none validate its freshness. Issue #186 (Epic #181 harness-retro promotion list #5).
+
+**Detection Method:**
+
+```bash
+LOCK_FILE="$(git rev-parse --show-toplevel)/.orchestrator/bootstrap.lock"
+[[ -f "$LOCK_FILE" ]] || exit 0
+CURRENT_VERSION="$(node -e "process.stdout.write(require('${PLUGIN_ROOT}/package.json').version)")"
+node --input-type=module -e "
+import { checkBootstrapLockFreshness } from '${PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs';
+const result = checkBootstrapLockFreshness({
+  repoRoot: '$(git rev-parse --show-toplevel)',
+  currentPluginVersion: '${CURRENT_VERSION}',
+});
+if (result.severity !== 'info') {
+  process.stdout.write(JSON.stringify(result, null, 2));
+  process.exit(result.severity === 'alert' ? 2 : 1);
+}
+" 2>/dev/null
+```
+
+**Evidence Format:**
+
+```
+Severity: info | warn | alert
+Message:  bootstrap.lock: age=<N>d, plugin-version=<lock-ver> (current=<plugin-ver>)
+Details:
+  ageDays:              <integer or null>
+  pluginVersion:        <version in lock or "unknown">
+  currentPluginVersion: <running plugin version>
+  bootstrappedAt:       <ISO timestamp used for age calculation>
+  versionMismatch:      true | false
+Remediation: Run `/bootstrap --upgrade` (if available) or re-run `/bootstrap --retroactive` to refresh the lock.
+```
+
+**Default Severity:** info <30d, warn 30–89d or version-mismatch, alert ≥90d or unparseable.
+
+**Remediation:** Run `/bootstrap --upgrade` (if available) or re-run `/bootstrap --retroactive` to refresh the lock and stamp the current plugin version.
+
+**Dependencies:** Requires `${PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs` (issue #186). Degrades gracefully when the helper is absent (pre-#186 plugin install) — skip with a note, do not fabricate findings.
+
+---
+
+### Probe: agent-frontmatter-invalid
+
+**Activation:** `.claude/agents/*.md` files exist in the repo.
+
+**Motivation:** Claude Code agent frontmatter has fragile YAML rules (tools as comma-string not array, description single-line not block-scalar, required fields per CLAUDE.md). Broken frontmatter causes silent "agents: Invalid input" validation failures at session start. Issue #189 (Epic #181 harness-retro promotion list #3).
+
+**Detection Method:**
+
+```bash
+AGENTS_DIR="$(git rev-parse --show-toplevel)/.claude/agents"
+[[ -d "$AGENTS_DIR" ]] || exit 0
+node --input-type=module -e "
+import { validateAgentFile } from '${PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+const dir = '${AGENTS_DIR}';
+const files = readdirSync(dir).filter(f => f.endsWith('.md'));
+let hasErrors = false;
+for (const f of files) {
+  const result = validateAgentFile(join(dir, f));
+  if (!result.ok) {
+    hasErrors = true;
+    console.log('INVALID: ' + f);
+    for (const e of result.errors) {
+      console.log('  - ' + e.path + ' (' + e.rule + '): ' + e.message);
+    }
+  }
+}
+if (!hasErrors) console.log('OK: all agent files passed validation');
+" 2>/dev/null
+```
+
+**Evidence Format:**
+
+```
+File: .claude/agents/<filename>.md
+Issue: agent-frontmatter-invalid
+Violations:
+  - tools (no-json-array): tools must be a comma-separated string, not a JSON array
+  - description (no-block-scalar): description must be inline, not a block scalar
+  - color (enum): color must be one of "blue"|"cyan"|"green"|"yellow"|"magenta"|"red"
+Recommendation: Run /bootstrap --retroactive to auto-surface violations, or manually fix per CLAUDE.md Agent Authoring Rules.
+```
+
+**Default Severity:** High — broken agents fail at runtime silently.
+
+**Remediation:** Run `/bootstrap --retroactive` (validator auto-surfaces violations) or manually fix per CLAUDE.md Agent Authoring Rules.
+
+**Dependencies:** Requires `${PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs` (issue #189). Degrades gracefully when the helper is absent — skip with a note, do not fabricate findings.
