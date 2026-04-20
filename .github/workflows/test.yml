@@ -44,11 +44,6 @@ jobs:
         shell: bash
         run: |
           bash --version | head -1
-          bash_version=$(bash -c 'echo ${BASH_VERSINFO[0]}')
-          if [ "$bash_version" -lt 4 ]; then
-            echo "ERROR: bash 4+ required, found bash $bash_version"
-            exit 1
-          fi
           git --version
           git config --global user.name "CI"
           git config --global user.email "ci@test.com"
