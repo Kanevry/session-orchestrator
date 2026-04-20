@@ -86,39 +86,43 @@ assert_eq "on-stop.sh emits orchestrator.session.stopped via so_emit_event" "0" 
 RESULT=$(grep -q 'so_emit_event.*"orchestrator\.agent\.stopped"' "$PLUGIN_ROOT/hooks/on-subagent-stop.sh" && echo 0 || echo 1)
 assert_eq "on-subagent-stop.sh emits orchestrator.agent.stopped via so_emit_event" "0" "$RESULT"
 
-# --- Test 11: hooks.json registers on-session-start.sh with proper structure ---
+# Tests 11–18 check the live hook registration in hooks.json. Since the Node
+# migration (v3.0), hooks.json dispatches .mjs handlers via `node "$CLAUDE_PLUGIN_ROOT/hooks/<name>.mjs"`.
+# SubagentStop consolidates on on-stop.mjs (same handler, inspects event payload).
+
+# --- Test 11: hooks.json registers on-session-start.mjs with proper structure ---
 echo ""
 echo "=== Test Group 5: Hook registration ==="
-RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.type == "command" and (.command | contains("on-session-start.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers on-session-start.sh with type:command" "0" "$RESULT"
+RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.type == "command" and (.command | contains("on-session-start.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers on-session-start.mjs with type:command" "0" "$RESULT"
 
-# --- Test 12: hooks-codex.json registers on-session-start.sh with proper structure ---
-RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.type == "command" and (.command | contains("on-session-start.sh")))' "$PLUGIN_ROOT/hooks/hooks-codex.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks-codex.json registers on-session-start.sh with type:command" "0" "$RESULT"
+# --- Test 12: hooks-codex.json registers on-session-start.mjs with proper structure ---
+RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.type == "command" and (.command | contains("on-session-start.mjs")))' "$PLUGIN_ROOT/hooks/hooks-codex.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks-codex.json registers on-session-start.mjs with type:command" "0" "$RESULT"
 
-# --- Test 13: hooks.json on-session-start.sh has async field ---
-RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.command | contains("on-session-start.sh")) | select(has("async"))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json on-session-start.sh has async field" "0" "$RESULT"
+# --- Test 13: hooks.json on-session-start.mjs has async field ---
+RESULT=$(jq -e '.hooks.SessionStart[0].hooks[] | select(.command | contains("on-session-start.mjs")) | select(has("async"))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json on-session-start.mjs has async field" "0" "$RESULT"
 
 # --- Test 14: hooks.json PreToolUse enforce-scope registered ---
-RESULT=$(jq -e '.hooks.PreToolUse[] | select(.matcher == "Edit|Write") | .hooks[] | select(.type == "command" and (.command | contains("enforce-scope.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers enforce-scope.sh for Edit|Write" "0" "$RESULT"
+RESULT=$(jq -e '.hooks.PreToolUse[] | select(.matcher == "Edit|Write") | .hooks[] | select(.type == "command" and (.command | contains("enforce-scope.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers enforce-scope.mjs for Edit|Write" "0" "$RESULT"
 
 # --- Test 15: hooks.json PreToolUse enforce-commands registered ---
-RESULT=$(jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.type == "command" and (.command | contains("enforce-commands.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers enforce-commands.sh for Bash" "0" "$RESULT"
+RESULT=$(jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.type == "command" and (.command | contains("enforce-commands.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers enforce-commands.mjs for Bash" "0" "$RESULT"
 
 # --- Test 16: hooks.json PostToolUse post-edit-validate registered ---
-RESULT=$(jq -e '.hooks.PostToolUse[] | select(.matcher == "Edit|Write") | .hooks[] | select(.type == "command" and (.command | contains("post-edit-validate.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers post-edit-validate.sh for Edit|Write" "0" "$RESULT"
+RESULT=$(jq -e '.hooks.PostToolUse[] | select(.matcher == "Edit|Write") | .hooks[] | select(.type == "command" and (.command | contains("post-edit-validate.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers post-edit-validate.mjs for Edit|Write" "0" "$RESULT"
 
 # --- Test 17: hooks.json Stop hook registered ---
-RESULT=$(jq -e '.hooks.Stop[0].hooks[] | select(.type == "command" and (.command | contains("on-stop.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers on-stop.sh" "0" "$RESULT"
+RESULT=$(jq -e '.hooks.Stop[0].hooks[] | select(.type == "command" and (.command | contains("on-stop.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers on-stop.mjs" "0" "$RESULT"
 
-# --- Test 18: hooks.json SubagentStop hook registered ---
-RESULT=$(jq -e '.hooks.SubagentStop[0].hooks[] | select(.type == "command" and (.command | contains("on-subagent-stop.sh")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
-assert_eq "hooks.json registers on-subagent-stop.sh" "0" "$RESULT"
+# --- Test 18: hooks.json SubagentStop hook registered (consolidated on on-stop.mjs) ---
+RESULT=$(jq -e '.hooks.SubagentStop[0].hooks[] | select(.type == "command" and (.command | contains("on-stop.mjs")))' "$PLUGIN_ROOT/hooks/hooks.json" >/dev/null 2>&1 && echo 0 || echo 1)
+assert_eq "hooks.json registers SubagentStop handler (on-stop.mjs)" "0" "$RESULT"
 
 echo ""
 echo "==========================================="
