@@ -9,6 +9,7 @@
  */
 
 const ENFORCEMENT_VALUES = new Set(['strict', 'warn', 'off']);
+const VAULT_MODE_VALUES = new Set(['strict', 'warn', 'off']);
 
 const REQUIRED_STRING_FIELDS = [
   'test-command',
@@ -71,6 +72,9 @@ export function validateSessionConfig(config) {
     });
   }
 
+  validateVaultIntegration(config['vault-integration'], errors);
+  validateVaultSync(config['vault-sync'], errors);
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -116,6 +120,72 @@ function validateAgentsPerWave(value, errors) {
     rule: 'integer-or-object',
     message: `agents-per-wave must be an integer >= 2 or an object with numeric entries (got ${JSON.stringify(value)})`,
   });
+}
+
+function validateVaultIntegration(value, errors) {
+  if (value === undefined || value === null) return;
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    errors.push({
+      path: 'vault-integration',
+      rule: 'object',
+      message: `vault-integration must be an object (got ${JSON.stringify(value)})`,
+    });
+    return;
+  }
+
+  if ('enabled' in value && typeof value['enabled'] !== 'boolean') {
+    errors.push({
+      path: 'vault-integration.enabled',
+      rule: 'boolean',
+      message: `vault-integration.enabled must be a boolean (got ${JSON.stringify(value['enabled'])})`,
+    });
+  }
+
+  if ('mode' in value && !VAULT_MODE_VALUES.has(value['mode'])) {
+    errors.push({
+      path: 'vault-integration.mode',
+      rule: 'enum',
+      message: `vault-integration.mode must be one of "strict"|"warn"|"off" (got ${JSON.stringify(value['mode'])})`,
+    });
+  }
+}
+
+function validateVaultSync(value, errors) {
+  if (value === undefined || value === null) return;
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    errors.push({
+      path: 'vault-sync',
+      rule: 'object',
+      message: `vault-sync must be an object (got ${JSON.stringify(value)})`,
+    });
+    return;
+  }
+
+  if ('enabled' in value && typeof value['enabled'] !== 'boolean') {
+    errors.push({
+      path: 'vault-sync.enabled',
+      rule: 'boolean',
+      message: `vault-sync.enabled must be a boolean (got ${JSON.stringify(value['enabled'])})`,
+    });
+  }
+
+  if ('mode' in value && !VAULT_MODE_VALUES.has(value['mode'])) {
+    errors.push({
+      path: 'vault-sync.mode',
+      rule: 'enum',
+      message: `vault-sync.mode must be one of "strict"|"warn"|"off" (got ${JSON.stringify(value['mode'])})`,
+    });
+  }
+
+  if ('exclude' in value && !Array.isArray(value['exclude'])) {
+    errors.push({
+      path: 'vault-sync.exclude',
+      rule: 'array',
+      message: `vault-sync.exclude must be an array of strings (got ${JSON.stringify(value['exclude'])})`,
+    });
+  }
 }
 
 /**

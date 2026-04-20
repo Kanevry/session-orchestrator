@@ -127,3 +127,71 @@ describe('formatErrors', () => {
     }
   });
 });
+
+describe('vault-integration validator', () => {
+  it('accepts valid vault-integration block', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-integration': { enabled: true, mode: 'warn', 'vault-dir': '~/Projects/vault' } })
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts absent vault-integration (fully optional)', () => {
+    const result = validateSessionConfig(baseConfig());
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects invalid vault-integration.mode enum', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-integration': { enabled: true, mode: 'hard' } })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.path === 'vault-integration.mode')).toBe(true);
+    }
+  });
+
+  it('rejects non-boolean vault-integration.enabled', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-integration': { enabled: 'yes' } })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.path === 'vault-integration.enabled')).toBe(true);
+    }
+  });
+});
+
+describe('vault-sync validator', () => {
+  it('accepts valid vault-sync block', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-sync': { enabled: false, mode: 'off', exclude: ['**/_MOC.md'] } })
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts absent vault-sync (fully optional)', () => {
+    const result = validateSessionConfig(baseConfig());
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects invalid vault-sync.mode enum', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-sync': { enabled: true, mode: 'hard' } })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.path === 'vault-sync.mode')).toBe(true);
+    }
+  });
+
+  it('rejects non-array vault-sync.exclude', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'vault-sync': { exclude: '**/_MOC.md' } })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.path === 'vault-sync.exclude')).toBe(true);
+    }
+  });
+});
