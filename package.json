@@ -9,7 +9,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "typecheck": "node --check scripts/lib/*.mjs"
+    "typecheck": "node scripts/typecheck.mjs"
   },
   "dependencies": { "zx": "^8.1.0" },
   "devDependencies": {
