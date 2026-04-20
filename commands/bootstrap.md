@@ -1,6 +1,6 @@
 ---
 description: Scaffold the minimum repo structure required by session-orchestrator
-argument-hint: "[--fast|--standard|--deep] [--upgrade <tier>] [--retroactive]"
+argument-hint: "[--fast|--standard|--deep] [--upgrade <tier>] [--retroactive] [--sync-rules] [--ecosystem-health]"
 ---
 
 # Bootstrap

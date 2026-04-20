@@ -10,8 +10,6 @@ import {
   parseEndpoints,
   parsePipelines,
   parseCommaSeparated,
-  resolveConfigFile,
-  readExistingEcosystemConfig,
   writeSessionConfigBlock,
   writePolicyFile,
   runEcosystemWizard,
