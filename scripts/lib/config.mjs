@@ -152,11 +152,28 @@ function _coerceList(kv, key, def) {
  * @param {string[]} allowed
  * @returns {string}
  */
-function _coerceEnum(kv, key, def, allowed) {
+export function _coerceEnum(kv, key, def, allowed) {
   const raw = _getVal(kv, key, def);
   const lower = raw.toLowerCase();
   if (!allowed.includes(lower)) {
     throw new Error(`config.mjs: ${key} must be ${allowed.join('|')}, got '${raw}'`);
+  }
+  return lower;
+}
+
+/**
+ * Validate and normalise a collision-risk value from plan output JSON.
+ * Returns the default when value is null/undefined; throws TypeError on invalid.
+ * @param {*} value
+ * @param {string} [def='low']
+ * @returns {'low'|'medium'|'high'}
+ */
+export function _coerceCollisionRisk(value, def = 'low') {
+  const ALLOWED = ['low', 'medium', 'high'];
+  if (value === null || value === undefined) return def;
+  const lower = String(value).toLowerCase();
+  if (!ALLOWED.includes(lower)) {
+    throw new TypeError(`_coerceCollisionRisk: must be low|medium|high, got '${value}'`);
   }
   return lower;
 }

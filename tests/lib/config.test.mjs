@@ -14,7 +14,7 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readConfigFile, parseSessionConfig, getConfigValue } from '../../scripts/lib/config.mjs';
+import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '../../scripts/lib/config.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -505,5 +505,40 @@ describe('readConfigFile', () => {
   it('error from missing files mentions the projectRoot path', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
     await expect(readConfigFile(tmpDir)).rejects.toThrow(tmpDir);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _coerceCollisionRisk (issue #194)
+// ---------------------------------------------------------------------------
+
+describe('_coerceCollisionRisk', () => {
+  it('returns default when value is null', () => {
+    expect(_coerceCollisionRisk(null)).toBe('low');
+  });
+
+  it('returns default when value is undefined', () => {
+    expect(_coerceCollisionRisk(undefined)).toBe('low');
+  });
+
+  it('returns custom default when supplied', () => {
+    expect(_coerceCollisionRisk(null, 'medium')).toBe('medium');
+  });
+
+  it('accepts low', () => {
+    expect(_coerceCollisionRisk('low')).toBe('low');
+  });
+
+  it('accepts medium', () => {
+    expect(_coerceCollisionRisk('medium')).toBe('medium');
+  });
+
+  it('accepts high', () => {
+    expect(_coerceCollisionRisk('high')).toBe('high');
+  });
+
+  it('throws TypeError for invalid value', () => {
+    expect(() => _coerceCollisionRisk('extreme')).toThrow(TypeError);
+    expect(() => _coerceCollisionRisk('extreme')).toThrow('low|medium|high');
   });
 });

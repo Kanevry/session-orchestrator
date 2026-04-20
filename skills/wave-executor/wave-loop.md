@@ -17,7 +17,11 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 
 Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
 
-Read each wave's dispatch metadata from the session plan header (e.g., `(4 agents, parallel, isolation: worktree)`). Pass the `isolation` value to each Agent() tool call per `circuit-breaker.md`. If the plan does not specify isolation, read from `$CONFIG.isolation` (default: `auto` = worktree for feature/deep, none for housekeeping). Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
+Read each wave's dispatch metadata from the session plan header (e.g., `(4 agents, parallel, isolation: worktree)`). When the plan specifies `isolation`, use it verbatim. When the plan does not specify, resolve the effective value via `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` from `scripts/lib/wave-sizing.mjs` — the graduated default (#194) replaces the previous session-type-only switch. Pass the resolved value to each Agent() tool call per `circuit-breaker.md` (omit the parameter when resolved to `none`).
+
+After resolving `isolation`, compute the wave's enforcement via `resolveEnforcement({ isolation, configEnforcement })` (same module) and write it into `wave-scope.json` under `enforcement`. When isolation resolves to `none`, enforcement auto-promotes from `warn` → `strict` unless the user explicitly set `off` — this ensures the scope hook is hard, not informational, when worktree-level isolation is absent.
+
+Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
 
 #### Agent-Type Resolution
 
@@ -75,7 +79,7 @@ The helper emits one `grounding_injected` event per injected file to `.orchestra
 
 **Fallback for agents without explicit file scope:** if the session plan's agent specification does not list a "Files:" scope for an agent, fall back to the wave-level `allowedPaths` (from `wave-scope.json`). If that is also empty, skip injection for that agent.
 
-**Relationship to `### 3b. File-level grounding`:** this pre-dispatch feature is DIFFERENT from the post-wave file-level grounding check. Pre-dispatch grounding injects file content into agent prompts (prevents friction). Post-wave grounding verifies agents stayed within their planned scope (detects scope creep). The two features share no code and run at different times.
+**Relationship to `### 3c. File-level grounding`:** this pre-dispatch feature is DIFFERENT from the post-wave file-level grounding check. Pre-dispatch grounding injects file content into agent prompts (prevents friction). Post-wave grounding verifies agents stayed within their planned scope (detects scope creep). The two features share no code and run at different times.
 
 #### Pre-Dispatch Untracked-Overlap Check (#180)
 
@@ -179,7 +183,21 @@ After ALL agents in the wave complete:
 
 Assign `error_class` using the taxonomy defined in `circuit-breaker.md` § "3. Error Echo" → Error-Class Taxonomy. For non-error-echo patterns, omit the `error_class` field. Paths are relative to the project root. `occurrences` is the count of pattern repetitions detected (minimum 3 per the trigger threshold).
 
-3b. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Not to be confused with pre-dispatch grounding injection (§ Pre-Dispatch Grounding Injection above): that feature is per-agent and runs before dispatch to prevent friction; this check is per-wave and runs after dispatch to detect scope creep. Skip the entire check when `grounding-check: false`.
+3b. **Worktree base-ref freshness check (#195)**: For each agent dispatched with `isolation: "worktree"` in this wave, verify that the coordinator has not advanced `main` past the worktree's base commit before the merge-back copies files. Call `checkWorktreeBaseRefFresh({ suffix, targetBranch: 'main', agentScope, cwd })` from `scripts/lib/worktree-freshness.mjs`:
+
+- `decision: 'pass'` (baseSha === currentSha) → proceed with merge-back.
+- `decision: 'warn'` (main advanced, no agent-scope overlap) → proceed, but log the drift in the wave progress update so the coordinator can audit. This is typically benign — coordinator commits to unrelated files.
+- `decision: 'block'` (main advanced, drift files overlap the agent's scope) → **STOP** the merge-back for this agent. The agent's copy would silently overwrite coordinator-committed work (this is exactly the 2026-04-20 07:30 and 09:00 regression). Either: (a) run `git diff main..wt-branch -- <overlap-files>` and manually reconcile before committing, or (b) ask the user whether to rebase the agent's branch onto current main and retry the merge. Do NOT proceed automatically.
+- `decision: 'no-meta'` (meta file missing or corrupted) → log a warning and fall back to manual diff review before commit. Missing meta usually means the worktree was created by an older plugin version; corrupted meta warrants an issue.
+
+Skip the check entirely for agents dispatched with `isolation: "none"` — there is no worktree merge-back in that path.
+
+Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` (gated on `persistence: true`):
+```json
+{"event":"freshness_check","timestamp":"<ISO 8601 UTC>","session":"<session_id>","wave":N,"agent":"<description>","suffix":"<worktree suffix>","decision":"pass|warn|block|no-meta","drift_commits":N,"overlap_files":M}
+```
+
+3c. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Not to be confused with pre-dispatch grounding injection (§ Pre-Dispatch Grounding Injection above): that feature is per-agent and runs before dispatch to prevent friction; this check is per-wave and runs after dispatch to detect scope creep. Skip the entire check when `grounding-check: false`.
 4. **Run incremental verification** (per the quality-gates skill, based on the wave's role):
    - After **Discovery**: no verification needed (read-only)
    - After **Impl-Core**: Incremental quality checks per quality-gates (test changed files, typecheck)

@@ -394,7 +394,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
-| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. Auto = worktree for feature/deep, none for housekeeping. |
+| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. See Section 14 "Isolation Graduation" below. |
 | `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 
 > **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in your config host file (`CLAUDE.md` / `AGENTS.md`) which may be committed to version control. Use header-based auth or separate secret management instead.
@@ -941,9 +941,39 @@ The circuit breaker also detects execution spirals: a file edited 3+ times withi
 
 ### Worktree Isolation
 
-When `isolation` is set to `worktree` (the default for feature and deep sessions), each subagent gets its own git worktree. This prevents file conflicts between agents working in parallel within the same wave. Housekeeping sessions default to `none` since they typically run fewer agents with non-overlapping scopes.
+When `isolation` is set to `worktree`, each subagent gets its own git worktree. This prevents file conflicts between agents working in parallel within the same wave. When set to `none`, all agents work in the coordinator's working tree in-place.
 
-Set `isolation: none` to disable worktrees (all agents work in the main working directory). Set `isolation: auto` to let the orchestrator choose based on session type.
+### Isolation Graduation (#194)
+
+`isolation: auto` (the default) is **not** a session-type switch — it is resolved per wave using the graduated default:
+
+| agentCount | sessionType | resolved |
+|---|---|---|
+| ≤ 2 | any | `none` |
+| 3–4 | housekeeping | `none` |
+| 3–4 | feature / deep | `worktree` |
+| ≥ 5 | any | `worktree` |
+
+The reason: worktrees are a tax, not a free lunch. Two full repo copies per wave, build artifacts duplicated, and merge-back risk when the coordinator commits inline. On small waves (1–2 agents on partitioned scopes) the tax is not worth paying — in-place dispatch is cleaner. On larger waves the isolation actually matters.
+
+**Overrides:**
+- Explicit `isolation: worktree` or `isolation: none` in Session Config disables the graduation entirely.
+- Session-plan may emit `collision-risk: high` on a wave spec to force `worktree` even at ≤2 agents — use it when agents will touch the same file.
+
+**Enforcement auto-promote:** when isolation resolves to `none`, `enforcement: warn` auto-promotes to `strict` for that wave. Worktrees provide filesystem-level isolation; in-place dispatch relies solely on the scope hook, so it must be hard. Explicit `enforcement: off` is respected.
+
+### Base-Ref Freshness (#195)
+
+Even with graduated isolation, worktree dispatch still carries a subtle risk: if the coordinator commits inline to `main` AFTER a worktree agent was created, the agent's merge-back silently overwrites those inline commits (the agent's base-ref is stale). This is not theoretical — it happened twice consecutively on 2026-04-20.
+
+The fix: wave-executor persists worktree meta at creation time (`.orchestrator/tmp/worktree-meta/<suffix>.json`) recording `baseSha`, `baseRef`, and `createdAt`. Before each merge-back, it checks whether `main` has advanced. Four outcomes:
+
+- **pass** — base matches current `main`. Merge-back proceeds normally.
+- **warn** — `main` advanced, but drift does not overlap the agent's scope. Log and proceed.
+- **block** — `main` advanced AND drift overlaps the agent's scope. Merge-back is refused; coordinator reconciles manually or rebases.
+- **no-meta** — meta missing/corrupted. Falls back to manual diff review.
+
+You do not configure this guard — it runs automatically for every `isolation: worktree` dispatch when persistence is enabled. The freshness events are logged to `.orchestrator/metrics/events.jsonl` as `event: freshness_check` for post-hoc analysis.
 
 ---
 
