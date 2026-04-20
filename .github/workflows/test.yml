@@ -52,6 +52,10 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Install nested vault-sync deps
+        shell: bash
+        run: (cd skills/vault-sync && npm install --no-audit --no-fund --silent)
+
       - name: Lint
         run: npm run lint
 
