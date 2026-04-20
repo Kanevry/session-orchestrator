@@ -256,6 +256,42 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
 
 ---
 
+## Sync-Rules Flow (`--sync-rules`)
+
+Entered when `$ARGUMENTS` contains `--sync-rules`. This is a standalone flow — it short-circuits the tier/archetype/scaffolding flow. No `bootstrap.lock` read, no template dispatched, no initial commit.
+
+**Purpose:** Vendor canonical rules from the plugin's `rules/` library (`rules/always-on/*.md`, and in the future `rules/opt-in-stack/*.md` and `rules/opt-in-domain/*.md`) into the consumer repo's `.claude/rules/`. Plugin-sourced files (identified by a `<!-- source: session-orchestrator plugin … -->` header) are overwritten on re-run; files without that header are preserved as local overrides. See `rules/_index.md` for the canonical manifest and `scripts/lib/rules-sync.mjs` for the implementation.
+
+**Steps:**
+
+1. **Resolve plugin root.** The plugin's `rules/_index.md` lives next to `SKILL.md`'s plugin directory. Use the plugin root inferred by the harness (`PLUGIN_ROOT`).
+
+2. **Invoke `scripts/lib/rules-sync.mjs`.** Run the CLI entrypoint from the consumer repo:
+
+   ```bash
+   node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$(pwd)"
+   ```
+
+   The script reads `rules/_index.md` from the plugin, iterates `always-on/` sources, and writes each file into `.claude/rules/` under the target repo. Stdout is a JSON object with `written[]`, `skipped[]`, `preserved[]`, and `errors[]`. Exit 1 on any error, 0 otherwise.
+
+   Add `--dry-run` to preview without writing.
+
+3. **Interpret the output.** Report a human summary:
+   - `written`: files newly created OR plugin-owned files overwritten with fresh canonical content.
+   - `skipped`: plugin-owned files already up-to-date (byte-identical).
+   - `preserved`: existing `.claude/rules/*.md` files that do NOT carry the plugin source header — left untouched as local overrides.
+   - `errors`: per-file failures (missing source, read/write errors, malformed `_index.md`).
+
+4. **Commit (optional).** `--sync-rules` does not auto-commit. If rules changed, prompt the user to review `git status` and stage/commit the updates manually. Rationale: rules are canonical artifacts and should travel with an intentional review, not land silently.
+
+5. **Report.** Print: `rules-sync complete. Written: <N>. Skipped: <N>. Preserved: <N>. Errors: <N>.` If `errors > 0`, non-zero exit.
+
+**Local overrides.** Any `.claude/rules/<name>.md` without the plugin source header is considered local and never overwritten. To replace a local override with the canonical version, delete it before re-running.
+
+**Idempotency.** Running `/bootstrap --sync-rules` twice in a row with no upstream changes emits `written: 0, skipped: <N>`. Safe to wire into CI or scheduled maintenance.
+
+---
+
 ## Phase 3: Dispatch to Template
 
 Based on `CONFIRMED_TIER`, read and execute the corresponding template file:
