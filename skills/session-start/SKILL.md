@@ -160,6 +160,19 @@ Run these checks in parallel using Bash:
 4. **Open branches**: list all local branches, identify which are mergeable to develop/main
 5. **Stale branches**: branches with no commits in more than `stale-branch-days` (default: 7) days
 
+## Phase 2.5: Docs Planning (Docs-Orchestrator Integration)
+
+> Skip this phase if `docs-orchestrator.enabled` config is not `true` (default: `false`).
+
+1. Read `docs-orchestrator.enabled`, `docs-orchestrator.audiences`, and `docs-orchestrator.mode` from `$CONFIG` (Phase 1 output).
+2. **Audience scope detection**: given the tasks surfaced in git/VCS analysis (Phases 2–5) and the user's session-type (housekeeping/feature/deep), identify which audiences from `docs-orchestrator.audiences` are likely touched:
+   - **User** — public-facing changes (README, docs/user, examples, CLI UX).
+   - **Dev** — architecture/refactor/module changes (CLAUDE.md, docs/dev, ADRs).
+   - **Vault** — strategic/status changes (context.md, decisions.md, people.md).
+3. **Thread audience list into session-plan context**: carry the detected audience list into Phase 8/9 so session-plan's Step 1.8 can classify tasks as `Docs` role and route them to `docs-writer`.
+4. **Non-overlap discipline**: `docs-orchestrator` MUST NOT touch `<vault>/01-projects/*/_overview.md` (owned by vault-mirror) or `<vault>/03-daily/*` (owned by daily). See `skills/docs-orchestrator/audience-mapping.md` for the authoritative audience → file-pattern table and the source-citation rules.
+5. Proceed to Phase 3.
+
 ## Phase 3: VCS Deep Dive (parallel)
 
 > **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.

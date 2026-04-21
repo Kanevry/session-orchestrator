@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -282,6 +282,61 @@ describe('validateAgentFrontmatter', () => {
 
   it('never throws on array input', () => {
     expect(() => validateAgentFrontmatter([])).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs-writer agent — targeted frontmatter compliance test
+// ---------------------------------------------------------------------------
+
+describe('docs-writer agent frontmatter', () => {
+  const DOCS_WRITER_PATH = join(REPO_ROOT, 'agents', 'docs-writer.md');
+
+  it('passes full validateAgentFile check', () => {
+    const result = validateAgentFile(DOCS_WRITER_PATH);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+  });
+
+  it('has name === "docs-writer"', () => {
+    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.frontmatter['name']).toBe('docs-writer');
+  });
+
+  it('has color === "blue"', () => {
+    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.frontmatter['color']).toBe('blue');
+  });
+
+  it('has model === "inherit"', () => {
+    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.frontmatter['model']).toBe('inherit');
+  });
+
+  it('has tools as a comma-separated string (not array, not block scalar)', () => {
+    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const tools = parsed.frontmatter['tools'];
+      expect(typeof tools).toBe('string');
+      expect(tools).not.toMatch(/^\[/);
+      expect(tools).not.toBe('__BLOCK_SCALAR__');
+      expect(tools).toContain(',');
+    }
+  });
+
+  it('has description as a single-line string containing <example> and <commentary>', () => {
+    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const desc = parsed.frontmatter['description'];
+      expect(typeof desc).toBe('string');
+      expect(desc).not.toBe('__BLOCK_SCALAR__');
+      expect(desc).toContain('<example>');
+      expect(desc).toContain('<commentary>');
+    }
   });
 });
 

@@ -121,7 +121,22 @@ This should have been cleaned up by wave-executor after the final wave, but cras
 - Update `CLAUDE.md` if patterns or conventions changed during this session
 - Check `<state-dir>/rules/` — if a new pattern was established, suggest a new rule file
 
-### 3.2 Session Handover (for significant sessions)
+### 3.2 Docs Verification (docs-orchestrator integration)
+
+> Skip this subsection if `docs-orchestrator.enabled` config is not `true` (default: `false`).
+
+1. **Retrieve docs tasks from the session plan**: filter the plan for tasks role-classified as `Docs` (see session-plan Step 1.8).
+2. **Verify each task produced a diff**:
+   - Compute changed files: `git diff --name-only $SESSION_START_REF..HEAD`
+   - For each Docs task, check whether its file-pattern target appears in the diff.
+   - If the target matches, inspect the diff for substantive content (not whitespace-only or unchanged blocks).
+   - If the target file contains `<!-- REVIEW: source needed -->` markers, classify the task as **partial** (needs human review before next release).
+3. **Report gaps per `docs-orchestrator.mode`**:
+   - `warn` (default) — log gaps in the session final report as advisories. Non-blocking; `/close` proceeds.
+   - `strict` — block `/close` until every gap is resolved or overridden by the user (AskUserQuestion on Claude Code, numbered Markdown list on Codex CLI / Cursor IDE).
+4. **Authoritative reference**: the audience → file-pattern mapping and source-citation rules live in `skills/docs-orchestrator/audience-mapping.md`.
+
+### 3.2a Session Handover (for significant sessions)
 If this session made substantial changes, create or update:
 - `<state-dir>/session-handover/` doc with: tasks completed, resume point, metrics changed, issues opened/closed
 - Or update `<state-dir>/STATE.md` with session digest

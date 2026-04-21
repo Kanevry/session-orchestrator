@@ -21,7 +21,7 @@ Two modes of operation:
 - **Standalone** (`/discovery [scope]`): Full 6-phase flow with interactive triage (Phases 0-6)
 - **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-4 only, returns structured findings to session-end
 
-The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, `audit`, or comma-separated like `code,session`.
+The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, or comma-separated like `code,session`.
 
 ## Phase 0: Bootstrap Gate
 
@@ -58,6 +58,7 @@ Detect the project's tech stack via marker file checks. Use Glob and run checks 
 | `tailwind.config.*`                   | Tailwind probes         |
 | Pencil in Session Config              | design-drift probe      |
 | `.orchestrator/bootstrap.lock`        | harness-audit probe     |
+| `.vault.yaml` OR Session Config `vault-integration.enabled: true` | vault probes      |
 
 ### Build Activation Set
 
@@ -67,6 +68,8 @@ Detect the project's tech stack via marker file checks. Use Glob and run checks 
 4. Remove probes whose activation conditions are not met
 
 The audit probe activates when `bootstrap.lock` is present OR when `discovery-probes` config explicitly lists `audit`.
+
+The vault probe activates when `.vault.yaml` is present in the repo root OR when `vault-integration.enabled: true` in Session Config OR when `discovery-probes` config explicitly lists `vault`.
 
 ### Exclude Paths
 
@@ -95,6 +98,7 @@ Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max 5
 - **Arch probes agent**: Runs all activated arch probes
 - **Session probes agent**: Runs all activated session probes
 - **Audit probes agent**: Runs harness-audit probe
+- **Vault probes** (`skills/discovery/probes-vault.md`): invokes `skills/discovery/probes/vault-staleness.mjs` and `skills/discovery/probes/vault-narrative-staleness.mjs` directly via `node`. Each probe returns `{findings, metrics, duration_ms}`. The runner reports `FINDING:` blocks per finding and appends summary records to `.orchestrator/metrics/vault-staleness.jsonl` and `vault-narrative-staleness.jsonl`.
 
 Each agent receives:
 - The probe definitions from `probes-intro.md` (confidence scoring reference) AND the category-specific `probes-<category>.md` file for this agent's category (include the actual grep commands/patterns in the prompt)

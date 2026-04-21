@@ -322,6 +322,9 @@ function _parseKV(lines) {
 
     if (!key) continue;
 
+    // Strip inline YAML comment (matches block-parser behaviour in _parseVaultSync etc.)
+    value = value.replace(/\s+#.*$/, '').trim();
+
     // Strip surrounding double quotes from value
     if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
       value = value.slice(1, -1);
@@ -416,7 +419,7 @@ function _parseVaultSync(content) {
         vsEnabled = v.toLowerCase() === 'true';
         break;
       case 'mode':
-        if (['hard', 'warn', 'off'].includes(v)) vsMode = v;
+        if (['strict', 'warn', 'off'].includes(v)) vsMode = v;
         // invalid mode silently defaults to 'warn' (matches shell behaviour)
         break;
       case 'vault-dir':
@@ -508,7 +511,7 @@ function _parseDriftCheck(content) {
         dcEnabled = v.toLowerCase() === 'true';
         break;
       case 'mode':
-        if (['hard', 'warn', 'off'].includes(v)) dcMode = v;
+        if (['strict', 'warn', 'off'].includes(v)) dcMode = v;
         break;
       case 'include-paths':
         if (!v) inIncludeList = true;
@@ -537,6 +540,178 @@ function _parseDriftCheck(content) {
     'check-issue-reference-freshness': dcChkIssue,
     'check-session-file-existence': dcChkSess,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Internal: docs-orchestrator block parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the top-level `docs-orchestrator:` YAML block from markdown content.
+ * Defaults: enabled=false, audiences=["user","dev","vault"], mode="warn".
+ * @param {string} content — full file contents
+ * @returns {{enabled: boolean, audiences: string[], mode: string}}
+ */
+function _parseDocsOrchestrator(content) {
+  const defaults = { enabled: false, audiences: ['user', 'dev', 'vault'], mode: 'warn' };
+
+  const lines = content.split(/\r?\n/);
+  let inBlock = false;
+  const blockLines = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!inBlock) {
+      if (/^docs-orchestrator:\s*$/.test(line)) inBlock = true;
+      continue;
+    }
+    if (line.length > 0 && !/^\s/.test(line)) break;
+    blockLines.push(line);
+  }
+
+  if (blockLines.length === 0) return defaults;
+
+  let doEnabled = false;
+  let doMode = 'warn';
+  const doAudiences = [];
+  let inAudiencesList = false;
+  const validAudiences = new Set(['user', 'dev', 'vault']);
+
+  for (const rawLine of blockLines) {
+    const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
+    if (!clean.trim()) continue;
+
+    if (/^\s+-\s+/.test(clean)) {
+      if (inAudiencesList) {
+        let item = clean.replace(/^\s+-\s+/, '').trim();
+        if (item.startsWith('"') && item.endsWith('"')) item = item.slice(1, -1);
+        else if (item.startsWith("'") && item.endsWith("'")) item = item.slice(1, -1);
+        if (item && validAudiences.has(item)) doAudiences.push(item);
+      }
+      continue;
+    }
+
+    inAudiencesList = false;
+
+    const kvMatch = clean.match(/^\s+([a-zA-Z_-]+):\s*(.*)/);
+    if (!kvMatch) continue;
+
+    const k = kvMatch[1];
+    let v = kvMatch[2].trim();
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+
+    switch (k) {
+      case 'enabled':
+        doEnabled = v.toLowerCase() === 'true';
+        break;
+      case 'mode':
+        if (['strict', 'warn', 'off'].includes(v)) doMode = v;
+        break;
+      case 'audiences':
+        if (!v) {
+          inAudiencesList = true;
+        } else {
+          // Inline list: audiences: [user, dev, vault]
+          const stripped = v.replace(/^\s*\[/, '').replace(/\]\s*$/, '').trim();
+          if (stripped) {
+            for (const item of stripped.split(',').map(s => s.trim())) {
+              if (item && validAudiences.has(item)) doAudiences.push(item);
+            }
+          }
+        }
+        break;
+    }
+  }
+
+  return {
+    enabled: doEnabled,
+    audiences: doAudiences.length > 0 ? doAudiences : ['user', 'dev', 'vault'],
+    mode: doMode,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal: vault-staleness block parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the top-level `vault-staleness:` YAML block from markdown content.
+ * Defaults: enabled=false, thresholds={top:30,active:60,archived:180}, mode="warn".
+ * @param {string} content — full file contents
+ * @returns {{enabled: boolean, thresholds: {top: number, active: number, archived: number}, mode: string}}
+ */
+function _parseVaultStaleness(content) {
+  const defaults = {
+    enabled: false,
+    thresholds: { top: 30, active: 60, archived: 180 },
+    mode: 'warn',
+  };
+
+  const lines = content.split(/\r?\n/);
+  let inBlock = false;
+  const blockLines = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!inBlock) {
+      if (/^vault-staleness:\s*$/.test(line)) inBlock = true;
+      continue;
+    }
+    if (line.length > 0 && !/^\s/.test(line)) break;
+    blockLines.push(line);
+  }
+
+  if (blockLines.length === 0) return defaults;
+
+  let vsEnabled = false;
+  let vsMode = 'warn';
+  const vsThresholds = { top: 30, active: 60, archived: 180 };
+  let inThresholdsBlock = false;
+
+  for (const rawLine of blockLines) {
+    const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
+    if (!clean.trim()) continue;
+
+    // Deeper indented key (thresholds sub-keys)
+    const deepMatch = clean.match(/^\s{4,}([a-zA-Z_-]+):\s*(.*)/);
+    if (deepMatch && inThresholdsBlock) {
+      const k = deepMatch[1];
+      let v = deepMatch[2].trim();
+      if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+      else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+      if (['top', 'active', 'archived'].includes(k)) {
+        const n = parseFloat(v);
+        if (Number.isFinite(n) && n > 0) vsThresholds[k] = n;
+      }
+      continue;
+    }
+
+    // Top-level key under vault-staleness (2-space indent)
+    const kvMatch = clean.match(/^\s+([a-zA-Z_-]+):\s*(.*)/);
+    if (!kvMatch) continue;
+
+    inThresholdsBlock = false;
+
+    const k = kvMatch[1];
+    let v = kvMatch[2].trim();
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+
+    switch (k) {
+      case 'enabled':
+        vsEnabled = v.toLowerCase() === 'true';
+        break;
+      case 'mode':
+        if (['strict', 'warn', 'off'].includes(v)) vsMode = v;
+        break;
+      case 'thresholds':
+        inThresholdsBlock = true;
+        break;
+    }
+  }
+
+  return { enabled: vsEnabled, thresholds: vsThresholds, mode: vsMode };
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +862,12 @@ export function parseSessionConfig(mdContent) {
   // drift-check: parsed from full content (standalone top-level block)
   const driftCheck = _parseDriftCheck(mdContent);
 
+  // docs-orchestrator: parsed from full content (standalone top-level block)
+  const docsOrchestrator = _parseDocsOrchestrator(mdContent);
+
+  // vault-staleness: parsed from full content (standalone top-level block)
+  const vaultStaleness = _parseVaultStaleness(mdContent);
+
   return {
     'agents-per-wave': agentsPerWave,
     'waves': waves,
@@ -736,6 +917,8 @@ export function parseSessionConfig(mdContent) {
     'vault-integration': vaultIntegration,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
+    'docs-orchestrator': docsOrchestrator,
+    'vault-staleness': vaultStaleness,
   };
 }
 

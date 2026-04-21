@@ -75,6 +75,16 @@ export function validateSessionConfig(config) {
   validateVaultIntegration(config['vault-integration'], errors);
   validateVaultSync(config['vault-sync'], errors);
 
+  if (config['docs-orchestrator'] !== undefined && config['docs-orchestrator'] !== null) {
+    const doErrs = validateDocsOrchestrator(config['docs-orchestrator']);
+    for (const msg of doErrs) errors.push({ path: 'docs-orchestrator', rule: 'object', message: msg });
+  }
+
+  if (config['vault-staleness'] !== undefined && config['vault-staleness'] !== null) {
+    const vsErrs = validateVaultStaleness(config['vault-staleness']);
+    for (const msg of vsErrs) errors.push({ path: 'vault-staleness', rule: 'object', message: msg });
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -186,6 +196,68 @@ function validateVaultSync(value, errors) {
       message: `vault-sync.exclude must be an array of strings (got ${JSON.stringify(value['exclude'])})`,
     });
   }
+}
+
+/**
+ * Validate the docs-orchestrator sub-object.
+ * @param {unknown} obj
+ * @returns {string[]} array of error messages (empty = valid)
+ */
+export function validateDocsOrchestrator(obj) {
+  if (obj === null || typeof obj !== 'object') return ['docs-orchestrator must be an object'];
+  const errs = [];
+  if (obj.enabled !== undefined && typeof obj.enabled !== 'boolean') {
+    errs.push('docs-orchestrator.enabled must be boolean');
+  }
+  if (obj.audiences !== undefined) {
+    if (!Array.isArray(obj.audiences)) {
+      errs.push('docs-orchestrator.audiences must be an array');
+    } else {
+      const valid = new Set(['user', 'dev', 'vault']);
+      for (const a of obj.audiences) {
+        if (typeof a !== 'string' || !valid.has(a)) {
+          errs.push(`docs-orchestrator.audiences contains invalid audience: ${a}`);
+        }
+      }
+    }
+  }
+  if (obj.mode !== undefined && !VAULT_MODE_VALUES.has(obj.mode)) {
+    errs.push(`docs-orchestrator.mode must be one of ${[...VAULT_MODE_VALUES].join('|')}`);
+  }
+  return errs;
+}
+
+/**
+ * Validate the vault-staleness sub-object.
+ * @param {unknown} obj
+ * @returns {string[]} array of error messages (empty = valid)
+ */
+export function validateVaultStaleness(obj) {
+  if (obj === null || typeof obj !== 'object') return ['vault-staleness must be an object'];
+  const errs = [];
+  if (obj.enabled !== undefined && typeof obj.enabled !== 'boolean') {
+    errs.push('vault-staleness.enabled must be boolean');
+  }
+  if (obj.thresholds !== undefined) {
+    if (obj.thresholds === null || typeof obj.thresholds !== 'object') {
+      errs.push('vault-staleness.thresholds must be an object');
+    } else {
+      for (const tier of ['top', 'active', 'archived']) {
+        if (
+          obj.thresholds[tier] !== undefined &&
+          (typeof obj.thresholds[tier] !== 'number' ||
+            !(obj.thresholds[tier] > 0) ||
+            !Number.isFinite(obj.thresholds[tier]))
+        ) {
+          errs.push(`vault-staleness.thresholds.${tier} must be a positive finite number (days)`);
+        }
+      }
+    }
+  }
+  if (obj.mode !== undefined && !VAULT_MODE_VALUES.has(obj.mode)) {
+    errs.push(`vault-staleness.mode must be one of ${[...VAULT_MODE_VALUES].join('|')}`);
+  }
+  return errs;
 }
 
 /**

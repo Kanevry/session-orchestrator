@@ -110,6 +110,7 @@ For each task from Step 1, assign exactly one role. Use these signal-to-role map
 | Needs codebase understanding before changes; audit, explore, verify assumptions, check existing coverage | **Discovery** | "Audit auth flow", "Check test coverage for module X", "Identify affected modules" |
 | New feature code, new API endpoints, DB schema changes, primary UI components, new modules | **Impl-Core** | "Add /api/users endpoint", "Create migration for invoices table", "Implement auth middleware" |
 | Bug fixes from prior waves, secondary features, integration work, edge cases, polish of existing code | **Impl-Polish** | "Fix pagination edge case", "Integrate payment with billing", "Handle error states in form" |
+| Documentation updates — new/changed README sections, CLAUDE.md updates, vault context.md/decisions.md narratives, ADR edits. Audience-aware (User/Dev/Vault). Gated on `docs-orchestrator.enabled` | **Docs** | "Update README for new --no-vault flag", "Write CLAUDE.md section for new hook", "Append vault decisions.md entry for architecture change" |
 | Write/update tests, lint fixes, security review, code simplification, type errors | **Quality** | "Add tests for auth module", "Fix TypeScript errors", "Security audit of new API" |
 | Documentation updates, issue cleanup, commit preparation, SSOT refresh, changelog | **Finalization** | "Update README", "Close resolved issues", "Write session handover notes" |
 
@@ -118,6 +119,7 @@ For each task from Step 1, assign exactly one role. Use these signal-to-role map
 - If a task is "fix something from a previous session" (not from this session's Impl-Core) → classify as **Impl-Core** (it is new work for this session).
 - If a task is "write tests for new feature code being built this session" → classify as **Quality** (not Impl-Core). Tests run after implementation.
 - If unsure between Impl-Core and Impl-Polish → if the task is on the critical path (other tasks depend on it), it is **Impl-Core**. If independent polish, it is **Impl-Polish**.
+- **Docs role** is only active when `docs-orchestrator.enabled: true` in Session Config. When disabled (default), documentation-update tasks fall into **Impl-Polish** (inline doc changes alongside code) or **Finalization** (standalone doc/SSOT updates) as today.
 - Housekeeping sessions: skip Steps 1.8, 2, and 3 — all tasks go into a single consolidated wave:
   - No role classification — all tasks treated as generic housekeeping work
   - Agent count: fixed at 1-2 per task (from wave-template.md housekeeping row), capped by `agents-per-wave`
@@ -152,6 +154,8 @@ Map roles to the configured wave count:
 | 6+ | W1=Discovery, W2-W3=Impl-Core (split), W4-W5=Impl-Polish (split), W6=Quality+Finalization |
 
 When roles are combined into a single wave, agents from both roles execute in that wave. The combined wave inherits the more restrictive verification level.
+
+> **Docs role (conditional):** When `docs-orchestrator.enabled: true`, a **Docs** role may be active alongside the above five roles. Docs tasks are dispatched in a dedicated Impl-Polish slot when there are 2+ doc tasks, or inline with Finalization when there is only 1. The Docs role never adds a sixth wave — it occupies an existing slot. When `docs-orchestrator.enabled` is `false` (default), no Docs role exists and this note has no effect.
 
 **Cross-role constraint in combined waves:** Tasks from different roles within a combined wave CANNOT be merged into a single agent (different scope permissions — e.g., Discovery is read-only, Impl-Core has write access). If the combined wave exceeds `agents-per-wave`, defer the lower-priority role's tasks: in W1=Discovery+Impl-Core, defer Impl-Core tasks to the next applicable wave. In W2=Impl-Polish+Quality, defer Quality tasks to a separate phase within the same wave.
 

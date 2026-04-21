@@ -512,6 +512,198 @@ describe('readConfigFile', () => {
 });
 
 // ---------------------------------------------------------------------------
+// docs-orchestrator parsing
+// ---------------------------------------------------------------------------
+
+describe('docs-orchestrator parsing', () => {
+  it('returns defaults when docs-orchestrator key is absent', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config['docs-orchestrator']).toEqual({
+      enabled: false,
+      audiences: ['user', 'dev', 'vault'],
+      mode: 'warn',
+    });
+  });
+
+  it('parses enabled: true', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  audiences: [user, dev]',
+      '  mode: strict',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].enabled).toBe(true);
+    expect(config['docs-orchestrator'].mode).toBe('strict');
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev']);
+  });
+
+  it('parses a single-item audiences narrowing', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  audiences: [user]',
+      '  mode: warn',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user']);
+  });
+
+  it('filters invalid audience values and keeps only valid ones', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  audiences: [user, bogus, dev]',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev']);
+  });
+
+  it('falls back to default audiences when all values in list are invalid', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  audiences: [bogus, invalid, fake]',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev', 'vault']);
+  });
+
+  it('silently defaults mode to warn when invalid mode (hard) is given', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vault-staleness parsing
+// ---------------------------------------------------------------------------
+
+describe('vault-staleness parsing', () => {
+  it('returns defaults when vault-staleness key is absent', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config['vault-staleness']).toEqual({
+      enabled: false,
+      thresholds: { top: 30, active: 60, archived: 180 },
+      mode: 'warn',
+    });
+  });
+
+  it('parses custom threshold values', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  enabled: true',
+      '  thresholds:',
+      '    top: 7',
+      '    active: 14',
+      '    archived: 60',
+      '  mode: strict',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].enabled).toBe(true);
+    expect(config['vault-staleness'].thresholds.top).toBe(7);
+    expect(config['vault-staleness'].thresholds.active).toBe(14);
+    expect(config['vault-staleness'].thresholds.archived).toBe(60);
+    expect(config['vault-staleness'].mode).toBe('strict');
+  });
+
+  it('silently keeps default for negative threshold top: -5', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  thresholds:',
+      '    top: -5',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].thresholds.top).toBe(30);
+  });
+
+  it('silently keeps default for zero threshold', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  thresholds:',
+      '    active: 0',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].thresholds.active).toBe(60);
+  });
+
+  it('silently defaults vault-staleness mode to warn when mode: hard is given (#217 regression guard)', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #217 regression — vault-sync and drift-check no longer accept "hard" mode
+// ---------------------------------------------------------------------------
+
+describe('#217 regression — mode: hard silently defaults to warn', () => {
+  it('vault-sync.mode: hard silently defaults to warn', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-sync:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-sync'].mode).toBe('warn');
+  });
+
+  it('drift-check.mode: hard silently defaults to warn', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'drift-check:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['drift-check'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs-orchestrator and vault-staleness appear in top-level keys
+// ---------------------------------------------------------------------------
+
+describe('docs-orchestrator and vault-staleness in top-level keys', () => {
+  it('returns all expected top-level keys including docs-orchestrator and vault-staleness', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config).toHaveProperty('docs-orchestrator');
+    expect(config).toHaveProperty('vault-staleness');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // _coerceCollisionRisk (issue #194)
 // ---------------------------------------------------------------------------
 

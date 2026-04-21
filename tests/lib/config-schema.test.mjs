@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { validateSessionConfig, formatErrors } from '../../scripts/lib/config-schema.mjs';
+import {
+  validateSessionConfig,
+  formatErrors,
+  validateDocsOrchestrator,
+  validateVaultStaleness,
+} from '../../scripts/lib/config-schema.mjs';
 
 function baseConfig(overrides = {}) {
   return {
@@ -159,6 +164,125 @@ describe('vault-integration validator', () => {
     if (!result.ok) {
       expect(result.errors.some((e) => e.path === 'vault-integration.enabled')).toBe(true);
     }
+  });
+});
+
+describe('validateDocsOrchestrator', () => {
+  it('returns empty array for empty object (all defaults valid)', () => {
+    expect(validateDocsOrchestrator({})).toEqual([]);
+  });
+
+  it('returns error when enabled is not boolean', () => {
+    const errs = validateDocsOrchestrator({ enabled: 'yes' });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('boolean'))).toBe(true);
+  });
+
+  it('returns error when audiences is a string rather than array', () => {
+    const errs = validateDocsOrchestrator({ audiences: 'user' });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('array'))).toBe(true);
+  });
+
+  it('returns error when audiences contains an invalid entry', () => {
+    const errs = validateDocsOrchestrator({ audiences: ['user', 'bogus'] });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.toLowerCase().includes('bogus') || e.includes('invalid'))).toBe(true);
+  });
+
+  it('returns error when mode is "hard" (not in strict|warn|off)', () => {
+    const errs = validateDocsOrchestrator({ mode: 'hard' });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('strict') || e.includes('warn') || e.includes('off'))).toBe(true);
+  });
+
+  it('returns empty array for valid full object', () => {
+    expect(validateDocsOrchestrator({ enabled: true, audiences: ['user', 'dev'], mode: 'strict' })).toEqual([]);
+  });
+
+  it('returns error for non-object input (null)', () => {
+    const errs = validateDocsOrchestrator(null);
+    expect(errs.length).toBeGreaterThan(0);
+  });
+
+  it('returns error for non-object input (string)', () => {
+    const errs = validateDocsOrchestrator('user');
+    expect(errs.length).toBeGreaterThan(0);
+  });
+});
+
+describe('validateVaultStaleness', () => {
+  it('returns empty array for empty object (all defaults valid)', () => {
+    expect(validateVaultStaleness({})).toEqual([]);
+  });
+
+  it('returns error when enabled is not boolean (number 1)', () => {
+    const errs = validateVaultStaleness({ enabled: 1 });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('boolean'))).toBe(true);
+  });
+
+  it('returns error when thresholds is a string rather than object', () => {
+    const errs = validateVaultStaleness({ thresholds: 'bad' });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('object'))).toBe(true);
+  });
+
+  it('returns error when thresholds.top is negative', () => {
+    const errs = validateVaultStaleness({ thresholds: { top: -5 } });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('top') && e.includes('positive'))).toBe(true);
+  });
+
+  it('returns error when thresholds.active is zero', () => {
+    const errs = validateVaultStaleness({ thresholds: { active: 0 } });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('active'))).toBe(true);
+  });
+
+  it('returns error when mode is "hard"', () => {
+    const errs = validateVaultStaleness({ mode: 'hard' });
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.includes('strict') || e.includes('warn') || e.includes('off'))).toBe(true);
+  });
+
+  it('returns empty array for valid full object', () => {
+    expect(
+      validateVaultStaleness({ enabled: true, thresholds: { top: 7, active: 14, archived: 60 }, mode: 'off' })
+    ).toEqual([]);
+  });
+
+  it('returns error for non-object input (null)', () => {
+    const errs = validateVaultStaleness(null);
+    expect(errs.length).toBeGreaterThan(0);
+  });
+});
+
+describe('validateSessionConfig — aggregates docs-orchestrator and vault-staleness errors', () => {
+  it('collects errors from both new validators when both blocks are invalid', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'docs-orchestrator': { enabled: 'yes', mode: 'hard' },
+        'vault-staleness': { enabled: 1, thresholds: 'bad' },
+      })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const paths = result.errors.map((e) => e.path);
+      expect(paths).toContain('docs-orchestrator');
+      expect(paths).toContain('vault-staleness');
+      expect(result.errors.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('accepts valid docs-orchestrator and vault-staleness together', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'docs-orchestrator': { enabled: true, audiences: ['user', 'dev'], mode: 'warn' },
+        'vault-staleness': { enabled: false, thresholds: { top: 30, active: 60, archived: 180 }, mode: 'off' },
+      })
+    );
+    expect(result.ok).toBe(true);
   });
 });
 
