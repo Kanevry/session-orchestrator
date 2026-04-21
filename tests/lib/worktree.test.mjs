@@ -9,7 +9,7 @@
  * Timeout is 15 s per test to accommodate git I/O.
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, access, realpath, mkdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -364,5 +364,183 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
         // Ignore
       }
     }
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// Worktree hardening helpers — resolveWorkspaceRoot, restoreCoordinatorCwd,
+// validatePathInWorkspace (issue #219)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!gitAvailable).sequential('worktree hardening helpers (#219)', () => {
+  let repoDir;
+  let origCwd;
+  let resolveWorkspaceRoot;
+  let restoreCoordinatorCwd;
+  let validatePathInWorkspace;
+  let createWorktree;
+  let removeWorktree;
+
+  beforeAll(async () => {
+    origCwd = process.cwd();
+    repoDir = await realpath(await makeTempRepo());
+    process.chdir(repoDir);
+    // Import the module after chdir so it picks up the correct repo root via
+    // process.cwd(). Use a cache-busting query param to force a fresh module
+    // instance separate from the one loaded by the first describe block.
+    ({
+      resolveWorkspaceRoot,
+      restoreCoordinatorCwd,
+      validatePathInWorkspace,
+      createWorktree,
+      removeWorktree,
+    } = await import('../../scripts/lib/worktree.mjs?hardening'));
+  });
+
+  afterAll(async () => {
+    process.chdir(origCwd);
+    await rm(repoDir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    // Guarantee CWD is restored to repoDir between tests so any failed chdir
+    // inside a test does not contaminate the next test.
+    try {
+      process.chdir(repoDir);
+    } catch {
+      // If repoDir was removed, restore to origCwd.
+      process.chdir(origCwd);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // resolveWorkspaceRoot
+  // -------------------------------------------------------------------------
+
+  it('resolveWorkspaceRoot returns the repo root when called from the main tree', async () => {
+    process.chdir(repoDir);
+    const root = await resolveWorkspaceRoot();
+    // Normalize separators so comparison is cross-platform.
+    const norm = (s) => s.replaceAll(path.sep, '/');
+    expect(norm(root)).toBe(norm(repoDir));
+  }, 15000);
+
+  it('resolveWorkspaceRoot returns the MAIN repo root when called from a linked worktree', async () => {
+    const wtPath = await createWorktree('rwsr-linked');
+    try {
+      const wtPathReal = await realpath(wtPath);
+      process.chdir(wtPathReal);
+      const root = await resolveWorkspaceRoot();
+      const norm = (s) => s.replaceAll(path.sep, '/');
+      // Must return the main repo root, NOT the linked worktree path.
+      expect(norm(root)).toBe(norm(repoDir));
+      expect(norm(root)).not.toBe(norm(wtPathReal));
+    } finally {
+      process.chdir(repoDir);
+      await removeWorktree(wtPath).catch(() => {});
+    }
+  }, 15000);
+
+  it('resolveWorkspaceRoot works when called from a subdirectory 5 levels deep inside the repo', async () => {
+    const deepDir = path.join(repoDir, 'a', 'b', 'c', 'd', 'e');
+    await mkdir(deepDir, { recursive: true });
+    process.chdir(deepDir);
+    const root = await resolveWorkspaceRoot();
+    const norm = (s) => s.replaceAll(path.sep, '/');
+    expect(norm(root)).toBe(norm(repoDir));
+  }, 15000);
+
+  it('resolveWorkspaceRoot throws with "resolveWorkspaceRoot:" prefix when not inside a git repo', async () => {
+    // Create a plain temp directory with no .git anywhere above it.
+    const plainDir = await mkdtemp(path.join(tmpdir(), 'so-no-git-'));
+    try {
+      process.chdir(plainDir);
+      await expect(resolveWorkspaceRoot()).rejects.toThrow('resolveWorkspaceRoot:');
+    } finally {
+      process.chdir(repoDir);
+      await rm(plainDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  // -------------------------------------------------------------------------
+  // restoreCoordinatorCwd
+  // -------------------------------------------------------------------------
+
+  it('restoreCoordinatorCwd returns restored:false and from:null when CWD is already workspace root', async () => {
+    process.chdir(repoDir);
+    const result = await restoreCoordinatorCwd();
+    expect(result.restored).toBe(false);
+    expect(result.from).toBe(null);
+    // to must equal the resolved workspace root.
+    const norm = (s) => s.replaceAll(path.sep, '/');
+    expect(norm(result.to)).toBe(norm(repoDir));
+  }, 15000);
+
+  it('restoreCoordinatorCwd restores CWD to workspace root when drifted into a linked worktree', async () => {
+    const wtPath = await createWorktree('rcc-drifted');
+    try {
+      const wtPathReal = await realpath(wtPath);
+      process.chdir(wtPathReal);
+      const result = await restoreCoordinatorCwd();
+
+      expect(result.restored).toBe(true);
+      // from must be the worktree path we chdir'd into.
+      const norm = (s) => s.replaceAll(path.sep, '/');
+      expect(norm(result.from)).toBe(norm(wtPathReal));
+      // to must be the main repo root.
+      expect(norm(result.to)).toBe(norm(repoDir));
+      // process.cwd() must now equal the repo root.
+      expect(norm(process.cwd())).toBe(norm(repoDir));
+    } finally {
+      process.chdir(repoDir);
+      await removeWorktree(wtPath).catch(() => {});
+    }
+  }, 15000);
+
+  // -------------------------------------------------------------------------
+  // validatePathInWorkspace
+  // -------------------------------------------------------------------------
+
+  it('validatePathInWorkspace returns true for a relative path inside the workspace', async () => {
+    process.chdir(repoDir);
+    const result = await validatePathInWorkspace('scripts/foo.mjs', repoDir);
+    expect(result).toBe(true);
+  }, 15000);
+
+  it('validatePathInWorkspace returns true for an absolute path inside the workspace', async () => {
+    const absPath = path.join(repoDir, 'src', 'index.ts');
+    const result = await validatePathInWorkspace(absPath, repoDir);
+    expect(result).toBe(true);
+  }, 15000);
+
+  it('validatePathInWorkspace returns false for a path outside the workspace (/tmp/foo)', async () => {
+    const outsidePath = path.join(tmpdir(), 'foo.txt');
+    const result = await validatePathInWorkspace(outsidePath, repoDir);
+    expect(result).toBe(false);
+  }, 15000);
+
+  it('validatePathInWorkspace returns false for a path escaping via ../sibling', async () => {
+    // Relative to repoDir, "../sibling" resolves outside the repo.
+    process.chdir(repoDir);
+    const result = await validatePathInWorkspace('../sibling-project/file.ts', repoDir);
+    expect(result).toBe(false);
+  }, 15000);
+
+  it('validatePathInWorkspace returns false for path inside .claude/worktrees/ subtree', async () => {
+    const worktreePath = path.join(repoDir, '.claude', 'worktrees', 'agent-X', 'file.ts');
+    const result = await validatePathInWorkspace(worktreePath, repoDir);
+    expect(result).toBe(false);
+  }, 15000);
+
+  it('validatePathInWorkspace returns false for path inside .codex/worktrees/ subtree', async () => {
+    const worktreePath = path.join(repoDir, '.codex', 'worktrees', 'agent-1', 'index.js');
+    const result = await validatePathInWorkspace(worktreePath, repoDir);
+    expect(result).toBe(false);
+  }, 15000);
+
+  it('validatePathInWorkspace returns false for path inside .cursor/worktrees/ subtree', async () => {
+    const worktreePath = path.join(repoDir, '.cursor', 'worktrees', 'wave2', 'component.tsx');
+    const result = await validatePathInWorkspace(worktreePath, repoDir);
+    expect(result).toBe(false);
   }, 15000);
 });

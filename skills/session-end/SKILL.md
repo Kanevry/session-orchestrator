@@ -154,6 +154,33 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 If STATE.md doesn't exist, skip this subsection.
 
+### 3.4a Coordinator Snapshot Cleanup (#196)
+
+Pre-dispatch snapshots (`refs/so-snapshots/<sessionId>/wave-*`) are created by wave-executor before each wave dispatch so that session-start can offer recovery if a session is interrupted mid-wave. On a clean close those snapshots are no longer needed and should be deleted. In addition, orphaned refs from older sessions that were never cleaned up (e.g. after a hard crash) are garbage-collected using an age-based policy (14 days).
+
+> Gate: Only run if `persistence` is `true` in Session Config. Skip entirely when persistence is off (snapshots are never written in that mode).
+
+```bash
+node --input-type=module -e "
+import { listSnapshots, deleteSnapshot, gcSnapshots } from '${PLUGIN_ROOT}/scripts/lib/coordinator-snapshot.mjs';
+
+// Step A: delete this session's snapshots (clean close → we don't need them)
+const mine = await listSnapshots({ sessionId: '${SESSION_ID}' });
+for (const s of mine) {
+  const r = await deleteSnapshot({ refName: s.ref });
+  if (!r.ok) console.error('snapshot cleanup:', r.error);
+}
+
+// Step B: GC orphans older than 14 days (non-fatal)
+const gc = await gcSnapshots({ olderThanDays: 14 });
+console.log(\`snapshot cleanup: deleted \${mine.length} from this session + \${gc.deletedCount} expired orphans (scanned \${gc.scanned}).\`);
+"
+```
+
+Failures in either step are logged to stderr but do **not** block session close — a missed cleanup is self-healing via the 14-day GC on the next session.
+
+This cleanup is the counterpart to the session-start Phase 1.5 recovery prompt: once a session closes cleanly, future sessions must not be offered recovery for its snapshots.
+
 ### 3.5 Session Memory
 
 > Gate: Only run if `persistence` is enabled in Session Config AND platform is Claude Code (session memory at `~/.claude/projects/` is Claude Code-only). Learnings (Phase 3.5a) and metrics (Phase 3.7) still write to `.orchestrator/metrics/` on all platforms.

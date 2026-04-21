@@ -44,8 +44,8 @@ Before reading STATE.md contents, validate the branch field:
 - If STATE.md's `branch` does not match `git rev-parse --abbrev-ref HEAD`, log: "⚠ STATE.md from branch [X], current branch is [Y] — treating as stale." Skip to step 2 (treat as if STATE.md does not exist).
 
 1. **STATE.md exists** — read it and inspect the `status` field:
-   - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started_at]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session.
-   - `status: paused` — session was intentionally paused. Use AskUserQuestion to offer resuming from the pause point or starting fresh.
+   - `status: active` — previous session crashed or was interrupted. Use the AskUserQuestion tool to present: "Found unfinished session from [started_at]. [N] waves completed. Resume or start fresh?" with options to resume the previous plan or start a new session. After a resume choice, proceed to **Snapshot Recovery** subsection below.
+   - `status: paused` — session was intentionally paused. Use AskUserQuestion to offer resuming from the pause point or starting fresh. After a resume choice, proceed to **Snapshot Recovery** subsection below.
    - `status: completed` — previous session ended cleanly. Note the summary for context (what was done, what was deferred), then **reset STATE.md to idle** before any new session state is written (see "Idle Reset" below). Continue with normal initialization.
 2. **STATE.md does not exist** — first session or persistence was previously off. Continue normally.
 
@@ -62,6 +62,66 @@ Reset rules — applies ONLY on the `completed` branch. Do NOT perform this rese
 5. Leave other frontmatter fields (`schema-version`, `session-type`, `branch`, `issues`, `started_at`, `total-waves`) intact until Phase 1b overwrites them with the new session's values.
 
 Rationale: `/close` intentionally keeps STATE.md as a record so the next session-start can read it. This reset completes that contract by demoting the record before new session state is written, so a fresh session never appears "already completed".
+
+### Snapshot Recovery (#196)
+
+Applies ONLY after the user chose to **resume** from the `active`/`paused` branch above. Skip entirely on the `completed` branch (snapshots for completed sessions are GC'd by session-end, not offered for recovery) and on the "start fresh" path of an `active`/`paused` prompt (starting fresh implies abandoning any snapshot).
+
+```js
+import { listSnapshots, deleteSnapshot } from '$PLUGIN_ROOT/scripts/lib/coordinator-snapshot.mjs';
+
+const snaps = await listSnapshots({ sessionId: '<sessionId from STATE.md>' });
+```
+
+If `snaps.length === 0` → no snapshots to recover; continue to the Current-Task Banner.
+
+If `snaps.length >= 1` → present the following choice:
+
+**Claude Code (AskUserQuestion):**
+
+```js
+AskUserQuestion({
+  questions: [{
+    question: `Found ${snaps.length} coordinator snapshot(s) from the resumed session (latest from ${humanAgeOf(snaps[0].createdAt)}). Recover, keep as backup, or discard?`,
+    header: "Snapshot",
+    multiSelect: false,
+    options: [
+      { label: "Recover (diff vs current tree) (Recommended)", description: "Apply the latest snapshot back onto the working tree. You will see a diff and can unstage unwanted changes before committing." },
+      { label: "Keep as backup", description: "Leave refs/so-snapshots/* in place untouched. You can recover manually later via `git stash apply $(git rev-parse <ref>)`." },
+      { label: "Discard all", description: "Delete all refs/so-snapshots/<sessionId>/* immediately via deleteSnapshot." },
+    ],
+  }],
+});
+```
+
+**Codex CLI / Cursor IDE fallback (numbered Markdown list):**
+
+```markdown
+Snapshot recovery options:
+
+1. **Recover (Recommended)** — Apply the latest snapshot back onto the working tree. You will see a diff and can unstage unwanted changes before committing.
+2. **Keep as backup** — Leave the refs in place untouched. You can recover manually later.
+3. **Discard all** — Delete all refs/so-snapshots/<sessionId>/* immediately.
+
+Reply with the number of your choice.
+```
+
+On user choice:
+- **Recover** → `git stash apply <snaps[0].sha>` (use apply, not pop — leaves the ref intact in case the user changes their mind). Then show the resulting `git diff --stat` so the user sees what landed.
+- **Keep as backup** → no-op. Log in the Session Overview: `Snapshot(s) retained: <N>. Recover manually with \`git stash apply <sha>\`.`
+- **Discard all** → for each snapshot in `snaps`, call `deleteSnapshot({refName: snap.ref})`. Log count.
+
+Snapshot age (`humanAgeOf`) is derived from `snap.createdAt` (ISO 8601 from `git for-each-ref --format='%(committerdate:iso8601)'`). A simple inline helper:
+
+```js
+function humanAgeOf(iso) {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+```
 
 ### Current-Task Banner (#184)
 

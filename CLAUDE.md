@@ -78,6 +78,8 @@ Development prerequisite: **Node 20+**. Run `npm ci` after cloning. Test with
 - Worktree isolation for parallel agent execution
 - 5 new Session Config fields (persistence, enforcement, circuit breaker, worktrees, ecosystem-health)
 - Session metrics tracking with historical trends (sessions.jsonl)
+- Coordinator snapshots: pre-dispatch `git stash create` refs under `refs/so-snapshots/` for crash recovery (#196)
+- CWD-drift guard: `restoreCoordinatorCwd` after every worktree-isolated Agent dispatch (#219)
 - Adaptive wave sizing based on complexity scoring
 - Cross-session learning system with confidence-based intelligence
 - Intelligent agent dispatch: project agents > plugin agents > general-purpose

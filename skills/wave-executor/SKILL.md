@@ -145,6 +145,18 @@ Read and follow `wave-loop.md` in this skill directory for the complete wave exe
 
 > **Reference:** See `circuit-breaker.md` in this skill directory for MaxTurns enforcement, spiral detection, recovery protocol, and worktree isolation configuration. Apply those rules during every wave dispatch and post-wave review.
 
+## Coordinator CWD Discipline (#219)
+
+Claude Code's `Agent` tool with `isolation: "worktree"` changes `process.cwd()` into the agent's worktree and does not restore it on agent return. Without discipline, the coordinator's subsequent Edit/Write/Bash calls silently route to a worktree branch — producing data loss when the worktree is later pruned.
+
+**Rules for the coordinator (this is YOU during wave execution):**
+
+1. **After every Agent() dispatch** (before reading its output), call `restoreCoordinatorCwd()` from `scripts/lib/worktree.mjs`. `wave-loop.md § 2` makes this explicit.
+2. **Prefer absolute file paths** for Read/Edit/Write tool calls. A drifted CWD turns relative paths into silent cross-tree writes.
+3. **Before any Bash git command**, either `cd` inside a subshell (`cd /path && cmd`) or rely on `git -C /path <cmd>`. Do not assume CWD.
+4. **Verify at checkpoints** — when in doubt, run `git rev-parse --show-toplevel` to confirm which tree is currently active.
+5. **Never `cd` into a worktree in the coordinator's top-level shell.** If you need to inspect a worktree, use `git -C <wt-path> ...` or spawn a subshell.
+
 ## Agent Prompt Best Practices
 
 Each agent prompt MUST include:

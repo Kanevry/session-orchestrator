@@ -111,6 +111,32 @@ The helper is stdlib-only and cross-platform. `mode=block` is recommended when t
 
 This is a downstream backstop: the underlying worktree merge-back strategy lives in the Claude Code harness and is outside this plugin's control. The correct fix (preserve untracked coordinator files during merge-back) must come upstream. Until then, this check is the only defense.
 
+#### Pre-Dispatch Coordinator Snapshot (#196)
+
+Before dispatching agents for this wave, checkpoint any uncommitted coordinator work as a git stash snapshot. This is a backup — it does NOT touch the working tree and does NOT block dispatch on failure.
+
+**Gate:** `$CONFIG.persistence == true`. When `persistence: false`, skip this step entirely.
+
+```js
+import { saveSnapshot } from '$PLUGIN_ROOT/scripts/lib/coordinator-snapshot.mjs';
+
+const snap = await saveSnapshot({
+  sessionId: '<session_id>',
+  waveN: <wave_num>,
+  label: 'pre-dispatch',
+});
+
+if (!snap.ok) {
+  // Non-fatal — log the error in the wave progress update but do not block.
+  console.warn(`coordinator-snapshot: snapshot failed (non-fatal): ${snap.error}`);
+}
+// snap.skipped === true when the working tree is clean; also fine, dispatch continues.
+```
+
+The snapshot is stored under `refs/so-snapshots/<sessionId>/wave-<N>-pre-dispatch`. It survives Claude process termination (unlike memory-only state) and is cleaned up by session-end on clean close (see session-end/SKILL.md). Orphaned snapshots from crashed sessions are reclaimed by `gcSnapshots({olderThanDays: 14})`.
+
+See issue #196 for the full rationale. This is complementary to the untracked-overlap check above (#180 is scope-level detection; this is working-tree-level backup).
+
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
 When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.
@@ -167,6 +193,20 @@ The `agents-per-wave` config is ignored on Cursor — all work is sequential. Se
 > **Timeout note:** Agent timeout is controlled by `maxTurns` from `circuit-breaker.md`, not by a time-based timeout. Claude Code's built-in turn limit provides the safety net. There is no need to set explicit time-based timeouts on agent dispatch.
 
 ### 2. Review Agent Outputs
+
+**Step 2.0 — Restore coordinator CWD (#219):** BEFORE reading any agent output or running any quality check, restore the coordinator's working directory. Claude Code's `Agent` tool with `isolation: "worktree"` `chdir()`s into each worktree internally and does NOT restore it on agent return. Subsequent Edit/Write/Bash calls would silently route to whichever worktree's tree CWD last drifted into.
+
+```js
+import { restoreCoordinatorCwd } from '$PLUGIN_ROOT/scripts/lib/worktree.mjs';
+
+const cwd = await restoreCoordinatorCwd();
+if (cwd.restored) {
+  console.warn(`wave-executor: restored coordinator CWD from ${cwd.from} → ${cwd.to}`);
+  // Include this line in the wave progress update so the coordinator has an audit trail.
+}
+```
+
+Run this step for every wave, regardless of isolation setting — it is a no-op when CWD never drifted.
 
 After ALL agents in the wave complete:
 
