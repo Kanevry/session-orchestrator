@@ -18,14 +18,15 @@ Session Orchestrator is a Claude Code and Codex plugin that brings structured, w
 10. [Design-Code Alignment (Pencil Integration)](#10-design-code-alignment-pencil-integration)
 11. [Ecosystem Health](#11-ecosystem-health)
 12. [Quality Discovery](#12-quality-discovery)
-13. [Session Persistence](#13-session-persistence)
-14. [Safety Features](#14-safety-features)
-15. [Session Metrics](#15-session-metrics)
-16. [Cross-Session Learning](#16-cross-session-learning)
-17. [Adaptive Wave Sizing](#17-adaptive-wave-sizing)
-18. [Cheat Sheet](#18-cheat-sheet)
-19. [FAQ](#19-faq)
-20. [Troubleshooting](#20-troubleshooting)
+13. [Harness Audit](#13-harness-audit)
+14. [Session Persistence](#14-session-persistence)
+15. [Safety Features](#15-safety-features)
+16. [Session Metrics](#16-session-metrics)
+17. [Cross-Session Learning](#17-cross-session-learning)
+18. [Adaptive Wave Sizing](#18-adaptive-wave-sizing)
+19. [Cheat Sheet](#19-cheat-sheet)
+20. [FAQ](#20-faq)
+21. [Troubleshooting](#21-troubleshooting)
 
 ---
 
@@ -383,7 +384,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 | `discovery-on-close` | boolean | `false` | Run discovery probes automatically during `/close`. |
-| `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`. |
+| `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
@@ -394,7 +395,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
-| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. See Section 14 "Isolation Graduation" below. |
+| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. See Section 15 "Isolation Graduation" below. |
 | `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 
 > **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in your config host file (`CLAUDE.md` / `AGENTS.md`) which may be committed to version control. Use header-based auth or separate secret management instead.
@@ -871,7 +872,61 @@ discovery-confidence-threshold: 60   # default; raise to reduce noise
 
 ---
 
-## 13. Session Persistence
+## 13. Harness Audit
+
+The harness audit scores this repository against the session-orchestrator rubric — a structured set of checks that verify the repo is set up correctly and the orchestrator has what it needs to run reliably. Run it whenever you want a baseline health reading or after making structural changes to the project setup.
+
+### How to run
+
+```
+/harness-audit
+```
+
+Or directly from the shell:
+
+```bash
+node scripts/harness-audit.mjs
+```
+
+No flags. The script always audits the current working directory / repo root.
+
+### What it produces
+
+- **stdout** — a JSON record matching the audit schema (see below)
+- **stderr** — a concise human-readable summary
+- **`.orchestrator/metrics/audit.jsonl`** — the same record appended as a single JSONL line for historical tracking
+
+### The 7 categories
+
+| Category | What it checks |
+|----------|----------------|
+| Session Discipline | STATE.md lifecycle, session-type usage, turn-limit compliance |
+| Quality Gate Coverage | Test command configured, typecheck command configured, lint command configured |
+| Hook Integrity | All 7 hook handlers registered and pointing to existing files |
+| Persistence Health | sessions.jsonl present and parseable, learnings.jsonl consistent |
+| Plugin-Root Resolution | Plugin path resolves correctly; bootstrap.lock committed |
+| Config Hygiene | Session Config fields are valid types; no unknown fields; no embedded secrets |
+| Policy Freshness | blocked-commands.json present; rubric_version matches `2026-05` |
+
+### Severity escalation
+
+| Score | Level | Action |
+|-------|-------|--------|
+| ≥ 7/10 | Info | No action required |
+| 5–7/10 | Medium finding | Review and address in next session |
+| < 5/10 | High finding | Surfaces automatically via `/discovery audit` |
+
+### Rubric version and bump policy
+
+The current rubric version is `2026-05`. It is embedded in every audit record as the `rubric_version` field. When session-orchestrator releases a minor version that changes the rubric, the version string is bumped via a conventional commit (`chore: bump rubric version to YYYY-MM`). Older records in `audit.jsonl` retain their original `rubric_version` and remain valid — use the field to filter when comparing across versions.
+
+### Related commands
+
+`/discovery audit` runs only the harness-audit probe within the discovery framework, without the full multi-category scan.
+
+---
+
+## 14. Session Persistence
 
 Session Orchestrator persists session state so you can resume after crashes, pauses, or context window exhaustion.
 
@@ -899,7 +954,7 @@ Set `persistence: false` in your Session Config to disable STATE.md writing and 
 
 ---
 
-## 14. Safety Features
+## 15. Safety Features
 
 ### Scope Enforcement
 
@@ -977,7 +1032,7 @@ You do not configure this guard — it runs automatically for every `isolation: 
 
 ---
 
-## 15. Session Metrics
+## 16. Session Metrics
 
 Session Orchestrator tracks metrics across sessions to provide historical trends and inform future planning.
 
@@ -1013,7 +1068,7 @@ These metrics are only displayed once enough session history exists; projects wi
 
 ---
 
-## 16. Cross-Session Learning
+## 17. Cross-Session Learning
 
 The learning system captures patterns from completed sessions and surfaces them in future sessions as "Project Intelligence."
 
@@ -1084,7 +1139,7 @@ Read-only display of all active learnings with confidence scores and expiry date
 
 ---
 
-## 17. Adaptive Wave Sizing
+## 18. Adaptive Wave Sizing
 
 Instead of fixed agent counts, the orchestrator scores session complexity and adjusts agent allocation dynamically.
 
@@ -1115,7 +1170,7 @@ The `agents-per-wave` config value always caps the maximum.
 
 ---
 
-## 18. Cheat Sheet
+## 19. Cheat Sheet
 
 ### Commands
 
@@ -1188,7 +1243,7 @@ Finalization    Documentation, issues, commits
 
 ---
 
-## 19. FAQ
+## 20. FAQ
 
 ### Can I use this with GitHub?
 
@@ -1240,7 +1295,7 @@ No. `/plan` runs outside of sessions. The session scope is locked after `/sessio
 
 ---
 
-## 20. Troubleshooting
+## 21. Troubleshooting
 
 ### "glab: command not found" or "gh: command not found"
 

@@ -1,0 +1,11 @@
+{
+  "name": "harness-audit-clean-repo-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "echo no-op",
+    "typecheck": "echo no-op",
+    "lint": "echo no-op"
+  }
+}

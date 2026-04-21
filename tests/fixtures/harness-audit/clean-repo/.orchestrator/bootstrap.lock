@@ -1,0 +1,5 @@
+version: 1
+tier: standard
+archetype: node-minimal
+timestamp: 2026-04-21T00:00:00Z
+source: plugin-template

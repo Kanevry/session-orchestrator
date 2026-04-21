@@ -80,6 +80,7 @@ Development prerequisite: **Node 20+**. Run `npm ci` after cloning. Test with
 - Session metrics tracking with historical trends (sessions.jsonl)
 - Coordinator snapshots: pre-dispatch `git stash create` refs under `refs/so-snapshots/` for crash recovery (#196)
 - CWD-drift guard: `restoreCoordinatorCwd` after every worktree-isolated Agent dispatch (#219)
+- Harness audit scorecard: deterministic 7-category rubric (RUBRIC_VERSION pinned), JSON to stdout + JSONL trend in `.orchestrator/metrics/audit.jsonl`, `/discovery audit` probe, `/harness-audit` command (#210)
 - Adaptive wave sizing based on complexity scoring
 - Cross-session learning system with confidence-based intelligence
 - Intelligent agent dispatch: project agents > plugin agents > general-purpose

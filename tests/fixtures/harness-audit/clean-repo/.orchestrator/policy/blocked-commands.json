@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "rationale": "Fixture policy for harness-audit clean-repo baseline.",
+  "rules": [
+    { "id": "git-reset-hard", "pattern": "git reset --hard", "severity": "block", "sources": ["psa-003"], "rationale": "Destroys staged/committed work." },
+    { "id": "git-checkout-dash", "pattern": "git checkout --", "severity": "block", "sources": ["psa-003"], "rationale": "Discards uncommitted changes." },
+    { "id": "git-clean-f", "pattern": "git clean -f", "severity": "block", "sources": ["psa-003"], "rationale": "Deletes untracked files." },
+    { "id": "git-clean-fd", "pattern": "git clean -fd", "severity": "block", "sources": ["psa-003"], "rationale": "Deletes untracked files and dirs." },
+    { "id": "rm-rf", "pattern": "rm -rf", "severity": "block", "sources": ["psa-003"], "rationale": "Recursive delete." },
+    { "id": "git-push-force", "pattern": "git push --force", "severity": "block", "sources": ["psa-003"], "rationale": "Rewrites shared history." },
+    { "id": "git-push-f", "pattern": "git push -f", "severity": "block", "sources": ["psa-003"], "rationale": "Rewrites shared history." },
+    { "id": "drop-table", "pattern": "DROP TABLE", "severity": "block", "sources": ["psa-003"], "rationale": "Destroys database tables." },
+    { "id": "drop-table-lower", "pattern": "drop table", "severity": "block", "sources": ["psa-003"], "rationale": "Destroys database tables." },
+    { "id": "git-stash-drop", "pattern": "git stash drop", "severity": "warn", "sources": ["psa-003"], "rationale": "Drops stashed work." },
+    { "id": "git-branch-d", "pattern": "git branch -D", "severity": "warn", "sources": ["psa-003"], "rationale": "Force-deletes branch." }
+  ]
+}
