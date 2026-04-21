@@ -253,6 +253,32 @@ vault-integration:
 | `vault-integration.vault-dir` | string or null | `null` | Absolute path to the vault repository. Falls back to `$VAULT_DIR` env variable if not set. Required when `enabled` is true. |
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
 
+## Docs Orchestrator
+
+Opt-in configuration for the `docs-orchestrator` skill, which generates audience-split documentation (User / Dev / Vault) within sessions (see `skills/docs-orchestrator/SKILL.md`). When enabled, session-start runs a Phase 2.5 docs-context step, session-plan assigns a Docs role, and session-end runs a Phase 3.2 gap-reporting step. The `docs-writer` agent is made available automatically when `enabled: true`.
+
+All fields live under a top-level `docs-orchestrator` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+docs-orchestrator:
+  enabled: false                 # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
+  audiences: [user, dev, vault]  # allowed audiences — can be narrowed per project
+  mode: warn                     # warn | strict | off — session-end Phase 3.2 gap reporting
+```
+
+| Field | Type | Default | Allowed values | Description |
+|-------|------|---------|----------------|-------------|
+| `docs-orchestrator.enabled` | boolean | `false` | `true` / `false` | If true, the docs-orchestrator lifecycle hooks activate: session-start Phase 2.5 runs a docs-context step, and session-end Phase 3.2 reports documentation gaps. When false (or missing), all docs-orchestrator steps are skipped silently. |
+| `docs-orchestrator.audiences` | array of string | `[user, dev, vault]` | `user`, `dev`, `vault` | Audiences for which documentation is generated. Can be narrowed to a subset (e.g., `[user, dev]`) to skip vault-targeted docs on projects without a vault. Each value must be one of the three canonical audience identifiers. |
+| `docs-orchestrator.mode` | string | `warn` | `warn` / `strict` / `off` | Gap-reporting severity at session-end Phase 3.2. `warn` reports undocumented changes but does not block session close. `strict` blocks session close when documentation gaps are detected. `off` bypasses gap reporting entirely (useful during onboarding). |
+
+**Related skills and files:**
+- `skills/docs-orchestrator/SKILL.md` — full skill spec, hook points, and source-citation rules
+- `skills/docs-orchestrator/audience-mapping.md` — per-audience content rules and output formats
+- `skills/session-start/SKILL.md` — Phase 2.5 docs-context step (activated when `enabled: true`)
+- `skills/session-end/SKILL.md` — Phase 3.2 gap-reporting step (activated when `enabled: true`)
+- `agents/docs-writer.md` — agent dispatched for documentation generation
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

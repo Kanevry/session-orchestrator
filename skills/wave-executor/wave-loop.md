@@ -23,6 +23,78 @@ After resolving `isolation`, compute the wave's enforcement via `resolveEnforcem
 
 Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
 
+#### Pre-Dispatch New-Directory Detection (#243)
+
+> **Motivation:** Claude Code's worktree merge-back fails silently when an agent creates a new directory inside the worktree — the new directory is not copied back to the coordinator's working tree (learning `agent-tool-worktree-no-sync-regression`, conf 0.90, 3rd-consecutive observation). The fix is to detect this condition BEFORE resolving isolation and force `isolation: 'none'` so worktree is never used for those agents, eliminating the regression rather than trying to recover from it (learning `wave3-isolation-none-dispatch`, conf 0.75, proven-pattern).
+
+Run this step only when `configIsolation` (read from the Execution Config or `$CONFIG.isolation`) is `'auto'`. If the user explicitly set `configIsolation: 'none'`, skip entirely — user override already achieves the desired outcome. If the user explicitly set `configIsolation: 'worktree'`, honour it but emit an ⚠ warning (see branch 4 below).
+
+```js
+import fs from 'fs';
+import path from 'path';
+
+// configIsolation: resolved from Execution Config or $CONFIG.isolation (default 'auto')
+// agentSpecs: array of agent specifications from the session plan for this wave
+//   Each spec has: { subagent_type, fileScope: string[] }  (fileScope = "Files:" entries)
+
+function detectNewDirAgents(agentSpecs, repoRoot) {
+  // Returns the count of agents whose scope includes at least one new (non-existent) directory.
+  let newDirCount = 0;
+  for (const agent of agentSpecs) {
+    const willCreateNewDir = (agent.fileScope ?? []).some((scopePath) => {
+      // Resolve relative to repo root; handle globs by taking the literal dirname.
+      const resolved = path.resolve(repoRoot, scopePath);
+      const dir = path.dirname(resolved);
+      return !fs.existsSync(dir);
+    });
+    if (willCreateNewDir) newDirCount++;
+  }
+  return newDirCount;
+}
+
+const repoRoot = process.cwd(); // coordinator CWD restored by Step 2.0 before this wave
+const newDirAgentCount = detectNewDirAgents(agentSpecs, repoRoot);
+
+// Branch 1 — no new directories detected, configIsolation: 'auto' → normal resolution path
+if (newDirAgentCount === 0 && configIsolation === 'auto') {
+  // Proceed to resolveIsolation() unchanged.
+}
+
+// Branch 2 — new directories detected, configIsolation: 'auto' → force isolation to 'none'
+if (newDirAgentCount > 0 && configIsolation === 'auto') {
+  configIsolation = 'none'; // override BEFORE calling resolveIsolation()
+  console.warn(
+    `⚠ Pre-dispatch: ${newDirAgentCount} agent(s) in this wave will create new directories ` +
+    `— isolation forced to 'none' per learning agent-tool-worktree-no-sync-regression (conf 0.90). ` +
+    `Reason: Claude Code worktree merge-back fails on new directories (issue #243).`
+  );
+  // NOTE: resolveEnforcement() will auto-promote 'warn' → 'strict' because isolation resolves
+  // to 'none'. The scope hook therefore becomes a hard barrier (not informational) for this wave —
+  // document this in the wave progress update so the operator understands enforcement escalated.
+}
+
+// Branch 3 — configIsolation: 'none' set explicitly by user → skip detection entirely
+if (configIsolation === 'none') {
+  // User override respected. No change needed.
+}
+
+// Branch 4 — configIsolation: 'worktree' set explicitly by user → honour but warn if new dirs exist
+if (configIsolation === 'worktree' && newDirAgentCount > 0) {
+  console.warn(
+    `⚠ Pre-dispatch: ${newDirAgentCount} agent(s) will create new directories AND ` +
+    `isolation is explicitly set to 'worktree'. ` +
+    `Known regression: Claude Code merge-back silently drops new directories (issue #243). ` +
+    `Override configIsolation to 'none' to avoid data loss.`
+  );
+  // Proceed with worktree as requested — user accepted the risk.
+}
+
+// Branch 5 — configIsolation: 'auto', newDirAgentCount === 0 → no-op (same as Branch 1)
+// Explicit for clarity; covered by Branch 1 above.
+```
+
+After running this detection block, call `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` with the (possibly overridden) `configIsolation`. Then call `resolveEnforcement({ isolation, configEnforcement })` as normal — when isolation resolved to `'none'` via Branch 2, enforcement auto-promotes `warn` → `strict`, which MUST be noted explicitly in the wave progress update.
+
 #### Agent-Type Resolution
 
 Each agent in the session plan specifies a `subagent_type`. Use that value directly when dispatching:
@@ -164,6 +236,9 @@ Rules:
    a. Project agent matching the task domain (e.g., `"database-architect"` for DB tasks)
    b. Plugin agent (e.g., `"session-orchestrator:code-implementer"`)
    c. `"general-purpose"` (final fallback)
+
+   > **Docs-role dispatch (A3):** `docs-writer` is the canonical first-class agent for Docs-role tasks (audience-split documentation generation per `skills/docs-orchestrator/SKILL.md`). It flows through step 3a naturally: when the session plan specifies `subagent_type: "docs-writer"` (project-level) or `subagent_type: "session-orchestrator:docs-writer"` (plugin-level), the resolution chain matches at step 3a without a separate branch. Cross-reference: `agents/docs-writer.md` (agent definition), `skills/docs-orchestrator/SKILL.md` (execution protocol and hook points). No new resolution branch is required — 3a handles it.
+
 4. **Finalization** → direct execution (no subagent needed)
 
 > **How to detect project agents:** The session plan's "Agent Registry" section lists all discovered agents. If an agent name does NOT contain a colon (`:`), it's a project-level agent. If it contains `session-orchestrator:`, it's a plugin agent.

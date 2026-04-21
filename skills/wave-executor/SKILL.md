@@ -135,6 +135,36 @@ Wave 0 — Initializing
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 
+#### Pre-Wave 1b Extension: Docs Tasks Persistence (A3 / #230)
+
+After writing the base STATE.md frontmatter above, conditionally persist the docs tasks block emitted by session-plan:
+
+**Condition:** BOTH of the following must be true:
+1. The session plan contains a `### Docs Tasks (machine-readable)` section with a YAML code block.
+2. `$CONFIG."docs-orchestrator".enabled` is `true`.
+
+If either condition is false → omit the `docs-tasks` field entirely. Do NOT write an empty key (`docs-tasks: []`). Absence means "no docs tasks planned this session" — downstream consumers (session-end Phase 3.2) treat absence the same as an empty list.
+
+When the condition is met, parse the YAML block from the session plan's `### Docs Tasks (machine-readable)` section and append the following field to the STATE.md YAML frontmatter (alongside the base fields above):
+
+```yaml
+docs-tasks:
+  - id: <task id from plan>
+    audience: <user|dev|vault>
+    target-pattern: <glob pattern from plan>
+    rationale: <rationale string from plan>
+    wave: <wave number the task is assigned to>
+    status: planned
+```
+
+Each entry's `status` is initialized to `planned`. session-end Phase 3.2 (Docs Verify) writes the terminal value per task: `ok` (diff is substantive), `partial` (diff region contains `<!-- REVIEW: source needed -->` markers), or `gap` (no matching diff). wave-executor does NOT perform intermediate status updates — `planned` remains until session-end runs.
+
+> **Schema note:** `schema-version: 1` now includes the optional `docs-tasks` array. The field is backwards-compatible — its absence is a valid schema-version-1 STATE.md meaning "no docs tasks planned". Readers MUST treat a missing `docs-tasks` key identically to `docs-tasks: []`.
+
+> **Ownership clarification:** session-plan does NOT write STATE.md directly. The wave-executor owns ALL STATE.md writes — initialization here (Pre-Wave 1b) is the canonical write point for `docs-tasks`. session-plan only emits the source `### Docs Tasks (machine-readable)` block for the coordinator to consume. See `skills/_shared/state-ownership.md` for the full ownership matrix.
+
+> **Consumer cross-reference:** session-end reads `STATE.md` frontmatter's `docs-tasks` field (if present) during Phase 3.2 Docs Verify — see `skills/session-end/SKILL.md`. The field is also readable by the docs-writer agent if it needs to know which tasks were planned for the current session.
+
 > **Ownership:** STATE.md is owned by the wave-executor. Only the wave-executor writes to it (initialization + post-wave updates). session-end reads it for metrics extraction and sets `status: completed`. session-start reads it only for continuity checks (Phase 0.5). No other skill should write to STATE.md.
 
 ## Wave Execution Loop
