@@ -253,6 +253,47 @@ vault-integration:
 | `vault-integration.vault-dir` | string or null | `null` | Absolute path to the vault repository. Falls back to `$VAULT_DIR` env variable if not set. Required when `enabled` is true. |
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
 
+## Vault Staleness
+
+Opt-in configuration for vault-drift discovery probes. Detects stale vault projects and narratives. Used by `/discovery vault` (on-demand probe execution) and session-end Phase 2.3 (automatic gate at close time). Projects without a vault leave these fields unset and are unaffected.
+
+All fields live under a top-level `vault-staleness` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+vault-staleness:
+  enabled: false           # opt-in
+  mode: warn               # warn | strict | off  (NOT 'hard'; canonical per #217)
+  thresholds:
+    top: 30                # days — tier=top narrative staleness threshold
+    active: 60             # days — tier=active
+    archived: 180          # days — tier=archived
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vault-staleness.enabled` | boolean | `false` | If true, vault-staleness probes are activated. When false (or missing), Phase 2.3 and `/discovery vault` probes are skipped silently. |
+| `vault-staleness.mode` | string | `warn` | Gate severity. `warn` runs probes and reports findings in the Docs Health line but never blocks session close. `strict` runs probes and blocks session close when findings are present; an interactive override prompt is available and any deviation is logged to STATE.md. `off` skips Phase 2.3 entirely — no probe execution. |
+| `vault-staleness.thresholds.top` | integer | `30` | Days before a `tier=top` project's `lastSync` or narrative file (`context.md`, `decisions.md`, `people.md`) is flagged as stale. |
+| `vault-staleness.thresholds.active` | integer | `60` | Days before a `tier=active` project's narrative is flagged as stale. |
+| `vault-staleness.thresholds.archived` | integer | `180` | Days before a `tier=archived` project's narrative is flagged as stale. |
+
+**Mode behavior:**
+
+| Mode | Phase 2.3 | Blocks close? | Notes |
+|------|-----------|---------------|-------|
+| `off` | Skipped | No | No probe execution at all. |
+| `warn` (default) | Runs | No | Findings reported in session-end Docs Health line. |
+| `strict` | Runs | Yes | Override available via interactive prompt; deviation logged to STATE.md. |
+
+**Related skills and files:**
+- `/discovery vault` — on-demand probe execution command
+- `skills/discovery/probes/vault-staleness.mjs` — project-staleness probe (flags `01-projects` with `lastSync` age > threshold)
+- `skills/discovery/probes/vault-narrative-staleness.mjs` — narrative-staleness probe (checks `context.md`, `decisions.md`, `people.md` by tier)
+- `skills/session-end/SKILL.md` — Phase 2.3: staleness gating and interactive override
+- `.orchestrator/metrics/vault-staleness.jsonl` — JSONL output from the project-staleness probe
+- `.orchestrator/metrics/vault-narrative-staleness.jsonl` — JSONL output from the narrative-staleness probe
+- GitLab issue `#232` (foundation), `#242` (Sub-Epic C integration)
+
 ## Docs Orchestrator
 
 Opt-in configuration for the `docs-orchestrator` skill, which generates audience-split documentation (User / Dev / Vault) within sessions (see `skills/docs-orchestrator/SKILL.md`). When enabled, session-start runs a Phase 2.5 docs-context step, session-plan assigns a Docs role, and session-end runs a Phase 3.2 gap-reporting step. The `docs-writer` agent is made available automatically when `enabled: true`.

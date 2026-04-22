@@ -58,3 +58,7 @@ if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
 **Default severity:** low (within 2× tier threshold), medium (within 3×), high (beyond 3×). Missing `updated` field → low.
 
 **Tier thresholds (days):** top=30, active=60, archived=180. Tier sourced from `_overview.md` frontmatter; defaults to `active` if missing.
+
+---
+
+**Session-end integration:** When `vault-staleness.enabled: true` in Session Config, these same probes are also invoked at session-end Phase 2.3 — see `skills/session-end/SKILL.md` for the gating logic and strict-mode override behavior. The `/discovery vault` invocation here is the on-demand discovery path; Phase 2.3 is the close-time gate.
