@@ -3,8 +3,13 @@
  *
  * Minimal hand-rolled YAML-subset parser + serializer for the fields used by
  * the session-orchestrator STATE.md contract. Not a general-purpose YAML
- * implementation — handles scalar strings, booleans, integers, and arrays of
- * integers only. That is the full grammar permitted by skills/_shared/state-ownership.md.
+ * implementation — handles:
+ *   - Scalar strings, booleans, integers, nulls
+ *   - Flow-style integer arrays (`[1, 2, 3]`)
+ *   - Block-style sequences of mappings (issue #244), e.g. `docs-tasks:` with
+ *     indented `- key: value` entries. Only one nesting level supported.
+ *
+ * That is the full grammar permitted by skills/_shared/state-ownership.md.
  *
  * Never throws. Returns null for unparseable input rather than raising.
  */
@@ -34,7 +39,17 @@ export function parseStateMd(contents) {
  * @returns {string}
  */
 export function serializeStateMd({ frontmatter, body }) {
-  const fmLines = Object.entries(frontmatter).map(([k, v]) => `${k}: ${serializeScalar(v)}`);
+  const fmLines = [];
+  for (const [k, v] of Object.entries(frontmatter)) {
+    if (isBlockSeqOfMappings(v)) {
+      fmLines.push(`${k}:`);
+      for (const entry of v) {
+        serializeBlockSeqEntry(entry, fmLines);
+      }
+    } else {
+      fmLines.push(`${k}: ${serializeScalar(v)}`);
+    }
+  }
   const bodyOut = body.startsWith('\n') ? body : `\n${body}`;
   return `---\n${fmLines.join('\n')}\n---\n${bodyOut}`;
 }
@@ -80,16 +95,91 @@ export function readCurrentTask(contents) {
 function parseFrontmatter(text) {
   const out = {};
   const lines = text.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\s+$/, '');
-    if (line === '' || /^\s*#/.test(line)) continue;
-    const idx = line.indexOf(':');
+  let i = 0;
+  while (i < lines.length) {
+    const rstripped = lines[i].replace(/\s+$/, '');
+    if (rstripped === '' || /^\s*#/.test(rstripped)) {
+      i++;
+      continue;
+    }
+    if (/^\s/.test(rstripped)) return null;
+    const idx = rstripped.indexOf(':');
     if (idx === -1) return null;
-    const key = line.slice(0, idx).trim();
+    const key = rstripped.slice(0, idx).trim();
     if (key === '') return null;
-    out[key] = parseScalar(line.slice(idx + 1).trim());
+    const valuePart = rstripped.slice(idx + 1).trim();
+    if (valuePart === '') {
+      const result = parseBlockValue(lines, i + 1);
+      if (result === null) return null;
+      out[key] = result.value;
+      i = result.nextIndex;
+    } else {
+      out[key] = parseScalar(valuePart);
+      i++;
+    }
   }
   return out;
+}
+
+/**
+ * Parses an optional block-sequence-of-mappings value following an empty
+ * `key:` line. Returns `{ value, nextIndex }` where:
+ *   - `value === null` means no block sequence was present (the `key:` has
+ *     no body) and `nextIndex === start` so the caller resumes at `start`.
+ *   - `value === [...]` means a block sequence was consumed.
+ * Returns `null` on malformed block syntax.
+ */
+function parseBlockValue(lines, start) {
+  let i = start;
+  while (i < lines.length) {
+    const rstripped = lines[i].replace(/\s+$/, '');
+    if (rstripped === '' || /^\s*#/.test(rstripped)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (i >= lines.length) return { value: null, nextIndex: start };
+  const peek = lines[i].replace(/\s+$/, '');
+  const bulletMatch = peek.match(/^(\s+)- /);
+  if (!bulletMatch) return { value: null, nextIndex: start };
+  const indent = bulletMatch[1];
+  const contIndent = indent + '  ';
+  const entries = [];
+  while (i < lines.length) {
+    const rstripped = lines[i].replace(/\s+$/, '');
+    if (rstripped === '' || /^\s*#/.test(rstripped)) {
+      i++;
+      continue;
+    }
+    if (!rstripped.startsWith(indent + '- ')) break;
+    const firstBody = rstripped.slice(indent.length + 2);
+    const firstColon = firstBody.indexOf(':');
+    if (firstColon === -1) return null;
+    const firstKey = firstBody.slice(0, firstColon).trim();
+    if (firstKey === '') return null;
+    const entry = {};
+    entry[firstKey] = parseScalar(firstBody.slice(firstColon + 1).trim());
+    i++;
+    while (i < lines.length) {
+      const inner = lines[i].replace(/\s+$/, '');
+      if (inner === '' || /^\s*#/.test(inner)) {
+        i++;
+        continue;
+      }
+      if (!inner.startsWith(contIndent) || inner.startsWith(indent + '- ')) break;
+      const body = inner.slice(contIndent.length);
+      if (/^\s/.test(body)) return null;
+      const colon = body.indexOf(':');
+      if (colon === -1) return null;
+      const key = body.slice(0, colon).trim();
+      if (key === '') return null;
+      entry[key] = parseScalar(body.slice(colon + 1).trim());
+      i++;
+    }
+    entries.push(entry);
+  }
+  return { value: entries, nextIndex: i };
 }
 
 function parseScalar(raw) {
@@ -109,6 +199,28 @@ function parseScalar(raw) {
     return raw.slice(1, -1);
   }
   return raw;
+}
+
+function isBlockSeqOfMappings(v) {
+  return (
+    Array.isArray(v) &&
+    v.length > 0 &&
+    v.every((x) => x !== null && typeof x === 'object' && !Array.isArray(x))
+  );
+}
+
+function serializeBlockSeqEntry(entry, fmLines) {
+  const entries = Object.entries(entry);
+  if (entries.length === 0) {
+    fmLines.push('  - {}');
+    return;
+  }
+  const [firstKey, firstValue] = entries[0];
+  fmLines.push(`  - ${firstKey}: ${serializeScalar(firstValue)}`);
+  for (let idx = 1; idx < entries.length; idx++) {
+    const [key, value] = entries[idx];
+    fmLines.push(`    ${key}: ${serializeScalar(value)}`);
+  }
 }
 
 function serializeScalar(v) {

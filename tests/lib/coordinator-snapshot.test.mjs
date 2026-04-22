@@ -222,6 +222,39 @@ describe.skipIf(!gitAvailable).sequential('coordinator-snapshot', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Test 4b (#221): save — untracked files ARE captured in the snapshot via `-u`.
+  // Pre-fix regression: `git stash create` (without -u) silently omits untracked
+  // files, so new test/scaffolding files generated between waves could not be
+  // recovered on crash resume. Test scenario: a tracked-file modification plus
+  // a NEW untracked file — the snapshot must contain both.
+  // -------------------------------------------------------------------------
+
+  it('save: dirty tree with untracked files captures them in the snapshot (-u)', async () => {
+    const { execFileSync } = await import('node:child_process');
+    // Modify a tracked file so the stash is materialized, then add an untracked one.
+    writeFileSync(path.join(repoDir, 'README.md'), 'tracked change\n', 'utf8');
+    writeFileSync(path.join(repoDir, 'new-untracked.txt'), 'freshly scaffolded\n', 'utf8');
+
+    const result = await saveSnapshot({ sessionId: 'sess-untracked', waveN: 3, label: 'pre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBeUndefined();
+    expect(typeof result.sha).toBe('string');
+    expect(result.sha.length).toBeGreaterThan(0);
+    expect(result.ref).toBe('refs/so-snapshots/sess-untracked/wave-3-pre');
+
+    // `git stash create -u` stores untracked files as an additional parent commit.
+    // `git stash show --include-untracked --name-only <sha>` walks all parents.
+    const stashContents = execFileSync(
+      'git',
+      ['stash', 'show', '--include-untracked', '--name-only', result.sha],
+      { cwd: repoDir, encoding: 'utf8' },
+    );
+    expect(stashContents).toContain('README.md');
+    expect(stashContents).toContain('new-untracked.txt');
+  });
+
+  // -------------------------------------------------------------------------
   // Test 5: list — empty namespace returns []
   // -------------------------------------------------------------------------
 

@@ -2,12 +2,23 @@
 /**
  * coordinator-snapshot.mjs — pre-dispatch coordinator snapshot helpers for session-orchestrator.
  *
- * Saves git stash commit objects under refs/so-snapshots/<sessionId>/wave-<N>-<label>
- * without touching the working tree. Uses `git stash create` to produce a stash commit
- * object and `git update-ref` to persist it under the custom ref namespace.
+ * Saves git stash-format commit objects under refs/so-snapshots/<sessionId>/wave-<N>-<label>
+ * without touching the working tree, using `git update-ref` to persist them.
+ *
+ * `git stash create` alone captures only tracked modifications. It silently ignores
+ * `-u`/`--include-untracked` on git 2.53 (the flag is accepted but has no effect on
+ * `create` — only `push` and `save` honor it), so any new untracked files produced
+ * during a wave were dropped from the snapshot. Fix (#221): after building the
+ * tracked stash commit we also build an untracked-tree commit from a temp index and
+ * attach it as a third parent, matching git-stash's 3-parent format so
+ * `git stash apply` restores both tracked and untracked content on recovery.
  *
  * Part of v3.1.0 env-aware sessions (issue #196).
  */
+
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 import { $, nothrow } from 'zx';
 
@@ -45,6 +56,91 @@ function _refName(sanitizedSessionId, waveN, label) {
   return `${REF_PREFIX}${sanitizedSessionId}/wave-${waveN}-${label}`;
 }
 
+/**
+ * Build a snapshot commit that captures both tracked changes and untracked files.
+ *
+ * Strategy:
+ *   1. `git stash create` produces a 2-parent commit over tracked/index changes.
+ *   2. `_buildUntrackedParent` produces an optional commit whose tree is the set
+ *      of untracked, non-gitignored files (done via a temp GIT_INDEX_FILE).
+ *   3. If both are present, we splice the untracked commit in as a third parent
+ *      of the stash — matching the format `git stash push -u` writes, so
+ *      `git stash apply` can restore both tracked and untracked content.
+ *   4. If only one is present, return that SHA; if neither, return empty string.
+ *
+ * @param {ReturnType<typeof $>} git
+ * @param {string} cwd
+ * @param {string} stashMessage
+ * @returns {Promise<string>} snapshot commit SHA or '' if nothing to capture
+ */
+async function _buildSnapshotCommit(git, cwd, stashMessage) {
+  const stashResult = await git`git stash create ${stashMessage}`;
+  const trackedSha = stashResult.stdout.trim();
+  const untrackedSha = await _buildUntrackedParent(git, cwd, stashMessage);
+
+  if (!trackedSha && !untrackedSha) return '';
+  if (!untrackedSha) return trackedSha;
+  if (!trackedSha) return untrackedSha;
+
+  // Splice untracked commit as a 3rd parent of the tracked stash commit.
+  const trackedTree = (await git`git rev-parse ${trackedSha + '^{tree}'}`).stdout.trim();
+  const parentsRaw = (await git`git rev-list --parents -n 1 ${trackedSha}`).stdout.trim().split(' ');
+  const [, ...stashParents] = parentsRaw;
+  const parentArgs = [];
+  for (const p of stashParents) parentArgs.push('-p', p);
+  parentArgs.push('-p', untrackedSha);
+  const combined = await git`git commit-tree ${trackedTree} ${parentArgs} -m ${stashMessage}`;
+  return combined.stdout.trim();
+}
+
+/**
+ * Build a commit object whose tree contains only the current untracked,
+ * non-gitignored files. Returns '' when the tree has no such files.
+ *
+ * Uses a temporary GIT_INDEX_FILE so the real index and working tree are never
+ * touched. The commit has HEAD as its sole parent, matching git-stash's
+ * "untracked files on ..." conventions.
+ *
+ * @param {ReturnType<typeof $>} git
+ * @param {string} cwd
+ * @param {string} stashMessage — reused as commit subject for provenance
+ * @returns {Promise<string>} untracked-commit SHA, or '' if no untracked files
+ */
+async function _buildUntrackedParent(git, cwd, stashMessage) {
+  const lsRes = await git`git ls-files --others --exclude-standard -z`;
+  const paths = lsRes.stdout.split('\0').filter(Boolean);
+  if (paths.length === 0) return '';
+
+  const tempIndex = path.join(
+    os.tmpdir(),
+    `so-snap-untracked-${process.pid}-${Date.now()}`,
+  );
+  const gitIdx = $({
+    cwd,
+    env: { ...process.env, GIT_INDEX_FILE: tempIndex },
+  });
+  gitIdx.verbose = false;
+  gitIdx.quiet = true;
+
+  try {
+    // `read-tree --empty` initializes the temp index file.
+    await gitIdx`git read-tree --empty`;
+    await gitIdx`git update-index --add -- ${paths}`;
+    const treeSha = (await gitIdx`git write-tree`).stdout.trim();
+    if (!treeSha) return '';
+    const head = (await git`git rev-parse HEAD`).stdout.trim();
+    const subject = `untracked files on ${stashMessage}`;
+    const commitRes = await git`git commit-tree ${treeSha} -p ${head} -m ${subject}`;
+    return commitRes.stdout.trim();
+  } finally {
+    try {
+      await fs.unlink(tempIndex);
+    } catch {
+      // Temp index may never have been created if read-tree failed — ignore.
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // saveSnapshot
 // ---------------------------------------------------------------------------
@@ -52,7 +148,10 @@ function _refName(sanitizedSessionId, waveN, label) {
 /**
  * Create a git-stash commit object and save it under refs/so-snapshots/<sessionId>/wave-<N>-<label>.
  * No-op when working tree is clean (no uncommitted changes). Does NOT touch the working tree
- * (uses `git stash create` which produces a commit object without modifying files).
+ * (uses `git stash create -u` which produces a commit object including untracked files
+ * without modifying files). The `-u` flag is load-bearing — without it, untracked files
+ * generated between waves (e.g. new test files) are silently dropped from the snapshot
+ * and cannot be recovered on crash resume (#221).
  *
  * @param {Object} opts
  * @param {string} opts.sessionId — session identifier (sanitized for ref namespace)
@@ -75,14 +174,16 @@ export async function saveSnapshot({ sessionId, waveN, label = 'pre' }) {
       return { ok: true, ref: null, sha: null, skipped: true };
     }
 
-    // Step 2: Create stash commit object without modifying working tree.
+    // Step 2: Build the snapshot commit without modifying the working tree.
+    // Tracked changes come from `git stash create`; untracked files are attached
+    // via a third parent commit built from a temp index (see _buildUntrackedParent).
     const sanitized = _sanitizeSessionId(sessionId);
     const stashMessage = `so-snapshot ${sessionId} wave ${waveN} ${label}`;
-    const stashResult = await git`git stash create ${stashMessage}`;
-    const sha = stashResult.stdout.trim();
+    const sha = await _buildSnapshotCommit(git, cwd, stashMessage);
 
     if (!sha) {
-      // git stash create returns empty if nothing to stash (race condition guard).
+      // Race condition guard: status showed changes but git stash create produced
+      // nothing and there are no untracked files — treat as clean.
       return { ok: true, ref: null, sha: null, skipped: true };
     }
 

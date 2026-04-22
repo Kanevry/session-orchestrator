@@ -361,3 +361,76 @@ describe('symlink-escape regression — SECURITY-REQ-03 / F-02', { timeout: 1500
     },
   );
 });
+
+describe('coordinator carveout — #245', { timeout: 15000 }, () => {
+  it('allows STATE.md write even when allowedPaths is empty', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+  });
+
+  it('allows STATE.md write when allowedPaths does not include it (strict)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows wave-scope.json write (the manifest the hook itself reads)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const scopePath = path.join(dir, '.claude', 'wave-scope.json');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(scopePath, 'Write'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('does NOT carve out sibling files in .claude/ (narrow allowlist)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const sibling = path.join(dir, '.claude', 'notes.md');
+    await fs.writeFile(sibling, '# notes');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(sibling),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('does NOT carve out a file that merely contains STATE.md in its name', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const fake = path.join(dir, '.claude', 'STATE.md.bak');
+    await fs.writeFile(fake, 'backup');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(fake),
+    });
+    expect(result.code).toBe(2);
+  });
+});
