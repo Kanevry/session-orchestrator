@@ -11,6 +11,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SO_PROJECT_DIR, SO_SHARED_DIR } from './platform.mjs';
 
+/**
+ * Default Clank Event Bus webhook URL. Overridden by the `CLANK_EVENT_URL`
+ * environment variable. Exported for reuse by hooks/on-stop.mjs so the fallback
+ * is defined in exactly one place.
+ */
+export const DEFAULT_EVENT_URL = 'https://events.gotzendorfer.at';
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -29,7 +36,7 @@ export function eventsFilePath() {
  * Writes `{ts, event, ...payload}` as a single JSON line to
  * `.orchestrator/metrics/events.jsonl` (creates parent directory if needed).
  * If `CLANK_EVENT_SECRET` is set, fires an async fire-and-forget POST to
- * `CLANK_EVENT_URL` (default: https://events.gotzendorfer.at) with a 3-second
+ * `CLANK_EVENT_URL` (default: {@link DEFAULT_EVENT_URL}) with a 3-second
  * timeout. Network errors are swallowed. Write errors propagate to the caller.
  *
  * @param {string} type — event type (e.g. "orchestrator.session.started")
@@ -48,7 +55,7 @@ export async function emitEvent(type, payload = {}) {
 
   // Fire-and-forget webhook POST — only when secret is configured.
   if (process.env.CLANK_EVENT_SECRET) {
-    const url = process.env.CLANK_EVENT_URL || 'https://events.gotzendorfer.at';
+    const url = process.env.CLANK_EVENT_URL || DEFAULT_EVENT_URL;
     const body = JSON.stringify({
       event_type: type,
       source: 'session-orchestrator',

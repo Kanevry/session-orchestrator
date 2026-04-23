@@ -71,3 +71,8 @@ jobs:
       - name: Vitest
         shell: bash
         run: npm test
+
+      - name: Coverage (Linux only, gated at 70% lines/funcs/stmts, 60% branches)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: npm run test:coverage
