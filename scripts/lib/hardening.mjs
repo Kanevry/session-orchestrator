@@ -197,14 +197,18 @@ export function pathMatchesPattern(relPath, pattern) {
   // Replacing `**/` → `(.*\/)?` captures "any number of segments + slash, or nothing".
   regex = regex.replace(/\*\*\//g, '<<DBLS>>');
 
-  // Replace remaining `**` (not followed by /) with `.*`
-  regex = regex.replace(/\*\*/g, '.*');
+  // Replace remaining `**` (not followed by /) with a second placeholder.
+  // MUST use a placeholder (not `.*` directly) — the single-* pass below would otherwise
+  // re-process the `*` quantifier in `.*`, yielding `.[^/]*` which blocks nested paths
+  // under `tests/**` etc. (issue #220).
+  regex = regex.replace(/\*\*/g, '<<DBLG>>');
 
   // Step 3: Single * → one path segment (no slashes)
   regex = regex.replace(/\*/g, '[^/]*');
 
   // Step 4: Expand placeholders
   regex = regex.replace(/<<DBLS>>/g, '(.*\\/)?');
+  regex = regex.replace(/<<DBLG>>/g, '.*');
 
   // Step 5: Anchor
   regex = `^${regex}$`;
