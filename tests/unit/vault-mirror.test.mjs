@@ -581,8 +581,12 @@ describe('vault-mirror CLI', () => {
 
   // ── session_id special-char fallback ──────────────────────────────────────
 
-  it('session_id with uppercase uses slug fallback session-<first8>', () => {
+  it('session_id with uppercase: sanitised via subjectToSlug (lowercased), no fallback to uuid prefix', () => {
     // session_id "A1B2C3D4-0001-4000-8000-000000000001" → not a valid slug (uppercase)
+    // The fallback path runs subjectToSlug first, which lowercases. The lowercased form
+    // is a valid slug, so the full lowercased id becomes the basename. Pre-2026-04 the
+    // fallback truncated to session-<first8 uppercase>; the new behaviour preserves
+    // information instead of truncating.
     const entry = JSON.stringify({
       session_id: 'A1B2C3D4-0001-4000-8000-000000000001',
       session_type: 'feature',
@@ -608,10 +612,10 @@ describe('vault-mirror CLI', () => {
 
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
     expect(result.status).toBe(0);
-    // Must NOT be the literal uppercase session_id as filename
-    expect(existsSync(join(vaultDir, '50-sessions', 'A1B2C3D4-0001-4000-8000-000000000001.md'))).toBe(false);
-    // Fallback file must exist
-    expect(existsSync(join(vaultDir, '50-sessions', 'session-A1B2C3D4.md'))).toBe(true);
+    // Use readdirSync to check actual on-disk casing (existsSync is case-insensitive on macOS APFS)
+    const files = readdirSync(join(vaultDir, '50-sessions'));
+    expect(files).toContain('a1b2c3d4-0001-4000-8000-000000000001.md');
+    expect(files).not.toContain('A1B2C3D4-0001-4000-8000-000000000001.md');
   });
 
   // ── CLI argument validation (additional) ──────────────────────────────────
@@ -633,5 +637,163 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const result = runMirror(['--vault-dir', vaultDir, '--source', '/nonexistent/99999.jsonl', '--kind', 'learning']);
     expect(result.status).toBe(2);
+  });
+
+  // ── v2 schema: learning with id/text/scope/first_seen ─────────────────────
+  // Producer schema introduced in S69+ (id is a kebab slug, no UUID, no subject/insight/evidence).
+  // Regression guard for the bug where `subjectToSlug(undefined)` crashed with exit 2 on the
+  // first v2 line, halting all subsequent processing.
+
+  const VALID_LEARNING_V2 = JSON.stringify({
+    id: 's69-compose-pids-cross-validation',
+    type: 'gotcha',
+    scope: 'infrastructure/docker-compose',
+    first_seen: '2026-04-19',
+    confidence: 0.85,
+    decay: 0.05,
+    text: 'docker-compose v2 cross-validates top-level pids_limit against deploy.resources.limits.pids.',
+  });
+
+  it('v2 learning: created action with slug derived from id', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING_V2);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+
+    expect(result.status).toBe(0);
+    const line = JSON.parse(result.stdout.trim());
+    expect(line.action).toBe('created');
+    expect(forwardSlashes(line.path)).toBe('40-learnings/s69-compose-pids-cross-validation.md');
+
+    const content = readFileSync(join(vaultDir, '40-learnings', 's69-compose-pids-cross-validation.md'), 'utf8');
+    expect(content).toContain('_generator: session-orchestrator-vault-mirror@1');
+    expect(content).toContain('type: learning');
+    expect(content).toContain('docker-compose v2 cross-validates');
+    expect(content).toContain('scope/docker-compose');
+  });
+
+  it('v2 learning: idempotent re-run returns skipped-noop', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING_V2);
+
+    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const second = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout.trim()).action).toBe('skipped-noop');
+  });
+
+  it('mixed v1+v2 learnings in same JSONL: both create, no crash (regression guard)', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING + '\n' + VALID_LEARNING_V2);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.action === 'created')).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 's69-compose-pids-cross-validation.md'))).toBe(true);
+  });
+
+  it('v2 learning missing required field "scope": skipped-invalid (no crash)', () => {
+    const invalid = JSON.stringify({
+      id: 's69-something',
+      type: 'gotcha',
+      first_seen: '2026-04-19',
+      confidence: 0.5,
+      text: 'some insight',
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, invalid);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
+  });
+
+  it('learning with no id and no subject: skipped-invalid (no crash)', () => {
+    // Pre-fix this would crash on subjectToSlug(undefined).includes('/').
+    const invalid = JSON.stringify({ type: 'gotcha', confidence: 0.5 });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, invalid);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
+  });
+
+  // ── v2 schema: session with files_changed/issues_closed (no total_agents) ─
+
+  const VALID_SESSION_V2 = JSON.stringify({
+    session_id: 'main-2026-04-19-0608',
+    session_type: 'deep',
+    started_at: '2026-04-19T06:08:00Z',
+    completed_at: '2026-04-19T06:35:00Z',
+    duration_seconds: 1968,
+    branch: 'main',
+    planned_issues: 1,
+    waves: [
+      { wave: 1, role: 'Discovery', agents: 4, dispatch: 'parallel', duration_s: 180, agents_done: 4, agents_partial: 0, agents_failed: 0 },
+      { wave: 2, role: 'Impl-Core', agents: 5, dispatch: 'coordinator-inline', duration_s: 480, agents_done: 5, agents_partial: 0, agents_failed: 0 },
+    ],
+    issues_closed: [44],
+    issues_created: [179, 181, 'products/eventdrop-render-service#23'],
+    files_changed: 7,
+    effectiveness: { completion_rate: 1.0, carryover: 0 },
+    notes: 'Test note body.',
+  });
+
+  it('v2 session: created action with content derived from waves/files_changed', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_SESSION_V2);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+
+    expect(result.status).toBe(0);
+    const line = JSON.parse(result.stdout.trim());
+    expect(line.action).toBe('created');
+    expect(forwardSlashes(line.path)).toBe('50-sessions/main-2026-04-19-0608.md');
+
+    const content = readFileSync(join(vaultDir, '50-sessions', 'main-2026-04-19-0608.md'), 'utf8');
+    expect(content).toContain('Agents:** 9'); // sum of 4 + 5
+    expect(content).toContain('Files changed:** 7');
+    expect(content).toContain('Branch:** main');
+    expect(content).toContain('| 1 | Discovery | 4 | parallel');
+    expect(content).toContain('Issues closed:** 44');
+    expect(content).toContain('## Notes');
+  });
+
+  it('session_id with slashes: sanitised via subjectToSlug, no slash leaks into basename', () => {
+    // Pre-fix: session_id "feat/opus-4-7-phase-2-2026-04-17" would crash with ENOENT
+    // because the fallback only stripped hyphens, leaving the slash intact.
+    const entry = JSON.stringify({
+      session_id: 'feat/opus-4-7-phase-2-2026-04-17-0800',
+      session_type: 'feature',
+      platform: 'claude-code',
+      started_at: '2026-04-17T08:00:00Z',
+      completed_at: '2026-04-17T09:00:00Z',
+      duration_seconds: 3600,
+      total_waves: 1,
+      total_agents: 1,
+      total_files_changed: 1,
+      agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+      waves: [{ wave: 1, role: 'X', agent_count: 1, files_changed: 1, quality: 'ok' }],
+      effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, entry);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+    expect(result.status).toBe(0);
+    const line = JSON.parse(result.stdout.trim());
+    expect(line.action).toBe('created');
+    // Last path segment of the slashy id is what subjectToSlug picks up
+    expect(forwardSlashes(line.path)).toBe('50-sessions/opus-4-7-phase-2-2026-04-17-0800.md');
+  });
+
+  it('mixed v1+v2 sessions in same JSONL: both create, no skipped-invalid', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_SESSION + '\n' + VALID_SESSION_V2);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.action === 'created')).toBe(true);
   });
 });
