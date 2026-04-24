@@ -367,6 +367,80 @@ events-rotation:
 
 **Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now `events.jsonl.1`); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
 
+## STATE.md Schema §Recommendations (v1.1)
+
+> Added by Epic #271 Phase A (issues #272–#275). **Additive** — `schema-version` remains `1`. Absence of all 5 fields is a valid `schema-version: 1` STATE.md meaning "no recommendation available" (pre-v1.1 compatibility). Readers MUST treat missing fields identically to explicit nulls.
+
+Session-end Phase 3.7a is the **only writer** of these fields. Session-start Phase 1.5 is the reader (renders a one-line banner on `status: completed`). Phase B Mode-Selector (planned) will consume these fields as its primary input.
+
+### Fields
+
+| Field | Type | Value range | Description |
+|-------|------|-------------|-------------|
+| `recommended-mode` | string | `housekeeping` \| `feature` \| `deep` \| `discovery` \| `evolve` \| `plan-retro` | v0 heuristic output: suggested mode for the next session. |
+| `top-priorities` | integer[] | 0–5 entries | Carried-over issue IIDs, pre-sorted (priority:critical/high first, FIFO tiebreak). |
+| `carryover-ratio` | float | `0.00`–`1.00` | `carryover_count / planned_issues` (0 when planned=0). Rounded to 2 decimals. |
+| `completion-rate` | float | `0.00`–`1.00` | `completed_issues / planned_issues`. Rounded to 2 decimals. |
+| `rationale` | string | ≤ 120 chars, single line | Which v0 rule branch fired (e.g. `"v0: completion <50% → retro"`). |
+
+### Example frontmatter
+
+```yaml
+---
+schema-version: 1
+session-type: deep
+branch: main
+issues: [272, 273, 274, 275]
+started_at: 2026-04-24T18:10:00+02:00
+status: completed
+current-wave: 5
+total-waves: 5
+recommended-mode: feature
+top-priorities: [278, 283, 285]
+carryover-ratio: 0.00
+completion-rate: 1.00
+rationale: "v0: default clean completion"
+---
+```
+
+### v0 heuristic (deterministic)
+
+Evaluated in order; first match wins:
+
+1. `completion_rate < 0.50` → `plan-retro` (rationale: `v0: completion <50% → retro`)
+2. `carryover_ratio >= 0.30` → `deep` (rationale: `v0: carryover ≥30% → deep`)
+3. otherwise → `feature` (rationale: `v0: default clean completion`)
+
+Implementation: `scripts/lib/recommendations-v0.mjs` → `computeV0Recommendation()`. Deterministic — same inputs always produce same output. Phase B will replace this with a learnings-driven selector; the contract (5 fields, same types) stays stable.
+
+### Backward compatibility
+
+- Pre-v1.1 STATE.md files (produced by sessions before Epic #271 shipped) simply do not contain these fields. The parser returns `null` from `parseRecommendations`; the banner silently no-ops.
+- `schema-version` is NOT bumped to `1.1` in the frontmatter — the existing `schema-version: 1` remains canonical. The v1.1 label is documentation-only, describing the additive surface.
+- Idle Reset (session-start Phase 1.5) archives these fields into the `## Previous Session` body block of STATE.md as a human-readable block, then removes them from the frontmatter — so a fresh session never inherits stale recommendations in its live frontmatter.
+
+### Reader behavior
+
+The banner renders with one of the following shapes:
+
+- **All 5 fields present, `top-priorities` non-empty:**
+  ```
+  📋 Previous session recommended: deep — v0: carryover ≥30% → deep (completion: 85%, carryover: 40%)
+    Suggested issues: #272, #273, #274
+  ```
+- **All 5 fields present, `top-priorities` empty:** banner line only (no "Suggested issues" line).
+- **Partial fields (1–4 present):** banner still renders; missing numeric fields display as `—`; WARN event `state-md-partial-recommendation` written to `.orchestrator/metrics/sweep.log`.
+- **`top-priorities` type-mismatch** (not an array): field treated as null; WARN `state-md-type-mismatch` written to sweep.log; other fields still render.
+- **Unknown `recommended-mode`:** banner shows `(unknown-mode)` instead of the string.
+- **Pre-v1.1 STATE.md (no fields at all):** silent no-op, no banner, no WARN.
+
+### Consumer cross-reference
+
+- **Writer:** `skills/session-end/SKILL.md` § Phase 3.7a "Compute and Write Recommendations" (runs after Phase 3.7 sessions.jsonl write, before Phase 3.4 `status: completed` setting).
+- **Reader:** `skills/session-start/SKILL.md` § Phase 1.5 "Recommendations Banner" (renders on `status: completed` branch only).
+- **Archival:** `skills/session-start/SKILL.md` § Idle Reset rule 6 (removes fields from frontmatter, prepends readable block to `## Previous Session`).
+- **Future consumer:** Phase B Mode-Selector skill (planned in Epic #271) will read these fields as the primary input for autonomous mode selection.
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.
