@@ -43,7 +43,7 @@ Der Migrations-Pfad ist klar: **Kompletter Umstieg auf Node.js (zx 8.x) für all
 - [ ] **`package.json`** (neu, Plugin-Root): Node 20+ engines, `type: "module"`, `zx ^8.1.0` als dep, `vitest ^2.0.0` als devDep, Scripts `test`, `test:watch`, `lint`, `typecheck`.
 - [ ] **Alle 5 Hooks migriert von `.sh` nach `.mjs`** (Node + zx): `on-session-start`, `on-stop`, `enforce-scope`, `enforce-commands`, `post-edit-validate`.
 - [ ] **`hooks/hooks.json` aktualisiert** auf `"command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/<name>.mjs\""` für alle Hooks.
-- [ ] **Kritische Scripts migriert** von `.sh` nach `.mjs` — alle unter `scripts/` die nicht Tests sind: `parse-config.sh`, `lib/events.sh`, `lib/worktree.sh`, `lib/config-yaml-parser.sh`, `lib/platform.sh`, `lib/hardening.sh`, `lib/common.sh`.
+- [ ] **Kritische Scripts migriert** von `.sh` nach `.mjs` — alle unter `scripts/` die nicht Tests sind: `parse-config.mjs` (v3, ersetzt `parse-config.sh`), `lib/events.sh`, `lib/worktree.sh`, `lib/config-yaml-parser.sh`, `lib/platform.sh`, `lib/hardening.sh`, `lib/common.sh`.
 - [ ] **Test-Runner von `bats` auf `vitest`** migriert: alle 47 `scripts/test/test-*.sh` in `tests/*.test.mjs` übersetzt. Fokus auf Verhaltensäquivalenz, nicht 1:1-Übersetzung.
 - [ ] **GitHub Actions windows-latest + macos-latest + ubuntu-latest Matrix** ab Tag 1 des Branches.
 - [ ] **Platform-Detection erweitert** in `scripts/lib/platform.mjs`: OS-Detection (`process.platform`), Drive-Letter-Awareness, SO_OS-Export für Downstream-Use.
@@ -205,7 +205,7 @@ And `docs/migration-v3.md` existiert und beschreibt den Umstieg für Bestands-Us
 | `hooks/post-edit-validate.mjs` | ersetzt `.sh` |
 | `scripts/lib/platform.mjs` | ersetzt `platform.sh`, erweitert um OS-Detection |
 | `scripts/lib/path-utils.mjs` | Containment-Check, Relative-Resolve, Drive-Letter-Case |
-| `scripts/lib/config.mjs` | ersetzt `parse-config.sh` + `config-yaml-parser.sh` |
+| `scripts/lib/config.mjs` + `scripts/parse-config.mjs` | ersetzt `parse-config.sh` + `config-yaml-parser.sh` |
 | `scripts/lib/events.mjs` | ersetzt `events.sh` |
 | `scripts/lib/worktree.mjs` | ersetzt `worktree.sh` |
 | `scripts/lib/hardening.mjs` | ersetzt `hardening.sh` |
@@ -228,7 +228,7 @@ And `docs/migration-v3.md` existiert und beschreibt den Umstieg für Bestands-Us
 |---|---|
 | `hooks/*.sh` (5 Dateien) | Ersetzt durch `.mjs` |
 | `scripts/lib/*.sh` (7 Dateien) | Ersetzt durch `.mjs` |
-| `scripts/parse-config.sh` | Ersetzt durch `scripts/lib/config.mjs` |
+| `scripts/parse-config.sh` | Ersetzt durch `scripts/parse-config.mjs` (CLI-Wrapper) + `scripts/lib/config.mjs` (Logik) |
 | `scripts/test/test-*.sh` (47 Dateien) | Ersetzt durch `tests/**/*.test.mjs` |
 | `scripts/test/run-all.sh` | Ersetzt durch `npm test` |
 

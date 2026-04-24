@@ -20,7 +20,7 @@ import { promises as fs } from 'node:fs';
 import { $ } from 'zx';
 
 import { appendJsonl } from '../scripts/lib/common.mjs';
-import { eventsFilePath } from '../scripts/lib/events.mjs';
+import { DEFAULT_EVENT_URL, eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 
@@ -145,7 +145,7 @@ async function readWaveNumber(projectRoot) {
  */
 function fireWebhook(type, payload) {
   if (!process.env.CLANK_EVENT_SECRET) return;
-  const url = process.env.CLANK_EVENT_URL || 'https://events.gotzendorfer.at';
+  const url = process.env.CLANK_EVENT_URL || DEFAULT_EVENT_URL;
   const body = JSON.stringify({
     event_type: type,
     source: 'session-orchestrator',

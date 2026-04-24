@@ -18,15 +18,27 @@ This skill defines the canonical quality check commands. Do NOT invoke this skil
 Consuming skills (session-start, wave-executor, session-end, session-reviewer) reference the
 variant they need and execute the commands inline.
 
-## Session Config Fields
+## Command Resolution (policy-file-first, #183)
 
-Read these from the project's `## Session Config` section in CLAUDE.md (Claude Code / Cursor) or AGENTS.md (Codex CLI):
+Quality-gate commands are resolved in this priority order:
 
-- **`test-command`** — Custom test command. Default: `pnpm test --run`
-- **`typecheck-command`** — Custom typecheck command. Default: `tsgo --noEmit`
-- **`lint-command`** — Custom lint command. Default: `pnpm lint`
+1. **`.orchestrator/policy/quality-gates.json`** — canonical policy file (preferred). Schema: `.orchestrator/policy/quality-gates.schema.json`. Bootstrap writes a package-manager-aware default; hand-edit to customize.
+2. **Session Config** `test-command` / `typecheck-command` / `lint-command` in CLAUDE.md (Claude Code / Cursor) or AGENTS.md (Codex CLI) — fallback.
+3. **Hardcoded defaults** — last resort: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`.
 
-If a field is missing, use the default. If set to `skip`, skip that check entirely.
+Loader: `scripts/lib/quality-gates-policy.mjs` exports `loadQualityGatesPolicy(repoRoot)` and `resolveCommand(policy, key, fallback)`. The Bash-side runner `scripts/run-quality-gate.sh` performs the same resolution inline inside `extract_command()`.
+
+If any resolved command is set to the literal string `skip`, skip that check entirely.
+
+## Session Config Fields (legacy fallback)
+
+Read these from the project's `## Session Config` section when `.orchestrator/policy/quality-gates.json` is absent:
+
+- **`test-command`** — Custom test command.
+- **`typecheck-command`** — Custom typecheck command.
+- **`lint-command`** — Custom lint command.
+
+If a field is missing, use the hardcoded default.
 
 ## Variant 1: Baseline
 
@@ -152,3 +164,28 @@ bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-qual
 ```
 
 The script handles graceful degradation (missing tools → skip), structured JSON output matching the schemas above, and proper exit codes (0=pass, 1=error, 2=gate-failed).
+
+## Baseline Cache (#258)
+
+Quality gates historically ran 2–3× per session (session-start Baseline, per-wave Incremental, session-end Full Gate) even when nothing relevant to the gate had changed between waves. The Baseline Cache short-circuits **Incremental only** when the session-start Baseline result is still trustworthy.
+
+**Storage:** `.orchestrator/metrics/baseline-results.jsonl` — append-only JSONL, one record per session baseline run (consistent with `sessions.jsonl`, `events.jsonl`, `learnings.jsonl` precedent at `.orchestrator/metrics/`).
+
+**Record schema (version 1):**
+```json
+{"version":1,"session_id":"<id>","session_start_ref":"<git-sha>","captured_at":"<ISO 8601 UTC>","dependency_hash":"<sha256 of package.json + lockfile>","results":{"typecheck":{"status":"pass|fail","error_count":0},"test":{"status":"pass|fail"},"lint":{"status":"pass|fail"}}}
+```
+
+**Validity rules** — a cache record is valid iff ALL of:
+- `session_start_ref` matches the current session's start ref.
+- `dependency_hash` matches current sha256 of `package.json` + lockfile (`pnpm-lock.yaml` preferred, then `package-lock.json`, then `yarn.lock`).
+- `captured_at` is within 7-day TTL.
+- `results.typecheck.status`, `results.test.status`, `results.lint.status` all === `pass`.
+
+Invalid reason codes: `no-record` | `session-ref-mismatch` | `dependency-changed` | `ttl-expired` | `baseline-had-failures`.
+
+**Incremental-skip condition:** `shouldSkipIncremental()` returns `skip: true` when the cache is valid AND `git diff --name-only $SESSION_START_REF..HEAD | wc -l` returns <50. Otherwise `skip: false` and Incremental runs as before. The function never throws — on any error (git failure, unreadable cache, missing dependency_hash) it fails safe by returning `skip: false`.
+
+**INVARIANT — Full Gate at session-end is NEVER skipped**, regardless of cache state. The cache only short-circuits Incremental in wave-executor. Full Gate remains the close-safety gate and always runs the complete typecheck + test + lint + debug-artifact scan. This is intentional and non-configurable.
+
+**Implementation:** `scripts/lib/quality-gates-cache.mjs` exports `computeDependencyHash`, `saveBaselineResult`, `loadLatestBaselineResult`, `isCacheValid`, `shouldSkipIncremental`. Stdlib-only (`node:fs`, `node:path`, `node:crypto`, `node:child_process`).

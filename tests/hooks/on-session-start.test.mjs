@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -60,15 +60,27 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null 
 
 /**
  * Create a minimal temp project directory with a git repo.
+ * Uses spawnSync directly (no zx / bash) so the helper works on Windows
+ * runners where bash is not on PATH. Issue #216.
  * @returns {Promise<string>}
  */
 async function mkProject() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-session-start-test-'));
-  const { $ } = await import('zx');
-  $.verbose = false;
-  $.quiet = true;
-  await $`git -C ${dir} init -q`;
-  await $`git -C ${dir} commit --allow-empty -m "init" --no-gpg-sign`;
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@example.com',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@example.com',
+  };
+  const runGit = (...args) => {
+    const r = spawnSync('git', args, { cwd: dir, env: gitEnv, encoding: 'utf8' });
+    if (r.status !== 0) {
+      throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    }
+  };
+  runGit('init', '-q');
+  runGit('commit', '--allow-empty', '-m', 'init', '--no-gpg-sign');
   return dir;
 }
 

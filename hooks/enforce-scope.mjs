@@ -24,6 +24,14 @@
  *   REQ-05  normalize path separators to "/" before pathMatchesPattern (Windows compat)
  *   REQ-06  relative file_path resolved against projectRoot, not process.cwd()
  *   REQ-08  wave-scope.json read once; parsed object passed to all gate checks
+ *
+ * Coordinator carveout (#245): a short, explicit list of harness-owned files
+ * bypasses Gate 7 (allowedPaths glob) — specifically STATE.md across all platform
+ * state dirs and the wave-scope.json manifest itself. Coordinators write these
+ * between waves as part of the harness protocol; subjecting them to per-wave
+ * allowedPaths would force every wave plan to re-list harness infrastructure.
+ * Project-root containment (Gate 6) and enforcement-off (Gate 5) still apply.
+ * No wildcards — exact string match only.
  */
 
 import path from 'node:path';
@@ -163,6 +171,13 @@ async function main() {
   // SECURITY-REQ-05: normalize Windows path separators to '/' before glob matching
   const normalizedRel = relPath.split(path.sep).join('/');
 
+  // Coordinator carveout (#245): exact-path allowlist for harness-owned files.
+  // STATE.md and wave-scope.json are written by the coordinator between waves;
+  // per-wave allowedPaths lists should not need to enumerate harness infrastructure.
+  if (isCoordinatorCarveout(normalizedRel, projectRoot, scopePath)) {
+    return emitAllow();
+  }
+
   // Gate 7: check normalised relative path against each allowedPaths pattern
   const matched = allowedPaths.some((pattern) => pathMatchesPattern(normalizedRel, pattern));
 
@@ -176,6 +191,27 @@ async function main() {
 
   // Gate 8 / all gates passed → allow
   return emitAllow();
+}
+
+const COORDINATOR_CARVEOUT_PATHS = Object.freeze([
+  '.claude/STATE.md',
+  '.codex/STATE.md',
+  '.cursor/STATE.md',
+]);
+
+/**
+ * Returns true if the given project-relative, forward-slash-normalized path is
+ * one of the harness-owned files the coordinator writes between waves.
+ *
+ * Matches STATE.md across all platform state dirs and the wave-scope.json the
+ * hook just read (its exact, resolved relative path — no wildcard). Exact
+ * string comparison only; any glob semantics belong in Gate 7.
+ */
+function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
+  if (COORDINATOR_CARVEOUT_PATHS.includes(normalizedRel)) return true;
+  const scopeRel = relativeFromRoot(projectRoot, scopePath);
+  if (scopeRel === null) return false;
+  return scopeRel.split(path.sep).join('/') === normalizedRel;
 }
 
 // SECURITY-REQ-01 (fail-closed): any unhandled rejection → structured deny, never bare exit 1

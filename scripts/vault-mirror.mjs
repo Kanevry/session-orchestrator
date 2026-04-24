@@ -144,6 +144,28 @@ function parseFrontmatter(content) {
   return result;
 }
 
+// ── Schema detection ──────────────────────────────────────────────────────────
+
+/**
+ * Learning JSONL has two producer schemas in production:
+ *   v1 (legacy): id, type, subject, insight, evidence, confidence, source_session, created_at, expires_at?
+ *   v2 (S69+):   id, type, text, scope, confidence, first_seen, decay?
+ * Detect by presence of the v2-only field 'text'.
+ */
+function detectLearningSchema(entry) {
+  return entry && typeof entry.text === 'string' ? 'v2' : 'v1';
+}
+
+/**
+ * Session JSONL has two producer schemas in production:
+ *   v1 (legacy): total_waves, total_agents, total_files_changed, agent_summary, waves[{agent_count, files_changed, quality}]
+ *   v2 (S69+):   files_changed (top-level), waves[{agents, agents_done, agents_partial, agents_failed, dispatch, duration_s}]
+ * Detect by absence of v1's total_agents.
+ */
+function detectSessionSchema(entry) {
+  return entry && entry.total_agents === undefined && entry.files_changed !== undefined ? 'v2' : 'v1';
+}
+
 // ── Markdown generators ───────────────────────────────────────────────────────
 
 function generateLearningNote(entry, slug) {
@@ -194,6 +216,49 @@ ${insight}
 ## Evidence
 
 ${evidence}
+`;
+}
+
+function generateLearningNoteV2(entry, slug) {
+  const REQUIRED_LEARNING_V2_FIELDS = ['id', 'type', 'text', 'scope', 'confidence', 'first_seen'];
+  for (const field of REQUIRED_LEARNING_V2_FIELDS) {
+    if (entry[field] === null || entry[field] === undefined) {
+      throw new Error(`vault-mirror: learning entry missing required field '${field}' (id=${entry.id ?? '<no id>'})`);
+    }
+  }
+
+  const { type, text, scope, confidence, first_seen } = entry;
+
+  const status = confidence > 0.8 ? 'verified' : 'draft';
+  const created = toDate(first_seen);
+  const updated = created;
+
+  const titleRaw = truncateAtWord(text, 80);
+  const title = yamlQuoteIfNeeded(titleRaw);
+
+  const scopeTag = subjectToSlug(scope) || 'unscoped';
+  const tags = `[learning/${type}, status/${status}, scope/${scopeTag}]`;
+
+  return `---
+id: ${slug}
+type: learning
+title: ${title}
+status: ${status}
+created: ${created}
+updated: ${updated}
+tags: ${tags}
+_generator: ${GENERATOR_MARKER}
+---
+
+# ${titleRaw}
+
+- **Type:** ${type}
+- **Confidence:** ${confidence}
+- **Scope:** ${scope}
+
+## Insight
+
+${text}
 `;
 }
 
@@ -281,6 +346,83 @@ ${waveRows}
 `;
 }
 
+function generateSessionNoteV2(entry) {
+  const REQUIRED_SESSION_V2_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'waves', 'files_changed', 'effectiveness'];
+  for (const field of REQUIRED_SESSION_V2_FIELDS) {
+    if (entry[field] === null || entry[field] === undefined) {
+      throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
+    }
+  }
+  if (!Array.isArray(entry.waves)) {
+    throw new Error(`vault-mirror: session entry 'waves' must be an array (session_id=${entry.session_id})`);
+  }
+  if (typeof entry.effectiveness !== 'object' || entry.effectiveness === null) {
+    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${entry.session_id})`);
+  }
+
+  const { session_id, session_type, started_at, completed_at, duration_seconds, branch, planned_issues, waves, files_changed, issues_closed, issues_created, effectiveness, notes } = entry;
+
+  const created = toDate(started_at);
+  const updated = toDate(completed_at);
+  const durationMin = Math.round((duration_seconds ?? 0) / 60);
+
+  // Derive v1-equivalent aggregates from v2 wave structure
+  const totalWaves = waves.length;
+  const totalAgents = waves.reduce((acc, w) => acc + (w.agents ?? 0), 0);
+  const complete = waves.reduce((acc, w) => acc + (w.agents_done ?? 0), 0);
+  const partial = waves.reduce((acc, w) => acc + (w.agents_partial ?? 0), 0);
+  const failed = waves.reduce((acc, w) => acc + (w.agents_failed ?? 0), 0);
+
+  const completionRate = effectiveness.completion_rate;
+  const ratePercent = typeof completionRate === 'number' ? Math.round(completionRate * 100) + '%' : 'n/a';
+  const carryover = effectiveness.carryover ?? 0;
+
+  const titleValue = `Session ${created} — ${session_type}`;
+  const title = `"${titleValue}"`;
+
+  const tags = `[session/${session_type}, status/verified]`;
+
+  const waveRows = waves
+    .map((w) => `| ${w.wave} | ${w.role} | ${w.agents ?? '?'} | ${w.dispatch ?? '?'} | ${w.duration_s ?? '?'}s | ${w.agents_done ?? 0}/${w.agents_partial ?? 0}/${w.agents_failed ?? 0} |`)
+    .join('\n');
+
+  const closedList = Array.isArray(issues_closed) && issues_closed.length ? issues_closed.join(', ') : '—';
+  const createdList = Array.isArray(issues_created) && issues_created.length ? issues_created.join(', ') : '—';
+  const branchLine = branch ? ` · **Branch:** ${branch}` : '';
+  const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
+
+  return `---
+id: ${session_id}
+type: session
+title: ${title}
+status: verified
+created: ${created}
+updated: ${updated}
+tags: ${tags}
+_generator: ${GENERATOR_MARKER}
+---
+
+# Session ${session_id}
+
+- **Type:** ${session_type}${branchLine}
+- **Duration:** ${durationMin}m (${started_at} → ${completed_at})
+- **Waves:** ${totalWaves} · **Agents:** ${totalAgents} · **Files changed:** ${files_changed}
+- **Effectiveness:** planned=${planned_issues ?? 'n/a'}, carryover=${carryover}, rate=${ratePercent}
+- **Issues closed:** ${closedList}
+- **Issues created:** ${createdList}
+
+## Wave breakdown
+
+| Wave | Role | Agents | Dispatch | Duration | done/partial/failed |
+|------|------|--------|----------|----------|---------------------|
+${waveRows}
+
+## Agent summary
+
+- Complete: ${complete} · Partial: ${partial} · Failed: ${failed}
+${notesBlock}`;
+}
+
 // ── Action output ─────────────────────────────────────────────────────────────
 
 function emitAction(action, filePath, fileKind, id) {
@@ -295,13 +437,30 @@ function emitAction(action, filePath, fileKind, id) {
 // ── Core processing ───────────────────────────────────────────────────────────
 
 async function processLearning(entry, _lineNum) {
-  const { id: entryId, subject, created_at } = entry;
+  const schema = detectLearningSchema(entry);
+  const entryId = entry.id;
 
-  // Derive slug
-  let slug = subjectToSlug(subject);
+  // Slug source differs by schema. Both fall back to learning-<uuid8> on invalid.
+  // For v2 the id is already a kebab slug (e.g. "s69-compose-pids-cross-validation").
+  // Crucially: validate id presence before slug derivation, so missing-id entries
+  // become skipped-invalid rather than crashing inside subjectToSlug.
+  if (entryId === null || entryId === undefined) {
+    throw new Error(`vault-mirror: learning entry missing required field 'id' (id=<no id>)`);
+  }
+  const slugSource = schema === 'v2' ? entry.id : entry.subject;
+  let slug;
+  if (typeof slugSource === 'string' && slugSource.length > 0) {
+    slug = subjectToSlug(slugSource);
+  } else {
+    slug = '';
+  }
   if (!isValidSlug(slug)) {
     slug = `learning-${uuidPrefix8(entryId)}`;
   }
+
+  // Generator + date source differ by schema
+  const generator = schema === 'v2' ? generateLearningNoteV2 : generateLearningNote;
+  const dateSource = schema === 'v2' ? entry.first_seen : entry.created_at;
 
   const targetDir = join(resolve(vaultDir), '40-learnings');
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
@@ -342,46 +501,58 @@ async function processLearning(entry, _lineNum) {
           return;
         }
         // Check updated advancement
-        const entryUpdated = toDate(created_at);
+        const entryUpdated = toDate(dateSource);
         if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
           emitAction('skipped-noop', targetPath, kind, disambigSlug);
           return;
         }
       }
 
-      const content = generateLearningNote(entry, slug);
+      const content = generator(entry, slug);
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
       emitAction('skipped-collision-resolved', targetPath, kind, slug);
       return;
     }
 
     // Same id: check if updated would advance
-    const entryUpdated = toDate(created_at);
+    const entryUpdated = toDate(dateSource);
     if (fm['updated'] && fm['updated'] >= entryUpdated) {
       emitAction('skipped-noop', targetPath, kind, slug);
       return;
     }
 
     // Overwrite with advanced updated date
-    const content = generateLearningNote(entry, slug);
+    const content = generator(entry, slug);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
     emitAction('updated', targetPath, kind, slug);
     return;
   }
 
   // File does not exist — create
-  const content = generateLearningNote(entry, slug);
+  const content = generator(entry, slug);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
   emitAction('created', targetPath, kind, slug);
 }
 
 async function processSession(entry, _lineNum) {
   const { session_id: rawSessionId } = entry;
+  const schema = detectSessionSchema(entry);
+  const generator = schema === 'v2' ? generateSessionNoteV2 : generateSessionNote;
 
-  // Validate session_id as a filesystem-safe slug; fall back to a uuid-derived slug if not
-  const session_id = isValidSlug(rawSessionId)
-    ? rawSessionId
-    : `session-${uuidPrefix8(rawSessionId || randomUUID())}`;
+  // Validate session_id as a filesystem-safe slug; fall back via subjectToSlug
+  // (which collapses slashes to last segment + strips invalid chars) before
+  // resorting to a uuid-derived slug. Without subjectToSlug, raw slashes in
+  // rawSessionId (e.g. "feat/opus-4-7-...") would survive uuidPrefix8 and
+  // produce a path with directory separators in the basename.
+  let session_id;
+  if (isValidSlug(rawSessionId)) {
+    session_id = rawSessionId;
+  } else if (typeof rawSessionId === 'string' && rawSessionId.length > 0) {
+    const sanitised = subjectToSlug(rawSessionId);
+    session_id = isValidSlug(sanitised) ? sanitised : `session-${uuidPrefix8(rawSessionId)}`;
+  } else {
+    session_id = `session-${uuidPrefix8(randomUUID())}`;
+  }
 
   const targetDir = join(resolve(vaultDir), '50-sessions');
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
@@ -412,7 +583,7 @@ async function processSession(entry, _lineNum) {
         emitAction('skipped-noop', targetPath, kind, session_id);
         return;
       }
-      const content = generateSessionNote(entry);
+      const content = generator(entry);
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
       emitAction('updated', targetPath, kind, session_id);
       return;
@@ -420,7 +591,7 @@ async function processSession(entry, _lineNum) {
   }
 
   // File does not exist — create
-  const content = generateSessionNote(entry);
+  const content = generator(entry);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
   emitAction('created', targetPath, kind, session_id);
 }

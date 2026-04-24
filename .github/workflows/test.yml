@@ -44,11 +44,6 @@ jobs:
         shell: bash
         run: |
           bash --version | head -1
-          bash_version=$(bash -c 'echo ${BASH_VERSINFO[0]}')
-          if [ "$bash_version" -lt 4 ]; then
-            echo "ERROR: bash 4+ required, found bash $bash_version"
-            exit 1
-          fi
           git --version
           git config --global user.name "CI"
           git config --global user.email "ci@test.com"
@@ -56,6 +51,10 @@ jobs:
 
       - name: Install Node dependencies
         run: npm ci
+
+      - name: Install nested vault-sync deps
+        shell: bash
+        run: (cd skills/vault-sync && npm install --no-audit --no-fund --silent)
 
       - name: Lint
         run: npm run lint
@@ -69,16 +68,11 @@ jobs:
             echo "No .mjs files yet (Wave 3 adds them) — skipping typecheck"
           fi
 
-      - name: Bash test suite (Unix only)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: bash scripts/test/run-all.sh
-
       - name: Vitest
         shell: bash
-        run: |
-          if [ -d tests ] && ls tests/**/*.test.mjs 2>/dev/null | grep -q .; then
-            npm test
-          else
-            echo "No vitest tests yet (Wave 4 adds them) — skipping"
-          fi
+        run: npm test
+
+      - name: Coverage (Linux only, gated at 70% lines/funcs/stmts, 60% branches)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: npm run test:coverage

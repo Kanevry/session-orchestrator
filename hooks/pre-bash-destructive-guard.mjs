@@ -29,8 +29,41 @@ import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mj
 import { commandMatchesBlocked } from '../scripts/lib/hardening.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
-import { existsSync } from 'node:fs';
+import fs, { existsSync } from 'node:fs';
 import path from 'node:path';
+
+// Module-level policy cache (issue #250). Safe because each hook invocation runs as
+// an isolated Node subprocess — state is fresh per process, never shared across calls.
+// Cache is invalidated on:
+//   (a) resolved policy path changes (different projectDir/CWD)
+//   (b) file mtime advances (user edited the policy)
+// Any stat/read error → skip cache + fall back to uncached read (fail-safe).
+let _cachedPolicy = null;
+let _cachedPolicyPath = null;
+let _cachedPolicyMtimeMs = null;
+
+async function loadPolicyCached(policyPath) {
+  try {
+    const stat = await fs.promises.stat(policyPath);
+    const mtimeMs = stat.mtimeMs;
+    if (
+      _cachedPolicy !== null &&
+      _cachedPolicyPath === policyPath &&
+      _cachedPolicyMtimeMs === mtimeMs
+    ) {
+      return _cachedPolicy;
+    }
+    const fresh = await readJson(policyPath);
+    _cachedPolicy = fresh;
+    _cachedPolicyPath = policyPath;
+    _cachedPolicyMtimeMs = mtimeMs;
+    return fresh;
+  } catch {
+    // On any error (stat failure, read failure), re-throw to let caller's existing
+    // try/catch handle the "malformed policy" branch. Do NOT poison the cache.
+    return readJson(policyPath);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -201,7 +234,7 @@ async function main() {
 
   let policy;
   try {
-    policy = await readJson(policyPath);
+    policy = await loadPolicyCached(policyPath);
   } catch {
     process.stderr.write(
       '⚠ pre-bash-destructive-guard: policy file is malformed (invalid JSON) — skipping guard\n'

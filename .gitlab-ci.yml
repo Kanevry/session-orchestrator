@@ -19,6 +19,7 @@
 stages:
   - test
   - verify
+  - coverage
 
 variables:
   NODE_VERSION: "22"
@@ -41,6 +42,8 @@ variables:
     - git config --global user.email "ci@session-orchestrator.local"
     - git config --global user.name "CI Runner"
     - npm ci
+    # Install nested vault-sync deps (zod, yaml) — ignored by root npm ci
+    - (cd skills/vault-sync && npm install --no-audit --no-fund --silent)
   cache:
     key:
       prefix: ${CI_CACHE_VERSION}
@@ -81,6 +84,37 @@ test:
     - 'echo "[ci] test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"'
     - 'test "${FAIL_COUNT:-0}" = "0"'
     - 'test "${PASS_COUNT:-0}" -ge "20"'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Stage: coverage (#263)
+#
+# Gated at 70% lines/functions/statements, 60% branches via vitest.config.mjs
+# thresholds. Runs only on main + MRs targeting main. Fails the pipeline if
+# coverage regresses below the threshold.
+# ---------------------------------------------------------------------------
+
+coverage:
+  <<: *node-setup
+  stage: coverage
+  interruptible: true
+  timeout: 15m
+  needs:
+    - test
+  script:
+    - npm run test:coverage
+  coverage: '/^Lines\s+:\s+\d+(?:\.\d+)?%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+    paths:
+      - coverage/
+    expire_in: 2 weeks
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

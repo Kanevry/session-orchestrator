@@ -50,14 +50,52 @@ The coordinator determines each agent's status after the wave completes:
 | **spiral** | Agent got stuck in an edit loop | Same file edited 3+ times (detected post-wave) | Revert agent's changes, narrow scope, split task if needed |
 
 3. **Recovery protocol**:
-   - FAILED agent → log in STATE.md, add fix task to next wave with corrected instructions
+   - FAILED agent → log in STATE.md, add fix task to next wave with corrected instructions, AND auto-create a carryover issue (see "Carryover Auto-Create" below) the first time this task is marked FAILED (check STATE.md Wave History for a prior `→ issue #NNN` on this task before filing).
    - PARTIAL agent → carry forward remaining work with context
-   - SPIRAL agent → revert the agent's changes (`git checkout -- <affected-files>` or `git stash` the agent's worktree), narrow scope to a single file or function, re-dispatch in next wave. If the task spiraled twice, escalate to the user.
+   - SPIRAL agent → revert the agent's changes (`git checkout -- <affected-files>` or `git stash` the agent's worktree), narrow scope to a single file or function, re-dispatch in next wave. If the task spiraled twice, escalate to the user AND auto-create a carryover issue (see "Carryover Auto-Create" below).
+
+### Carryover Auto-Create (#261)
+
+When a task is escalated (2×SPIRAL or first-time FAILED with no prior carryover), the coordinator MUST call `createSpiralCarryoverIssue` so the work is tracked on the VCS platform even if the user is inactive. Escalating to the user alone is not enough — the user may miss the message, or the session may crash before they see it.
+
+**Ownership split:** auto-create happens HERE (inline at detection time), not deferred to session-end. Session-end Phase 1.6 only *validates* that each SPIRAL/FAILED entry in Wave History has an `→ issue #NNN` suffix and retroactively files one if missing.
+
+```js
+import { createSpiralCarryoverIssue } from '$PLUGIN_ROOT/scripts/lib/spiral-carryover.mjs';
+
+// On 2×SPIRAL detection for <task>:
+const result = await createSpiralCarryoverIssue({
+  taskDescription: '<agent task description>',
+  kind: 'SPIRAL',
+  context: '<relevant STATE.md Deviations entry>',
+  priority: 'high',
+  vcs: '<from Session Config: $CONFIG.vcs>'
+});
+// result.created === true            → append "→ issue #<id>" to the Wave History line for this agent
+// result.skipped === 'duplicate'     → append "→ existing #<id>" (do NOT create a new one)
+// result.skipped === 'error'         → log result.error to stderr + continue escalation (do NOT block the session)
+```
+
+For the FAILED branch, use the same call shape with `kind: 'FAILED'`. Before calling, scan STATE.md Wave History for an existing `→ issue #NNN` entry on the same task — if present, skip the call (the dedup check in the module will also catch it via the `<!-- task-hash: ... -->` marker, but skipping early avoids an unnecessary `glab`/`gh` round-trip).
+
+The function never throws — it always returns a result object. Treat `skipped: 'error'` as a logged warning, not a session blocker.
 
 ## Worktree Isolation
 
-1. **When to use**: Read `isolation` from Session Config. Default: `worktree` for feature/deep sessions, `none` for housekeeping.
-2. **Dispatch with isolation**: When isolation is enabled, add `isolation: "worktree"` to Agent tool calls:
+1. **When to use — graduated default (#194)**: Resolve isolation per wave via `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` from `scripts/lib/wave-sizing.mjs`. User-explicit `isolation: worktree` or `isolation: none` in Session Config overrides the graduation. Plan-level `collision-risk: high` forces `worktree` even at ≤2 agents.
+
+   | agentCount | sessionType | resolved isolation |
+   |---|---|---|
+   | ≤ 2 | any | `none` (coordinator-direct / in-place) |
+   | 3–4 | housekeeping | `none` |
+   | 3–4 | feature / deep | `worktree` |
+   | ≥ 5 | any | `worktree` |
+
+   Rationale: the verified learning `coordinator-over-worktree-on-shared-files` (confidence 0.75) shows that small waves on partitioned scopes merge cleaner when run in-place. Two consecutive deep-session regressions (2026-04-20 07:30, 09:00) were worktree base-ref staleness on ≤2-agent waves editing the same SKILL.md. Graduated default makes worktree the tool for parallelism, not the default tax on every wave.
+
+2. **Enforcement auto-promote (#194)**: Call `resolveEnforcement({ isolation, configEnforcement })` from the same module. When isolation resolves to `none` and the user has not explicitly set `configEnforcement: 'off'`, enforcement auto-promotes from `warn` → `strict`. Worktrees provide filesystem-level isolation; in-place dispatch relies on the scope hook as the only barrier — it must be hard, not informational. Write the resolved value into `wave-scope.json` `enforcement`.
+
+3. **Dispatch with isolation**: When resolved isolation is `worktree`, add `isolation: "worktree"` to Agent tool calls:
    ```
    Agent({
      description: "...",
@@ -67,14 +105,16 @@ The coordinator determines each agent's status after the wave completes:
      isolation: "worktree"
    })
    ```
-3. **Post-wave merge**: After wave completes, worktree changes are automatically available. If agents made changes in worktrees:
+   When resolved isolation is `none`, omit the `isolation` parameter (agents run in the coordinator's working tree).
+
+4. **Post-wave merge**: After wave completes, worktree changes are automatically available. If agents made changes in worktrees:
    - Review each agent's changes for conflicts using `git diff` between worktree branches
    - **Merge strategy**: Apply agent changes sequentially (by agent number). For each agent:
      a. Attempt fast-forward merge. If clean, proceed.
      b. If conflicts: prefer the later agent's version for new code, prefer the earlier agent's version for modified existing code. When unclear, keep both versions and add a fix task to the next wave.
    - After all agents merged, run incremental quality checks
    - Document any conflict resolutions in the wave progress update
-4. **Fallback**: If worktree creation fails (e.g., git state issue), fall back to shared directory with a warning logged.
+5. **Fallback**: If worktree creation fails (e.g., git state issue), fall back to shared directory with a warning logged.
 
 ## Stagnation Patterns
 

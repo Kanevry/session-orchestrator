@@ -521,3 +521,67 @@ describe('shell-operator bypass — conservative blocking', { timeout: 15000 }, 
     expect(result.code).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Policy cache mtime-invalidation contract — #250
+// ---------------------------------------------------------------------------
+
+describe('policy cache mtime-invalidation — #250', { timeout: 15000 }, () => {
+  it('honors policy edits between hook invocations (mtime invalidation contract, issue #250)', async () => {
+    // Arrange: policy that only warns on `git revert` (no block rules for `foo` patterns).
+    // We use a distinctive custom pattern so we can observe behavior change.
+    const permissivePolicy = {
+      version: 1,
+      rules: [
+        {
+          id: 'foo-marker',
+          pattern: 'foo-destructive-marker',
+          severity: 'warn',
+          rationale: 'Initially only warns.',
+        },
+      ],
+    };
+    const dir = await mkProjectTracked({ policy: permissivePolicy });
+
+    // Act 1: spawn hook with a command matching pattern → warn (exit 0).
+    const first = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('foo-destructive-marker --yes'),
+    });
+    expect(first.code).toBe(0);
+
+    // Modify policy on disk: same pattern now blocks. Advance mtime to ensure
+    // the cache-invalidation contract (mtime comparison) would trigger a reload
+    // in any persistent-process model. In the subprocess-spawn model, the
+    // observable contract is simply "edits on disk are honored on the next
+    // invocation" — which any mtime-invalidating cache must preserve.
+    const strictPolicy = {
+      version: 1,
+      rules: [
+        {
+          id: 'foo-marker',
+          pattern: 'foo-destructive-marker',
+          severity: 'block',
+          rationale: 'Now blocks after policy edit.',
+        },
+      ],
+    };
+    const policyPath = path.join(dir, '.orchestrator', 'policy', 'blocked-commands.json');
+    await fs.writeFile(policyPath, JSON.stringify(strictPolicy, null, 2));
+    // Force mtime forward so a naive mtime-based cache cannot stale-serve.
+    const future = new Date(Date.now() + 10_000);
+    await fs.utimes(policyPath, future, future);
+
+    // Act 2: spawn hook again with same command.
+    const second = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('foo-destructive-marker --yes'),
+    });
+
+    // Assert: hook now blocks (exit 2, deny in stdout).
+    expect(second.code).toBe(2);
+    const json = JSON.parse(second.stdout);
+    expect(json.permissionDecision).toBe('deny');
+    expect(second.stdout).toContain('foo-marker');
+  });
+});

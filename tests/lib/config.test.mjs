@@ -14,14 +14,17 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readConfigFile, parseSessionConfig, getConfigValue } from '../../scripts/lib/config.mjs';
+import { fileURLToPath } from 'node:url';
+import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '../../scripts/lib/config.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const WORKTREE_ROOT = new URL('../../', import.meta.url).pathname;
-const FIXTURES = new URL('../fixtures/', import.meta.url).pathname;
+// fileURLToPath, not .pathname — Windows returns `/D:/...` via .pathname, which
+// resolve() then mangles to `D:\D:\...`.
+const WORKTREE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const FIXTURES = fileURLToPath(new URL('../fixtures/', import.meta.url));
 
 function readFixture(name) {
   return readFileSync(join(FIXTURES, name), 'utf8');
@@ -102,7 +105,7 @@ describe('parseSessionConfig', () => {
         'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
         'resource-awareness', 'enable-host-banner', 'resource-thresholds',
-        'worktree-exclude', 'vault-integration', 'vault-sync',
+        'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
@@ -231,15 +234,15 @@ describe('parseSessionConfig', () => {
 
   describe('parity with parse-config.sh', () => {
     it.skipIf(process.platform === 'win32')(
-      'produces JSON matching bash parse-config.sh output on CLAUDE.md (sorted keys)',
+      'produces JSON matching node parse-config.mjs output on CLAUDE.md (sorted keys)',
       () => {
         const claudeMdPath = join(WORKTREE_ROOT, 'CLAUDE.md');
         const claudeMdContent = readFileSync(claudeMdPath, 'utf8');
 
-        // Run bash parse-config.sh
+        // Run node parse-config.mjs
         const result = spawnSync(
-          'bash',
-          [join(WORKTREE_ROOT, 'scripts/parse-config.sh'), claudeMdPath],
+          'node',
+          [join(WORKTREE_ROOT, 'scripts/parse-config.mjs'), claudeMdPath],
           { encoding: 'utf8', timeout: 10000 }
         );
 
@@ -247,7 +250,7 @@ describe('parseSessionConfig', () => {
           throw result.error;
         }
         if (result.status !== 0) {
-          throw new Error(`parse-config.sh failed (exit ${result.status}): ${result.stderr}`);
+          throw new Error(`parse-config.mjs failed (exit ${result.status}): ${result.stderr}`);
         }
 
         const bashJson = JSON.parse(result.stdout);
@@ -269,7 +272,7 @@ describe('parseSessionConfig', () => {
             }
           }
           throw new Error(
-            `config.mjs diverged from parse-config.sh:\n${diffs.join('\n')}`
+            `config.mjs diverged from parse-config.mjs:\n${diffs.join('\n')}`
           );
         }
 
@@ -599,5 +602,232 @@ describe('readConfigFile', () => {
   it('error from missing files mentions the projectRoot path', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
     await expect(readConfigFile(tmpDir)).rejects.toThrow(tmpDir);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs-orchestrator parsing
+// ---------------------------------------------------------------------------
+
+describe('docs-orchestrator parsing', () => {
+  it('returns defaults when docs-orchestrator key is absent', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config['docs-orchestrator']).toEqual({
+      enabled: false,
+      audiences: ['user', 'dev', 'vault'],
+      mode: 'warn',
+    });
+  });
+
+  it('parses enabled: true', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  audiences: [user, dev]',
+      '  mode: strict',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].enabled).toBe(true);
+    expect(config['docs-orchestrator'].mode).toBe('strict');
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev']);
+  });
+
+  it('parses a single-item audiences narrowing', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  audiences: [user]',
+      '  mode: warn',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user']);
+  });
+
+  it('filters invalid audience values and keeps only valid ones', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  audiences: [user, bogus, dev]',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev']);
+  });
+
+  it('falls back to default audiences when all values in list are invalid', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  audiences: [bogus, invalid, fake]',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].audiences).toEqual(['user', 'dev', 'vault']);
+  });
+
+  it('silently defaults mode to warn when invalid mode (hard) is given', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'docs-orchestrator:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['docs-orchestrator'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vault-staleness parsing
+// ---------------------------------------------------------------------------
+
+describe('vault-staleness parsing', () => {
+  it('returns defaults when vault-staleness key is absent', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config['vault-staleness']).toEqual({
+      enabled: false,
+      thresholds: { top: 30, active: 60, archived: 180 },
+      mode: 'warn',
+    });
+  });
+
+  it('parses custom threshold values', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  enabled: true',
+      '  thresholds:',
+      '    top: 7',
+      '    active: 14',
+      '    archived: 60',
+      '  mode: strict',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].enabled).toBe(true);
+    expect(config['vault-staleness'].thresholds.top).toBe(7);
+    expect(config['vault-staleness'].thresholds.active).toBe(14);
+    expect(config['vault-staleness'].thresholds.archived).toBe(60);
+    expect(config['vault-staleness'].mode).toBe('strict');
+  });
+
+  it('silently keeps default for negative threshold top: -5', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  thresholds:',
+      '    top: -5',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].thresholds.top).toBe(30);
+  });
+
+  it('silently keeps default for zero threshold', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  thresholds:',
+      '    active: 0',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].thresholds.active).toBe(60);
+  });
+
+  it('silently defaults vault-staleness mode to warn when mode: hard is given (#217 regression guard)', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-staleness:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-staleness'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #217 regression — vault-sync and drift-check no longer accept "hard" mode
+// ---------------------------------------------------------------------------
+
+describe('#217 regression — mode: hard silently defaults to warn', () => {
+  it('vault-sync.mode: hard silently defaults to warn', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'vault-sync:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['vault-sync'].mode).toBe('warn');
+  });
+
+  it('drift-check.mode: hard silently defaults to warn', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'drift-check:',
+      '  enabled: true',
+      '  mode: hard',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['drift-check'].mode).toBe('warn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs-orchestrator and vault-staleness appear in top-level keys
+// ---------------------------------------------------------------------------
+
+describe('docs-orchestrator and vault-staleness in top-level keys', () => {
+  it('returns all expected top-level keys including docs-orchestrator and vault-staleness', () => {
+    const config = parseSessionConfig(readFixture('config-minimal.md'));
+    expect(config).toHaveProperty('docs-orchestrator');
+    expect(config).toHaveProperty('vault-staleness');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _coerceCollisionRisk (issue #194)
+// ---------------------------------------------------------------------------
+
+describe('_coerceCollisionRisk', () => {
+  it('returns default when value is null', () => {
+    expect(_coerceCollisionRisk(null)).toBe('low');
+  });
+
+  it('returns default when value is undefined', () => {
+    expect(_coerceCollisionRisk(undefined)).toBe('low');
+  });
+
+  it('returns custom default when supplied', () => {
+    expect(_coerceCollisionRisk(null, 'medium')).toBe('medium');
+  });
+
+  it('accepts low', () => {
+    expect(_coerceCollisionRisk('low')).toBe('low');
+  });
+
+  it('accepts medium', () => {
+    expect(_coerceCollisionRisk('medium')).toBe('medium');
+  });
+
+  it('accepts high', () => {
+    expect(_coerceCollisionRisk('high')).toBe('high');
+  });
+
+  it('throws TypeError for invalid value', () => {
+    expect(() => _coerceCollisionRisk('extreme')).toThrow(TypeError);
+    expect(() => _coerceCollisionRisk('extreme')).toThrow('low|medium|high');
   });
 });

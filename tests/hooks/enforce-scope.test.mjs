@@ -361,3 +361,107 @@ describe('symlink-escape regression — SECURITY-REQ-03 / F-02', { timeout: 1500
     },
   );
 });
+
+describe('coordinator carveout — #245', { timeout: 15000 }, () => {
+  it('allows STATE.md write even when allowedPaths is empty', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+  });
+
+  it('allows STATE.md write when allowedPaths does not include it (strict)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows wave-scope.json write (the manifest the hook itself reads)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const scopePath = path.join(dir, '.claude', 'wave-scope.json');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(scopePath, 'Write'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('does NOT carve out sibling files in .claude/ (narrow allowlist)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const sibling = path.join(dir, '.claude', 'notes.md');
+    await fs.writeFile(sibling, '# notes');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(sibling),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('does NOT carve out a file that merely contains STATE.md in its name', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const fake = path.join(dir, '.claude', 'STATE.md.bak');
+    await fs.writeFile(fake, 'backup');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(fake),
+    });
+    expect(result.code).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discovery-wave semantics regression lock — #256 NO-OP contract
+// ---------------------------------------------------------------------------
+//
+// Issue #256 proposed a "lazy-skip" optimization: if allowedPaths is empty,
+// skip the scope check entirely. This was REJECTED because `allowedPaths: []`
+// is the intentional Discovery-wave "deny all writes" semantics. This test
+// locks in the contract: any future PR that implements the skip MUST fail
+// this test. Do not remove without reading the #256 decision.
+// ---------------------------------------------------------------------------
+
+describe('Discovery-wave deny-all semantics — #256 NO-OP regression lock', { timeout: 15000 }, () => {
+  it('enforces Discovery-wave deny-all semantics when allowedPaths is empty (issue #256 NO-OP contract)', async () => {
+    const dir = await mkProjectTracked({
+      wave: 1,
+      role: 'Discovery',
+      enforcement: 'strict',
+      allowedPaths: [],
+      blockedCommands: [],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+    });
+    // Deny semantics MUST be preserved: empty allowedPaths in strict mode
+    // means "Discovery wave — read-only". Exit code non-zero + deny decision.
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+});

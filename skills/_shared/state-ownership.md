@@ -8,15 +8,26 @@
 ```yaml
 ---
 schema-version: 1
-session-type: feature|deep|housekeeping
+session-type: feature|deep|housekeeping|none
 branch: <current branch>
 issues: [<issue numbers>]
 started_at: <ISO 8601 with timezone>
-status: active|paused|completed
+status: active|paused|completed|idle
 current-wave: <N>
 total-waves: <N>
+# Optional fields (schema-version 1, additive for backward-compat):
+updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
+session: <session-id>        # <branch>-<YYYY-MM-DD>-<HHmm>, set Pre-Wave 1b
+session-start-ref: <sha>     # git ref at session start
 ---
 ```
+
+### Required vs. optional fields
+
+- `schema-version`, `session-type`, `branch`, `issues`, `started_at`, `status`, `current-wave`, `total-waves` — **required** in every session-owned STATE.md.
+- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence.
+
+The `session-type: none` + `status: idle` combination is used only for bootstrap-scaffolded placeholder files (no active session).
 
 ### Body Sections
 
@@ -25,6 +36,8 @@ total-waves: <N>
 | `## Current Wave` | Next wave to execute | wave-executor (post-wave) |
 | `## Wave History` | Completed wave records | wave-executor (post-wave) |
 | `## Deviations` | Plan adaptation log | wave-executor (step 3) |
+
+Wave History lines MAY include a `→ issue #NNN` suffix (or `→ existing #NNN` when a duplicate was detected) for SPIRAL/FAILED agents, linking to the auto-created carryover issue (#261). This is optional and backward-compatible; readers that do not recognize the notation can skip it. Session-end Phase 1.6 uses the presence of this suffix to decide whether to retro-file a carryover as a fallback safety net.
 
 ## Ownership Model
 

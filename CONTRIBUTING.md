@@ -465,12 +465,12 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 6. **Metrics paths**: Use `.orchestrator/metrics/` (shared) for learnings and sessions
 7. **Config file**: Reference "Session Config in CLAUDE.md or AGENTS.md" — not just CLAUDE.md
 
-### Writing Platform-Portable Shell Scripts
+### Writing Platform-Portable Scripts (Node.js)
 
-1. **Source `platform.sh`**: `source "$(dirname "${BASH_SOURCE[0]}")/../lib/platform.sh"` (or `|| true` for graceful fallback)
-2. **Use `$SO_*` variables**: `$SO_PLATFORM`, `$SO_PLUGIN_ROOT`, `$SO_STATE_DIR`, `$SO_CONFIG_FILE`, `$SO_SHARED_DIR`
-3. **Never hardcode `.claude/`** in new scripts — always use `$SO_STATE_DIR`
-4. **Check all three env vars** for project root: `$CLAUDE_PROJECT_DIR`, `$CODEX_PROJECT_DIR`, `$CURSOR_PROJECT_DIR`
+1. **Import from `platform.mjs`**: `import { detectPlatform } from '../lib/platform.mjs'` — returns `{ platform, stateDir, configFile, pluginRoot }`
+2. **Use the returned object** instead of `$SO_*` env vars. Node.js scripts get platform state via function call, not environment.
+3. **Never hardcode `.claude/`** — derive the state directory from the platform detection helper.
+4. **Check all three env vars** for project root: `CLAUDE_PROJECT_DIR`, `CODEX_PROJECT_DIR`, `CURSOR_PROJECT_DIR` (via `process.env`).
 
 ## Scripts & Testing
 
@@ -478,23 +478,23 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/parse-config.sh` | Parse Session Config from CLAUDE.md/AGENTS.md into validated JSON |
+| `scripts/parse-config.mjs` | Parse Session Config from CLAUDE.md/AGENTS.md into validated JSON (CLI wrapper over `scripts/lib/config.mjs`) |
 | `scripts/run-quality-gate.sh` | Run quality gate checks (4 variants: baseline, incremental, full-gate, per-file) |
 | `scripts/validate-wave-scope.sh` | Validate wave-scope.json before enforcement hooks consume it |
 | `scripts/token-audit.sh` | Cross-project token efficiency audit |
 | `scripts/cursor-install.sh` | Install Cursor rules via symlinks |
-| `scripts/lib/platform.sh` | Platform detection — exports SO_PLATFORM, SO_STATE_DIR, SO_CONFIG_FILE |
-| `scripts/lib/common.sh` | Shared utilities — die(), warn(), find_project_root() |
-| `scripts/lib/worktree.sh` | Git worktree helpers for isolated agent work |
+| `scripts/lib/platform.mjs` | Platform detection — returns platform + stateDir + configFile + pluginRoot |
+| `scripts/lib/common.sh` | Shared shell utilities — die(), warn(), find_project_root() (used by install/quality-gate scripts) |
+| `scripts/lib/worktree.mjs` | Git worktree helpers for isolated agent work |
 
 ### Running Tests
 
 ```bash
-bash scripts/test/run-all.sh    # Run all test suites
-bash scripts/test/test-parse-config.sh  # Run specific suite
+npm test              # Run the full vitest suite
+npx vitest run <pattern>   # Run a specific test file / subset
 ```
 
-Test files are in `scripts/test/`. Each `test-*.sh` file is self-contained with setup/teardown. Add new tests by creating `scripts/test/test-<name>.sh` following existing patterns.
+Test files are in `tests/`. Add new tests as `tests/<area>/<name>.test.mjs` following existing patterns (hooks, lib, unit, integration, skills).
 
 ### Platform Variables
 

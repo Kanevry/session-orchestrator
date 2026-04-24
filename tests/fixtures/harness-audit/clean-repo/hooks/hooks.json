@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.mjs\"" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"" },
+          { "type": "command", "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs\"" }
+        ]
+      }
+    ]
+  }
+}

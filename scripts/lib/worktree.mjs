@@ -5,10 +5,12 @@
  * ${TMPDIR:-/tmp} for Windows compatibility. Shell-outs via zx `$`.
  *
  * Part of v3.0.0 migration (Epic #124, issue #134).
+ * Meta-persistence added for base-ref freshness guard (issue #195).
  */
 
 import { $, nothrow, ProcessOutput } from 'zx';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readConfigFile, parseSessionConfig } from './config.mjs';
@@ -31,6 +33,27 @@ const DEFAULT_EXCLUDE_PATTERNS = [
 // Do not spam stdout/stderr with git command echoes.
 $.verbose = false;
 $.quiet = true;
+
+// ---------------------------------------------------------------------------
+// Meta-file constants (issue #195)
+// ---------------------------------------------------------------------------
+
+/**
+ * Relative path (from repo root) where worktree meta JSON files are stored.
+ * Each file is named `<suffix>.json`.
+ */
+export const WORKTREE_META_DIR = '.orchestrator/tmp/worktree-meta';
+
+/**
+ * Return the absolute path of the meta JSON file for a given suffix.
+ * Uses process.cwd() as the repo root (same as all other helpers in this module).
+ *
+ * @param {string} suffix
+ * @returns {string}
+ */
+export function metaPathFor(suffix) {
+  return path.join(process.cwd(), WORKTREE_META_DIR, `${suffix}.json`);
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -69,6 +92,11 @@ function _worktreeInfo(suffix) {
 /**
  * Create a git worktree for isolated agent work.
  *
+ * After a successful `git worktree add`, persists a meta JSON file at
+ * `.orchestrator/tmp/worktree-meta/<suffix>.json` for the base-ref freshness
+ * guard (issue #195). Meta write failures are non-fatal — they emit a warning
+ * to stderr but never block worktree creation.
+ *
  * @param {string} suffix   Unique suffix for the branch (e.g. "wave2-agent1").
  * @param {string} [baseRef="HEAD"]  Git ref to base the worktree on.
  * @param {{ excludePatterns?: string[] }} [options={}]
@@ -80,19 +108,32 @@ function _worktreeInfo(suffix) {
  */
 export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
   const { branch, wtPath } = _worktreeInfo(suffix);
+  // Capture cwd at call time so git commands run in the correct repo even if
+  // zx's module-level default cwd differs (e.g. during tests with chdir).
+  const cwd = process.cwd();
+  const git = $({ cwd });
+
+  // Resolve baseSha BEFORE creating the worktree so we capture the exact sha used.
+  let baseSha = null;
+  try {
+    const result = await git`git rev-parse ${baseRef}`;
+    baseSha = result.stdout.trim();
+  } catch {
+    // Non-fatal: freshness guard will treat missing baseSha as no-meta.
+  }
 
   // Ensure parent directory exists — path.join + recursive mkdir is cross-platform.
   await fs.mkdir(path.dirname(wtPath), { recursive: true });
 
   try {
-    await $`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
+    await git`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
   } catch {
     // Branch or worktree may already exist from a previous failed run — force-cleanup and retry.
-    await nothrow($`git worktree remove ${wtPath} --force`);
-    await nothrow($`git branch -D ${branch}`);
+    await nothrow(git`git worktree remove ${wtPath} --force`);
+    await nothrow(git`git branch -D ${branch}`);
 
     try {
-      await $`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
+      await git`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
     } catch (secondErr) {
       const msg = secondErr instanceof ProcessOutput ? secondErr.stderr.trim() : String(secondErr);
       throw new Error(
@@ -136,7 +177,42 @@ export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
 
   await applyWorktreeExcludes(wtPath, excludePatterns);
 
+  // Persist meta for freshness guard (issue #195). Non-fatal on failure.
+  await _writeWorktreeMeta(suffix, { branch, wtPath, baseRef, baseSha, repoRoot: cwd }).catch((err) => {
+    console.warn(`createWorktree: meta write failed for '${suffix}' — freshness guard will be skipped: ${err.message}`);
+  });
+
   return wtPath;
+}
+
+/**
+ * Write the worktree meta JSON file atomically (tmp + rename).
+ * Creates the meta directory if it does not exist.
+ *
+ * @param {string} suffix
+ * @param {{ branch: string, wtPath: string, baseRef: string, baseSha: string|null, repoRoot?: string }} info
+ * @returns {Promise<void>}
+ */
+async function _writeWorktreeMeta(suffix, { branch, wtPath, baseRef, baseSha, repoRoot }) {
+  // Use explicit repoRoot when provided (avoids stale module-level cwd capture).
+  const root = repoRoot ?? process.cwd();
+  const metaPath = path.join(root, WORKTREE_META_DIR, `${suffix}.json`);
+  const metaDir = path.dirname(metaPath);
+
+  await fs.mkdir(metaDir, { recursive: true });
+
+  const meta = {
+    suffix,
+    baseRef,
+    baseSha,
+    branch,
+    wtPath,
+    createdAt: new Date().toISOString(),
+  };
+
+  const tmpPath = `${metaPath}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf8');
+  await fs.rename(tmpPath, metaPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +269,7 @@ export async function applyWorktreeExcludes(wtPath, patterns) {
 /**
  * Remove a worktree and its associated branch.
  * Emits a warning to stderr (does not throw) if uncommitted changes exist.
+ * Also cleans up the meta file written by createWorktree (issue #195).
  * Always resolves — never throws.
  *
  * @param {string} wtPath  Absolute path to the worktree to remove.
@@ -204,9 +281,13 @@ export async function removeWorktree(wtPath) {
     return;
   }
 
+  // Capture cwd at call time for the same reason as createWorktree.
+  const cwd = process.cwd();
+  const git = $({ cwd });
+
   // Warn about uncommitted changes without throwing.
   try {
-    const status = await $`git -C ${wtPath} status --porcelain`;
+    const status = await git`git -C ${wtPath} status --porcelain`;
     if (status.stdout.trim().length > 0) {
       console.error(`WARNING: worktree at ${wtPath} has uncommitted changes`);
     }
@@ -217,7 +298,7 @@ export async function removeWorktree(wtPath) {
   // Resolve the branch name, but only accept so-worktree-* names.
   let branch = '';
   try {
-    const ref = await $`git -C ${wtPath} rev-parse --abbrev-ref HEAD`;
+    const ref = await git`git -C ${wtPath} rev-parse --abbrev-ref HEAD`;
     const candidate = ref.stdout.trim();
     if (/^so-worktree-/.test(candidate)) {
       branch = candidate;
@@ -227,11 +308,27 @@ export async function removeWorktree(wtPath) {
   }
 
   // Remove worktree (force so it works even with dirty state).
-  await nothrow($`git worktree remove ${wtPath} --force`);
+  await nothrow(git`git worktree remove ${wtPath} --force`);
 
   // Clean up the temporary branch (best-effort).
   if (branch) {
-    await nothrow($`git branch -D ${branch}`);
+    await nothrow(git`git branch -D ${branch}`);
+  }
+
+  // Clean up meta file (issue #195). Derive suffix from branch name.
+  // branch is "so-worktree-<suffix>"; if branch is empty, fall back to wtPath basename.
+  const suffix = branch
+    ? branch.replace(/^so-worktree-/, '')
+    : path.basename(wtPath).replace(/^so-worktree-/, '');
+
+  if (suffix) {
+    const metaPath = path.join(cwd, WORKTREE_META_DIR, `${suffix}.json`);
+    await fs.unlink(metaPath).catch((err) => {
+      if (err.code !== 'ENOENT') {
+        console.warn(`removeWorktree: meta cleanup failed for '${suffix}': ${err.message}`);
+      }
+      // ENOENT — already gone or never written; silently ignore.
+    });
   }
 }
 
@@ -246,9 +343,10 @@ export async function removeWorktree(wtPath) {
  *   Array of worktree descriptors; empty array if none or on parse error.
  */
 export async function listWorktrees() {
+  const git = $({ cwd: process.cwd() });
   let output = '';
   try {
-    const result = await $`git worktree list --porcelain`;
+    const result = await git`git worktree list --porcelain`;
     output = result.stdout;
   } catch {
     return [];
@@ -310,5 +408,182 @@ export async function cleanupAllWorktrees() {
     // Best-effort — swallow any unexpected errors.
   }
 
-  await nothrow($`git worktree prune`);
+  await nothrow($({ cwd: process.cwd() })`git worktree prune`);
+}
+
+// ---------------------------------------------------------------------------
+// resolveWorkspaceRoot
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the canonical workspace root path — the directory containing the main
+ * .git/worktrees/ (i.e. the coordinator's tree), NOT any agent worktree.
+ *
+ * Resolution order:
+ *   1. `git rev-parse --git-common-dir` → parent directory (this returns the
+ *      SAME path whether called from the main tree or any worktree, unlike
+ *      --show-toplevel which returns the current worktree's tree).
+ *   2. Fallback: walk up from process.cwd() looking for `.git` (directory or file).
+ *   3. If both fail → throw Error with message starting "resolveWorkspaceRoot:".
+ *
+ * Does NOT change process.cwd(). Pure resolution.
+ *
+ * @returns {Promise<string>} absolute path
+ */
+export async function resolveWorkspaceRoot() {
+  const cwd = process.cwd();
+  const git = $({ cwd });
+
+  // Strategy 1: git rev-parse --git-common-dir
+  try {
+    const result = await git`git rev-parse --git-common-dir`;
+    const commonDir = result.stdout.trim();
+    if (commonDir) {
+      // May be relative (when inside a linked worktree) or absolute.
+      const absCommonDir = path.resolve(cwd, commonDir);
+      return path.dirname(absCommonDir);
+    }
+  } catch {
+    // Fall through to walk-up fallback.
+  }
+
+  // Strategy 2: walk up from cwd looking for .git (directory or worktree link file).
+  let p = cwd;
+  let levels = 0;
+  while (levels < 20) {
+    const gitEntry = path.join(p, '.git');
+    if (fsSync.existsSync(gitEntry)) {
+      // Check if .git is a file (worktree link) or a directory.
+      try {
+        const stat = await fs.stat(gitEntry);
+        if (stat.isDirectory()) {
+          return p;
+        }
+        // .git is a file — worktree link. Read it to find gitdir.
+        const content = await fs.readFile(gitEntry, 'utf8');
+        const match = content.match(/^gitdir:\s*(.+)$/m);
+        if (match) {
+          // gitdir points to e.g. /repo/.git/worktrees/agent1
+          // common dir would be /repo/.git — go up to /repo
+          const gitdir = path.resolve(p, match[1].trim());
+          // Walk up to find the real .git directory (not a worktrees subdir).
+          let candidate = gitdir;
+          while (path.dirname(candidate) !== candidate) {
+            const base = path.basename(candidate);
+            const parentBase = path.basename(path.dirname(candidate));
+            if (base !== 'worktrees' && parentBase !== 'worktrees' && fsSync.existsSync(path.join(candidate, 'config'))) {
+              return path.dirname(candidate);
+            }
+            candidate = path.dirname(candidate);
+          }
+        }
+      } catch {
+        // Could not stat or read — treat as found anyway.
+        return p;
+      }
+    }
+    const parent = path.dirname(p);
+    if (parent === p) break; // filesystem root
+    p = parent;
+    levels++;
+  }
+
+  throw new Error(`resolveWorkspaceRoot: could not locate workspace root from '${cwd}'`);
+}
+
+// ---------------------------------------------------------------------------
+// restoreCoordinatorCwd
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether CWD is inside a worktree (anything under .git/worktrees/ or a
+ * registered linked-worktree path), and if so, chdir back to the workspace root.
+ *
+ * Idempotent — when CWD already equals the workspace root, returns without
+ * calling process.chdir().
+ *
+ * @returns {Promise<{restored: boolean, from: string|null, to: string}>}
+ *   restored=true when chdir happened; from is the previous CWD (only when restored);
+ *   to is always the workspace root.
+ */
+export async function restoreCoordinatorCwd() {
+  const cwd = process.cwd();
+  const root = await resolveWorkspaceRoot();
+
+  // Normalize both for comparison (handles trailing slash differences, etc.)
+  const normCwd = path.resolve(cwd);
+  const normRoot = path.resolve(root);
+
+  if (normCwd === normRoot) {
+    return { restored: false, from: null, to: normRoot };
+  }
+
+  // Check if CWD is inside a worktree by listing registered worktrees.
+  let insideWorktree = false;
+  try {
+    const worktrees = await listWorktrees();
+    for (const wt of worktrees) {
+      const wtResolved = path.resolve(wt.path);
+      if (wtResolved === normRoot) continue; // skip main worktree
+      // CWD is inside this linked worktree if it equals or is a descendant.
+      const rel = path.relative(wtResolved, normCwd);
+      if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+        insideWorktree = true;
+        break;
+      }
+    }
+  } catch {
+    // If listing fails, fall back to checking if CWD differs from root.
+    // Any divergence from root is treated as suspect when git-common-dir already
+    // resolved to a different root, so we still restore.
+    insideWorktree = true;
+  }
+
+  if (insideWorktree) {
+    process.chdir(normRoot);
+    return { restored: true, from: normCwd, to: normRoot };
+  }
+
+  return { restored: false, from: null, to: normRoot };
+}
+
+// ---------------------------------------------------------------------------
+// validatePathInWorkspace
+// ---------------------------------------------------------------------------
+
+/**
+ * Return true IFF filePath resolves to a location inside the workspace root AND
+ * NOT inside any .claude/worktrees/* (or .codex/worktrees, .cursor/worktrees) subtree.
+ *
+ * Accepts absolute or relative paths. Relative paths resolve against process.cwd().
+ * Does NOT touch the filesystem beyond reading the workspace root.
+ *
+ * @param {string} filePath
+ * @param {string} [workspaceRoot] optional — if omitted, resolves via resolveWorkspaceRoot()
+ * @returns {Promise<boolean>}
+ */
+export async function validatePathInWorkspace(filePath, workspaceRoot) {
+  const root = workspaceRoot !== undefined ? workspaceRoot : await resolveWorkspaceRoot();
+  const absRoot = path.resolve(root);
+  const absFile = path.resolve(process.cwd(), filePath);
+
+  // Must be inside workspace root (descendant — not equal to root itself).
+  const relToRoot = path.relative(absRoot, absFile);
+  const isInside = relToRoot !== '' && !relToRoot.startsWith('..') && !path.isAbsolute(relToRoot);
+  if (!isInside) return false;
+
+  // Normalize separator to forward-slash for cross-platform startsWith checks.
+  const relNorm = relToRoot.split(path.sep).join('/');
+
+  // Reject paths inside known worktree subtrees.
+  const worktreeSubtrees = [
+    '.claude/worktrees/',
+    '.codex/worktrees/',
+    '.cursor/worktrees/',
+  ];
+  for (const subtree of worktreeSubtrees) {
+    if (relNorm.startsWith(subtree)) return false;
+  }
+
+  return true;
 }

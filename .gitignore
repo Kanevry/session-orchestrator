@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.local
 .env.*
+!.env.example
 .DS_Store
 Thumbs.db
 .idea/
@@ -16,6 +17,7 @@ Thumbs.db
 .claude/wave-scope.json
 .claude/metrics/
 .claude/worktrees/
+.claude/*.lock
 
 # Codex CLI runtime state (session orchestrator)
 .codex/STATE.md
@@ -27,6 +29,9 @@ Thumbs.db
 
 # Per-project session metrics (local-only observability data)
 .orchestrator/metrics/*.jsonl
+
+# Vitest coverage artifacts (#263)
+coverage/
 
 # Per-session runtime state (machine-specific, never committable)
 .orchestrator/host.json

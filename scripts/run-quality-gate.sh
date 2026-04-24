@@ -66,6 +66,28 @@ esac
 
 extract_command() {
   local key="$1" default="$2"
+
+  # Policy-file-first (#183): check .orchestrator/policy/quality-gates.json
+  # before falling back to CLAUDE.md $CONFIG. The policy file is the
+  # centralized source of truth when present.
+  local policy_file=".orchestrator/policy/quality-gates.json"
+  if [[ -f "$policy_file" ]]; then
+    local policy_key=""
+    case "$key" in
+      test-command)      policy_key="test" ;;
+      typecheck-command) policy_key="typecheck" ;;
+      lint-command)      policy_key="lint" ;;
+    esac
+    if [[ -n "$policy_key" ]]; then
+      local policy_cmd
+      policy_cmd="$(jq -r --arg k "$policy_key" '.commands[$k].command // empty' "$policy_file" 2>/dev/null)" || policy_cmd=""
+      if [[ -n "$policy_cmd" && "$policy_cmd" != "null" ]]; then
+        echo "$policy_cmd"
+        return
+      fi
+    fi
+  fi
+
   if [[ -z "$CONFIG" ]]; then
     echo "$default"
     return

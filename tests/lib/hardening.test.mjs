@@ -326,6 +326,23 @@ describe('pathMatchesPattern', () => {
       expect(pathMatchesPattern('src/[a-z]', 'src/[a-z]')).toBe(true);
     });
   });
+
+  describe('** glob expansion (issue #220 regression)', () => {
+    it.each([
+      // [relPath, pattern, expected]
+      ['tests/lib/foo.test.mjs', 'tests/**',           true],
+      ['tests/foo.mjs',          'tests/**',           true],
+      ['src/foo.mjs',            'tests/**',           false],
+      ['a/b/src/foo.mjs',        '**/src/foo.mjs',     true],
+      ['src/foo.mjs',            '**/src/foo.mjs',     true],
+      ['src/a/b/foo.test.mjs',   'src/**/*.test.mjs',  true],
+      ['src/a/b/foo.test.js',    'src/**/*.test.mjs',  false],
+      ['src/nested/foo.mjs',     'src/*.mjs',          false],
+      ['src/foo.mjs',            'src/*.mjs',          true],
+    ])('pathMatchesPattern(%s, %s) === %s', (rel, pattern, expected) => {
+      expect(pathMatchesPattern(rel, pattern)).toBe(expected);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

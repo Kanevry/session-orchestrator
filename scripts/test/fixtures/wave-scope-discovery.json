@@ -1,7 +1,0 @@
-{
-  "wave": 1,
-  "role": "Discovery",
-  "enforcement": "strict",
-  "allowedPaths": [],
-  "blockedCommands": ["rm -rf", "git push --force"]
-}
