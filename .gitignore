@@ -28,6 +28,10 @@ Thumbs.db
 # Per-project session metrics (local-only observability data)
 .orchestrator/metrics/*.jsonl
 
+# Per-session runtime state (machine-specific, never committable)
+.orchestrator/host.json
+.orchestrator/current-session.json
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
