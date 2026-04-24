@@ -72,11 +72,41 @@ jobs:
             echo "No .mjs files yet (Wave 3 adds them) — skipping typecheck"
           fi
 
-      - name: Vitest
+      # On Linux the tinypool exit-hang (#268, upstream vitest issue #3077)
+      # still occurs occasionally with vitest 4 + pool=forks: the runner
+      # hangs at worker teardown AFTER all tests have passed. Without a
+      # wrapper the job hits the 15-min workflow timeout. Mirrors the
+      # GitLab CI remediation in .gitlab-ci.yml. Windows + macOS do not
+      # exhibit the hang — keep the plain `npm test` path for them.
+      - name: Vitest (Linux — wrapped)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          timeout --preserve-status 240s npm test -- --reporter=verbose --no-color 2>&1 | tee /tmp/vitest.raw.log || true
+          sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/vitest.raw.log > /tmp/vitest.log || cp /tmp/vitest.raw.log /tmp/vitest.log
+          tail -80 /tmp/vitest.log
+          PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/vitest.log 2>/dev/null || true)
+          FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/vitest.log 2>/dev/null || true)
+          echo "[ci] test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"
+          test "${FAIL_COUNT:-0}" = "0"
+          test "${PASS_COUNT:-0}" -ge "20"
+
+      - name: Vitest (macOS + Windows — plain)
+        if: runner.os != 'Linux'
         shell: bash
         run: npm test
 
       - name: Coverage (Linux only, gated at 70% lines/funcs/stmts, 60% branches)
         if: runner.os == 'Linux'
         shell: bash
-        run: npm run test:coverage
+        run: |
+          timeout --preserve-status 420s npm run test:coverage -- --reporter=verbose --no-color 2>&1 | tee /tmp/cov.raw.log || true
+          sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/cov.raw.log > /tmp/cov.log || cp /tmp/cov.raw.log /tmp/cov.log
+          tail -100 /tmp/cov.log
+          PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/cov.log 2>/dev/null || true)
+          FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/cov.log 2>/dev/null || true)
+          echo "[ci] coverage: test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"
+          test "${FAIL_COUNT:-0}" = "0"
+          test "${PASS_COUNT:-0}" -ge "20"
+          test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"
+          ! grep -q "Coverage for .* .* below" /tmp/cov.log
