@@ -162,6 +162,11 @@ export function validateLearning(entry) {
 // called multiple times (e.g., during readLearnings + filter helpers).
 const _warnedMissingSchemaVersion = new Set();
 
+// Same contract for required-key warnings (issue #281). Keyed by
+// `<id>|<sorted-missing-fields>` so distinct shapes for the same id still
+// warn once, but repeated reads of the same shape stay silent.
+const _warnedMissingRequiredKeys = new Set();
+
 /**
  * Normalize a learning entry read from disk. Applies defaults for the
  * extended fields so callers can treat legacy and new entries uniformly.
@@ -189,6 +194,22 @@ export function normalizeLearning(entry) {
       );
     }
   }
+
+  // Required-key surface (issue #281). Legacy records may silently miss fields
+  // that validateLearning() would reject on write. Reader path is never-throw,
+  // so emit a dedupe'd WARN so operators can spot legacy drift without spam.
+  const missing = LEGACY_REQUIRED_FIELDS.filter((f) => !(f in entry));
+  if (missing.length > 0) {
+    const warnId = entry.id ?? '<unknown>';
+    const warnKey = `${warnId}|${missing.join(',')}`;
+    if (!_warnedMissingRequiredKeys.has(warnKey)) {
+      _warnedMissingRequiredKeys.add(warnKey);
+      console.error(
+        `[learnings] WARN: record missing required legacy field(s) [${missing.join(', ')}] (id=${warnId}); passing through unchanged`
+      );
+    }
+  }
+
   return {
     ...entry,
     schema_version: schemaVersion,

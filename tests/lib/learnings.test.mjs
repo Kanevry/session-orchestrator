@@ -238,6 +238,69 @@ describe('normalizeLearning — backward compat', () => {
 });
 
 // ---------------------------------------------------------------------------
+// normalizeLearning — required-key WARN (issue #281)
+// ---------------------------------------------------------------------------
+
+describe('normalizeLearning — required-key WARN (issue #281)', () => {
+  let warnSpy;
+  beforeEach(() => {
+    warnSpy = [];
+    // Route console.error into warnSpy so we can assert on WARN output without
+    // spamming the test output. Restored in afterEach.
+    const orig = console.error;
+    console.error = (msg) => warnSpy.push(String(msg));
+    warnSpy._restore = () => { console.error = orig; };
+  });
+  afterEach(() => { if (warnSpy._restore) warnSpy._restore(); });
+
+  it('emits WARN for a record missing required legacy fields', () => {
+    // unique id to avoid dedupe collision with other tests in this suite
+    normalizeLearning({ id: 'warn-test-missing-1', type: 'a', confidence: 0.5, subject: 's' });
+    const hit = warnSpy.find((m) => m.includes('warn-test-missing-1') && m.includes('missing required legacy field(s)'));
+    expect(hit).toBeTruthy();
+    expect(hit).toMatch(/\[insight,.+source_session/);
+  });
+
+  it('dedupes WARN by <id>|<missing-fields> key', () => {
+    normalizeLearning({ id: 'warn-test-dedupe', type: 'a', confidence: 0.5, subject: 's' });
+    normalizeLearning({ id: 'warn-test-dedupe', type: 'a', confidence: 0.5, subject: 's' });
+    normalizeLearning({ id: 'warn-test-dedupe', type: 'a', confidence: 0.5, subject: 's' });
+    const hits = warnSpy.filter((m) => m.includes('warn-test-dedupe') && m.includes('missing required legacy field(s)'));
+    expect(hits.length).toBe(1);
+  });
+
+  it('emits a distinct WARN when the same id has a different missing-field set', () => {
+    // first call: missing insight+evidence+source_session+created_at+expires_at
+    normalizeLearning({ id: 'warn-test-shape-shift', type: 'a', confidence: 0.5, subject: 's' });
+    // second call: only missing expires_at (shape has shifted)
+    normalizeLearning({
+      id: 'warn-test-shape-shift',
+      type: 'a',
+      subject: 's',
+      insight: 'i',
+      evidence: [],
+      confidence: 0.5,
+      source_session: 'x',
+      created_at: '2026-04-24T00:00:00Z',
+    });
+    const hits = warnSpy.filter((m) => m.includes('warn-test-shape-shift') && m.includes('missing required legacy field(s)'));
+    expect(hits.length).toBe(2);
+  });
+
+  it('does NOT emit WARN for a complete legacy record', () => {
+    normalizeLearning({ ...LEGACY(), id: 'warn-test-complete' });
+    const hit = warnSpy.find((m) => m.includes('warn-test-complete') && m.includes('missing required legacy field(s)'));
+    expect(hit).toBeFalsy();
+  });
+
+  it('uses <unknown> as id when record lacks id', () => {
+    normalizeLearning({ type: 'a', confidence: 0.5, subject: 's' });
+    const hit = warnSpy.find((m) => m.includes('id=<unknown>') && m.includes('missing required legacy field(s)'));
+    expect(hit).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // readLearnings — JSONL I/O + malformed handling
 // ---------------------------------------------------------------------------
 

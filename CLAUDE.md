@@ -123,6 +123,15 @@ End-state per mirror on `042be0a`:
 
 Local suite remained stable: 1589 tests passing / 10 skipped / 7.01s on M4 Pro across both the bump and the portability fix. Coverage thresholds intact (73.6% / 65.8% / 76.2% / 71.5%).
 
+## Meta-Audit Follow-ups #281 + #270 (2026-04-24)
+
+Small feature session closing two audit-flagged bugs under critical RAM (coordinator-direct, 5 waves, ~40 min):
+
+- **#281 — learnings.jsonl required-key drift**: Repaired 18 legacy records in `.orchestrator/metrics/learnings.jsonl` (5 from the audit probe's `type,subject,confidence` check + 13 also missing `insight`/`evidence`/`source_session`/`expires_at`). Repair derives `subject` from `id` (first-2-tokens + rest split by space), `insight` from `content` or `subject`, `source_session` from `evidence[0]` prefix "session ", `expires_at` from `created_at + 30d`. Atomic tmp+rename, `.bak-<ISO>` preserved. Added reader-side dedupe'd WARN in `scripts/lib/learnings.mjs` `normalizeLearning()` — keyed `<id>|<sorted-missing-fields>` so shape-shifts on the same id still warn but repeated reads stay silent. Mirrors the existing `_warnedMissingSchemaVersion` pattern at L163. Audit probe check `learnings-jsonl-nonempty` now 0/93 missing (was 5/88). 12 residual records still fail the stricter 9-field `LEGACY_REQUIRED_FIELDS` contract (missing `id` or using alt `text`/`session_id` schema) — visible via reader WARN, out of this session's scope.
+- **#270 — validate-wave-scope v3.0 residue**: Ported `scripts/validate-wave-scope.sh` → `scripts/validate-wave-scope.mjs` (plain node, zero shell deps, same CLI contract: stdin OR `<path>`, exit 0 on valid with stdout echo, exit 1 on invalid with stderr ERROR lines). Closes the v3.0 Bash→Node migration straggler — the legacy `.sh` sourced `scripts/lib/common.sh:5` which tried to `source platform.sh` (removed in commit d41e00e), silently exiting 1 under `set -euo pipefail`. `skills/wave-executor/wave-loop.md:529` now invokes `node`; docs refs updated in `CONTRIBUTING.md:483` + `docs/USER-GUIDE.md:721`; `.sh` deleted.
+- **Tests (+21)**: 5 new in `tests/lib/learnings.test.mjs` for the required-key WARN (emits, dedupes, distinct-WARN on shape-shift, no-WARN on complete record, `<unknown>` id path). 16 new in `tests/scripts/validate-wave-scope.test.mjs` — stdin + file input, 6 contract checks (wave positive integer, role non-empty string, enforcement enum, allowedPaths array, blockedCommands array, gates object), 3 security checks (absolute path, path traversal, non-string entries), invalid JSON, file-not-found. 1611 passed / 10 skipped (was 1589). Full Gate green: typecheck 37 OK, lint clean, coverage 73.67 / 65.96 / 76.30 / 71.54.
+- **Dupe cleanup**: #225 closed as duplicate of #285 (same file `scripts/lib/harness-audit/categories.mjs`, same 956-line snapshot). #226 closed as duplicate of #284 (same file `scripts/lib/config.mjs`; newer #284 at 1075L is the current source of truth).
+
 ## v2.0 Features
 
 - Session persistence via STATE.md + session memory files
