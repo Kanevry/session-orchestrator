@@ -40,3 +40,7 @@ coverage/
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
+
+# Nested vault-sync lockfile (CI runs `npm install` in skills/vault-sync/
+# fresh each run; no value pinning a lockfile for the sub-package)
+skills/vault-sync/package-lock.json
