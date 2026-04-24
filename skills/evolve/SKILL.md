@@ -129,7 +129,7 @@ For each of the 6 learning types, apply these heuristics:
   - **concurrent-session-pressure** — session-start events with `peer_count ≥ concurrent-sessions-warn`
   - **disk-full** — events whose `error` matches `ENOSPC` / "no space left"
   - **thermal-throttle** — events whose `resource_snapshot.cpu_load_pct` crosses `cpu-load-max-pct`
-- Each candidate is piped through `candidateToLearning()` → `validateLearning()`. Default `scope` is `private` (in-repo only); C3 export promotes to `public` with an anonymization pass.
+- Each candidate is piped through `candidateToLearning()` → `validateLearning()`. Default `scope` is `private` (in-repo only). To promote to `public`, the user runs `npm run share:hw-learnings -- --promote` (C3 export). This anonymizes each `private` hardware-pattern entry, validates via the privacy contract, and appends a `public` twin to `learnings.jsonl` (original preserved). Use `--dry-run` to preview without writing.
 - Subject convention: `<signal>::<host_class>` (e.g., `oom-kill::macos-arm64-m3pro`). The `::` separator avoids colliding with project-keyed subjects.
 - Confidence starts at 0.5 like other learning types, but decay is slower in practice: hardware stays the same longer than code. This is an emergent property of the existing expire-after-N-days policy applied to a mostly-stable `host_class` — no special-casing needed.
 - **Presentation in step 3.5** (see below): render hardware-patterns in a dedicated section titled `## Hardware Patterns (keyed on host_class)` after the project-keyed patterns. This makes the source of the learning obvious to the user at confirmation time.

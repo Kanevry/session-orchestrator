@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -21,7 +21,9 @@ import {
   groupByHost,
   renderMarkdown,
   exportHwLearnings,
+  promoteHwLearnings,
 } from '../../scripts/export-hw-learnings.mjs';
+import { CURRENT_ANONYMIZATION_VERSION } from '../../scripts/lib/learnings.mjs';
 
 const GENERATED_AT = '2026-04-19T14:00:00Z';
 
@@ -315,5 +317,294 @@ describe('idempotency', () => {
     writeFileSync(input, JSON.stringify(baseLearning()) + '\n');
     await exportHwLearnings({ input, output, dryRun: false, generatedAt: GENERATED_AT });
     expect(existsSync(output)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part A — Expanded regex coverage
+// ---------------------------------------------------------------------------
+
+describe('anonymizeString — Linux system paths', () => {
+  it('redacts /root paths', () => {
+    const s = 'Config loaded from /root/.config/app/settings.json';
+    expect(anonymizeString(s)).not.toMatch(/\/root\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /var paths', () => {
+    const s = 'Log written to /var/log/session-orchestrator/run.log';
+    expect(anonymizeString(s)).not.toMatch(/\/var\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /opt paths', () => {
+    const s = 'Binary at /opt/homebrew/bin/node crashed';
+    expect(anonymizeString(s)).not.toMatch(/\/opt\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /tmp paths', () => {
+    const s = 'Temp file: /tmp/so-wt-abc123/output.json';
+    expect(anonymizeString(s)).not.toMatch(/\/tmp\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /mnt paths', () => {
+    const s = 'Mounted at /mnt/data/projects';
+    expect(anonymizeString(s)).not.toMatch(/\/mnt\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /srv paths', () => {
+    const s = 'Served from /srv/www/app/public';
+    expect(anonymizeString(s)).not.toMatch(/\/srv\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /etc paths', () => {
+    const s = 'Config at /etc/hosts was modified';
+    expect(anonymizeString(s)).not.toMatch(/\/etc\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts /usr paths', () => {
+    const s = 'Library in /usr/local/lib/node_modules/vitest';
+    expect(anonymizeString(s)).not.toMatch(/\/usr\//);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+});
+
+describe('anonymizeString — Windows paths with spaces', () => {
+  it('redacts Windows backslash paths with spaces', () => {
+    const s = 'Installed at C:\\Program Files\\MyApp\\bin\\app.exe';
+    expect(anonymizeString(s)).not.toMatch(/Program Files/);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+
+  it('redacts Windows forward-slash normalized paths', () => {
+    const s = 'Found at C:/Users/foo/bar/project/src/index.js';
+    expect(anonymizeString(s)).not.toMatch(/C:\/Users/);
+    expect(anonymizeString(s)).toContain('<redacted-path>');
+  });
+});
+
+describe('anonymizeString — IPv4 addresses', () => {
+  it('redacts 192.168.x.x private addresses', () => {
+    const s = 'Connected to 192.168.1.1 via LAN';
+    expect(anonymizeString(s)).not.toMatch(/192\.168\./);
+    expect(anonymizeString(s)).toContain('<IP>');
+  });
+
+  it('redacts 10.x.x.x private addresses', () => {
+    const s = 'Server at 10.0.0.1 responded';
+    expect(anonymizeString(s)).not.toMatch(/10\.0\.0\.1/);
+    expect(anonymizeString(s)).toContain('<IP>');
+  });
+
+  it('redacts loopback 127.0.0.1', () => {
+    const s = 'Bound to 127.0.0.1:8080';
+    expect(anonymizeString(s)).not.toMatch(/127\.0\.0\.1/);
+    expect(anonymizeString(s)).toContain('<IP>');
+  });
+
+  it('redacts public routable addresses', () => {
+    const s = 'Origin IP: 203.0.113.42 flagged';
+    expect(anonymizeString(s)).not.toMatch(/203\.0\.113\.42/);
+    expect(anonymizeString(s)).toContain('<IP>');
+  });
+});
+
+describe('anonymizeString — GitHub/GitLab VCS URLs', () => {
+  it('redacts github.com org/repo URLs', () => {
+    const s = 'See https://github.com/alice/private-repo for reference';
+    expect(anonymizeString(s)).not.toMatch(/github\.com\/alice/);
+    expect(anonymizeString(s)).toContain('<VCS-URL>');
+  });
+
+  it('redacts gitlab.com org/repo URLs', () => {
+    const s = 'MR at https://gitlab.com/myorg/my-project/merge_requests/42';
+    expect(anonymizeString(s)).not.toMatch(/gitlab\.com\/myorg/);
+    expect(anonymizeString(s)).toContain('<VCS-URL>');
+  });
+
+  it('redacts self-hosted GitLab URLs', () => {
+    const s = 'Push to https://gitlab.gotzendorfer.at/user/repo';
+    expect(anonymizeString(s)).not.toMatch(/gotzendorfer\.at\/user/);
+    expect(anonymizeString(s)).toContain('<VCS-URL>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part B — anonymizeLearning stamps anonymized + version
+// ---------------------------------------------------------------------------
+
+describe('anonymizeLearning — metadata stamping', () => {
+  it('stamps anonymized: true on the output', () => {
+    // Even when entry has anonymized: false (private entry pre-promotion)
+    const entry = baseLearning({ scope: 'private', anonymized: false });
+    delete entry.anonymization_version;
+    const a = anonymizeLearning(entry);
+    expect(a.anonymized).toBe(true);
+  });
+
+  it('stamps anonymization_version equal to CURRENT_ANONYMIZATION_VERSION', () => {
+    const a = anonymizeLearning(baseLearning());
+    expect(a.anonymization_version).toBe(CURRENT_ANONYMIZATION_VERSION);
+  });
+
+  it('overwrites a stale anonymization_version', () => {
+    const a = anonymizeLearning(baseLearning({ anonymization_version: 0 }));
+    expect(a.anonymization_version).toBe(CURRENT_ANONYMIZATION_VERSION);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part C — Promotion pipeline
+// ---------------------------------------------------------------------------
+
+/** Build a minimal private hardware-pattern learning suitable for promotion. */
+const privateHwLearning = (overrides = {}) => ({
+  id: `priv-${overrides.id ?? '1'}`,
+  type: 'hardware-pattern',
+  subject: overrides.subject ?? 'oom-kill::linux-x86_64',
+  insight: overrides.insight ?? 'OOM kill observed during wave execution.',
+  evidence: overrides.evidence ?? 'signal=oom-kill, occurrences=2',
+  confidence: 0.5,
+  source_session: 'session-abc-2026-04-19',
+  created_at: '2026-04-19T10:00:00Z',
+  expires_at: '2026-05-19T10:00:00Z',
+  scope: 'private',
+  host_class: overrides.host_class ?? 'linux-x86_64',
+  anonymized: false,
+  ...overrides,
+});
+
+describe('promoteHwLearnings', () => {
+  it('promotes 2 private entries → 2 new public entries, originals preserved', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    const e1 = privateHwLearning({ id: '1', subject: 'oom-kill::linux-x86_64' });
+    const e2 = privateHwLearning({ id: '2', subject: 'disk-full::linux-x86_64' });
+    writeFileSync(input, [e1, e2].map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const result = await promoteHwLearnings({ input, dryRun: false });
+
+    expect(result.promoted).toBe(2);
+    expect(result.skipped).toBe(0);
+
+    // Read back and verify
+    const fileContent = readFileSync(input, 'utf8');
+    const lines = fileContent.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(4); // 2 originals + 2 public twins
+
+    const privates = lines.filter((l) => l.scope === 'private');
+    const publics = lines.filter((l) => l.scope === 'public');
+    expect(privates).toHaveLength(2);
+    expect(publics).toHaveLength(2);
+
+    // Public twins must pass the privacy contract
+    for (const pub of publics) {
+      expect(pub.anonymized).toBe(true);
+      expect(pub.anonymization_version).toBe(CURRENT_ANONYMIZATION_VERSION);
+      expect(pub.host_class).toBeTruthy();
+    }
+  });
+
+  it('creates a backup file before writing', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    writeFileSync(input, JSON.stringify(privateHwLearning()) + '\n');
+
+    await promoteHwLearnings({ input, dryRun: false });
+
+    const files = readdirSync(tmp);
+    const backups = files.filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(1);
+  });
+
+  it('dry-run: does not mutate learnings.jsonl', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    const original = JSON.stringify(privateHwLearning()) + '\n';
+    writeFileSync(input, original);
+
+    await promoteHwLearnings({ input, dryRun: true });
+
+    expect(readFileSync(input, 'utf8')).toBe(original);
+  });
+
+  it('dry-run: does not create a backup file', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    writeFileSync(input, JSON.stringify(privateHwLearning()) + '\n');
+
+    await promoteHwLearnings({ input, dryRun: true });
+
+    const files = readdirSync(tmp);
+    const backups = files.filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(0);
+  });
+
+  it('skips already-public entries (counts them in skipped)', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    const pub = baseLearning({ id: 'pub1' }); // scope=public
+    const priv = privateHwLearning({ id: 'priv1' });
+    writeFileSync(input, [pub, priv].map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const result = await promoteHwLearnings({ input, dryRun: false });
+
+    expect(result.promoted).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('no-op when no private hardware-pattern entries exist', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    writeFileSync(input, JSON.stringify(baseLearning()) + '\n'); // already public
+
+    const result = await promoteHwLearnings({ input, dryRun: false });
+
+    expect(result.promoted).toBe(0);
+    expect(result.skipped).toBe(1);
+    // No backup should be created (nothing written)
+    const files = readdirSync(tmp);
+    const backups = files.filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(0);
+  });
+
+  it('contract-violating entry (missing host_class) throws before any write', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    const bad = privateHwLearning({ id: 'bad1', host_class: null });
+    writeFileSync(input, JSON.stringify(bad) + '\n');
+    const original = readFileSync(input, 'utf8');
+
+    await expect(promoteHwLearnings({ input, dryRun: false })).rejects.toThrow();
+
+    // learnings.jsonl must be untouched
+    expect(readFileSync(input, 'utf8')).toBe(original);
+  });
+
+  it('promoted entries have insight/evidence redacted', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    const e = privateHwLearning({
+      id: 'pii1',
+      insight: 'OOM at /home/alice/code/project on 192.168.1.10',
+      evidence: 'by alice@example.com via https://github.com/alice/repo',
+    });
+    writeFileSync(input, JSON.stringify(e) + '\n');
+
+    await promoteHwLearnings({ input, dryRun: false });
+
+    const lines = readFileSync(input, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const pub = lines.find((l) => l.scope === 'public');
+    expect(pub).toBeTruthy();
+    expect(pub.insight).not.toMatch(/\/home\//);
+    expect(pub.insight).not.toMatch(/192\.168\./);
+    expect(pub.evidence).not.toMatch(/@example\.com/);
+    expect(pub.evidence).not.toMatch(/github\.com\/alice/);
+  });
+
+  it('returns flags when learnings.jsonl contains malformed lines', async () => {
+    const input = join(tmp, 'learnings.jsonl');
+    writeFileSync(input, 'not-json\n' + JSON.stringify(privateHwLearning()) + '\n');
+
+    const result = await promoteHwLearnings({ input, dryRun: true });
+
+    expect(result.flags.some((f) => f.includes('malformed'))).toBe(true);
   });
 });
