@@ -437,11 +437,13 @@ After reviewing wave results, decide:
 
 - **On track**: proceed to next wave as planned
 - **Minor issues**: add fix tasks to next wave's agent assignments
-- **Major blocker**: inform the user, propose revised plan for remaining waves
+- **Major blocker**: propose a revised plan for the remaining waves and present the choice to the user via `AskUserQuestion` (proceed / revise / abort). See `.claude/rules/ask-via-tool.md` — never surface this as an inline prose question.
 - **Agent failed**: re-dispatch with corrected instructions in next wave
-- **Scope change**: document why, adjust remaining waves, inform user
+- **Scope change**: document why, adjust remaining waves, present scope deltas to the user via `AskUserQuestion` (accept / reject / modify).
 
 **Deviation protocol**: ALWAYS document WHY you deviated from the plan. Log it in a brief note that session-end can reference.
+
+**User interaction protocol**: Any decision surfaced to the user from this loop — plan revisions, scope changes, recovery-path choice, pause/continue prompts — goes through `AskUserQuestion`. Inline markdown-list choices are a bug; see `.claude/rules/ask-via-tool.md`.
 
 #### Dynamic Scaling
 

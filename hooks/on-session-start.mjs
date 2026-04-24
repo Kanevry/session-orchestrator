@@ -221,9 +221,19 @@ async function main() {
   const branch = (await gitOutput(['branch', '--show-current'], projectRoot)) ?? 'unknown';
 
   // v3.1.0 env-aware banner (opt-out via enable-host-banner: false in Session Config).
+  // The ask-via-tool nudge rides the same opt-out flag — both are coordinator
+  // reminders shown at session start; users who silence one expect silence.
   let bannerData = null;
   if (await isHostBannerEnabled(projectRoot)) {
     bannerData = await emitHostBanner(projectRoot);
+    // Always-on nudge: user decisions must go through AskUserQuestion, not inline
+    // markdown lists. The coordinator chat stream is dense and prose questions
+    // are reliably missed. Full rationale + exceptions in .claude/rules/ask-via-tool.md.
+    try {
+      console.log(JSON.stringify({
+        systemMessage: '🎯 User decisions → AskUserQuestion tool. Inline choice lists = bug (.claude/rules/ask-via-tool.md).',
+      }));
+    } catch { /* best effort */ }
   }
 
   // v3.1.0 multi-session registry (#168). All steps best-effort — failures
