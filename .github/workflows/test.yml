@@ -45,9 +45,13 @@ jobs:
         run: |
           bash --version | head -1
           git --version
+          jq --version
+
+      - name: Configure git identity (all platforms)
+        shell: bash
+        run: |
           git config --global user.name "CI"
           git config --global user.email "ci@test.com"
-          jq --version
 
       - name: Install Node dependencies
         run: npm ci

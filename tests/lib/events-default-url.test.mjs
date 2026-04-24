@@ -86,7 +86,8 @@ describe('DEFAULT_EVENT_URL — single source of truth', () => {
       }
     }
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatch(/scripts\/lib\/events\.mjs$/);
+    // Normalize path separators — Windows uses `\`, the regex uses `/`.
+    expect(hits[0].replaceAll(path.sep, '/')).toMatch(/scripts\/lib\/events\.mjs$/);
   });
 
   it('hooks/on-stop.mjs imports DEFAULT_EVENT_URL (not redeclares the literal)', () => {

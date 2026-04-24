@@ -87,8 +87,11 @@ describe('assertNodeVersion', () => {
 // ---------------------------------------------------------------------------
 
 describe('assertDepInstalled', () => {
-  it('returns true for "vitest" which is installed as a devDependency', async () => {
-    const result = await assertDepInstalled('vitest');
+  it('returns true for "prettier" which is installed as a devDependency', async () => {
+    // Using 'prettier' rather than 'vitest' — vitest 4's dynamic-import path
+    // has side-effects that can fail on Windows runners when `import()` is
+    // invoked from within a vitest worker (#280 regression).
+    const result = await assertDepInstalled('prettier');
     expect(result).toBe(true);
   });
 
