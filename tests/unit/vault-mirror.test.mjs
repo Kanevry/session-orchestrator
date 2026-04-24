@@ -171,6 +171,75 @@ describe('vault-mirror CLI', () => {
     expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
   });
 
+  // ── --strict-schema flag (Issue #249 follow-up) ──────────────────────────
+  describe('--strict-schema', () => {
+    it('exits 1 and emits strict-schema-abort when any entry is skipped-invalid', () => {
+      const vaultDir = tmp();
+      const invalidEntry = JSON.stringify({
+        id: 'a1b2c3d4-0001-4000-8000-000000000002',
+        type: 'architectural',
+        subject: 'strict-schema-probe',
+        // insight missing → skipped-invalid
+        evidence: 'evidence',
+        confidence: 0.9,
+        source_session: 'session-2026-04-24',
+        created_at: '2026-04-24T10:00:00Z',
+      });
+      const sourceFile = writeJsonl(vaultDir, invalidEntry);
+
+      const result = runMirror([
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'learning',
+        '--strict-schema',
+      ]);
+
+      expect(result.status).toBe(1);
+      const outLines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+      expect(outLines[0].action).toBe('skipped-invalid');
+      const abort = outLines[outLines.length - 1];
+      expect(abort.action).toBe('strict-schema-abort');
+      expect(abort.skipped).toBe(1);
+      expect(abort.kind).toBe('learning');
+      expect(result.stderr).toContain('strict-schema');
+    });
+
+    it('exits 0 when all entries pass validation (flag is no-op)', () => {
+      const vaultDir = tmp();
+      const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+
+      const result = runMirror([
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'learning',
+        '--strict-schema',
+      ]);
+
+      expect(result.status).toBe(0);
+      // No strict-schema-abort line on clean runs
+      const stdout = result.stdout.trim();
+      expect(stdout).not.toMatch(/strict-schema-abort/);
+    });
+
+    it('default behavior (no --strict-schema) still exits 0 on skipped-invalid', () => {
+      const vaultDir = tmp();
+      const invalidEntry = JSON.stringify({
+        id: 'a1b2c3d4-0001-4000-8000-000000000003',
+        type: 'architectural',
+        subject: 'lenient-default-probe',
+        evidence: 'e',
+        confidence: 0.9,
+        source_session: 'session-2026-04-24',
+        created_at: '2026-04-24T10:00:00Z',
+      });
+      const sourceFile = writeJsonl(vaultDir, invalidEntry);
+
+      const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
+    });
+  });
+
   it('exits 2 when vault-dir does not exist', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);

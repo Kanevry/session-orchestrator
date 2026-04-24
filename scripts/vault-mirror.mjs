@@ -46,10 +46,11 @@ const vaultDir = getArg('--vault-dir');
 const source = getArg('--source');
 const kind = getArg('--kind');
 const dryRun = args.includes('--dry-run');
+const strictSchema = args.includes('--strict-schema');
 
 if (!vaultDir || !source || !kind) {
   process.stderr.write(
-    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run]\n',
+    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run] [--strict-schema]\n',
   );
   process.exit(1);
 }
@@ -621,6 +622,7 @@ async function main() {
   }
 
   let lineNum = 0;
+  let skippedInvalidCount = 0;
 
   for (const line of lines) {
     lineNum++;
@@ -649,12 +651,25 @@ async function main() {
         process.stdout.write(
           JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
         );
+        skippedInvalidCount++;
         continue;
       }
       // Unexpected filesystem errors → fatal
       process.stderr.write(`vault-mirror: filesystem error on line ${lineNum}: ${err.message}\n`);
       process.exit(2);
     }
+  }
+
+  // --strict-schema: abort with exit 1 when any entry was skipped-invalid.
+  // Useful in CI to catch producer-side schema drift early (issue #249).
+  if (strictSchema && skippedInvalidCount > 0) {
+    process.stdout.write(
+      JSON.stringify({ action: 'strict-schema-abort', skipped: skippedInvalidCount, kind }) + '\n',
+    );
+    process.stderr.write(
+      `vault-mirror: --strict-schema: ${skippedInvalidCount} entries failed validation — exiting 1\n`,
+    );
+    process.exit(1);
   }
 }
 
