@@ -13,6 +13,22 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readConfigFile, parseSessionConfig } from './config.mjs';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Default list of top-level directory names to exclude from new worktrees.
+ * Issue #192 — skip build artifacts to reduce RAM spikes on memory-constrained
+ * sessions. Can be overridden per-call via options.excludePatterns or via
+ * Session Config `worktree-exclude`.
+ */
+const DEFAULT_EXCLUDE_PATTERNS = [
+  'node_modules', 'dist', 'build', '.next', '.nuxt',
+  'coverage', '.cache', '.turbo', '.vercel', 'out',
+];
 
 // Do not spam stdout/stderr with git command echoes.
 $.verbose = false;
@@ -83,9 +99,14 @@ function _worktreeInfo(suffix) {
  *
  * @param {string} suffix   Unique suffix for the branch (e.g. "wave2-agent1").
  * @param {string} [baseRef="HEAD"]  Git ref to base the worktree on.
+ * @param {{ excludePatterns?: string[] }} [options={}]
+ *   Optional configuration.
+ *   - `excludePatterns`: list of top-level directory names to remove after
+ *     worktree creation. Overrides the Session Config `worktree-exclude` value
+ *     and the hardcoded default. Pass `[]` to disable all exclusions.
  * @returns {Promise<string>}  Absolute path to the created worktree.
  */
-export async function createWorktree(suffix, baseRef = 'HEAD') {
+export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
   const { branch, wtPath } = _worktreeInfo(suffix);
   // Capture cwd at call time so git commands run in the correct repo even if
   // zx's module-level default cwd differs (e.g. during tests with chdir).
@@ -121,6 +142,40 @@ export async function createWorktree(suffix, baseRef = 'HEAD') {
       );
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Exclude build artifacts (issue #192)
+  // -------------------------------------------------------------------------
+
+  // Resolve exclude patterns: explicit options > Session Config > hardcoded default.
+  let excludePatterns;
+  if (options.excludePatterns !== undefined) {
+    excludePatterns = options.excludePatterns;
+  } else {
+    // Attempt to read from Session Config; fall back to hardcoded default.
+    // Semantics:
+    //   key absent (undefined)  → fall back to DEFAULT_EXCLUDE_PATTERNS
+    //   key explicit null       → empty array (disable all excludes)
+    //   key is an array         → use that array
+    try {
+      const content = await readConfigFile(process.cwd());
+      const config = parseSessionConfig(content);
+      const fromConfig = config['worktree-exclude'];
+      if (fromConfig === null) {
+        // Explicit `worktree-exclude: null` (YAML null) — user opted out of excludes.
+        excludePatterns = [];
+      } else if (Array.isArray(fromConfig)) {
+        excludePatterns = fromConfig;
+      } else {
+        // Key missing (undefined) or unrecognised value — use hardcoded default.
+        excludePatterns = DEFAULT_EXCLUDE_PATTERNS;
+      }
+    } catch {
+      excludePatterns = DEFAULT_EXCLUDE_PATTERNS;
+    }
+  }
+
+  await applyWorktreeExcludes(wtPath, excludePatterns);
 
   // Persist meta for freshness guard (issue #195). Non-fatal on failure.
   await _writeWorktreeMeta(suffix, { branch, wtPath, baseRef, baseSha, repoRoot: cwd }).catch((err) => {
@@ -158,6 +213,53 @@ async function _writeWorktreeMeta(suffix, { branch, wtPath, baseRef, baseSha, re
   const tmpPath = `${metaPath}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf8');
   await fs.rename(tmpPath, metaPath);
+}
+
+// ---------------------------------------------------------------------------
+// applyWorktreeExcludes
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove top-level directories matching `patterns` from a worktree path.
+ * Pure fs operation — no git, no zx. Exported for unit testing (issue #192).
+ *
+ * @param {string} wtPath  Absolute path to the worktree root.
+ * @param {string[]} patterns  Top-level directory names to remove.
+ * @returns {Promise<void>}
+ */
+export async function applyWorktreeExcludes(wtPath, patterns) {
+  if (!patterns || patterns.length === 0) return;
+
+  let anyRemoved = false;
+  let allFailed = true;
+
+  for (const pattern of patterns) {
+    const targetPath = path.join(wtPath, pattern);
+    let dirExists = false;
+    try {
+      const stat = await fs.stat(targetPath);
+      dirExists = stat.isDirectory();
+    } catch {
+      // Pattern does not exist — silently skip.
+      allFailed = false; // not a failure, just absent
+      continue;
+    }
+
+    if (dirExists) {
+      try {
+        await fs.rm(targetPath, { recursive: true, force: true });
+        process.stderr.write(`[worktree] excluded: ${pattern}\n`);
+        anyRemoved = true;
+        allFailed = false;
+      } catch {
+        // Individual removal failure — continue with remaining patterns.
+      }
+    }
+  }
+
+  if (anyRemoved === false && allFailed) {
+    process.stderr.write(`[worktree] WARNING: all pattern removals failed for worktree at ${wtPath}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

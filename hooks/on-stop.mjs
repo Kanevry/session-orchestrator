@@ -22,6 +22,7 @@ import { $ } from 'zx';
 import { appendJsonl } from '../scripts/lib/common.mjs';
 import { DEFAULT_EVENT_URL, eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — no io.mjs because Stop hooks exit 0 always, never deny)
@@ -166,6 +167,31 @@ function fireWebhook(type, payload) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve this session's id. Stdin payload wins. If Claude Code did not pass
+ * one (Codex / Cursor paths, or older harnesses), fall back to
+ * `.orchestrator/current-session.json` which on-session-start.mjs writes.
+ *
+ * @param {object|null} input
+ * @param {string} projectRoot
+ * @returns {Promise<string|null>}
+ */
+async function resolveSessionId(input, projectRoot) {
+  const fromStdin = input?.session_id ?? input?.sessionId ?? null;
+  if (typeof fromStdin === 'string' && fromStdin.length > 0) return fromStdin;
+  try {
+    const raw = await fs.readFile(
+      path.join(projectRoot, '.orchestrator', 'current-session.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
+      return parsed.session_id;
+    }
+  } catch { /* missing or unparseable is fine */ }
+  return null;
+}
+
+/**
  * Handle a Stop event. Reads wave from scope file + git info, appends JSONL.
  * @param {object|null} input
  */
@@ -176,8 +202,21 @@ async function handleStop(input) {
   const wave = await readWaveNumber(projectRoot);
   const { commit, branch } = await gitInfo(projectRoot);
 
-  // Extract session_id from input if provided
-  const sessionId = input?.session_id ?? input?.sessionId ?? null;
+  const sessionId = await resolveSessionId(input, projectRoot);
+
+  // v3.1.0 multi-session registry (#169) — best-effort deregister. Missing
+  // entry is fine (zombie sweep handles crashed sessions). Failures are logged
+  // to sweep.log for observability but never re-thrown (hook must remain silent).
+  if (sessionId) {
+    try {
+      await deregisterSelf(sessionId);
+    } catch (err) {
+      // Deregistration failed — emit an observability breadcrumb to sweep.log.
+      // Do NOT throw, do NOT write to stderr: the hook is informational-only.
+      logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
+    }
+  }
+
   // duration_ms: if input provides a start time we compute from it, else 0
   const durationMs =
     typeof input?.start_ms === 'number' ? Date.now() - input.start_ms : 0;
