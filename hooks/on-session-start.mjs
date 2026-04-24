@@ -34,7 +34,9 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { emitEvent } from '../scripts/lib/events.mjs';
+import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
+import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
+import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { SO_PLATFORM, resolveProjectDir } from '../scripts/lib/platform.mjs';
 import {
   registerSelf,
@@ -279,6 +281,30 @@ async function main() {
     payload.claude_processes_count = bannerData.resources.claude_processes_count;
   }
   await emitEvent('orchestrator.session.started', payload);
+
+  // Size-based rotation of events.jsonl (#251). Session-start is the single
+  // rotation trigger — per-append overhead is rejected design. Any failure
+  // is swallowed: rotation must NEVER block the hook.
+  try {
+    let rotCfg = { enabled: true, 'max-size-mb': 10, 'max-backups': 5 };
+    try {
+      const md = await readConfigFile(projectRoot);
+      const config = parseSessionConfig(md);
+      if (config['events-rotation']) rotCfg = config['events-rotation'];
+    } catch { /* missing config → defaults */ }
+
+    const result = maybeRotate({
+      logPath: eventsFilePath(),
+      maxSizeMb: rotCfg['max-size-mb'] ?? 10,
+      maxBackups: rotCfg['max-backups'] ?? 5,
+      enabled: rotCfg.enabled !== false,
+    });
+    if (result.rotated) {
+      console.error(`events-rotation: archived ${result.archivedAs} (${result.sizeBefore} bytes)`);
+    }
+  } catch (err) {
+    console.error(`events-rotation: skipped (${err?.message ?? err})`);
+  }
 }
 
 // Top-level guard — always exit 0 (non-blocking informational hook).

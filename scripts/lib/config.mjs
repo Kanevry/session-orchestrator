@@ -199,7 +199,7 @@ function _coerceObject(kv, key) {
     if (colonIdx === -1) continue;
     const k = pair.slice(0, colonIdx).trim();
     const v = pair.slice(colonIdx + 1).trim();
-    if (k && v) result[k] = v;
+    if (k) result[k] = v;
   }
   return Object.keys(result).length === 0 ? null : result;
 }
@@ -715,6 +715,79 @@ function _parseVaultStaleness(content) {
 }
 
 // ---------------------------------------------------------------------------
+// Internal: events-rotation block parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the top-level `events-rotation:` YAML block from markdown content.
+ * Defaults: enabled=true, max-size-mb=10, max-backups=5.
+ * Bounds: max-size-mb 1..1024, max-backups 1..20. Out-of-range values fall
+ * back to defaults (silently; mirrors the tolerant shape of other block
+ * parsers — hard errors here would break session-start, which must never
+ * block).
+ * @param {string} content — full file contents
+ * @returns {{enabled: boolean, "max-size-mb": number, "max-backups": number}}
+ */
+function _parseEventsRotation(content) {
+  const defaults = { enabled: true, 'max-size-mb': 10, 'max-backups': 5 };
+
+  const lines = content.split(/\r?\n/);
+  let inBlock = false;
+  const blockLines = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!inBlock) {
+      if (/^events-rotation:\s*$/.test(line)) inBlock = true;
+      continue;
+    }
+    if (line.length > 0 && !/^\s/.test(line)) break;
+    blockLines.push(line);
+  }
+
+  if (blockLines.length === 0) return defaults;
+
+  let erEnabled = true;
+  let erMaxSize = 10;
+  let erMaxBackups = 5;
+
+  for (const rawLine of blockLines) {
+    const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
+    if (!clean.trim()) continue;
+
+    const kvMatch = clean.match(/^\s+([a-zA-Z_-]+):\s*(.*)/);
+    if (!kvMatch) continue;
+
+    const k = kvMatch[1];
+    let v = kvMatch[2].trim();
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+
+    switch (k) {
+      case 'enabled':
+        erEnabled = v.toLowerCase() !== 'false';
+        break;
+      case 'max-size-mb': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (n >= 1 && n <= 1024) erMaxSize = n;
+        }
+        break;
+      }
+      case 'max-backups': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (n >= 1 && n <= 20) erMaxBackups = n;
+        }
+        break;
+      }
+    }
+  }
+
+  return { enabled: erEnabled, 'max-size-mb': erMaxSize, 'max-backups': erMaxBackups };
+}
+
+// ---------------------------------------------------------------------------
 // Internal: vault-integration sub-keys from Session Config KV map
 // ---------------------------------------------------------------------------
 
@@ -839,6 +912,14 @@ export function parseSessionConfig(mdContent) {
   const learningsSurfaceTopN = _coerceInteger(kv, 'learnings-surface-top-n', 15);
   const groundingInjectionMaxFiles = _coerceInteger(kv, 'grounding-injection-max-files', 3);
   const discoveryConfidenceThreshold = _coerceInteger(kv, 'discovery-confidence-threshold', 60);
+  // discovery-parallelism: bounded 1..16, silent fallback to default 5 (matches events-rotation pattern)
+  const discoveryParallelism = (() => {
+    const raw = _getVal(kv, 'discovery-parallelism', '5');
+    if (!/^\d+$/.test(raw)) return 5;
+    const n = parseInt(raw, 10);
+    if (n < 1 || n > 16) return 5;
+    return n;
+  })();
 
   // Float fields
   const learningDecayRate = _coerceFloat(kv, 'learning-decay-rate', 0.05, 0.0, 1.0);
@@ -872,6 +953,28 @@ export function parseSessionConfig(mdContent) {
 
   // Object fields
   const agentMapping = _coerceObject(kv, 'agent-mapping');
+  if (agentMapping !== null) {
+    // Validate role keys against canonical list from skills/_shared/config-reading.md
+    const ALLOWED_ROLES = ['impl', 'test', 'db', 'ui', 'security', 'compliance', 'docs', 'perf'];
+    const invalidKeys = [];
+    for (const [k, v] of Object.entries(agentMapping)) {
+      if (!ALLOWED_ROLES.includes(k)) {
+        invalidKeys.push(k);
+        continue;
+      }
+      if (typeof v !== 'string' || v === '') {
+        throw new Error(
+          `config.mjs: agent-mapping role '${k}' has invalid value '${v}' (expected non-empty string)`
+        );
+      }
+    }
+    if (invalidKeys.length > 0) {
+      throw new Error(
+        `config.mjs: agent-mapping contains invalid role key(s): ${invalidKeys.join(', ')} ` +
+          `(allowed: ${ALLOWED_ROLES.join(', ')})`
+      );
+    }
+  }
   const enforcementGates = _coerceBoolObject(kv, 'enforcement-gates');
 
   // Special field
@@ -894,6 +997,9 @@ export function parseSessionConfig(mdContent) {
 
   // vault-staleness: parsed from full content (standalone top-level block)
   const vaultStaleness = _parseVaultStaleness(mdContent);
+
+  // events-rotation: parsed from full content (standalone top-level block)
+  const eventsRotation = _parseEventsRotation(mdContent);
 
   return {
     'agents-per-wave': agentsPerWave,
@@ -921,6 +1027,7 @@ export function parseSessionConfig(mdContent) {
     'discovery-exclude-paths': discoveryExcludePaths,
     'discovery-severity-threshold': discoverySeverityThreshold,
     'discovery-confidence-threshold': discoveryConfidenceThreshold,
+    'discovery-parallelism': discoveryParallelism,
     'persistence': persistence,
     'memory-cleanup-threshold': memoryCleanupThreshold,
     'learning-expiry-days': learningExpiryDays,
@@ -950,6 +1057,7 @@ export function parseSessionConfig(mdContent) {
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,
     'vault-staleness': vaultStaleness,
+    'events-rotation': eventsRotation,
   };
 }
 

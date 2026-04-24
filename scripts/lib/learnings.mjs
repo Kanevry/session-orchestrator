@@ -38,7 +38,20 @@ export const VALID_SCOPES = Object.freeze(['local', 'private', 'public']);
 /** Current anonymization ruleset version. Bump when C3 redaction rules change. */
 export const CURRENT_ANONYMIZATION_VERSION = 1;
 
-/** Legacy schema fields expected on every learning. */
+/**
+ * Current learnings-record schema version.
+ *
+ * Records are tagged with `schema_version` at write time. Records without the
+ * field (legacy, pre-versioning) are read as `schema_version: 0`.
+ *
+ * History:
+ *  - 0: legacy pre-versioning shape (no `schema_version` field). Still accepted
+ *       on read for backward compatibility. Treated as implicit v0.
+ *  - 1: current shape. All NEW appends are stamped with `schema_version: 1`.
+ */
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/** Legacy schema fields expected on every learning (pre-v1). */
 const LEGACY_REQUIRED_FIELDS = Object.freeze([
   'id',
   'type',
@@ -75,6 +88,14 @@ export class ValidationError extends Error {
 export function validateLearning(entry) {
   if (!entry || typeof entry !== 'object') {
     throw new ValidationError('learning must be an object');
+  }
+
+  // schema_version: 0 (implicit/legacy), 1 (current). Both accepted.
+  const schemaVersion = entry.schema_version ?? 0;
+  if (schemaVersion !== 0 && schemaVersion !== 1) {
+    throw new ValidationError(
+      `schema_version must be 0 (legacy) or 1, got: ${schemaVersion}`
+    );
   }
 
   for (const field of LEGACY_REQUIRED_FIELDS) {
@@ -114,7 +135,13 @@ export function validateLearning(entry) {
     );
   }
 
-  const normalized = { ...entry, scope, host_class: hostClass, anonymized };
+  const normalized = {
+    ...entry,
+    schema_version: schemaVersion,
+    scope,
+    host_class: hostClass,
+    anonymized,
+  };
 
   // anonymization_version is only meaningful when anonymized=true. If the
   // caller omitted it while setting anonymized=true, stamp the current
@@ -129,6 +156,12 @@ export function validateLearning(entry) {
   return normalized;
 }
 
+// Module-level dedupe set for schema-version warnings.
+// Keyed by record `id` (or '<unknown>' for records without an id) so each
+// legacy record warns at most once per process, even if normalizeLearning is
+// called multiple times (e.g., during readLearnings + filter helpers).
+const _warnedMissingSchemaVersion = new Set();
+
 /**
  * Normalize a learning entry read from disk. Applies defaults for the
  * extended fields so callers can treat legacy and new entries uniformly.
@@ -140,8 +173,25 @@ export function validateLearning(entry) {
  */
 export function normalizeLearning(entry) {
   if (!entry || typeof entry !== 'object') return entry;
+  // Records without `schema_version` are pre-versioning (legacy). Tag as v0.
+  // Warn once per unique id per process so operators can spot-check the fleet
+  // without log-spam on large files. Never throw.
+  let schemaVersion;
+  if ('schema_version' in entry && entry.schema_version !== undefined) {
+    schemaVersion = entry.schema_version;
+  } else {
+    schemaVersion = 0;
+    const warnKey = entry.id ?? '<unknown>';
+    if (!_warnedMissingSchemaVersion.has(warnKey)) {
+      _warnedMissingSchemaVersion.add(warnKey);
+      console.error(
+        `[learnings] WARN: record missing schema_version (id=${warnKey}); treating as schema_version=0 (pre-versioning legacy)`
+      );
+    }
+  }
   return {
     ...entry,
+    schema_version: schemaVersion,
     scope: entry.scope ?? 'local',
     host_class: entry.host_class ?? null,
     anonymized: entry.anonymized ?? false,
@@ -185,6 +235,11 @@ export async function readLearnings(filePath) {
  * Append a single validated learning to the JSONL file. Returns the
  * validated (normalized) entry. Creates the parent directory if missing.
  *
+ * All records are validated against `schema_version: 1` requirements
+ * before appending. New records missing `schema_version` are auto-stamped
+ * with `CURRENT_SCHEMA_VERSION` prior to validation so every newly written
+ * line carries a version tag.
+ *
  * Atomic append via write-temp-then-concat is NOT used here — JSONL
  * lines shorter than PIPE_BUF (~4KB on Linux, ~512B on macOS) are
  * atomic on POSIX append. For very large insight/evidence fields that
@@ -195,7 +250,11 @@ export async function readLearnings(filePath) {
  * @returns {Promise<object>} validated entry
  */
 export async function appendLearning(filePath, entry) {
-  const validated = validateLearning(entry);
+  const stamped = {
+    ...entry,
+    schema_version: entry?.schema_version ?? CURRENT_SCHEMA_VERSION,
+  };
+  const validated = validateLearning(stamped);
   const line = JSON.stringify(validated) + '\n';
   await mkdir(path.dirname(filePath), { recursive: true });
   const { appendFile } = await import('node:fs/promises');
@@ -213,7 +272,12 @@ export async function appendLearning(filePath, entry) {
  * @returns {Promise<object[]>} validated entries written
  */
 export async function rewriteLearnings(filePath, entries) {
-  const validated = entries.map((e) => validateLearning(e));
+  const validated = entries.map((e) =>
+    validateLearning({
+      ...e,
+      schema_version: e?.schema_version ?? CURRENT_SCHEMA_VERSION,
+    })
+  );
   const body = validated.map((e) => JSON.stringify(e)).join('\n') + '\n';
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
