@@ -718,7 +718,7 @@ Session Orchestrator includes bash scripts for critical workflow paths. These pr
 
 - `scripts/parse-config.mjs` — Parses `## Session Config` from a config host file, outputs validated JSON with all 40+ fields and defaults applied. Run: `node scripts/parse-config.mjs [path/to/CLAUDE.md|AGENTS.md]`
 - `scripts/run-quality-gate.sh` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
-- `scripts/validate-wave-scope.sh` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
+- `scripts/validate-wave-scope.mjs` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
 
 Run `npm test` to execute the vitest suite.
 
