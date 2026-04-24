@@ -40,6 +40,7 @@ import {
   registerSelf,
   detectPeers,
   sweepZombies,
+  logSweepEvent,
 } from '../scripts/lib/session-registry.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -232,13 +233,19 @@ async function main() {
   let peers = [];
   try {
     await sweepZombies().catch(() => ({ removed: [], logged: 0 }));
-    await registerSelf({
-      sessionId,
-      projectRoot,
-      branch,
-      platform,
-      hostClass: bannerData?.host?.host_class ?? null,
-    }).catch(() => {});
+    try {
+      await registerSelf({
+        sessionId,
+        projectRoot,
+        branch,
+        platform,
+        hostClass: bannerData?.host?.host_class ?? null,
+      });
+    } catch (err) {
+      // Registration failed — emit an observability breadcrumb to sweep.log.
+      // Do NOT throw, do NOT write to stderr: the hook is informational-only.
+      logSweepEvent({ event: 'register-failed', session_id: sessionId, error: err?.message ?? String(err) });
+    }
     peers = await detectPeers({ sessionId }).catch(() => []);
   } catch { /* swallow — hook must remain non-blocking */ }
 

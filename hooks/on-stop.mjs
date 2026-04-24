@@ -22,7 +22,7 @@ import { $ } from 'zx';
 import { appendJsonl } from '../scripts/lib/common.mjs';
 import { eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
-import { deregisterSelf } from '../scripts/lib/session-registry.mjs';
+import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — no io.mjs because Stop hooks exit 0 always, never deny)
@@ -205,9 +205,16 @@ async function handleStop(input) {
   const sessionId = await resolveSessionId(input, projectRoot);
 
   // v3.1.0 multi-session registry (#169) — best-effort deregister. Missing
-  // entry is fine (zombie sweep handles crashed sessions), all errors swallowed.
+  // entry is fine (zombie sweep handles crashed sessions). Failures are logged
+  // to sweep.log for observability but never re-thrown (hook must remain silent).
   if (sessionId) {
-    try { await deregisterSelf(sessionId); } catch { /* best effort */ }
+    try {
+      await deregisterSelf(sessionId);
+    } catch (err) {
+      // Deregistration failed — emit an observability breadcrumb to sweep.log.
+      // Do NOT throw, do NOT write to stderr: the hook is informational-only.
+      logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
+    }
   }
 
   // duration_ms: if input provides a start time we compute from it, else 0

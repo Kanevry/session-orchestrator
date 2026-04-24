@@ -14,6 +14,7 @@ import {
   detectPeers,
   sweepZombies,
   deregisterSelf,
+  logSweepEvent,
 } from '../../scripts/lib/session-registry.mjs';
 
 describe('session-registry', () => {
@@ -243,6 +244,65 @@ describe('session-registry', () => {
     it('rejects invalid session ids', async () => {
       await expect(deregisterSelf('')).rejects.toThrow(TypeError);
       await expect(deregisterSelf('../bad')).rejects.toThrow(TypeError);
+    });
+  });
+
+  describe('logSweepEvent', () => {
+    it('appends a valid JSONL line to sweep.log', async () => {
+      logSweepEvent({ event: 'register-failed', session_id: 'sess-001', error: 'EACCES: permission denied' });
+      const content = await readFile(sweepLogPath(), 'utf8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      expect(lines.length).toBeGreaterThanOrEqual(1);
+      const entry = JSON.parse(lines[lines.length - 1]);
+      expect(entry.event).toBe('register-failed');
+      expect(entry.session_id).toBe('sess-001');
+      expect(entry.error).toBe('EACCES: permission denied');
+      expect(entry.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('writes a deregister-failed event', async () => {
+      logSweepEvent({ event: 'deregister-failed', session_id: 'sess-002', error: 'EPERM: operation not permitted' });
+      const content = await readFile(sweepLogPath(), 'utf8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      const entry = JSON.parse(lines[lines.length - 1]);
+      expect(entry.event).toBe('deregister-failed');
+      expect(entry.session_id).toBe('sess-002');
+      expect(entry.error).toBe('EPERM: operation not permitted');
+    });
+
+    it('serialises null session_id correctly', async () => {
+      logSweepEvent({ event: 'register-failed', session_id: null, error: 'test' });
+      const content = await readFile(sweepLogPath(), 'utf8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      const entry = JSON.parse(lines[lines.length - 1]);
+      expect(entry.session_id).toBeNull();
+    });
+
+    it('is non-throwing even when the log path is unwritable', () => {
+      if (process.platform === 'win32') return;
+      const origEnvVal = process.env.SO_SESSION_REGISTRY_DIR;
+      // /proc/nonexistent-so-test-dir cannot be created — mkdir will fail,
+      // appendFileSync will also fail, but logSweepEvent must swallow both.
+      process.env.SO_SESSION_REGISTRY_DIR = '/proc/nonexistent-so-test-dir';
+      try {
+        expect(() => {
+          logSweepEvent({ event: 'register-failed', session_id: 'x', error: 'boom' });
+        }).not.toThrow();
+      } finally {
+        if (origEnvVal === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+        else process.env.SO_SESSION_REGISTRY_DIR = origEnvVal;
+      }
+    });
+
+    it('accumulates multiple entries in order', async () => {
+      logSweepEvent({ event: 'register-failed', session_id: 'a', error: 'first' });
+      logSweepEvent({ event: 'deregister-failed', session_id: 'b', error: 'second' });
+      const content = await readFile(sweepLogPath(), 'utf8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      expect(lines.length).toBeGreaterThanOrEqual(2);
+      const last2 = lines.slice(-2).map((l) => JSON.parse(l));
+      expect(last2[0].session_id).toBe('a');
+      expect(last2[1].session_id).toBe('b');
     });
   });
 });

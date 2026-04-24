@@ -466,7 +466,104 @@ describe('SubagentStop with missing agent_name', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. Session registry deregister (v3.1.0 #169)
+// 11. Silent-failure observability — sweep.log breadcrumb on deregisterSelf failure
+// ---------------------------------------------------------------------------
+
+describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () => {
+  it('hook still exits 0 when deregisterSelf throws (read-only registry)', async () => {
+    if (process.platform === 'win32') return; // chmod not meaningful on Windows
+    const dir = await track(await mkGitDir());
+    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-ro-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    // Pre-create the active/ dir and a heartbeat so deregisterSelf actually
+    // tries to unlink something; then lock down the directory so unlink fails.
+    const activeDir = path.join(badRegistryDir, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const sessionId = 'fail-deregister-test';
+    await fs.writeFile(
+      path.join(activeDir, `${sessionId}.json`),
+      JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
+    );
+    await fs.chmod(activeDir, 0o555); // can't delete files from a read-only dir
+    try {
+      const result = await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ session_id: sessionId }),
+        env: { SO_SESSION_REGISTRY_DIR: badRegistryDir },
+      });
+      expect(result.code).toBe(0);
+    } finally {
+      try { await fs.chmod(activeDir, 0o755); } catch { /* ignore */ }
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appends a deregister-failed entry to sweep.log when deregisterSelf throws', async () => {
+    if (process.platform === 'win32') return;
+    const dir = await track(await mkGitDir());
+    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-log-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    const activeDir = path.join(badRegistryDir, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const sessionId = 'fail-deregister-log-test';
+    await fs.writeFile(
+      path.join(activeDir, `${sessionId}.json`),
+      JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
+    );
+    await fs.chmod(activeDir, 0o555);
+    try {
+      await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ session_id: sessionId }),
+        env: { SO_SESSION_REGISTRY_DIR: badRegistryDir },
+      });
+      await fs.chmod(activeDir, 0o755);
+      const logPath = path.join(badRegistryDir, 'sweep.log');
+      const exists = await fs.access(logPath).then(() => true).catch(() => false);
+      if (exists) {
+        const raw = await fs.readFile(logPath, 'utf8');
+        const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        const failed = entries.find((e) => e.event === 'deregister-failed');
+        expect(failed).toBeDefined();
+        expect(failed.session_id).toBe(sessionId);
+        expect(typeof failed.error).toBe('string');
+        expect(failed.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      }
+    } finally {
+      try { await fs.chmod(activeDir, 0o755); } catch { /* ignore */ }
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write to stderr on deregisterSelf failure', async () => {
+    if (process.platform === 'win32') return;
+    const dir = await track(await mkGitDir());
+    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-stderr-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    const activeDir = path.join(badRegistryDir, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const sessionId = 'fail-deregister-stderr-test';
+    await fs.writeFile(
+      path.join(activeDir, `${sessionId}.json`),
+      JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
+    );
+    await fs.chmod(activeDir, 0o555);
+    try {
+      const result = await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ session_id: sessionId }),
+        env: { SO_SESSION_REGISTRY_DIR: badRegistryDir },
+      });
+      expect(result.stderr).toBe('');
+    } finally {
+      try { await fs.chmod(activeDir, 0o755); } catch { /* ignore */ }
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Session registry deregister (v3.1.0 #169)
 // ---------------------------------------------------------------------------
 
 describe('session registry deregister (#169)', { timeout: 15000 }, () => {

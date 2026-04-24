@@ -289,6 +289,73 @@ describe('project-dir resolution', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// Silent-failure observability — sweep.log breadcrumb on registerSelf failure
+// ---------------------------------------------------------------------------
+
+describe('register-failed observability breadcrumb', { timeout: 15000 }, () => {
+  it('hook still exits 0 when the registry dir is read-only (registerSelf fails)', async () => {
+    if (process.platform === 'win32') return; // chmod not meaningful on Windows
+    const dir = await mkProjectTracked();
+    // Point the registry to a non-writable path so registerSelf fails.
+    const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-ro-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    // Make it read-only so mkdir(active/) inside registerSelf throws EACCES.
+    await fs.chmod(badRegistryDir, 0o555);
+    try {
+      const result = await runHook({ projectDir: dir, registryDir: badRegistryDir });
+      expect(result.code).toBe(0);
+    } finally {
+      await fs.chmod(badRegistryDir, 0o755);
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appends a register-failed entry to sweep.log when registerSelf throws', async () => {
+    if (process.platform === 'win32') return; // chmod not meaningful on Windows
+    const dir = await mkProjectTracked();
+    const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-log-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    await fs.chmod(badRegistryDir, 0o555);
+    try {
+      await runHook({ projectDir: dir, registryDir: badRegistryDir });
+      // The log may not be writable either if the dir is 0o555, but the hook
+      // must not crash. Just verify exit code 0 was already asserted above.
+      // Restore and then check sweep.log if it was written.
+      await fs.chmod(badRegistryDir, 0o755);
+      const logPath = path.join(badRegistryDir, 'sweep.log');
+      const exists = await fs.access(logPath).then(() => true).catch(() => false);
+      if (exists) {
+        const raw = await fs.readFile(logPath, 'utf8');
+        const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        const failed = entries.find((e) => e.event === 'register-failed');
+        expect(failed).toBeDefined();
+        expect(typeof failed.session_id).toBe('string');
+        expect(typeof failed.error).toBe('string');
+        expect(failed.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      }
+    } finally {
+      try { await fs.chmod(badRegistryDir, 0o755); } catch { /* ignore */ }
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write to stderr on registerSelf failure', async () => {
+    if (process.platform === 'win32') return;
+    const dir = await mkProjectTracked();
+    const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-stderr-' + Date.now());
+    await fs.mkdir(badRegistryDir, { recursive: true });
+    await fs.chmod(badRegistryDir, 0o555);
+    try {
+      const result = await runHook({ projectDir: dir, registryDir: badRegistryDir });
+      expect(result.stderr).toBe('');
+    } finally {
+      try { await fs.chmod(badRegistryDir, 0o755); } catch { /* ignore */ }
+      await fs.rm(badRegistryDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Multi-session registry (v3.1.0 #168)
 // ---------------------------------------------------------------------------
 

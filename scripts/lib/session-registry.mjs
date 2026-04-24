@@ -24,6 +24,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 
+import { appendFileSync, mkdirSync } from 'node:fs';
+
 import { utcTimestamp, appendJsonl } from './common.mjs';
 
 // ---------------------------------------------------------------------------
@@ -111,6 +113,32 @@ function _ageMinutes(isoTimestamp, now = Date.now()) {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Append a single JSONL observability event to sweep.log. Non-throwing:
+ * if writing to sweep.log itself fails the error is silently swallowed so
+ * callers never cascade a log-write failure into a blocking error.
+ *
+ * Uses appendFileSync (sync) intentionally — this is called from a catch
+ * branch where fire-and-forget sync writes are simpler and safer than
+ * spawning a new async chain. Lines stay well under PIPE_BUF (4 KiB) so
+ * the append is effectively atomic on POSIX.
+ *
+ * @param {{ event: string, session_id: string|null, error: string }} opts
+ */
+export function logSweepEvent({ event, session_id, error }) {
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    event,
+    session_id: session_id ?? null,
+    error: typeof error === 'string' ? error : String(error),
+  }) + '\n';
+  try {
+    const logPath = sweepLogPath();
+    try { mkdirSync(path.dirname(logPath), { recursive: true }); } catch { /* best effort */ }
+    appendFileSync(logPath, line, 'utf8');
+  } catch { /* last-resort silent no-op — never let log-write cascade */ }
+}
 
 /**
  * Create the heartbeat file for this session.
