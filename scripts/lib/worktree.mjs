@@ -112,11 +112,23 @@ export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
     excludePatterns = options.excludePatterns;
   } else {
     // Attempt to read from Session Config; fall back to hardcoded default.
+    // Semantics:
+    //   key absent (undefined)  → fall back to DEFAULT_EXCLUDE_PATTERNS
+    //   key explicit null       → empty array (disable all excludes)
+    //   key is an array         → use that array
     try {
       const content = await readConfigFile(process.cwd());
       const config = parseSessionConfig(content);
       const fromConfig = config['worktree-exclude'];
-      excludePatterns = Array.isArray(fromConfig) ? fromConfig : DEFAULT_EXCLUDE_PATTERNS;
+      if (fromConfig === null) {
+        // Explicit `worktree-exclude: null` (YAML null) — user opted out of excludes.
+        excludePatterns = [];
+      } else if (Array.isArray(fromConfig)) {
+        excludePatterns = fromConfig;
+      } else {
+        // Key missing (undefined) or unrecognised value — use hardcoded default.
+        excludePatterns = DEFAULT_EXCLUDE_PATTERNS;
+      }
     } catch {
       excludePatterns = DEFAULT_EXCLUDE_PATTERNS;
     }

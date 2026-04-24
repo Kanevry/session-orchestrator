@@ -40,6 +40,8 @@ create_worktree() {
     if command -v jq >/dev/null 2>&1; then
       _patterns="$(echo "$_wt_exclude_json" | jq -r '.[]?' 2>/dev/null | tr '\n' ' ')" || _patterns=""
     else
+      # NOTE: sed fallback assumes ASCII directory names with no embedded commas
+      # or quotes inside values. Canonical parser is jq (preferred path above).
       _patterns="$(echo "$_wt_exclude_json" | sed 's/^\[//;s/\]$//' | tr ',' '\n' | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//' | tr '\n' ' ')"
     fi
   fi

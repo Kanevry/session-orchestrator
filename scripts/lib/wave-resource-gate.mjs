@@ -66,9 +66,9 @@ export async function evaluateWaveResourceGate(opts) {
   const measurements = { ramFreeGb, cpuLoadPct, concurrentSessions };
   const T = config['resource-thresholds'];
 
-  // Defensive: if a caller hands us a config without resource-thresholds (legacy
-  // pre-#166 configs, or test fixtures that omit the key), fall back to proceed
-  // rather than crash inside the rule chain. The caller still sees the gate ran.
+  // Rule 3: resource-thresholds missing → degrade to proceed (defensive).
+  // Handles legacy pre-#166 configs and test fixtures that omit the key.
+  // The gate is considered "ran" — caller receives measurements but no enforcement.
   if (!T || typeof T !== 'object') {
     return {
       decision: 'proceed',
