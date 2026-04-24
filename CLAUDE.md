@@ -2,9 +2,11 @@
 
 Claude Code plugin for session-level orchestration. This is a **plugin repo** — not an application.
 
+> **Für Installation, CLI-Nutzung und Kommando-Referenz:** Siehe [`README.md`](./README.md).
+
 ## Structure
 
-- `skills/` — 16 skills (bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator)
+- `skills/` — 19 skills (bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development)
 - `commands/` — 8 commands (/session, /go, /close, /discovery, /plan, /evolve, /bootstrap, /harness-audit)
 - `agents/` — 7 agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer, docs-writer)
 - `hooks/` — 6 event matchers covering 7 hook handlers: SessionStart (banner + init), PreToolUse/Edit|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events)
