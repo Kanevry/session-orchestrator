@@ -72,6 +72,16 @@ removed. Entry point is `scripts/parse-config.mjs`.
 Development prerequisite: **Node 20+**. Run `npm ci` after cloning. Test with
 `npm test` (vitest). Lint: `npm run lint`.
 
+## v3.1.0 Release — Environment-Aware Sessions (Epic #157)
+
+Shipped 2026-04-24 via cascade-merge of !15/!10/!12 into !9 → main. Four sub-epics:
+
+- **Sub-Epic A+B — Host-Identity + Pre-Session Resource Gate (#158)**: `scripts/lib/host-identity.mjs` (device fingerprint + SSH detection, #162), `scripts/lib/resource-probe.mjs` (live RAM/CPU/process snapshot + `evaluate()` verdict, #163), `hooks/on-session-start.mjs` host+resource banner + `peer_count` event payload (#164), `skills/session-start` Phase 4.5 adaptive wave sizing (#165), new `resource-awareness` / `enable-host-banner` / `resource-thresholds` Session Config block (#166).
+- **Sub-Epic B — Pre-Dispatch Resource Gate (#192 #193)**: `scripts/lib/wave-resource-gate.mjs` 8-rule decision chain (`proceed`/`reduce`/`coordinator-direct`); probe failure + missing thresholds degrade to `proceed` so the gate never blocks. New `worktree-exclude` Session Config field plus `applyWorktreeExcludes` post-`git worktree add` helper (default: node_modules, dist, build, .next, .nuxt, coverage, .cache, .turbo, .vercel, out).
+- **Sub-Epic C+E — Hardware-Pattern Learnings + Privacy Tiers (#170 #171 #172)**: `scripts/lib/learnings.mjs` `scope: local | private | public` + `host_class` + `anonymized` schema. Privacy validator enforces `{scope:'public', anonymized:false}` throws. `scripts/lib/hardware-pattern-detector.mjs` 5 detection signals (oom-kill, heartbeat-gap, concurrent-session-pressure, disk-full, thermal-throttle) + `/evolve` type 7 handler. `scripts/export-hw-learnings.mjs --promote` CLI (anonymize → set `scope:public`/`anonymized:true` → validate → rewrite with `.bak-<ISO>`). Anonymization: macOS+Linux system paths (incl. `/root`, `/var`, `/opt`, `/tmp`, `/mnt`, `/srv`), Windows paths (forward + back slash), IPv4, GitHub/GitLab URLs.
+- **Sub-Epic F — Multi-Session Registry + Heartbeat (#167 #168 #169)**: `scripts/lib/session-registry.mjs` (atomic writes via temp+rename, sha256 repo-path hash, configurable `registryBaseDir`, zombie sweep with threshold), `hooks/on-session-start.mjs` register-self + detect-peers + sweep with peer banner, `hooks/on-stop.mjs` idempotent deregister. Both hooks now emit `register-failed`/`deregister-failed` breadcrumbs to `sweep.log` via `logSweepEvent` helper (silent-failure observability). Default registry: `~/.config/session-orchestrator/sessions/active/`, overridable via `SO_SESSION_REGISTRY_DIR`.
+- **CI flake remediation (#268)**: Root cause was vitest 2.1.9 + tinypool worker exit-hang AFTER all tests pass. Remediated in `.gitlab-ci.yml` via bounded `timeout --preserve-status` + per-file `✓`/`✗` marker count (decouples CI green signal from vitest exit sequence). Also added `vitest.config.mjs` hardening: `pool: 'forks'`, `teardownTimeout: 15000`, `hookTimeout: 30000`, `include` narrowed to `['tests/**/*.test.mjs']` (excludes `skills/vault-sync/tests/schema-drift.test.mjs` which runs standalone in the `schema-drift-check` CI stage).
+
 ## v2.0 Features
 
 - Session persistence via STATE.md + session memory files
