@@ -70,6 +70,88 @@ export function touchUpdatedField(contents, isoTimestamp) {
 }
 
 /**
+ * Additively writes frontmatter keys. Only keys present in `fields` are
+ * touched; all other existing frontmatter keys (including unknown
+ * extensions) are preserved verbatim.
+ *
+ * Value semantics:
+ *   - `null` or `undefined` value → key is DELETED from the frontmatter
+ *   - anything else → key is set/overwritten
+ *
+ * No-ops if `contents` has no frontmatter (returns input unchanged).
+ *
+ * @param {string} contents
+ * @param {object} fields
+ * @returns {string}
+ */
+export function updateFrontmatterFields(contents, fields) {
+  const parsed = parseStateMd(contents);
+  if (parsed === null) return contents;
+  if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) {
+    return contents;
+  }
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === null || v === undefined) {
+      delete parsed.frontmatter[k];
+    } else {
+      parsed.frontmatter[k] = v;
+    }
+  }
+  return serializeStateMd(parsed);
+}
+
+/**
+ * Parses the 5 v1.1 Recommendation fields from a STATE.md frontmatter object
+ * (as returned by `parseStateMd(...).frontmatter`).
+ *
+ * Returns `null` when NONE of the 5 fields are present (backward-compat:
+ * pre-v1.1 STATE.md files).
+ *
+ * When a subset is present, populates the object with the parsed values and
+ * sets missing fields to null. Type-mismatched fields are also coerced to
+ * null (defensive — do not propagate garbage into downstream Mode-Selector).
+ * Caller is responsible for emitting partial/type-mismatch warn events.
+ *
+ * @param {object} frontmatter
+ * @returns {{mode: string|null, priorities: number[]|null, carryoverRatio: number|null, completionRate: number|null, rationale: string|null}|null}
+ */
+export function parseRecommendations(frontmatter) {
+  if (frontmatter === null || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
+    return null;
+  }
+  const keys = [
+    'recommended-mode',
+    'top-priorities',
+    'carryover-ratio',
+    'completion-rate',
+    'rationale',
+  ];
+  const anyPresent = keys.some((k) => Object.prototype.hasOwnProperty.call(frontmatter, k));
+  if (!anyPresent) return null;
+
+  const mode = typeof frontmatter['recommended-mode'] === 'string'
+    ? frontmatter['recommended-mode']
+    : null;
+  const priorities = Array.isArray(frontmatter['top-priorities'])
+    && frontmatter['top-priorities'].every((x) => Number.isInteger(x))
+    ? frontmatter['top-priorities'].slice()
+    : null;
+  const carryoverRatio = typeof frontmatter['carryover-ratio'] === 'number'
+    && !Number.isNaN(frontmatter['carryover-ratio'])
+    ? frontmatter['carryover-ratio']
+    : null;
+  const completionRate = typeof frontmatter['completion-rate'] === 'number'
+    && !Number.isNaN(frontmatter['completion-rate'])
+    ? frontmatter['completion-rate']
+    : null;
+  const rationale = typeof frontmatter.rationale === 'string'
+    ? frontmatter.rationale
+    : null;
+
+  return { mode, priorities, carryoverRatio, completionRate, rationale };
+}
+
+/**
  * Extracts the current-wave banner info from the `## Current Wave` body
  * section: first non-blank line after the heading.
  *
@@ -187,6 +269,7 @@ function parseScalar(raw) {
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   if (/^-?\d+$/.test(raw)) return parseInt(raw, 10);
+  if (/^-?\d+\.\d+$/.test(raw)) return parseFloat(raw);
   if (raw.startsWith('[') && raw.endsWith(']')) {
     const inner = raw.slice(1, -1).trim();
     if (inner === '') return [];
