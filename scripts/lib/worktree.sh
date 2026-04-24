@@ -23,6 +23,37 @@ create_worktree() {
     git worktree add -b "$branch" "$worktree_dir" "$base"
   }
 
+  # -------------------------------------------------------------------------
+  # Exclude build artifacts (issue #192)
+  # -------------------------------------------------------------------------
+  # Read V_WORKTREE_EXCLUDE from the environment (set by parse-config.sh callers)
+  # or fall back to the hardcoded default 10-pattern list.
+  local _wt_exclude_json="${V_WORKTREE_EXCLUDE:-}"
+
+  local _patterns
+  if [[ -z "$_wt_exclude_json" || "$_wt_exclude_json" == "null" ]]; then
+    # Hardcoded default — mirrors DEFAULT_EXCLUDE_PATTERNS in worktree.mjs
+    _patterns="node_modules dist build .next .nuxt coverage .cache .turbo .vercel out"
+  else
+    # Parse JSON array produced by parse-config.sh into whitespace-separated list.
+    # Uses jq when available; otherwise falls back to sed-based extraction.
+    if command -v jq >/dev/null 2>&1; then
+      _patterns="$(echo "$_wt_exclude_json" | jq -r '.[]?' 2>/dev/null | tr '\n' ' ')" || _patterns=""
+    else
+      # NOTE: sed fallback assumes ASCII directory names with no embedded commas
+      # or quotes inside values. Canonical parser is jq (preferred path above).
+      _patterns="$(echo "$_wt_exclude_json" | sed 's/^\[//;s/\]$//' | tr ',' '\n' | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//' | tr '\n' ' ')"
+    fi
+  fi
+
+  local _pattern
+  for _pattern in $_patterns; do
+    local _target="${worktree_dir}/${_pattern}"
+    if [ -d "$_target" ]; then
+      rm -rf "$_target" && echo "[worktree] excluded: ${_pattern}" >&2 || true
+    fi
+  done
+
   echo "$worktree_dir"
 }
 
