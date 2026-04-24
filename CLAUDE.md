@@ -106,6 +106,23 @@ Follow-up work for issue #249 (vault-mirror dual-schema post-mortem) — closes 
 
 Total: 6 new/changed files + 1 skill update. 75 new tests (1514 → 1589 green, 10 skipped). Backfill tool ready for operator-supervised live-data apply during quiet time (deferred this session due to 7 concurrent Claude processes / PSA-001 race risk).
 
+## Vitest 4 Upgrade + GH Actions CI Repair (2026-04-24)
+
+Closes #282 (vitest 2.1.9 → 4.1.5) + #280 (GH Actions mirror red for 8 consecutive runs) + #224 (dupe of #282). Shipped in 3 commits across one feature session (coordinator-direct, RAM 1.6 GB resource gate):
+
+- **`07d3a75` — vitest 4.1.5 bump**: `@vitest/coverage-v8` + `vitest` pinned to `^4.1.5`. Zero config changes required — every key in `vitest.config.mjs` (`pool: 'forks'`, `testTimeout`, `teardownTimeout`, `hookTimeout`, `coverage.{provider,reporter,include,exclude,thresholds}`) is stable across v2 → v4. Removed options (`coverage.all`, `coverage.extensions`, `poolOptions.{isolate,maxWorkers,vmMemoryLimit}`) were not in use. `pool: 'forks'` is now the v4 default — kept explicit for clarity. Side-effect: `npm audit` moderate count 6 → 0.
+- **`eb1a24c` — #280 Windows portability regressions**: GH Actions had 10 Windows failures across 3 files, root cause was NOT tinypool. Three test-side/workflow fixes:
+  1. `.github/workflows/test.yml` — git-identity `git config --global user.name/email` was gated on `runner.os != 'Windows'`. Every subprocess-spawned `git` on Windows failed with "Author identity unknown" → 8× `multi-session-registry.test.mjs` failures. Split the step so diagnostics stay Unix-only but git identity runs on all platforms.
+  2. `tests/lib/events-default-url.test.mjs` — path-separator regex assertion compared raw fs paths (`D:\a\...\scripts\lib\events.mjs`) against `/scripts\/lib\/events\.mjs$/`. Normalize via `replaceAll(path.sep, '/')` before matching (precedent from #216).
+  3. `tests/lib/hardening.test.mjs` — `assertDepInstalled('vitest')` returned `false` on Windows with v4. v4's dynamic-import path triggers module-evaluator worker side-effects that can fail when invoked from inside a vitest worker. Switched the dep to `prettier` (pure ESM, no complex loader state).
+- **`042be0a` — #280 Ubuntu wrapper port**: vitest 4 does NOT eliminate the tinypool exit-hang on Linux CI — Ubuntu hung at teardown for 15 min after all tests passed on the `eb1a24c` run, hitting `timeout-minutes: 15`. Ported the GitLab CI remediation (timeout-bounded run + per-file `✓`/`✗` marker count, decouples green signal from vitest exit sequence) into `.github/workflows/test.yml` as two conditional steps: `Vitest (Linux — wrapped)` for Ubuntu, `Vitest (macOS + Windows — plain)` for the others that do NOT hang. Coverage step (Linux-only) gets the same 420s wrapper.
+
+End-state per mirror on `042be0a`:
+- **GitLab CI** (Linux only, `pipeline #3308`): ✓ green — existing wrapper still active, belt-and-suspenders.
+- **GH Actions** (ubuntu + macOS + windows matrix): ubuntu ✓, windows ✓, macOS ✗ blocked by pre-existing #222 (`harness-audit.integration` stdout JSON truncation at 8188 bytes) — explicitly out of this session's scope.
+
+Local suite remained stable: 1589 tests passing / 10 skipped / 7.01s on M4 Pro across both the bump and the portability fix. Coverage thresholds intact (73.6% / 65.8% / 76.2% / 71.5%).
+
 ## v2.0 Features
 
 - Session persistence via STATE.md + session memory files
