@@ -1,26 +1,51 @@
 ---
 description: Scaffold the minimum repo structure required by session-orchestrator
-argument-hint: "[--fast|--standard|--deep] [--upgrade <tier>] [--retroactive] [--sync-rules] [--ecosystem-health]"
+argument-hint: [--upgrade <tier>]
 ---
 
 # Bootstrap
 
+**TL;DR — for first-time users:** Run `/bootstrap` with no flags. The skill auto-detects the right tier (fast/standard/deep) from your repo, recommends one with a one-line reason, and asks **a single confirmation question**. Bestätigen → fertig. Keine weiteren Schritte.
+
+The flags below cover special cases (re-adopting an existing repo, upgrading a tier, syncing rules). If you don't recognize the case in the description, you don't need the flag.
+
+---
+
 You are running the bootstrap skill directly. The user has invoked `/bootstrap` with arguments: **$ARGUMENTS**.
 
-**Parse $ARGUMENTS before invoking the skill:**
+## Standard usage (no flags)
 
-| Flag | Behavior |
-|------|----------|
-| _(no flags)_ | Auto-detect tier from context using intensity heuristic. Ask one confirmation question. |
-| `--fast` | Skip tier selection. Use Fast tier directly. No confirmation question. |
-| `--standard` | Skip tier selection. Use Standard tier directly. No confirmation question. |
-| `--deep` | Skip tier selection. Use Deep tier directly. No confirmation question. |
-| `--upgrade <tier>` | Idempotent upgrade from current tier to target (`fast → standard`, `fast → deep`, or `standard → deep`). Reads existing `bootstrap.lock`, computes the file delta (only what the target tier adds over the current tier), writes missing files, updates `bootstrap.lock` with the new tier. Refuses downgrade (e.g., `deep → fast`) with a non-zero exit. Safe to run twice — second run is a no-op. |
-| `--retroactive` | For repos that already have `CLAUDE.md` + `## Session Config` but no `bootstrap.lock` (bootstrapped manually before the gate existed). Infers tier from file inventory: CI file + CHANGELOG.md → `deep`; package manifest (`package.json`/`pyproject.toml`) → `standard`; else → `fast`. Writes `.orchestrator/bootstrap.lock` with `source: retroactive`. Makes NO scaffolding changes. Commits: `chore: bootstrap lock (retroactive)`. Idempotent: if lock already exists, reports "Nothing to do" and exits 0. |
-| `--sync-rules` | Copy canonical rules from the plugin's `rules/` library into the consumer repo's `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone flow — does not scaffold or modify `bootstrap.lock`. |
-| `--ecosystem-health` | Standalone wizard: detects CI provider + package manager, then prompts for health endpoints, CI pipeline identifiers, and critical issue labels. Writes `ecosystem-health:` block in Session Config (CLAUDE.md/AGENTS.md) and `.orchestrator/policy/ecosystem.json`. No scaffolding changes, no auto-commit. Idempotent: if config already exists, reports "Skipped" and exits 0. See `skills/ecosystem-health/wizard.md` for full spec. |
+This is the path 95 % of users want.
 
-**Invoke the bootstrap skill.** Read `skills/bootstrap/SKILL.md` and follow its instructions with `INVOCATION_MODE = direct`.
+| Invocation | Behavior |
+|------------|----------|
+| `/bootstrap` | Auto-detect tier (fast / standard / deep) from repo context. Present recommendation via `AskUserQuestion` with options to confirm or override. At most ONE question in the normal case. Then scaffold files + commit. |
+
+What the user sees:
+
+```
+Skill: "Repo leer. Empfehle 'standard' weil <reason>. Passt das?"
+User: [Enter on "standard (Empfohlen)"]
+Skill: <writes files, commits, prints summary>
+```
+
+## Flag reference (special cases)
+
+Only use a flag if you have one of the situations described.
+
+| Flag | When to use it |
+|------|----------------|
+| `--upgrade <tier>` | You bootstrapped `fast` earlier and now need `standard` or `deep`. Idempotent — writes only the delta. Refuses downgrade. Valid: `fast → standard`, `fast → deep`, `standard → deep`. |
+| `--retroactive` | The repo already has `CLAUDE.md` + `## Session Config` but no `bootstrap.lock` (manually bootstrapped before the gate existed). Writes the lock based on file inventory; **makes no scaffolding changes**. Commit: `chore: bootstrap lock (retroactive)`. |
+| `--sync-rules` | Pull canonical rules from the plugin's `rules/` library into `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone — does not touch `bootstrap.lock`. |
+| `--ecosystem-health` | Run the ecosystem-health wizard: detects CI provider + package manager, prompts for health endpoints, pipelines, and critical issue labels. Writes the config block + `.orchestrator/policy/ecosystem.json`. No scaffolding, no auto-commit. |
+| `--fast` / `--standard` / `--deep` | Skip the tier confirmation question (e.g., for scripted runs). Equivalent to running `/bootstrap` and selecting that option. |
+
+All flag-driven flows are idempotent — running twice with no upstream change is a no-op.
+
+## Invoke the skill
+
+Read `skills/bootstrap/SKILL.md` and follow its instructions with `INVOCATION_MODE = direct`.
 
 Pass the parsed flags so the skill can skip the tier confirmation question when `--fast`, `--standard`, or `--deep` is provided. `--retroactive`, `--sync-rules`, and `--ecosystem-health` are standalone short-circuit flows — they run to completion inside SKILL.md without dispatching to a tier template.
 
