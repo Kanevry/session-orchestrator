@@ -1,0 +1,205 @@
+---
+name: autopilot
+description: >
+  Autonomous session-orchestration loop. Chains session-start → session-plan →
+  wave-executor → session-end for N iterations with kill-switches (SPIRAL, FAILED
+  wave, carryover > 50%, max-hours, sub-threshold confidence). Reads Mode-Selector
+  output (Phase B) to decide auto-execute vs. fallback. Writes one autopilot.jsonl
+  record per loop run. Phase C scaffold (issue #277); implementation lives in
+  scripts/lib/autopilot.mjs (Phase C-1 follow-up).
+user-invocable: true
+tags: [phase-c, autopilot, autonomous, loop]
+---
+
+# Autopilot Skill
+
+## Status
+
+**Scaffold (2026-04-25, issue #277).** This skill file is the contract surface and loop
+specification. The runtime implementation (`scripts/lib/autopilot.mjs::runLoop` with
+kill-switch enforcement, `autopilot.jsonl` writer, resource-adaptive cap logic) ships in
+Phase C-1 follow-up. Until Phase C-1 lands, invoking `/autopilot` prints "Phase C
+implementation pending — see docs/prd/2026-04-25-autopilot-loop.md" and exits.
+
+## Purpose
+
+Autopilot collapses the per-session attention cost when Mode-Selector is confident enough
+to make routine decisions autonomously. A productive day commonly ships 3–7 sessions; each
+manual session-start costs the user 10–60 seconds of context-switch attention. When the
+session is genuinely routine (mechanical refactor, post-merge housekeeping, repeated
+follow-ups from a planned epic), that attention cost is pure overhead.
+
+`/autopilot` reads the Mode-Selector recommendation, executes the recommended session if
+confidence clears the threshold, then loops — checking kill-switches between iterations.
+The user invokes the loop once and walks away; autopilot stops itself when work runs out
+or quality degrades.
+
+This is **opt-in by design**: autopilot never starts itself. The user must run
+`/autopilot` explicitly. Configuration thresholds (`--max-sessions`, `--max-hours`,
+`--confidence-threshold`) are CLI flags, not Session Config defaults — the user signals
+intent for THIS run, not a standing policy.
+
+## Command Surface
+
+```
+/autopilot [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
+```
+
+| Flag | Default | Bounds | Meaning |
+|------|---------|--------|---------|
+| `--max-sessions` | `5` | 1..50 | Iteration cap (graceful exit when reached) |
+| `--max-hours` | `4.0` | 0.5..24.0 | Wall-clock budget for entire loop |
+| `--confidence-threshold` | `0.85` | 0.0..1.0 | Minimum `selectMode` confidence for auto-execute |
+| `--dry-run` | `false` | — | Print planned iterations without executing |
+
+Out-of-range values silently clamp to bounds. `--dry-run` exits after printing — never
+invokes session lifecycle.
+
+## Loop Semantics
+
+```
+state := { iterations_completed: 0, started_at: now(), kill_switch: null, sessions: [] }
+
+WHILE state.iterations_completed < max-sessions:
+  IF (now() - state.started_at) > max-hours:
+    kill_switch := 'max-hours-exceeded'; break
+  IF resource_verdict() == 'critical' AND peer_count() > autopilot-peer-abort:
+    kill_switch := 'resource-overload'; break
+
+  recommendation := mode-selector.selectMode(<live signals from session-start Phase 7.5>)
+
+  IF recommendation.confidence < confidence-threshold:
+    IF state.iterations_completed == 0:
+      fallback_to_manual()  # iteration 1: hand off cleanly to manual /session flow
+    ELSE:
+      kill_switch := 'low-confidence-fallback'  # iteration 2+: exit, let user decide
+    break
+
+  cap := resource_adaptive_cap()
+  session_result := run_session(mode=recommendation.mode, agents_per_wave_cap=cap)
+  state.sessions.append(session_result.session_id)
+
+  IF session_result.spiral_detected: kill_switch := 'spiral'; break
+  IF session_result.failed_waves > 0: kill_switch := 'failed-wave'; break
+  IF session_result.carryover_ratio > 0.50: kill_switch := 'carryover-too-high'; break
+
+  state.iterations_completed += 1
+
+write_autopilot_jsonl(state, kill_switch)
+print_summary(state, kill_switch)
+```
+
+**Atomicity rule:** iteration boundaries are atomic. A session must complete (`/close`
+including the post-session writes) before the next iteration starts. Autopilot does NOT
+abort sessions mid-flight; kill-switches are checked AFTER each session completes.
+
+## Kill-Switches
+
+| Kill-switch | Trigger | Recovery hint |
+|-------------|---------|---------------|
+| `spiral` | wave-executor spiral detection fires | Triage the spiraling wave manually; autopilot will not retry. |
+| `failed-wave` | Any wave reports `agent_summary.failed > 0` | Investigate failure mode (test contract drift, env issue). Re-run after fix. |
+| `carryover-too-high` | `carryover_ratio > 0.50` | Last session under-delivered. Reduce scope or split issues before resuming. |
+| `max-hours-exceeded` | Wall-clock exceeds `--max-hours` | Re-run with higher `--max-hours` or address slow waves. |
+| `max-sessions-reached` | `iterations_completed == --max-sessions` | Graceful — not an error. |
+| `resource-overload` | `verdict==critical AND peers > autopilot-peer-abort` | Wait for peer sessions to complete or close them. |
+| `low-confidence-fallback` | `confidence < threshold` (iteration 2+) | Re-run with lower `--confidence-threshold` or run next session manually. |
+| `user-abort` | Ctrl+C / Esc | Re-run when ready. |
+
+## Resource-Adaptive Concurrency
+
+Autopilot does NOT hard-block on peer Claude processes. It adapts `agents-per-wave` cap
+per iteration based on the most-restrictive resource signal.
+
+| Tier | RAM free | Swap | Peers | macOS memory_pressure | cap |
+|------|----------|------|-------|------------------------|-----|
+| green | ≥ 6 GB | < 1 GB | ≤ 2 | ≥ 30% free | Session Config default |
+| warn | 4–6 GB | 1–2 GB | 3–4 | 15–30% free | 4 |
+| degraded | 2–4 GB | 2–3 GB | 5–6 | 5–15% free | 2 |
+| critical | < 2 GB | > 3 GB | > 6 | < 5% free | 0 (coord-direct) |
+
+**Most-restrictive-signal-wins:** `[ram=8GB, swap=0, peers=7]` → critical (peer rule wins).
+
+Defaults are conservative initial estimates. Phase C-3 follow-up calibrates the swap and
+memory_pressure thresholds against real autopilot-run effectiveness data.
+
+## Telemetry
+
+One record per `/autopilot` invocation, written to `.orchestrator/metrics/autopilot.jsonl`
+via atomic tmp + rename. See `docs/prd/2026-04-25-autopilot-loop.md` § Output for the
+full schema.
+
+Each iteration's `sessions.jsonl` entry gets an additional optional field
+`autopilot_run_id` (string or null) so retros can join across the two files without
+schema changes.
+
+Manual sessions write `autopilot_run_id: null` (or omit the field — both treated
+identically by readers per the v1 schema additive convention).
+
+## Integration with Other Skills
+
+- **`mode-selector.mjs::selectMode`** — sole source of mode + confidence per iteration.
+  Autopilot does not implement its own mode logic; v1.x quirks affect autopilot exactly
+  as they affect manual session-start.
+- **`resource-probe.mjs::probe + evaluate`** — extended in Phase C-2 with swap and
+  memory_pressure signals. Existing consumers (manual session-start, wave-executor)
+  benefit from the new signals automatically.
+- **`session-start` / `session-plan` / `wave-executor` / `session-end`** — invoked
+  unmodified. Autopilot is a controller around the existing session lifecycle, not a
+  replacement.
+- **`session-registry.mjs`** — peer-count signal source. Autopilot reads but does not
+  write to the registry beyond the standard hook.
+- **`mode-selector-accuracy`** — autopilot iterations write accuracy learnings exactly
+  like manual sessions (Phase B-4 contract). The `chosen` field reflects autopilot's
+  auto-execute decision, which equals `recommendation.mode` when confidence ≥ threshold.
+
+## Critical Rules
+
+- **Never auto-merge or auto-push beyond `/close` defaults.** `/close` already pushes to
+  origin; autopilot does not add PR creation, merge, or force-push behavior.
+- **Iteration boundaries are atomic.** Never abort a running session to start a new one.
+- **Kill-switches checked AFTER each session.** Even if a kill-switch will fire after
+  iteration N, iteration N completes cleanly first.
+- **Iteration 1 sub-threshold falls back to manual; iteration 2+ exits with kill-switch.**
+  This asymmetry is intentional — see PRD Q8.
+- **`autopilot.jsonl` is the SOLE writer's responsibility of `autopilot.mjs`.** Other
+  skills must not append to or rewrite this file.
+- **Mode-Selector contract is read-only here.** Autopilot does not modify `selectMode`
+  output, does not re-rank alternatives, does not patch confidence values.
+
+## Anti-Patterns
+
+- Do not invoke `/autopilot` from inside a running session. The skill is a top-level
+  command; nested invocation is undefined behavior.
+- Do not modify `autopilot.jsonl` schema additively without bumping `schema_version`.
+  Readers MUST treat unknown fields as a forward-compat signal, not as corruption.
+- Do not bypass `selectMode` to force-run a specific mode. If you want to run a specific
+  mode, use `/session [mode]` manually — that is autopilot's fallback path.
+- Do not lower `--confidence-threshold` below 0.5 in production. The Mode-Selector
+  fallback table treats `< 0.5` as suggestion-only; autopilot at that threshold becomes
+  a random-walk over modes.
+- Do not implement kill-switch logic in this skill. Kill-switch enforcement is in
+  `scripts/lib/autopilot.mjs`. The skill documents the contract; the runtime enforces it.
+
+## References
+
+- PRD: `docs/prd/2026-04-25-autopilot-loop.md`
+- Implementation (Phase C-1): `scripts/lib/autopilot.mjs` (not yet written)
+- Tests (Phase C-1): `tests/lib/autopilot.test.mjs` (not yet written)
+- Command file: `commands/autopilot.md`
+- Mode-Selector contract: `skills/mode-selector/SKILL.md`
+- Resource probe: `scripts/lib/resource-probe.mjs`
+- Session registry: `scripts/lib/session-registry.mjs`
+- Epic: [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/271)
+- Issue: [#277 Phase C /autopilot Loop Command](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/277)
+- Phase A PRD: `docs/prd/2026-04-24-state-md-recommendations-contract.md`
+- Phase B PRD: `docs/prd/2026-04-25-mode-selector.md`
+
+## Open Questions (Phase C-1 to resolve)
+
+- `--confidence-threshold=auto` — let autopilot self-tune from accumulated
+  `mode-selector-accuracy` learnings? Requires ≥ 20 accuracy learnings before useful.
+- STATE.md `autopilot-active: true` field — should other Claude sessions detect via the
+  session-registry and refuse to start during an autopilot run? Dogfooding will inform.
+- `failed-wave` granularity — distinguish "agent failed but was retried successfully"
+  from "wave ended with un-recovered failures"? Requires wave-executor schema audit.
