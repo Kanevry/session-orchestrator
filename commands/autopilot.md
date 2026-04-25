@@ -1,6 +1,6 @@
 ---
 description: Autonomous session-orchestration loop with kill-switches (Phase C-1.b — all 8 kill-switches shipped)
-argument-hint: [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
+argument-hint: [--headless] [--verbose] [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
 ---
 
 # Autopilot
@@ -19,12 +19,24 @@ Parse `$ARGUMENTS` for these flags. Unrecognized flags are ignored. Out-of-range
 
 | Flag | Default | Bounds |
 |------|---------|--------|
+| `--headless` | `false` | flag |
 | `--max-sessions=N` | `5` | 1..50 |
 | `--max-hours=H` | `4.0` | 0.5..24.0 |
 | `--confidence-threshold=0.X` | `0.85` | 0.0..1.0 |
 | `--dry-run` | `false` | flag |
 
+`--headless`: Run via `scripts/autopilot.mjs` driver — spawns `claude -p` per iteration. Required for unattended walk-away mode. Without this flag, `/autopilot` runs the in-process driver inside the current chat session.
+
 Use `parseFlags` from `scripts/lib/autopilot.mjs` for canonical parsing — never re-implement clamping inline.
+
+## Headless Mode
+
+When invoked with `--headless`, the slash command delegates to the standalone driver `scripts/autopilot.mjs` which spawns `claude -p '/session <mode>'` as a child process per iteration. Use this for true walk-away operation; the in-process default keeps you in the current chat. See `skills/autopilot/SKILL.md § Production Wiring` for the design contract and issue #302 for the implementation rationale.
+
+Headless requirements:
+- Anthropic API key configured for `claude -p` (Claude Code CLI auth).
+- `scripts/autopilot.mjs` reads `sessions.jsonl` tail after each child exit to construct the `sessionRunner` return shape — the spawned session must complete cleanly and append its record (session-end Phase 3.7 handles this).
+- `AUTOPILOT_RUN_ID` env var is propagated to the child so session-end stamps it onto the per-iteration `sessions.jsonl` record.
 
 ## Invocation
 

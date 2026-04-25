@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Stub claude binary for tests/scripts/autopilot.test.mjs (issue #302 Phase C-5).
+#
+# Honors env vars set by tests:
+#   AUTOPILOT_RUN_ID         — required; appended to the synthesized sessions.jsonl record
+#   STUB_EXIT_CODE           — defaults to 0; non-zero exits without appending
+#   STUB_SESSIONS_JSONL      — required; absolute path to the sessions.jsonl file to append to
+#   STUB_SESSION_ID          — defaults to a deterministic id based on AUTOPILOT_RUN_ID
+#   STUB_AGENT_FAILED        — defaults to 0; integer count for agent_summary.failed
+#   STUB_AGENT_SPIRAL        — defaults to 0; integer count for agent_summary.spiral
+#   STUB_PLANNED_ISSUES      — defaults to 1
+#   STUB_CARRYOVER           — defaults to 0
+#
+# Output: writes one schema_version=1 sessions.jsonl line via append.
+#
+# Exits with $STUB_EXIT_CODE (default 0). When STUB_EXIT_CODE != 0, no append.
+
+EXIT_CODE="${STUB_EXIT_CODE:-0}"
+
+if [ "$EXIT_CODE" != "0" ]; then
+  exit "$EXIT_CODE"
+fi
+
+# Parse session type from args: the second arg after "-p" is "/session <mode>"
+# argv: claude -p '/session deep'
+SESSION_TYPE="feature"
+for arg in "$@"; do
+  case "$arg" in
+    /session\ *)
+      SESSION_TYPE="${arg#/session }"
+      ;;
+  esac
+done
+
+# Defaults
+RUN_ID="${AUTOPILOT_RUN_ID:-unknown-run-id}"
+SESSION_ID="${STUB_SESSION_ID:-${RUN_ID}-iter-$$}"
+JSONL_PATH="${STUB_SESSIONS_JSONL}"
+AGENT_FAILED="${STUB_AGENT_FAILED:-0}"
+AGENT_SPIRAL="${STUB_AGENT_SPIRAL:-0}"
+PLANNED_ISSUES="${STUB_PLANNED_ISSUES:-1}"
+CARRYOVER="${STUB_CARRYOVER:-0}"
+
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-01-01T00:00:00Z')"
+COMPLETED_AT="$STARTED_AT"
+
+if [ -z "$JSONL_PATH" ]; then
+  echo "stub-claude: STUB_SESSIONS_JSONL not set" >&2
+  exit 1
+fi
+
+printf '%s\n' "{\"schema_version\":1,\"session_id\":\"${SESSION_ID}\",\"session_type\":\"${SESSION_TYPE}\",\"started_at\":\"${STARTED_AT}\",\"completed_at\":\"${COMPLETED_AT}\",\"total_waves\":5,\"waves\":[],\"agent_summary\":{\"complete\":0,\"partial\":0,\"failed\":${AGENT_FAILED},\"spiral\":${AGENT_SPIRAL}},\"total_agents\":0,\"total_files_changed\":0,\"effectiveness\":{\"planned_issues\":${PLANNED_ISSUES},\"carryover\":${CARRYOVER},\"completion_rate\":1.0,\"completed_issues\":${PLANNED_ISSUES}},\"autopilot_run_id\":\"${RUN_ID}\"}" >> "$JSONL_PATH"
+
+exit 0
