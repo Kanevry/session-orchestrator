@@ -1,22 +1,42 @@
 /**
  * autopilot.mjs — Phase C-1 runtime for /autopilot loop command.
  *
- * Issue #295 (Epic #271 v3.2 Autopilot, Phase C). Ships:
+ * Issue #295 (Phase C-1) + #300 (Phase C-1.b). Ships:
  *   - parseFlags(argv): silent-clamp flag parsing
  *   - runLoop(opts):    iterate session lifecycle until a kill-switch fires
  *   - writeAutopilotJsonl(state, path): atomic tmp+rename writer
  *   - KILL_SWITCHES, FLAG_BOUNDS, SCHEMA_VERSION constants
  *
- * 5 kill-switches enforced in this phase:
- *   max-sessions-reached, max-hours-exceeded, low-confidence-fallback,
- *   user-abort, resource-overload.
- *
- * Deferred to Phase C-1.b (require wave-executor signal extraction):
- *   spiral, failed-wave, carryover-too-high. Stubs in `_postSessionKillSwitch`.
+ * 8 of 8 kill-switches enforced (5 pre-iteration + 3 post-session):
+ *   max-sessions-reached, max-hours-exceeded, resource-overload,
+ *   low-confidence-fallback, user-abort, spiral, failed-wave,
+ *   carryover-too-high.
  *
  * Pure orchestration: all I/O (session lifecycle, mode selection, resource
  * probing, peer count, wall clock) is injected via opts so the loop is unit-
  * testable without spawning child processes.
+ *
+ * `sessionRunner` return-shape contract (consumed by `postSessionKillSwitch`):
+ *   {
+ *     session_id: string,                       // required (already used by Phase C-1)
+ *     agent_summary?: {                         // optional; absent fields → no kill
+ *       spiral?: number,                        // count of spiraled agents in the session
+ *       failed?: number,                        // count of failed agents in the session
+ *       ...                                     // schema-canonical session-record fields
+ *     },
+ *     effectiveness?: {                         // optional; carryover-too-high only fires
+ *       planned_issues?: number,                //   when planned_issues > 0
+ *       carryover?: number,
+ *       ...
+ *     }
+ *   }
+ *
+ * Production callers MUST also persist `autopilot_run_id` (passed in via
+ * `args.autopilotRunId`) into the corresponding `sessions.jsonl` record so
+ * sessions launched by autopilot can be correlated back to the originating
+ * loop. The field is additive (schema_version 1 compatible); manual sessions
+ * write `null` or omit it. See `skills/wave-executor/SKILL.md § Return Shape
+ * Contract` and `skills/session-end/SKILL.md § Phase 3.7`.
  *
  * Reference contract: docs/prd/2026-04-25-autopilot-loop.md
  *                     skills/autopilot/SKILL.md
@@ -33,13 +53,13 @@ import crypto from 'node:crypto';
 export const SCHEMA_VERSION = 1;
 
 export const KILL_SWITCHES = Object.freeze({
-  // Shipped Phase C-1
+  // Pre-iteration kill-switches (Phase C-1, #295)
   MAX_SESSIONS_REACHED: 'max-sessions-reached',
   MAX_HOURS_EXCEEDED: 'max-hours-exceeded',
   RESOURCE_OVERLOAD: 'resource-overload',
   LOW_CONFIDENCE_FALLBACK: 'low-confidence-fallback',
   USER_ABORT: 'user-abort',
-  // Deferred Phase C-1.b
+  // Post-session kill-switches (Phase C-1.b, #300)
   SPIRAL: 'spiral',
   FAILED_WAVE: 'failed-wave',
   CARRYOVER_TOO_HIGH: 'carryover-too-high',
@@ -57,7 +77,7 @@ export const DEFAULT_PEER_ABORT_THRESHOLD = 6;
 /** Default JSONL path for autopilot loop records. */
 export const DEFAULT_JSONL_PATH = '.orchestrator/metrics/autopilot.jsonl';
 
-/** Default carryover ratio threshold (deferred kill-switch, kept here for symmetry). */
+/** Default carryover ratio threshold above which `carryover-too-high` fires post-session. */
 export const DEFAULT_CARRYOVER_THRESHOLD = 0.5;
 
 // ---------------------------------------------------------------------------
@@ -240,16 +260,63 @@ function preIterationKillSwitch(args) {
 }
 
 /**
- * Post-session kill-switch stubs for Phase C-1.b. Currently a no-op — returns
- * `null` always. Wired here so the loop structure is in place; signal
- * extraction (spiral_detected / failed_waves / carryover_ratio) ships in the
- * follow-up sub-issue once wave-executor exposes those fields on its return
- * shape.
+ * Post-session kill-switch checks. Pure: reads only fields on `sessionResult`
+ * (see the `sessionRunner` return-shape contract in the file header) and the
+ * configured `carryoverThreshold`. Returns `{kill, detail}` to fire a kill
+ * or `null` when the loop may proceed.
  *
- * @param {object} _sessionResult
+ * Field semantics:
+ *   - `spiral`             ← `agent_summary.spiral > 0`         (count of spiraled agents)
+ *   - `failed-wave`        ← `agent_summary.failed > 0`         (count of failed agents)
+ *   - `carryover-too-high` ← `effectiveness.planned_issues > 0`
+ *                            AND `effectiveness.carryover / effectiveness.planned_issues > carryoverThreshold`
+ *
+ * Absent fields are treated as "no signal" — the loop continues. This is
+ * deliberate: when a `sessionRunner` (e.g. an older wave-executor wrapper)
+ * does not yet emit `agent_summary` or `effectiveness`, the post-session
+ * gates are silently no-op and only pre-iteration gates apply.
+ *
+ * @param {object | null | undefined} sessionResult
+ * @param {{carryoverThreshold: number}} args
  * @returns {{kill: string, detail: string} | null}
  */
-function postSessionKillSwitch(_sessionResult) {
+function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
+  if (!sessionResult || typeof sessionResult !== 'object') return null;
+
+  const agentSummary = sessionResult.agent_summary;
+  if (agentSummary && typeof agentSummary === 'object') {
+    const spiralCount = Number(agentSummary.spiral);
+    if (Number.isFinite(spiralCount) && spiralCount > 0) {
+      return {
+        kill: KILL_SWITCHES.SPIRAL,
+        detail: `agent_summary.spiral=${spiralCount} > 0`,
+      };
+    }
+    const failedCount = Number(agentSummary.failed);
+    if (Number.isFinite(failedCount) && failedCount > 0) {
+      return {
+        kill: KILL_SWITCHES.FAILED_WAVE,
+        detail: `agent_summary.failed=${failedCount} > 0`,
+      };
+    }
+  }
+
+  const effectiveness = sessionResult.effectiveness;
+  if (effectiveness && typeof effectiveness === 'object') {
+    const planned = Number(effectiveness.planned_issues);
+    const carryover = Number(effectiveness.carryover);
+    if (Number.isFinite(planned) && planned > 0 && Number.isFinite(carryover)) {
+      const ratio = carryover / planned;
+      if (ratio > carryoverThreshold) {
+        const ratioPct = Math.round(ratio * 100) / 100;
+        return {
+          kill: KILL_SWITCHES.CARRYOVER_TOO_HIGH,
+          detail: `carryover/planned=${ratioPct} > threshold=${carryoverThreshold} (carryover=${carryover}, planned=${planned})`,
+        };
+      }
+    }
+  }
+
   return null;
 }
 
@@ -301,6 +368,8 @@ function postSessionKillSwitch(_sessionResult) {
  * @param {string} [opts.branch] — branch name for default runId construction.
  * @param {string} [opts.hostJsonPath] — `.orchestrator/host.json` location.
  * @param {number} [opts.peerAbortThreshold] — overrides DEFAULT_PEER_ABORT_THRESHOLD.
+ * @param {number} [opts.carryoverThreshold] — overrides DEFAULT_CARRYOVER_THRESHOLD; ratio above which
+ *   `carryover-too-high` fires post-session.
  * @returns {Promise<AutopilotState>}
  */
 export async function runLoop(opts = {}) {
@@ -328,6 +397,9 @@ export async function runLoop(opts = {}) {
   const peerAbortThreshold = typeof opts.peerAbortThreshold === 'number'
     ? opts.peerAbortThreshold
     : DEFAULT_PEER_ABORT_THRESHOLD;
+  const carryoverThreshold = typeof opts.carryoverThreshold === 'number'
+    ? opts.carryoverThreshold
+    : DEFAULT_CARRYOVER_THRESHOLD;
 
   const startedAtMs = nowMs();
   const runId = typeof opts.runId === 'string' && opts.runId.length > 0
@@ -472,8 +544,8 @@ export async function runLoop(opts = {}) {
     }
     state.iterations_completed += 1;
 
-    // Post-session kill-switch (Phase C-1.b stub — currently always null).
-    const postCheck = postSessionKillSwitch(sessionResult);
+    // Post-session kill-switches (Phase C-1.b — spiral / failed-wave / carryover-too-high).
+    const postCheck = postSessionKillSwitch(sessionResult, { carryoverThreshold });
     if (postCheck !== null) {
       state.kill_switch = postCheck.kill;
       state.kill_switch_detail = postCheck.detail;

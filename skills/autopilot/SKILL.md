@@ -15,24 +15,24 @@ tags: [phase-c, autopilot, autonomous, loop]
 
 ## Status
 
-**Phase C-1 partial (2026-04-25, issue #295).** Runtime exists at
-`scripts/lib/autopilot.mjs` with five of the eight kill-switches enforced:
-`max-sessions-reached`, `max-hours-exceeded`, `resource-overload`,
-`low-confidence-fallback` (with iter-1-fallback / iter-2+-exit asymmetry), and
-`user-abort`. Atomic `autopilot.jsonl` writer (tmp+rename, schema_version 1)
-and silent-clamp `parseFlags` are shipped.
+**Phase C-1.b complete (2026-04-25, issues #295 + #300).** Runtime at
+`scripts/lib/autopilot.mjs` enforces all 8 kill-switches:
 
-The remaining three kill-switches — `spiral`, `failed-wave`, `carryover-too-high`
-— and `autopilot_run_id` propagation into `sessions.jsonl` are **deferred to
-Phase C-1.b**. These require wave-executor to expose `spiral_detected`,
-`failed_waves`, and `carryover_ratio` on its return shape; that signal-
-extraction work is the gating change. The loop structure for these checks is
-already in place via `postSessionKillSwitch()` (currently a no-op stub).
+- **Pre-iteration (5, #295):** `max-sessions-reached`, `max-hours-exceeded`,
+  `resource-overload`, `low-confidence-fallback` (with iter-1-fallback /
+  iter-2+-exit asymmetry), `user-abort`.
+- **Post-session (3, #300):** `spiral`, `failed-wave`, `carryover-too-high`.
+  Read schema-canonical fields off the `sessionRunner` return shape:
+  `agent_summary.{spiral, failed}` (numeric counts) and `effectiveness.{carryover,
+  planned_issues}`. Absent fields → no kill (forward-compatible: a `sessionRunner`
+  that does not yet emit those fields silently no-ops the post-session gates).
 
-Until C-1.b lands, multi-iteration autopilot runs proceed without spiral /
-failed-wave / carryover safeguards — use single-iteration runs (`--max-sessions=1`)
-or `--dry-run` previews for routine work; prefer manual `/session [type]` when
-those signals matter.
+Atomic `autopilot.jsonl` writer (tmp+rename, schema_version 1) and silent-clamp
+`parseFlags` shipped in C-1. `autopilot_run_id` is passed into `sessionRunner`
+via `args.autopilotRunId`; production callers MUST persist it into the per-iteration
+`sessions.jsonl` record (additive optional field, schema_version 1 compatible).
+See `skills/wave-executor/SKILL.md § Return Shape Contract` and
+`skills/session-end/SKILL.md § Phase 3.7`.
 
 ## Purpose
 
@@ -197,14 +197,16 @@ identically by readers per the v1 schema additive convention).
 ## References
 
 - PRD: `docs/prd/2026-04-25-autopilot-loop.md`
-- Implementation (Phase C-1 partial): `scripts/lib/autopilot.mjs` — exports `runLoop`, `parseFlags`, `writeAutopilotJsonl`, `KILL_SWITCHES`, `FLAG_BOUNDS`, `SCHEMA_VERSION`
-- Tests (Phase C-1): `tests/lib/autopilot.test.mjs`
+- Implementation (Phase C-1 + C-1.b): `scripts/lib/autopilot.mjs` — exports `runLoop`, `parseFlags`, `writeAutopilotJsonl`, `KILL_SWITCHES`, `FLAG_BOUNDS`, `SCHEMA_VERSION`, `DEFAULT_PEER_ABORT_THRESHOLD`, `DEFAULT_JSONL_PATH`, `DEFAULT_CARRYOVER_THRESHOLD`
+- Tests (Phase C-1 + C-1.b): `tests/lib/autopilot.test.mjs`
 - Command file: `commands/autopilot.md`
 - Mode-Selector contract: `skills/mode-selector/SKILL.md`
 - Resource probe: `scripts/lib/resource-probe.mjs`
 - Session registry: `scripts/lib/session-registry.mjs`
+- Wave-executor return shape: `skills/wave-executor/SKILL.md § Return Shape Contract`
+- Sessions.jsonl writer: `skills/session-end/session-metrics-write.md`
 - Epic: [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/271)
-- Issue: [#277 Phase C /autopilot Loop Command](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/277)
+- Issues: [#277 Phase C scaffold](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/277), [#295 Phase C-1 runtime](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/295), [#300 Phase C-1.b follow-up](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/300)
 - Phase A PRD: `docs/prd/2026-04-24-state-md-recommendations-contract.md`
 - Phase B PRD: `docs/prd/2026-04-25-mode-selector.md`
 

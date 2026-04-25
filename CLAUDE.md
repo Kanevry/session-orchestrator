@@ -64,10 +64,10 @@ Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-de
 ## Current State
 
 - **Plugin version:** v3.1.0 (shipped 2026-04-24, Environment-Aware Sessions, Epic #157).
-- **Active epic:** #271 v3.2 Autopilot — Phase A + B shipped, Phase C-1 partial (`scripts/lib/autopilot.mjs` runtime: 5 of 8 kill-switches enforced); **Phase C-1.b follow-up next** (spiral / failed-wave / carryover-too-high signals + `autopilot_run_id` propagation).
+- **Active epic:** #271 v3.2 Autopilot — Phase A + B shipped, Phase C-1 + C-1.b complete (`scripts/lib/autopilot.mjs` runtime: all 8 kill-switches enforced — 5 pre-iteration + 3 post-session reading `agent_summary.{spiral, failed}` and `effectiveness.{carryover, planned_issues}` off the `sessionRunner` return shape; `autopilot_run_id` propagation contract documented across wave-executor + session-end). Phase C-2/C-3/C-4 follow-ups (#296/#297/#298) next.
 - **Stack:** Node 20+, vitest 4.1.5, ESLint 9. Run `npm ci` after cloning. Test: `npm test`. Lint: `npm run lint`.
-- **Tests:** 1778 passed / 10 skipped. Coverage above thresholds 70 / 65 / 70 / 60.
-- **Backlog:** ~66 open issues. Recent meta-audit fallout (#265, #281) closed; #283–#288 discovery/refactor cluster, #296–#299 Phase C follow-ups, plus #295 (in-progress this session) + Phase C-1.b filing pending at /close.
+- **Tests:** 1789 passed / 10 skipped. Coverage above thresholds 70 / 65 / 70 / 60.
+- **Backlog:** ~64 open issues (after closing #295 + #300 this session). Recent meta-audit fallout (#265, #281) closed; #283–#288 discovery/refactor cluster, #296–#299 Phase C follow-ups remain.
 
 For full release history, architectural decisions, and meta-audit narratives see [[01-projects/session-orchestrator/decisions]] in the Meta-Vault. The PRDs for v3.2 Autopilot live at [[01-projects/session-orchestrator/prd/2026-04-24-state-md-recommendations-contract|Phase A]] / [[01-projects/session-orchestrator/prd/2026-04-25-mode-selector|Phase B]] / [[01-projects/session-orchestrator/prd/2026-04-25-autopilot-loop|Phase C]].
 

@@ -1,5 +1,5 @@
 ---
-description: Autonomous session-orchestration loop with kill-switches (Phase C-1 partial — 5 of 8 kill-switches shipped)
+description: Autonomous session-orchestration loop with kill-switches (Phase C-1.b — all 8 kill-switches shipped)
 argument-hint: [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
 ---
 
@@ -9,11 +9,9 @@ You are entering autonomous session-orchestration mode. The user has invoked `/a
 
 ## Status
 
-**Phase C-1 partial (issue #295). Runtime exists at `scripts/lib/autopilot.mjs`.** Five of the eight kill-switches are enforced this phase: `max-sessions-reached`, `max-hours-exceeded`, `resource-overload`, `low-confidence-fallback`, `user-abort`. The remaining three (`spiral`, `failed-wave`, `carryover-too-high`) plus `autopilot_run_id` propagation into `sessions.jsonl` are deferred to Phase C-1.b — they require wave-executor to expose the relevant signals on its return shape.
+**Phase C-1.b complete (issues #295 + #300). Runtime at `scripts/lib/autopilot.mjs`.** All 8 kill-switches enforced — pre-iteration: `max-sessions-reached`, `max-hours-exceeded`, `resource-overload`, `low-confidence-fallback`, `user-abort`; post-session: `spiral`, `failed-wave`, `carryover-too-high`. Post-session gates read schema-canonical fields off the `sessionRunner` return shape (`agent_summary.{spiral, failed}` numeric counts, `effectiveness.{carryover, planned_issues}`); absent fields are forward-compatible (no kill).
 
-If the user asks to actually run multi-iteration autopilot before C-1.b lands, inform them:
-
-> The runtime is functional for single-iteration / dry-run / max-sessions usage. Multi-iteration loops with session-result-dependent kill-switches (spiral, failed-wave, carryover-too-high) require Phase C-1.b. For now, prefer manual `/session [type]` for sessions where those signals matter.
+Production `sessionRunner` callers MUST persist `args.autopilotRunId` into the per-iteration `sessions.jsonl` record (additive optional field, schema_version 1 compatible). Manual sessions write `null` or omit the field — readers treat both identically.
 
 ## Argument Parsing
 

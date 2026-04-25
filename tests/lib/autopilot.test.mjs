@@ -12,6 +12,7 @@ import {
   SCHEMA_VERSION,
   DEFAULT_PEER_ABORT_THRESHOLD,
   DEFAULT_JSONL_PATH,
+  DEFAULT_CARRYOVER_THRESHOLD,
 } from '../../scripts/lib/autopilot.mjs';
 
 let tmp;
@@ -35,7 +36,7 @@ describe('autopilot — exported constants', () => {
     expect(SCHEMA_VERSION).toBe(1);
   });
 
-  it('KILL_SWITCHES enumerates all 8 kill-switches (5 shipped + 3 deferred)', () => {
+  it('KILL_SWITCHES enumerates all 8 kill-switches (5 pre-iteration + 3 post-session)', () => {
     const values = Object.values(KILL_SWITCHES);
     expect(values).toContain('max-sessions-reached');
     expect(values).toContain('max-hours-exceeded');
@@ -53,6 +54,10 @@ describe('autopilot — exported constants', () => {
 
   it('DEFAULT_JSONL_PATH is .orchestrator/metrics/autopilot.jsonl', () => {
     expect(DEFAULT_JSONL_PATH).toBe('.orchestrator/metrics/autopilot.jsonl');
+  });
+
+  it('DEFAULT_CARRYOVER_THRESHOLD is 0.5', () => {
+    expect(DEFAULT_CARRYOVER_THRESHOLD).toBe(0.5);
   });
 
   it('FLAG_BOUNDS encodes spec defaults', () => {
@@ -571,5 +576,255 @@ describe('runLoop — telemetry record shape', () => {
       branch: 'main',
     });
     expect(state.autopilot_run_id).toMatch(/^main-2026-04-25-0842-autopilot$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-session kill-switches (Phase C-1.b, #300)
+// ---------------------------------------------------------------------------
+
+describe('runLoop — kill-switch: spiral', () => {
+  it('agent_summary.spiral > 0 after iter 1 fires kill_switch=spiral', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId, mode }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-${mode}-${runs}`,
+        agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 2 },
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'spiral-test',
+    });
+    expect(runs).toBe(1);
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.SPIRAL);
+    expect(state.kill_switch_detail).toMatch(/agent_summary\.spiral=2/);
+    expect(state.sessions).toHaveLength(1);
+  });
+
+  it('agent_summary.spiral === 0 (no spiral) does NOT fire — loop continues to next gate', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-clean`,
+      agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+    });
+    const state = await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'no-spiral-test',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(state.iterations_completed).toBe(1);
+  });
+});
+
+describe('runLoop — kill-switch: failed-wave', () => {
+  it('agent_summary.failed > 0 after iter 1 fires kill_switch=failed-wave', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-r${runs}`,
+        agent_summary: { complete: 0, partial: 0, failed: 3, spiral: 0 },
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'failed-wave-test',
+    });
+    expect(runs).toBe(1);
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.FAILED_WAVE);
+    expect(state.kill_switch_detail).toMatch(/agent_summary\.failed=3/);
+  });
+
+  it('spiral takes precedence over failed when both fields fire', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-both`,
+      agent_summary: { complete: 0, partial: 0, failed: 1, spiral: 1 },
+    });
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'both-fire',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.SPIRAL);
+  });
+});
+
+describe('runLoop — kill-switch: carryover-too-high', () => {
+  it('carryover/planned > threshold (default 0.5) fires kill_switch=carryover-too-high', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-co${runs}`,
+        agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 5, carryover: 4, completion_rate: 0.2 },
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'carryover-test',
+    });
+    expect(runs).toBe(1);
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.CARRYOVER_TOO_HIGH);
+    expect(state.kill_switch_detail).toMatch(/carryover\/planned=0\.8/);
+    expect(state.kill_switch_detail).toMatch(/threshold=0\.5/);
+  });
+
+  it('ratio at-or-below threshold does NOT fire (boundary 0.5 with planned=4, carryover=2)', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-boundary`,
+      effectiveness: { planned_issues: 4, carryover: 2 }, // ratio = 0.5, NOT > 0.5
+    });
+    const state = await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'boundary-test',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(state.iterations_completed).toBe(1);
+  });
+
+  it('planned_issues=0 does NOT fire even if carryover>0 (avoids div-by-zero)', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-zero`,
+      effectiveness: { planned_issues: 0, carryover: 3 },
+    });
+    const state = await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'zero-planned',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+  });
+
+  it('opts.carryoverThreshold overrides DEFAULT_CARRYOVER_THRESHOLD', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-strict`,
+      effectiveness: { planned_issues: 10, carryover: 3 }, // ratio 0.3, would NOT fire at default 0.5
+    });
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      carryoverThreshold: 0.2, // strict — fires at 0.3 > 0.2
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'strict-threshold',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.CARRYOVER_TOO_HIGH);
+    expect(state.kill_switch_detail).toMatch(/threshold=0\.2/);
+  });
+
+  it('absent agent_summary AND effectiveness → no post-session kill (forward-compat)', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const sessionRunner = async ({ autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-bare`,
+      // No agent_summary, no effectiveness — older sessionRunner contract.
+    });
+    const state = await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'bare-test',
+    });
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(state.iterations_completed).toBe(1);
+  });
+});
+
+describe('runLoop — autopilotRunId propagation (#300)', () => {
+  it('sessionRunner receives autopilotRunId === state.autopilot_run_id every iteration', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const observedRunIds = [];
+    const sessionRunner = async ({ autopilotRunId, mode }) => {
+      observedRunIds.push(autopilotRunId);
+      return { session_id: `${autopilotRunId}-${mode}-${observedRunIds.length}` };
+    };
+    const state = await runLoop({
+      maxSessions: 3,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'propagation-test',
+    });
+    expect(state.autopilot_run_id).toBe('propagation-test');
+    expect(observedRunIds).toHaveLength(3);
+    expect(observedRunIds.every((id) => id === 'propagation-test')).toBe(true);
+    expect(state.iterations_completed).toBe(3);
+    expect(state.sessions).toEqual([
+      'propagation-test-feature-1',
+      'propagation-test-feature-2',
+      'propagation-test-feature-3',
+    ]);
   });
 });
