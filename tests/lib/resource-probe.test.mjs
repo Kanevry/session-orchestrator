@@ -4,6 +4,8 @@ import {
   probe,
   evaluate,
   countProcessMatches,
+  parseSwapUsageOutput,
+  parseMemoryPressureOutput,
 } from '../../scripts/lib/resource-probe.mjs';
 
 const DEFAULT_THRESHOLDS = {
@@ -17,7 +19,7 @@ const DEFAULT_THRESHOLDS = {
 describe('resource-probe', () => {
   describe('probe()', () => {
     it('returns the expected shape (skipProcessCounts=true for speed)', async () => {
-      const s = await probe({ skipProcessCounts: true });
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       expect(s).toMatchObject({
         timestamp: expect.any(String),
         ram_free_gb: expect.any(Number),
@@ -31,25 +33,47 @@ describe('resource-probe', () => {
       });
     });
 
-    it('probe_duration_ms is below 200 in the fast path', async () => {
+    it('shape includes swap_used_mb and memory_pressure_pct_free fields', async () => {
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
+      expect(Object.prototype.hasOwnProperty.call(s, 'swap_used_mb')).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(s, 'memory_pressure_pct_free')).toBe(true);
+      // When skipExtendedSignals=true both must be null
+      expect(s.swap_used_mb).toBe(null);
+      expect(s.memory_pressure_pct_free).toBe(null);
+    });
+
+    it('skipExtendedSignals=true returns null for swap_used_mb and memory_pressure_pct_free', async () => {
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
+      expect(s.swap_used_mb).toBe(null);
+      expect(s.memory_pressure_pct_free).toBe(null);
+    });
+
+    it('extended signals are number|null when skipExtendedSignals is omitted', async () => {
       const s = await probe({ skipProcessCounts: true });
+      const isValid = (v) => v === null || (typeof v === 'number' && v >= 0);
+      expect(isValid(s.swap_used_mb)).toBe(true);
+      expect(isValid(s.memory_pressure_pct_free)).toBe(true);
+    }, 5000);
+
+    it('probe_duration_ms is below 200 in the fast path', async () => {
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       expect(s.probe_duration_ms).toBeLessThan(200);
     });
 
     it('ram_used_pct is between 0 and 100 inclusive', async () => {
-      const s = await probe({ skipProcessCounts: true });
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       expect(s.ram_used_pct).toBeGreaterThanOrEqual(0);
       expect(s.ram_used_pct).toBeLessThanOrEqual(100);
     });
 
     it('cpu_load_pct is between 0 and 100 inclusive', async () => {
-      const s = await probe({ skipProcessCounts: true });
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       expect(s.cpu_load_pct).toBeGreaterThanOrEqual(0);
       expect(s.cpu_load_pct).toBeLessThanOrEqual(100);
     });
 
     it('produces a valid ISO 8601 timestamp', async () => {
-      const s = await probe({ skipProcessCounts: true });
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       const t = Date.parse(s.timestamp);
       expect(Number.isNaN(t)).toBe(false);
     });
@@ -160,6 +184,161 @@ describe('resource-probe', () => {
       const snap = { ...baseSnapshot, claude_processes_count: null };
       const result = evaluate(snap, DEFAULT_THRESHOLDS);
       expect(result.verdict).toBe('green');
+    });
+  });
+
+  describe('parseSwapUsageOutput()', () => {
+    it('parses typical macOS sysctl vm.swapusage output', () => {
+      const text = 'vm.swapusage: total = 4096.00M  used = 1234.50M  free = 2861.50M  (encrypted)';
+      const result = parseSwapUsageOutput(text);
+      // Math.round(1234.50) === 1235
+      expect(result).toBe(1235);
+    });
+
+    it('parses zero swap usage', () => {
+      const text = 'vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M';
+      expect(parseSwapUsageOutput(text)).toBe(0);
+    });
+
+    it('returns null for garbage output', () => {
+      expect(parseSwapUsageOutput('garbage output')).toBe(null);
+    });
+
+    it('returns null for null input', () => {
+      expect(parseSwapUsageOutput(null)).toBe(null);
+    });
+
+    it('returns null for undefined input', () => {
+      expect(parseSwapUsageOutput(undefined)).toBe(null);
+    });
+  });
+
+  describe('parseMemoryPressureOutput()', () => {
+    it('parses standard memory_pressure output', () => {
+      expect(parseMemoryPressureOutput('System-wide memory free percentage: 42%')).toBe(42);
+    });
+
+    it('parses 0% free', () => {
+      expect(parseMemoryPressureOutput('System-wide memory free percentage: 0%')).toBe(0);
+    });
+
+    it('returns null for garbage output', () => {
+      expect(parseMemoryPressureOutput('garbage')).toBe(null);
+    });
+
+    it('returns null for null input', () => {
+      expect(parseMemoryPressureOutput(null)).toBe(null);
+    });
+  });
+
+  describe('evaluate() — swap and memory_pressure signals', () => {
+    const baseSnapshot = {
+      ram_free_gb: 8,
+      ram_used_pct: 40,
+      cpu_load_1m: 1.2,
+      cpu_load_pct: 30,
+      claude_processes_count: 1,
+      codex_processes_count: 0,
+      other_node_processes: 5,
+    };
+
+    it('swap > 3072 MB → critical regardless of healthy RAM', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: 3500, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+      expect(result.reasons.some((r) => r.includes('3500 MB above critical threshold 3072 MB'))).toBe(true);
+    });
+
+    it('swap 2048..3072 MB → degraded', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: 2500, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('degraded');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('2500 MB in degraded range'))).toBe(true);
+    });
+
+    it('swap 1024..2048 MB → warn', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: 1500, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('1500 MB in warn range'))).toBe(true);
+    });
+
+    it('swap ≤ 1024 MB → no swap rule fires (green from all signals)', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: 500, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+      expect(result.recommended_agents_per_wave_cap).toBe(null);
+    });
+
+    it('memory_pressure_pct_free < 5 → critical regardless of swap', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: null, memory_pressure_pct_free: 3 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+      expect(result.reasons.some((r) => r.includes('3% below critical threshold 5%'))).toBe(true);
+    });
+
+    it('memory_pressure_pct_free 5..15 → degraded', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: null, memory_pressure_pct_free: 10 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('degraded');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('10% in degraded range (5..15%)'))).toBe(true);
+    });
+
+    it('memory_pressure_pct_free 15..30 → warn', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: null, memory_pressure_pct_free: 20 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('20% in warn range (15..30%)'))).toBe(true);
+    });
+
+    it('memory_pressure_pct_free null (Linux) → no memory_pressure rule fires', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: null, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+    });
+
+    it('critical RAM beats degraded swap → final verdict critical, cap=0', () => {
+      const snap = { ...baseSnapshot, ram_free_gb: 1, swap_used_mb: 2500, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+    });
+
+    it('warn swap + degraded memory_pressure → final verdict degraded, cap=2', () => {
+      const snap = { ...baseSnapshot, swap_used_mb: 1500, memory_pressure_pct_free: 10 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('degraded');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+    });
+
+    it('most-restrictive wins: both warn signals → final warn', () => {
+      const snap = { ...baseSnapshot, ram_free_gb: 8, swap_used_mb: 1500, memory_pressure_pct_free: 25 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+    });
+
+    it('backward compat: snapshot without new fields does not throw and produces same legacy result', () => {
+      // Simulate a legacy snapshot without swap_used_mb / memory_pressure_pct_free
+      const legacySnap = {
+        ram_free_gb: 8,
+        ram_used_pct: 40,
+        cpu_load_1m: 1.2,
+        cpu_load_pct: 30,
+        claude_processes_count: 1,
+        codex_processes_count: 0,
+        other_node_processes: 5,
+      };
+      expect(() => evaluate(legacySnap, DEFAULT_THRESHOLDS)).not.toThrow();
+      const result = evaluate(legacySnap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+      expect(result.recommended_agents_per_wave_cap).toBe(null);
     });
   });
 });

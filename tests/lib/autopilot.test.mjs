@@ -14,6 +14,9 @@ import {
   DEFAULT_JSONL_PATH,
   DEFAULT_CARRYOVER_THRESHOLD,
 } from '../../scripts/lib/autopilot.mjs';
+import { buildLiveSignals } from '../../scripts/lib/build-live-signals.mjs';
+import { selectMode } from '../../scripts/lib/mode-selector.mjs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 
 let tmp;
 let jsonlPath;
@@ -825,6 +828,294 @@ describe('runLoop — autopilotRunId propagation (#300)', () => {
       'propagation-test-feature-1',
       'propagation-test-feature-2',
       'propagation-test-feature-3',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: runLoop end-to-end with real buildLiveSignals (#301 Phase C-1.c)
+// ---------------------------------------------------------------------------
+
+describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)', () => {
+  function writeFixture(dir, files) {
+    for (const [rel, contents] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, contents);
+    }
+  }
+
+  it('drives runLoop with selectMode(buildLiveSignals(fixtures)); kills on low-confidence at iter1 fallback', async () => {
+    // Empty fixture dir → buildLiveSignals returns all-null/empty Signals.
+    // selectMode default branch: confidence=0.0, mode='feature'.
+    // Iter1 sub-threshold → fallback to manual (kill-switch fires inside runLoop).
+    const fixtureDir = path.join(tmp, 'fixtures-empty');
+    mkdirSync(fixtureDir, { recursive: true });
+
+    let observedConfidence = null;
+    const modeSelector = async () => {
+      const signals = await buildLiveSignals({
+        statePath: path.join(fixtureDir, '.claude/STATE.md'),
+        sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
+        lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+      });
+      const rec = selectMode(signals);
+      observedConfidence = rec.confidence;
+      return rec;
+    };
+
+    const state = await runLoop({
+      maxSessions: 3,
+      maxHours: 1,
+      confidenceThreshold: 0.5,
+      sessionRunner: async () => ({ session_id: 'should-not-run' }),
+      modeSelector,
+      resourceEvaluator: () => ({ verdict: 'green' }),
+      peerCounter: () => 0,
+      jsonlPath,
+      runId: 'integration-empty',
+    });
+
+    expect(observedConfidence).toBe(0);
+    expect(state.iterations_completed).toBe(0);
+    expect(state.kill_switch).toBeNull();
+    expect(state.fallback_to_manual).toBe(true);
+  });
+
+  it('drives runLoop with populated fixtures; selectMode returns non-zero confidence and runs sessions', async () => {
+    // Fixture: STATE.md with v1.1 rec fields → recommendedMode populated → selectMode passthrough w/ confidence > 0.
+    const fixtureDir = path.join(tmp, 'fixtures-populated');
+    writeFixture(fixtureDir, {
+      '.claude/STATE.md': [
+        '---',
+        'schema-version: 1',
+        'session-type: feature',
+        'branch: main',
+        'issues: [99]',
+        'started_at: 2026-04-25T10:00:00+02:00',
+        'status: completed',
+        'current-wave: 5',
+        'total-waves: 5',
+        'recommended-mode: feature',
+        'top-priorities: []',
+        'carryover-ratio: 0',
+        'completion-rate: 1',
+        'rationale: "v0: clean completion"',
+        '---',
+        '',
+        '## Current Wave',
+        'done',
+      ].join('\n'),
+      '.orchestrator/metrics/sessions.jsonl': JSON.stringify({
+        session_id: 'main-2026-04-25-1000',
+        session_type: 'feature',
+        completion_rate: 1.0,
+      }) + '\n',
+      '.orchestrator/bootstrap.lock': 'version: 1\ntier: standard\n',
+    });
+
+    const sessionsRun = [];
+    const modeSelector = async () => {
+      const signals = await buildLiveSignals({
+        statePath: path.join(fixtureDir, '.claude/STATE.md'),
+        sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
+        lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+      });
+      // Lock-in: signals must be a valid Signals object consumed by selectMode.
+      expect(signals.recommendedMode).toBe('feature');
+      expect(signals.completionRate).toBe(1);
+      expect(signals.bootstrapLock).toEqual({ version: '1', tier: 'standard' });
+      return selectMode(signals);
+    };
+
+    const sessionRunner = async ({ mode, autopilotRunId }) => {
+      const id = `${autopilotRunId}-${mode}-${sessionsRun.length + 1}`;
+      sessionsRun.push({ id, mode });
+      return {
+        session_id: id,
+        agent_summary: { complete: 5, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 2, carryover: 0, completion_rate: 1.0 },
+      };
+    };
+
+    const state = await runLoop({
+      maxSessions: 2,
+      maxHours: 1,
+      confidenceThreshold: 0.3, // populated fixture yields ~0.4 passthrough confidence
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator: () => ({ verdict: 'green' }),
+      peerCounter: () => 0,
+      jsonlPath,
+      runId: 'integration-populated',
+    });
+
+    expect(state.iterations_completed).toBe(2);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(sessionsRun).toHaveLength(2);
+    expect(sessionsRun.every((s) => s.mode === 'feature')).toBe(true);
+  });
+
+  it('post-session kill-switch (failed-wave) fires when sessionRunner reports agent_summary.failed > 0', async () => {
+    const fixtureDir = path.join(tmp, 'fixtures-failed');
+    writeFixture(fixtureDir, {
+      '.claude/STATE.md': [
+        '---',
+        'schema-version: 1',
+        'session-type: feature',
+        'branch: main',
+        'issues: [1]',
+        'started_at: 2026-04-25T10:00:00+02:00',
+        'status: completed',
+        'current-wave: 5',
+        'total-waves: 5',
+        'recommended-mode: feature',
+        'rationale: "v0"',
+        '---',
+        '',
+        '## Body',
+      ].join('\n'),
+    });
+
+    const modeSelector = async () => {
+      const signals = await buildLiveSignals({
+        statePath: path.join(fixtureDir, '.claude/STATE.md'),
+        sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
+        lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+      });
+      return selectMode(signals);
+    };
+
+    const sessionRunner = async ({ mode, autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-${mode}-1`,
+      agent_summary: { complete: 4, partial: 0, failed: 2, spiral: 0 },
+      effectiveness: { planned_issues: 5, carryover: 0, completion_rate: 0.8 },
+    });
+
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 1,
+      confidenceThreshold: 0.3,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator: () => ({ verdict: 'green' }),
+      peerCounter: () => 0,
+      jsonlPath,
+      runId: 'integration-failed',
+    });
+
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.FAILED_WAVE);
+  });
+
+  it('post-session kill-switch (carryover-too-high) fires when effectiveness.carryover/planned > 0.5', async () => {
+    const fixtureDir = path.join(tmp, 'fixtures-carryover');
+    writeFixture(fixtureDir, {
+      '.claude/STATE.md': [
+        '---',
+        'schema-version: 1',
+        'session-type: feature',
+        'branch: main',
+        'issues: [1]',
+        'started_at: 2026-04-25T10:00:00+02:00',
+        'status: completed',
+        'current-wave: 5',
+        'total-waves: 5',
+        'recommended-mode: feature',
+        'rationale: "v0"',
+        '---',
+        '',
+        '## Body',
+      ].join('\n'),
+    });
+
+    const modeSelector = async () => {
+      const signals = await buildLiveSignals({
+        statePath: path.join(fixtureDir, '.claude/STATE.md'),
+        sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
+        lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+      });
+      return selectMode(signals);
+    };
+
+    const sessionRunner = async ({ mode, autopilotRunId }) => ({
+      session_id: `${autopilotRunId}-${mode}-1`,
+      agent_summary: { complete: 5, partial: 0, failed: 0, spiral: 0 },
+      effectiveness: { planned_issues: 4, carryover: 3, completion_rate: 0.25 }, // 3/4 = 0.75 > 0.5
+    });
+
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 1,
+      confidenceThreshold: 0.3,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator: () => ({ verdict: 'green' }),
+      peerCounter: () => 0,
+      jsonlPath,
+      runId: 'integration-carryover',
+    });
+
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.CARRYOVER_TOO_HIGH);
+  });
+
+  it('happy-path multi-iteration with autopilot_run_id stamped on every sessionRunner invocation', async () => {
+    const fixtureDir = path.join(tmp, 'fixtures-happy');
+    writeFixture(fixtureDir, {
+      '.claude/STATE.md': [
+        '---',
+        'schema-version: 1',
+        'session-type: feature',
+        'branch: main',
+        'issues: [1]',
+        'started_at: 2026-04-25T10:00:00+02:00',
+        'status: completed',
+        'current-wave: 5',
+        'total-waves: 5',
+        'recommended-mode: feature',
+        'rationale: "v0"',
+        '---',
+      ].join('\n'),
+    });
+
+    const observedRunIds = [];
+    const modeSelector = async () => {
+      const signals = await buildLiveSignals({
+        statePath: path.join(fixtureDir, '.claude/STATE.md'),
+        sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
+        lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+      });
+      return selectMode(signals);
+    };
+
+    const sessionRunner = async ({ mode, autopilotRunId }) => {
+      observedRunIds.push(autopilotRunId);
+      return {
+        session_id: `${autopilotRunId}-${mode}-${observedRunIds.length}`,
+        agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 1, carryover: 0, completion_rate: 1.0 },
+      };
+    };
+
+    const state = await runLoop({
+      maxSessions: 3,
+      maxHours: 1,
+      confidenceThreshold: 0.3,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator: () => ({ verdict: 'green' }),
+      peerCounter: () => 0,
+      jsonlPath,
+      runId: 'integration-happy',
+    });
+
+    expect(state.iterations_completed).toBe(3);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(observedRunIds).toEqual([
+      'integration-happy',
+      'integration-happy',
+      'integration-happy',
     ]);
   });
 });

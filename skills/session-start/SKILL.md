@@ -586,57 +586,21 @@ Both banners may render in the same session-start run. That is intentional: the 
 
 ### Step 1: Build Signals
 
-Assemble the `signals` object from data already in memory at this point in the skill. **Do not re-read any files** — all of these values are available from earlier phases.
+Invoke `buildLiveSignals` from `scripts/lib/build-live-signals.mjs` to assemble the `signals` object. The helper composes all six source modules (state-md, sessions.jsonl, bootstrap.lock, scanBacklog, learnings, vaultStaleness reserved) with graceful-null on every failure. Pure async, never throws.
 
 ```js
-// All imports are conceptual — invoked via node --input-type=module inline script.
-import { parseStateMd, parseRecommendations, updateFrontmatterFields } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
-import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
-import { parseBootstrapLock } from '$PLUGIN_ROOT/scripts/lib/bootstrap-lock-freshness.mjs';
-import { normalizeSession } from '$PLUGIN_ROOT/scripts/lib/session-schema.mjs';
-import { scanBacklog } from '$PLUGIN_ROOT/scripts/lib/backlog-scan.mjs';
-import { readFileSync } from 'node:fs';
+import { buildLiveSignals } from '$PLUGIN_ROOT/scripts/lib/build-live-signals.mjs';
 
-// rec: result of parseRecommendations() from Phase 1.5 (already in memory).
-// If Phase 1.5 was skipped or STATE.md is absent, rec === null.
-
-// recentSessions: last 10 entries from sessions.jsonl, normalized.
-// Phase 6.6 reads sessions.jsonl for effectiveness analysis — reuse that read.
-// Map each raw entry through normalizeSession() (never-throws contract).
-// If fewer than 10 exist, use all available. If sessions.jsonl absent, use [].
-const tail10NormalizedSessions = rawRecentSessions.map(normalizeSession);
-
-// bootstrapLock: parsed from .orchestrator/bootstrap.lock if it exists.
-// Phase 4 already invokes bootstrap-lock-freshness.mjs for the banner — reuse.
-// If the file is absent, pass null.
-const bootstrapLockObj = lockFileContents
-  ? parseBootstrapLock(lockFileContents)   // returns {tier, ...} or null on parse failure
-  : null;
-
-// surfacedTopLearnings: the top-N active learnings already surfaced in Phase 6.6.
-// These are the same objects already displayed in the Project Intelligence section.
-// If Phase 6.6 was skipped or no learnings exist, use [].
-
-// backlog: structural counts from the project's open issues. Phase B-3 (#293).
-// scanBacklog auto-detects glab/gh, caches per (vcs, limit), and returns null on
-// graceful-degradation paths (CLI missing, non-zero exit, parse failure, no
-// git origin). null contributes 0 delta to selectMode — no error path.
-const backlogSummary = await scanBacklog({ limit: 50 });
-
-const signals = {
-  recommendedMode:    rec?.mode           ?? null,
-  topPriorities:      rec?.priorities     ?? null,
-  carryoverRatio:     rec?.carryoverRatio ?? null,
-  completionRate:     rec?.completionRate ?? null,
-  previousRationale:  rec?.rationale      ?? null,
-  recentSessions:     tail10NormalizedSessions,  // array, may be empty
-  bootstrapLock:      bootstrapLockObj,          // object or null
-  learnings:          surfacedTopLearnings,       // array, may be empty
-  backlog:            backlogSummary,             // {criticalCount, highCount, staleCount, byLabel, total} or null
-  // vaultStaleness: reserved for follow-up — pass null for now
-  vaultStaleness:     null,
-};
+// Pass the surfaced top-N learnings (already computed in Phase 6.6) to avoid
+// re-reading learnings.jsonl. Other paths default to canonical locations
+// (.claude/STATE.md, .orchestrator/metrics/sessions.jsonl, .orchestrator/bootstrap.lock).
+const signals = await buildLiveSignals({
+  learnings: surfacedTopLearnings,   // array, may be empty
+  backlogLimit: 50,
+});
 ```
+
+`buildLiveSignals` is the single SSOT for the Signals shape consumed by `selectMode` and by the autopilot driver protocol (see `skills/autopilot/SKILL.md § Production Wiring`). Phase 7.5 here and the autopilot in-process driver MUST go through this helper — do not inline the recipe in either call site.
 
 **Key source bindings (Phase → field):**
 

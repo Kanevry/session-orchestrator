@@ -6,6 +6,7 @@
  * pressure rather than static config defaults.
  *
  * Part of v3.1.0 Epic #157, Sub-Epic #158 (A+B). Issue #163.
+ * Extended in v3.2 Phase C-2 (#296): swap_used_mb + memory_pressure_pct_free signals.
  *
  * Snapshot shape:
  *   {
@@ -17,11 +18,16 @@
  *     claude_processes_count: 3 | null,
  *     codex_processes_count: 0 | null,
  *     other_node_processes: 12 | null,
+ *     swap_used_mb: 512 | null,
+ *     memory_pressure_pct_free: 42 | null,
  *     probe_duration_ms: 45,
  *   }
  *
  * process-count fields fall back to `null` when the process-list command fails
  * (e.g. sandboxed environments). Consumers treat `null` as "unknown".
+ *
+ * swap_used_mb: null on Windows/unknown or on spawn/parse failure.
+ * memory_pressure_pct_free: null on Linux/Windows/unknown or on failure.
  */
 
 import os from 'node:os';
@@ -161,6 +167,115 @@ async function _processCounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Swap usage (async, spawn-based) — macOS + Linux only
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `sysctl vm.swapusage` output (macOS) and return used MB as integer.
+ * Pure function for unit testability.
+ * @param {string} text
+ * @returns {number|null}
+ */
+export function parseSwapUsageOutput(text) {
+  if (text === null || text === undefined) return null;
+  // Sample: "vm.swapusage: total = 4096.00M  used = 1234.50M  free = 2861.50M"
+  const match = /used\s*=\s*([\d.]+)M/i.exec(String(text));
+  if (!match) return null;
+  const mb = parseFloat(match[1]);
+  if (Number.isNaN(mb)) return null;
+  return Math.round(mb);
+}
+
+/**
+ * Parse `memory_pressure` output (macOS) and return the free percentage as integer.
+ * Pure function for unit testability.
+ * @param {string} text
+ * @returns {number|null}
+ */
+export function parseMemoryPressureOutput(text) {
+  if (text === null || text === undefined) return null;
+  // Sample: "System-wide memory free percentage: 42%"
+  const match = /System-wide memory free percentage:\s*(\d+)%/i.exec(String(text));
+  if (!match) return null;
+  const pct = parseInt(match[1], 10);
+  if (Number.isNaN(pct)) return null;
+  return pct;
+}
+
+/**
+ * Run a command and collect stdout, with a timeout. Returns null on failure.
+ * @param {string} cmd
+ * @param {string[]} args
+ * @param {number} timeoutMs
+ * @returns {Promise<string|null>}
+ */
+function _runCommand(cmd, args, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    try {
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      const chunks = [];
+      child.stdout.on('data', (c) => chunks.push(c));
+      child.on('error', () => finish(null));
+      child.on('close', (code) => {
+        if (code !== 0) return finish(null);
+        finish(Buffer.concat(chunks).toString('utf8'));
+      });
+      setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        finish(null);
+      }, timeoutMs);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/**
+ * Probe swap usage. Returns used MB as integer, or null on unsupported/failure.
+ * @returns {Promise<number|null>}
+ */
+async function _swapUsedMb() {
+  if (SO_IS_WINDOWS) return null;
+
+  if (process.platform === 'darwin') {
+    const output = await _runCommand('sysctl', ['vm.swapusage']);
+    return parseSwapUsageOutput(output);
+  }
+
+  if (process.platform === 'linux') {
+    // Read /proc/meminfo and compute SwapTotal - SwapFree (values in kB)
+    const output = await _runCommand('cat', ['/proc/meminfo']);
+    if (output === null) return null;
+    const totalMatch = /SwapTotal:\s*(\d+)\s*kB/i.exec(output);
+    const freeMatch = /SwapFree:\s*(\d+)\s*kB/i.exec(output);
+    if (!totalMatch || !freeMatch) return null;
+    const totalKb = parseInt(totalMatch[1], 10);
+    const freeKb = parseInt(freeMatch[1], 10);
+    if (Number.isNaN(totalKb) || Number.isNaN(freeKb)) return null;
+    return Math.round((totalKb - freeKb) / 1024);
+  }
+
+  return null;
+}
+
+/**
+ * Probe macOS memory_pressure free percentage. Returns integer 0..100, or null.
+ * @returns {Promise<number|null>}
+ */
+async function _memoryPressurePctFree() {
+  if (process.platform !== 'darwin') return null;
+
+  const output = await _runCommand('memory_pressure', []);
+  return parseMemoryPressureOutput(output);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -168,6 +283,7 @@ async function _processCounts() {
  * Capture a live resource snapshot of the current host.
  * @param {object} [opts]
  * @param {boolean} [opts.skipProcessCounts] — skip process listing (faster in tests)
+ * @param {boolean} [opts.skipExtendedSignals] — skip swap + memory_pressure calls (faster in tests)
  * @returns {Promise<object>}
  */
 export async function probe(opts = {}) {
@@ -177,14 +293,44 @@ export async function probe(opts = {}) {
   const procs = opts.skipProcessCounts
     ? { claude_processes_count: null, codex_processes_count: null, other_node_processes: null }
     : await _processCounts();
+
+  let swap_used_mb = null;
+  let memory_pressure_pct_free = null;
+  if (!opts.skipExtendedSignals) {
+    [swap_used_mb, memory_pressure_pct_free] = await Promise.all([
+      _swapUsedMb(),
+      _memoryPressurePctFree(),
+    ]);
+  }
+
   const duration = Date.now() - start;
   return {
     timestamp: new Date().toISOString(),
     ...ram,
     ...cpu,
     ...procs,
+    swap_used_mb,
+    memory_pressure_pct_free,
     probe_duration_ms: duration,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Verdict precedence helper
+// ---------------------------------------------------------------------------
+
+const VERDICT_RANK = { green: 0, warn: 1, degraded: 2, critical: 3 };
+
+/**
+ * Return the more restrictive of two verdicts.
+ * @param {string} current
+ * @param {string} target
+ * @returns {string}
+ */
+function bumpVerdict(current, target) {
+  const currentRank = VERDICT_RANK[current] ?? 0;
+  const targetRank = VERDICT_RANK[target] ?? 0;
+  return targetRank > currentRank ? target : current;
 }
 
 /**
@@ -192,7 +338,7 @@ export async function probe(opts = {}) {
  * and return a verdict used by session-start Phase 4.5.
  * @param {object} snapshot — output of probe()
  * @param {object} thresholds — resource-thresholds block from parseSessionConfig
- * @returns {{verdict: 'green'|'warn'|'critical', reasons: string[], recommended_agents_per_wave_cap: number|null}}
+ * @returns {{verdict: 'green'|'warn'|'degraded'|'critical', reasons: string[], recommended_agents_per_wave_cap: number|null}}
  */
 export function evaluate(snapshot, thresholds) {
   const reasons = [];
@@ -226,6 +372,64 @@ export function evaluate(snapshot, thresholds) {
   if (claude_processes_count !== null && claude_processes_count !== undefined && claude_processes_count >= concWarn) {
     if (verdict === 'green') verdict = 'warn';
     reasons.push(`${claude_processes_count} Claude processes already running (threshold: ${concWarn}) — consider sequencing this session after others finish.`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Swap signal (macOS / Linux only; null = signal unavailable → no rule fires)
+  // ---------------------------------------------------------------------------
+  const { swap_used_mb } = snapshot;
+  if (swap_used_mb !== null && swap_used_mb !== undefined) {
+    if (swap_used_mb > 3072) {
+      verdict = bumpVerdict(verdict, 'critical');
+      cap = 0;
+      reasons.push(`Swap usage ${swap_used_mb} MB above critical threshold 3072 MB — recommend coordinator-direct (0 agents).`);
+    } else if (swap_used_mb > 2048) {
+      const newVerdict = bumpVerdict(verdict, 'degraded');
+      if (newVerdict !== verdict) {
+        verdict = newVerdict;
+        cap = cap === null ? 2 : Math.min(cap, 2);
+      }
+      reasons.push(`Swap usage ${swap_used_mb} MB in degraded range (2048..3072 MB) — capping agents-per-wave at 2.`);
+    } else if (swap_used_mb > 1024) {
+      const newVerdict = bumpVerdict(verdict, 'warn');
+      if (newVerdict !== verdict) {
+        verdict = newVerdict;
+        cap = cap === null ? 2 : Math.min(cap, 2);
+      }
+      reasons.push(`Swap usage ${swap_used_mb} MB in warn range (1024..2048 MB) — capping agents-per-wave at 2.`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // macOS memory_pressure signal (null = signal unavailable → no rule fires)
+  // ---------------------------------------------------------------------------
+  const { memory_pressure_pct_free } = snapshot;
+  if (memory_pressure_pct_free !== null && memory_pressure_pct_free !== undefined) {
+    if (memory_pressure_pct_free < 5) {
+      verdict = bumpVerdict(verdict, 'critical');
+      cap = 0;
+      reasons.push(`macOS memory_pressure free ${memory_pressure_pct_free}% below critical threshold 5% — recommend coordinator-direct (0 agents).`);
+    } else if (memory_pressure_pct_free < 15) {
+      const newVerdict = bumpVerdict(verdict, 'degraded');
+      if (newVerdict !== verdict) {
+        verdict = newVerdict;
+        cap = cap === null ? 2 : Math.min(cap, 2);
+      }
+      reasons.push(`macOS memory_pressure free ${memory_pressure_pct_free}% in degraded range (5..15%) — capping agents-per-wave at 2.`);
+    } else if (memory_pressure_pct_free < 30) {
+      const newVerdict = bumpVerdict(verdict, 'warn');
+      if (newVerdict !== verdict) {
+        verdict = newVerdict;
+        cap = cap === null ? 2 : Math.min(cap, 2);
+      }
+      reasons.push(`macOS memory_pressure free ${memory_pressure_pct_free}% in warn range (15..30%) — capping agents-per-wave at 2.`);
+    }
+  }
+
+  // Ensure cap aligns with final verdict when critical was triggered by swap/memory_pressure
+  // (the bumpVerdict path sets cap=0 inline for critical, but re-affirm for safety)
+  if (verdict === 'critical') {
+    cap = 0;
   }
 
   return { verdict, reasons, recommended_agents_per_wave_cap: cap };

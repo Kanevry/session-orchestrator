@@ -136,6 +136,103 @@ per iteration based on the most-restrictive resource signal.
 Defaults are conservative initial estimates. Phase C-3 follow-up calibrates the swap and
 memory_pressure thresholds against real autopilot-run effectiveness data.
 
+## Production Wiring
+
+Phase C-1 ships `runLoop` as a pure controller. Phase C-1.c ships `buildLiveSignals` as
+the canonical signals-assembly helper. This section documents the **in-process driver
+protocol** (Option B from #301): how Claude — running as the coordinator in a chat
+session — drives `runLoop` between manual `/session` invocations. The headless wrapper
+(Option A, `scripts/autopilot.mjs` CLI spawning `claude -p`) is reserved for Phase C-5.
+
+### Dependency-Injection Contract
+
+`runLoop` requires four injected dependencies:
+
+| Field | Signature | Source |
+|---|---|---|
+| `modeSelector` | `() => Promise<{mode, confidence, rationale?}>` | wraps `selectMode(await buildLiveSignals())` |
+| `sessionRunner` | `({mode, autopilotRunId}) => Promise<{session_id, agent_summary?, effectiveness?}>` | wraps a `/session <mode>` invocation; reads `sessions.jsonl` tail to construct return value |
+| `resourceEvaluator` | `() => {verdict}` | wraps `evaluate(await probe(), thresholds)` from `resource-probe.mjs` |
+| `peerCounter` | `() => number` | reads `claude_processes_count` from a fresh `probe()` snapshot |
+
+`abortSignal` is optional (Ctrl+C / Esc → `user-abort` kill-switch).
+
+### In-Process Driver Skeleton
+
+```js
+import { runLoop, parseFlags } from '$PLUGIN_ROOT/scripts/lib/autopilot.mjs';
+import { buildLiveSignals } from '$PLUGIN_ROOT/scripts/lib/build-live-signals.mjs';
+import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
+import { probe, evaluate } from '$PLUGIN_ROOT/scripts/lib/resource-probe.mjs';
+
+const flags = parseFlags(process.argv.slice(2));
+
+const modeSelector = async () => {
+  // Each iteration rebuilds signals from current disk state. STATE.md will be
+  // freshly idle-reset by the previous /close, sessions.jsonl will have the
+  // new tail entry, etc. This is the contract: live signals every iteration.
+  const signals = await buildLiveSignals({ backlogLimit: 50 });
+  return selectMode(signals);
+};
+
+const resourceEvaluator = () => {
+  const snapshot = probeSync();   // or cached snapshot if probe is async
+  return evaluate(snapshot, thresholds);
+};
+
+const peerCounter = () => {
+  // Synchronous-friendly count from a recent probe snapshot.
+  return latestSnapshot.claude_processes_count ?? 0;
+};
+
+const sessionRunner = async ({ mode, autopilotRunId }) => {
+  // The coordinator (Claude) invokes /session <mode> manually here. After the
+  // session completes (/close runs, sessions.jsonl appended), this function
+  // reads the tail entry and projects it into the runLoop return-shape.
+  const tail = readSessionsJsonlTail(1);   // last line, normalized
+  return {
+    session_id: tail.session_id,
+    agent_summary: tail.agent_summary,    // {complete, partial, failed, spiral}
+    effectiveness: tail.effectiveness,    // {planned_issues, carryover, completion_rate, ...}
+  };
+};
+
+const result = await runLoop({
+  ...flags,
+  modeSelector,
+  sessionRunner,
+  resourceEvaluator,
+  peerCounter,
+});
+```
+
+### Why In-Process First
+
+The in-process driver has Claude (the coordinator) call `/session <mode>` between
+`runLoop` iterations, with `runLoop` orchestrating the kill-switches. Trade-offs:
+
+- **Pro:** zero new infra. Reuses canonical kill-switch logic. Validates `buildLiveSignals`
+  against real Phase 7.5 swap before headless complexity. Each iteration carries
+  inter-session memory through STATE.md / sessions.jsonl / learnings.
+- **Con:** not truly autonomous — Claude must stay in the chat. Doesn't deliver
+  walk-away UX. That's Phase C-5's job.
+
+### `autopilot_run_id` Propagation
+
+When `runLoop` invokes `sessionRunner({mode, autopilotRunId})`, the per-iteration
+`sessions.jsonl` record MUST carry `autopilot_run_id: <id>`. session-end Phase 3.7
+writes this field. Manual sessions write `null` or omit it — readers treat both
+identically per the v1 schema additive convention. See
+`skills/session-end/session-metrics-write.md`.
+
+### Acceptance Signals
+
+A live `/autopilot` invocation against this wiring produces a non-zero `confidence`
+recommendation when at least one signal source is populated (state-md rec fields,
+sessions.jsonl tail, learnings, or backlog). Confidence at 0.0 with all four sources
+populated is a Mode-Selector heuristic bug (file as `[Mode-Selector v1.x quirk]` issue),
+not an autopilot bug.
+
 ## Telemetry
 
 One record per `/autopilot` invocation, written to `.orchestrator/metrics/autopilot.jsonl`
