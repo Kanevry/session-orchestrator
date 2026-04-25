@@ -312,23 +312,29 @@ describe('selectMode — heuristic v1', () => {
       { session_type: 'feature', completion_rate: 1.0 },
     ];
 
-    it('recommendedMode deep + trend all feature → trend penalty -0.10 → confidence 0.40', () => {
+    it('recommendedMode deep + trend all feature → trend penalty -0.10 on deep, swap to feature@0.65 (#299)', () => {
       const r = selectMode({
         recommendedMode: 'deep',
         recentSessions: threeFeatureSessions,
       });
-      expect(r.mode).toBe('deep');
-      expect(r.confidence).toBe(0.40);
+      // Global-max swap (#299): passthrough deep@0.40 < trend-bonused feature@0.65 → swap.
+      expect(r.mode).toBe('feature');
+      expect(r.confidence).toBe(0.65);
+      expect(r.rationale).toMatch(/global-max swap/);
+      expect(r.alternatives).toContainEqual({ mode: 'deep', confidence: 0.40 });
     });
 
-    it('recommendedMode deep + trend all feature + bootstrapLock standard → two penalties → confidence 0.30', () => {
+    it('recommendedMode deep + trend all feature + bootstrapLock standard → swap to feature@0.75 (#299)', () => {
       const r = selectMode({
         recommendedMode: 'deep',
         recentSessions: threeFeatureSessions,
         bootstrapLock: { tier: 'standard' },
       });
-      expect(r.mode).toBe('deep');
-      expect(r.confidence).toBe(0.30);
+      // Global-max swap: passthrough deep@0.30 < feature@0.75 (trend +0.15, tier +0.10) → swap.
+      expect(r.mode).toBe('feature');
+      expect(r.confidence).toBe(0.75);
+      expect(r.rationale).toMatch(/global-max swap/);
+      expect(r.alternatives).toContainEqual({ mode: 'deep', confidence: 0.30 });
     });
 
     it('recommendedMode deep + carryoverRatio 0.25 → no penalty (deep is carryover-immune)', () => {
@@ -349,7 +355,7 @@ describe('selectMode — heuristic v1', () => {
       expect(r.confidence).toBe(0.40);
     });
 
-    it('confidence is clamped to 0.0 minimum (extreme penalties)', () => {
+    it('extreme penalties on feature + alt deep with full bonuses → swap to deep (#299, primary clamp still works)', () => {
       const r = selectMode({
         recommendedMode: 'feature',
         recentSessions: [
@@ -360,8 +366,11 @@ describe('selectMode — heuristic v1', () => {
         bootstrapLock: { tier: 'deep' },
         carryoverRatio: 0.25,
       });
-      expect(r.mode).toBe('feature');
-      expect(r.confidence).toBeGreaterThanOrEqual(0.0);
+      // Global-max swap: passthrough feature@0.20 (clamped) < deep@0.75 (trend +0.15, tier +0.10) → swap.
+      expect(r.mode).toBe('deep');
+      expect(r.confidence).toBe(0.75);
+      // Demoted feature is preserved at its (clamped) score in alternatives.
+      expect(r.alternatives).toContainEqual({ mode: 'feature', confidence: 0.20 });
     });
   });
 
@@ -558,9 +567,11 @@ describe('selectMode — heuristic v1', () => {
       expect(r.confidence).toBe(0.5);
     });
 
-    it('recentSessions with non-number completion_rate in penalty path → treated as 0', () => {
-      // covers the false branch of `typeof s.completion_rate === 'number'` inside reduce
-      // triggering penalty path: all 3 sessions are 'deep' for candidate 'feature'
+    it('recentSessions with non-number completion_rate → no penalty fires, but partial trend bonus does → swap to deep@0.57 (#299)', () => {
+      // Covers the false branch of `typeof s.completion_rate === 'number'` inside reduce.
+      // avgCompletion = 0 (all non-numeric) < 0.9 → no penalty on feature primary.
+      // BUT alt deep still gets the partial trend bonus (+0.075, the avg<0.9 branch),
+      // so deep ≈ 0.575 (round2 → 0.57 due to JS float) outranks feature@0.5 → global-max swap.
       const r = selectMode({
         recommendedMode: 'feature',
         recentSessions: [
@@ -569,9 +580,9 @@ describe('selectMode — heuristic v1', () => {
           { session_type: 'deep', completion_rate: 'not-a-number' },
         ],
       });
-      // avgCompletion = 0 (all non-numeric), < 0.9, so no penalty fires
-      expect(r.mode).toBe('feature');
-      expect(r.confidence).toBe(0.5);
+      expect(r.mode).toBe('deep');
+      expect(r.confidence).toBe(0.57);
+      expect(r.alternatives).toContainEqual({ mode: 'feature', confidence: 0.5 });
     });
 
     it('bootstrapLock with non-string tier in buildPassthroughRationale → still produces valid rationale', () => {
@@ -587,6 +598,114 @@ describe('selectMode — heuristic v1', () => {
       });
       expect(r.mode).toBe('feature');
       expect(r.rationale.length).toBeGreaterThan(0);
+      expect(r.rationale.length).toBeLessThanOrEqual(120);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Global-max swap (#299) — primary recommendation must be the global max
+  // -----------------------------------------------------------------------
+  describe('global-max swap (#299)', () => {
+    it('passthrough primary < alt → swap promotes alt, demotes primary into alternatives', () => {
+      const r = selectMode({
+        recommendedMode: 'feature',
+        recentSessions: [
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+        ],
+        bootstrapLock: { tier: 'deep' },
+      });
+      // feature gets penalty -0.10 (3-deep trend) -0.10 (deep tier) → 0.30.
+      // deep gets +0.15 trend +0.10 tier → 0.75. Strict > → swap.
+      expect(r.mode).toBe('deep');
+      expect(r.confidence).toBe(0.75);
+      expect(r.rationale).toMatch(/global-max swap/);
+      expect(r.alternatives).toContainEqual({ mode: 'feature', confidence: 0.30 });
+      // Alternatives still sorted DESC by confidence.
+      for (let i = 1; i < r.alternatives.length; i++) {
+        expect(r.alternatives[i - 1].confidence).toBeGreaterThanOrEqual(r.alternatives[i].confidence);
+      }
+    });
+
+    it('tie at primary confidence → no swap (stability — passthrough preference)', () => {
+      // recentSessions: 1 entry triggers hasActiveSignals so alternatives DO get computed,
+      // but with only 1 session no trend bonus or penalty applies anywhere → all candidates
+      // tie at base 0.5. Strict > prevents swap on equality, so primary stays at feature.
+      const r = selectMode({
+        recommendedMode: 'feature',
+        recentSessions: [{ session_type: 'feature', completion_rate: 1.0 }],
+      });
+      expect(r.mode).toBe('feature');
+      expect(r.confidence).toBe(0.5);
+      // Alts may exist but none strictly outrank primary.
+      for (const alt of r.alternatives) {
+        expect(alt.confidence).toBeLessThanOrEqual(0.5);
+      }
+    });
+
+    it('ties between primary and alts under active signals → no swap (strict greater-than)', () => {
+      // bootstrapLock present makes hasActiveSignals true so alternatives get computed,
+      // but with no other distinguishing signals all candidates score identically at 0.5.
+      // Strict > prevents swap on equality.
+      const r = selectMode({
+        recommendedMode: 'feature',
+        bootstrapLock: { tier: 99 }, // non-string tier → no tier bonus or penalty
+      });
+      expect(r.mode).toBe('feature');
+      expect(r.confidence).toBe(0.5);
+      // All alternatives at most equal to primary; primary stays.
+      for (const alt of r.alternatives) {
+        expect(alt.confidence).toBeLessThanOrEqual(0.5);
+      }
+    });
+
+    it('SPIRAL branch unaffected: hard-coded primary 0.8 > hard-coded alts ≤0.3', () => {
+      const r = selectMode({ completionRate: 0.3 });
+      expect(r.mode).toBe('plan-retro');
+      expect(r.confidence).toBe(0.8);
+      expect(r.rationale).not.toMatch(/global-max swap/);
+    });
+
+    it('CARRYOVER branch unaffected: hard-coded primary 0.75 > hard-coded alts ≤0.3', () => {
+      const r = selectMode({ carryoverRatio: 0.5 });
+      expect(r.mode).toBe('deep');
+      expect(r.confidence).toBe(0.75);
+      expect(r.rationale).not.toMatch(/global-max swap/);
+    });
+
+    it('DEFAULT branch (no recommendedMode) unaffected: empty alternatives → no swap path', () => {
+      const r = selectMode({});
+      expect(r.mode).toBe('feature');
+      expect(r.confidence).toBe(0.0);
+      expect(r.alternatives).toEqual([]);
+      expect(r.rationale).not.toMatch(/global-max swap/);
+    });
+
+    it('post-swap alternatives are capped at top-3', () => {
+      const r = selectMode({
+        recommendedMode: 'feature',
+        recentSessions: [
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+        ],
+        bootstrapLock: { tier: 'deep' },
+      });
+      expect(r.mode).toBe('deep');
+      expect(r.alternatives.length).toBeLessThanOrEqual(3);
+    });
+
+    it('post-swap rationale stays under the 120-char clamp', () => {
+      const r = selectMode({
+        recommendedMode: 'feature',
+        recentSessions: [
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+          { session_type: 'deep', completion_rate: 1.0 },
+        ],
+        bootstrapLock: { tier: 'deep' },
+      });
       expect(r.rationale.length).toBeLessThanOrEqual(120);
     });
   });

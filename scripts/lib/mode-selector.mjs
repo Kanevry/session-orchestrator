@@ -376,6 +376,26 @@ export function selectMode(signals) {
     const rationale = buildPassthroughRationale(m, confidence, signals);
     const alternatives = buildAlternatives(m, signals);
 
+    // Global-max swap (#299): the primary recommendation must be the
+    // highest-confidence mode across {primary, ...alternatives}. When an
+    // alternative outranks the passthrough primary (strict greater-than to
+    // preserve passthrough preference on ties), promote it and demote the
+    // original primary into alternatives, re-sort, slice to top-3.
+    if (alternatives.length > 0 && alternatives[0].confidence > confidence) {
+      const promoted = alternatives[0];
+      const demoted = { mode: m, confidence };
+      const reranked = [demoted, ...alternatives.slice(1)]
+        .filter((e) => e.confidence >= 0.1)
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 3);
+      return {
+        mode: promoted.mode,
+        rationale: `global-max swap: ${promoted.mode} (${promoted.confidence}) outranked passthrough ${m} (${confidence})`.slice(0, 120),
+        confidence: promoted.confidence,
+        alternatives: reranked,
+      };
+    }
+
     return {
       mode: m,
       rationale,
