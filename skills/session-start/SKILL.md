@@ -594,6 +594,7 @@ import { parseStateMd, parseRecommendations, updateFrontmatterFields } from '$PL
 import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
 import { parseBootstrapLock } from '$PLUGIN_ROOT/scripts/lib/bootstrap-lock-freshness.mjs';
 import { normalizeSession } from '$PLUGIN_ROOT/scripts/lib/session-schema.mjs';
+import { scanBacklog } from '$PLUGIN_ROOT/scripts/lib/backlog-scan.mjs';
 import { readFileSync } from 'node:fs';
 
 // rec: result of parseRecommendations() from Phase 1.5 (already in memory).
@@ -616,6 +617,12 @@ const bootstrapLockObj = lockFileContents
 // These are the same objects already displayed in the Project Intelligence section.
 // If Phase 6.6 was skipped or no learnings exist, use [].
 
+// backlog: structural counts from the project's open issues. Phase B-3 (#293).
+// scanBacklog auto-detects glab/gh, caches per (vcs, limit), and returns null on
+// graceful-degradation paths (CLI missing, non-zero exit, parse failure, no
+// git origin). null contributes 0 delta to selectMode — no error path.
+const backlogSummary = await scanBacklog({ limit: 50 });
+
 const signals = {
   recommendedMode:    rec?.mode           ?? null,
   topPriorities:      rec?.priorities     ?? null,
@@ -625,8 +632,8 @@ const signals = {
   recentSessions:     tail10NormalizedSessions,  // array, may be empty
   bootstrapLock:      bootstrapLockObj,          // object or null
   learnings:          surfacedTopLearnings,       // array, may be empty
-  // backlog + vaultStaleness: reserved for Phase B-3 — pass null for now
-  backlog:            null,
+  backlog:            backlogSummary,             // {criticalCount, highCount, staleCount, byLabel, total} or null
+  // vaultStaleness: reserved for follow-up — pass null for now
   vaultStaleness:     null,
 };
 ```
@@ -643,6 +650,7 @@ const signals = {
 | `recentSessions` | tail-10 of `.orchestrator/metrics/sessions.jsonl` | Phase 6.6 |
 | `bootstrapLock` | `.orchestrator/bootstrap.lock` via `parseBootstrapLock` | Phase 4 |
 | `learnings` | surfaced top-N learnings (confidence > 0.3) | Phase 6.6 |
+| `backlog` | `scanBacklog({limit: 50})` from `backlog-scan.mjs` (live VCS scan) | Phase 7.5 Step 1 |
 
 ### Step 2: Invoke selectMode
 
@@ -734,8 +742,64 @@ All of the following result in **no banner and default AUQ ordering** — they a
 | `recommendation === null` (catch path) | Error during invocation | No banner, default ordering |
 | `.orchestrator/bootstrap.lock` absent | `bootstrapLockObj === null` | Signals still valid; lock contributes 0 delta |
 | `sessions.jsonl` absent or < 1 entry | `recentSessions: []` | Signals still valid; trend contributes 0 delta |
+| `glab`/`gh` CLI missing or non-zero exit | `scanBacklog` returns null | `signals.backlog: null`; backlog signal contributes 0 delta. Phase B-3 (#293). |
+| no git origin | `detectVcs()` returns null → `scanBacklog` short-circuits | Same as above |
 
 Note: `selectMode` is designed to NEVER throw (pure function, defensive null-guard). The try/catch in Step 2 is belt-and-suspenders. If it does throw, the `mode-selector-error` breadcrumb in sweep.log is the observable signal for debugging without blocking the session.
+
+### Step 6: Record Mode-Selector Accuracy Learning (post-AUQ, Phase B-4)
+
+Runs **after Phase 8 collects the user's mode choice** (or skip on Codex/Cursor numbered-list response). This step writes a `mode-selector-accuracy` learning to `.orchestrator/metrics/learnings.jsonl` so future Mode-Selector heuristic tuning has feedback data. Phase B-4 (#294).
+
+**Trigger conditions (ALL must be true):**
+
+1. Phase 7.5 produced a non-null `recommendation` (banner rendered — Step 3 was either the `< 0.5` or `>= 0.5` branch).
+2. The user actively confirmed or overrode via AUQ (or numbered-list reply on Codex/Cursor). Timeouts and aborts do NOT trigger a write.
+3. `recommendation.mode` and the user's chosen mode are both valid `isValidMode` values from `recommendations-v0.mjs`.
+
+**Skip silently when:**
+
+- Phase 7.5 was skipped (`persistence: false` or Phase 6.6 skipped).
+- `recommendation === null` or `recommendation.confidence === 0.0` (no banner rendered).
+- The chosen mode does not parse cleanly (e.g., custom "Other" free-text response).
+
+**Write contract (delegated to `recordAccuracy` in `mode-selector-accuracy.mjs`):**
+
+```js
+import { recordAccuracy } from '$PLUGIN_ROOT/scripts/lib/mode-selector-accuracy.mjs';
+
+// After Phase 8 AUQ resolves with the user's choice:
+const result = await recordAccuracy({
+  recommended: recommendation.mode,   // from Phase 7.5 Step 2
+  chosen:      userChosenMode,        // from Phase 8 AUQ answer, normalized to canonical mode
+  sessionId:   `${branch}-${ymd}-${hhmm}`, // matches the wave-executor session_id format
+});
+
+if (!result.ok) {
+  // Log to sweep.log as mode-selector-accuracy-skip; never block session-start.
+  appendFileSync(
+    '.orchestrator/metrics/sweep.log',
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event: 'mode-selector-accuracy-skip',
+      detail: result.reason, // 'no-recommendation' | 'unknown-mode' | 'missing-session-id' | 'append-failed: ...'
+    }) + '\n',
+  );
+}
+```
+
+**Lifecycle handling (NOT this step's job):**
+
+The helper writes a fresh entry at `confidence: 0.5`. The +0.15 confirm / -0.20 contradict semantics are applied later by `evolve` and `session-end` when the same `(type, subject)` pair recurs across sessions. Subject pattern: `<recommended>-selected-vs-<chosen>` — agreement and override outcomes land at distinct subjects so they accumulate independently.
+
+**Graceful no-op rules** (none of these block session-start):
+
+| Condition | Behaviour |
+|---|---|
+| recommendation is null | helper returns `{ok: false, reason: 'no-recommendation'}` |
+| chosen mode unparsable | helper returns `{ok: false, reason: 'unknown-mode'}` |
+| `appendLearning` validation fails | helper returns `{ok: false, reason: 'append-failed: ...'}` |
+| learnings.jsonl write I/O error | same as above; sweep.log captures detail |
 
 ### References
 
@@ -745,8 +809,10 @@ Note: `selectMode` is designed to NEVER throw (pure function, defensive null-gua
 - Phase A writer: `skills/session-end/SKILL.md` Phase 3.7a
 - Bootstrap lock reader: `scripts/lib/bootstrap-lock-freshness.mjs::parseBootstrapLock`
 - Session normalizer: `scripts/lib/session-schema.mjs::normalizeSession`
+- Backlog signal: `scripts/lib/backlog-scan.mjs::scanBacklog` (Phase B-3, #293)
+- Accuracy helper: `scripts/lib/mode-selector-accuracy.mjs::recordAccuracy` (Phase B-4, #294)
 - PRD: `docs/prd/2026-04-25-mode-selector.md`
-- Issue: [#292 Phase B-2 session-start integration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/292)
+- Issues: [#292 Phase B-2 integration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/292), [#293 Phase B-3 backlog signal](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/293), [#294 Phase B-4 accuracy feedback](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/294)
 
 ## Phase 8: Structured Presentation & Q&A
 

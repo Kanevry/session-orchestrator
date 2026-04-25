@@ -15,10 +15,12 @@ tags: [phase-b, autopilot, mode-selection, scaffold]
 ## Status
 
 Heuristic v1 active (issue #291, shipped 2026-04-25). Wired into session-start Phase 7.5
-(issue #292, shipped 2026-04-25). Backlog signal source (`signals.backlog`) is still inert —
-Phase B-3 (#293) fills it. The accuracy feedback loop that writes `mode-selector-accuracy`
-learnings post-session is Phase B-4 (#294). Phase C (#277) `/autopilot` Loop Command is the
-next epic and owns its own PRD.
+(issue #292, shipped 2026-04-25). Backlog signal source live (issue #293, shipped 2026-04-25):
+`signals.backlog` is populated by `scripts/lib/backlog-scan.mjs::scanBacklog`. Accuracy feedback
+loop live (issue #294, shipped 2026-04-25): `scripts/lib/mode-selector-accuracy.mjs::recordAccuracy`
+writes a `mode-selector-accuracy` learning after the user confirms/overrides the Phase 7.5 banner.
+Phase B contract is **closed**. Phase C (#277) `/autopilot` Loop Command is the next epic and
+owns its own PRD.
 
 ## Purpose
 
@@ -51,7 +53,7 @@ from any skill without side-effect risk.
 - `previousRationale` (string|null) — the `rationale` string written by session-end Phase 3.7a
 - `learnings` (object[]|null) — RESERVED; not consumed in scaffold; Phase B-1 heuristic input
 - `recentSessions` (object[]|null) — RESERVED; not consumed in scaffold; recent-sessions trend input
-- `backlog` (object[]|null) — RESERVED; not consumed in scaffold; VCS backlog scan input (Phase B-3)
+- `backlog` (object|null) — `{criticalCount, highCount, staleCount, byLabel, total, vcs, limit}` from `scripts/lib/backlog-scan.mjs::scanBacklog` (Phase B-3, #293). `null` when CLI missing or no git origin — contributes 0 delta.
 - `bootstrapLock` (object|null) — RESERVED; not consumed in scaffold; tier-aware sizing hints
 
 ### Output: `Recommendation` object
@@ -81,9 +83,14 @@ from any skill without side-effect risk.
 
 - **`/autopilot` (Phase C, #277)** — auto-execute when `confidence >= 0.85` AND
   SPIRAL/FAILED/carryover-50% kill-switches pass. No user prompt in that path.
-- **Phase B-3 (#293)** — fills `signals.backlog` from the VCS open-issue list; currently inert.
-- **Phase B-4 (#294)** — writes a `mode-selector-accuracy` learning after the user
-  confirms or overrides the recommendation; closes the feedback loop.
+
+### Companion modules (Phase B closure)
+
+- **`scripts/lib/backlog-scan.mjs::scanBacklog`** — feeds `signals.backlog`. Phase B-3 (#293).
+  Module-level cache, glab/gh auto-detection, returns `null` on graceful-degradation paths.
+- **`scripts/lib/mode-selector-accuracy.mjs::recordAccuracy`** — post-AUQ feedback writer. Phase B-4 (#294).
+  Subject pattern `<recommended>-selected-vs-<chosen>`; agreement and override land at distinct subjects so
+  the existing learning lifecycle can confirm/contradict them independently.
 
 ## Scaffold Heuristic (v0)
 
@@ -155,7 +162,9 @@ VCS backlog priority-weighting, and bootstrap.lock tier — is the Phase B-1 fol
 ## References
 
 - Implementation: `scripts/lib/mode-selector.mjs`
-- Tests: `tests/lib/mode-selector.test.mjs` (written in Wave 3)
+- Tests: `tests/lib/mode-selector.test.mjs` (selector core, 75 tests), `tests/lib/backlog-scan.test.mjs` (signal source), `tests/lib/mode-selector-accuracy.test.mjs` (feedback loop)
+- Backlog signal source: `scripts/lib/backlog-scan.mjs` (Phase B-3, #293)
+- Accuracy feedback writer: `scripts/lib/mode-selector-accuracy.mjs` (Phase B-4, #294)
 - PRD: `docs/prd/2026-04-25-mode-selector.md`
 - Epic: [#271 v3.2 Autopilot](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/271)
 - Issue: [#276 Phase B Mode-Selector](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/276)
