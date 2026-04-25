@@ -64,10 +64,10 @@ Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-de
 ## Current State
 
 - **Plugin version:** v3.1.0 (shipped 2026-04-24, Environment-Aware Sessions, Epic #157).
-- **Active epic:** #271 v3.2 Autopilot — Phase A + B shipped, Phase C scaffolded; **Phase C-1 runtime (#295, priority:high) is next**.
+- **Active epic:** #271 v3.2 Autopilot — Phase A + B shipped, Phase C-1 partial (`scripts/lib/autopilot.mjs` runtime: 5 of 8 kill-switches enforced); **Phase C-1.b follow-up next** (spiral / failed-wave / carryover-too-high signals + `autopilot_run_id` propagation).
 - **Stack:** Node 20+, vitest 4.1.5, ESLint 9. Run `npm ci` after cloning. Test: `npm test`. Lint: `npm run lint`.
-- **Tests:** 1741 passed / 10 skipped. Coverage 72.94 / 68.31 / 78.26 / 75.08 (above thresholds 70 / 65 / 70 / 60).
-- **Backlog:** ~66 open issues. Recent meta-audit fallout (#265, #281) closed; #283–#288 discovery/refactor cluster + #295–#299 Phase C follow-ups are upcoming.
+- **Tests:** 1778 passed / 10 skipped. Coverage above thresholds 70 / 65 / 70 / 60.
+- **Backlog:** ~66 open issues. Recent meta-audit fallout (#265, #281) closed; #283–#288 discovery/refactor cluster, #296–#299 Phase C follow-ups, plus #295 (in-progress this session) + Phase C-1.b filing pending at /close.
 
 For full release history, architectural decisions, and meta-audit narratives see [[01-projects/session-orchestrator/decisions]] in the Meta-Vault. The PRDs for v3.2 Autopilot live at [[01-projects/session-orchestrator/prd/2026-04-24-state-md-recommendations-contract|Phase A]] / [[01-projects/session-orchestrator/prd/2026-04-25-mode-selector|Phase B]] / [[01-projects/session-orchestrator/prd/2026-04-25-autopilot-loop|Phase C]].
 

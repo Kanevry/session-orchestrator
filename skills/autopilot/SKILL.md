@@ -15,11 +15,24 @@ tags: [phase-c, autopilot, autonomous, loop]
 
 ## Status
 
-**Scaffold (2026-04-25, issue #277).** This skill file is the contract surface and loop
-specification. The runtime implementation (`scripts/lib/autopilot.mjs::runLoop` with
-kill-switch enforcement, `autopilot.jsonl` writer, resource-adaptive cap logic) ships in
-Phase C-1 follow-up. Until Phase C-1 lands, invoking `/autopilot` prints "Phase C
-implementation pending — see docs/prd/2026-04-25-autopilot-loop.md" and exits.
+**Phase C-1 partial (2026-04-25, issue #295).** Runtime exists at
+`scripts/lib/autopilot.mjs` with five of the eight kill-switches enforced:
+`max-sessions-reached`, `max-hours-exceeded`, `resource-overload`,
+`low-confidence-fallback` (with iter-1-fallback / iter-2+-exit asymmetry), and
+`user-abort`. Atomic `autopilot.jsonl` writer (tmp+rename, schema_version 1)
+and silent-clamp `parseFlags` are shipped.
+
+The remaining three kill-switches — `spiral`, `failed-wave`, `carryover-too-high`
+— and `autopilot_run_id` propagation into `sessions.jsonl` are **deferred to
+Phase C-1.b**. These require wave-executor to expose `spiral_detected`,
+`failed_waves`, and `carryover_ratio` on its return shape; that signal-
+extraction work is the gating change. The loop structure for these checks is
+already in place via `postSessionKillSwitch()` (currently a no-op stub).
+
+Until C-1.b lands, multi-iteration autopilot runs proceed without spiral /
+failed-wave / carryover safeguards — use single-iteration runs (`--max-sessions=1`)
+or `--dry-run` previews for routine work; prefer manual `/session [type]` when
+those signals matter.
 
 ## Purpose
 
@@ -184,8 +197,8 @@ identically by readers per the v1 schema additive convention).
 ## References
 
 - PRD: `docs/prd/2026-04-25-autopilot-loop.md`
-- Implementation (Phase C-1): `scripts/lib/autopilot.mjs` (not yet written)
-- Tests (Phase C-1): `tests/lib/autopilot.test.mjs` (not yet written)
+- Implementation (Phase C-1 partial): `scripts/lib/autopilot.mjs` — exports `runLoop`, `parseFlags`, `writeAutopilotJsonl`, `KILL_SWITCHES`, `FLAG_BOUNDS`, `SCHEMA_VERSION`
+- Tests (Phase C-1): `tests/lib/autopilot.test.mjs`
 - Command file: `commands/autopilot.md`
 - Mode-Selector contract: `skills/mode-selector/SKILL.md`
 - Resource probe: `scripts/lib/resource-probe.mjs`
