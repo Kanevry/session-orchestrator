@@ -156,6 +156,20 @@ Second Phase of Epic #271 (v3.2 Autopilot). Scaffold-only slice (#276) consumed 
 
 Forward path: Phase B-1 fills the heuristic inside `selectMode` — callers and contract remain stable. Phase C (/autopilot Loop Command, #277) chains Mode-Selector → session-start → session-plan → wave-executor → session-end with SPIRAL/FAILED/carryover kill-switches and confidence-gated auto-execution.
 
+## v3.2 Autopilot Phase B-1 + B-2 — Mode-Selector Heuristic v1 + session-start Integration (2026-04-25)
+
+Second feature session in 24 hours on Epic #271 (v3.2 Autopilot). Phase B is now functional — the v0 passthrough scaffold is replaced by a live 5-branch heuristic, and `selectMode` is wired into `skills/session-start/SKILL.md` for the first time. Phase B no longer requires a follow-up to be useful; it will pre-select and banner-render a mode recommendation on every session-start that has Phase A signals. Phase C (#277, `/autopilot` Loop Command) is the next item on the critical path.
+
+- **`scripts/lib/mode-selector.mjs`** — heuristic v1 replaces v0 scaffold (+338/−25, 82 → 363 lines). Five decision branches in deterministic order: SPIRAL (`completionRate < 0.5` → `plan-retro` at 0.80), CARRYOVER (`carryoverRatio >= 0.3` → `deep` at 0.75), PASSTHROUGH-WEIGHTED (base 0.50 + bonuses for sessions trend +0.15 / bootstrap tier +0.10 / learnings +0.10, minus penalties up to −0.30, clamped to [0.0, 0.9]), STALE-SIGNALS (folded into branch 3), DEFAULT (`feature` at 0.0). Bootstrap tier alignment: `fast → housekeeping`, `standard → feature`, `deep → deep`. Alternatives sorted DESC by confidence, sliced to 3, entries < 0.1 dropped. See `skills/mode-selector/SKILL.md` for the full decision spec.
+- **`tests/lib/mode-selector.test.mjs`** — coverage extension (+507/−23, 18 → 75 tests). Seven new describe blocks: SPIRAL, CARRYOVER, high-confidence path, conflicting-signals, stale-signals, alternatives generation, defensive parsing. `mode-selector.mjs` coverage reached 100%/100%/100%/100% (lines/branches/functions/statements).
+- **`skills/session-start/SKILL.md`** — Phase 7.5 "Mode-Selector Pre-Pass" added at line 572 (+179 lines, 610 → 788). Banner rendering rules: `confidence = 0.0` is a no-op; `< 0.5` renders an informational `📊 Mode-Selector suggests:` banner; `>= 0.5` pre-selects AUQ option 1 with `📊 Mode-Selector recommends:`. AUQ option ordering protocol and graceful no-op table for 8 conditions. Distinct from Phase 1.5 `📋` banner — Phase 1.5 reads Phase A frontmatter directly, Phase 7.5 calls `selectMode`.
+- **`skills/mode-selector/SKILL.md`** — Status section updated to reflect heuristic v1 active; Invocation Points updated to list `session-start Phase 7.5` as the first wired call site and 75-test count.
+- **`CLAUDE.md`** — this narrative section.
+
+Tests: 1655 → 1712 passing (+57 net), 10 skipped. Full Gate green: typecheck 39 OK, lint clean (3 `!=` → `!==` mechanical fixes coordinator-direct before gate), coverage 72.52/67.85/77.75/74.63 — all above thresholds (70/65/70/60). Session ran with 2-agent cap (override of resource-gate 0 recommendation); RAM eased from 1.8 GB at start to 4.8 GB by Wave 3. 6th-consecutive isolation:none + enforcement:strict session.
+
+Forward path: Phase B-3 (#293) fills `signals.backlog` from the VCS open-issue list (currently inert). Phase B-4 (#294) writes a `mode-selector-accuracy` learning post-session after the user confirms or overrides the recommendation. Phase C (#277) `/autopilot` Loop Command is the major next epic — owns its own PRD and chains Mode-Selector → session-start → session-plan → wave-executor → session-end with SPIRAL/FAILED/carryover-50% kill-switches and `confidence >= 0.85` auto-execution.
+
 ## v2.0 Features
 
 - Session persistence via STATE.md + session memory files

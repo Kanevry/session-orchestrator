@@ -569,6 +569,185 @@ Present a Surface Health block immediately after the per-type grouping, before t
 - Skip deep research — prioritize operational tasks
 - Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
 
+## Phase 7.5: Mode-Selector Pre-Pass (Epic #271 Phase B-2)
+
+> Skip this phase if `persistence` config is `false`, or if the entire Phase 6.6 block was skipped.
+> This is the **first wired invocation point** of `selectMode` (previously documented as "None wired" in `skills/mode-selector/SKILL.md` — Phase C `/autopilot` is the second, reserved for #277).
+
+Run immediately before Phase 8 so the Mode-Selector recommendation can influence the AUQ option ordering.
+
+### Distinction from Phase 1.5 Recommendations Banner
+
+Phase 1.5 renders a `📋` banner that reads the **previous** session's archived Recommendation fields from STATE.md (`recommended-mode`, `rationale`, `completion-rate`, etc., written by session-end Phase 3.7a). It is a backward-looking handoff signal.
+
+Phase 7.5 runs `selectMode(signals)` — a **forward-looking** computation over live signals gathered this session (current carryover ratios, recent sessions trend, learnings, bootstrap tier). It emits a `📊` banner.
+
+Both banners may render in the same session-start run. That is intentional: the `📋` banner tells you what the last session recommended; the `📊` banner tells you what the selector computes from all available data right now. They should usually agree. When they diverge, the `📊` signal is more current and should be treated as authoritative.
+
+### Step 1: Build Signals
+
+Assemble the `signals` object from data already in memory at this point in the skill. **Do not re-read any files** — all of these values are available from earlier phases.
+
+```js
+// All imports are conceptual — invoked via node --input-type=module inline script.
+import { parseStateMd, parseRecommendations, updateFrontmatterFields } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
+import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
+import { parseBootstrapLock } from '$PLUGIN_ROOT/scripts/lib/bootstrap-lock-freshness.mjs';
+import { normalizeSession } from '$PLUGIN_ROOT/scripts/lib/session-schema.mjs';
+import { readFileSync } from 'node:fs';
+
+// rec: result of parseRecommendations() from Phase 1.5 (already in memory).
+// If Phase 1.5 was skipped or STATE.md is absent, rec === null.
+
+// recentSessions: last 10 entries from sessions.jsonl, normalized.
+// Phase 6.6 reads sessions.jsonl for effectiveness analysis — reuse that read.
+// Map each raw entry through normalizeSession() (never-throws contract).
+// If fewer than 10 exist, use all available. If sessions.jsonl absent, use [].
+const tail10NormalizedSessions = rawRecentSessions.map(normalizeSession);
+
+// bootstrapLock: parsed from .orchestrator/bootstrap.lock if it exists.
+// Phase 4 already invokes bootstrap-lock-freshness.mjs for the banner — reuse.
+// If the file is absent, pass null.
+const bootstrapLockObj = lockFileContents
+  ? parseBootstrapLock(lockFileContents)   // returns {tier, ...} or null on parse failure
+  : null;
+
+// surfacedTopLearnings: the top-N active learnings already surfaced in Phase 6.6.
+// These are the same objects already displayed in the Project Intelligence section.
+// If Phase 6.6 was skipped or no learnings exist, use [].
+
+const signals = {
+  recommendedMode:    rec?.mode           ?? null,
+  topPriorities:      rec?.priorities     ?? null,
+  carryoverRatio:     rec?.carryoverRatio ?? null,
+  completionRate:     rec?.completionRate ?? null,
+  previousRationale:  rec?.rationale      ?? null,
+  recentSessions:     tail10NormalizedSessions,  // array, may be empty
+  bootstrapLock:      bootstrapLockObj,          // object or null
+  learnings:          surfacedTopLearnings,       // array, may be empty
+  // backlog + vaultStaleness: reserved for Phase B-3 — pass null for now
+  backlog:            null,
+  vaultStaleness:     null,
+};
+```
+
+**Key source bindings (Phase → field):**
+
+| `signals` field | Populated from | Phase |
+|---|---|---|
+| `recommendedMode` | `parseRecommendations(frontmatter).mode` | Phase 1.5 |
+| `carryoverRatio` | `parseRecommendations(frontmatter).carryoverRatio` | Phase 1.5 |
+| `completionRate` | `parseRecommendations(frontmatter).completionRate` | Phase 1.5 |
+| `previousRationale` | `parseRecommendations(frontmatter).rationale` | Phase 1.5 |
+| `topPriorities` | `parseRecommendations(frontmatter).priorities` | Phase 1.5 |
+| `recentSessions` | tail-10 of `.orchestrator/metrics/sessions.jsonl` | Phase 6.6 |
+| `bootstrapLock` | `.orchestrator/bootstrap.lock` via `parseBootstrapLock` | Phase 4 |
+| `learnings` | surfaced top-N learnings (confidence > 0.3) | Phase 6.6 |
+
+### Step 2: Invoke selectMode
+
+Wrap the call in a try/catch. `selectMode` is a pure function with a defensive null-guard and should never throw, but if it does the session must not be blocked.
+
+```js
+let recommendation = null;
+
+try {
+  recommendation = selectMode(signals);
+} catch (err) {
+  // Log to sweep.log as mode-selector-error — no banner, continue to Phase 8.
+  try {
+    const { appendFileSync, mkdirSync } = await import('node:fs');
+    mkdirSync('.orchestrator/metrics', { recursive: true });
+    appendFileSync(
+      '.orchestrator/metrics/sweep.log',
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        event: 'mode-selector-error',
+        detail: String(err?.message ?? err),
+      }) + '\n',
+    );
+  } catch {}
+  // Fall through: recommendation stays null → no banner, Phase 8 uses default AUQ ordering.
+}
+```
+
+### Step 3: Render the 📊 Banner (conditional)
+
+```js
+const pct = (x) => Math.round(x * 100) + '%';
+
+if (!recommendation || recommendation.confidence === 0.0) {
+  // No banner. Fall through to Phase 8 with default (unmodified) AUQ ordering.
+
+} else if (recommendation.confidence < 0.5) {
+  // Low-confidence suggestion — informational banner only.
+  // Do NOT pre-select this mode as the AUQ "Recommended" option.
+  console.log(
+    `📊 Mode-Selector suggests: ${recommendation.mode}` +
+    ` (confidence: ${pct(recommendation.confidence)}) — ${recommendation.rationale}`
+  );
+  // Phase 8 AUQ ordering: unchanged from default. The banner is purely informational.
+
+} else {
+  // confidence >= 0.5 — pre-select as AUQ option 1 with "(Recommended by Mode-Selector)" label.
+  console.log(
+    `📊 Mode-Selector recommends: ${recommendation.mode}` +
+    ` (confidence: ${pct(recommendation.confidence)}) — ${recommendation.rationale}`
+  );
+  // Phase 8 AUQ ordering: modified — see Step 4.
+}
+```
+
+### Step 4: AUQ Option Ordering Protocol (Phase 8 integration)
+
+Phase 8 reads `presentation-format.md` for the AUQ structure. The Mode-Selector output modifies option ordering **only when `recommendation.confidence >= 0.5`**. Do not modify `presentation-format.md` — the ordering adjustment is a runtime protocol applied at the call site in Phase 8.
+
+**When `recommendation.confidence >= 0.5`:**
+
+1. AUQ option 1 label: `"<recommendation.mode> (Recommended by Mode-Selector)"`.  
+   AUQ option 1 description: `recommendation.rationale` + any relevant focus issues from Phase 3/6.
+2. `recommendation.alternatives` (when non-empty, may have up to 3 entries) become options 2..N.  
+   Each alternative label: `"<alt.mode> (confidence: <pct(alt.confidence)>%)"`.  
+   Each alternative description: a brief label derived from the mode name (e.g. "housekeeping → cleanup cycle", "feature → standard incremental delivery").
+3. Total AUQ options ≤ 4 (AUQ tool cap). If `alternatives.length >= 3`, show the first 2 and add a final option: `"Other (specify)"` with description `"Enter a custom mode or focus not listed above."`.
+4. Any previously-computed focus recommendations from the Session Overview (Phase 8's ## Recommended Focus section) are folded into the descriptions of whichever option matches that mode. They are NOT added as separate AUQ options.
+
+**When `recommendation.confidence < 0.5` (including `0.0`):**
+
+AUQ option ordering is **unchanged** from the existing `presentation-format.md` default. The `📊` banner (if rendered) is informational only and does not influence option ordering.
+
+**Codex CLI / Cursor IDE fallback (no AUQ tool):**
+
+When operating on Codex CLI or Cursor IDE, apply the same ordering logic but render as a numbered Markdown list (per `presentation-format.md` Codex fallback section). When `confidence >= 0.5`, prefix option 1 with `(Recommended by Mode-Selector)`.
+
+### Step 5: Graceful No-Op Rules
+
+All of the following result in **no banner and default AUQ ordering** — they are silent no-ops that do not block session startup:
+
+| Condition | Why | Behaviour |
+|---|---|---|
+| `persistence: false` | Phase 6.6 skipped, no learnings/sessions data | Phase 7.5 skipped entirely |
+| STATE.md absent | `rec === null`, all Phase-A `signals.*` are null | `selectMode` returns `confidence: 0.0` → no banner |
+| Pre-v1.1 STATE.md (no Phase A fields) | `parseRecommendations` returns `null` → `rec === null` | Same as above |
+| `selectMode` throws (should never happen) | Pure function contract violation | `mode-selector-error` logged to sweep.log, no banner |
+| `recommendation.confidence === 0.0` | Default fallback branch in selector | No banner, default ordering |
+| `recommendation === null` (catch path) | Error during invocation | No banner, default ordering |
+| `.orchestrator/bootstrap.lock` absent | `bootstrapLockObj === null` | Signals still valid; lock contributes 0 delta |
+| `sessions.jsonl` absent or < 1 entry | `recentSessions: []` | Signals still valid; trend contributes 0 delta |
+
+Note: `selectMode` is designed to NEVER throw (pure function, defensive null-guard). The try/catch in Step 2 is belt-and-suspenders. If it does throw, the `mode-selector-error` breadcrumb in sweep.log is the observable signal for debugging without blocking the session.
+
+### References
+
+- Implementation: `scripts/lib/mode-selector.mjs::selectMode`
+- Skill contract: `skills/mode-selector/SKILL.md`
+- Phase A parser: `scripts/lib/state-md.mjs::parseRecommendations`
+- Phase A writer: `skills/session-end/SKILL.md` Phase 3.7a
+- Bootstrap lock reader: `scripts/lib/bootstrap-lock-freshness.mjs::parseBootstrapLock`
+- Session normalizer: `scripts/lib/session-schema.mjs::normalizeSession`
+- PRD: `docs/prd/2026-04-25-mode-selector.md`
+- Issue: [#292 Phase B-2 session-start integration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/292)
+
 ## Phase 8: Structured Presentation & Q&A
 
 Read `presentation-format.md` in this skill directory for the output structure, templates, and AskUserQuestion examples.

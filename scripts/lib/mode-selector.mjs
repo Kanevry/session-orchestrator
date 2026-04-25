@@ -1,32 +1,59 @@
 /**
- * Phase B Mode-Selector scaffold (issue #276, Epic #271).
+ * Phase B-1 Mode-Selector heuristic v1 (issue #291, Epic #271).
  *
  * Pure function: same inputs → same outputs, zero side effects, no I/O.
- * This is the v0 scaffold — the full heuristic consuming learnings,
- * sessions.jsonl trends, VCS backlog, and bootstrap.lock is deferred to
- * follow-up sub-issues. The implementation is intentionally minimal:
- * passthrough of the Phase A `recommended-mode` frontmatter field at
- * confidence 0.5, or fallback to 'feature' at confidence 0.0.
+ * Consumes Phase A signals (recommendedMode, carryoverRatio, completionRate) plus
+ * Phase B signals (learnings, recentSessions, bootstrapLock) to produce a
+ * confidence-weighted mode recommendation with ranked alternatives.
  */
 
 import { isValidMode } from './recommendations-v0.mjs';
 
 /** @type {'feature'} */
 const DEFAULT_MODE = 'feature';
-const PASSTHROUGH_CONFIDENCE = 0.5;
-const FALLBACK_CONFIDENCE = 0.0;
+
+/** All valid mode values — mirrors VALID_MODES in recommendations-v0.mjs. */
+const ALL_MODES = ['housekeeping', 'feature', 'deep', 'discovery', 'evolve', 'plan-retro'];
+
+/**
+ * Bootstrap tier → preferred mode alignment map.
+ * @type {Record<string, string>}
+ */
+const TIER_MODE_MAP = {
+  fast: 'housekeeping',
+  standard: 'feature',
+  deep: 'deep',
+};
+
+/**
+ * @typedef {Object} RecentSession
+ * @property {string} [session_type] - Mode used for that session.
+ * @property {number} [completion_rate] - 0.0-1.0 completion rate.
+ */
+
+/**
+ * @typedef {Object} Learning
+ * @property {string} [type] - Learning type (e.g. 'effective-sizing', 'scope-guidance').
+ * @property {string} [subject] - Subject text for matching.
+ * @property {string} [expires_at] - ISO date string.
+ */
+
+/**
+ * @typedef {Object} BootstrapLock
+ * @property {string} [tier] - Bootstrap tier: 'fast' | 'standard' | 'deep'.
+ */
 
 /**
  * @typedef {Object} Signals
  * @property {string|null} [recommendedMode] - Phase A `recommended-mode`.
- * @property {number[]|null} [topPriorities] - Phase A top-priorities.
+ * @property {Array<number|string>|null} [topPriorities] - Phase A top-priorities (informational).
  * @property {number|null} [carryoverRatio] - Phase A carryover-ratio (0.0-1.0).
  * @property {number|null} [completionRate] - Phase A completion-rate (0.0-1.0).
- * @property {string|null} [previousRationale] - Phase A rationale.
- * @property {object[]|null} [learnings] - Reserved for Phase B heuristic v1.
- * @property {object[]|null} [recentSessions] - Reserved.
- * @property {object[]|null} [backlog] - Reserved.
- * @property {object|null} [bootstrapLock] - Reserved.
+ * @property {string|null} [previousRationale] - Phase A rationale (informational).
+ * @property {Learning[]|null} [learnings] - Active learnings for hints.
+ * @property {RecentSession[]|null} [recentSessions] - Recent session history.
+ * @property {object[]|null} [backlog] - Reserved for Phase B-3.
+ * @property {BootstrapLock|null} [bootstrapLock] - Bootstrap lock tier info.
  * @property {object|null} [vaultStaleness] - Reserved.
  */
 
@@ -38,44 +65,330 @@ const FALLBACK_CONFIDENCE = 0.0;
  * @property {Array<{mode: string, confidence: number}>} alternatives - 0-3 entries; may be empty.
  */
 
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Clamp a number to [min, max].
+ * @param {number} v
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+/**
+ * Round to 2 decimal places (avoids floating-point drift in comparisons).
+ * @param {number} v
+ * @returns {number}
+ */
+function round2(v) {
+  return Math.round(v * 100) / 100;
+}
+
+/**
+ * Safely coerce to an array (returns [] for non-arrays, null, undefined).
+ * @param {unknown} v
+ * @returns {any[]}
+ */
+function safeArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * Return true if any "active signal" field is non-trivially present.
+ * Used to decide whether alternatives should be computed (branch 3).
+ *
+ * "Non-trivially present" means:
+ *   - learnings: non-empty array
+ *   - recentSessions: non-empty array
+ *   - bootstrapLock: non-null object
+ *
+ * When no active signals exist, all modes score identically at base 0.5
+ * so alternatives carry no information. Return [] to keep the passthrough
+ * contract stable (existing tests assert alternatives === [] for bare calls).
+ *
+ * @param {Signals} signals
+ * @returns {boolean}
+ */
+function hasActiveSignals(signals) {
+  const ls = safeArray(signals.learnings);
+  const rs = safeArray(signals.recentSessions);
+  const bl = signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object';
+  return ls.length > 0 || rs.length > 0 || bl;
+}
+
+/**
+ * Compute the bonus+penalty score delta for a candidate mode given the
+ * provided signals. Returns a number in the range (-0.30, +0.35).
+ *
+ * @param {string} candidateMode
+ * @param {Signals} signals
+ * @returns {number} delta (positive bonuses − negative penalties)
+ */
+function computeDelta(candidateMode, signals) {
+  const recentSessions = safeArray(signals.recentSessions);
+  const learnings = safeArray(signals.learnings);
+  const bootstrapLock = (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
+    ? signals.bootstrapLock
+    : null;
+
+  // --- Recent-sessions trend bonus (max +0.15) ---
+  let trendBonus = 0;
+  const last3 = recentSessions.slice(-3);
+  if (last3.length >= 3) {
+    const allMatch = last3.every(
+      (s) => typeof s === 'object' && s !== null && s.session_type === candidateMode,
+    );
+    if (allMatch) {
+      const avgCompletion =
+        last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
+        3;
+      trendBonus = avgCompletion >= 0.9 ? 0.15 : 0.075;
+    }
+  }
+
+  // --- Bootstrap-tier alignment bonus (max +0.10) ---
+  let tierBonus = 0;
+  if (bootstrapLock !== null) {
+    const tier = typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
+    if (tier !== null && TIER_MODE_MAP[tier] === candidateMode) {
+      tierBonus = 0.10;
+    }
+  }
+
+  // --- Learnings-hint bonus (max +0.10) ---
+  let learningsBonus = 0;
+  const HINT_TYPES = new Set(['effective-sizing', 'scope-guidance']);
+  const modeKeyword = candidateMode.toLowerCase();
+  for (const learning of learnings) {
+    if (
+      typeof learning === 'object' &&
+      learning !== null &&
+      typeof learning.type === 'string' &&
+      HINT_TYPES.has(learning.type) &&
+      typeof learning.subject === 'string' &&
+      learning.subject.toLowerCase().includes(modeKeyword)
+    ) {
+      learningsBonus = Math.min(learningsBonus + 0.05, 0.10);
+    }
+  }
+
+  // --- Conflict penalties (max −0.30) ---
+  let penalty = 0;
+
+  // Penalty: recent sessions trend strongly suggests a DIFFERENT mode
+  if (last3.length >= 3) {
+    const otherModes = ALL_MODES.filter((m) => m !== candidateMode);
+    for (const otherMode of otherModes) {
+      const allOther = last3.every(
+        (s) => typeof s === 'object' && s !== null && s.session_type === otherMode,
+      );
+      if (allOther) {
+        const avgCompletion =
+          last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
+          3;
+        if (avgCompletion >= 0.9) {
+          penalty += 0.10;
+          break; // only one other dominant mode possible
+        }
+      }
+    }
+  }
+
+  // Penalty: bootstrap tier maps to a different mode than candidateMode
+  if (bootstrapLock !== null) {
+    const tier = typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
+    if (tier !== null) {
+      const alignedMode = TIER_MODE_MAP[tier];
+      if (alignedMode !== undefined && alignedMode !== candidateMode) {
+        penalty += 0.10;
+      }
+    }
+  }
+
+  // Penalty: high carryover but not in 'deep' mode
+  const carryoverRatio =
+    typeof signals.carryoverRatio === 'number' && !Number.isNaN(signals.carryoverRatio)
+      ? signals.carryoverRatio
+      : null;
+  if (carryoverRatio !== null && carryoverRatio >= 0.2 && candidateMode !== 'deep') {
+    penalty += 0.10;
+  }
+
+  return trendBonus + tierBonus + learningsBonus - penalty;
+}
+
+/**
+ * Score a candidate mode: base 0.5 + delta, clamped to [0.0, 0.9].
+ *
+ * @param {string} candidateMode
+ * @param {Signals} signals
+ * @returns {number}
+ */
+function scoreMode(candidateMode, signals) {
+  return round2(clamp(0.5 + computeDelta(candidateMode, signals), 0.0, 0.9));
+}
+
+/**
+ * Build the alternatives array for branch 3 (passthrough-weighted).
+ * Returns 0–3 entries sorted by confidence descending, each with confidence >= 0.1.
+ *
+ * When no active signals are present, returns [] (all modes score identically
+ * at 0.5, so alternatives carry no information — and this preserves the
+ * existing passthrough test contract).
+ *
+ * @param {string} chosenMode
+ * @param {Signals} signals
+ * @returns {Array<{mode: string, confidence: number}>}
+ */
+function buildAlternatives(chosenMode, signals) {
+  if (!hasActiveSignals(signals)) {
+    return [];
+  }
+
+  const otherModes = ALL_MODES.filter((m) => m !== chosenMode);
+  const scored = otherModes
+    .map((m) => ({ mode: m, confidence: scoreMode(m, signals) }))
+    .filter((e) => e.confidence >= 0.1)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 3);
+
+  return scored;
+}
+
+/**
+ * Build a rationale string for branch 3 based on the dominant factor.
+ *
+ * @param {string} mode
+ * @param {number} confidence
+ * @param {Signals} signals
+ * @returns {string}
+ */
+function buildPassthroughRationale(mode, confidence, signals) {
+  const recentSessions = safeArray(signals.recentSessions);
+  const last3 = recentSessions.slice(-3);
+  const bootstrapLock = (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
+    ? signals.bootstrapLock
+    : null;
+  const tier = bootstrapLock ? (typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null) : null;
+
+  const hasTrend = last3.length >= 3 &&
+    last3.every((s) => typeof s === 'object' && s !== null && s.session_type === mode);
+  const hasTierAlign = tier !== null && TIER_MODE_MAP[tier] === mode;
+  const hasSignals = hasActiveSignals(signals);
+
+  let rationale;
+  if (!hasSignals) {
+    rationale = 'passthrough of Phase A recommended-mode — stale signals';
+  } else if (hasTrend && hasTierAlign) {
+    rationale = 'passthrough reinforced by recent-sessions trend + bootstrap tier';
+  } else if (hasTrend) {
+    rationale = 'passthrough reinforced by recent-sessions trend';
+  } else if (hasTierAlign) {
+    rationale = `passthrough reinforced by bootstrap tier (${tier})`;
+  } else {
+    rationale = 'passthrough of Phase A recommended-mode';
+  }
+
+  // Clamp to 120 chars (safety net)
+  return rationale.slice(0, 120);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
  * Deterministic mode selection for session-start.
  *
  * Pure function: same inputs → same outputs, zero side effects, no I/O.
  *
- * Phase B scaffold (issue #276) — the full heuristic consuming learnings,
- * sessions.jsonl trends, VCS backlog, and bootstrap.lock is a follow-up
- * sub-issue. This implementation is intentionally minimal: passthrough of
- * the Phase A `recommended-mode` frontmatter field at confidence 0.5, or
- * fallback to 'feature' at confidence 0.0.
+ * Heuristic v1 (issue #291) — consumes carryoverRatio, completionRate,
+ * recentSessions trend, bootstrapLock tier-alignment, and learnings hints
+ * to compute a confidence-weighted recommendation with alternatives.
+ *
+ * Decision priority:
+ *   1. SPIRAL    — completionRate < 0.5
+ *   2. CARRYOVER — carryoverRatio >= 0.3
+ *   3. PASSTHROUGH-WEIGHTED — valid recommendedMode + signal scoring
+ *   4. DEFAULT   — no valid mode, no spiral/carryover trigger
  *
  * @param {Signals|null|undefined} signals
  * @returns {Recommendation}
  */
 export function selectMode(signals) {
+  // Null-guard: treat null/undefined as empty signals object.
   if (signals === null || signals === undefined) {
     return {
       mode: DEFAULT_MODE,
       rationale: 'scaffold: null signals → default',
-      confidence: FALLBACK_CONFIDENCE,
+      confidence: 0.0,
       alternatives: [],
     };
   }
 
+  // Defensive extraction of numeric signals.
+  const completionRate =
+    typeof signals.completionRate === 'number' && !Number.isNaN(signals.completionRate)
+      ? signals.completionRate
+      : null;
+  const carryoverRatio =
+    typeof signals.carryoverRatio === 'number' && !Number.isNaN(signals.carryoverRatio)
+      ? signals.carryoverRatio
+      : null;
+
+  // Branch 1 — SPIRAL: low completion rate
+  if (completionRate !== null && completionRate < 0.5) {
+    return {
+      mode: 'plan-retro',
+      rationale: 'low completion → retrospective',
+      confidence: 0.8,
+      alternatives: [
+        { mode: 'feature', confidence: 0.3 },
+        { mode: 'discovery', confidence: 0.25 },
+      ],
+    };
+  }
+
+  // Branch 2 — CARRYOVER: high carryover ratio
+  if (carryoverRatio !== null && carryoverRatio >= 0.3) {
+    const pct = Math.round(carryoverRatio * 100);
+    return {
+      mode: 'deep',
+      rationale: `carryover ${pct}% — deep clear`,
+      confidence: 0.75,
+      alternatives: [
+        { mode: 'feature', confidence: 0.3 },
+        { mode: 'plan-retro', confidence: 0.2 },
+      ],
+    };
+  }
+
+  // Branch 3 — PASSTHROUGH-WEIGHTED: valid recommendedMode from Phase A
   const m = signals.recommendedMode;
   if (typeof m === 'string' && isValidMode(m)) {
+    const delta = computeDelta(m, signals);
+    const confidence = round2(clamp(0.5 + delta, 0.0, 0.9));
+    const rationale = buildPassthroughRationale(m, confidence, signals);
+    const alternatives = buildAlternatives(m, signals);
+
     return {
       mode: m,
-      rationale: 'scaffold: passthrough of Phase A recommended-mode',
-      confidence: PASSTHROUGH_CONFIDENCE,
-      alternatives: [],
+      rationale,
+      confidence,
+      alternatives,
     };
   }
 
+  // Branch 5 — DEFAULT: no valid mode signal and no spiral/carryover trigger
   return {
     mode: DEFAULT_MODE,
-    rationale: 'scaffold: missing/invalid recommendedMode → default',
-    confidence: FALLBACK_CONFIDENCE,
+    rationale: 'missing/invalid recommendedMode → default',
+    confidence: 0.0,
     alternatives: [],
   };
 }

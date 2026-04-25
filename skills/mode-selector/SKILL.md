@@ -14,9 +14,11 @@ tags: [phase-b, autopilot, mode-selection, scaffold]
 
 ## Status
 
-Scaffold only. Contract is stable; the full Phase B-1 heuristic (consuming learnings.jsonl,
-recent sessions trend, VCS backlog priority-weighting, and bootstrap.lock tier) is deferred
-to follow-up sub-issues #TBD. Not yet wired into session-start or any other invocation point.
+Heuristic v1 active (issue #291, shipped 2026-04-25). Wired into session-start Phase 7.5
+(issue #292, shipped 2026-04-25). Backlog signal source (`signals.backlog`) is still inert —
+Phase B-3 (#293) fills it. The accuracy feedback loop that writes `mode-selector-accuracy`
+learnings post-session is Phase B-4 (#294). Phase C (#277) `/autopilot` Loop Command is the
+next epic and owns its own PRD.
 
 ## Purpose
 
@@ -63,14 +65,25 @@ from any skill without side-effect risk.
 
 ## Invocation Points
 
-### Current (scaffold)
+### Current
 
-None wired. Tests in `tests/lib/mode-selector.test.mjs` exercise the contract.
+- **`skills/session-start/SKILL.md` Phase 7.5** — first wired invocation (issue #292). Renders
+  `📊 Mode-Selector suggests:` when `confidence < 0.5` (informational, no pre-selection) or
+  `📊 Mode-Selector recommends:` when `confidence >= 0.5` (pre-selects AUQ option 1). Eight
+  graceful no-op conditions documented inline. Note: Phase 1.5 `📋` banner is NOT a Mode-Selector
+  invocation — it reads Phase A STATE.md frontmatter directly via `parseRecommendations`; the
+  Mode-Selector lives at Phase 7.5.
+- **`tests/lib/mode-selector.test.mjs`** — 75 tests (7 describe blocks) exercising SPIRAL,
+  CARRYOVER, high-confidence path, conflicting-signals, stale-signals, alternatives generation,
+  and defensive parsing. `mode-selector.mjs` coverage 100%/100%/100%/100%. Issue #291.
 
-### Future (follow-up sub-issues)
+### Future
 
-- **session-start Phase 1.5 banner** — render `selectMode` output as banner text before AUQ; pre-select the first AUQ option with the recommended mode.
-- **`/autopilot` (Phase C, #277)** — if `confidence ≥` configurable threshold AND SPIRAL/FAILED/carryover-50% guards pass, auto-execute without user prompt.
+- **`/autopilot` (Phase C, #277)** — auto-execute when `confidence >= 0.85` AND
+  SPIRAL/FAILED/carryover-50% kill-switches pass. No user prompt in that path.
+- **Phase B-3 (#293)** — fills `signals.backlog` from the VCS open-issue list; currently inert.
+- **Phase B-4 (#294)** — writes a `mode-selector-accuracy` learning after the user
+  confirms or overrides the recommendation; closes the feedback loop.
 
 ## Scaffold Heuristic (v0)
 
