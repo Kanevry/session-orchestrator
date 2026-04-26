@@ -187,7 +187,7 @@ function generateLearningNote(entry, slug) {
   const titleRaw = truncateAtWord(insight, 80);
   const title = yamlQuoteIfNeeded(titleRaw);
 
-  const sourceTag = source_session.replace(/\./g, '-');
+  const sourceTag = subjectToSlug(String(source_session)) || 'unknown';
   const tags = `[learning/${type}, status/${status}, source/${sourceTag}]`;
 
   // Check if expires has a value; it's optional in schema

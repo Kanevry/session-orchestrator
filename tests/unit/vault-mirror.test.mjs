@@ -604,6 +604,67 @@ describe('vault-mirror CLI', () => {
     expect(existsSync(join(vaultDir, '40-learnings', 'helloworld.md'))).toBe(true);
   });
 
+  // ── source_session sanitisation (regression: corrupted "[object" upstream) ──
+
+  it('source_session with YAML-breaking chars is sanitised in tags line', () => {
+    // Regression: 3 learnings on 2026-04-23 had source_session="[object" (an
+    // upstream evolve-skill bug coerced an Object to String). Without the
+    // subjectToSlug guard, the tags line emitted `source/[object]` which is
+    // invalid YAML flow-array syntax (unbalanced bracket). Verify the slugger
+    // strips the bracket and produces a valid tag.
+    const entry = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-000000000099',
+      type: 'architectural',
+      subject: 'broken-source-session-recovery',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Probe entry for sanitisation',
+      confidence: 0.5,
+      source_session: '[object',
+      created_at: '2026-04-23T18:19:24Z',
+      expires_at: '2026-05-23T00:00:00Z',
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, entry);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+
+    const md = readFileSync(
+      join(vaultDir, '40-learnings', 'broken-source-session-recovery.md'),
+      'utf8',
+    );
+    // Tags line must be valid YAML: no '[' or ']' inside source/ segment
+    expect(md).toMatch(/^tags: \[learning\/architectural, status\/draft, source\/object\]$/m);
+    expect(md).not.toContain('source/[object');
+  });
+
+  it('source_session that sanitises to empty falls back to "unknown"', () => {
+    // If subjectToSlug strips everything, sourceTag must default to a
+    // schema-valid placeholder rather than emitting `source/`.
+    const entry = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-000000000098',
+      type: 'architectural',
+      subject: 'empty-source-session-recovery',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Probe entry for fallback',
+      confidence: 0.5,
+      source_session: '!!!@@###',
+      created_at: '2026-04-23T18:19:24Z',
+      expires_at: '2026-05-23T00:00:00Z',
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, entry);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+
+    const md = readFileSync(
+      join(vaultDir, '40-learnings', 'empty-source-session-recovery.md'),
+      'utf8',
+    );
+    expect(md).toMatch(/^tags: \[learning\/architectural, status\/draft, source\/unknown\]$/m);
+  });
+
   // ── Session entry missing agent_summary → skipped-invalid ─────────────────
 
   it('session entry missing agent_summary emits skipped-invalid', () => {
