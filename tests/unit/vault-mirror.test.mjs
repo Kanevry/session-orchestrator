@@ -927,3 +927,224 @@ describe('vault-mirror CLI', () => {
     expect(lines.every((l) => l.action === 'created')).toBe(true);
   });
 });
+
+// ── Auto-commit (#31) ─────────────────────────────────────────────────────────
+
+describe('vault-mirror auto-commit (#31)', () => {
+  let dirs = [];
+
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    dirs = [];
+  });
+
+  function tmp() {
+    const d = makeTmpDir();
+    dirs.push(d);
+    return d;
+  }
+
+  function writeJsonl(dir, content) {
+    const p = join(dir, 'source.jsonl');
+    writeFileSync(p, content + '\n', 'utf8');
+    return p;
+  }
+
+  function gitInit(vaultDir) {
+    spawnSync('git', ['-C', vaultDir, 'init', '-q', '-b', 'main'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vaultDir, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vaultDir, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vaultDir, 'config', 'commit.gpgsign', 'false'], { encoding: 'utf8' });
+    // Initial commit so HEAD exists
+    writeFileSync(join(vaultDir, '.gitkeep'), '', 'utf8');
+    spawnSync('git', ['-C', vaultDir, 'add', '.gitkeep'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vaultDir, 'commit', '-q', '-m', 'init'], { encoding: 'utf8' });
+  }
+
+  function gitLog(vaultDir) {
+    const r = spawnSync('git', ['-C', vaultDir, 'log', '--oneline'], { encoding: 'utf8' });
+    return r.stdout.trim().split('\n').filter(Boolean);
+  }
+
+  function gitStatus(vaultDir) {
+    const r = spawnSync('git', ['-C', vaultDir, 'status', '--porcelain'], { encoding: 'utf8' });
+    return r.stdout.trim().split('\n').filter(Boolean);
+  }
+
+  it('happy path: writes one mirror file and creates an auto-commit with subject', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'test-session-001',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const commitAction = actions.find((a) => a.action === 'auto-commit-created');
+    expect(commitAction).toBeDefined();
+    expect(commitAction.subject).toBe('chore(vault): mirror test-session-001 — 1 learnings + 0 sessions');
+    expect(commitAction.learnings).toBe(1);
+    expect(commitAction.sessions).toBe(0);
+
+    // History: init + auto-commit = 2
+    expect(gitLog(vaultDir)).toHaveLength(2);
+    // Mirror dirs are clean post-commit (source.jsonl in vaultDir root is untracked but irrelevant)
+    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions'], { encoding: 'utf8' });
+    expect(cached.stdout.trim()).toBe('');
+  });
+
+  it('mismatch: handwritten file in 40-learnings/ unstages and skips commit', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    // Plant a non-mirror file in 40-learnings/
+    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    writeFileSync(join(vaultDir, '40-learnings', 'handwritten.md'), '---\ntitle: by hand\n---\n\nNo generator marker here.\n', 'utf8');
+
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'mismatch-session',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const skip = actions.find((a) => a.action === 'auto-commit-skipped');
+    expect(skip).toBeDefined();
+    expect(skip.reason).toBe('non-mirror-staged-changes');
+    expect(skip.offenders).toEqual(expect.arrayContaining([forwardSlashes('40-learnings/handwritten.md')]));
+
+    // No new commit: only init
+    expect(gitLog(vaultDir)).toHaveLength(1);
+    // Verify nothing was staged for commit (the unstage path worked)
+    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only'], { encoding: 'utf8' });
+    expect(cached.stdout.trim()).toBe('');
+    // Handwritten file still on disk, untouched
+    expect(existsSync(join(vaultDir, '40-learnings', 'handwritten.md'))).toBe(true);
+  });
+
+  it('idempotent no-op: empty input produces no commit and no-staged-changes action', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    const sourceFile = writeJsonl(vaultDir, '');
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'noop-session',
+    ]);
+
+    expect(result.status).toBe(0);
+    // 40-learnings/50-sessions don't exist → no-mirror-dirs OR no-staged-changes (depending)
+    const actions = result.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const skipReasons = actions.filter((a) => a.action === 'auto-commit-skipped' || a.action === 'auto-commit-noop')
+      .map((a) => a.reason);
+    expect(skipReasons.some((r) => r === 'no-mirror-dirs' || r === 'no-staged-changes')).toBe(true);
+    expect(gitLog(vaultDir)).toHaveLength(1);
+  });
+
+  it('--dry-run skips auto-commit entirely (no writes, no commits)', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'dry-session', '--dry-run',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(actions.find((a) => a.action === 'auto-commit-created')).toBeUndefined();
+    expect(actions.find((a) => a.action?.startsWith('auto-commit-'))).toBeUndefined();
+    expect(gitLog(vaultDir)).toHaveLength(1);
+  });
+
+  it('--no-commit writes artifacts but skips commit entirely', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'no-commit-session', '--no-commit',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(actions.find((a) => a.action === 'created')).toBeDefined();
+    expect(actions.find((a) => a.action?.startsWith('auto-commit-'))).toBeUndefined();
+    // Mirror file written but uncommitted
+    expect(gitLog(vaultDir)).toHaveLength(1);
+    expect(gitStatus(vaultDir).length).toBeGreaterThan(0);
+  });
+
+  it('vault without 40-learnings/ or 50-sessions/ dirs reports no-mirror-dirs and no commit', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    const sourceFile = writeJsonl(vaultDir, '');
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'empty-vault-session',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const skip = actions.find((a) => a.action === 'auto-commit-skipped' && a.reason === 'no-mirror-dirs');
+    expect(skip).toBeDefined();
+    expect(gitLog(vaultDir)).toHaveLength(1);
+  });
+
+  it('backlog catchup: 2 pre-existing untracked mirror files plus 1 new file all commit together', () => {
+    const vaultDir = tmp();
+    gitInit(vaultDir);
+    // Plant 2 pre-existing generator-tagged untracked files
+    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    writeFileSync(
+      join(vaultDir, '40-learnings', 'old-1.md'),
+      `---\n_generator: ${'session-orchestrator-vault-mirror@1'}\nid: old-1\n---\n\nOld backlog 1.\n`,
+      'utf8',
+    );
+    mkdirSync(join(vaultDir, '50-sessions'), { recursive: true });
+    writeFileSync(
+      join(vaultDir, '50-sessions', 'old-2.md'),
+      `---\n_generator: ${'session-orchestrator-vault-mirror@1'}\nid: old-2\n---\n\nOld backlog 2.\n`,
+      'utf8',
+    );
+
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'catchup-session',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const commit = actions.find((a) => a.action === 'auto-commit-created');
+    expect(commit).toBeDefined();
+    expect(commit.subject).toBe('chore(vault): mirror catchup-session — 2 learnings + 1 sessions');
+    expect(commit.files).toBe(3);
+    // source.jsonl lives in vaultDir root (not 40-learnings/ or 50-sessions/) so it
+    // remains untracked — that's expected. Only assert mirror dirs are clean.
+    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions'], { encoding: 'utf8' });
+    expect(cached.stdout.trim()).toBe('');
+  });
+
+  it('non-git vault directory reports not-a-git-repo and exits cleanly', () => {
+    const vaultDir = tmp();
+    // Intentionally NO gitInit
+    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror([
+      '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
+      '--session-id', 'no-git-session',
+    ]);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(actions.find((a) => a.action === 'auto-commit-skipped' && a.reason === 'not-a-git-repo')).toBeDefined();
+  });
+});
