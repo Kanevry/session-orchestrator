@@ -5,46 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] - Unreleased
+## [3.2.0] - 2026-04-27
 
-Windows native support via Bash → Node.js (zx 8) migration. Epic [#124](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/124).
+Consolidated stable release covering the v3.0.0 (Windows native), v3.1.0 (environment-aware sessions), and v3.2.0 (Mode-Selector + Autopilot) work since v2.0.0. Supersedes the `v3.0.0-rc.1` pre-release.
 
-### ⚠ BREAKING CHANGES
+### ⚠ BREAKING CHANGES (carried from v3.0.0)
 
-- **Node.js 20+ is now required.** The plugin runs as ES modules (`.mjs`) and uses native `fs.promises`, `fetch`, and `AbortSignal.timeout`. Node 18 and earlier are unsupported.
-- **`npm install` is required once in the plugin directory** before hooks fire. The `zx` runtime is listed as a runtime dependency in `package.json`; without it, any hook that imports `scripts/lib/worktree.mjs` fails at load time.
-- **Hooks are now `.mjs` files instead of `.sh`.** `hooks/hooks.json` points to the Node runtime (`node "$CLAUDE_PLUGIN_ROOT/hooks/<name>.mjs"`). The Bash hook files remain on disk during the transition but are no longer wired up. Custom consumer configs that referenced `.sh` hook paths need to be updated.
-- **`jq` and Bash are no longer hard dependencies for hooks.** Scope/command enforcement and session state reads all use native Node JSON parsing. `jq` remains a soft recommendation for the scope-enforcement policy-editing workflow but is not invoked at runtime by v3 hooks.
-- **`bats` test suite retired.** The legacy `scripts/test/run-all.sh` shell harness is deprecated and will be removed in a future release (tracked in issue [#151](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/151)). Development and CI use [vitest](https://vitest.dev/) exclusively.
+- **Node.js 20+ is required.** The plugin runs as ES modules (`.mjs`) and uses native `fs.promises`, `fetch`, and `AbortSignal.timeout`. Node 18 and earlier are unsupported.
+- **`npm install` is required once in the plugin directory** before hooks fire. `zx` is a runtime dependency; without it, hooks fail at load time.
+- **Hooks are now `.mjs` files instead of `.sh`.** `hooks/hooks.json` points to the Node runtime. Custom consumer configs that referenced `.sh` hook paths must be updated.
+- **`jq` and Bash are no longer hard dependencies for hooks.** Scope/command enforcement and session state reads use native Node JSON parsing. `jq` remains a soft recommendation for policy-editing workflows.
+- **`bats` test suite retired.** Development and CI use [vitest](https://vitest.dev/) exclusively.
 
-See [`docs/migration-v3.md`](docs/migration-v3.md) for the step-by-step upgrade path, rollback instructions, and known issues.
+See [`docs/migration-v3.md`](docs/migration-v3.md) for the upgrade path from v2.x.
 
-### Added
+### Added — Windows native + Node.js migration (v3.0.0 surface)
 
-- **`scripts/parse-config.mjs`** — thin Node.js CLI wrapper over `scripts/lib/config.mjs`. Replaces `scripts/parse-config.sh` as the entry point for parsing `## Session Config` from `CLAUDE.md`/`AGENTS.md`. Same file-resolution order (arg → `SO_CONFIG_FILE` → `CLAUDE.md` → `AGENTS.md`), same validation gate via `validate-config.mjs`, same `SO_SKIP_CONFIG_VALIDATION=1` bypass. Byte-parity with the legacy shell script confirmed via `diff` on the repo's own `CLAUDE.md`. Issue #151.
-- **Native Windows support** — no WSL or Git-Bash required. All file paths use `path.join`, all tmp paths use `os.tmpdir()`, filesystem walks terminate at drive roots via `path.parse(dir).root`, and glob matching normalizes backslashes before comparison. CRLF-tolerant config parsing and `.gitattributes` EOL rules prevent autocrlf breakage on Windows checkouts.
-- **GitHub Actions CI matrix** across `ubuntu-latest`, `macos-latest`, and `windows-latest` (`.github/workflows/test.yml`) with `fail-fast: false`, concurrency grouping, and per-OS `jq` install steps.
-- **Vitest test framework** (`npm test`) replacing the `bats` shell harness. 533+ tests across `tests/lib/`, `tests/hooks/`, and `tests/integration/` with byte-exact parity checks against the retired Bash implementations.
-- **`package.json` at plugin root** with `type: "module"`, `engines.node >= 20`, `zx ^8.1.0` runtime dep, ESLint v9 + Prettier v3 + Vitest dev deps. `npm ci` bootstraps a reproducible tree from `package-lock.json`.
-- **Pre-bash destructive-command guard** (`hooks/pre-bash-destructive-guard.mjs`, 13-rule policy at `.orchestrator/policy/blocked-commands.json`) active alongside subagent waves — blocks `git reset --hard`, `rm -rf`, `git push --force`, and related destructive operations in the main session. Opt-out via `allow-destructive-ops: true` in Session Config.
-- **Canonical `parallel-sessions.md` rule** vendored via bootstrap. Documents PSA-001 (detect before acting), PSA-002 (ask, don't assume), PSA-003 (never destroy what you didn't create), PSA-004 (isolate your changes).
-- **ESLint v9 flat config + Prettier** with Node 20 globals, `_`-prefix allowlist for unused vars, and markdown excluded (skill files have intentional formatting). `npm run lint:fix` is idempotent.
+- **Native Windows support** — no WSL or Git-Bash required. All file paths use `path.join`, tmp paths use `os.tmpdir()`, filesystem walks terminate at drive roots, glob matching normalizes backslashes. CRLF-tolerant config parsing and `.gitattributes` EOL rules prevent autocrlf breakage.
+- **GitHub Actions CI matrix** across `ubuntu-latest`, `macos-latest`, and `windows-latest` with `fail-fast: false`, concurrency grouping, and per-OS `jq` install steps.
+- **Vitest test framework** (`npm test`) replacing the `bats` shell harness. 1871 passing tests with byte-exact parity checks against the retired Bash implementations.
+- **`package.json` at plugin root** with `type: "module"`, `engines.node >= 20`, `zx ^8.1.0` runtime dep, ESLint v9 + Prettier v3 + Vitest dev deps. `npm ci` bootstraps a reproducible tree.
+- **Pre-bash destructive-command guard** — `hooks/pre-bash-destructive-guard.mjs` blocks `git reset --hard`, `rm -rf`, `git push --force`, and related destructive operations in the main session, with a 13-rule policy at `.orchestrator/policy/blocked-commands.json`. Opt-out via `allow-destructive-ops: true` in Session Config.
+- **Canonical `parallel-sessions.md` rule** vendored via bootstrap. Documents PSA-001 through PSA-004 (detect before acting, ask before assuming, never destroy what you didn't create, isolate your changes).
+- **ESLint v9 flat config + Prettier** with Node 20 globals, `_`-prefix allowlist for unused vars, markdown excluded.
+
+### Added — Environment-aware sessions (v3.1.0 surface)
+
+- **Resource-gate dispatch** — `scripts/lib/wave-resource-gate.mjs` reads live RAM/CPU/concurrent-session metrics before dispatching each wave. Eight-rule decision chain returns `proceed`, `reduce` (halve agent count), or `coordinator-direct` (0 agents). Configurable via `resource-thresholds` in Session Config; failures degrade to `proceed` so the gate never blocks.
+- **`worktree-exclude` Session Config field** — string array of top-level directories skipped when creating agent worktrees. Default 10-pattern list (`node_modules`, `dist`, `build`, `.next`, `.nuxt`, `coverage`, `.cache`, `.turbo`, `.vercel`, `out`). Empty array disables. Cuts worktree clone size dramatically on large repos.
+- **Multi-session registry** — `scripts/lib/session-registry.mjs` tracks active sessions across the host with heartbeat + sweep semantics. `on-session-start` hook registers the session and detects peers; `on-stop` deregisters cleanly. Enables resource-gate to factor in concurrent Claude/Codex sessions.
+- **Anonymized hardware learnings** — `scripts/export-hw-learnings.mjs` exports anonymized hardware-pattern learnings for sharing. Promotion pipeline + anonymization regex tuning (no machine names, no usernames, no absolute paths).
+- **CWD-drift guard** — `restoreCoordinatorCwd` runs after every worktree-isolated `Agent` dispatch so subsequent coordinator Edit/Write/Bash calls cannot silently route to a worktree branch.
+- **Coordinator snapshots** — pre-dispatch `git stash create` refs under `refs/so-snapshots/` provide crash recovery for unfinished sessions; surfaced to the user via `AskUserQuestion` on session-start when the prior session was `active` or `paused`.
+
+### Added — Mode-Selector + Autopilot (v3.2.0 surface)
+
+- **Mode-Selector** — pure-function recommendation engine that suggests the next session mode (`housekeeping` | `feature` | `deep`) based on live signals: prior STATE.md recommendations, recent `sessions.jsonl` trend, surfaced learnings, bootstrap tier, and live VCS backlog scan. Renders a `📊` banner at session-start when confidence ≥ 0.5; modifies `AskUserQuestion` option ordering to put the recommendation first.
+- **STATE.md Recommendations Contract** — five forward-looking frontmatter fields (`recommended-mode`, `top-priorities`, `carryover-ratio`, `completion-rate`, `rationale`) written by `session-end` and read by the next session-start as a `📋` banner. Backwards-compatible: pre-v1.1 STATE.md files are silently no-op.
+- **Autopilot loop** — `/autopilot` runs `session-start → session-plan → wave-executor → session-end` chained for N iterations with kill-switches: SPIRAL detection, FAILED-wave gate, carryover > 50%, max-hours, sub-threshold confidence, etc. Eight kill-switches total.
+- **Autopilot headless CLI** — `scripts/autopilot.mjs` is a walk-away driver. `--headless` required flag, `--verbose` pipes child stdio, `--dry-run` round-trips without spawning. Spawns `claude -p '/session <mode>'` per iteration and propagates `AUTOPILOT_RUN_ID` for retro joinability across `autopilot.jsonl` ↔ `sessions.jsonl`.
+- **Vault-mirror auto-commit** — opt-in via `--session-id <id>`. After mirroring artifacts, stages `40-learnings/` + `50-sessions/`, validates `_generator: session-orchestrator-vault-mirror@1` frontmatter on every staged file, commits as `chore(vault): mirror <id> — N learnings + M sessions` when staged set is all-mirror, or unstages + warns on mismatch.
+- **Docs-orchestrator** — opt-in audience-aware doc generation (User / Dev / Vault). Three hook points: session-start Phase 2.5 (audience detection + AskUserQuestion), session-plan Step 1.5/1.8 (Docs role classification + docs-writer auto-match), session-end Phase 3.2 (per-task ok/partial/gap verification).
+- **Harness-audit scorecard** — deterministic 7-category rubric (`RUBRIC_VERSION` pinned), JSON to stdout + JSONL trend in `.orchestrator/metrics/audit.jsonl`. Available via `/discovery audit` probe and standalone `/harness-audit` command.
+- **Plan modes** — `/plan new` (project kickoff with repo scaffolding), `/plan feature` (compact feature PRD), `/plan retro` (data-driven retrospective with vault-backfill sub-mode). All modes share a researched Q&A engine that dispatches parallel Explore agents before each question wave.
+- **Discovery probes** — modular probes adapted to the project's tech stack, including `vault-staleness`, `vault-narrative-staleness`, `state-md-staleness`, and `bootstrap-lock-freshness`.
+- **Adaptive wave sizing** — complexity scoring (files × directories × issues) maps to agent counts per role. Cross-session learnings can override the formula based on historical data.
+- **Intelligent agent dispatch** — project agents > plugin agents > general-purpose. Optional `agent-mapping` Session Config for explicit role-to-agent binding. Model selection matrix (haiku / sonnet / opus per task type).
+- **`isolation: 'none'` default for new-directory waves** — Pre-Dispatch New-Directory Detection forces `isolation: 'none'` when any agent's target parent directory doesn't exist and `configIsolation: 'auto'`. Avoids the Claude Code merge-back regression where new-dir writes silently fail to sync back from worktrees. Explicit `isolation: 'worktree'` overrides are honored with a warning.
 
 ### Changed
 
-- **All hooks and `scripts/lib/` helpers migrated from Bash to Node.js.** Security-critical hooks (`enforce-scope.mjs`, `enforce-commands.mjs`) include symlink-escape protection, shell-operator + quote-boundary parsing, and Windows backslash normalization. Hook I/O follows the Claude Code stdin/stdout contract via `scripts/lib/io.mjs` (`emitAllow`/`emitDeny`/`emitWarn`, 5s stdin timeout + 1 MB byte guard).
-- **Cross-platform tmpdir and path handling** — `os.tmpdir()` replaces `${TMPDIR:-/tmp}`, `path.join`/`path.sep` throughout, `path.parse(dir).root` for filesystem-walk termination.
-- **Native JSON parsing** replaces all `jq` shell-outs inside hooks. The few remaining `jq` references are in editor-facing Bash scripts that are outside the hook hot path.
-- **Version badge in README** updated from `2.0.0` to `3.0.0`. Windows support is now marked ✅ natively (previously required WSL).
+- **All hooks and `scripts/lib/` helpers migrated from Bash to Node.js.** Security-critical hooks (`enforce-scope.mjs`, `enforce-commands.mjs`) include symlink-escape protection, shell-operator + quote-boundary parsing, and Windows backslash normalization.
+- **Cross-platform path handling** — `os.tmpdir()` replaces `${TMPDIR:-/tmp}`, `path.join`/`path.sep` throughout, `path.parse(dir).root` for filesystem-walk termination.
+- **Native JSON parsing** replaces all `jq` shell-outs inside hooks.
+- **Vitest 4.1.5** — upgraded from vitest 2.1.9. Includes the GitHub Actions CI tinypool timeout wrapper for Windows.
 
 ### Removed
 
-- `bats` test suite (`scripts/test/run-all.sh` and `tests/*.bats`) — retired in favor of vitest. Legacy files remain on disk during the transition and will be removed by issue [#151](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/151).
-- Hard runtime dependency on `jq` and `bash` for hooks. Both remain soft recommendations for developer workflows but are no longer invoked by hooks.
+- `bats` test suite — retired in favor of vitest.
+- Hard runtime dependency on `jq` and `bash` for hooks.
+
+### Security
+
+- Pre-bash destructive-command guard active alongside subagent waves.
+- Symlink-escape protection in scope-enforcement (`fs.realpath` + ancestor-walk fallback for non-existent targets).
+- Shell-operator + quote-boundary parsing in command-enforcement (catches `ls;rm -rf /`, `psql -c "DROP TABLE …"`, and similar bypass patterns).
+- `CLAUDE_PROJECT_DIR` validated against the platform's state directory before being trusted by enforcement hooks.
+- Coordinator-snapshot refs (`refs/so-snapshots/`) garbage-collected at session-end for completed sessions.
+
+### Quality
+
+- 1871 tests passing / 10 skipped across vitest suites.
+- Coverage thresholds: 70 / 65 / 70 / 60 (lines / functions / statements / branches).
+- ESLint v9 flat config, Prettier v3 — `lint:fix` idempotent on the full tree.
+- TypeScript discipline via `node scripts/typecheck.mjs` (43 file(s) OK).
 
 ### Migration
 
-See [`docs/migration-v3.md`](docs/migration-v3.md). Short version:
+Short version:
 
 ```bash
 cd /path/to/session-orchestrator
@@ -53,13 +91,13 @@ npm install           # installs zx + vitest + ESLint + Prettier
 # Restart Claude Code / Codex / Cursor so hooks.json is re-read.
 ```
 
-Rollback: `git checkout v2.0.0 && rm -rf node_modules` and restart the editor.
+For details, see [`docs/migration-v3.md`](docs/migration-v3.md). Rollback: `git checkout v2.0.0 && rm -rf node_modules` and restart the editor.
 
 ---
 
-## [Unreleased] (dev trail)
+## Internal Development Trail (pre-v3.2.0)
 
-Detailed per-session entries captured during the v3.0.0 development cycle. Retained for traceability; content is consolidated in the [3.0.0] release block above.
+Detailed per-session entries captured during the v3.0.0 / v3.1.0 / v3.2.0 development cycles. Retained for traceability; content is consolidated in the [3.2.0] release block above.
 
 ### Added — harness-retro Wave 1 (2026-04-19, Epic #181)
 
