@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — Architecture-DDD-Trio adoption (Epic #309)
+
+- **Three new skills derived from `mattpocock/skills@90ea8ee` (MIT):**
+  - `skills/architecture/` — surfaces *deepening opportunities* (Ousterhout — shallow modules, hypothetical seams, pass-through adapters) using the precise vocabulary from `LANGUAGE.md` (Module / Interface / Implementation / Depth / Seam / Adapter / Leverage / Locality). Bundles `LANGUAGE.md`, `DEEPENING.md`, `INTERFACE-DESIGN.md` byte-identically (the vocabulary IS the contract). #310.
+  - `skills/domain-model/` — grilling session that stress-tests plans against the existing domain model, sharpens fuzzy terminology inline, updates `CONTEXT.md` lazily, offers ADRs sparingly under a 3-criteria gate. `disable-model-invocation: true` (explicit-invocation only). Bundles `CONTEXT-FORMAT.md`, `ADR-FORMAT.md`. #311.
+  - `skills/ubiquitous-language/` — extracts a DDD glossary from the current conversation into `UBIQUITOUS_LANGUAGE.md`, flags ambiguities and synonyms, proposes opinionated canonical terms. `disable-model-invocation: true`. #312.
+- **`architectural-friction` Markdown probe** added to `skills/discovery/probes-arch.md` with concrete grep regex for three heuristics: `shallow-module` (exported_symbols / LOC ≥ 0.5), `pass-through-adapter` (delegation methods ≥ 70%), `one-adapter-seam` (interface with exactly one implementation). FINDING blocks route `recommended_fix` to the `architecture` skill. #313.
+- **Repo-root `NOTICE`** with full upstream MIT-license reproduction, pinned SHA `90ea8eec03d4ae8f43427aaf6fe4722653561a42`, and the inventory of vendored sub-files plus adapted SKILL.md files.
+- **Test pack `tests/skills/architecture-ddd-trio.test.mjs`** — 20 tests covering byte-equality (SHA-256-pinned), frontmatter validity, attribution preservation, `disable-model-invocation` flag, sub-file references, and NOTICE compliance.
+
+### Cross-repo (`projects-baseline`)
+
+- **`.claude/rules/architecture.md`** vendors `LANGUAGE.md` vocabulary verbatim plus a "When to use which skill" matrix routing intents to the three new skills (#314, separate-repo MR `!15`).
+- **`docs/adr/000-template.md`** extended with a "When to write an ADR" section codifying the 3-criteria gate (hard-to-reverse + surprising-without-context + real-trade-off), preserving the existing Nygard structure unchanged (#315, same MR).
+
+### Attribution
+
+Each adapted SKILL.md carries `derived-from: mattpocock/skills@90ea8ee` and `license: MIT` in its YAML frontmatter for traceability. See `NOTICE` for the full attribution + license boilerplate.
+
 ## [3.2.0] - 2026-04-27
 
 Consolidated stable release covering the v3.0.0 (Windows native), v3.1.0 (environment-aware sessions), and v3.2.0 (Mode-Selector + Autopilot) work since v2.0.0. Supersedes the `v3.0.0-rc.1` pre-release.

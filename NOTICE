@@ -1,0 +1,64 @@
+Session Orchestrator
+Copyright (c) 2025-2026 Bernhard Goetzendorfer
+
+This product is licensed under the MIT License (see LICENSE).
+
+================================================================================
+Third-Party Attributions
+================================================================================
+
+This product includes material derived from `mattpocock/skills`
+(https://github.com/mattpocock/skills), used under the MIT License.
+
+Upstream: https://github.com/mattpocock/skills
+Commit:   90ea8eec03d4ae8f43427aaf6fe4722653561a42  (pinned, 2026-04-26)
+License:  MIT — Copyright (c) 2026 Matt Pocock
+
+The following files in this repository are vendored from `mattpocock/skills`
+at the commit above:
+
+  Byte-identical (verbatim) sub-files:
+    skills/architecture/LANGUAGE.md
+    skills/architecture/DEEPENING.md
+    skills/architecture/INTERFACE-DESIGN.md
+    skills/domain-model/CONTEXT-FORMAT.md
+    skills/domain-model/ADR-FORMAT.md
+
+  Adapted SKILL.md files (description and frontmatter re-tuned for our
+  trigger conventions; process body and structural content preserved):
+    skills/architecture/SKILL.md
+      (from improve-codebase-architecture/SKILL.md)
+    skills/domain-model/SKILL.md
+      (from domain-model/SKILL.md)
+    skills/ubiquitous-language/SKILL.md
+      (from ubiquitous-language/SKILL.md)
+
+Each adapted SKILL.md carries `derived-from: mattpocock/skills@90ea8ee`
+and `license: MIT` in its YAML frontmatter for traceability.
+
+The MIT License notice from the upstream project is reproduced below in
+satisfaction of the "above copyright notice and this permission notice
+shall be included in all copies or substantial portions of the Software"
+condition:
+
+    MIT License
+
+    Copyright (c) 2026 Matt Pocock
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
