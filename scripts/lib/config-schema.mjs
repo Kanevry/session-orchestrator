@@ -228,6 +228,32 @@ export function validateDocsOrchestrator(obj) {
 }
 
 /**
+ * Validate the resource-thresholds sub-object.
+ * @param {unknown} obj
+ * @returns {string[]} array of error messages (empty = valid)
+ */
+export function validateResourceThresholds(obj) {
+  if (obj === null || typeof obj !== 'object') return ['resource-thresholds must be an object'];
+  const errs = [];
+  const numFields = ['ram-free-min-gb', 'ram-free-critical-gb', 'cpu-load-max-pct', 'concurrent-sessions-warn'];
+  for (const field of numFields) {
+    if (obj[field] !== undefined && (typeof obj[field] !== 'number' || !(obj[field] > 0) || !Number.isFinite(obj[field]))) {
+      errs.push(`resource-thresholds.${field} must be a positive finite number`);
+    }
+  }
+  if (obj['zombie-threshold-min'] !== undefined) {
+    const v = obj['zombie-threshold-min'];
+    if (typeof v !== 'number' || !(v > 0) || !Number.isFinite(v) || !Number.isInteger(v)) {
+      errs.push('resource-thresholds.zombie-threshold-min must be a positive integer (minutes)');
+    }
+  }
+  if (obj['ssh-no-docker'] !== undefined && typeof obj['ssh-no-docker'] !== 'boolean') {
+    errs.push('resource-thresholds.ssh-no-docker must be a boolean');
+  }
+  return errs;
+}
+
+/**
  * Validate the vault-staleness sub-object.
  * @param {unknown} obj
  * @returns {string[]} array of error messages (empty = valid)

@@ -19,8 +19,12 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { $ } from 'zx';
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('on-stop')) process.exit(0);
+
 import { appendJsonl } from '../scripts/lib/common.mjs';
-import { DEFAULT_EVENT_URL, eventsFilePath } from '../scripts/lib/events.mjs';
+import { eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 
@@ -138,14 +142,15 @@ async function readWaveNumber(projectRoot) {
 // ---------------------------------------------------------------------------
 
 /**
- * POST event to Clank Event Bus if CLANK_EVENT_SECRET is configured.
- * Swallows all errors — fire and forget.
+ * POST event to Clank Event Bus if CLANK_EVENT_SECRET and CLANK_EVENT_URL are
+ * both configured. Swallows all errors — fire and forget.
+ * No personal-domain default URL: CLANK_EVENT_URL must be set explicitly (#228).
  * @param {string} type
  * @param {object} payload
  */
 function fireWebhook(type, payload) {
-  if (!process.env.CLANK_EVENT_SECRET) return;
-  const url = process.env.CLANK_EVENT_URL || DEFAULT_EVENT_URL;
+  if (!process.env.CLANK_EVENT_SECRET || !process.env.CLANK_EVENT_URL) return;
+  const url = process.env.CLANK_EVENT_URL;
   const body = JSON.stringify({
     event_type: type,
     source: 'session-orchestrator',

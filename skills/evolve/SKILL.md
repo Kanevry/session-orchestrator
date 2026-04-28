@@ -197,11 +197,12 @@ For confirmed learnings, use atomic rewrite strategy:
    - Cap at 1.0
    - Reset `expires_at` to current date + `learning-expiry-days` (default: 30)
 3. Apply confidence decrements for contradicted learnings (-0.2) — do NOT reset `expires_at` for contradicted learnings (let them decay naturally)
-4. Append new learnings with:
-   - `id`: generate a uuid-v4 (use `uuidgen` or equivalent)
+4. Append new learnings with the **canonical schema_version:1 shape** — every field is required (#303):
+   - `schema_version`: **1** (integer, ALWAYS — never omit)
+   - `id`: UUID v4 string generated via `node -e "const {randomUUID}=require('crypto');process.stdout.write(randomUUID())"` or `uuidgen | tr '[:upper:]' '[:lower:]'`. MUST be a non-empty UUID string. **Never omit** — missing `id` causes 100% mirror-skip (#303).
    - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`
    - `subject`: the pattern subject
-   - `insight`: human-readable description of the pattern
+   - `insight`: human-readable description of the pattern. **MUST be `insight`** — do NOT use `description` or `recommendation` (legacy alias keys that vault-mirror cannot read; see #303).
    - `evidence`: specific data points that support the pattern
    - `confidence`: 0.5 for new learnings
    - `source_session`: **non-empty kebab-slug string** identifying the session from which the pattern was extracted (e.g. `main-2026-04-27-1942`). MUST be a string — never an object, array, number, or null. If multiple sessions contributed, use the earliest. If unknown, use `"unknown"` (the string). **Never** pass `String(<object>)` — that yields `"[object Object]"` and breaks the YAML mirror downstream (#307). Optional pre-write validation: `jq -e 'select(.source_session | type == "string" and length > 2)'`.

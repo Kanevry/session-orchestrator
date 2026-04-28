@@ -10,8 +10,10 @@
 
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import {
+  resolvePluginRoot as _resolvePluginRootRobust,
+  PluginRootResolutionError,
+} from './plugin-root.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -96,11 +98,13 @@ export function detectPlatform() {
 /**
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
- * Detection order (mirrors platform.sh):
- * 1. Platform-specific env var (CLAUDE_PLUGIN_ROOT / CODEX_PLUGIN_ROOT / CURSOR_RULES_DIR),
- *    verified to be an existing directory
- * 2. Walk up from this file's own directory looking for plugin.json (file) or skills/ (dir)
- * 3. Known install-path fallbacks
+ * Delegates to `scripts/lib/plugin-root.mjs` which implements the 4-level fallback
+ * (CLAUDE_PLUGIN_ROOT → CODEX_PLUGIN_ROOT → walk from import.meta.url →
+ * walk from cwd). The platform-specific CURSOR_RULES_DIR path is handled here
+ * as an additional level before falling back to the robust resolver.
+ *
+ * Returns empty string (never throws) to preserve backward compat with callers
+ * that check for a falsy return value.
  *
  * @param {"claude"|"codex"|"cursor"} [platform]
  * @returns {string}  Absolute path, or empty string if nothing found
@@ -108,39 +112,21 @@ export function detectPlatform() {
 export function resolvePluginRoot(platform) {
   const plt = platform ?? detectPlatform();
 
-  // 1. Env-var fast path
-  if (plt === 'claude' && process.env.CLAUDE_PLUGIN_ROOT &&
-      _isDir(process.env.CLAUDE_PLUGIN_ROOT)) {
-    return process.env.CLAUDE_PLUGIN_ROOT;
-  }
-  if (plt === 'codex' && process.env.CODEX_PLUGIN_ROOT &&
-      _isDir(process.env.CODEX_PLUGIN_ROOT)) {
-    return process.env.CODEX_PLUGIN_ROOT;
-  }
+  // Cursor: platform-specific env var not covered by plugin-root.mjs
   if (plt === 'cursor' && process.env.CURSOR_RULES_DIR &&
       _isDir(process.env.CURSOR_RULES_DIR)) {
     return process.env.CURSOR_RULES_DIR;
   }
 
-  // 2. Walk up from this module's own directory
-  const thisDir = path.dirname(fileURLToPath(import.meta.url));
-  const byPluginJson = walkUpFor(thisDir, 'plugin.json', 'file');
-  if (byPluginJson) return byPluginJson;
-  const bySkills = walkUpFor(thisDir, 'skills', 'dir');
-  if (bySkills) return bySkills;
-
-  // 3. Known install-path fallbacks
-  const home = os.homedir();
-  const fallbacks = [
-    path.join(home, '.claude',  'plugins', 'session-orchestrator'),
-    path.join(home, '.codex',   'plugins', 'session-orchestrator'),
-    path.join(home, 'Projects', 'session-orchestrator'),
-  ];
-  for (const fb of fallbacks) {
-    if (_isDir(fb)) return fb;
+  // Delegate to the robust 4-level resolver (#212)
+  try {
+    return _resolvePluginRootRobust();
+  } catch (err) {
+    if (err instanceof PluginRootResolutionError) {
+      return '';
+    }
+    return '';
   }
-
-  return '';
 }
 
 // ---------------------------------------------------------------------------

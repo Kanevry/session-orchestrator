@@ -18,6 +18,7 @@ import {
   validateSession,
   normalizeSession,
 } from '../../scripts/lib/session-schema.mjs';
+import { migrateEntry } from '../../scripts/migrate-sessions-jsonl.mjs';
 
 const VALID = () => ({
   session_id: 'sess-2026-04-24-test',
@@ -308,5 +309,218 @@ describe('module exports', () => {
 
   it('CURRENT_SESSION_SCHEMA_VERSION is 1', () => {
     expect(CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #304 — old-shape rejected by validateSession, new-shape accepted
+// ---------------------------------------------------------------------------
+
+/**
+ * Old-shape record: uses agents_dispatched / agents_complete / agents_partial /
+ * agents_failed scalars + waves_completed scalar instead of agent_summary
+ * object + waves[] array.
+ */
+const OLD_SHAPE = () => ({
+  session_id: 'sess-old-2025-01-01-1000',
+  session_type: 'feature',
+  started_at: '2025-01-01T10:00:00Z',
+  completed_at: '2025-01-01T11:00:00Z',
+  agents_dispatched: 4,
+  agents_complete: 3,
+  agents_partial: 1,
+  agents_failed: 0,
+  waves_completed: 2,
+  total_files_changed: 8,
+});
+
+describe('validateSession — old shape rejected (#304)', () => {
+  it('rejects a bare old-shape record (missing total_waves, waves, agent_summary, total_agents)', () => {
+    const entry = OLD_SHAPE();
+    // OLD_SHAPE lacks total_waves, waves[], agent_summary, total_agents — all required
+    expect(() => validateSession(entry)).toThrow(ValidationError);
+    // The validator hits the first missing required field in REQUIRED_FIELDS order;
+    // assert that it rejects with a "missing required field" message.
+    expect(() => validateSession(entry)).toThrow(/session missing required field/);
+  });
+
+  it('rejects an old-shape record that has agent_summary but lacks waves array', () => {
+    // Supply total_waves + agent_summary + total_agents but NOT waves[]
+    const entry = {
+      ...OLD_SHAPE(),
+      total_waves: 2,
+      agent_summary: { complete: 3, partial: 1, failed: 0, spiral: 0 },
+      total_agents: 4,
+    };
+    expect(() => validateSession(entry)).toThrow(ValidationError);
+    expect(() => validateSession(entry)).toThrow(/waves/);
+  });
+
+  it('rejects an old-shape record that has waves[] but lacks agent_summary', () => {
+    const entry = {
+      ...OLD_SHAPE(),
+      total_waves: 2,
+      waves: [],
+      total_agents: 4,
+    };
+    expect(() => validateSession(entry)).toThrow(ValidationError);
+    expect(() => validateSession(entry)).toThrow(/agent_summary/);
+  });
+
+  it('rejects an old-shape record that has agent_summary + waves[] but lacks total_agents', () => {
+    const entry = {
+      ...OLD_SHAPE(),
+      total_waves: 2,
+      waves: [],
+      agent_summary: { complete: 3, partial: 1, failed: 0, spiral: 0 },
+    };
+    expect(() => validateSession(entry)).toThrow(ValidationError);
+    expect(() => validateSession(entry)).toThrow(/total_agents/);
+  });
+});
+
+describe('validateSession — new shape accepted (#304)', () => {
+  it('accepts a fully canonical new-shape record', () => {
+    const entry = VALID();
+    const v = validateSession(entry);
+    expect(v.schema_version).toBe(1);
+    expect(v.agent_summary).toEqual({ complete: 5, partial: 1, failed: 0, spiral: 0 });
+    expect(Array.isArray(v.waves)).toBe(true);
+    expect(typeof v.total_agents).toBe('number');
+    expect(typeof v.total_files_changed).toBe('number');
+  });
+
+  it('accepts new-shape with empty waves array', () => {
+    const v = validateSession({ ...VALID(), waves: [], total_waves: 0 });
+    expect(v.waves).toEqual([]);
+    expect(v.total_waves).toBe(0);
+  });
+
+  it('accepts new-shape with all four agent_summary fields as zero', () => {
+    const v = validateSession({
+      ...VALID(),
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 0,
+    });
+    expect(v.agent_summary.spiral).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #304 — migrateEntry: old → new shape mapping
+// ---------------------------------------------------------------------------
+
+describe('migrateEntry — old to new shape mapping (#304)', () => {
+  it('reconstructs agent_summary from agents_complete/partial/failed scalars', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(migrated.agent_summary).toEqual({ complete: 3, partial: 1, failed: 0, spiral: 0 });
+  });
+
+  it('derives total_agents from agents_dispatched when agent_summary absent', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(migrated.total_agents).toBe(4);
+  });
+
+  it('derives total_waves from waves_completed scalar', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(migrated.total_waves).toBe(2);
+  });
+
+  it('sets waves to empty array when scalar-only record (not reconstructible)', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(Array.isArray(migrated.waves)).toBe(true);
+    expect(migrated.waves).toHaveLength(0);
+  });
+
+  it('preserves total_files_changed when already present', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(migrated.total_files_changed).toBe(8);
+  });
+
+  it('produces a record that passes validateSession', () => {
+    const migrated = migrateEntry(OLD_SHAPE());
+    expect(() => validateSession(migrated)).not.toThrow();
+    const validated = validateSession(migrated);
+    expect(validated.schema_version).toBe(1);
+  });
+
+  it('converts duration_min to duration_seconds when absent', () => {
+    const entry = { ...OLD_SHAPE(), duration_min: 30 };
+    const migrated = migrateEntry(entry);
+    expect(migrated.duration_seconds).toBe(1800);
+  });
+
+  it('converts duration_minutes to duration_seconds when absent', () => {
+    const entry = { ...OLD_SHAPE(), duration_minutes: 45 };
+    const migrated = migrateEntry(entry);
+    expect(migrated.duration_seconds).toBe(2700);
+  });
+
+  it('does not overwrite existing duration_seconds when duration_min also present', () => {
+    const entry = { ...OLD_SHAPE(), duration_min: 30, duration_seconds: 999 };
+    const migrated = migrateEntry(entry);
+    expect(migrated.duration_seconds).toBe(999);
+  });
+
+  it('applies head_ref → branch alias via normalizeSession', () => {
+    const entry = { ...OLD_SHAPE(), head_ref: 'feature/foo' };
+    const migrated = migrateEntry(entry);
+    expect(migrated.branch).toBe('feature/foo');
+  });
+
+  it('preserves all original old-shape fields (additive migration — no information lost)', () => {
+    const old = OLD_SHAPE();
+    const migrated = migrateEntry(old);
+    expect(migrated.agents_dispatched).toBe(4);
+    expect(migrated.agents_complete).toBe(3);
+    expect(migrated.agents_partial).toBe(1);
+    expect(migrated.agents_failed).toBe(0);
+    expect(migrated.waves_completed).toBe(2);
+  });
+
+  it('throws TypeError on non-object input', () => {
+    expect(() => migrateEntry(null)).toThrow(TypeError);
+    expect(() => migrateEntry('nope')).toThrow(TypeError);
+    expect(() => migrateEntry([1, 2])).toThrow(TypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #304 — migrateEntry idempotency: already-canonical records survive intact
+// ---------------------------------------------------------------------------
+
+describe('migrateEntry — idempotency (#304)', () => {
+  it('running migrateEntry on a new-shape record is a no-op (result validates identically)', () => {
+    const canonical = VALID();
+    const once = migrateEntry(canonical);
+    const twice = migrateEntry(once);
+    // Both must validate without error
+    const v1 = validateSession(once);
+    const v2 = validateSession(twice);
+    expect(v1.session_id).toBe(canonical.session_id);
+    expect(v2.session_id).toBe(canonical.session_id);
+    expect(v1.agent_summary).toEqual(v2.agent_summary);
+    expect(v1.total_agents).toBe(v2.total_agents);
+    expect(v1.total_files_changed).toBe(v2.total_files_changed);
+  });
+
+  it('running migrateEntry twice on an old-shape record yields the same canonical form', () => {
+    const old = OLD_SHAPE();
+    const once = migrateEntry(old);
+    const twice = migrateEntry(once);
+    const v1 = validateSession(once);
+    const v2 = validateSession(twice);
+    expect(v1.agent_summary).toEqual(v2.agent_summary);
+    expect(v1.total_agents).toBe(v2.total_agents);
+    expect(v1.schema_version).toBe(1);
+    expect(v2.schema_version).toBe(1);
+  });
+
+  it('migrateEntry on a record with schema_version:1 does not change schema_version', () => {
+    const entry = { ...VALID(), schema_version: 1 };
+    const migrated = migrateEntry(entry);
+    // schema_version preserved by validateSession stamp
+    const validated = validateSession(migrated);
+    expect(validated.schema_version).toBe(1);
   });
 });

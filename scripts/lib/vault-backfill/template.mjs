@@ -65,14 +65,32 @@ export function pathToSlug(repoPath) {
 }
 
 /**
+ * Produce a safe YAML 1.2 scalar for a user-supplied string value.
+ *
+ * Uses JSON.stringify (YAML 1.2 is a superset of JSON) which:
+ *   - wraps the value in double quotes
+ *   - escapes newlines (\n), carriage returns (\r), tabs (\t), backslashes, and double quotes
+ *
+ * This prevents YAML injection via embedded newlines or special characters
+ * in externally-sourced fields such as `owner` (GitLab API) and `gitlabPath`
+ * (manifest file). CWE-1336 / Issue #247.
+ *
+ * @param {string} value
+ * @returns {string} — a JSON-encoded double-quoted YAML scalar, e.g. "alice"
+ */
+export function yamlScalar(value) {
+  return JSON.stringify(String(value));
+}
+
+/**
  * Render .vault.yaml content from the canonical template.
  *
  * Substitutions:
  *   {{PROJECT_NAME}} → humanName   (metadata.name, summary placeholder)
  *   metadata.slug    → slug         (overwrite the {{PROJECT_NAME}} echo on slug field)
  *   tier             → manifest tier
- *   owner            → fetched owner
- *   {{GITLAB_GROUP}}/{{PROJECT_NAME}} → full gitlab path_with_namespace
+ *   owner            → fetched owner  [sanitised via yamlScalar]
+ *   {{GITLAB_GROUP}}/{{PROJECT_NAME}} → full gitlab path_with_namespace  [sanitised via yamlScalar]
  *
  * @param {{ humanName: string, slug: string, tier: string, gitlabPath: string, owner: string }} opts
  * @param {string} templateContent - loaded template string
@@ -84,20 +102,29 @@ export function renderTemplate({ humanName, slug, tier, gitlabPath, owner }, tem
     templateContent;
 
   // {{PROJECT_NAME}} → humanName (appears in metadata.name, summary)
+  // humanName is derived from a manifest-validated slug ([a-z0-9-]) so it only
+  // contains word characters and spaces — no YAML-special characters.
   out = out.replace(/\{\{PROJECT_NAME\}\}/g, humanName);
 
   // metadata.slug line: after PROJECT_NAME substitution it reads slug: "humanName" — fix to actual slug
+  // slug is validated to /^[a-z0-9]+(?:-[a-z0-9]+)*$/ by validateManifest — safe to embed bare.
   out = out.replace(/^(\s*slug:\s*)"[^"]*"(.*)$/m, `$1"${slug}"$2`);
 
   // tier: active → tier: <manifest tier>
+  // tier is a closed enum (top|active|archived) — safe to embed bare.
   out = out.replace(/^(\s*tier:\s*)active(.*)$/m, `$1${tier}$2`);
 
-  // owner field
-  out = out.replace(/^(\s*owner:\s*)\S+(.*)$/m, `$1${owner}$2`);
+  // owner field — value comes from GitLab API (externally controlled).
+  // Use yamlScalar() to produce a quoted scalar, preventing newline injection (CWE-1336, #247).
+  // The template has a bare unquoted owner value (e.g. `owner: bernhard`);
+  // the regex replaces only the bare value token, preserving any trailing comment.
+  out = out.replace(/^(\s*owner:\s*)\S+(.*)$/m, `$1${yamlScalar(owner)}$2`);
 
   // spec.links.gitlab — template uses {{GITLAB_GROUP}}/{{PROJECT_NAME}};
-  // after PROJECT_NAME substitution: {{GITLAB_GROUP}}/humanName — replace both
-  out = out.replace(/\{\{GITLAB_GROUP\}\}\/[^\n"]+/g, gitlabPath);
+  // after PROJECT_NAME substitution the token reads {{GITLAB_GROUP}}/humanName, still inside "...".
+  // gitlabPath comes from the manifest `path` field which is not validated for YAML-special chars.
+  // Replace the whole "..." quoted token with yamlScalar(gitlabPath) to prevent injection (#247).
+  out = out.replace(/"?\{\{GITLAB_GROUP\}\}\/[^\n"]*"?/g, yamlScalar(gitlabPath));
 
   return out;
 }

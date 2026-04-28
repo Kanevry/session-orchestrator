@@ -41,6 +41,112 @@ import { pathMatchesPattern } from './hardening.mjs';
  */
 
 // ---------------------------------------------------------------------------
+// Primary export — helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads and validates the worktree meta file for a given suffix.
+ * Returns `{ ok: true, baseSha }` on success, or `{ ok: false, result }` on any failure.
+ *
+ * @param {string} suffix
+ * @param {string} cwd
+ * @returns {Promise<{ok: true, baseSha: string} | {ok: false, result: FreshnessResult}>}
+ */
+async function _readAndValidateMeta(suffix, cwd) {
+  const metaPath = path.join(cwd, WORKTREE_META_DIR, `${suffix}.json`);
+  let meta;
+  try {
+    const raw = await fs.readFile(metaPath, 'utf8');
+    meta = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof SyntaxError
+      ? `meta file corrupted for '${suffix}': ${err.message}`
+      : `no meta for suffix '${suffix}' — cannot validate freshness`;
+    return { ok: false, result: _noMeta(null, null, message) };
+  }
+
+  if (!meta || typeof meta.baseSha !== 'string' || typeof meta.branch !== 'string') {
+    return {
+      ok: false,
+      result: _noMeta(null, null, `meta file corrupted for '${suffix}': missing required fields (baseSha, branch)`),
+    };
+  }
+
+  return { ok: true, baseSha: meta.baseSha };
+}
+
+/**
+ * Resolves the current SHA of `targetBranch` via `git rev-parse`.
+ * Returns `{ ok: true, currentSha }` on success, or `{ ok: false, result }` on failure.
+ *
+ * @param {string} suffix
+ * @param {string} targetBranch
+ * @param {string} cwd
+ * @param {string} baseSha  (included in error message only)
+ * @returns {{ok: true, currentSha: string} | {ok: false, result: FreshnessResult}}
+ */
+function _resolveCurrentSha(suffix, targetBranch, cwd, baseSha) {
+  try {
+    const currentSha = execFileSync('git', ['rev-parse', targetBranch], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return { ok: true, currentSha };
+  } catch (err) {
+    return {
+      ok: false,
+      result: _noMeta(
+        baseSha,
+        null,
+        `no meta for suffix '${suffix}' — cannot validate freshness: failed to resolve '${targetBranch}': ${err.message}`
+      ),
+    };
+  }
+}
+
+/**
+ * Builds the FreshnessResult for a diverged worktree (steps 5–6).
+ * Computes overlap between drift files and agent scope; decides 'block' or 'warn'.
+ *
+ * @param {string}        targetBranch
+ * @param {DriftCommit[]} driftCommits
+ * @param {string[]|null} agentScope
+ * @param {string}        baseSha
+ * @param {string}        currentSha
+ * @returns {FreshnessResult}
+ */
+function _freshnessResultForDivergence(targetBranch, driftCommits, agentScope, baseSha, currentSha) {
+  const n = driftCommits.length;
+  const commitSuffix = `${n} commit${n === 1 ? '' : 's'} since worktree creation`;
+
+  if (agentScope === null || agentScope.length === 0) {
+    return {
+      fresh: false, baseSha, currentSha, driftCommits, overlap: [],
+      decision: 'warn',
+      message: `${targetBranch} advanced by ${commitSuffix}; no agent-scope overlap — coordinator review recommended`,
+    };
+  }
+
+  const driftFiles = _uniqueDriftFiles(driftCommits);
+  const overlap = driftFiles.filter((file) => agentScope.some((pat) => pathMatchesPattern(file, pat)));
+
+  if (overlap.length > 0) {
+    return {
+      fresh: false, baseSha, currentSha, driftCommits, overlap,
+      decision: 'block',
+      message: `${targetBranch} advanced by ${commitSuffix}; overlap on ${overlap.join(', ')} — agent's copy would overwrite coordinator work`,
+    };
+  }
+
+  return {
+    fresh: false, baseSha, currentSha, driftCommits, overlap: [],
+    decision: 'warn',
+    message: `${targetBranch} advanced by ${commitSuffix}; no agent-scope overlap — coordinator review recommended`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Primary export
 // ---------------------------------------------------------------------------
 
@@ -68,66 +174,17 @@ export async function checkWorktreeBaseRefFresh({
   agentScope = null,
   cwd = process.cwd(),
 } = {}) {
-  // ------------------------------------------------------------------
-  // 1. Read meta file — resolve path relative to `cwd` so the caller's
-  //    repo root governs (consistent with the git commands below).
-  // ------------------------------------------------------------------
-  const metaPath = path.join(cwd, WORKTREE_META_DIR, `${suffix}.json`);
-  let meta;
+  // 1. Read and validate meta file
+  const metaResult = await _readAndValidateMeta(suffix, cwd);
+  if (!metaResult.ok) return metaResult.result;
+  const { baseSha } = metaResult;
 
-  try {
-    const raw = await fs.readFile(metaPath, 'utf8');
-    meta = JSON.parse(raw);
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      return _noMeta(
-        null,
-        null,
-        `meta file corrupted for '${suffix}': ${err.message}`
-      );
-    }
-    // ENOENT or any other read error → no meta
-    return _noMeta(
-      null,
-      null,
-      `no meta for suffix '${suffix}' — cannot validate freshness`
-    );
-  }
-
-  // Validate required fields
-  if (!meta || typeof meta.baseSha !== 'string' || typeof meta.branch !== 'string') {
-    return _noMeta(
-      null,
-      null,
-      `meta file corrupted for '${suffix}': missing required fields (baseSha, branch)`
-    );
-  }
-
-  const { baseSha } = meta;
-
-  // ------------------------------------------------------------------
   // 2. Resolve current sha of target branch
-  // ------------------------------------------------------------------
-  let currentSha;
-  try {
-    currentSha = execFileSync('git', ['rev-parse', targetBranch], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-  } catch (err) {
-    return _noMeta(
-      baseSha,
-      null,
-      `no meta for suffix '${suffix}' — cannot validate freshness: failed to resolve '${targetBranch}': ${err.message}`
-    );
-  }
+  const shaResult = _resolveCurrentSha(suffix, targetBranch, cwd, baseSha);
+  if (!shaResult.ok) return shaResult.result;
+  const { currentSha } = shaResult;
 
-  // ------------------------------------------------------------------
   // 3. Fresh check
-  // ------------------------------------------------------------------
-  const sha7 = currentSha.slice(0, 7);
-
   if (baseSha === currentSha) {
     return {
       fresh: true,
@@ -136,13 +193,11 @@ export async function checkWorktreeBaseRefFresh({
       driftCommits: [],
       overlap: [],
       decision: 'pass',
-      message: `base-ref fresh (${targetBranch} at ${sha7})`,
+      message: `base-ref fresh (${targetBranch} at ${currentSha.slice(0, 7)})`,
     };
   }
 
-  // ------------------------------------------------------------------
   // 4. Compute drift commits: baseSha..currentSha
-  // ------------------------------------------------------------------
   let driftCommits;
   try {
     driftCommits = _parseDriftLog(cwd, baseSha, currentSha);
@@ -155,57 +210,8 @@ export async function checkWorktreeBaseRefFresh({
     );
   }
 
-  const n = driftCommits.length;
-
-  // ------------------------------------------------------------------
-  // 5. Overlap computation
-  // ------------------------------------------------------------------
-  if (agentScope === null || agentScope.length === 0) {
-    return {
-      fresh: false,
-      baseSha,
-      currentSha,
-      driftCommits,
-      overlap: [],
-      decision: 'warn',
-      message:
-        `${targetBranch} advanced by ${n} commit${n === 1 ? '' : 's'} since worktree creation; ` +
-        `no agent-scope overlap — coordinator review recommended`,
-    };
-  }
-
-  // Collect all files touched in drift, deduplicated
-  const driftFiles = _uniqueDriftFiles(driftCommits);
-
-  const overlap = driftFiles.filter((file) =>
-    agentScope.some((pat) => pathMatchesPattern(file, pat))
-  );
-
-  if (overlap.length > 0) {
-    return {
-      fresh: false,
-      baseSha,
-      currentSha,
-      driftCommits,
-      overlap,
-      decision: 'block',
-      message:
-        `${targetBranch} advanced by ${n} commit${n === 1 ? '' : 's'} since worktree creation; ` +
-        `overlap on ${overlap.join(', ')} — agent's copy would overwrite coordinator work`,
-    };
-  }
-
-  return {
-    fresh: false,
-    baseSha,
-    currentSha,
-    driftCommits,
-    overlap: [],
-    decision: 'warn',
-    message:
-      `${targetBranch} advanced by ${n} commit${n === 1 ? '' : 's'} since worktree creation; ` +
-      `no agent-scope overlap — coordinator review recommended`,
-  };
+  // 5–6. Overlap computation and decision
+  return _freshnessResultForDivergence(targetBranch, driftCommits, agentScope, baseSha, currentSha);
 }
 
 // ---------------------------------------------------------------------------

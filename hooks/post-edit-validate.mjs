@@ -31,6 +31,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('post-edit-validate')) process.exit(0);
+
 import { readStdin } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { findScopeFile, gateEnabled } from '../scripts/lib/hardening.mjs';

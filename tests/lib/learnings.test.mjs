@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   validateLearning,
   normalizeLearning,
+  migrateLegacyLearning,
   readLearnings,
   appendLearning,
   rewriteLearnings,
@@ -25,6 +26,7 @@ import {
   ValidationError,
   VALID_SCOPES,
   CURRENT_ANONYMIZATION_VERSION,
+  CURRENT_SCHEMA_VERSION,
 } from '../../scripts/lib/learnings.mjs';
 
 const LEGACY = () => ({
@@ -425,5 +427,141 @@ describe('filter helpers', () => {
 
   it('filterByType', () => {
     expect(filterByType(set, 'hardware-pattern').map((e) => e.id).sort()).toEqual(['b', 'c']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — #303 schema drift fix
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — canonical record passes through unchanged', () => {
+  it('returns a canonical schema_version:1 record unmodified (except deleting stale aliases)', () => {
+    const canonical = LEGACY(); // already has insight + id + all required fields
+    canonical.schema_version = 1;
+    const result = migrateLegacyLearning(canonical);
+    expect(result.id).toBe(canonical.id);
+    expect(result.insight).toBe(canonical.insight);
+    expect(result.schema_version).toBe(1);
+    expect(result).not.toHaveProperty('description');
+    expect(result).not.toHaveProperty('recommendation');
+  });
+
+  it('migrated canonical record passes validateLearning without throwing', () => {
+    const canonical = { ...LEGACY(), schema_version: 1 };
+    const migrated = migrateLegacyLearning(canonical);
+    expect(() => validateLearning(migrated)).not.toThrow();
+  });
+});
+
+describe('migrateLegacyLearning — missing id is auto-generated', () => {
+  it('backfills a UUID when id is absent', () => {
+    const noId = { ...LEGACY() };
+    delete noId.id;
+    const result = migrateLegacyLearning(noId);
+    expect(typeof result.id).toBe('string');
+    // UUID v4 pattern
+    expect(result.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
+  it('each call generates a different UUID for distinct records', () => {
+    const noId = { ...LEGACY() };
+    delete noId.id;
+    const a = migrateLegacyLearning({ ...noId });
+    const b = migrateLegacyLearning({ ...noId });
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it('record with backfilled id passes validateLearning', () => {
+    const noId = { ...LEGACY(), schema_version: 1 };
+    delete noId.id;
+    const migrated = migrateLegacyLearning(noId);
+    expect(() => validateLearning(migrated)).not.toThrow();
+  });
+});
+
+describe('migrateLegacyLearning — description alias → insight', () => {
+  it('renames description to insight when insight is absent', () => {
+    const descRecord = { ...LEGACY() };
+    delete descRecord.insight;
+    descRecord.description = 'some description text';
+    const result = migrateLegacyLearning(descRecord);
+    expect(result.insight).toBe('some description text');
+    expect(result).not.toHaveProperty('description');
+  });
+
+  it('migrated description record passes validateLearning', () => {
+    const descRecord = { ...LEGACY(), schema_version: 1 };
+    delete descRecord.insight;
+    descRecord.description = 'docker-compose env: blocks DO NOT auto-inherit host env vars';
+    const migrated = migrateLegacyLearning(descRecord);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrated.insight).toBe('docker-compose env: blocks DO NOT auto-inherit host env vars');
+  });
+});
+
+describe('migrateLegacyLearning — recommendation alias → insight', () => {
+  it('renames recommendation to insight when insight is absent', () => {
+    const recRecord = { ...LEGACY() };
+    delete recRecord.insight;
+    recRecord.recommendation = 'Always use .schema(X).from(Y) for non-public schemas';
+    const result = migrateLegacyLearning(recRecord);
+    expect(result.insight).toBe('Always use .schema(X).from(Y) for non-public schemas');
+    expect(result).not.toHaveProperty('recommendation');
+  });
+
+  it('migrated recommendation record passes validateLearning', () => {
+    const recRecord = { ...LEGACY(), schema_version: 1 };
+    delete recRecord.insight;
+    recRecord.recommendation = 'When querying a non-public schema with Supabase JS client, always use .schema(X).from(Y).';
+    const migrated = migrateLegacyLearning(recRecord);
+    expect(() => validateLearning(migrated)).not.toThrow();
+  });
+});
+
+describe('migrateLegacyLearning — schema_version backfill', () => {
+  it('stamps schema_version:1 when field is absent', () => {
+    const legacy = { ...LEGACY() };
+    delete legacy.schema_version;
+    const result = migrateLegacyLearning(legacy);
+    expect(result.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('stamps schema_version:1 when field is null', () => {
+    const legacy = { ...LEGACY(), schema_version: null };
+    const result = migrateLegacyLearning(legacy);
+    expect(result.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('preserves existing schema_version:1 (idempotent)', () => {
+    const v1 = { ...LEGACY(), schema_version: 1 };
+    const result = migrateLegacyLearning(v1);
+    expect(result.schema_version).toBe(1);
+  });
+});
+
+describe('migrateLegacyLearning — idempotency', () => {
+  it('running migration twice on a legacy record produces the same output as once', () => {
+    const legacy = { ...LEGACY() };
+    delete legacy.id;
+    delete legacy.insight;
+    legacy.description = 'idempotent test description';
+    delete legacy.schema_version;
+
+    const once = migrateLegacyLearning(legacy);
+    const twice = migrateLegacyLearning(once);
+
+    expect(twice.insight).toBe(once.insight);
+    expect(twice.schema_version).toBe(once.schema_version);
+    expect(twice.id).toBe(once.id); // same id preserved on second pass
+    expect(twice).not.toHaveProperty('description');
+  });
+});
+
+describe('validateLearning — missing id is rejected (canonical write gate)', () => {
+  it('throws ValidationError when id field is missing', () => {
+    const noId = { ...LEGACY(), schema_version: 1 };
+    delete noId.id;
+    expect(() => validateLearning(noId)).toThrow(ValidationError);
+    expect(() => validateLearning(noId)).toThrow(/missing required field.*id/);
   });
 });

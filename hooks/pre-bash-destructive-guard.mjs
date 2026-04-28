@@ -32,6 +32,10 @@ import { readJson } from '../scripts/lib/common.mjs';
 import fs, { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+
 // Module-level policy cache (issue #250). Safe because each hook invocation runs as
 // an isolated Node subprocess — state is fresh per process, never shared across calls.
 // Cache is invalidated on:

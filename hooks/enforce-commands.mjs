@@ -22,6 +22,10 @@
  * SECURITY-REQ-08: scope file read exactly once per invocation.
  */
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('enforce-commands')) process.exit(0);
+
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import {

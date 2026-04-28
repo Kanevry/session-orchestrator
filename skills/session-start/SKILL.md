@@ -392,11 +392,13 @@ Group issues by:
 3. **Pencil design status**: if `pencil` is configured, verify the `.pen` file exists at the configured path. Report: "Pencil design configured at [path] — design-code alignment reviews will run after Impl-Core and Impl-Polish waves." If file not found, warn: "Pencil path configured but file not found at [path]."
 4. **Plugin freshness**: Determine the session-orchestrator plugin directory (navigate up from this skill's base directory to the plugin root). Run `git -C <plugin-dir> log -1 --format="%ci"` to get the last commit date. If older than `plugin-freshness-days` (default: 30) days, flag a warning in the Session Overview: `"⚠ Session Orchestrator plugin last updated [N] days ago — consider pulling the latest version."` Non-blocking — present in overview, don't halt.
 
-   Additionally, if `.orchestrator/bootstrap.lock` exists in the current repo, invoke the bootstrap-lock-freshness probe (`scripts/lib/bootstrap-lock-freshness.mjs`) to check lock age and plugin-version drift. When severity is `warn` or `alert`, render an additional banner alongside the plugin-freshness warning:
-   - **warn** (age 30–89d or version mismatch): `"⚠ bootstrap.lock: age=<N>d, plugin-version=<lock-ver> (current=<plugin-ver>) — consider re-running /bootstrap --retroactive to refresh."`
-   - **alert** (age ≥90d, unparseable, or missing): `"⚠ bootstrap.lock: <message> — re-run /bootstrap --retroactive is strongly recommended."`
+   Additionally, if `.orchestrator/bootstrap.lock` exists in the current repo, invoke the bootstrap-lock-freshness probe (`scripts/lib/bootstrap-lock-freshness.mjs`) to check lock age and plugin-version drift. Pass `currentPluginVersion` read from `$PLUGIN_ROOT/package.json` so version comparison is live. When severity is `warn` or `alert`, render an additional banner alongside the plugin-freshness warning:
+   - **warn** (age 30–89d or non-parseable version mismatch): `"⚠ bootstrap.lock: age=<N>d, plugin-version=<lock-ver> (current=<plugin-ver>) — consider re-running /bootstrap --retroactive to refresh."`
+   - **alert** (age ≥90d, unparseable, missing, or major plugin-version mismatch): `"⚠ bootstrap.lock: <message> — re-run /bootstrap --retroactive is strongly recommended."`
+   - **info-only version mismatch** (patch or minor version only): `"ℹ bootstrap.lock: plugin-version=<lock-ver> (current=<plugin-ver>) — minor drift only, no action required."`
+   - **legacy lock without plugin-version** (soft signal only): `"ℹ bootstrap.lock: lock predates plugin-version field; consider /bootstrap --retroactive to refresh."`
 
-   Both banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install), skip silently.
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 
@@ -785,6 +787,48 @@ Read `presentation-format.md` in this skill directory for the output structure, 
 Present your findings following that structure. Key rules:
 - **MANDATORY: Use a structured choice flow** — AskUserQuestion on Claude Code, numbered Markdown options on Codex/Cursor
 - Always include your recommendation as the first option with "(Recommended)" in the label
+
+### Phase 8.5: Express Path Evaluation (#214)
+
+After the user confirms the session type and scope via the Q&A above, evaluate whether the **Express Path** applies before handing off to session-plan. The express path collapses the full 5-wave plan into a single coordinator-direct phase for lightweight sessions.
+
+**Activation conditions (ALL three must be true):**
+
+1. `express-path.enabled` is `true` in Session Config (default: `true` — opt-in by default, opt-out via `express-path.enabled: false`).
+2. Session type is `housekeeping` (the user confirmed `housekeeping` in Phase 8).
+3. Agreed issue scope is ≤ 3 issues AND no parallel agents are required (i.e., tasks are sequential, no wave decomposition needed).
+
+**Backward compat:** when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs as before.
+
+**Historical context:** The 13 prior coordinator-direct sessions documented in `CLAUDE.md` (2026-04 series — vault-mirror GH#31, phased-rollout #307, v3.2.0 release, etc.) were all running this pattern implicitly: no wave decomposition, coordinator executes tasks directly in sequence. This phase codifies what was already proven to work.
+
+**When Express Path activates:**
+
+Emit the following banner immediately after the Phase 8 Q&A resolves:
+
+```
+Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
+```
+
+Then **skip the handoff to session-plan entirely**. Instead, execute the agreed tasks directly as the coordinator:
+
+1. For each agreed task (in dependency order): execute as a direct coordinator action — read files, make changes, run quality checks inline.
+2. After all tasks complete, invoke `skills/session-end/SKILL.md` directly (bypass session-plan and wave-executor).
+3. Log the express-path activation in STATE.md `## Deviations` section: `Express path: N tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: N issues)`.
+
+**When Express Path does NOT activate** (conditions not met):
+
+Proceed normally to Phase 9 (session-plan handoff). The express-path evaluation is a silent no-op when any condition fails.
+
+**Condition examples:**
+
+| Scenario | Activates? | Reason |
+|---|---|---|
+| `housekeeping`, 2 issues, `express-path.enabled: true` | Yes | All 3 conditions met |
+| `housekeeping`, 4 issues, `express-path.enabled: true` | No | Scope > 3 |
+| `feature`, 2 issues, `express-path.enabled: true` | No | Not housekeeping |
+| `housekeeping`, 2 issues, `express-path.enabled: false` | No | Opted out |
+| `housekeeping`, 3 issues needing parallel agents, `express-path.enabled: true` | No | Parallel agents needed |
 
 ## Phase 9: Handoff to Session Plan
 

@@ -34,6 +34,10 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('on-session-start')) process.exit(0);
+
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';

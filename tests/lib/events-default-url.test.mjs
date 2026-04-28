@@ -1,52 +1,28 @@
 /**
  * tests/lib/events-default-url.test.mjs
  *
- * Smoke test for issue #260: `DEFAULT_EVENT_URL` refactor.
+ * Regression guard for issue #228: personal-domain default URL removal.
  *
  * Contract:
- *   - `DEFAULT_EVENT_URL` is exported from scripts/lib/events.mjs.
- *   - It is a non-empty string starting with `https://`.
- *   - hooks/on-stop.mjs imports it (no hardcoded duplicate of the URL literal
- *     lives in that hook — a regression would add a second occurrence of the
- *     `'https://events.gotzendorfer.at'` string across scripts/ + hooks/).
- *
- * The grep-count assertion ensures we keep the constant defined in exactly
- * one place (the export in events.mjs) and imported everywhere else.
+ *   - `DEFAULT_EVENT_URL` no longer exists in scripts/lib/events.mjs (#228).
+ *   - No literal `events.gotzendorfer.at` URL appears anywhere in scripts/ or hooks/.
+ *   - hooks/on-stop.mjs no longer imports DEFAULT_EVENT_URL.
+ *   - emitEvent requires both CLANK_EVENT_SECRET and CLANK_EVENT_URL to POST;
+ *     setting only CLANK_EVENT_SECRET (without a URL) is a no-op.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 
-import { DEFAULT_EVENT_URL } from '../../scripts/lib/events.mjs';
-
 // ---------------------------------------------------------------------------
-// 1. Exported constant shape
-// ---------------------------------------------------------------------------
-
-describe('DEFAULT_EVENT_URL', () => {
-  it('is exported as a non-empty string', () => {
-    expect(typeof DEFAULT_EVENT_URL).toBe('string');
-    expect(DEFAULT_EVENT_URL.length).toBeGreaterThan(0);
-  });
-
-  it('starts with https://', () => {
-    expect(DEFAULT_EVENT_URL.startsWith('https://')).toBe(true);
-  });
-
-  it('contains no trailing slash (concatenated with path suffix at call sites)', () => {
-    // Consumers append `/api/webhooks/events` — a trailing slash would produce
-    // a double-slash URL and is a regression worth guarding against.
-    expect(DEFAULT_EVENT_URL.endsWith('/')).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 2. Single-source-of-truth check — grep across scripts/ + hooks/
+// helpers
 // ---------------------------------------------------------------------------
 
 function walkMjs(dir, acc = []) {
@@ -59,7 +35,6 @@ function walkMjs(dir, acc = []) {
       continue;
     }
     if (s.isDirectory()) {
-      // Skip vendor / generated dirs
       if (entry === 'node_modules' || entry === '.git') continue;
       walkMjs(full, acc);
     } else if (entry.endsWith('.mjs')) {
@@ -69,9 +44,39 @@ function walkMjs(dir, acc = []) {
   return acc;
 }
 
-describe('DEFAULT_EVENT_URL — single source of truth', () => {
-  it('literal URL string occurs in exactly ONE .mjs file (events.mjs)', () => {
-    const literal = DEFAULT_EVENT_URL; // derived from the constant, not hardcoded
+async function importEventsWithDir(dir) {
+  process.env.CLAUDE_PROJECT_DIR = dir;
+  vi.resetModules();
+  return import('../../scripts/lib/events.mjs');
+}
+
+// ---------------------------------------------------------------------------
+// 1. DEFAULT_EVENT_URL is no longer exported (#228)
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_EVENT_URL removed (#228)', () => {
+  it('scripts/lib/events.mjs does not export DEFAULT_EVENT_URL', async () => {
+    vi.resetModules();
+    const mod = await import('../../scripts/lib/events.mjs');
+    expect(mod.DEFAULT_EVENT_URL).toBeUndefined();
+  });
+
+  it('scripts/lib/events.mjs does not contain the personal domain literal', () => {
+    const raw = readFileSync(
+      path.join(repoRoot, 'scripts', 'lib', 'events.mjs'),
+      'utf8',
+    );
+    expect(raw).not.toContain('gotzendorfer.at');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. Personal domain absent from scripts/ and hooks/ .mjs files
+// ---------------------------------------------------------------------------
+
+describe('personal domain absent from source files (#228)', () => {
+  it('no .mjs file in scripts/ or hooks/ contains "events.gotzendorfer.at"', () => {
+    const literal = 'events.gotzendorfer.at';
     const dirs = [
       path.join(repoRoot, 'scripts'),
       path.join(repoRoot, 'hooks'),
@@ -79,25 +84,72 @@ describe('DEFAULT_EVENT_URL — single source of truth', () => {
     const hits = [];
     for (const dir of dirs) {
       for (const file of walkMjs(dir)) {
-        // Skip the constant-definition file itself? No — we INCLUDE it and
-        // assert count === 1 (i.e. only events.mjs mentions the literal).
         const raw = readFileSync(file, 'utf8');
         if (raw.includes(literal)) hits.push(file);
       }
     }
-    expect(hits).toHaveLength(1);
-    // Normalize path separators — Windows uses `\`, the regex uses `/`.
-    expect(hits[0].replaceAll(path.sep, '/')).toMatch(/scripts\/lib\/events\.mjs$/);
+    expect(hits).toHaveLength(0);
   });
+});
 
-  it('hooks/on-stop.mjs imports DEFAULT_EVENT_URL (not redeclares the literal)', () => {
+// ---------------------------------------------------------------------------
+// 3. hooks/on-stop.mjs no longer imports DEFAULT_EVENT_URL
+// ---------------------------------------------------------------------------
+
+describe('hooks/on-stop.mjs migration (#228)', () => {
+  it('does not import DEFAULT_EVENT_URL from events.mjs', () => {
     const raw = readFileSync(
       path.join(repoRoot, 'hooks', 'on-stop.mjs'),
       'utf8',
     );
-    expect(raw).toContain('DEFAULT_EVENT_URL');
-    expect(raw).toContain("from '../scripts/lib/events.mjs'");
-    // Negative: the literal URL must NOT appear hardcoded in the hook.
-    expect(raw.includes(DEFAULT_EVENT_URL)).toBe(false);
+    expect(raw).not.toContain('DEFAULT_EVENT_URL');
+  });
+
+  it('does not contain the personal domain literal', () => {
+    const raw = readFileSync(
+      path.join(repoRoot, 'hooks', 'on-stop.mjs'),
+      'utf8',
+    );
+    expect(raw).not.toContain('gotzendorfer.at');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. emitEvent: CLANK_EVENT_SECRET alone (no URL) must NOT call fetch
+// ---------------------------------------------------------------------------
+
+describe('emitEvent — no fetch when only CLANK_EVENT_SECRET is set (no URL)', () => {
+  let tmpDir;
+  const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-nourltest-'));
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origClaudeProjectDir === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+    }
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does not call fetch when CLANK_EVENT_SECRET is set but CLANK_EVENT_URL is absent', async () => {
+    process.env.CLANK_EVENT_SECRET = 'test-secret-token';
+    // CLANK_EVENT_URL intentionally not set — no personal-domain default fallback
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('{}', { status: 200 }),
+    );
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    await emitEvent('no.url.event', { x: 1 });
+    await new Promise((r) => setImmediate(r));
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

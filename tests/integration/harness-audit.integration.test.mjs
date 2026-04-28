@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -41,6 +41,12 @@ const EXPECTED_RUBRIC_VERSION = rubricVersionMatch ? rubricVersionMatch[1] : nul
 /**
  * Copy the fixture directory to a fresh tmpdir using cp -R (POSIX) or
  * xcopy/robocopy fallback on Windows. Returns the path to the copy.
+ *
+ * After copying, any stale audit.jsonl in the tmpdir is removed. The script
+ * creates this file on every run; if a developer ran harness-audit.mjs
+ * directly inside the fixture directory (or a prior test run leaked into it),
+ * the copy would have a non-empty audit.jsonl and the JSONL append-count
+ * test (test 6) would fail with an unexpected line count. (#222)
  */
 function copyFixtureToTmpdir() {
   const dest = mkdtempSync(join(tmpdir(), 'so-harness-audit-test-'));
@@ -59,18 +65,30 @@ function copyFixtureToTmpdir() {
     }
   }
 
+  // Remove stale audit.jsonl if it was accidentally copied from a polluted fixture dir.
+  const staleAuditJsonl = join(dest, '.orchestrator', 'metrics', 'audit.jsonl');
+  if (existsSync(staleAuditJsonl)) {
+    unlinkSync(staleAuditJsonl);
+  }
+
   return dest;
 }
 
 /**
  * Run harness-audit.mjs with cwd set to the given root.
  * Returns the spawnSync result.
+ *
+ * maxBuffer is set to 16 MB to prevent truncation on CI runners where the
+ * default pipe buffer (historically as low as 8 KiB in some environments)
+ * would silently truncate the audit JSON — which now exceeds 12 KB after
+ * the category-split (#285). See issue #222.
  */
 function runAudit(cwd) {
   return spawnSync('node', [SCRIPT_PATH], {
     cwd,
     encoding: 'utf8',
     timeout: 18000,
+    maxBuffer: 16 * 1024 * 1024, // 16 MB — audit JSON is ~12-50 KB; future-proof
   });
 }
 

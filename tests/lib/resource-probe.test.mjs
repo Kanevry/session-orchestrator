@@ -6,6 +6,8 @@ import {
   countProcessMatches,
   parseSwapUsageOutput,
   parseMemoryPressureOutput,
+  parseEtimeToMinutes,
+  countZombieProcesses,
 } from '../../scripts/lib/resource-probe.mjs';
 
 const DEFAULT_THRESHOLDS = {
@@ -231,6 +233,71 @@ describe('resource-probe', () => {
     });
   });
 
+  describe('evaluate() — zombie signal (#178)', () => {
+    const baseSnapshot = {
+      ram_free_gb: 8,
+      ram_used_pct: 40,
+      cpu_load_1m: 1.2,
+      cpu_load_pct: 30,
+      claude_processes_count: 3,
+      codex_processes_count: 0,
+      other_node_processes: 5,
+      swap_used_mb: null,
+      memory_pressure_pct_free: null,
+    };
+    const thresholdsWithZombie = {
+      ...DEFAULT_THRESHOLDS,
+      'zombie-threshold-min': 30,
+    };
+
+    it('zombie_processes_count >= 1 AND claude > 0 → escalates to warn', () => {
+      const snap = { ...baseSnapshot, zombie_processes_count: 2 };
+      const result = evaluate(snap, thresholdsWithZombie);
+      expect(result.verdict).toBe('warn');
+      expect(result.reasons.some((r) => r.includes('2 zombie') && r.includes('30 min'))).toBe(true);
+    });
+
+    it('zombie_processes_count >= 1 BUT claude_processes_count = 0 → no escalation', () => {
+      const snap = { ...baseSnapshot, claude_processes_count: 0, zombie_processes_count: 5 };
+      const result = evaluate(snap, thresholdsWithZombie);
+      expect(result.verdict).toBe('green');
+      expect(result.reasons.some((r) => r.includes('zombie'))).toBe(false);
+    });
+
+    it('zombie_processes_count = 0 → no escalation', () => {
+      const snap = { ...baseSnapshot, zombie_processes_count: 0 };
+      const result = evaluate(snap, thresholdsWithZombie);
+      expect(result.verdict).toBe('green');
+    });
+
+    it('zombie_processes_count = null → feature disabled, no escalation', () => {
+      const snap = { ...baseSnapshot, zombie_processes_count: null };
+      const result = evaluate(snap, thresholdsWithZombie);
+      expect(result.verdict).toBe('green');
+    });
+
+    it('defaults applied when zombie-threshold-min absent — zombie field treated as null', () => {
+      const snap = { ...baseSnapshot, zombie_processes_count: null };
+      // Thresholds without zombie-threshold-min key
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+    });
+
+    it('zombie warn does not override a higher existing verdict (degraded stays degraded)', () => {
+      // Swap at degraded level + zombies
+      const snap = {
+        ...baseSnapshot,
+        swap_used_mb: 2500,
+        memory_pressure_pct_free: null,
+        zombie_processes_count: 3,
+      };
+      const result = evaluate(snap, thresholdsWithZombie);
+      // degraded from swap + warn from zombie → degraded wins via bumpVerdict
+      expect(result.verdict).toBe('degraded');
+      expect(result.reasons.some((r) => r.includes('zombie'))).toBe(true);
+    });
+  });
+
   describe('evaluate() — swap and memory_pressure signals', () => {
     const baseSnapshot = {
       ram_free_gb: 8,
@@ -341,4 +408,118 @@ describe('resource-probe', () => {
       expect(result.recommended_agents_per_wave_cap).toBe(null);
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Zombie detection (#178) — parseEtimeToMinutes + countZombieProcesses + probe shape
+// ---------------------------------------------------------------------------
+
+describe('parseEtimeToMinutes()', () => {
+  it('parses MM:SS format', () => {
+    expect(parseEtimeToMinutes('05:30')).toBe(5);
+  });
+
+  it('parses HH:MM:SS format', () => {
+    expect(parseEtimeToMinutes('02:15:00')).toBe(135);
+  });
+
+  it('parses DD-HH:MM:SS format', () => {
+    expect(parseEtimeToMinutes('1-02:30:00')).toBe(1590); // 1440 + 150
+  });
+
+  it('parses DD-MM:SS (no hours component)', () => {
+    // "1-05:00" → days=1, hours=0, mins=5
+    expect(parseEtimeToMinutes('1-05:00')).toBe(1445);
+  });
+
+  it('returns null for empty string', () => {
+    expect(parseEtimeToMinutes('')).toBe(null);
+  });
+
+  it('returns null for non-string input', () => {
+    expect(parseEtimeToMinutes(123)).toBe(null);
+  });
+
+  it('returns null for garbage string', () => {
+    expect(parseEtimeToMinutes('not-a-time')).toBe(null);
+  });
+});
+
+describe('countZombieProcesses()', () => {
+  // ps -A -o pid,comm,etime,%cpu output (header + rows)
+  const makePsOutput = (rows) =>
+    ['  PID COMM             ELAPSED  %CPU', ...rows].join('\n');
+
+  it('counts claude process older than threshold with idle CPU', () => {
+    const output = makePsOutput([
+      '  101 claude           01:00:00   0.0',  // 60 min, 0% CPU → zombie at threshold=30
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(1);
+  });
+
+  it('does not count claude process younger than threshold', () => {
+    const output = makePsOutput([
+      '  102 claude           10:00   0.0',  // 10 min < 30 threshold
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(0);
+  });
+
+  it('does not count claude process with active CPU', () => {
+    const output = makePsOutput([
+      '  103 claude           01:00:00  45.0',  // old but busy
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(0);
+  });
+
+  it('counts node process older than threshold with idle CPU', () => {
+    const output = makePsOutput([
+      '  104 node             02:00:00   0.5',  // 120 min, 0.5% → at default maxCpuPct=1.0
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(1);
+  });
+
+  it('does not count non-claude/node processes', () => {
+    const output = makePsOutput([
+      '  105 bash             05:00:00   0.0',  // old idle bash — not zombie candidate
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(0);
+  });
+
+  it('counts multiple zombie candidates', () => {
+    const output = makePsOutput([
+      '  106 claude           01:00:00   0.0',
+      '  107 node             02:00:00   0.0',
+      '  108 claude           00:05:00  55.0',  // active — not zombie
+    ]);
+    expect(countZombieProcesses(output, 30)).toBe(2);
+  });
+
+  it('returns null when psOutput is null', () => {
+    expect(countZombieProcesses(null, 30)).toBe(null);
+  });
+
+  it('returns 0 for empty output (header only)', () => {
+    const output = makePsOutput([]);
+    expect(countZombieProcesses(output, 30)).toBe(0);
+  });
+});
+
+describe('probe() — zombie_processes_count field (#178)', () => {
+  it('snapshot shape includes zombie_processes_count when skipProcessCounts=true → null', async () => {
+    const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
+    expect(Object.prototype.hasOwnProperty.call(s, 'zombie_processes_count')).toBe(true);
+    expect(s.zombie_processes_count).toBe(null);
+  });
+
+  it('zombie_processes_count is null when zombieThresholdMin not provided', async () => {
+    const s = await probe({ skipProcessCounts: false, skipExtendedSignals: true });
+    // No zombieThresholdMin → feature disabled → null
+    expect(s.zombie_processes_count).toBe(null);
+  }, 3000);
+
+  it('zombie_processes_count is number|null when zombieThresholdMin is provided', async () => {
+    const s = await probe({ skipExtendedSignals: true, zombieThresholdMin: 30 });
+    const isValid = (v) => v === null || (typeof v === 'number' && v >= 0);
+    expect(isValid(s.zombie_processes_count)).toBe(true);
+  }, 3000);
 });

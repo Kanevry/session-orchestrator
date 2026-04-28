@@ -521,7 +521,23 @@ git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || ech
 
 > **VCS Reference:** Use CLI commands per the "Common CLI Commands" section of the gitlab-ops skill.
 
-1. **Close resolved issues**: Use the issue close and note commands per the "Common CLI Commands" section of the gitlab-ops skill. Note: some VCS platforms require separate note and close commands.
+1. **Close resolved issues**: Before closing each issue, strip `status:*` workflow labels using `stripStatusLabels` from `scripts/lib/issue-close-strip-labels.mjs` (#308). A closed issue carrying `status:in-progress` or `status:ready` skews dashboard filters and discovery heuristics. Then close and add a note using the issue close and note commands per the "Common CLI Commands" section of the gitlab-ops skill. Note: some VCS platforms require separate note and close commands.
+
+   ```js
+   import { stripStatusLabels } from '${PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs';
+
+   // For each resolved issue IID:
+   const { stripped, error } = await stripStatusLabels({ issueId: iid, vcs: '<from Session Config>' });
+   if (error) {
+     console.warn(`⚠ label strip failed for #${iid}: ${error} — proceeding with close`);
+   } else if (stripped.length) {
+     console.log(`Stripped ${stripped.join(', ')} from #${iid}`);
+   }
+   // then: glab issue close <iid> / gh issue close <iid>
+   ```
+
+   The call is idempotent: if the issue has no `status:*` labels, no update CLI call is made. Failures from `stripStatusLabels` are non-fatal — log and proceed with close.
+
 2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
 3. **Create carryover issues**: for partially-done work (from Phase 1.2), use the issue create command with appropriate labels
 

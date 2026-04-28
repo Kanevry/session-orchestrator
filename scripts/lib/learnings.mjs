@@ -2,31 +2,41 @@
  * learnings.mjs — v3.1.0 schema-extended learnings writer/reader.
  *
  * Part of v3.1.0 Epic #157, Sub-Epic #160 (Hardware-Pattern Learnings + Privacy Tiers).
- * Issue #170 (C1).
+ * Issue #170 (C1). Schema drift fix: #303.
  *
- * Schema additions on top of the legacy 9-field shape:
- *   - scope:                 'local' | 'private' | 'public'  (default: 'local')
- *   - host_class:            string | null                   (default: null)
- *   - anonymized:            boolean                         (default: false)
- *   - anonymization_version: number | undefined              (bumped when redaction rules change)
+ * Canonical schema (schema_version: 1) — ALL required fields:
+ *   id            UUID v4 string (crypto.randomUUID())
+ *   type          string — e.g. 'fragile-file', 'effective-sizing', 'recurring-issue'
+ *   subject       string — pattern subject
+ *   insight       string — human-readable description (NOT 'description'/'recommendation')
+ *   evidence      string — data points supporting the pattern
+ *   confidence    number [0, 1]
+ *   source_session string — non-empty kebab-slug (e.g. 'main-2026-04-27-1942')
+ *   created_at    ISO 8601 string
+ *   expires_at    ISO 8601 string
+ *   schema_version 1
+ *
+ * Extended fields (optional, defaulted on read):
+ *   scope:                 'local' | 'private' | 'public'  (default: 'local')
+ *   host_class:            string | null                   (default: null)
+ *   anonymized:            boolean                         (default: false)
+ *   anonymization_version: number | undefined              (bumped when redaction rules change)
  *
  * Privacy contract (enforced by validateLearning):
  *   - scope=local   → never exported. May contain absolute paths, host info.
  *   - scope=private → in-repo only. No host identifying info.
  *   - scope=public  → export-safe. anonymized=true is REQUIRED.
  *
- * Backward compat:
- *   - Existing entries without scope/host_class/anonymized are read as
- *     {scope: 'local', host_class: null, anonymized: false}. No migration
- *     needed — the legacy JSONL lines are valid on re-read without rewrite.
- *
- * Existing writers (skills/evolve/, skills/session-end/) keep emitting
- * legacy shapes via shell. Only new writers that opt into the extended
- * fields need to use this module. The upgrade path is additive.
+ * Legacy field aliases handled by migrateLegacyLearning():
+ *   description   → insight (lrn-2026-04-25-xxx writer)
+ *   recommendation → insight (retro/supabase writer)
+ *   missing id    → crypto.randomUUID()
+ *   missing schema_version → 1
  */
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -154,6 +164,59 @@ export function validateLearning(entry) {
   }
 
   return normalized;
+}
+
+// ---------------------------------------------------------------------------
+// Migration
+// ---------------------------------------------------------------------------
+
+/**
+ * Migrate a legacy learning record to the canonical schema_version:1 shape.
+ * Idempotent — calling it on an already-canonical record is a safe no-op.
+ *
+ * Transformations applied:
+ *   - `description` → `insight` (lrn-2026-04-25-xxx writer format)
+ *   - `recommendation` → `insight` (retro/supabase writer format)
+ *   - Missing `id` → `crypto.randomUUID()`
+ *   - Missing `schema_version` → 1
+ *
+ * The caller MUST still run validateLearning() on the result to confirm the
+ * migrated record passes the full schema gate before writing.
+ *
+ * @param {object} entry — raw record from JSONL, possibly legacy shape
+ * @returns {object} record with canonical field names (NOT validated)
+ */
+export function migrateLegacyLearning(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+
+  const out = { ...entry };
+
+  // Backfill id with a stable UUID when missing
+  if (!out.id) {
+    out.id = randomUUID();
+  }
+
+  // Normalize insight aliases: description | recommendation → insight
+  if (!out.insight) {
+    if (typeof out.description === 'string') {
+      out.insight = out.description;
+      delete out.description;
+    } else if (typeof out.recommendation === 'string') {
+      out.insight = out.recommendation;
+      delete out.recommendation;
+    }
+  } else {
+    // insight is present — clean up stale alias keys to avoid confusion
+    delete out.description;
+    delete out.recommendation;
+  }
+
+  // Stamp schema_version when absent
+  if (out.schema_version === undefined || out.schema_version === null) {
+    out.schema_version = CURRENT_SCHEMA_VERSION;
+  }
+
+  return out;
 }
 
 // Module-level dedupe set for schema-version warnings.

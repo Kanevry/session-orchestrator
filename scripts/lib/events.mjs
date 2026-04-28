@@ -5,18 +5,13 @@
  * Uses native fetch (Node 20+) and fs.promises — no external dependencies.
  *
  * Part of v3.0.0 migration (Epic #124, issue #133).
+ * Issue #228: removed hardcoded personal-domain default URL. Clank Event Bus URL
+ * must now be supplied explicitly via CLANK_EVENT_URL when CLANK_EVENT_SECRET is set.
  */
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SO_PROJECT_DIR, SO_SHARED_DIR } from './platform.mjs';
-
-/**
- * Default Clank Event Bus webhook URL. Overridden by the `CLANK_EVENT_URL`
- * environment variable. Exported for reuse by hooks/on-stop.mjs so the fallback
- * is defined in exactly one place.
- */
-export const DEFAULT_EVENT_URL = 'https://events.gotzendorfer.at';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -35,9 +30,10 @@ export function eventsFilePath() {
  *
  * Writes `{ts, event, ...payload}` as a single JSON line to
  * `.orchestrator/metrics/events.jsonl` (creates parent directory if needed).
- * If `CLANK_EVENT_SECRET` is set, fires an async fire-and-forget POST to
- * `CLANK_EVENT_URL` (default: {@link DEFAULT_EVENT_URL}) with a 3-second
- * timeout. Network errors are swallowed. Write errors propagate to the caller.
+ * If both `CLANK_EVENT_SECRET` and `CLANK_EVENT_URL` are set, fires an async
+ * fire-and-forget POST to `CLANK_EVENT_URL` with a 3-second timeout. Network
+ * errors are swallowed. Write errors propagate to the caller. No personal-domain
+ * default URL exists — both vars must be set explicitly (#228).
  *
  * @param {string} type — event type (e.g. "orchestrator.session.started")
  * @param {object} [payload={}] — additional fields shallow-merged into the record
@@ -53,9 +49,10 @@ export async function emitEvent(type, payload = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');
 
-  // Fire-and-forget webhook POST — only when secret is configured.
-  if (process.env.CLANK_EVENT_SECRET) {
-    const url = process.env.CLANK_EVENT_URL || DEFAULT_EVENT_URL;
+  // Fire-and-forget webhook POST — only when secret AND URL are configured.
+  // No personal-domain default: CLANK_EVENT_URL must be set explicitly (#228).
+  if (process.env.CLANK_EVENT_SECRET && process.env.CLANK_EVENT_URL) {
+    const url = process.env.CLANK_EVENT_URL;
     const body = JSON.stringify({
       event_type: type,
       source: 'session-orchestrator',

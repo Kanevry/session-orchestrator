@@ -1,6 +1,6 @@
 ---
 name: claude-md-drift-check
-description: Detects drift between CLAUDE.md / _meta narrative and live repository state. Four checks: absolute-path resolution, 01-projects/ count claims, issue-reference freshness (closed refs in forward-looking sections), session-file existence. Invoked as an opt-in session-end phase; mirrors vault-sync's lean JSON+exit-code contract.
+description: Detects drift between CLAUDE.md / _meta narrative and live repository state. Five checks: absolute-path resolution, 01-projects/ count claims, issue-reference freshness (closed refs in forward-looking sections), session-file existence, command-count sync (claimed "N commands" vs actual commands/*.md). Invoked as an opt-in session-end phase; mirrors vault-sync's lean JSON+exit-code contract.
 ---
 
 # CLAUDE.md Drift-Check Skill
@@ -21,8 +21,11 @@ PHASE 1 IMPLEMENTED (2026-04-19). Session-end opt-in quality gate. Upstream of `
 | 2 | `project-count-sync` | Hardcoded "N registered" / "N projects" claims next to `01-projects/` | compare to `ls -d 01-projects/*/` |
 | 3 | `issue-reference-freshness` | `#NN` in forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps) | `glab issue view NN --repo <origin>` |
 | 4 | `session-file-existence` | `50-sessions/YYYY-MM-DD-*.md` references anywhere in scope | `existsSync(vault/50-sessions/<file>)` |
+| 5 | `command-count` | "N commands" / "N /commands" claims in prose | compare to `ls commands/*.md \| wc -l`; skipped if no `commands/` dir |
 
 Check 3 deliberately scopes to forward-looking sections. Mentions inside "Recently Closed", "Decisions", "Archive", etc. describe history and must not be flagged.
+
+Check 5 counts `*.md` files directly inside `commands/` (non-recursive, non-hidden). The `commands/` directory is resolved relative to `VAULT_DIR` by default; use `--commands-dir <path>` to override.
 
 ## Files
 
@@ -48,6 +51,8 @@ CLI flags (all optional):
 | `--skip-project-count` | off | Disable Check 2 |
 | `--skip-issue-refs` | off | Disable Check 3 (also auto-skipped if `glab` not on PATH) |
 | `--skip-session-files` | off | Disable Check 4 |
+| `--skip-command-count` | off | Disable Check 5 |
+| `--commands-dir <path>` | `<VAULT_DIR>/commands` | Override path to `commands/` directory for Check 5 |
 
 Environment:
 
@@ -61,16 +66,19 @@ Environment:
   "mode": "hard|warn|off",
   "vault_dir": "<absolute path>",
   "files_scanned": N,
-  "checks_run": ["path-resolver", "project-count-sync", "issue-reference-freshness", "session-file-existence"],
+  "checks_run": ["path-resolver", "project-count-sync", "issue-reference-freshness", "session-file-existence", "command-count"],
   "checks_skipped": ["<name>: <reason>"],
   "errors": [
     { "check": "<name>", "file": "<relative path>", "line": N, "message": "<human>", "extracted": "<raw text>" }
   ],
   "warnings": [
     { "check": "<name>", "file": "<relative path>", "line": N, "message": "<human>", "extracted": "<raw text>" }
-  ]
+  ],
+  "command_count": { "actual": N }
 }
 ```
+
+When `command-count` fires a drift error, the error object also carries `"command_count": { "actual": N, "claimed": M }` for easy programmatic diffing.
 
 Exit codes:
 
@@ -93,6 +101,7 @@ drift-check:
   check-project-count-sync: true
   check-issue-reference-freshness: true
   check-session-file-existence: true
+  check-command-count: true
 ```
 
 When `drift-check.enabled` is `false` or the block is absent, the session-end phase is a no-op.

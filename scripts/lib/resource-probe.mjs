@@ -18,6 +18,7 @@
  *     claude_processes_count: 3 | null,
  *     codex_processes_count: 0 | null,
  *     other_node_processes: 12 | null,
+ *     zombie_processes_count: 1 | null,
  *     swap_used_mb: 512 | null,
  *     memory_pressure_pct_free: 42 | null,
  *     probe_duration_ms: 45,
@@ -114,6 +115,103 @@ function _runPs(timeoutMs = 2000) {
 }
 
 /**
+ * Parse a `ps` etime field (`[[DD-]HH:]MM:SS`) into whole minutes.
+ * Returns null when the format is unrecognised.
+ * Pure function for unit testability.
+ * @param {string} etime
+ * @returns {number|null}
+ */
+export function parseEtimeToMinutes(etime) {
+  if (typeof etime !== 'string') return null;
+  const s = etime.trim();
+  // Regex: optional "DD-", optional "HH:", then "MM:SS"
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(s);
+  if (!m) return null;
+  const days = parseInt(m[1] ?? '0', 10);
+  const hours = parseInt(m[2] ?? '0', 10);
+  const mins = parseInt(m[3], 10);
+  // seconds intentionally dropped (we only need minutes resolution)
+  if ([days, hours, mins].some(Number.isNaN)) return null;
+  return days * 24 * 60 + hours * 60 + mins;
+}
+
+/**
+ * Run `ps` collecting PID, command name, elapsed time, and CPU% — used for zombie detection.
+ * Returns raw stdout string or null on failure.
+ * @param {number} timeoutMs
+ * @returns {Promise<string|null>}
+ */
+function _runPsDetailed(timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    if (SO_IS_WINDOWS) { resolve(null); return; }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    try {
+      // -A: all processes; output: pid, comm (basename), etime, %cpu
+      const child = spawn('ps', ['-A', '-o', 'pid,comm,etime,%cpu'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const chunks = [];
+      child.stdout.on('data', (c) => chunks.push(c));
+      child.on('error', () => finish(null));
+      child.on('close', (code) => {
+        if (code !== 0) return finish(null);
+        finish(Buffer.concat(chunks).toString('utf8'));
+      });
+      setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        finish(null);
+      }, timeoutMs);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/**
+ * Parse the detailed ps output and count Claude/Node zombie candidates.
+ * A zombie candidate is a process matching "claude" or "node" that:
+ *   - has been running longer than `thresholdMin` minutes, AND
+ *   - has CPU% at or below `maxCpuPct` (default 1.0 → idle).
+ * Pure function for unit testability.
+ * @param {string|null} psOutput — stdout from `ps -A -o pid,comm,etime,%cpu`
+ * @param {number} thresholdMin — age threshold in minutes
+ * @param {number} [maxCpuPct] — CPU% at-or-below which process is considered idle (default 1.0)
+ * @returns {number|null} count, or null when psOutput is null
+ */
+export function countZombieProcesses(psOutput, thresholdMin, maxCpuPct = 1.0) {
+  if (psOutput === null || psOutput === undefined) return null;
+  const lines = String(psOutput).split(/\r?\n/);
+  let count = 0;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed || /^\s*PID/i.test(trimmed)) continue; // skip header
+    // Fields: PID COMM ELAPSED %CPU  (ELAPSED may contain '-' and ':')
+    // Split on whitespace but preserve etime which has no spaces.
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 4) continue;
+    // parts[0]=PID, parts[1]=COMM, parts[2]=ETIME, parts[3]=%CPU
+    const comm = (parts[1] ?? '').toLowerCase();
+    const etimeStr = parts[2] ?? '';
+    const cpuStr = parts[3] ?? '';
+    const isClaudeOrNode =
+      /(^|[\s/])claude([\s]|$)/.test(comm) ||
+      comm === 'claude' ||
+      /(^|[\s/])node([\s]|$)/.test(comm) ||
+      comm === 'node';
+    if (!isClaudeOrNode) continue;
+    const ageMin = parseEtimeToMinutes(etimeStr);
+    if (ageMin === null || ageMin < thresholdMin) continue;
+    const cpu = parseFloat(cpuStr);
+    if (Number.isNaN(cpu) || cpu > maxCpuPct) continue;
+    count++;
+  }
+  return count;
+}
+
+/**
  * Parse a raw process listing (ps or tasklist output) and count matches.
  * Pure function for unit testability.
  */
@@ -147,22 +245,32 @@ const DEFAULT_PATTERNS = [
   },
 ];
 
-async function _processCounts() {
-  const output = await _runPs();
+async function _processCounts(zombieThresholdMin = null) {
+  // Run simple ps (for counts) and detailed ps (for zombie detection) in parallel.
+  const [output, detailedOutput] = await Promise.all([
+    _runPs(),
+    zombieThresholdMin !== null ? _runPsDetailed() : Promise.resolve(null),
+  ]);
   if (output === null || output === undefined) {
     return {
       claude_processes_count: null,
       codex_processes_count: null,
       other_node_processes: null,
+      zombie_processes_count: null,
     };
   }
   const raw = countProcessMatches(output, DEFAULT_PATTERNS);
   // Subtract self (the currently running probe process counts as 1 node).
   const otherNode = Math.max(0, (raw.other_node ?? 0) - 1);
+  const zombie_processes_count =
+    zombieThresholdMin !== null
+      ? countZombieProcesses(detailedOutput, zombieThresholdMin)
+      : null;
   return {
     claude_processes_count: raw.claude ?? 0,
     codex_processes_count: raw.codex ?? 0,
     other_node_processes: otherNode,
+    zombie_processes_count,
   };
 }
 
@@ -284,15 +392,18 @@ async function _memoryPressurePctFree() {
  * @param {object} [opts]
  * @param {boolean} [opts.skipProcessCounts] — skip process listing (faster in tests)
  * @param {boolean} [opts.skipExtendedSignals] — skip swap + memory_pressure calls (faster in tests)
+ * @param {number|null} [opts.zombieThresholdMin] — when non-null, detect zombie Claude/Node
+ *   processes older than this many minutes with low CPU. Default null (feature disabled).
  * @returns {Promise<object>}
  */
 export async function probe(opts = {}) {
   const start = Date.now();
   const ram = _ramSnapshot();
   const cpu = _cpuSnapshot();
+  const zombieThresholdMin = opts.zombieThresholdMin ?? null;
   const procs = opts.skipProcessCounts
-    ? { claude_processes_count: null, codex_processes_count: null, other_node_processes: null }
-    : await _processCounts();
+    ? { claude_processes_count: null, codex_processes_count: null, other_node_processes: null, zombie_processes_count: null }
+    : await _processCounts(zombieThresholdMin);
 
   let swap_used_mb = null;
   let memory_pressure_pct_free = null;
@@ -372,6 +483,23 @@ export function evaluate(snapshot, thresholds) {
   if (claude_processes_count !== null && claude_processes_count !== undefined && claude_processes_count >= concWarn) {
     if (verdict === 'green') verdict = 'warn';
     reasons.push(`${claude_processes_count} Claude processes already running (threshold: ${concWarn}) — consider sequencing this session after others finish.`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Zombie signal (#178): null = feature disabled (zombieThresholdMin absent) → no rule fires
+  // Escalates to warn only when BOTH zombie_processes_count >= 1 AND
+  // claude_processes_count is elevated (>= concWarn or > 0 with zombies).
+  // ---------------------------------------------------------------------------
+  const { zombie_processes_count } = snapshot;
+  if (zombie_processes_count !== null && zombie_processes_count !== undefined && zombie_processes_count >= 1) {
+    const claudeElevated =
+      claude_processes_count !== null &&
+      claude_processes_count !== undefined &&
+      claude_processes_count > 0;
+    if (claudeElevated) {
+      verdict = bumpVerdict(verdict, 'warn');
+      reasons.push(`${zombie_processes_count} zombie Claude/Node process(es) detected (age > ${thresholds['zombie-threshold-min'] ?? 30} min, idle CPU) with ${claude_processes_count} Claude process(es) running — consider sweeping stale sessions.`);
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -7,7 +7,8 @@
 #   The canonical vault-frontmatter schema lives in a *private* GitLab repo
 #   (gitlab.gotzendorfer.at/infrastructure/projects-baseline, project ID 52).
 #   Cross-project access during CI requires same-instance authentication via
-#   CI_JOB_TOKEN — a mechanism only available within the same GitLab instance.
+#   SCHEMA_DRIFT_TOKEN (deploy token/PAT) — a masked CI variable with
+#   read-only access to the private projects-baseline repo (project ID 52).
 #   GitHub Actions has no equivalent for private GitLab resources, so the
 #   schema-drift gate must live here.
 #
@@ -138,14 +139,13 @@ coverage:
 # ---------------------------------------------------------------------------
 # Stage: verify
 #
-# REQUIRES: projects-baseline (project ID 52) must list this project
-# (infrastructure/session-orchestrator) in its CI/CD Job Token inbound
-# allowlist. Without this, the git clone below will return HTTP 401.
+# REQUIRES: a GitLab Deploy Token or PAT stored as the masked CI variable
+# SCHEMA_DRIFT_TOKEN with read-only access to infrastructure/projects-baseline
+# (project ID 52). See docs/ci-setup.md for step-by-step token creation.
 #
-# How to configure:
-#   projects-baseline → Settings → CI/CD → Token Access →
-#   "Allow CI job tokens from the following projects to access this project" →
-#   Add: infrastructure/session-orchestrator
+# If SCHEMA_DRIFT_TOKEN is unset (e.g. on a fork or before the variable is
+# configured), the job emits a warning and exits 0 so it does not block the
+# pipeline. Set the variable to activate the check.
 # ---------------------------------------------------------------------------
 
 schema-drift-check:
@@ -153,20 +153,26 @@ schema-drift-check:
   stage: verify
   interruptible: true
   timeout: 10m
-  # TODO: flip to false once projects-baseline (#52) has this project on
-  # its CI/CD Job Token inbound allowlist. Until then, the git clone
-  # returns 403 and the job fails by design — but we do not want a
-  # missing admin config to block every MR, so the failure is non-blocking.
-  allow_failure: true
+  allow_failure: false
   needs:
     - test
   script:
-    # Clone the canonical schema source from the same GitLab instance.
-    # CI_JOB_TOKEN provides scoped read-only access when the allowlist is
-    # configured (see comment block above this job).
+    # Guard: skip gracefully when the token variable is not configured.
+    # This avoids blocking pipelines on forks or fresh environments where
+    # SCHEMA_DRIFT_TOKEN has not yet been set in GitLab CI/CD settings.
+    - >
+      if [ -z "${SCHEMA_DRIFT_TOKEN}" ]; then
+        echo "WARNING: schema-drift-check skipped — SCHEMA_DRIFT_TOKEN is not set.";
+        echo "See docs/ci-setup.md to configure a deploy token for infrastructure/projects-baseline.";
+        exit 0;
+      fi
+    # Clone the canonical schema source using a deploy token or PAT.
+    # SCHEMA_DRIFT_TOKEN must be a masked CI variable with read_repository
+    # scope on infrastructure/projects-baseline (project ID 52).
+    # See docs/ci-setup.md for token creation steps.
     - >
       git clone --depth 1
-      "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/infrastructure/projects-baseline.git"
+      "https://oauth2:${SCHEMA_DRIFT_TOKEN}@${CI_SERVER_HOST}/infrastructure/projects-baseline.git"
       /tmp/projects-baseline
     # Run the drift-check — exits 0 if in sync, 1 if the local vendored copy
     # has diverged from the canonical schema. Diff is emitted to stderr.

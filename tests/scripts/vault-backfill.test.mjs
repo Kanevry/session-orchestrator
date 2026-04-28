@@ -682,3 +682,161 @@ describe('validateManifest (unit)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 15: yamlScalar — unit tests (Issue #247, CWE-1336)
+// ---------------------------------------------------------------------------
+
+import { yamlScalar } from '../../scripts/lib/vault-backfill/template.mjs';
+
+describe('yamlScalar (unit, #247)', () => {
+  it('wraps a plain ASCII string in double quotes', () => {
+    expect(yamlScalar('alice')).toBe('"alice"');
+  });
+
+  it('escapes embedded newline — newline cannot create a new YAML key', () => {
+    const result = yamlScalar('alice\nmalicious-key: malicious-value');
+    // JSON.stringify encodes \n as \\n inside the quoted string
+    expect(result).toBe('"alice\\nmalicious-key: malicious-value"');
+    // The literal text "malicious-key:" must not appear unescaped
+    expect(result).not.toContain('\nmalicious-key:');
+  });
+
+  it('escapes embedded carriage return', () => {
+    expect(yamlScalar('alice\r\nbob')).toBe('"alice\\r\\nbob"');
+  });
+
+  it('escapes colon (YAML key separator)', () => {
+    // JSON.stringify does NOT escape ":" because JSON strings allow it — but the
+    // value is wrapped in double quotes, making it a YAML scalar, not a key.
+    const result = yamlScalar('ns:path');
+    expect(result).toBe('"ns:path"');
+    expect(result.startsWith('"')).toBe(true);
+    expect(result.endsWith('"')).toBe(true);
+  });
+
+  it('escapes hash character (YAML comment marker)', () => {
+    const result = yamlScalar('alice # injected comment');
+    expect(result).toBe('"alice # injected comment"');
+  });
+
+  it('escapes backslash', () => {
+    expect(yamlScalar('a\\b')).toBe('"a\\\\b"');
+  });
+
+  it('escapes embedded double quote', () => {
+    expect(yamlScalar('say "hello"')).toBe('"say \\"hello\\""');
+  });
+
+  it('handles empty string', () => {
+    expect(yamlScalar('')).toBe('""');
+  });
+
+  it('coerces non-string to string before quoting', () => {
+    // undefined → "undefined" (safe scalar)
+    expect(yamlScalar(undefined)).toBe('"undefined"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 16: renderTemplate YAML injection regression (Issue #247, CWE-1336)
+// ---------------------------------------------------------------------------
+
+describe('renderTemplate — YAML injection regression (#247)', () => {
+  const INJECTION_TEMPLATE = [
+    'apiVersion: vault.gotzendorfer/v1',
+    'metadata:',
+    '  name: "{{PROJECT_NAME}}"',
+    '  slug: "{{PROJECT_NAME}}"',
+    '  tier: active',
+    '  owner: bernhard',
+    'spec:',
+    '  summary: "{{PROJECT_NAME}} — summary TODO"',
+    '  links:',
+    '    gitlab: "{{GITLAB_GROUP}}/{{PROJECT_NAME}}"',
+    '',
+  ].join('\n');
+
+  it('newline in owner does not inject a new YAML key', () => {
+    const out = renderTemplate(
+      {
+        humanName: 'My App',
+        slug: 'my-app',
+        tier: 'active',
+        gitlabPath: 'org/my-app',
+        owner: 'alice\nmalicious-key: malicious-value',
+      },
+      INJECTION_TEMPLATE,
+    );
+    // The raw string "malicious-key:" must not appear on its own line
+    expect(out).not.toMatch(/^malicious-key:/m);
+    // The owner line must be a single quoted scalar
+    const ownerLine = out.split('\n').find((l) => /^\s*owner:/.test(l));
+    expect(ownerLine).toBeDefined();
+    expect(ownerLine).toContain('"alice\\nmalicious-key: malicious-value"');
+  });
+
+  it('newline in gitlabPath does not inject a new YAML key', () => {
+    const out = renderTemplate(
+      {
+        humanName: 'My App',
+        slug: 'my-app',
+        tier: 'active',
+        gitlabPath: 'org/my-app\nevil-key: evil-value',
+        owner: 'alice',
+      },
+      INJECTION_TEMPLATE,
+    );
+    expect(out).not.toMatch(/^evil-key:/m);
+    // gitlabPath must appear as a quoted value in the output
+    const gitlabLine = out.split('\n').find((l) => /gitlab:/.test(l));
+    expect(gitlabLine).toBeDefined();
+    expect(gitlabLine).toContain('"org/my-app\\nevil-key: evil-value"');
+  });
+
+  it('clean owner string round-trips without over-escaping (valid YAML scalar)', () => {
+    const out = renderTemplate(
+      {
+        humanName: 'My App',
+        slug: 'my-app',
+        tier: 'active',
+        gitlabPath: 'org/my-app',
+        owner: 'bernhard',
+      },
+      INJECTION_TEMPLATE,
+    );
+    const ownerLine = out.split('\n').find((l) => /^\s*owner:/.test(l));
+    expect(ownerLine).toBe('  owner: "bernhard"');
+  });
+
+  it('clean gitlabPath round-trips without over-escaping (valid YAML scalar)', () => {
+    const out = renderTemplate(
+      {
+        humanName: 'My App',
+        slug: 'my-app',
+        tier: 'active',
+        gitlabPath: 'my-group/my-app',
+        owner: 'alice',
+      },
+      INJECTION_TEMPLATE,
+    );
+    const gitlabLine = out.split('\n').find((l) => /gitlab:/.test(l));
+    expect(gitlabLine).toBe('    gitlab: "my-group/my-app"');
+  });
+
+  it('owner with special YAML chars (colon, hash) is safely quoted', () => {
+    const out = renderTemplate(
+      {
+        humanName: 'My App',
+        slug: 'my-app',
+        tier: 'active',
+        gitlabPath: 'org/my-app',
+        owner: 'namespace:group # comment',
+      },
+      INJECTION_TEMPLATE,
+    );
+    expect(out).not.toMatch(/^# comment/m);
+    const ownerLine = out.split('\n').find((l) => /^\s*owner:/.test(l));
+    expect(ownerLine).toContain('"namespace:group # comment"');
+  });
+});

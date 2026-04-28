@@ -145,7 +145,7 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
 
 6. **Apply delta files.** Execute only the relevant template steps for the missing files. Read the appropriate template (`standard-template.md` and/or `deep-template.md`) and execute ONLY the steps that produce the delta files. Do NOT re-run already-completed steps.
 
-7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve `archetype`, `timestamp` (update to now), and `source` from the existing lock.
+7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve `archetype`, `timestamp` (update to now), and `source` from the existing lock. Write `plugin-version` from `$PLUGIN_ROOT/package.json` (current plugin version at upgrade time).
 
 8. **Commit.** Stage only the delta files that were just written and commit:
    ```bash
@@ -198,6 +198,7 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    archetype: <INFERRED_ARCHETYPE or null>
    timestamp: <current ISO 8601 UTC>
    source: retroactive
+   plugin-version: <current plugin version from $PLUGIN_ROOT/package.json>
    ```
 
 6. **Patch Session Config (#182).** Run the validator against the current `## Session Config` block; append any missing mandatory fields with defaults. The 7 mandatory fields (per `scripts/lib/config-schema.mjs`) are: `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
@@ -426,12 +427,19 @@ tier: <CONFIRMED_TIER>
 archetype: <CONFIRMED_ARCHETYPE or null>
 timestamp: <current ISO 8601 UTC timestamp>
 source: <projects-baseline | plugin-template | claude-init>
+plugin-version: <current plugin version from package.json>
 ```
 
 Determine `source`:
 - `projects-baseline` if `PATH_TYPE = private` and baseline scripts were used
 - `claude-init` if `claude init` was used successfully on Claude Code
 - `plugin-template` otherwise
+
+Read `plugin-version` from the session-orchestrator plugin's `package.json` (`$PLUGIN_ROOT/package.json`, field `version`). This enables the freshness probe (#290) to detect plugin upgrades that need re-bootstrap. Example:
+
+```bash
+PLUGIN_VERSION="$(node -e "const p=require('$PLUGIN_ROOT/package.json');console.log(p.version);" 2>/dev/null || node --input-type=module -e "import pkg from '$PLUGIN_ROOT/package.json' assert {type:'json'}; console.log(pkg.version);")"
+```
 
 The template's initial git commit includes `bootstrap.lock`. If the template already wrote the lock file (as `fast-template.md` does), skip this step — the lock is already committed.
 

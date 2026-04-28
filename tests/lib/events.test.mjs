@@ -173,7 +173,9 @@ describe('emitEvent — no fetch when CLANK_EVENT_SECRET is unset', () => {
 // 4. emitEvent — fetch IS called when CLANK_EVENT_SECRET is set
 // ---------------------------------------------------------------------------
 
-describe('emitEvent — fetch called when CLANK_EVENT_SECRET is set', () => {
+// #228: Both CLANK_EVENT_SECRET and CLANK_EVENT_URL are required to POST.
+// Setting only CLANK_EVENT_SECRET without a URL is a safe no-op (no personal-domain default).
+describe('emitEvent — fetch called when both CLANK_EVENT_SECRET and CLANK_EVENT_URL are set', () => {
   let tmpDir;
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
@@ -195,8 +197,9 @@ describe('emitEvent — fetch called when CLANK_EVENT_SECRET is set', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('calls fetch once when CLANK_EVENT_SECRET is set', async () => {
+  it('calls fetch once when both CLANK_EVENT_SECRET and CLANK_EVENT_URL are set', async () => {
     process.env.CLANK_EVENT_SECRET = 'test-secret-token';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
@@ -208,6 +211,7 @@ describe('emitEvent — fetch called when CLANK_EVENT_SECRET is set', () => {
 
   it('passes the correct Authorization header to fetch', async () => {
     process.env.CLANK_EVENT_SECRET = 'my-secret';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
@@ -220,6 +224,7 @@ describe('emitEvent — fetch called when CLANK_EVENT_SECRET is set', () => {
 
   it('swallows a network error — emitEvent still resolves', async () => {
     process.env.CLANK_EVENT_SECRET = 'test-secret-token';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network failure'));
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await expect(emitEvent('network.error', {})).resolves.toBeUndefined();

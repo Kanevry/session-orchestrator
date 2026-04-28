@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  MS_PER_DAY,
   parseBootstrapLock,
   checkBootstrapLockFreshness,
+  classifyVersionMismatch,
 } from '../../scripts/lib/bootstrap-lock-freshness.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -18,7 +20,7 @@ function writeLock(contents) {
 }
 
 function isoAgo(days) {
-  return new Date(Date.now() - days * 86400000).toISOString();
+  return new Date(Date.now() - days * MS_PER_DAY).toISOString();
 }
 
 function nowMs() {
@@ -143,7 +145,8 @@ describe('checkBootstrapLockFreshness — warn', () => {
     expect(result.severity).toBe('warn');
   });
 
-  it('returns severity=warn on version mismatch regardless of age', () => {
+  it('returns severity=alert on major version mismatch (2.9.0 → 3.0.0) regardless of age', () => {
+    // Major version mismatch (2.x.x vs 3.x.x) → alert (#290 tiering)
     writeLock(
       `version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 2.9.0\n`
     );
@@ -151,7 +154,7 @@ describe('checkBootstrapLockFreshness — warn', () => {
       repoRoot: sandbox,
       currentPluginVersion: '3.0.0',
     });
-    expect(result.severity).toBe('warn');
+    expect(result.severity).toBe('alert');
     expect(result.details.versionMismatch).toBe(true);
   });
 
@@ -335,5 +338,145 @@ describe('checkBootstrapLockFreshness — return shape', () => {
     expect(result.message).toMatch(/age=/);
     expect(result.message).toMatch(/plugin-version=/);
     expect(result.message).toMatch(/current=/);
+  });
+});
+
+// ── MS_PER_DAY constant (#203) ────────────────────────────────────────────────
+
+describe('MS_PER_DAY constant', () => {
+  it('equals exactly 86400000', () => {
+    expect(MS_PER_DAY).toBe(86400000);
+  });
+
+  it('equals 24 * 60 * 60 * 1000', () => {
+    expect(MS_PER_DAY).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('is used correctly: a 1-day offset expressed via MS_PER_DAY produces ageDays=1', () => {
+    const now = nowMs();
+    const bootstrappedAt = new Date(now - 1 * MS_PER_DAY).toISOString();
+    writeLock(`version: 1\nbootstrapped-at: ${bootstrappedAt}\nplugin-version: 3.0.0\n`);
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.0.0',
+      now,
+    });
+    expect(result.details.ageDays).toBe(1);
+  });
+});
+
+// ── classifyVersionMismatch (#290) ────────────────────────────────────────────
+
+describe('classifyVersionMismatch', () => {
+  it('returns alert for major version mismatch (2.x.x vs 3.x.x)', () => {
+    expect(classifyVersionMismatch('2.0.0', '3.0.0')).toBe('alert');
+  });
+
+  it('returns alert when lock has lower major (3.0.0 → 4.0.0)', () => {
+    expect(classifyVersionMismatch('3.0.0', '4.2.1')).toBe('alert');
+  });
+
+  it('returns info for minor version mismatch only (3.1.0 vs 3.2.0)', () => {
+    expect(classifyVersionMismatch('3.1.0', '3.2.0')).toBe('info');
+  });
+
+  it('returns info for patch-only mismatch (3.2.0 vs 3.2.1)', () => {
+    expect(classifyVersionMismatch('3.2.0', '3.2.1')).toBe('info');
+  });
+
+  it('returns warn for non-parseable versions', () => {
+    expect(classifyVersionMismatch('not-a-version', '3.0.0')).toBe('warn');
+  });
+
+  it('returns warn when current version is not parseable', () => {
+    expect(classifyVersionMismatch('3.0.0', 'dev-build')).toBe('warn');
+  });
+});
+
+// ── plugin_version field (#290) ───────────────────────────────────────────────
+
+describe('checkBootstrapLockFreshness — plugin_version (#290)', () => {
+  it('returns ok=true and severity=info when plugin-version matches current', () => {
+    writeLock(
+      `version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 3.2.0\n`
+    );
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.0',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.severity).toBe('info');
+    expect(result.details.versionMismatch).toBe(false);
+  });
+
+  it('returns severity=info (not raised) for patch-only mismatch on a fresh lock', () => {
+    writeLock(
+      `version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 3.2.0\n`
+    );
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.1',
+    });
+    // Patch mismatch → versionMismatchSeverity='info' → does not raise overall severity
+    expect(result.severity).toBe('info');
+    expect(result.details.versionMismatch).toBe(true);
+    expect(result.details.versionMismatchSeverity).toBe('info');
+  });
+
+  it('returns severity=info for minor-only mismatch on a fresh lock', () => {
+    writeLock(
+      `version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 3.1.0\n`
+    );
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.0',
+    });
+    expect(result.severity).toBe('info');
+    expect(result.details.versionMismatch).toBe(true);
+    expect(result.details.versionMismatchSeverity).toBe('info');
+  });
+
+  it('returns severity=alert for major plugin-version mismatch (v2 lock vs v3 current)', () => {
+    writeLock(
+      `version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 2.0.0\n`
+    );
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.0',
+    });
+    expect(result.severity).toBe('alert');
+    expect(result.ok).toBe(false);
+    expect(result.details.versionMismatch).toBe(true);
+    expect(result.details.versionMismatchSeverity).toBe('alert');
+  });
+
+  it('legacy lock without plugin-version: does NOT raise severity, sets legacyLock detail', () => {
+    // Lock predates plugin-version field — backward compat (#290)
+    writeLock(`version: 1\nbootstrapped-at: ${isoAgo(1)}\n`);
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.0',
+    });
+    // Severity must NOT be raised to warn/alert for missing plugin-version
+    expect(result.severity).toBe('info');
+    expect(result.ok).toBe(true);
+    expect(result.details.versionMismatch).toBe(false);
+    expect(result.details.legacyLock).toMatch(/predates plugin-version/);
+  });
+
+  it('legacy lock without plugin-version and no currentPluginVersion: legacyLock is null', () => {
+    // No currentPluginVersion provided — can't determine legacy drift
+    writeLock(`version: 1\nbootstrapped-at: ${isoAgo(1)}\n`);
+    const result = checkBootstrapLockFreshness({ repoRoot: sandbox });
+    expect(result.details.legacyLock).toBeNull();
+  });
+
+  it('returns details.versionMismatchSeverity=null when versions match', () => {
+    writeLock(`version: 1\nbootstrapped-at: ${isoAgo(1)}\nplugin-version: 3.2.0\n`);
+    const result = checkBootstrapLockFreshness({
+      repoRoot: sandbox,
+      currentPluginVersion: '3.2.0',
+    });
+    expect(result.details.versionMismatchSeverity).toBeNull();
   });
 });

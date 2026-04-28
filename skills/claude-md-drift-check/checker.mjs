@@ -2,8 +2,8 @@
 /**
  * checker.mjs — CLAUDE.md narrative drift-check (claude-md-drift-check).
  *
- * Four checks: path-resolver, project-count-sync, issue-reference-freshness,
- * session-file-existence. Scans CLAUDE.md + _meta/**\/*.md by default.
+ * Five checks: path-resolver, project-count-sync, issue-reference-freshness,
+ * session-file-existence, command-count. Scans CLAUDE.md + _meta/**\/*.md by default.
  * Emits JSON on stdout. Exit 0 (ok/warn/skip), 1 (hard + errors), 2 (infra).
  *
  * Pure Node stdlib — no runtime dependencies.
@@ -26,19 +26,23 @@ function parseArgs(argv) {
     skipProjectCount: false,
     skipIssueRefs: false,
     skipSessionFiles: false,
+    skipCommandCount: false,
     repo: null,
+    commandsDir: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--mode') out.mode = argv[++i];
     else if (a === '--include-path') out.includePaths.push(argv[++i]);
     else if (a === '--repo') out.repo = argv[++i];
+    else if (a === '--commands-dir') out.commandsDir = argv[++i];
     else if (a === '--skip-path-resolver') out.skipPathResolver = true;
     else if (a === '--skip-project-count') out.skipProjectCount = true;
     else if (a === '--skip-issue-refs') out.skipIssueRefs = true;
     else if (a === '--skip-session-files') out.skipSessionFiles = true;
+    else if (a === '--skip-command-count') out.skipCommandCount = true;
     else if (a === '--help' || a === '-h') {
-      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--skip-*]\n');
+      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--skip-*]\n');
       process.exit(0);
     } else {
       process.stderr.write(`{"status":"infra-error","reason":"unknown arg: ${a}"}\n`);
@@ -153,6 +157,21 @@ function main() {
     }
   }
 
+  // Check 5: command-count — count commands/*.md and compare to claimed "N commands" in prose.
+  let actualCommandCount = null;
+  if (!args.skipCommandCount) {
+    const commandsDir = args.commandsDir
+      ? resolve(args.commandsDir)
+      : join(vaultDir, 'commands');
+    if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
+      actualCommandCount = readdirSync(commandsDir)
+        .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+        .length;
+    } else {
+      checksSkipped.push('command-count: no commands/ directory found (use --commands-dir to override)');
+    }
+  }
+
   let repo = args.repo;
   const glabPresent = !args.skipIssueRefs && hasGlab();
   if (!args.skipIssueRefs && !glabPresent) {
@@ -169,6 +188,7 @@ function main() {
   if (!args.skipProjectCount && actualProjectCount !== null) checksRun.push('project-count-sync');
   if (runIssueCheck) checksRun.push('issue-reference-freshness');
   if (!args.skipSessionFiles) checksRun.push('session-file-existence');
+  if (!args.skipCommandCount && actualCommandCount !== null) checksRun.push('command-count');
 
   if (scopeFiles.length === 0) {
     process.stdout.write(JSON.stringify({
@@ -271,17 +291,38 @@ function main() {
           }
         }
       }
+
+      if (!args.skipCommandCount && actualCommandCount !== null) {
+        // Match patterns like "8 commands", "8 /commands", "8 slash commands"
+        const cmdCountRegex = /\b(\d+)\s+(?:\/)?commands?\b/gi;
+        let m;
+        while ((m = cmdCountRegex.exec(line)) !== null) {
+          const claimed = parseInt(m[1], 10);
+          if (claimed !== actualCommandCount) {
+            errors.push({
+              check: 'command-count', file: rel, line: lineNum,
+              message: `Narrative claims ${claimed} commands but actual commands/ count is ${actualCommandCount}`,
+              extracted: m[0],
+              command_count: { actual: actualCommandCount, claimed },
+            });
+          }
+        }
+      }
     }
   }
 
   const status = errors.length === 0 ? 'ok' : 'invalid';
-  process.stdout.write(JSON.stringify({
+  const result = {
     status, mode: args.mode, vault_dir: vaultDir,
     files_scanned: scopeFiles.length,
     checks_run: checksRun,
     checks_skipped: checksSkipped,
     errors, warnings,
-  }) + '\n');
+  };
+  if (actualCommandCount !== null) {
+    result.command_count = { actual: actualCommandCount };
+  }
+  process.stdout.write(JSON.stringify(result) + '\n');
 
   process.exit(errors.length > 0 && args.mode === 'hard' ? 1 : 0);
 }

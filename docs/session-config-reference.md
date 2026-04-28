@@ -81,7 +81,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discovery-on-close` | boolean | `false` | Run discovery probes automatically during `/close`. |
+| `discovery-on-close` | boolean | session-type aware: `false` for `housekeeping`, `true` for `feature`/`deep` (#264) | Run discovery probes automatically during `/close`. Default is `false` for housekeeping sessions and `true` for feature and deep sessions when not explicitly configured. An explicit value always overrides the session-type default. |
 | `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
@@ -114,7 +114,7 @@ Introduced by Epic #157 / issue #166. Lets session-start sense the host (RAM, CP
 |-------|------|---------|-------------|
 | `resource-awareness` | boolean | `true` | Master toggle for the env-aware runtime. When `false`, skips Phase 4.5 adaptive wave sizing and the host banner. |
 | `enable-host-banner` | boolean | `true` | Whether `hooks/on-session-start.mjs` emits the host + resource banner at the top of every session. Set `false` to silence. |
-| `resource-thresholds` | object | see below | Numeric thresholds that drive Phase 4.5 adaptive rules. Unset sub-keys fall back to defaults. Sub-keys: `ram-free-min-gb`, `ram-free-critical-gb`, `cpu-load-max-pct`, `concurrent-sessions-warn`, `ssh-no-docker`. |
+| `resource-thresholds` | object | see below | Numeric thresholds that drive Phase 4.5 adaptive rules. Unset sub-keys fall back to defaults. Sub-keys: `ram-free-min-gb`, `ram-free-critical-gb`, `cpu-load-max-pct`, `concurrent-sessions-warn`, `ssh-no-docker`, `zombie-threshold-min`. |
 
 ### resource-thresholds
 
@@ -127,7 +127,10 @@ resource-thresholds:
   cpu-load-max-pct: 80          # sustained above this, cap agents-per-wave at 2
   concurrent-sessions-warn: 5   # warn when host has this many Claude sessions
   ssh-no-docker: true           # when session is over SSH, steer the plan away from Docker-based tests
+  zombie-threshold-min: 30      # age (minutes) above which an idle Claude/Node process is a zombie candidate
 ```
+
+**`zombie-threshold-min`** (default: `30`): When set, the resource probe runs a secondary `ps` pass that counts Claude and Node processes older than this many minutes **and** with CPU% ≤ 1%. These are "zombie candidates" — stale sessions or orphaned workers that still hold RAM. The probe exposes them via `zombie_processes_count` in the snapshot. The evaluator escalates the verdict to at least `warn` when `zombie_processes_count >= 1` **and** `claude_processes_count > 0` (i.e., there are active Claude processes alongside the zombies). The reason string surfaces the threshold and count so the session-start banner gives actionable context. Set to `0` to disable zombie detection entirely (the field is omitted from the default snapshot when absent from config).
 
 Rationale: originated from the 2026-04-19 incident where 8 parallel Claude sessions on one Mac caused a hard freeze. The adaptive rules cap concurrent agent load when the host is under pressure, before a wave ever spawns subagents. See Epic #157 and Sub-Epic #158.
 
@@ -441,6 +444,164 @@ The banner renders with one of the following shapes:
 - **Reader:** `skills/session-start/SKILL.md` § Phase 1.5 "Recommendations Banner" (renders on `status: completed` branch only).
 - **Archival:** `skills/session-start/SKILL.md` § Idle Reset rule 6 (removes fields from frontmatter, prepends readable block to `## Previous Session`).
 - **Future consumer:** Phase B Mode-Selector skill (planned in Epic #271) will read these fields as the primary input for autonomous mode selection.
+
+## Hook Runtime Profile Control (#211)
+
+Control which hooks run at runtime via environment variables — no settings-file edits required.
+
+### Environment variables
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `SO_HOOK_PROFILE` | `full` \| `minimal` \| `off` | `full` | Preset bundle that enables/disables groups of hooks. |
+| `SO_DISABLED_HOOKS` | Comma-separated hook names | _(none)_ | Disable individual hooks regardless of profile. |
+
+### Profile bundles
+
+| Profile | Enabled hooks |
+|---------|--------------|
+| `full` | All hooks (default — no behaviour change when env unset) |
+| `minimal` | `on-session-start`, `pre-bash-destructive-guard` only |
+| `off` | No hooks |
+
+### Precedence
+
+`SO_DISABLED_HOOKS` takes precedence over `SO_HOOK_PROFILE` for the listed names. Unknown `SO_HOOK_PROFILE` values fall back to `full` with a single stderr warning.
+
+### Examples
+
+```bash
+# Disable all hooks for a quick one-shot run
+SO_HOOK_PROFILE=off claude ...
+
+# Keep only the safety guard active
+SO_HOOK_PROFILE=minimal claude ...
+
+# Disable only the typecheck-on-save hook, keep everything else
+SO_DISABLED_HOOKS=post-edit-validate claude ...
+
+# Disable two hooks independently
+SO_DISABLED_HOOKS=enforce-scope,enforce-commands claude ...
+```
+
+### Hook name reference
+
+| Hook name | hooks.json event |
+|-----------|-----------------|
+| `on-session-start` | SessionStart |
+| `pre-bash-destructive-guard` | PreToolUse/Bash |
+| `enforce-commands` | PreToolUse/Bash |
+| `enforce-scope` | PreToolUse/Edit\|Write |
+| `post-edit-validate` | PostToolUse/Edit\|Write |
+| `on-stop` | Stop + SubagentStop |
+
+### Implementation
+
+Each hook handler imports `shouldRunHook` from `hooks/_lib/profile-gate.mjs` at the top level and calls `process.exit(0)` immediately when gated off. The exit is silent (no stdout, no stderr), so Claude Code sees an allow as if the hook had never run.
+
+## Webhooks (#228)
+
+Opt-in webhook notifications delivered by `scripts/lib/webhook-url.mjs`. The helper centralizes URL resolution so no personal-domain default ever silently fires — callers must supply a URL explicitly.
+
+### Resolution order
+
+For every supported kind the resolver checks sources in this order; the first non-empty string wins:
+
+1. **Environment variable** `SO_WEBHOOK_<KIND>_URL` — uppercase kind, hyphens → underscores  
+   e.g. `SO_WEBHOOK_SLACK_URL`, `SO_WEBHOOK_GITLAB_PIPELINE_STATUS_URL`
+2. **Session Config** `webhooks.<kind>.url`
+3. **Error** — `WebhookConfigError` is thrown. No silent personal-domain fallback.
+
+### Supported kinds
+
+| Kind | Env variable | Config key |
+|------|-------------|------------|
+| `slack` | `SO_WEBHOOK_SLACK_URL` | `webhooks.slack.url` |
+| `discord` | `SO_WEBHOOK_DISCORD_URL` | `webhooks.discord.url` |
+| `generic` | `SO_WEBHOOK_GENERIC_URL` | `webhooks.generic.url` |
+| `gitlab-pipeline-status` | `SO_WEBHOOK_GITLAB_PIPELINE_STATUS_URL` | `webhooks.gitlab-pipeline-status.url` |
+
+### Session Config example
+
+```yaml
+webhooks:
+  slack:
+    url: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
+  discord:
+    url: https://discord.com/api/webhooks/000000000000000000/xxxxxxxxxxxxxxxxxxxx
+  generic:
+    url: https://example.com/hooks/session-events
+  gitlab-pipeline-status:
+    url: https://gitlab.example.com/hooks/pipeline
+```
+
+### Clank Event Bus (events.mjs / on-stop.mjs)
+
+The internal Clank Event Bus webhook is controlled by two environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `CLANK_EVENT_SECRET` | Bearer token. **Required** — if absent, no POST is made. |
+| `CLANK_EVENT_URL` | Target base URL. **Required** — if absent, no POST is made (no personal-domain default). |
+
+Both variables must be set for the fire-and-forget POST to fire. Setting only `CLANK_EVENT_SECRET` without `CLANK_EVENT_URL` is a safe no-op.
+
+## Express Path (#214)
+
+Codified coordinator-direct flow for housekeeping and simple single-issue sessions. When the express path activates, session-start Phase 8.5 skips the full 5-wave plan decomposition and runs all tasks directly as the coordinator — no subagents dispatched, no inter-wave checkpoints.
+
+> **Historical context:** The 13 coordinator-direct sessions documented in the project `CLAUDE.md` (2026-04 series: vault-mirror GH#31, phased-rollout #307, v3.2.0 release, Architecture-DDD-Trio, etc.) were running this pattern implicitly without a codified path. Issue #214 codifies it so that future housekeeping sessions gain the express path automatically without needing to know to opt in manually.
+
+All fields live under a top-level `express-path` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+express-path:
+  enabled: true   # default true; set false to always use the full 5-wave flow
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `express-path.enabled` | boolean | `true` | When `true`, session-start Phase 8.5 evaluates the express-path activation conditions. When `false`, the evaluation is skipped and the full session-plan 5-wave flow always runs. |
+
+### Activation conditions
+
+All three conditions must be true simultaneously for the express path to activate:
+
+1. `express-path.enabled: true` (default)
+2. Session type is `housekeeping` (confirmed in session-start Phase 8 Q&A)
+3. Agreed issue scope is ≤ 3 issues AND no parallel agents are required
+
+When any condition is false, the full 5-wave flow runs as before — the check is a transparent no-op.
+
+### What changes when express path is active
+
+- **session-start:** After Phase 8 Q&A, emits `"Express path activated — N tasks, coordinator-direct, no inter-wave checks."` banner and executes tasks directly as the coordinator. session-plan is called but receives the express-path signal.
+- **session-plan:** Detects the banner in conversation context and emits a minimal 1-wave `coordinator-direct` plan (0 agents dispatched). Skips all role decomposition, complexity scoring, and wave splitting.
+- **STATE.md:** Activation is logged in the `## Deviations` section for traceability.
+- **Inter-wave checkpoints:** Skipped entirely — no Discovery → Impl-Core → Quality pipeline.
+
+### When to disable
+
+Set `express-path.enabled: false` when:
+
+- You want all housekeeping sessions to go through the standard quality-gate pipeline (Discovery + Quality waves).
+- The session involves ≥ 4 issues (the scope check already prevents activation, but disabling makes the intent explicit).
+- You are running an automated `/autopilot` loop and want predictable wave counts across session types.
+
+### Condition matrix
+
+| Session type | Issue count | `express-path.enabled` | Parallel agents? | Activates? |
+|---|---|---|---|---|
+| `housekeeping` | 1–3 | `true` | No | **Yes** |
+| `housekeeping` | 4+ | `true` | No | No — scope too large |
+| `housekeeping` | 1–3 | `false` | No | No — opted out |
+| `feature` | 1–3 | `true` | No | No — not housekeeping |
+| `housekeeping` | 1–3 | `true` | Yes | No — parallel agents required |
+
+**Related skills and files:**
+- `skills/session-start/SKILL.md` — Phase 8.5: Express Path Evaluation (activation logic + banner)
+- `skills/session-plan/SKILL.md` — Express Path Short-Circuit section (1-wave plan emission)
+- GitLab issue `#214` (foundation and codification)
 
 ## Defaults
 

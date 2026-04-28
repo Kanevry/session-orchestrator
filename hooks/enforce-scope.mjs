@@ -37,6 +37,10 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 
+import { shouldRunHook } from './_lib/profile-gate.mjs';
+// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+if (!shouldRunHook('enforce-scope')) process.exit(0);
+
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { isPathInside, relativeFromRoot } from '../scripts/lib/path-utils.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
