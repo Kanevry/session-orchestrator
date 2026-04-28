@@ -1,0 +1,71 @@
+# ~/.config/session-orchestrator/owner.yaml
+#
+# Per-user persona for the session-orchestrator plugin. Copy this file to
+# ~/.config/session-orchestrator/owner.yaml (or $XDG_CONFIG_HOME/...) and
+# fill in your values. NEVER commit this file to a project repo.
+#
+# Issue #174 (Sub-Epic #161 — Owner Persona Layer). Schema reference:
+# docs/owner-config-schema.md.
+
+# Schema version. MUST be 1. The plugin refuses to load mismatched versions.
+schema-version: 1
+
+owner:
+  # Required. Display name. 1-100 characters.
+  name: Your Name
+
+  # Optional. SHA256 hex digest of your email address. Used for cross-host
+  # identity correlation when sharing learnings (D4/C4). 64 hex chars exactly,
+  # or null to opt out. Plugin can compute this for you on first bootstrap.
+  email-hash: null
+
+  # Required. ISO-639-1 language code (e.g. "de", "en"). Optionally with a
+  # region tag like "en-US". Drives default response language in soul.md.
+  language: en
+
+tone:
+  # How direct should responses be. One of: direct | neutral | friendly.
+  # Default: neutral.
+  style: direct
+
+  # Optional free-form descriptor. Up to 200 chars. Examples:
+  # "austrian-pragmatic", "british-dry", "minimal-comments".
+  tonality: austrian-pragmatic
+
+efficiency:
+  # Caveman-inspired output dial. One of: lite | full | ultra.
+  #   lite  — minimum tokens, telegram style, why-use-many-token-when-few-do-trick.
+  #   full  — default, sentence-style narration.
+  #   ultra — full + extra context, narrative tone (ECC/teaching mode).
+  output-level: full
+
+  # Pre-tool-call narration intensity. One of: minimal | verbose.
+  preamble: minimal
+
+  # Inline code comments. One of: minimal | full.
+  comments-in-code: minimal
+
+hardware-sharing:
+  # Consent gate for sharing hardware-pattern learnings (Sub-Epic C+E).
+  # When true, the plugin may export anonymized hardware patterns (e.g.
+  # "Mac M1 16GB freezes at 8 parallel agents"). Default: false (off).
+  enabled: false
+
+  # 32-byte hex salt (64 chars), per-host. Used to derive a stable but
+  # anonymous host-class identifier. Generated on first bootstrap when
+  # hardware-sharing.enabled is set to true.
+  hash-salt: null
+
+defaults:
+  # Optional. Override the project's `test-command` from CLAUDE.md when no
+  # repo-local override exists. Up to 200 chars.
+  preferred-test-command: null
+
+  # Optional. Editor command for "open in editor" actions. Up to 50 chars.
+  preferred-editor: null
+
+metadata:
+  # Auto-set by the writer on first save (D2 bootstrap).
+  created_at: null
+  # Auto-bumped on every successful save.
+  updated_at: null

@@ -47,6 +47,7 @@ export default [
       ".codex/**",
       ".cursor/**",
       "docs/**",
+      "templates/**",
       "tests/**/*.fixture.*",
     ],
   },

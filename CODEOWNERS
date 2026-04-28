@@ -1,0 +1,27 @@
+# CODEOWNERS — Defines code review ownership
+# Docs: https://docs.gitlab.com/ee/user/project/codeowners/
+#
+# Format: <pattern> <@user-or-group>
+# Premium feature: Required approval from code owners on MRs
+
+# Default owner for everything
+* @bernhard
+
+# Infrastructure & CI/CD — extra review for changes
+.gitlab-ci.yml @bernhard
+Dockerfile @bernhard
+docker-compose*.yml @bernhard
+
+# Security-sensitive files — mandatory review
+.env.example @bernhard
+.gitleaks.toml @bernhard
+supabase/migrations/ @bernhard
+
+# AI/LLM configuration
+CLAUDE.md @bernhard
+.claude/ @bernhard
+.mcp.json @bernhard
+
+# Package dependencies — review for supply chain safety
+package.json @bernhard
+pnpm-lock.yaml @bernhard

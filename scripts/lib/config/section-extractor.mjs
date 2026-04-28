@@ -57,8 +57,8 @@ export function _parseKV(lines) {
   for (const line of lines) {
     if (!line.trim()) continue;
 
-    let key = '';
-    let value = '';
+    let key;
+    let value;
 
     // Format 1: - **key:** value
     const fmt1 = line.match(/^\s*-\s+\*\*([^*:]+):\*\*\s*(.*)/);

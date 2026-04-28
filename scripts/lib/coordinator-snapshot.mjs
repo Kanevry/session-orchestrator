@@ -216,7 +216,7 @@ export async function listSnapshots({ sessionId } = {}) {
   const cwd = process.cwd();
   const git = $({ cwd });
 
-  let output = '';
+  let output;
   try {
     // zx interpolates each template-literal word as a separate argv entry, so the
     // format string must be a single interpolated value to stay as one --format arg.
@@ -342,7 +342,7 @@ export async function gcSnapshots({ olderThanDays = 14 } = {}) {
   const msPerDay = 24 * 60 * 60 * 1000;
 
   for (const snapshot of snapshots) {
-    let ageMs = NaN;
+    let ageMs;
     try {
       ageMs = now - new Date(snapshot.createdAt).getTime();
     } catch {

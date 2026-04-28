@@ -45,3 +45,7 @@ docs/specs/
 # Nested vault-sync lockfile (CI runs `npm install` in skills/vault-sync/
 # fresh each run; no value pinning a lockfile for the sub-package)
 skills/vault-sync/package-lock.json
+
+# Environment
+.env.production
+.env.*.local

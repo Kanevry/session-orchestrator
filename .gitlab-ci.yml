@@ -21,6 +21,7 @@ stages:
   - test
   - verify
   - coverage
+  - scheduled
 
 variables:
   NODE_VERSION: "22"
@@ -183,3 +184,51 @@ schema-drift-check:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Stage: scheduled
+#
+# vault-watcher — daily watcher for vault-integration warn→strict flip (#306).
+#
+# Runs via GitLab CI Scheduled Pipeline. Configure in GitLab UI:
+#   CI/CD → Schedules → New schedule:
+#     Description: vault-watcher
+#     Cron: 0 7 * * *          (07:00 UTC = 09:00 Europe/Vienna)
+#     Target branch: main
+#     Variables: SCHEDULE_NAME = vault-watcher
+#
+# Required CI variable (masked + protected):
+#   WATCHER_GITLAB_TOKEN — project token with api + write_comments scope
+#   on infrastructure/session-orchestrator. Set in:
+#   GitLab → Settings → CI/CD → Variables → Add variable.
+#
+# Manual trigger for testing (GitLab UI):
+#   CI/CD → Pipelines → Run pipeline → add variable SCHEDULE_NAME=vault-watcher
+#
+# The schedule itself is controlled by the GitLab UI — no code change needed
+# to enable/disable. The job is dormant in all non-scheduled pipelines
+# thanks to the rule below.
+# ---------------------------------------------------------------------------
+
+vault-watcher:
+  stage: scheduled
+  image: node:24-alpine
+  before_script:
+    - apk add --no-cache git curl bash
+    # Install glab CLI (latest release for linux/amd64)
+    - >
+      curl -sL
+      "https://gitlab.com/gitlab-org/cli/-/releases/permalink/latest/downloads/glab_linux_amd64.tar.gz"
+      | tar xz -C /tmp
+      && mv /tmp/bin/glab /usr/local/bin/glab
+      && chmod +x /usr/local/bin/glab
+    # Configure glab to use this GitLab instance + token
+    - glab config set -g token "$WATCHER_GITLAB_TOKEN"
+    - glab config set -g gitlab_host "$CI_SERVER_HOST"
+    - npm ci
+  script:
+    - node scripts/vault-integration-watcher.mjs --verbose
+  variables:
+    GITLAB_TOKEN: $WATCHER_GITLAB_TOKEN
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_NAME == "vault-watcher"'

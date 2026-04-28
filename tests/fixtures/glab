@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+/**
+ * Stub glab binary for vault-integration-watcher tests.
+ * Reads fixture data from GLAB_FIXTURE_DIR.
+ *
+ * Supported invocations:
+ *   glab issue view <id> --output json
+ *   glab issue view <id> --comments --output json
+ *   glab issue note add <id> --message <body>
+ */
+import { readFileSync, existsSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const args = process.argv.slice(2);
+const fixtureDir = process.env.GLAB_FIXTURE_DIR;
+const callLog = process.env.GLAB_CALL_LOG;
+
+// Log call for assertion
+if (callLog) {
+  appendFileSync(callLog, JSON.stringify(args) + '\n');
+}
+
+// glab issue note add <id> --message <body>
+if (args[0] === 'issue' && args[1] === 'note' && args[2] === 'add') {
+  // Just succeed silently
+  process.exit(0);
+}
+
+// glab issue view <id> [--comments] --output json
+if (args[0] === 'issue' && args[1] === 'view') {
+  const id = args[2];
+  const isComments = args.includes('--comments');
+  const base = isComments ? `comments-${id}` : `issue-${id}`;
+  const file = join(fixtureDir, base + '.json');
+  if (existsSync(file)) {
+    process.stdout.write(readFileSync(file, 'utf8'));
+    process.exit(0);
+  }
+  // Fallback: generic issue
+  const fallback = join(fixtureDir, isComments ? 'comments-default.json' : 'issue-default.json');
+  if (existsSync(fallback)) {
+    process.stdout.write(readFileSync(fallback, 'utf8'));
+    process.exit(0);
+  }
+  process.stderr.write('stub glab: no fixture for ' + file + '\n');
+  process.exit(1);
+}
+
+process.stderr.write('stub glab: unrecognised args: ' + JSON.stringify(args) + '\n');
+process.exit(1);

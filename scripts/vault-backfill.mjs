@@ -254,7 +254,7 @@ async function promptForRepo(rl, repoPath, suggestedSlug) {
 
   process.stderr.write(`\n  Repo: ${repoPath}\n`);
 
-  let slug = '';
+  let slug;
   while (true) {
     const input = await ask(`  Slug [${suggestedSlug}]: `);
     slug = input || suggestedSlug;
@@ -262,7 +262,7 @@ async function promptForRepo(rl, repoPath, suggestedSlug) {
     process.stderr.write(`  Invalid slug — must match [a-z0-9]+(-[a-z0-9]+)*\n`);
   }
 
-  let tier = '';
+  let tier;
   while (true) {
     const input = await ask(`  Tier (top/active/archived) [active]: `);
     tier = input || 'active';

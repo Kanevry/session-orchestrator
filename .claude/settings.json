@@ -1,0 +1,124 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git stash:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git remote:*)",
+      "Bash(git merge:*)",
+      "Bash(pnpm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(jq:*)",
+      "Bash(glab:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(ssh:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(which:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh api repos/*/issues*:*)",
+      "Bash(gh api repos/*/pulls*:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "mcp__Ref__ref_search_documentation",
+      "mcp__Ref__ref_read_url",
+      "mcp__context7__*",
+      "mcp__playwright__*",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push --force origin main)",
+      "Bash(git push --force origin master)",
+      "Bash(git reset --hard)",
+      "Bash(git push --force)",
+      "Bash(DROP TABLE *)",
+      "Bash(TRUNCATE TABLE *)",
+      "Bash(docker system prune)",
+      "Bash(vercel *)",
+      "Bash(supabase *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git fetch --quiet 2>/dev/null; BRANCH=$(git branch --show-current 2>/dev/null); if [ -n \"$BRANCH\" ]; then BEHIND=$(git rev-list --count HEAD..origin/$BRANCH 2>/dev/null || echo 0); if [ \"$BEHIND\" -gt 0 ]; then echo \"Branch $BRANCH is $BEHIND commits behind origin.\"; fi; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.(ts|tsx|js|jsx)$'; then npx prettier --write \"$FILEPATH\" 2>/dev/null; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.env\\.example$'; then echo '.env.example modified. Reminder: update local .env if new vars added.'; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.(ts|tsx)$' && ! echo \"$FILEPATH\" | grep -qE '\\.(test|spec)\\.(ts|tsx)$'; then DIR=$(dirname \"$FILEPATH\"); BASE=$(basename \"$FILEPATH\" | sed 's/\\.[^.]*$//'); TESTFILE=\"${DIR}/${BASE}.test.ts\"; if [ ! -f \"$TESTFILE\" ]; then echo \"No co-located test file found. Consider: $TESTFILE\"; fi; fi"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=$(echo $CLAUDE_TOOL_INPUT | jq -r '.command // empty' 2>/dev/null); if echo \"$CMD\" | grep -qE 'rm\\s+-rf\\s+/|DROP\\s+(DATABASE|TABLE)|TRUNCATE\\s+TABLE|format\\s+c:|git\\s+push\\s+--force|docker\\s+system\\s+prune'; then echo '{\"decision\":\"deny\",\"reason\":\"Destructive command blocked by baseline hook\"}'; fi"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": ".",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"Claude Code wartet auf Input\" with title \"Claude Code\"' 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

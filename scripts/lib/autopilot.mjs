@@ -171,7 +171,7 @@ export function writeAutopilotJsonl(state, jsonlPath) {
   const dir = path.dirname(jsonlPath);
   mkdirSync(dir, { recursive: true });
 
-  let existing = '';
+  let existing;
   try {
     existing = readFileSync(jsonlPath, 'utf8');
   } catch {

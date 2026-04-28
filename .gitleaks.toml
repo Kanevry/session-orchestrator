@@ -1,0 +1,382 @@
+# Gitleaks Configuration — Baseline
+# Standardized secret detection for all project types
+# Copy to project root. Customize allowlists as needed.
+#
+# Usage: gitleaks detect --source . --verbose
+# CI:    gitleaks detect --source . --verbose --no-git
+
+title = "Baseline Gitleaks Configuration"
+
+[extend]
+# Extend the default gitleaks ruleset (covers 100+ secret patterns)
+useDefault = true
+
+# Global allowlist: patterns safe to ignore across all rules
+[allowlist]
+description = "Test credentials and CI mock values"
+
+regexes = [
+  # Generic test/placeholder credentials
+  "test[_-]?(key|secret|token|password)",
+  "placeholder",
+  "example",
+  "dummy",
+  "changeme",
+
+  # Supabase local/test references
+  "supabase\\.co",
+]
+
+# Paths that intentionally contain test/mock credentials
+paths = [
+  # CI configuration (variables are mock values)
+  ".gitlab-ci.yml",
+
+  # Test files
+  ".*\\.test\\.ts",
+  ".*\\.test\\.tsx",
+  ".*\\.spec\\.ts",
+  ".*\\.spec\\.tsx",
+  ".*/__tests__/.*",
+  ".*/__mocks__/.*",
+
+  # Documentation (skills may reference credential formats; rules are scanned)
+  "\\.claude/skills/.*\\.md",
+  "docs/.*\\.md",
+  "CLAUDE\\.md",
+
+  # Seed/fixture files
+  "seeds/.*",
+  "fixtures/.*",
+
+  # Lock files (package checksums, not secrets)
+  "pnpm-lock\\.yaml",
+  "package-lock\\.json",
+  "bun\\.lockb",
+]
+
+# Stripe live key detection (all projects that use Stripe)
+[[rules]]
+id = "baseline-stripe-live-key"
+description = "Stripe live secret key (production)"
+regex = '''sk_live_[A-Za-z0-9]{24,}'''
+severity = "CRITICAL"
+tags = ["stripe", "payment"]
+
+  [rules.allowlist]
+  paths = [
+    ".*\\.test\\.ts",
+    ".*\\.test\\.tsx",
+    ".*\\.spec\\.ts",
+    ".*\\.spec\\.tsx",
+    ".*/__tests__/.*",
+    "fixtures/.*",
+    "seeds/.*",
+  ]
+
+# Supabase service role key (bypasses RLS)
+[[rules]]
+id = "baseline-supabase-service-role"
+description = "Supabase service role key (bypasses RLS policies)"
+regex = '''(?i)supabase[_-]?service[_-]?role[_-]?key\s*[=:]\s*["']([A-Za-z0-9\.\-_]{40,})["']'''
+secretGroup = 1
+severity = "CRITICAL"
+tags = ["supabase", "rls-bypass"]
+
+  [rules.allowlist]
+  regexes = ["your[_-]supabase", "placeholder", "example"]
+
+# GitHub Personal Access Token (classic)
+[[rules]]
+id = "baseline-github-pat-classic"
+description = "GitHub Personal Access Token (classic)"
+regex = '''ghp_[A-Za-z0-9]{36,}'''
+severity = "CRITICAL"
+tags = ["github", "pat"]
+
+# GitHub Fine-grained Personal Access Token
+[[rules]]
+id = "baseline-github-pat-fine-grained"
+description = "GitHub Fine-grained Personal Access Token"
+regex = '''github_pat_[A-Za-z0-9_]{22,}'''
+severity = "CRITICAL"
+tags = ["github", "pat"]
+
+# Anthropic API Key
+[[rules]]
+id = "baseline-anthropic-api-key"
+description = "Anthropic API Key"
+regex = '''sk-ant-[A-Za-z0-9\-_]{20,}'''
+severity = "CRITICAL"
+tags = ["anthropic", "ai"]
+
+# Firebase / GCP Private Key
+[[rules]]
+id = "baseline-private-key-pem"
+description = "PEM-encoded private key (Firebase, GCP, etc.)"
+regex = '''-----BEGIN PRIVATE KEY-----'''
+severity = "CRITICAL"
+tags = ["gcp", "firebase", "pem"]
+
+# Google API Key
+[[rules]]
+id = "baseline-google-api-key"
+description = "Google API Key"
+regex = '''AIza[A-Za-z0-9\-_]{35}'''
+severity = "HIGH"
+tags = ["google", "api-key"]
+
+# GitLab Personal Access Token
+[[rules]]
+id = "baseline-gitlab-pat"
+description = "GitLab Personal Access Token"
+regex = '''glpat-[A-Za-z0-9\-_]{20,}'''
+severity = "CRITICAL"
+tags = ["gitlab", "pat"]
+
+# GitLab Deploy Token
+[[rules]]
+id = "baseline-gitlab-deploy-token"
+description = "GitLab Deploy Token"
+regex = '''gldt-[A-Za-z0-9\-_]{20,}'''
+severity = "HIGH"
+tags = ["gitlab", "deploy-token"]
+
+# Slack Webhook URL
+[[rules]]
+id = "slack-webhook"
+description = "Slack Webhook URL"
+regex = '''https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+'''
+tags = ["webhook", "slack"]
+
+# Discord Webhook URL
+[[rules]]
+id = "discord-webhook"
+description = "Discord Webhook URL"
+regex = '''https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+'''
+tags = ["webhook", "discord"]
+
+# GitLab Group Access Token
+[[rules]]
+id = "gitlab-group-access-token"
+description = "GitLab Group Access Token"
+regex = '''glgat-[A-Za-z0-9\-_]{20,}'''
+tags = ["token", "gitlab"]
+
+# Vercel Authentication Token
+[[rules]]
+id = "vercel-token"
+description = "Vercel Authentication Token"
+regex = '''(?i)(?:vercel[_-]?token|VERCEL_TOKEN)\s*[=:]\s*['\"]?[A-Za-z0-9]{24,}['\"]?'''
+tags = ["token", "vercel"]
+
+# MongoDB Connection String with credentials
+[[rules]]
+id = "baseline-mongodb-uri"
+description = "MongoDB connection string with embedded credentials"
+regex = '''mongodb(\+srv)?://[^:]+:[^@]+@[^\s"']+'''
+severity = "CRITICAL"
+tags = ["mongodb", "database"]
+
+  [rules.allowlist]
+  regexes = ["localhost", "127\\.0\\.0\\.1", "example\\.com", "placeholder"]
+
+# Docker Hub Access Token
+[[rules]]
+id = "baseline-dockerhub-token"
+description = "Docker Hub Personal Access Token"
+regex = '''dckr_pat_[A-Za-z0-9\-_]{20,}'''
+severity = "HIGH"
+tags = ["docker", "registry"]
+
+# OAuth Bearer Token (generic, high entropy)
+[[rules]]
+id = "baseline-oauth-bearer"
+description = "OAuth Bearer Token in Authorization header"
+regex = '''(?i)(?:authorization|bearer)\s*[:=]\s*["']?Bearer\s+[A-Za-z0-9\-_.~+/]{40,}["']?'''
+severity = "HIGH"
+tags = ["oauth", "bearer"]
+
+# Telegram Bot Token
+[[rules]]
+id = "baseline-telegram-bot-token"
+description = "Telegram Bot API Token"
+regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
+severity = "HIGH"
+tags = ["telegram", "bot"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "test"]
+
+# Slack Bot Token
+[[rules]]
+id = "baseline-slack-bot-token"
+description = "Slack Bot Token (xoxb)"
+regex = '''xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{24,}'''
+severity = "CRITICAL"
+tags = ["slack", "bot"]
+
+# Slack App Token
+[[rules]]
+id = "baseline-slack-app-token"
+description = "Slack App-level Token (xapp)"
+regex = '''xapp-[0-9]-[A-Z0-9]+-[0-9]+-[A-Za-z0-9]+'''
+severity = "HIGH"
+tags = ["slack", "app"]
+
+# Grafana API Key / Service Account Token
+[[rules]]
+id = "baseline-grafana-token"
+description = "Grafana API Key or Service Account Token"
+regex = '''(?:glsa_|eyJrIjoi)[A-Za-z0-9\-_]{20,}'''
+severity = "HIGH"
+tags = ["grafana", "monitoring"]
+
+# HashiCorp Vault Token
+[[rules]]
+id = "baseline-vault-token"
+description = "HashiCorp Vault Token"
+regex = '''(?:hvs\.|s\.)[A-Za-z0-9]{24,}'''
+severity = "CRITICAL"
+tags = ["vault", "secrets"]
+
+# Twilio API Key
+[[rules]]
+id = "baseline-twilio-api-key"
+description = "Twilio API Key"
+regex = '''SK[a-f0-9]{32}'''
+severity = "HIGH"
+tags = ["twilio", "api-key"]
+
+# Twilio Auth Token
+[[rules]]
+id = "baseline-twilio-auth-token"
+description = "Twilio Auth Token"
+regex = '''(?i)(?:twilio[_-]?auth[_-]?token)\s*[=:]\s*["']?[a-f0-9]{32}["']?'''
+severity = "CRITICAL"
+tags = ["twilio", "auth"]
+
+# RSA Private Key (PEM format)
+[[rules]]
+id = "baseline-rsa-private-key"
+description = "RSA Private Key in PEM format"
+regex = '''-----BEGIN RSA PRIVATE KEY-----'''
+severity = "CRITICAL"
+tags = ["rsa", "private-key", "pem"]
+
+# EC Private Key (PEM format)
+[[rules]]
+id = "baseline-ec-private-key"
+description = "EC Private Key in PEM format"
+regex = '''-----BEGIN EC PRIVATE KEY-----'''
+severity = "CRITICAL"
+tags = ["ec", "private-key", "pem"]
+
+# Firebase API Key
+[[rules]]
+id = "baseline-firebase-api-key"
+description = "Firebase API Key"
+regex = '''(?i)(?:firebase[_-]?api[_-]?key|FIREBASE_API_KEY)\s*[=:]\s*["']?AIza[A-Za-z0-9\-_]{35}["']?'''
+severity = "HIGH"
+tags = ["firebase", "api-key", "google"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "test", "your-api-key"]
+
+# AWS Access Key ID
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''AKIA[0-9A-Z]{16}'''
+tags = ["aws", "cloud"]
+
+# AWS Secret Access Key
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}'''
+tags = ["aws", "cloud"]
+
+# SendGrid API Key
+[[rules]]
+id = "sendgrid-api-key"
+description = "SendGrid API Key"
+regex = '''SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'''
+tags = ["sendgrid", "email"]
+
+# Auth0 Client Secret
+[[rules]]
+id = "auth0-client-secret"
+description = "Auth0 Client Secret"
+regex = '''(?i)(auth0|a0)[\w]*[_-]?(client|secret)[_-]?\w*\s*[:=]\s*["\']?[a-zA-Z0-9_-]{32,}["\']?'''
+tags = ["auth0", "authentication"]
+
+# OpenAI API Key (new sk-proj- format, 2024+)
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API Key (sk-proj- prefix)"
+regex = '''sk-proj-[A-Za-z0-9\-_]{40,}'''
+tags = ["openai", "ai", "api-key"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "sk-proj-fake", "sk-proj-test"]
+
+# Hugging Face User Access Token
+[[rules]]
+id = "huggingface-token"
+description = "Hugging Face User Access Token"
+regex = '''hf_[A-Za-z0-9]{34,}'''
+tags = ["huggingface", "ai", "api-key"]
+
+# Cloudflare API Token (context-dependent)
+[[rules]]
+id = "cloudflare-api-token"
+description = "Cloudflare API Token"
+regex = '''(?i)(?:cloudflare[_-]?(?:api[_-]?token|token)|CF_API_TOKEN)\s*[=:]\s*["']?[A-Za-z0-9_-]{40,}["']?'''
+tags = ["cloudflare", "api-token"]
+
+# OPENSSH Private Key
+[[rules]]
+id = "baseline-openssh-private-key"
+description = "OpenSSH Private Key in PEM format"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+severity = "CRITICAL"
+tags = ["openssh", "private-key", "pem"]
+
+# JWT Token (compact serialization)
+[[rules]]
+id = "baseline-jwt-token"
+description = "JSON Web Token (compact serialization) — may contain sensitive claims"
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+severity = "HIGH"
+tags = ["jwt", "token"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "test", "mock"]
+  paths = [
+    ".*\\.test\\.ts",
+    ".*\\.spec\\.ts",
+    ".*/__tests__/.*",
+  ]
+
+# Base64-encoded API Key (high entropy, assigned context)
+[[rules]]
+id = "baseline-base64-api-key"
+description = "Base64-encoded API key in assignment context"
+regex = '''(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?key)\s*[=:]\s*["']?[A-Za-z0-9+/]{40,}={0,2}["']?'''
+severity = "HIGH"
+tags = ["api-key", "base64"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "test", "changeme", "your-"]
+
+# High-entropy hex string in assignment context (64+ chars)
+[[rules]]
+id = "baseline-hex-secret"
+description = "High-entropy hex string in secret assignment context"
+regex = '''(?i)(?:secret|private[_-]?key|signing[_-]?key|encryption[_-]?key|hmac[_-]?key)\s*[=:]\s*["']?[a-f0-9]{64,}["']?'''
+severity = "HIGH"
+tags = ["hex", "secret"]
+
+  [rules.allowlist]
+  regexes = ["example", "placeholder", "test", "0{64}"]
