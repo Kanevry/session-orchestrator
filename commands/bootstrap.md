@@ -13,6 +13,8 @@ The flags below cover special cases (re-adopting an existing repo, upgrading a t
 
 You are running the bootstrap skill directly. The user has invoked `/bootstrap` with arguments: **$ARGUMENTS**.
 
+> **Instruction file alias:** Bootstrap creates and reads `CLAUDE.md` (or `AGENTS.md` on Codex CLI). The two are transparent aliases — pick one, never both. Resolution rule: see `skills/_shared/instruction-file-resolution.md`.
+
 ## Standard usage (no flags)
 
 This is the path 95 % of users want.
@@ -36,7 +38,7 @@ Only use a flag if you have one of the situations described.
 | Flag | When to use it |
 |------|----------------|
 | `--upgrade <tier>` | You bootstrapped `fast` earlier and now need `standard` or `deep`. Idempotent — writes only the delta. Refuses downgrade. Valid: `fast → standard`, `fast → deep`, `standard → deep`. |
-| `--retroactive` | The repo already has `CLAUDE.md` + `## Session Config` but no `bootstrap.lock` (manually bootstrapped before the gate existed). Writes the lock based on file inventory; **makes no scaffolding changes**. Commit: `chore: bootstrap lock (retroactive)`. |
+| `--retroactive` | The repo already has `CLAUDE.md` (or `AGENTS.md` on Codex CLI) + `## Session Config` but no `bootstrap.lock` (manually bootstrapped before the gate existed). Writes the lock based on file inventory; **makes no scaffolding changes**. Commit: `chore: bootstrap lock (retroactive)`. |
 | `--sync-rules` | Pull canonical rules from the plugin's `rules/` library into `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone — does not touch `bootstrap.lock`. |
 | `--ecosystem-health` | Run the ecosystem-health wizard: detects CI provider + package manager, prompts for health endpoints, pipelines, and critical issue labels. Writes the config block + `.orchestrator/policy/ecosystem.json`. No scaffolding, no auto-commit. |
 | `--fast` / `--standard` / `--deep` | Skip the tier confirmation question (e.g., for scripted runs). Equivalent to running `/bootstrap` and selecting that option. |

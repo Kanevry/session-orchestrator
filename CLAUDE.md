@@ -1,23 +1,12 @@
 # Session Orchestrator Plugin
 
-Claude Code plugin for session-level orchestration. This is a **plugin repo** — not an application.
+> Project-instruction file resolution: this is `CLAUDE.md` on Claude Code / Cursor IDE; the equivalent file on Codex CLI is `AGENTS.md`. See [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md).
 
-> **Für Installation, CLI-Nutzung und Kommando-Referenz:** Siehe [`README.md`](./README.md).
+> Für Installation, CLI-Nutzung und Architektur siehe [`README.md`](./README.md). Diese Datei enthält nur die runtime-kritischen Abschnitte, die von `skills/_shared/config-reading.md` gelesen werden.
 
 ## Structure
 
-- `skills/` — 25 skills (bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, **architecture**, **domain-model**, **ubiquitous-language**, autopilot, mode-selector, repo-audit)
-- `commands/` — 10 commands (/session, /go, /close, /discovery, /plan, /evolve, /bootstrap, /harness-audit, /autopilot, /repo-audit)
-- `agents/` — 7 agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer, docs-writer)
-- `hooks/` — 6 event matchers covering 7 hook handlers: SessionStart (banner + init), PreToolUse/Edit|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events)
-- `.orchestrator/policy/` — runtime policy files (e.g. `blocked-commands.json`, 13 rules for destructive-command guard)
-- `.claude/rules/` — always-on contributor rules (e.g. `parallel-sessions.md`)
-
-## Development
-
-Edit skills directly. Test by running `/session feature` in any project repo.
-
-Skills are loaded by Claude Code from the plugin directory — no build step needed.
+See [`README.md`](./README.md#components) for the canonical inventory (25 skills, 10 commands, 7 agents, 6 hook event matchers / 7 handlers). Runtime layout: `skills/`, `commands/`, `agents/`, `hooks/`, `.orchestrator/policy/`, `.claude/rules/`.
 
 ## Destructive-Command Guard
 
@@ -27,18 +16,7 @@ Skills are loaded by Claude Code from the plugin directory — no build step nee
 allow-destructive-ops: true
 ```
 
-Rule source of truth: `.claude/rules/parallel-sessions.md` (PSA-003). See issue #155.
-
-## Rules
-
-- `.claude/rules/parallel-sessions.md` — PSA-001/002/003/004 parallel-session discipline. Vendored to all consumer repos via bootstrap (issue #155).
-
-## Key Conventions
-
-- Skills use Markdown with YAML frontmatter
-- Commands use `$ARGUMENTS` for user input
-- Agent definitions need `<example>` blocks in description
-- Hooks use the Claude Code hooks.json format
+Rule source of truth: [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003). See README § Destructive-Command Guard for the full narrative.
 
 ## Agent Authoring Rules
 
@@ -74,29 +52,6 @@ Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-de
 - **v3.2.0 GitHub release (2026-04-27 evening):** Consolidated stable cut covering 135 commits since v2.0.0. `package.json` 3.0.0-dev → 3.2.0, README badge sync, hooks/{hooks,hooks-codex}.json banner version sync (caught by `tests/hooks/banner-version-sync.test.mjs` on first quality run), `CHANGELOG.md` `[3.0.0] - Unreleased` + `[Unreleased] (dev trail)` blocks consolidated into a single `[3.2.0] - 2026-04-27` block (Added/Changed/Removed/Security/Quality/Migration sections covering v3.0+v3.1+v3.2 surfaces); old dev trail demoted to `## Internal Development Trail (pre-v3.2.0)` appendix. Public-voice `RELEASE_NOTES_v3.2.0.md` (4.3 KB) drafted (zero `gitlab.gotzendorfer.at`/`GH#`/`infrastructure/` refs), consumed by `gh release create v3.2.0 --latest --notes-file ...` then deleted. Tag pushed to both `github` (Kanevry/session-orchestrator) and `origin` (gitlab) — v3.0.0-rc.1 auto-demoted from Latest → Pre-release via `--latest` flag. 4 waves coord-direct, ~25 min, 1871 tests still green. Commit `e9a38bf chore(release): v3.2.0 — consolidated stable`.
 
 For full release history, architectural decisions, and meta-audit narratives see [[01-projects/session-orchestrator/decisions]] in the Meta-Vault. The PRDs for v3.2 Autopilot live at [[01-projects/session-orchestrator/prd/2026-04-24-state-md-recommendations-contract|Phase A]] / [[01-projects/session-orchestrator/prd/2026-04-25-mode-selector|Phase B]] / [[01-projects/session-orchestrator/prd/2026-04-25-autopilot-loop|Phase C]].
-
-## v2.0 Features
-
-- Session persistence via STATE.md + session memory files
-- Scope & command enforcement hooks (PreToolUse)
-- Circuit breaker: maxTurns limit + spiral detection
-- Worktree isolation for parallel agent execution
-- 5 new Session Config fields (persistence, enforcement, circuit breaker, worktrees, ecosystem-health)
-- Session metrics tracking with historical trends (sessions.jsonl)
-- Coordinator snapshots: pre-dispatch `git stash create` refs under `refs/so-snapshots/` for crash recovery (#196)
-- CWD-drift guard: `restoreCoordinatorCwd` after every worktree-isolated Agent dispatch (#219)
-- Harness audit scorecard: deterministic 7-category rubric (RUBRIC_VERSION pinned), JSON to stdout + JSONL trend in `.orchestrator/metrics/audit.jsonl`, `/discovery audit` probe, `/harness-audit` command (#210)
-- Docs-orchestrator skill + docs-writer agent: audience-split (User/Dev/Vault) doc generation within sessions. Opt-in via `docs-orchestrator.enabled`. Source-cited only (diff/git-log/session-memory/affected-files); sourceless sections get `<!-- REVIEW: source needed -->`. Canonical four source types with hard abort when ALL absent. Three hook points: session-start Phase 2.5 (audience detection + AskUserQuestion, #233), session-plan Step 1.5/1.8 (Docs role classification + docs-writer auto-match + machine-readable `### Docs Tasks` SSOT emission, #234), session-end Phase 3.2 (per-task ok/partial/gap verification, mode warn/strict/off, #235). Config schema fields documented at `docs/session-config-reference.md § Docs Orchestrator` (#236). Umbrella #229 + foundation #230.
-- Isolation:none default for new-directory waves (#243): `wave-executor/wave-loop.md` Pre-Dispatch New-Directory Detection inspects each agent's file scope — if ANY agent's target parent directory doesn't exist AND `configIsolation: 'auto'`, forces `isolation: 'none'` (NOT worktree). Avoids the Claude Code Agent-tool merge-back regression where new-dir writes silently fail to sync back. Enforcement auto-promotes `warn` → `strict` to keep the scope hook hard. Explicit `isolation: 'worktree'` overrides are honored with a `⚠` warning. 3rd-consecutive-session learning (conf 0.90).
-- Vault-staleness discovery probes: `/discovery vault` activates two `.mjs` probes — `vault-staleness` flags 01-projects with `lastSync` age > 24h; `vault-narrative-staleness` flags `context.md`/`decisions.md`/`people.md` by tier thresholds (top=30d, active=60d, archived=180d). JSONL under `.orchestrator/metrics/vault-*.jsonl` (#232)
-- Vault-backfill CLI (#241): `scripts/vault-backfill.mjs` scans configured GitLab groups (`vault-integration.gitlab-groups`), dry-run by default, `--apply` generates canonical `.vault.yaml` from projects-baseline template per repo, `--yes <manifest>` skips confirmation. Surfaced as `/plan retro` sub-mode via `skills/plan/mode-retro.md` Phase 1.6 (vault-backfill path). Umbrella #229.
-- Session-end Phase 2.3 vault staleness check (#242): opt-in via `vault-staleness.enabled: true`; runs both `vault-staleness` + `vault-narrative-staleness` probes via Node import at close time. `mode: warn` surfaces findings in the Phase 6 Final Report Docs Health line; `mode: strict` blocks session-end with AskUserQuestion override. Umbrella #229.
-- Architecture-DDD-Trio (Epic #309, derived from `mattpocock/skills@90ea8ee`, MIT): three coordinated skills + a discovery probe for AI-navigable codebases. (a) `architecture` surfaces *deepening opportunities* (Ousterhout — shallow modules, hypothetical seams, pass-through adapters) using a precise vocabulary from `LANGUAGE.md` (Module / Interface / Implementation / Depth / Seam / Adapter / Leverage / Locality). (b) `domain-model` runs grilling sessions that stress-test plans against the existing domain model, sharpens fuzzy terminology inline, and offers ADRs sparingly under a 3-criteria gate (`disable-model-invocation: true` — explicit-invocation only). (c) `ubiquitous-language` extracts a DDD glossary from the current conversation into `UBIQUITOUS_LANGUAGE.md`, flagging ambiguities and synonyms (`disable-model-invocation: true`). (d) `skills/discovery/probes-arch.md` gains an `architectural-friction` probe with concrete grep regex for shallow-module / pass-through-adapter / one-adapter-seam, whose `recommended_fix` routes to the `architecture` skill. Vendor inventory and full upstream MIT notice live in repo-root `NOTICE`. PRD: `docs/prd/2026-04-27-architecture-ddd-trio.md`.
-- Adaptive wave sizing based on complexity scoring
-- Cross-session learning system with confidence-based intelligence
-- Intelligent agent dispatch: project agents > plugin agents > general-purpose
-- Agent-mapping Session Config for explicit role-to-agent binding
-- Model selection matrix (haiku/sonnet/opus per task type)
 
 ## Session Config
 

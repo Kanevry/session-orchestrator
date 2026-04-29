@@ -1,8 +1,10 @@
 /**
  * Agent frontmatter validator — plain-JS, no Zod (issue #189).
  *
- * Validates `.claude/agents/*.md` frontmatter against the CLAUDE.md Agent
- * Authoring Rules. Catches the two most common silent-failure pitfalls:
+ * Validates `.claude/agents/*.md` frontmatter against the project-instruction
+ * file's Agent Authoring Rules (CLAUDE.md, or AGENTS.md on Codex CLI — see
+ * skills/_shared/instruction-file-resolution.md). Catches the two most common
+ * silent-failure pitfalls:
  *   (a) `tools` as a JSON array instead of a comma-separated string
  *   (b) `description` as a YAML block scalar (`>` or `|`) instead of an
  *       inline string

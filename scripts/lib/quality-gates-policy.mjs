@@ -5,8 +5,9 @@
  * Consumed by scripts/run-quality-gate.sh and the quality-gates skill.
  *
  * Policy-file-first: when a valid policy exists, its commands take precedence
- * over CLAUDE.md Session Config. Falls back to caller-provided defaults when
- * the file is missing or malformed.
+ * over the project-instruction file's Session Config (CLAUDE.md, or AGENTS.md
+ * on Codex CLI — see skills/_shared/instruction-file-resolution.md). Falls
+ * back to caller-provided defaults when the file is missing or malformed.
  *
  * Never throws.
  */
@@ -79,8 +80,9 @@ export function resolveCommand(policy, key, fallback) {
 }
 
 /**
- * Maps a CLAUDE.md Session Config key (e.g. "test-command") to the policy-file
- * key ("test"). Used by run-quality-gate.sh via shell.
+ * Maps a Session Config key (e.g. "test-command") from the project-instruction
+ * file (CLAUDE.md or AGENTS.md alias) to the policy-file key ("test"). Used by
+ * run-quality-gate.sh via shell.
  *
  * @param {string} configKey
  * @returns {"test"|"typecheck"|"lint"|null}

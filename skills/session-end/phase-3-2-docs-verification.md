@@ -2,6 +2,8 @@
 
 > Skip this subsection if `docs-orchestrator.enabled` config is not `true` (default: `false`). Also skip entirely if `docs-orchestrator.mode` is `off`.
 
+> Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). The Dev audience target listed below resolves to whichever file the repo uses.
+
 ## Step 1 — Load docs-tasks SSOT
 
 Read `docs-tasks` from STATE.md frontmatter. This field is written by wave-executor Pre-Wave 1b when `docs-orchestrator.enabled: true` and session-plan emitted a `### Docs Tasks (machine-readable)` block.
@@ -56,7 +58,7 @@ The following mini-table mirrors `skills/docs-orchestrator/audience-mapping.md` 
 | Audience | Target file patterns |
 |----------|----------------------|
 | `user` | `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md` |
-| `dev` | `CLAUDE.md`, `docs/dev/**/*.md`, `docs/adr/**/*.md` |
+| `dev` | `CLAUDE.md` (or `AGENTS.md` on Codex CLI), `docs/dev/**/*.md`, `docs/adr/**/*.md` |
 | `vault` | `<vault>/01-projects/<slug>/context.md`, `<vault>/01-projects/<slug>/decisions.md`, `<vault>/01-projects/<slug>/people.md` |
 
 Each `docs-task` carries its own `target-pattern` field (set during session-plan Step 1.8, derived from the audience-mapping table above). Use `task.target-pattern` as the primary match target; the table above is for human reference and fallback when `target-pattern` is absent.

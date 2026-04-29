@@ -129,6 +129,10 @@ export function runCategory5(root) {
         { present: false },
         'skills/_shared/bootstrap-gate.md missing'));
     } else {
+      // CLAUDE.md is the canonical Claude-Code-side name; AGENTS.md is the
+      // Codex CLI alias (skills/_shared/instruction-file-resolution.md).
+      // bootstrap-gate.md must reference the canonical name; presence of the
+      // alias is checked separately by the alias-coverage sweep test.
       const required = ['CLAUDE.md', 'Session Config', 'bootstrap.lock'];
       const found = required.filter((s) => text.includes(s));
       if (found.length === 3) {

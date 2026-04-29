@@ -1,5 +1,7 @@
 # Phase 8.5: Express Path Evaluation (#214)
 
+> Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references to `CLAUDE.md` below apply to whichever file the repo uses.
+
 After the user confirms the session type and scope via the Q&A above, evaluate whether the **Express Path** applies before handing off to session-plan. The express path collapses the full 5-wave plan into a single coordinator-direct phase for lightweight sessions.
 
 **Activation conditions (ALL three must be true):**
@@ -10,7 +12,7 @@ After the user confirms the session type and scope via the Q&A above, evaluate w
 
 **Backward compat:** when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs as before.
 
-**Historical context:** The 13 prior coordinator-direct sessions documented in `CLAUDE.md` (2026-04 series — vault-mirror GH#31, phased-rollout #307, v3.2.0 release, etc.) were all running this pattern implicitly: no wave decomposition, coordinator executes tasks directly in sequence. This phase codifies what was already proven to work.
+**Historical context:** The 13 prior coordinator-direct sessions documented in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series — vault-mirror GH#31, phased-rollout #307, v3.2.0 release, etc.) were all running this pattern implicitly: no wave decomposition, coordinator executes tasks directly in sequence. This phase codifies what was already proven to work.
 
 **When Express Path activates:**
 

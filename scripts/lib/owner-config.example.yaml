@@ -57,8 +57,9 @@ hardware-sharing:
   hash-salt: null
 
 defaults:
-  # Optional. Override the project's `test-command` from CLAUDE.md when no
-  # repo-local override exists. Up to 200 chars.
+  # Optional. Override the project's `test-command` from CLAUDE.md (or
+  # AGENTS.md on Codex CLI) when no repo-local override exists. Up to 200
+  # chars. See skills/_shared/instruction-file-resolution.md for the alias rule.
   preferred-test-command: null
 
   # Optional. Editor command for "open in editor" actions. Up to 50 chars.

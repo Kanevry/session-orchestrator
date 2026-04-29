@@ -10,7 +10,7 @@
  * Covered cases:
  *   1. Stop with session_id — record has event="stop", session_id, wave, duration_ms
  *   2. Stop without session_id — record has event="stop", no session_id key
- *   3. SubagentStop with agent_name — record has event="subagent_stop", agent=<name>
+ *   3. SubagentStop with agent_type — record has event="subagent_stop", agent=<type>
  *   4. Missing / empty stdin — exits 0, writes a stop record (graceful degradation)
  *   5. git info unavailable (non-git dir) — exits 0, record omits branch/commit
  *   6. Discriminator via hook_event_name="SubagentStop" — writes subagent_stop record
@@ -257,15 +257,15 @@ describe('Stop event without session_id', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. SubagentStop with agent_name (discriminated by field presence)
+// 3. SubagentStop with agent_type (discriminated by field presence)
 // ---------------------------------------------------------------------------
 
-describe('SubagentStop via agent_name field', { timeout: 15000 }, () => {
+describe('SubagentStop via agent_type field', { timeout: 15000 }, () => {
   it('exits 0', async () => {
     const dir = await track(await mkGitDir());
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ agent_name: 'code-implementer' }),
+      stdin: JSON.stringify({ agent_type: 'code-implementer' }),
     });
     expect(result.code).toBe(0);
   });
@@ -274,17 +274,17 @@ describe('SubagentStop via agent_name field', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ agent_name: 'code-implementer' }),
+      stdin: JSON.stringify({ agent_type: 'code-implementer' }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('subagent_stop');
   });
 
-  it('record includes agent field with the agent_name value', async () => {
+  it('record includes agent field with the agent_type value', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ agent_name: 'test-writer' }),
+      stdin: JSON.stringify({ agent_type: 'test-writer' }),
     });
     const record = await readLastEvent(dir);
     expect(record.agent).toBe('test-writer');
@@ -294,7 +294,7 @@ describe('SubagentStop via agent_name field', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ agent_name: 'security-reviewer' }),
+      stdin: JSON.stringify({ agent_type: 'security-reviewer' }),
     });
     const record = await readLastEvent(dir);
     expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
@@ -310,7 +310,7 @@ describe('SubagentStop via hook_event_name field', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_name: 'ui-developer' }),
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'ui-developer' }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('subagent_stop');
@@ -439,8 +439,8 @@ describe('webhook — CLANK_EVENT_SECRET set', { timeout: 15000 }, () => {
 describe('sequential event accumulation', { timeout: 20000 }, () => {
   it('two runs produce two lines in events.jsonl', async () => {
     const dir = await track(await mkGitDir());
-    await runHook({ projectDir: dir, stdin: JSON.stringify({ agent_name: 'agent-1' }) });
-    await runHook({ projectDir: dir, stdin: JSON.stringify({ agent_name: 'agent-2' }) });
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ agent_type: 'agent-1' }) });
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ agent_type: 'agent-2' }) });
     const events = await readAllEvents(dir);
     expect(events).toHaveLength(2);
     expect(events[0].agent).toBe('agent-1');
@@ -449,15 +449,56 @@ describe('sequential event accumulation', { timeout: 20000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. SubagentStop with unknown agent (missing agent_name)
+// 10. SubagentStop with unknown agent (missing agent_type)
 // ---------------------------------------------------------------------------
 
-describe('SubagentStop with missing agent_name', { timeout: 15000 }, () => {
-  it('uses "unknown" as agent value when agent_name is absent', async () => {
+describe('SubagentStop with missing agent_type', { timeout: 15000 }, () => {
+  it('uses "unknown" as agent value when agent_type is absent', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop' }),
+    });
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('subagent_stop');
+    expect(record.agent).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Issue #32 regression — Claude Code passes agent_type, not agent_name
+// ---------------------------------------------------------------------------
+
+describe('issue #32 — agent_type is the upstream contract', { timeout: 15000 }, () => {
+  it('positive path: hook_event_name=SubagentStop + agent_type=code-implementer → record.agent=code-implementer', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'code-implementer' }),
+    });
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('subagent_stop');
+    expect(record.agent).toBe('code-implementer');
+  });
+
+  it('negative path: SubagentStop without agent_type → record.agent="unknown" (graceful fallback)', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop' }),
+    });
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('subagent_stop');
+    expect(record.agent).toBe('unknown');
+  });
+
+  it('regression guard: legacy agent_name field is NOT honored — record.agent="unknown"', async () => {
+    // This test pins the contract change. If the handler ever falls back to
+    // input.agent_name again, this assertion will fail loudly.
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_name: 'legacy-name' }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('subagent_stop');

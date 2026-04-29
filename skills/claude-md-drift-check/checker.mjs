@@ -12,6 +12,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -27,8 +28,10 @@ function parseArgs(argv) {
     skipIssueRefs: false,
     skipSessionFiles: false,
     skipCommandCount: false,
+    skipSessionConfigParity: false,
     repo: null,
     commandsDir: null,
+    configTemplate: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -36,22 +39,23 @@ function parseArgs(argv) {
     else if (a === '--include-path') out.includePaths.push(argv[++i]);
     else if (a === '--repo') out.repo = argv[++i];
     else if (a === '--commands-dir') out.commandsDir = argv[++i];
+    else if (a === '--config-template') out.configTemplate = argv[++i];
     else if (a === '--skip-path-resolver') out.skipPathResolver = true;
     else if (a === '--skip-project-count') out.skipProjectCount = true;
     else if (a === '--skip-issue-refs') out.skipIssueRefs = true;
     else if (a === '--skip-session-files') out.skipSessionFiles = true;
     else if (a === '--skip-command-count') out.skipCommandCount = true;
+    else if (a === '--skip-session-config-parity') out.skipSessionConfigParity = true;
     else if (a === '--help' || a === '-h') {
-      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--skip-*]\n');
+      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--config-template PATH] [--skip-*]\n');
       process.exit(0);
     } else {
       process.stderr.write(`{"status":"infra-error","reason":"unknown arg: ${a}"}\n`);
       process.exit(2);
     }
   }
-  if (out.includePaths.length === 0) {
-    out.includePaths = ['CLAUDE.md', '_meta/**/*.md'];
-  }
+  // Defaults for includePaths are seeded post-vaultDir resolution so the
+  // instruction file (CLAUDE.md or AGENTS.md alias) can be alias-resolved.
   return out;
 }
 
@@ -83,6 +87,52 @@ function walkDir(dir, visit) {
     if (entry.isDirectory()) walkDir(full, visit);
     else if (entry.isFile()) visit(full);
   }
+}
+
+/**
+ * Extract the YAML block under `## Session Config` from a Markdown document.
+ * Tries fenced YAML first (```yaml ... ```), then falls back to raw body up
+ * to the next `^## ` heading or EOF.
+ *
+ * Returns { body: string, headingLine: number } or null when no heading found.
+ */
+function extractSessionConfigBlock(content) {
+  const lines = content.split('\n');
+  let headingLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+Session Config\b/.test(lines[i])) {
+      headingLine = i + 1; // 1-based line number for error reporting
+      break;
+    }
+  }
+  if (headingLine === -1) return null;
+
+  // Try fenced YAML first.
+  const fenced = content.match(/^## Session Config\s*\n```ya?ml\n([\s\S]*?)\n```/m);
+  if (fenced) return { body: fenced[1], headingLine };
+
+  // Fallback: raw body up to next `## ` heading or EOF.
+  const startIdx = headingLine; // index *after* heading line (0-based)
+  let endIdx = lines.length;
+  for (let i = startIdx; i < lines.length; i++) {
+    if (/^##\s+/.test(lines[i])) { endIdx = i; break; }
+  }
+  const body = lines.slice(startIdx, endIdx).join('\n');
+  return { body, headingLine };
+}
+
+/**
+ * Extract top-level YAML keys from a YAML body. Only column-0 keys are
+ * collected (indented keys are children and ignored).
+ */
+function extractTopLevelKeys(body) {
+  const keys = [];
+  const re = /^([A-Za-z][\w-]*):/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    keys.push(m[1]);
+  }
+  return keys;
 }
 
 function classifySection(heading) {
@@ -132,14 +182,32 @@ function main() {
     process.exit(2);
   }
 
+  // Alias-aware instruction file resolution (issue #33).
+  // CLAUDE.md (Claude Code / Cursor IDE) and AGENTS.md (Codex CLI) are
+  // transparent aliases — see skills/_shared/instruction-file-resolution.md.
+  const instr = resolveInstructionFile(vaultDir); // {path, kind} | null
+  const resolvedPath = instr ? instr.path : null;
+  const resolvedKind = instr ? instr.kind : null;
+
   if (args.mode === 'off') {
-    process.stdout.write(JSON.stringify({ status: 'skipped-mode-off', mode: 'off', vault_dir: vaultDir }) + '\n');
+    process.stdout.write(JSON.stringify({
+      status: 'skipped-mode-off', mode: 'off', vault_dir: vaultDir,
+      resolved_path: resolvedPath, resolved_kind: resolvedKind,
+    }) + '\n');
     process.exit(0);
   }
 
   if (!existsSync(vaultDir) || !statSync(vaultDir).isDirectory()) {
     process.stderr.write(`{"status":"infra-error","reason":"VAULT_DIR does not exist: ${vaultDir}"}\n`);
     process.exit(2);
+  }
+
+  // Seed default includePaths post-vaultDir resolution (alias-aware).
+  if (args.includePaths.length === 0) {
+    args.includePaths = [
+      ...(instr ? [relative(vaultDir, instr.path)] : []),
+      '_meta/**/*.md',
+    ];
   }
 
   const scopeFiles = resolveScopeFiles(vaultDir, args.includePaths);
@@ -190,18 +258,70 @@ function main() {
   if (!args.skipSessionFiles) checksRun.push('session-file-existence');
   if (!args.skipCommandCount && actualCommandCount !== null) checksRun.push('command-count');
 
-  if (scopeFiles.length === 0) {
-    process.stdout.write(JSON.stringify({
-      status: 'skipped', mode: args.mode, vault_dir: vaultDir,
-      files_scanned: 0, checks_run: checksRun, checks_skipped: checksSkipped,
-      errors: [], warnings: [], reason: 'no scope files matched',
-    }) + '\n');
-    process.exit(0);
-  }
-
   const errors = [];
   const warnings = [];
   const issueCache = new Map();
+
+  // Check 6: session-config-parity (issue #30) — diff top-level keys under
+  // `## Session Config` between the canonical template and the local
+  // instruction file. Surface missing keys as parity errors.
+  let configParityRan = false;
+  if (!args.skipSessionConfigParity) {
+    const templatePath = args.configTemplate
+      ? resolve(args.configTemplate)
+      : join(vaultDir, 'docs', 'session-config-template.md');
+    if (!instr) {
+      checksSkipped.push('session-config-parity: no instruction file');
+    } else if (!existsSync(templatePath) || !statSync(templatePath).isFile()) {
+      checksSkipped.push('session-config-parity: no docs/session-config-template.md found');
+    } else {
+      const templateContent = readFileSync(templatePath, 'utf8');
+      const localContent = readFileSync(instr.path, 'utf8');
+      const tplBlock = extractSessionConfigBlock(templateContent);
+      const localBlock = extractSessionConfigBlock(localContent);
+      if (!tplBlock) {
+        checksSkipped.push('session-config-parity: template has no ## Session Config block');
+      } else if (!localBlock) {
+        // Treat absent local block as "every template key missing".
+        configParityRan = true;
+        const tplKeys = extractTopLevelKeys(tplBlock.body);
+        const rel = relative(vaultDir, instr.path);
+        for (const key of tplKeys) {
+          errors.push({
+            check: 'session-config-parity', file: rel, line: 1,
+            message: `Session Config missing top-level key '${key}' (present in docs/session-config-template.md)`,
+            extracted: key,
+          });
+        }
+      } else {
+        configParityRan = true;
+        const tplKeys = extractTopLevelKeys(tplBlock.body);
+        const localKeys = new Set(extractTopLevelKeys(localBlock.body));
+        const missing = tplKeys.filter((k) => !localKeys.has(k));
+        const rel = relative(vaultDir, instr.path);
+        for (const key of missing) {
+          errors.push({
+            check: 'session-config-parity', file: rel, line: localBlock.headingLine,
+            message: `Session Config missing top-level key '${key}' (present in docs/session-config-template.md)`,
+            extracted: key,
+          });
+        }
+      }
+    }
+  } else {
+    checksSkipped.push('session-config-parity: explicitly skipped');
+  }
+  if (configParityRan) checksRun.push('session-config-parity');
+
+  if (scopeFiles.length === 0) {
+    process.stdout.write(JSON.stringify({
+      status: 'skipped', mode: args.mode, vault_dir: vaultDir,
+      resolved_path: resolvedPath, resolved_kind: resolvedKind,
+      files_scanned: 0, checks_run: checksRun, checks_skipped: checksSkipped,
+      errors, warnings, reason: 'no scope files matched',
+    }) + '\n');
+    process.exit(errors.length > 0 && args.mode === 'hard' ? 1 : 0);
+  }
 
   for (const abs of scopeFiles) {
     const rel = relative(vaultDir, abs);
@@ -314,6 +434,7 @@ function main() {
   const status = errors.length === 0 ? 'ok' : 'invalid';
   const result = {
     status, mode: args.mode, vault_dir: vaultDir,
+    resolved_path: resolvedPath, resolved_kind: resolvedKind,
     files_scanned: scopeFiles.length,
     checks_run: checksRun,
     checks_skipped: checksSkipped,

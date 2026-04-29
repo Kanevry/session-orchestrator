@@ -15,6 +15,8 @@ description: >
 
 > **Platform Note:** State files (STATE.md, wave-scope.json) live in the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). All references to `.claude/` below should use the platform's state directory. Shared metrics live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
 
+> **Project-instruction file:** `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references to `CLAUDE.md` in this skill resolve via that precedence rule.
+
 ## Phase 0: Bootstrap Gate
 
 Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
@@ -120,7 +122,7 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 
 Read `skills/session-end/vault-operations.md` for validator bash contract and reporting matrix.
 
-### 2.2 CLAUDE.md Drift Check (if configured)
+### 2.2 CLAUDE.md (or AGENTS.md) Drift Check (if configured)
 
 Read `skills/session-end/drift-operations.md` for checker bash contract and reporting matrix. Complements 2.1: vault-sync validates frontmatter inside the vault tree; drift-check validates narrative claims (paths, counts, issue refs, session-file refs) in top-level repo docs.
 
@@ -183,7 +185,7 @@ This should have been cleaned up by wave-executor after the final wave, but cras
 
 ### 3.1 SSOT Files
 - Update `STATUS.md` / `STATE.md` if they exist (metrics, dates, status)
-- Update `CLAUDE.md` if patterns or conventions changed during this session
+- Update `CLAUDE.md` (or `AGENTS.md` on Codex CLI) if patterns or conventions changed during this session
 - Check `<state-dir>/rules/` — if a new pattern was established, suggest a new rule file
 
 ### 3.2 Docs Verification (docs-orchestrator integration)

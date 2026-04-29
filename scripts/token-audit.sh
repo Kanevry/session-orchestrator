@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Token Audit — Quick ecosystem-wide token efficiency check
 # Usage: bash scripts/token-audit.sh [projects_dir]
-# Runs standalone without a Claude session. Reports CLAUDE.md sizes,
-# .claude/ hygiene, .claudeignore coverage, and plugin mismatches.
+# Runs standalone without a Claude session. Reports CLAUDE.md (or AGENTS.md
+# alias on Codex CLI — see skills/_shared/instruction-file-resolution.md)
+# sizes, .claude/ hygiene, .claudeignore coverage, and plugin mismatches.
 
 set -euo pipefail
 
@@ -21,8 +22,10 @@ echo "Date: $(date +%Y-%m-%d)"
 echo "Projects: $PROJECTS_DIR"
 echo ""
 
-# ── 1. CLAUDE.md Sizes ──────────────────────────────────────────────
-echo -e "${CYAN}## CLAUDE.md Sizes${NC} (flagged if > 150 lines)"
+# ── 1. CLAUDE.md / AGENTS.md Sizes ──────────────────────────────────
+# Project-instruction file is CLAUDE.md (or AGENTS.md alias on Codex CLI).
+# See skills/_shared/instruction-file-resolution.md for the alias rule.
+echo -e "${CYAN}## CLAUDE.md / AGENTS.md Sizes${NC} (flagged if > 150 lines)"
 echo ""
 
 declare -a high_items=()
@@ -36,24 +39,34 @@ for dir in "$PROJECTS_DIR"/*/; do
     # Skip non-project dirs
     [[ "$name" == "Archives" || "$name" == "Videos" || "$name" == "n8n" ]] && continue
 
-    claude_md="$dir/CLAUDE.md"
-    if [ -f "$claude_md" ]; then
-        lines=$(wc -l < "$claude_md" | tr -d ' ')
+    # Resolve instruction file: CLAUDE.md wins; else AGENTS.md alias.
+    instr_file=""
+    instr_label=""
+    if [ -s "$dir/CLAUDE.md" ]; then
+        instr_file="$dir/CLAUDE.md"
+        instr_label="CLAUDE.md"
+    elif [ -s "$dir/AGENTS.md" ]; then
+        instr_file="$dir/AGENTS.md"
+        instr_label="AGENTS.md"
+    fi
+
+    if [ -n "$instr_file" ]; then
+        lines=$(wc -l < "$instr_file" | tr -d ' ')
         total_lines=$((total_lines + lines))
         project_count=$((project_count + 1))
 
         if [ "$lines" -gt 250 ]; then
-            echo -e "  ${RED}[HIGH]${NC} $name: ${lines} lines"
+            echo -e "  ${RED}[HIGH]${NC} $name ($instr_label): ${lines} lines"
             high_items+=("$name")
         elif [ "$lines" -gt 150 ]; then
-            echo -e "  ${YELLOW}[WARN]${NC} $name: ${lines} lines"
+            echo -e "  ${YELLOW}[WARN]${NC} $name ($instr_label): ${lines} lines"
             warn_items+=("$name")
         fi
     fi
 done
 
 if [ ${#high_items[@]} -eq 0 ] && [ ${#warn_items[@]} -eq 0 ]; then
-    echo -e "  ${GREEN}[OK]${NC} All CLAUDE.md files under 150 lines"
+    echo -e "  ${GREEN}[OK]${NC} All instruction files under 150 lines"
 fi
 echo ""
 echo "  Total: $total_lines lines across $project_count projects (avg: $((total_lines / (project_count > 0 ? project_count : 1))))"
@@ -96,7 +109,8 @@ for dir in "$PROJECTS_DIR"/*/; do
     name=$(basename "$dir")
     [[ "$name" == "Archives" || "$name" == "Videos" || "$name" == "n8n" ]] && continue
 
-    if [ -f "$dir/CLAUDE.md" ] && [ ! -f "$dir/.claudeignore" ]; then
+    # Detect project-instruction file (CLAUDE.md or AGENTS.md alias).
+    if { [ -s "$dir/CLAUDE.md" ] || [ -s "$dir/AGENTS.md" ]; } && [ ! -f "$dir/.claudeignore" ]; then
         # Check if project has enough files to warrant .claudeignore
         file_count=$(find "$dir" -maxdepth 3 -type f -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null | wc -l | tr -d ' ')
         if [ "$file_count" -gt 200 ]; then
@@ -150,15 +164,27 @@ else
 fi
 echo ""
 
-# ── 6. User-level CLAUDE.md ──────────────────────────────────────────
+# ── 6. User-level CLAUDE.md / AGENTS.md ─────────────────────────────
+# Claude Code stores user-level rules at ~/.claude/CLAUDE.md; Codex CLI uses
+# ~/.codex/AGENTS.md. See skills/_shared/instruction-file-resolution.md.
 echo -e "${CYAN}## User-level Config${NC}"
 echo ""
 
-if [ -f "$HOME/.claude/CLAUDE.md" ]; then
-    user_lines=$(wc -l < "$HOME/.claude/CLAUDE.md" | tr -d ' ')
+user_claude="$HOME/.claude/CLAUDE.md"
+user_agents="$HOME/.codex/AGENTS.md"
+user_found=false
+if [ -f "$user_claude" ]; then
+    user_lines=$(wc -l < "$user_claude" | tr -d ' ')
     echo -e "  ${GREEN}[OK]${NC} ~/.claude/CLAUDE.md exists ($user_lines lines)"
-else
-    echo -e "  ${YELLOW}[WARN]${NC} No ~/.claude/CLAUDE.md — cross-project patterns may be duplicated"
+    user_found=true
+fi
+if [ -f "$user_agents" ]; then
+    user_lines=$(wc -l < "$user_agents" | tr -d ' ')
+    echo -e "  ${GREEN}[OK]${NC} ~/.codex/AGENTS.md exists ($user_lines lines)"
+    user_found=true
+fi
+if [ "$user_found" = false ]; then
+    echo -e "  ${YELLOW}[WARN]${NC} No ~/.claude/CLAUDE.md or ~/.codex/AGENTS.md — cross-project patterns may be duplicated"
 fi
 echo ""
 

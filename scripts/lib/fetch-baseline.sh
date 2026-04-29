@@ -3,7 +3,8 @@
 #
 # Fetch a file from a GitLab project's repository raw endpoint.
 # Used by the bootstrap skill to pull canonical baseline files (rules, agents,
-# CLAUDE.md snippets) on demand instead of relying on local copies that drift.
+# CLAUDE.md / AGENTS.md snippets — see skills/_shared/instruction-file-resolution.md)
+# on demand instead of relying on local copies that drift.
 #
 # Companion to session-orchestrator#110.
 #

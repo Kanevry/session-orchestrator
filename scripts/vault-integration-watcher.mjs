@@ -259,14 +259,22 @@ function buildTickBody(issueMap, depIds, verdict, streak, date) {
  */
 function buildFlipBody(repos) {
   const repoList = repos.join(' ');
+  // The sed/add/commit one-liner targets the project-instruction file. Most
+  // ecosystem repos use CLAUDE.md, but Codex-CLI repos use AGENTS.md as a
+  // transparent alias — see skills/_shared/instruction-file-resolution.md.
+  // The embedded loop picks whichever exists per repo.
   return `${MARKER_FLIP}
 🚦 **BEREIT ZUM FLIP** — manueller Run-Through über die ${repos.length} Repos jetzt legitim.
 
-Lokaler Befehl (ein-Liner pro Repo, aber besser per Session orchestriert):
+Lokaler Befehl (ein-Liner pro Repo, aber besser per Session orchestriert; CLAUDE.md and AGENTS.md sind Aliase):
 \`\`\`bash
 for d in ${repoList}; do
-  sed -i.bak 's/mode: warn }/mode: strict }/' ~/Projects/$d/CLAUDE.md
-  git -C ~/Projects/$d add CLAUDE.md
+  for f in CLAUDE.md AGENTS.md; do
+    [ -s ~/Projects/$d/$f ] || continue
+    sed -i.bak 's/mode: warn }/mode: strict }/' ~/Projects/$d/$f
+    git -C ~/Projects/$d add $f
+    break
+  done
   git -C ~/Projects/$d commit -m 'chore(orchestrator): Promote vault-integration to strict mode — closes #305'
 done
 \`\`\``;

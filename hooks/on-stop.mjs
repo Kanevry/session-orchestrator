@@ -4,7 +4,7 @@
  *
  * Replaces hooks/on-stop.sh and hooks/on-subagent-stop.sh. Handles both Claude Code
  * hook events in a single file, discriminating by the `hook_event_name` field first,
- * then falling back to presence of `agent_name` (SubagentStop) vs absence (Stop).
+ * then falling back to presence of `agent_type` (SubagentStop) vs absence (Stop).
  *
  * Part of v3.0.0 Windows-native migration. Issue #141.
  *
@@ -69,7 +69,7 @@ async function readStdinJson() {
 
 /**
  * Determine whether the parsed stdin represents a Stop or SubagentStop event.
- * Precedence: hook_event_name field → presence of agent_name field → default Stop.
+ * Precedence: hook_event_name field → presence of agent_type field → default Stop.
  * @param {object|null} input
  * @returns {"stop"|"subagent_stop"}
  */
@@ -80,8 +80,8 @@ function discriminate(input) {
     if (name === 'SubagentStop') return 'subagent_stop';
     return 'stop';
   }
-  // Fallback: SubagentStop always provides agent_name; Stop does not.
-  if (typeof input.agent_name === 'string') return 'subagent_stop';
+  // Fallback: SubagentStop always provides agent_type; Stop does not.
+  if (typeof input.agent_type === 'string') return 'subagent_stop';
   return 'stop';
 }
 
@@ -248,7 +248,7 @@ async function handleStop(input) {
  */
 async function handleSubagentStop(input) {
   const timestamp = new Date().toISOString();
-  const agent = input?.agent_name ?? 'unknown';
+  const agent = input?.agent_type ?? 'unknown';
 
   const record = {
     event: 'subagent_stop',

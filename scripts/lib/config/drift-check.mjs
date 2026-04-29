@@ -7,16 +7,24 @@
 /**
  * Parse the top-level `drift-check:` YAML block from markdown content.
  * Mirrors the shell parse_drift_check() in config-yaml-parser.sh.
- * Defaults: enabled=false, mode="warn", include-paths=["CLAUDE.md","_meta/**\/*.md"],
+ * Defaults: enabled=false, mode="warn",
+ * include-paths=["CLAUDE.md","AGENTS.md","_meta/**\/*.md"] (CLAUDE.md and
+ * AGENTS.md are transparent aliases per
+ * skills/_shared/instruction-file-resolution.md),
  * all four per-check flags default to true.
  * @param {string} content — full file contents
  * @returns {{enabled: boolean, mode: string, "include-paths": string[], "check-path-resolver": boolean, "check-project-count-sync": boolean, "check-issue-reference-freshness": boolean, "check-session-file-existence": boolean}}
  */
 export function _parseDriftCheck(content) {
+  // CLAUDE.md and AGENTS.md are transparent aliases per
+  // skills/_shared/instruction-file-resolution.md. Both are included so
+  // drift-check covers the project-instruction file regardless of which
+  // platform created it.
+  const DEFAULT_INCLUDE_PATHS = ['CLAUDE.md', 'AGENTS.md', '_meta/**/*.md'];
   const defaults = {
     enabled: false,
     mode: 'warn',
-    'include-paths': ['CLAUDE.md', '_meta/**/*.md'],
+    'include-paths': DEFAULT_INCLUDE_PATHS,
     'check-path-resolver': true,
     'check-project-count-sync': true,
     'check-issue-reference-freshness': true,
@@ -100,7 +108,7 @@ export function _parseDriftCheck(content) {
   return {
     enabled: dcEnabled,
     mode: dcMode,
-    'include-paths': dcInclude.length > 0 ? dcInclude : ['CLAUDE.md', '_meta/**/*.md'],
+    'include-paths': dcInclude.length > 0 ? dcInclude : DEFAULT_INCLUDE_PATHS,
     'check-path-resolver': dcChkPath,
     'check-project-count-sync': dcChkCount,
     'check-issue-reference-freshness': dcChkIssue,

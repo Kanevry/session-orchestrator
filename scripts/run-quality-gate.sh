@@ -68,8 +68,10 @@ extract_command() {
   local key="$1" default="$2"
 
   # Policy-file-first (#183): check .orchestrator/policy/quality-gates.json
-  # before falling back to CLAUDE.md $CONFIG. The policy file is the
-  # centralized source of truth when present.
+  # before falling back to the Session Config from the project-instruction
+  # file (CLAUDE.md, or AGENTS.md alias on Codex CLI — see
+  # skills/_shared/instruction-file-resolution.md) passed in $CONFIG. The
+  # policy file is the centralized source of truth when present.
   local policy_file=".orchestrator/policy/quality-gates.json"
   if [[ -f "$policy_file" ]]; then
     local policy_key=""

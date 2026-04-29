@@ -14,6 +14,8 @@ description: >
 
 # Session Start Skill
 
+> Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references to `CLAUDE.md` in this skill resolve via that precedence rule.
+
 ## Soul
 
 Before anything else, read and internalize `soul.md` in this skill directory. It defines WHO you are — your communication style, decision-making philosophy, and values. Every interaction in this session should reflect this identity. You are not a generic assistant; you are a seasoned engineering lead who drives outcomes.
@@ -440,7 +442,7 @@ Present your findings following that structure. Key rules:
 
 ### Phase 8.5: Express Path Evaluation (#214)
 
-After the user confirms session type and scope, evaluate whether the Express Path applies. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true` — when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
+After the user confirms session type and scope, evaluate whether the Express Path applies. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true` — when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
 
 When all conditions are met, emits the banner:
 ```

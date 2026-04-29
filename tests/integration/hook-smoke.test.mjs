@@ -267,7 +267,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     const result = await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'SubagentStop', agent_name: 'code-implementer' },
+      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer' },
     });
     expect(result.code).toBe(0);
   });
@@ -283,7 +283,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'SubagentStop', agent_name: 'code-implementer' },
+      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer' },
     });
 
     const events = await readEvents(dir);
@@ -302,7 +302,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'SubagentStop', agent_name: 'code-implementer' },
+      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer' },
     });
 
     const events = await readEvents(dir);
@@ -322,7 +322,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'SubagentStop', agent_name: 'code-implementer' },
+      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer' },
     });
 
     const events = await readEvents(dir);

@@ -44,7 +44,9 @@ echo ""
 echo "Done! $COUNT rules linked."
 echo ""
 echo "Next steps:"
-echo "  1. Ensure CLAUDE.md has a '## Session Config' section"
+# Project-instruction file is CLAUDE.md (or AGENTS.md on Codex CLI).
+# See skills/_shared/instruction-file-resolution.md for the alias rule.
+echo "  1. Ensure CLAUDE.md (or AGENTS.md on Codex CLI) has a '## Session Config' section"
 echo "  2. (Optional) Configure hooks in Cursor Settings > Hooks:"
 echo "     - afterFileEdit:          $SO_ROOT/hooks/enforce-scope.sh"
 echo "     - beforeShellExecution:   $SO_ROOT/hooks/enforce-commands.sh"

@@ -253,3 +253,44 @@ export function resolvePluginRoot(callerUrl) {
     'or ensure plugin.json / skills/ exists in an ancestor of the cwd.',
   );
 }
+
+// ---------------------------------------------------------------------------
+// resolveInstructionFile (issue #33)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the canonical project-instruction file at the given repo root.
+ *
+ * `CLAUDE.md` (Claude Code / Cursor IDE) and `AGENTS.md` (Codex CLI) are
+ * transparent aliases. Precedence:
+ *
+ *   1. `<repoRoot>/CLAUDE.md` exists and is non-empty → kind: 'claude'
+ *   2. `<repoRoot>/AGENTS.md` exists and is non-empty → kind: 'agents'
+ *   3. otherwise → null (caller decides what to do)
+ *
+ * Never merge both. Never read both. Pick one.
+ *
+ * SSOT for the alias rule: `skills/_shared/instruction-file-resolution.md`.
+ *
+ * @param {string} [repoRoot] - absolute repo root (default: findProjectRoot())
+ * @returns {{ path: string, kind: 'claude' | 'agents' } | null}
+ */
+export function resolveInstructionFile(repoRoot) {
+  const root = repoRoot ?? findProjectRoot();
+  if (!root) return null;
+  const candidates = [
+    { file: 'CLAUDE.md', kind: 'claude' },
+    { file: 'AGENTS.md', kind: 'agents' },
+  ];
+  for (const c of candidates) {
+    const p = path.join(root, c.file);
+    if (existsSync(p)) {
+      try {
+        if (statSync(p).size > 0) return { path: p, kind: c.kind };
+      } catch {
+        // stat failure (race, permissions) — skip this candidate, try next
+      }
+    }
+  }
+  return null;
+}

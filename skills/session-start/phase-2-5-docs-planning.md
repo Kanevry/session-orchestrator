@@ -2,6 +2,8 @@
 
 > Skip this phase if `docs-orchestrator.enabled` config is not `true` (default: `false`).
 
+> Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). The Dev audience target listed below resolves to whichever file the repo uses.
+
 ## Step 1: Read Docs-Orchestrator Config
 
 Read the three controlling fields from `$CONFIG` using the canonical `jq` accessor pattern:
@@ -27,7 +29,7 @@ Using signals already gathered in Phases 2–5 (git analysis, VCS issues, branch
 - Install flow or setup instructions are modified
 
 **Dev audience** — flag as likely when any of the following are true:
-- Affected files include `CLAUDE.md`, `docs/dev/**/*.md`, or `docs/adr/**/*.md`
+- Affected files include `CLAUDE.md` (or `AGENTS.md` on Codex CLI), `docs/dev/**/*.md`, or `docs/adr/**/*.md`
 - Issues describe an architecture decision, major refactor, new module or subsystem, test-coverage shift, dependency upgrade, or an ADR-worthy choice
 - New `.mjs` scripts, skill files (`skills/**`), hook files (`hooks/**`), or agent definitions (`agents/**`) are added or substantially changed
 
@@ -56,7 +58,7 @@ AskUserQuestion({
     options: [
       {
         label: "Dev (Recommended)",   // add "(Recommended)" to each detected audience
-        description: "Architektur-, Modul- oder Refactoring-Änderungen — aktualisiert CLAUDE.md, docs/dev/**, docs/adr/**."
+        description: "Architektur-, Modul- oder Refactoring-Änderungen — aktualisiert CLAUDE.md (oder AGENTS.md auf Codex CLI), docs/dev/**, docs/adr/**."
       },
       {
         label: "User",
@@ -78,7 +80,7 @@ Welche Audiences berührt dieser Scope? (Mehrfachauswahl möglich)
 
 Auto-detected: [dev]  ← list detected audiences here, or "none" if empty intersection
 
-1. **Dev (Recommended)** — Architektur-, Modul- oder Refactoring-Änderungen. Targets: CLAUDE.md, docs/dev/**, docs/adr/**.
+1. **Dev (Recommended)** — Architektur-, Modul- oder Refactoring-Änderungen. Targets: CLAUDE.md (oder AGENTS.md auf Codex CLI), docs/dev/**, docs/adr/**.
 2. **User** — Öffentlich sichtbare Änderungen. Targets: README.md, docs/user/**, examples/**.
 3. **Vault** — Strategische oder Status-Änderungen. Targets: <vault>/01-projects/<slug>/context.md, decisions.md, people.md.
 

@@ -5,7 +5,9 @@ set -euo pipefail
 # Speaks JSON-RPC 2.0 over stdin/stdout
 #
 # Exposes two read-only tools:
-#   - session_config  — reads Session Config from project CLAUDE.md
+#   - session_config  — reads Session Config from the project instruction file
+#                       (CLAUDE.md, or AGENTS.md alias on Codex CLI — see
+#                       skills/_shared/instruction-file-resolution.md)
 #   - session_metrics — reads last 5 session metrics entries
 
 # ---------------------------------------------------------------------------
@@ -62,7 +64,7 @@ handle_tools_list() {
     "tools": [
       {
         "name": "session_config",
-        "description": "Reads Session Config section from the project CLAUDE.md",
+        "description": "Reads Session Config section from the project instruction file (CLAUDE.md or AGENTS.md alias)",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
       },
       {
@@ -106,18 +108,25 @@ tool_session_config() {
     return
   }
 
-  local claude_md="$project_root/CLAUDE.md"
-  if [[ ! -f "$claude_md" ]]; then
-    respond "$id" "$(text_content "No CLAUDE.md found at $claude_md")"
+  # Resolve project-instruction file (CLAUDE.md or AGENTS.md alias).
+  # See skills/_shared/instruction-file-resolution.md for the alias rule.
+  local instr_file=""
+  if [[ -s "$project_root/CLAUDE.md" ]]; then
+    instr_file="$project_root/CLAUDE.md"
+  elif [[ -s "$project_root/AGENTS.md" ]]; then
+    instr_file="$project_root/AGENTS.md"
+  fi
+  if [[ -z "$instr_file" ]]; then
+    respond "$id" "$(text_content "No CLAUDE.md or AGENTS.md found at $project_root")"
     return
   fi
 
   # Extract everything from "## Session Config" to the next heading or EOF
   local config
-  config=$(sed -n '/^## Session Config$/,/^## /{/^## Session Config$/d;/^## /d;p;}' "$claude_md" 2>/dev/null) || true
+  config=$(sed -n '/^## Session Config$/,/^## /{/^## Session Config$/d;/^## /d;p;}' "$instr_file" 2>/dev/null) || true
 
   if [[ -z "$config" ]]; then
-    respond "$id" "$(text_content "No '## Session Config' section found in CLAUDE.md")"
+    respond "$id" "$(text_content "No '## Session Config' section found in $instr_file")"
     return
   fi
 
