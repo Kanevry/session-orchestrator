@@ -6,32 +6,66 @@
  * which depended on scripts/lib/common.sh → scripts/lib/platform.sh (removed).
  *
  * Usage:
- *   node validate-wave-scope.mjs <path-to-wave-scope.json>
- *   cat wave-scope.json | node validate-wave-scope.mjs
+ *   node scripts/validate-wave-scope.mjs <path-to-wave-scope.json>
+ *   cat wave-scope.json | node scripts/validate-wave-scope.mjs
  *
  * Exit codes:
  *   0 — valid (validated JSON echoed to stdout)
- *   1 — invalid (error messages written to stderr)
+ *   1 — invalid input / validation failure (error messages written to stderr)
+ *   2 — I/O error (file not found, unreadable stdin)
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { warn } from './lib/common.mjs';
 
-function die(msg) {
+/**
+ * Write an error to stderr and exit with the given code.
+ * @param {string} msg
+ * @param {number} [code=1]
+ * @returns {never}
+ */
+function die(msg, code = 1) {
   process.stderr.write(`ERROR: ${msg}\n`);
-  process.exit(1);
+  process.exit(code);
 }
 
+/**
+ * Read raw input: from a file path arg or from stdin (fd 0).
+ *
+ * Exit codes used here:
+ *   1 — bad argument (file path argument given but file not found)
+ *   2 — unexpected I/O error (file exists but cannot be read, stdin failure)
+ *
+ * @param {string[]} argv
+ * @returns {string}
+ */
 function readInput(argv) {
   const arg = argv[2];
   if (arg) {
+    // Exit 1: file not found is a user/argument error
     if (!existsSync(arg) || !statSync(arg).isFile()) {
-      die(`File not found: ${arg}`);
+      die(`File not found: ${arg}`, 1);
     }
-    return readFileSync(arg, 'utf8');
+    // Exit 2: file exists but cannot be read is an I/O error
+    try {
+      return readFileSync(arg, 'utf8');
+    } catch (err) {
+      die(`Cannot read file ${arg}: ${err.message}`, 2);
+    }
   }
-  return readFileSync(0, 'utf8');
+  // Exit 2: stdin read failure is an I/O error
+  try {
+    return readFileSync(0, 'utf8');
+  } catch (err) {
+    die(`Cannot read stdin: ${err.message}`, 2);
+  }
 }
 
+/**
+ * Parse raw JSON input; exits 1 on parse failure.
+ * @param {string} input
+ * @returns {unknown}
+ */
 function parseJson(input) {
   try {
     return JSON.parse(input);
@@ -40,6 +74,11 @@ function parseJson(input) {
   }
 }
 
+/**
+ * Validate required scalar fields: wave, role, enforcement.
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} errors
+ */
 function validateRequired(obj, errors) {
   // wave — positive integer
   if (!('wave' in obj) || obj.wave === null || obj.wave === undefined) {
@@ -65,6 +104,13 @@ function validateRequired(obj, errors) {
   }
 }
 
+/**
+ * Validate allowedPaths array: must exist, be an array of non-empty strings,
+ * with no absolute paths and no path-traversal segments.
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} errors
+ * @param {string[]} warnings
+ */
 function validateAllowedPaths(obj, errors, warnings) {
   if (!('allowedPaths' in obj)) {
     errors.push('Missing required field: allowedPaths');
@@ -80,18 +126,26 @@ function validateAllowedPaths(obj, errors, warnings) {
       errors.push('allowedPaths contains empty string');
       continue;
     }
+    // Reject absolute paths (must be repo-relative)
     if (entry.startsWith('/')) {
       errors.push(`allowedPaths contains absolute path: ${entry}`);
     }
+    // Reject path traversal: any `../` segment
     if (entry.includes('../')) {
       errors.push(`allowedPaths contains path traversal: ${entry}`);
     }
+    // Warn on overly permissive glob patterns
     if (entry === '**/*' || entry === '*') {
       warnings.push(`allowedPaths contains overly permissive pattern: ${entry}`);
     }
   }
 }
 
+/**
+ * Validate blockedCommands: must exist and be an array.
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} errors
+ */
 function validateBlockedCommands(obj, errors) {
   if (!('blockedCommands' in obj)) {
     errors.push('Missing required field: blockedCommands');
@@ -103,6 +157,11 @@ function validateBlockedCommands(obj, errors) {
   }
 }
 
+/**
+ * Validate optional gates field: if present must be an object of string→boolean entries.
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} errors
+ */
 function validateGates(obj, errors) {
   if (!('gates' in obj)) return;
   const gates = obj.gates;
@@ -111,12 +170,18 @@ function validateGates(obj, errors) {
     errors.push(`gates must be an object, got type: ${t}`);
     return;
   }
-  const bad = Object.entries(gates).filter(([, v]) => typeof v !== 'boolean').map(([k]) => k);
+  const bad = Object.entries(gates)
+    .filter(([, v]) => typeof v !== 'boolean')
+    .map(([k]) => k);
   if (bad.length > 0) {
     errors.push(`gates values must be booleans, invalid entries: ${bad.join(', ')}`);
   }
 }
 
+/**
+ * Main validation entry point. Reads input, validates, exits with appropriate code.
+ * @param {string} input - raw JSON string
+ */
 function validate(input) {
   const obj = parseJson(input);
   const errors = [];
@@ -128,7 +193,7 @@ function validate(input) {
   validateGates(obj, errors);
 
   for (const w of warnings) {
-    process.stderr.write(`WARNING: ${w}\n`);
+    warn(w);
   }
 
   if (errors.length > 0) {
@@ -138,6 +203,7 @@ function validate(input) {
     process.exit(1);
   }
 
+  // Echo validated JSON to stdout (trailing newline normalised)
   process.stdout.write(input.endsWith('\n') ? input : input + '\n');
 }
 

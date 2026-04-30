@@ -65,7 +65,7 @@ Clone the repository, then run the installer from the plugin root:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git
 cd session-orchestrator
-bash scripts/codex-install.sh
+node scripts/codex-install.mjs
 ```
 
 Then fully restart Codex and open a new session. The commands become available in the restarted app. For desktop-specific details and troubleshooting, see `docs/codex-setup.md`.
@@ -717,7 +717,7 @@ If any check fails and cannot be quickly fixed, the orchestrator creates a `prio
 Session Orchestrator includes bash scripts for critical workflow paths. These provide deterministic, testable alternatives to agent-interpreted instructions:
 
 - `scripts/parse-config.mjs` — Parses `## Session Config` from a config host file, outputs validated JSON with all 40+ fields and defaults applied. Run: `node scripts/parse-config.mjs [path/to/CLAUDE.md|AGENTS.md]`
-- `scripts/run-quality-gate.sh` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
+- `scripts/run-quality-gate.mjs` — Runs quality gates with structured JSON output. Supports 4 variants: baseline, incremental, full-gate, per-file.
 - `scripts/validate-wave-scope.mjs` — Validates wave-scope.json before enforcement hooks consume it. Checks for path traversal, absolute paths, and required fields.
 
 Run `npm test` to execute the vitest suite.
@@ -1341,7 +1341,7 @@ Codex:
 
 ```bash
 cd /path/to/session-orchestrator
-bash scripts/codex-install.sh
+node scripts/codex-install.mjs
 ```
 
 ### "tsgo: command not found"

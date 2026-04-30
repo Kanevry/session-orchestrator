@@ -156,3 +156,24 @@ describe('validate-wave-scope.mjs — file input errors', () => {
     expect(r.stderr).toMatch(/ERROR: File not found/);
   });
 });
+
+describe('validate-wave-scope.mjs — stdin pipe (shebang/runnable)', () => {
+  it('cat .claude/wave-scope.json | node validate-wave-scope.mjs exits 0', () => {
+    // Pipe the real .claude/wave-scope.json from the repo through stdin
+    const waveScopePath = resolve(__dirname, '../../.claude/wave-scope.json');
+    const catResult = spawnSync('cat', [waveScopePath], { encoding: 'utf8' });
+    expect(catResult.status).toBe(0);
+
+    // Now pipe that content to the validator via stdin
+    const r = spawnSync('node', [SCRIPT], {
+      input: catResult.stdout,
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+    // Output must be valid JSON matching the source
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.wave).toBeTypeOf('number');
+    expect(parsed.enforcement).toMatch(/^(strict|warn|off)$/);
+  });
+});

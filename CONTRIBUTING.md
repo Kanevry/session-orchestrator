@@ -479,10 +479,10 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 | Script | Purpose |
 |--------|---------|
 | `scripts/parse-config.mjs` | Parse Session Config from CLAUDE.md/AGENTS.md into validated JSON (CLI wrapper over `scripts/lib/config.mjs`) |
-| `scripts/run-quality-gate.sh` | Run quality gate checks (4 variants: baseline, incremental, full-gate, per-file) |
+| `scripts/run-quality-gate.mjs` | Run quality gate checks (4 variants: baseline, incremental, full-gate, per-file) |
 | `scripts/validate-wave-scope.mjs` | Validate wave-scope.json before enforcement hooks consume it |
 | `scripts/token-audit.sh` | Cross-project token efficiency audit |
-| `scripts/cursor-install.sh` | Install Cursor rules via symlinks |
+| `scripts/cursor-install.mjs` | Install Cursor rules via symlinks |
 | `scripts/lib/platform.mjs` | Platform detection — returns platform + stateDir + configFile + pluginRoot |
 | `scripts/lib/common.sh` | Shared shell utilities — die(), warn(), find_project_root() (used by install/quality-gate scripts) |
 | `scripts/lib/worktree.mjs` | Git worktree helpers for isolated agent work |

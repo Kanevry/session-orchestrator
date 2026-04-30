@@ -322,7 +322,37 @@ When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the fu
 
 Standard and Deep tier templates include Step 5.5 (standard) / D6.6 (deep) which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step.
 
-## Phase 3.5: (Optional) Rules-Fetch Bridge
+## Phase 3.5: Owner Persona Interview (first-run only)
+
+> Closes session-orchestrator issues #175 (D2 owner interview) + #173 (C4 hardware-sharing consent).
+
+**WHEN:** Runs after Phase 3.4 when `~/.config/session-orchestrator/owner.yaml` is absent AND `--no-interview` was NOT passed. Skipped entirely on `--upgrade`, `--retroactive`, `--sync-rules`, and `--ecosystem-health` flows.
+
+**WHAT:** The coordinator dispatches 5 `AskUserQuestion` calls using definitions from `scripts/lib/owner-interview.mjs`:
+
+1. **Language** — `de` | `en` | other (free text)
+2. **Tone style** — `direct` (recommended) | `neutral` | `friendly`
+3. **Output level** — `lite` (verbose) | `full` (default) | `ultra` (telegraphic)
+4. **Preamble** — `minimal` (one-line updates) | `verbose` (explain before action)
+5. **Hardware-sharing consent (C4)** — `No` (default) | `Yes` (generates random `hash-salt`) | `Preview`
+
+**HOW (coordinator steps):**
+
+```js
+import { runOwnerInterview, getInterviewQuestions, applyInterviewAnswers } from '$PLUGIN_ROOT/scripts/lib/owner-interview.mjs';
+const probe = runOwnerInterview({ skipIfExists: true });
+if (probe.status === 'pending') {
+  // dispatch AskUserQuestion for each of probe.questions, collect answers[]
+  const result = applyInterviewAnswers(answers, { path: probe.path });
+  // result: { ok, path, errors }
+}
+```
+
+**WHERE:** Written to `~/.config/session-orchestrator/owner.yaml` (user-global, never committed).
+
+**RE-TRIGGER:** `/bootstrap --owner-reset` sets `force: true` in `runOwnerInterview`, archives the existing yaml to `owner.yaml.bak-<timestamp>`, and re-runs the 5 questions.
+
+## Phase 3.6: (Optional) Rules-Fetch Bridge
 
 > Closes session-orchestrator issue #110.
 
@@ -418,7 +448,7 @@ See `skills/ecosystem-health/wizard.md` for the full prompt spec and schema deta
 
 ## Phase 4: Write bootstrap.lock
 
-After all template files are written and committed, write `.orchestrator/bootstrap.lock` (and, if the rules-fetch bridge ran, also `.claude/.baseline-fetch.lock` — see Phase 3.5):
+After all template files are written and committed, write `.orchestrator/bootstrap.lock` (and, if the rules-fetch bridge ran, also `.claude/.baseline-fetch.lock` — see Phase 3.6):
 
 ```yaml
 # .orchestrator/bootstrap.lock

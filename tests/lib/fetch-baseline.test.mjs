@@ -1,389 +1,496 @@
 /**
  * tests/lib/fetch-baseline.test.mjs
  *
- * Vitest port of scripts/tests/fetch-baseline.bats
- * Subject: scripts/lib/fetch-baseline.sh
- *
- * Covers 4 exit-code paths:
- *   0 — 200 OK (network success)
- *   1 — auth failure (401/403) — fatal, no cache fallback
- *   2 — file not found (404, no cache)
- *   0 — network failure with seeded cache (fallback, warns)
- *
- * Approach: spawn `bash scripts/lib/fetch-baseline.sh` with a mock `curl`
- * prepended to PATH. The mock curl script is written into a temp dir for
- * each test.
+ * Vitest tests for scripts/lib/fetch-baseline.mjs
+ * Imports the module directly; all HTTP is mocked via vi.spyOn(globalThis, 'fetch').
+ * No live network requests. Cache isolated to os.tmpdir() per test.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { fetchBaselineFile } from '../../scripts/lib/fetch-baseline.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const FETCH_BASELINE_SH = join(REPO_ROOT, 'scripts/lib/fetch-baseline.sh');
-const FIXTURE_SAMPLE_RULE = join(__dirname, 'fixtures/fetch-baseline/sample-rule.md');
+const FETCH_BASELINE_MJS = join(REPO_ROOT, 'scripts/lib/fetch-baseline.mjs');
 
 // ---------------------------------------------------------------------------
-// Helper: write a mock `curl` into mockDir and make it executable
-//
-//   httpCode  — HTTP status string printed to stdout (simulating -w '%{http_code}')
-//   bodyFile  — path whose contents are copied to the -o destination (200 path)
-//   exitCode  — curl transport exit code (0 = success, 7 = connection refused)
+// Helpers
 // ---------------------------------------------------------------------------
-function installCurlMock(mockDir, httpCode, bodyFile, exitCode) {
-  const bodyLine =
-    bodyFile
-      ? `[ -n "$out_path" ] && cp '${bodyFile}' "$out_path" || true`
-      : `[ -n "$out_path" ] && printf '' > "$out_path" || true`;
 
-  const script = `#!/usr/bin/env bash
-# mock curl for fetch-baseline.test.mjs
-out_path=""
-args=("$@")
-i=0
-while [[ $i -lt \${#args[@]} ]]; do
-  case "\${args[$i]}" in
-    -o)
-      i=$(( i + 1 ))
-      out_path="\${args[$i]}"
-      ;;
-    -o*)
-      out_path="\${args[$i]#-o}"
-      ;;
-  esac
-  i=$(( i + 1 ))
-done
+/**
+ * Build a minimal Response-like object that globalThis.fetch returns.
+ */
+function makeFetchResponse({ status, body }) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: () => Promise.resolve(body ?? ''),
+  };
+}
 
-if [[ "${exitCode}" != "0" ]]; then
-  echo "mock: simulated transport failure (exit ${exitCode})" >&2
-  exit ${exitCode}
-fi
-
-${bodyLine}
-
-printf '%s' "${httpCode}"
-`;
-
-  const curlPath = join(mockDir, 'curl');
-  writeFileSync(curlPath, script, { mode: 0o755 });
+/**
+ * Derive the cache key the module uses (mirrors _cacheKey in the module).
+ * Used to pre-populate or assert paths without duplicating logic.
+ *
+ * Cache key: `${projectId}-${ref}-${filePath}` with /. replaced by _
+ */
+function cacheKey(projectId, ref, filePath) {
+  return `${projectId}-${ref}-${filePath}`.replace(/[/.]/g, '_');
 }
 
 // ---------------------------------------------------------------------------
-// Helper: run fetch_baseline_file via bash subprocess
-// ---------------------------------------------------------------------------
-function runFetchBaseline({ mockDir, cacheDir, projectId, filePath, ref, dest }) {
-  // We call bash and source fetch-baseline.sh, then invoke fetch_baseline_file
-  const script = `
-set +euo pipefail
-source '${FETCH_BASELINE_SH}'
-set +euo pipefail
-fetch_baseline_file '${projectId}' '${filePath}' '${ref}' '${dest}'
-`;
-
-  return spawnSync('bash', ['-c', script], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${mockDir}:${process.env.PATH}`,
-      BASELINE_CACHE_DIR: cacheDir,
-      GITLAB_TOKEN: 'test-token-do-not-use-in-real-calls',
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Test suite
+// Per-test setup: isolated tmp dir, BASELINE_CACHE_DIR override, fetch spy
 // ---------------------------------------------------------------------------
 
-describe('fetch-baseline.sh', () => {
-  let tmpBase;
-  let mockDir;
-  let cacheDir;
-  let destDir;
+let tmpBase;
+let cacheDir;
+let fetchSpy;
+let stderrSpy;
 
-  beforeEach(() => {
-    tmpBase = mkdtempSync(join(tmpdir(), 'fetch-baseline-test-'));
-    mockDir = join(tmpBase, 'mocks');
-    cacheDir = join(tmpBase, '.cache');
-    destDir = join(tmpBase, 'output');
-    mkdirSync(mockDir, { recursive: true });
-    mkdirSync(destDir, { recursive: true });
-  });
+beforeEach(() => {
+  tmpBase = mkdtempSync(join(tmpdir(), 'fetch-baseline-test-'));
+  cacheDir = join(tmpBase, 'cache');
+  mkdirSync(cacheDir, { recursive: true });
+  process.env.BASELINE_CACHE_DIR = cacheDir;
 
-  afterEach(() => {
-    try {
-      rmSync(tmpBase, { recursive: true, force: true });
-    } catch {
-      /* best-effort cleanup */
-    }
-  });
+  fetchSpy = vi.spyOn(globalThis, 'fetch');
+  stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+});
 
-  it('200 OK: exits 0 and writes file matching fixture', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    const dest = join(destDir, 'out.md');
+afterEach(() => {
+  vi.restoreAllMocks();
+  delete process.env.BASELINE_CACHE_DIR;
+  try {
+    rmSync(tmpBase, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+});
 
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
+// ---------------------------------------------------------------------------
+// 1. Happy path 200
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — 200 OK', () => {
+  it('returns ok:true with body and status 200 when fetch succeeds', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'file body content' }));
+
+    const result = await fetchBaselineFile({
       filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
     });
 
-    expect(result.status).toBe(0);
-    expect(existsSync(dest)).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.body).toBe('file body content');
+    expect(result.status).toBe(200);
   });
 
-  it('200 OK: dest file content matches fixture', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    const dest = join(destDir, 'out.md');
+  it('sets fromCache to false on a network 200 hit', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'content' }));
 
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
+    const result = await fetchBaselineFile({
       filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
     });
 
-    const diff = spawnSync('diff', [dest, FIXTURE_SAMPLE_RULE], { encoding: 'utf8' });
-    expect(diff.status).toBe(0);
+    // The module does not set fromCache on 200 — it is absent (falsy), not explicitly false.
+    // Assert it is not truthy (no cache hit).
+    expect(result.fromCache).toBeFalsy();
   });
 
-  it('200 OK: cache directory is created and contains an entry with project id', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    const dest = join(destDir, 'out.md');
+  it('writes the response body to the cache file after a 200', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'cached content' }));
 
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
+    await fetchBaselineFile({
+      filePath: 'rules/testing.md',
+      token: 'test-token',
+      projectId: '99',
+      baselineRef: 'main',
     });
 
-    expect(existsSync(cacheDir)).toBe(true);
-    const entries = readdirSync(cacheDir).filter((f) => f.includes('52'));
-    expect(entries.length).toBe(1);
+    // Cache file must exist with the right content
+    const key = cacheKey('99', 'main', 'rules/testing.md');
+    const cacheFile = join(cacheDir, key);
+    const { readFileSync } = await import('node:fs');
+    const written = readFileSync(cacheFile, 'utf8');
+    expect(written).toBe('cached content');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. 404 with cache hit
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — 404 with cache hit', () => {
+  it('returns ok:true with cached body when fetch 404s and cache is present', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'cached fallback', 'utf8');
+
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 404, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.body).toBe('cached fallback');
+    expect(result.fromCache).toBe(true);
   });
 
-  it('401 auth failure: exits 1 even when cache is seeded', () => {
-    // Seed cache via a successful fetch first
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
+  it('emits a WARNING to stderr when falling back to cache on 404', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'cached fallback', 'utf8');
+
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 404, body: '' }));
+
+    await fetchBaselineFile({
       filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
     });
 
-    // Now simulate 401
-    installCurlMock(mockDir, '401', '', 0);
-    const dest = join(destDir, 'auth-fail.md');
+    const stderrOutput = stderrSpy.mock.calls.map((c) => c[0]).join('');
+    expect(stderrOutput).toMatch(/WARNING/);
+    expect(stderrOutput).toMatch(/cache/i);
+  });
+});
 
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
+// ---------------------------------------------------------------------------
+// 3. 404 without cache
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — 404 without cache', () => {
+  it('returns ok:false with status 404 when fetch 404s and no cache', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 404, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/missing.md',
+      token: 'test-token',
       projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
+      baselineRef: 'main',
     });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
+  });
+
+  it('includes a descriptive error message for 404 with no cache', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 404, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/missing.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(typeof result.error).toBe('string');
+    expect(result.error.length).toBeGreaterThan(0);
+    // Must mention the file or "not found" concept
+    expect(result.error).toMatch(/not found|missing\.md/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. 401 NEVER falls back to cache
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — 401 auth failure', () => {
+  it('returns ok:false even when cache is present', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'cached content', 'utf8');
+
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 401, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(401);
+  });
+
+  it('does not set fromCache on a 401 response', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'cached content', 'utf8');
+
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 401, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.fromCache).toBeFalsy();
+  });
+
+  it('error message mentions auth or GITLAB_TOKEN on 401', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 401, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.error).toMatch(/auth|GITLAB_TOKEN/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. 403 NEVER falls back to cache
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — 403 forbidden', () => {
+  it('returns ok:false even when cache is present', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'cached content', 'utf8');
+
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 403, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+    expect(result.fromCache).toBeFalsy();
+  });
+
+  it('error message mentions auth or 403 on 403', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 403, body: '' }));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.error).toMatch(/auth|403/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Transport error with cache hit
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — transport error with cache hit', () => {
+  it('returns ok:true with cached body when fetch rejects and cache exists', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'offline cached body', 'utf8');
+
+    fetchSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.body).toBe('offline cached body');
+    expect(result.fromCache).toBe(true);
+  });
+
+  it('emits a WARNING to stderr on transport error cache fallback', async () => {
+    const key = cacheKey('52', 'main', '.claude/rules/security.md');
+    writeFileSync(join(cacheDir, key), 'offline cached body', 'utf8');
+
+    fetchSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    const stderrOutput = stderrSpy.mock.calls.map((c) => c[0]).join('');
+    expect(stderrOutput).toMatch(/WARNING/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Transport error without cache
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — transport error without cache', () => {
+  it('returns ok:false when fetch rejects and no cache exists', async () => {
+    fetchSpy.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('error field contains the transport error message', async () => {
+    fetchSpy.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(typeof result.error).toBe('string');
+    expect(result.error).toMatch(/ETIMEDOUT/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. PRIVATE-TOKEN header sent
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — request headers', () => {
+  it('sends PRIVATE-TOKEN header with the provided token', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'ok' }));
+
+    await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'my-secret-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, fetchOptions] = fetchSpy.mock.calls[0];
+    expect(fetchOptions.headers['PRIVATE-TOKEN']).toBe('my-secret-token');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Cache-key encoding
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — cache key encoding', () => {
+  it('cache file path encodes slashes and dots in filePath as underscores', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'content' }));
+
+    await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+    });
+
+    // Expected key: 52-main-_claude_rules_security_md  (all /. → _)
+    // Slashes in filePath: .claude/rules/security.md
+    // '.' → '_', '/' → '_'
+    const { readdirSync } = await import('node:fs');
+    const files = readdirSync(cacheDir);
+    expect(files).toHaveLength(1);
+    // Key must start with projectId-ref and contain no literal slashes or dots from the path segment
+    expect(files[0]).toMatch(/^52-main-/);
+    expect(files[0]).not.toContain('/');
+    expect(files[0]).not.toContain('.');
+  });
+
+  it('two calls with different projectIds produce different cache files', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'proj-a' }))
+      .mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'proj-b' }));
+
+    await fetchBaselineFile({ filePath: 'rules/dev.md', token: 'tok', projectId: '10', baselineRef: 'main' });
+    await fetchBaselineFile({ filePath: 'rules/dev.md', token: 'tok', projectId: '20', baselineRef: 'main' });
+
+    const { readdirSync } = await import('node:fs');
+    const files = readdirSync(cacheDir);
+    expect(files).toHaveLength(2);
+    const keyA = cacheKey('10', 'main', 'rules/dev.md');
+    const keyB = cacheKey('20', 'main', 'rules/dev.md');
+    expect(files).toContain(keyA);
+    expect(files).toContain(keyB);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. timeoutMs honored via AbortController
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — timeout', () => {
+  it('returns an error containing "abort" or "timeout" when fetch times out', async () => {
+    // Simulate an AbortError — what AbortController fires when signal aborts
+    const abortErr = new globalThis.DOMException('The operation was aborted.', 'AbortError');
+    fetchSpy.mockRejectedValueOnce(abortErr);
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+      timeoutMs: 100,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/abort|timeout/i);
+  });
+
+  it('passes a signal to fetch (AbortController wired)', async () => {
+    fetchSpy.mockResolvedValueOnce(makeFetchResponse({ status: 200, body: 'ok' }));
+
+    await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+      timeoutMs: 5000,
+    });
+
+    const [, fetchOptions] = fetchSpy.mock.calls[0];
+    expect(fetchOptions.signal).toBeDefined();
+    expect(typeof fetchOptions.signal.aborted).toBe('boolean');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Missing token — CLI spawn (exit code 1)
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile CLI — missing GITLAB_TOKEN', () => {
+  it('exits with code 1 and writes an error to stderr when GITLAB_TOKEN is absent', () => {
+    const env = { ...process.env };
+    delete env.GITLAB_TOKEN;
+    delete env.BASELINE_CACHE_DIR;
+
+    const result = spawnSync(
+      process.execPath,
+      [FETCH_BASELINE_MJS, '52', 'some/file.md'],
+      { encoding: 'utf8', env },
+    );
 
     expect(result.status).toBe(1);
-  });
-
-  it('401 auth failure: output mentions auth or GITLAB_TOKEN', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
-    });
-
-    installCurlMock(mockDir, '401', '', 0);
-    const dest = join(destDir, 'auth-fail.md');
-
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    const combined = result.stdout + result.stderr;
-    expect(combined.toLowerCase()).toMatch(/auth|gitlab_token/i);
-  });
-
-  it('401 auth failure: dest file is NOT written (no cache fallback)', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
-    });
-
-    installCurlMock(mockDir, '401', '', 0);
-    const dest = join(destDir, 'auth-fail.md');
-
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    expect(existsSync(dest)).toBe(false);
-  });
-
-  it('404 with no cache: exits 2', () => {
-    installCurlMock(mockDir, '404', '', 0);
-    const dest = join(destDir, 'missing.md');
-
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    expect(result.status).toBe(2);
-  });
-
-  it('404 with no cache: output mentions "not found" or "404"', () => {
-    installCurlMock(mockDir, '404', '', 0);
-    const dest = join(destDir, 'missing.md');
-
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    const combined = result.stdout + result.stderr;
-    expect(combined).toMatch(/not found|404/i);
-  });
-
-  it('404 with no cache: does not write dest file', () => {
-    installCurlMock(mockDir, '404', '', 0);
-    const dest = join(destDir, 'missing.md');
-
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    expect(existsSync(dest)).toBe(false);
-  });
-
-  it('network failure with seeded cache: exits 0 (cache fallback)', () => {
-    // Seed cache
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
-    });
-
-    // Simulate transport failure (curl exit 7)
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 7);
-    const dest = join(destDir, 'offline-result.md');
-
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    expect(result.status).toBe(0);
-  });
-
-  it('network failure with seeded cache: dest written from cache matches fixture', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
-    });
-
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 7);
-    const dest = join(destDir, 'offline-result.md');
-
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    expect(existsSync(dest)).toBe(true);
-    const diff = spawnSync('diff', [dest, FIXTURE_SAMPLE_RULE], { encoding: 'utf8' });
-    expect(diff.status).toBe(0);
-  });
-
-  it('network failure with seeded cache: output warns about cache', () => {
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 0);
-    runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest: join(destDir, 'prime.md'),
-    });
-
-    installCurlMock(mockDir, '200', FIXTURE_SAMPLE_RULE, 7);
-    const dest = join(destDir, 'offline-result.md');
-
-    const result = runFetchBaseline({
-      mockDir,
-      cacheDir,
-      projectId: '52',
-      filePath: '.claude/rules/security.md',
-      ref: 'main',
-      dest,
-    });
-
-    const combined = result.stdout + result.stderr;
-    expect(combined).toMatch(/cache|WARNING/i);
+    expect(result.stderr).toMatch(/GITLAB_TOKEN/i);
   });
 });

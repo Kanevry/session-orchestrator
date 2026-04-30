@@ -47,7 +47,7 @@ Prefer installing from a local clone? Use an absolute path instead of the `owner
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
 cd ~/Projects/session-orchestrator
 npm install
-bash scripts/codex-install.sh
+node scripts/codex-install.mjs
 ```
 
 ### Cursor IDE
@@ -59,7 +59,7 @@ cd ~/Projects/session-orchestrator
 npm install
 
 # 2. Install Cursor rules into your project
-bash scripts/cursor-install.sh /path/to/your/project
+node scripts/cursor-install.mjs /path/to/your/project
 
 # Session Config goes in CLAUDE.md (or AGENTS.md on Codex CLI; Cursor reads CLAUDE.md natively)
 ```
@@ -80,7 +80,7 @@ After installing the plugin (see [Install](#install)), add a `## Session Config`
 
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
-bash ~/Projects/session-orchestrator/scripts/codex-install.sh
+node ~/Projects/session-orchestrator/scripts/codex-install.mjs
 ```
 
 Add Session Config to `AGENTS.md` (the Codex CLI alias for `CLAUDE.md` — see [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md)), restart Codex, then run:
@@ -142,7 +142,7 @@ Back up any uncommitted work first.
 
 ### macOS / Linux: `Permission denied` on a hook
 
-v3 hooks are `.mjs` files invoked via `node <path>` — the executable bit is not required. If your editor reports `Permission denied`, it is still pointing at a stale `.sh` path. Re-run the platform install script (`scripts/codex-install.sh`, `scripts/cursor-install.sh`) or re-add the plugin in Claude Code.
+v3 hooks are `.mjs` files invoked via `node <path>` — the executable bit is not required. If your editor reports `Permission denied`, it is still pointing at a stale `.sh` path. Re-run the platform install script (`scripts/codex-install.mjs`, `scripts/cursor-install.mjs`) or re-add the plugin in Claude Code.
 
 ### `SyntaxError` in hooks
 
@@ -363,7 +363,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - `.orchestrator/policy/` — runtime policy files (e.g. `blocked-commands.json`, 13 rules consumed by the destructive-command guard)
 - `.claude/rules/` — always-on contributor rules (e.g. `parallel-sessions.md`)
 - `.codex-plugin/`: Codex plugin manifest (`plugin.json`) + compatibility config + 3 agent role definitions
-- `scripts/codex-install.sh`: installs into the active Codex desktop plugin catalog or falls back to a local marketplace
+- `scripts/codex-install.mjs`: installs into the active Codex desktop plugin catalog or falls back to a local marketplace
 - `scripts/`: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) + shared lib (`scripts/lib/*.mjs`) + vitest suite (2160+ tests)
 
 ## Destructive-Command Guard

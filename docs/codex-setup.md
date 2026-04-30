@@ -13,7 +13,7 @@ Guide for using Session Orchestrator with OpenAI Codex.
 ### Option 1: Home-local plugin
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
-bash ~/Projects/session-orchestrator/scripts/codex-install.sh
+node ~/Projects/session-orchestrator/scripts/codex-install.mjs
 ```
 
 The installer auto-detects the active Codex desktop plugin catalog at `~/.codex/.tmp/plugins` and falls back to a home-local marketplace when that catalog is not present.
@@ -98,7 +98,7 @@ Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-spe
 
 ## Troubleshooting
 
-- **Commands not recognized**: Re-run `bash scripts/codex-install.sh`, then restart Codex completely
+- **Commands not recognized**: Re-run `node scripts/codex-install.mjs`, then restart Codex completely
 - **Hooks not firing**: Verify your Codex build supports plugin hooks or copy `hooks/hooks-codex.json` into your local hook config
 - **Agent dispatch fails**: Verify Codex subagent support is available in your build and the agent TOMLs exist in `.codex-plugin/agents/`
 - **jq not found**: Install jq for scope enforcement hooks

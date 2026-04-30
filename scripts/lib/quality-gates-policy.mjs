@@ -2,7 +2,7 @@
  * Quality-gates policy loader.
  *
  * Reads .orchestrator/policy/quality-gates.json (issue #183).
- * Consumed by scripts/run-quality-gate.sh and the quality-gates skill.
+ * Consumed by scripts/run-quality-gate.mjs and the quality-gates skill.
  *
  * Policy-file-first: when a valid policy exists, its commands take precedence
  * over the project-instruction file's Session Config (CLAUDE.md, or AGENTS.md
@@ -82,7 +82,7 @@ export function resolveCommand(policy, key, fallback) {
 /**
  * Maps a Session Config key (e.g. "test-command") from the project-instruction
  * file (CLAUDE.md or AGENTS.md alias) to the policy-file key ("test"). Used by
- * run-quality-gate.sh via shell.
+ * run-quality-gate.mjs.
  *
  * @param {string} configKey
  * @returns {"test"|"typecheck"|"lint"|null}

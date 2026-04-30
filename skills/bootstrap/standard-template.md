@@ -621,7 +621,8 @@ Canonical implementation in [`_shared-template.md#baseline-fetch`](_shared-templ
 OPT-IN: only fires when `baseline-ref` is in Session Config, `GITLAB_TOKEN` is set, and
 `scripts/lib/fetch-baseline.sh` exists. Fetches `.claude/rules/*.md` from the baseline GitLab
 project (default project 52) and writes `.claude/.baseline-fetch.lock`. Does NOT abort on failure.
-See shared partial for full implementation.
+The rule manifest includes `owner-persona.md` (alongside `parallel-sessions.md`, `development.md`,
+and the rest of the always-on rules). See shared partial for full implementation.
 
 ---
 

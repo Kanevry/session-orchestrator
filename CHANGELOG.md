@@ -7,24 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Architecture-DDD-Trio adoption (Epic #309)
+### Added
+- **Owner Persona Layer (#161 epic)** — first-run owner.yaml + soul.md template engine + baseline rule (all in-repo).
+  - `scripts/lib/owner-yaml.mjs` (184L) — schema, validator, loader, writer, defaults. 5 exports: `OWNER_YAML_PATH`, `validateOwnerConfig`, `loadOwnerConfig`, `writeOwnerConfig`, `getDefaults`. Plain-JS validation (no Zod dep added). 36 tests.
+  - `scripts/lib/owner-interview.mjs` (130L) — 5-question interview (language, tone style, output level, preamble, hardware-sharing consent). C4 hardware-sharing consent (#173) merged into question 5; on Yes generates 64-char hex `hash-salt` via `crypto.randomBytes`. Idempotent: skipIfExists default; `force: true` archives to `owner.yaml.bak-<timestamp>`.
+  - `scripts/lib/soul-resolve.mjs` (98L) — mustache-style `{{slot}}` resolver. Pure `resolveSoul(template, ownerConfig)` + disk-loading `loadAndResolveSoul(soulPath, opts)`. Falls back to `getDefaults()` silently for missing slots; unknown slots left in place with warning. 10 tests.
+  - `skills/session-start/soul.md` + `skills/plan/soul.md` — both now contain `{{owner.language}}`, `{{tone.style}}`, `{{efficiency.output-level}}`, `{{efficiency.preamble}}` slots. Static defaults preserved at module level so resolution never fails.
+  - `skills/bootstrap/SKILL.md` — Phase 3.5 (30 lines) documents owner-interview integration. Phase 3.6 = (former 3.5) Rules-Fetch Bridge.
+  - `.claude/rules/owner-persona.md` (79L, 7 sections) — documents owner.yaml location, slot system, `--owner-reset` re-trigger, privacy guarantee (path-only, never content).
+  - `skills/bootstrap/standard-template.md` S99 step now lists `owner-persona.md` in baseline-fetch manifest.
+  - `tests/integration/owner-persona-flow.test.mjs` (15 tests) — end-to-end: interview → write → load → soul resolve.
+- **Architecture-DDD-Trio (#309)** — CLAUDE.md narrative bullet added; `skills/discovery/probes-arch.md` confirmed already complete (W1 audit). Cross-repo work (#314, #315) deferred to projects-baseline.
+- **Marketplace prep (#213)** — `docs/marketplace/composio-submission.md` (114L) — submission draft for ComposioHQ/awesome-claude-plugins (entry text, 9-row comparison vs maestro-orchestrate + backlog, PR mechanics, risk/fallback path).
 
-- **Three new skills derived from `mattpocock/skills@90ea8ee` (MIT):**
-  - `skills/architecture/` — surfaces *deepening opportunities* (Ousterhout — shallow modules, hypothetical seams, pass-through adapters) using the precise vocabulary from `LANGUAGE.md` (Module / Interface / Implementation / Depth / Seam / Adapter / Leverage / Locality). Bundles `LANGUAGE.md`, `DEEPENING.md`, `INTERFACE-DESIGN.md` byte-identically (the vocabulary IS the contract). #310.
-  - `skills/domain-model/` — grilling session that stress-tests plans against the existing domain model, sharpens fuzzy terminology inline, updates `CONTEXT.md` lazily, offers ADRs sparingly under a 3-criteria gate. `disable-model-invocation: true` (explicit-invocation only). Bundles `CONTEXT-FORMAT.md`, `ADR-FORMAT.md`. #311.
-  - `skills/ubiquitous-language/` — extracts a DDD glossary from the current conversation into `UBIQUITOUS_LANGUAGE.md`, flags ambiguities and synonyms, proposes opinionated canonical terms. `disable-model-invocation: true`. #312.
-- **`architectural-friction` Markdown probe** added to `skills/discovery/probes-arch.md` with concrete grep regex for three heuristics: `shallow-module` (exported_symbols / LOC ≥ 0.5), `pass-through-adapter` (delegation methods ≥ 70%), `one-adapter-seam` (interface with exactly one implementation). FINDING blocks route `recommended_fix` to the `architecture` skill. #313.
-- **Repo-root `NOTICE`** with full upstream MIT-license reproduction, pinned SHA `90ea8eec03d4ae8f43427aaf6fe4722653561a42`, and the inventory of vendored sub-files plus adapted SKILL.md files.
-- **Test pack `tests/skills/architecture-ddd-trio.test.mjs`** — 20 tests covering byte-equality (SHA-256-pinned), frontmatter validity, attribution preservation, `disable-model-invocation` flag, sub-file references, and NOTICE compliance.
+### Changed
+- **#218 partial port** — 6 top-level .sh scripts ported to .mjs:
+  - `scripts/codex-install.mjs` (200L), `scripts/cursor-install.mjs` (90L)
+  - `scripts/run-quality-gate.mjs` (155L) — orchestrates 4 variants by spawning existing `gate-*.sh` sub-scripts
+  - `scripts/validate-wave-scope.mjs` — replaces stub; preserves all .sh validation rules (path traversal, absolute paths, gates-object check)
+  - `scripts/validate-plugin.mjs` (116L) — orchestrates 5 sub-script validators via spawn
+  - `scripts/lib/fetch-baseline.mjs` (303L) — named export `fetchBaselineFile(opts)` + CLI mode; native `fetch()`, no new deps; cache fallback for 404/transport (NOT for 401/403)
+- **Doc cleanup (#218 sweep)** — README.md, CONTRIBUTING.md, USER-GUIDE.md, codex-setup.md, cursor-setup.md, migration-v3.md, session-config-reference.md, .claude/rules/cli-design.md (Shared Shell Library section rewritten), skills/quality-gates/SKILL.md, skills/session-end/verification-checklist.md, scripts/lib/quality-gates-policy.mjs — 12 files updated to reference .mjs paths instead of .sh.
 
-### Cross-repo (`projects-baseline`)
+### Removed
+- 5 top-level .sh scripts deleted: `scripts/codex-install.sh`, `scripts/cursor-install.sh`, `scripts/run-quality-gate.sh`, `scripts/validate-plugin.sh`, `scripts/lib/fetch-baseline.sh`. (`scripts/validate-wave-scope.sh` was already absent pre-session.)
 
-- **`.claude/rules/architecture.md`** vendors `LANGUAGE.md` vocabulary verbatim plus a "When to use which skill" matrix routing intents to the three new skills (#314, separate-repo MR `!15`).
-- **`docs/adr/000-template.md`** extended with a "When to write an ADR" section codifying the 3-criteria gate (hard-to-reverse + surprising-without-context + real-trade-off), preserving the existing Nygard structure unchanged (#315, same MR).
+### Kept (deliberate)
+- `scripts/lib/common.sh` — retained because 10 nested .sh files under `scripts/lib/gates/` (5) and `scripts/lib/validate/` (5) still source it. Follow-up #317 created for nested ports + common.sh removal.
 
-### Attribution
+### Testing
+- Test count: 2160 → 2420 (+260):
+  - 36 tests for owner-yaml
+  - 10 tests for soul-resolve
+  - 15 tests for owner-persona-flow integration
+  - 6 tests for codex-install + 5 for cursor-install
+  - 24 for run-quality-gate + 18 for validate-wave-scope + 16 for validate-plugin
+  - 22 for fetch-baseline (rewritten from .skip placeholder)
 
-Each adapted SKILL.md carries `derived-from: mattpocock/skills@90ea8ee` and `license: MIT` in its YAML frontmatter for traceability. See `NOTICE` for the full attribution + license boilerplate.
+### Closed Issues (2026-04-30 deep session)
+- #143 (vitest baseline functionally done — 2420 tests, GitLab CI green)
+- #152, #153, #154 (all superseded by v3.2.0 shipped 2026-04-27)
+- #173 (C4 consent merged into D2 question 5)
+- #175, #176, #177 (D2/D3/D4 of #161 epic — all in-repo work complete)
+
+### New Follow-up Issue
+- **#317** — port nested gates/ + validate/ shell scripts to .mjs + remove common.sh (10 .sh files remain)
 
 ## [3.2.0] - 2026-04-27
 

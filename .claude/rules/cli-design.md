@@ -52,9 +52,10 @@ paths:
 - Configure ShellCheck via `.shellcheckrc` at project root (severity, disabled rules). See baseline `.shellcheckrc` for reference.
 - Never require global installs — npx or project-local bin.
 
-## Shared Shell Library (common.sh)
-- All baseline scripts MUST source `scripts/lib/common.sh` for consistent behavior.
-- Source pattern: `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `source "${SCRIPT_DIR}/lib/common.sh"`.
+## Shared Shell Library (common.sh / common.mjs)
+- Top-level install/quality-gate scripts have been ported to `.mjs` equivalents (`scripts/codex-install.mjs`, `scripts/cursor-install.mjs`, `scripts/run-quality-gate.mjs`, etc.). New scripts should be written as `.mjs` and import from `scripts/lib/common.mjs`.
+- `scripts/lib/common.sh` is retained for the nested `.sh` scripts under `scripts/lib/gates/` and `scripts/lib/validate/` that still require a bash source context. Do not delete it.
+- Shell scripts that still need `common.sh` MUST source it via: `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `source "${SCRIPT_DIR}/lib/common.sh"`.
 - Use `parse_flags "$@"` for `--verbose`, `--json`, `--dry-run`, `--help`, `--version` flags.
 - Use `print_help "$HELP_TEXT"` and `show_version "name" "$VERSION"` for standard flag handling.
 - Use `require_commands cmd1 cmd2` to validate dependencies at startup (exits 2 if missing).

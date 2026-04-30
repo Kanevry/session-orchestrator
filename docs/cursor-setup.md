@@ -16,7 +16,7 @@ Guide for using Session Orchestrator with Cursor IDE.
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
 
 # 2. Symlink Cursor rules into your project
-bash ~/Projects/session-orchestrator/scripts/cursor-install.sh /path/to/your/project
+node ~/Projects/session-orchestrator/scripts/cursor-install.mjs /path/to/your/project
 ```
 
 ### Option 2: Manual copy

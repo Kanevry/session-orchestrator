@@ -197,7 +197,7 @@ baseline-ref: main
 
 Requires:
 - `GITLAB_TOKEN` env var set with read scope on the baseline project
-- `scripts/lib/fetch-baseline.sh` present in the session-orchestrator plugin
+- `scripts/lib/fetch-baseline.mjs` present in the session-orchestrator plugin
 
 If the fetch fails (network error, auth error, missing file), bootstrap continues without aborting — rules will arrive via the legacy Clank sync path. A warning is printed.
 

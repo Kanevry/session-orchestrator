@@ -50,7 +50,7 @@ If you installed via `/plugin marketplace add Kanevry/session-orchestrator`, the
 cd ~/Projects/session-orchestrator
 git pull
 npm install
-bash scripts/codex-install.sh     # re-syncs the codex plugin catalog
+node scripts/codex-install.mjs     # re-syncs the codex plugin catalog
 # Restart Codex
 ```
 
@@ -60,7 +60,7 @@ bash scripts/codex-install.sh     # re-syncs the codex plugin catalog
 cd ~/Projects/session-orchestrator
 git pull
 npm install
-bash scripts/cursor-install.sh /path/to/your/project    # re-syncs rules
+node scripts/cursor-install.mjs /path/to/your/project    # re-syncs rules
 # Restart Cursor
 ```
 
@@ -110,7 +110,7 @@ This re-checks out every file with the correct line endings. Back up any uncommi
 
 ### Permission errors on hook scripts (macOS / Linux)
 
-Pre-v3, hook `.sh` files needed `+x`. v3 `.mjs` files are invoked via `node <path>`, so the executable bit is not required. If your editor reports `Permission denied` on a hook, it is pointing at a stale `.sh` path — re-run the install script for your platform (`scripts/codex-install.sh`, `scripts/cursor-install.sh`) or re-add the plugin in Claude Code.
+Pre-v3, hook `.sh` files needed `+x`. v3 `.mjs` files are invoked via `node <path>`, so the executable bit is not required. If your editor reports `Permission denied` on a hook, it is pointing at a stale `.sh` path — re-run the install script for your platform (`scripts/codex-install.mjs`, `scripts/cursor-install.mjs`) or re-add the plugin in Claude Code.
 
 ### `zx` not found
 
