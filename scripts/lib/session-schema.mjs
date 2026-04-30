@@ -78,6 +78,7 @@ export const SESSION_KEY_ALIASES = Object.freeze({
   snapshots: 'snapshots_created',
   learnings: 'learnings_added',
   waves_total: 'total_waves',
+  waves_completed: 'total_waves',
   head_ref: 'branch',
   isolation_override: 'isolation',
 });

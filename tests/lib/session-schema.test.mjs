@@ -242,6 +242,12 @@ describe('normalizeSession — aliases + schema_version', () => {
     expect(out.isolation).toBe('none');
   });
 
+  it('applies waves_completed → total_waves alias (#400)', () => {
+    const out = normalizeSession({ session_id: 'sess-wc', session_type: 'deep', waves_completed: 5 });
+    expect(out.total_waves).toBe(5);
+    expect(out.waves_completed).toBe(5); // original preserved for debugging
+  });
+
   it('does not overwrite an existing canonical key when alias also present', () => {
     const out = normalizeSession({
       session_id: 'sess-no-clobber',
@@ -305,6 +311,10 @@ describe('module exports', () => {
     expect(SESSION_KEY_ALIASES.type).toBe('session_type');
     expect(SESSION_KEY_ALIASES.closed_issues).toBe('issues_closed');
     expect(SESSION_KEY_ALIASES.head_ref).toBe('branch');
+  });
+
+  it('SESSION_KEY_ALIASES maps waves_completed → total_waves (#400)', () => {
+    expect(SESSION_KEY_ALIASES.waves_completed).toBe('total_waves');
   });
 
   it('CURRENT_SESSION_SCHEMA_VERSION is 1', () => {
