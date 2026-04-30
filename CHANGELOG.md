@@ -7,103 +7,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-04-30
+
+Iterative release covering the work since v3.2.0 (2026-04-27): Owner Persona Layer (D-axis complete), bash-free milestone, AGENTS.md alias parity, vault-staleness banner, autopilot-effectiveness skeleton, two epic closures (#309 Architecture-DDD-Trio, #271 v3.2 Autopilot), 50+ closed sub-issues, and a major refactor pass (vault-mirror / config / categories / worktree / resource-probe splits). Tests grew 1871 → 2623 (+752). No breaking changes.
+
 ### Added
-- **Owner Persona Layer (#161 epic)** — first-run owner.yaml + soul.md template engine + baseline rule (all in-repo).
-  - `scripts/lib/owner-yaml.mjs` (184L) — schema, validator, loader, writer, defaults. 5 exports: `OWNER_YAML_PATH`, `validateOwnerConfig`, `loadOwnerConfig`, `writeOwnerConfig`, `getDefaults`. Plain-JS validation (no Zod dep added). 36 tests.
-  - `scripts/lib/owner-interview.mjs` (130L) — 5-question interview (language, tone style, output level, preamble, hardware-sharing consent). C4 hardware-sharing consent (#173) merged into question 5; on Yes generates 64-char hex `hash-salt` via `crypto.randomBytes`. Idempotent: skipIfExists default; `force: true` archives to `owner.yaml.bak-<timestamp>`.
-  - `scripts/lib/soul-resolve.mjs` (98L) — mustache-style `{{slot}}` resolver. Pure `resolveSoul(template, ownerConfig)` + disk-loading `loadAndResolveSoul(soulPath, opts)`. Falls back to `getDefaults()` silently for missing slots; unknown slots left in place with warning. 10 tests.
-  - `skills/session-start/soul.md` + `skills/plan/soul.md` — both now contain `{{owner.language}}`, `{{tone.style}}`, `{{efficiency.output-level}}`, `{{efficiency.preamble}}` slots. Static defaults preserved at module level so resolution never fails.
-  - `skills/bootstrap/SKILL.md` — Phase 3.5 (30 lines) documents owner-interview integration. Phase 3.6 = (former 3.5) Rules-Fetch Bridge.
-  - `.claude/rules/owner-persona.md` (79L, 7 sections) — documents owner.yaml location, slot system, `--owner-reset` re-trigger, privacy guarantee (path-only, never content).
-  - `skills/bootstrap/standard-template.md` S99 step now lists `owner-persona.md` in baseline-fetch manifest.
-  - `tests/integration/owner-persona-flow.test.mjs` (15 tests) — end-to-end: interview → write → load → soul resolve.
-- **Architecture-DDD-Trio (#309)** — CLAUDE.md narrative bullet added; `skills/discovery/probes-arch.md` confirmed already complete (W1 audit). Cross-repo work (#314, #315) deferred to projects-baseline.
-- **Marketplace prep (#213)** — `docs/marketplace/composio-submission.md` (114L) — submission draft for ComposioHQ/awesome-claude-plugins (entry text, 9-row comparison vs maestro-orchestrate + backlog, PR mechanics, risk/fallback path).
+
+#### Owner Persona Layer (#161 epic — D-axis complete)
+- `scripts/lib/owner-yaml.mjs` (184L, 5 exports) — schema, validator, loader, writer, defaults; plain-JS validation (no Zod dep). 36 tests.
+- `scripts/lib/owner-interview.mjs` (130L) — 5-question interview (language, tone, output level, preamble, hardware-sharing consent). C4 hardware-sharing consent (#173) merged into question 5; generates 64-char hex `hash-salt` via `crypto.randomBytes`. Idempotent (`force: true` archives to `owner.yaml.bak-<timestamp>`).
+- `scripts/lib/soul-resolve.mjs` (98L) — mustache-style `{{slot}}` resolver. Pure `resolveSoul()` + `loadAndResolveSoul()`. Falls back to defaults silently for missing slots. 10 tests.
+- `scripts/lib/owner-config{,-loader}.mjs` (313L + 113L) — earlier config foundation (#174) + 41 tests + `docs/owner-config-schema.md`.
+- `skills/session-start/soul.md` + `skills/plan/soul.md` — both contain `{{owner.language}}`, `{{tone.style}}`, `{{efficiency.output-level}}`, `{{efficiency.preamble}}` slots.
+- `skills/bootstrap/SKILL.md` — Phase 3.5 owner-interview integration; Phase 3.6 = (former 3.5) Rules-Fetch Bridge.
+- `.claude/rules/owner-persona.md` (79L, 7 sections) — owner.yaml location, slot system, `--owner-reset` re-trigger, privacy guarantee (path-only, never content).
+- `tests/integration/owner-persona-flow.test.mjs` (15 tests) — interview → write → load → soul resolve.
+
+#### AGENTS.md alias parity (#33 + #30)
+- `skills/_shared/instruction-file-resolution.md` — alias-rule SSOT (CLAUDE.md → AGENTS.md → null).
+- `scripts/lib/common.mjs` adds `resolveInstructionFile()` helper.
+- 30 sites updated: 16 skills, 11 scripts, 1 command, 1 example.yaml — transparent alias everywhere.
+- `skills/claude-md-drift-check/checker.mjs` alias-resolves at runtime; JSON now emits `resolved_path` / `resolved_kind`.
+- `tests/skills/instruction-file-alias-coverage.test.mjs` — sweep test prevents regression.
+- `docs/session-config-template.md` — ~70-field baseline template for adopters.
+- `scripts/check-doc-consistency.sh` — POSIX H2-parity, count-parity, alias-phrasing CI gate (exit 0/1/2).
+- `skills/claude-md-drift-check` gains session-config-parity check (template-vs-local key diff, 2 new CLI flags) and a fifth command-count probe (#269).
+
+#### Architecture-DDD-Trio (#309 epic, closed)
+- 3 skills + `skills/discovery/probes-arch.md` (235L, 4 probes incl. architectural-friction) + 20 tests adopted from `mattpocock/skills@90ea8ee` (MIT). Plugin-scope items complete; cross-repo work (#314, #315) deferred to projects-baseline MR.
+
+#### Vault & Discovery Infrastructure
+- `scripts/vault-integration-watcher.mjs` (260L, #306) — vault staleness watcher + 12 tests + GitLab Scheduled Pipeline.
+- `scripts/lib/vault-staleness-banner.mjs` (#319) — 2-tier severity banner (`warn`/`alert`) wired into `session-start` Phase 4. Reads last line of `.orchestrator/metrics/vault-staleness.jsonl`. Silent no-op on absent/malformed file or `stale_count === 0`.
+- `docs/vault-docs-architecture.md` (#237, 297L, 31 source citations, 9 sections).
+
+#### Autopilot Foundation (#271 epic, closed)
+- `scripts/lib/evolve/autopilot-effectiveness.mjs` (#298) — `/evolve` learning type 8 skeleton; data-gated on ≥20 paired manual+autopilot runs per mode (returns `[]` until threshold).
+- All v3.2 Autopilot phases (A/B/C-1/C-1.b/C-1.c/C-2/C-5) confirmed shipped at v3.2.0; epic closed in this cycle. Sub-issues `#297` (cap calibration) and `#298` (effectiveness data) remain open, blocked on real RUNS.
+
+#### Repository tooling
+- `skills/repo-audit/SKILL.md` (#215, 258L) + `commands/repo-audit.md` + 32 tests; Clank section opt-in; config-driven.
+- `skills/_shared/instruction-file-resolution.md` baseline-fetch in `skills/bootstrap/standard-template.md` S99 manifest.
+
+#### Express Path (#214)
+- `session-start` Phase 8.5 + `session-plan` Express Path Short-Circuit + docs section. Codifies the 13× consecutive coord-direct pattern observed in 2026-04 deep sessions. Activates for housekeeping ≤3 sequential issues. +20 tests.
+
+#### Marketplace prep (#213)
+- `docs/marketplace/composio-submission.md` (114L) — submission draft for ComposioHQ/awesome-claude-plugins (entry text, 9-row comparison vs maestro-orchestrate, PR mechanics, risk/fallback path).
+
+#### Cross-repo baseline propagation prep
+- `docs/baseline-diffs/` — three MR-ready preview documents for #318 (owner-persona), #314 (architecture rule), #315 (ADR template gate). Plugin-side only; baseline MR is a separate session.
 
 ### Changed
-- **#218 partial port** — 6 top-level .sh scripts ported to .mjs:
-  - `scripts/codex-install.mjs` (200L), `scripts/cursor-install.mjs` (90L)
-  - `scripts/run-quality-gate.mjs` (155L) — orchestrates 4 variants by spawning existing `gate-*.sh` sub-scripts
-  - `scripts/validate-wave-scope.mjs` — replaces stub; preserves all .sh validation rules (path traversal, absolute paths, gates-object check)
-  - `scripts/validate-plugin.mjs` (116L) — orchestrates 5 sub-script validators via spawn
-  - `scripts/lib/fetch-baseline.mjs` (303L) — named export `fetchBaselineFile(opts)` + CLI mode; native `fetch()`, no new deps; cache fallback for 404/transport (NOT for 401/403)
-- **Doc cleanup (#218 sweep)** — README.md, CONTRIBUTING.md, USER-GUIDE.md, codex-setup.md, cursor-setup.md, migration-v3.md, session-config-reference.md, .claude/rules/cli-design.md (Shared Shell Library section rewritten), skills/quality-gates/SKILL.md, skills/session-end/verification-checklist.md, scripts/lib/quality-gates-policy.mjs — 12 files updated to reference .mjs paths instead of .sh.
+
+#### Refactor pass (lower complexity, preserved public APIs)
+- `vault-mirror.mjs` (#283) — 679L → 152L CLI orchestrator + 6 modules under `scripts/lib/vault-mirror/`. CLI flags byte-identical; 51/51 existing tests unchanged.
+- `config.mjs` (#284) — 1075L → 294L orchestrator + 8 per-section parsers under `scripts/lib/config/`. Public API frozen; 152/152 tests pass.
+- `categories.mjs` (#285) — 956L → 17L re-export barrel + 7 per-category files; `RUBRIC_VERSION='2026-05'` unchanged; audit JSON output identical.
+- `worktree.mjs` (#287) — 589L → 420L; new `workspace.mjs` 198L re-export shim.
+- `resource-probe.mjs` (#287) — 564L → 89L + new `resource-probe/{parsers,probe-platform,evaluate}.mjs`.
+- `validate-plugin.sh` (#122) — 364L → 79L orchestrator + 5 helpers under `scripts/lib/validate/`.
+- `run-quality-gate.sh` (#121) — 412L → 132L dispatcher + 4 gate handlers + helpers under `scripts/lib/gates/`.
+- `bootstrap` templates (#288 batch 1+2) — `_shared-template.md` partial extraction; `session-start` 862→486L (4 phase siblings); `session-end` 636→446L (2 phase siblings).
+- `harness-audit` pass()/fail() (#227) — options-object signature with backward-compat positional shim (warn-once + forward); +19 tests.
+- `ecosystem-wizard` + `worktree-freshness` (#208) — 9 helpers extracted; all functions ≤57 lines; #289 idempotent merge fully preserved.
+
+#### Bash-free milestone (#218 / #317)
+- 16 .sh scripts ported to .mjs (10 nested under `scripts/lib/gates/` + `scripts/lib/validate/`, 6 top-level); `find scripts/lib -name '*.sh'` returns zero.
+- New pure-ESM modules: `scripts/lib/gates/gate-{baseline,incremental,full,per-file,helpers}.mjs` (475L), `scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.mjs` (447L). Exact JSON-on-stdout contracts and exit codes preserved.
+- `scripts/run-quality-gate.mjs` and `scripts/validate-plugin.mjs` switched from `bash` → `node` spawn. Public CLI/env API unchanged.
+- `.claude/rules/cli-design.md` — "Shared Shell Library" section rewritten as "Shared Module Library (common.mjs)" reflecting bash-free state.
+- `CONTRIBUTING.md` updated: `platform.sh` → `scripts/lib/platform.mjs (detectPlatform)`, `common.sh` → `common.mjs`.
+- 12 doc/skill/rule files updated to reference .mjs paths instead of .sh.
+
+#### Hooks profile gate (#211)
+- `hooks/_lib/profile-gate.mjs` (`shouldRunHook`) imported by all 6 handlers. `SO_HOOK_PROFILE` (full/minimal/off) + `SO_DISABLED_HOOKS` per-name override. Backward compatible (unset env = full). +10 tests.
+
+#### Webhook URL centralization (#228)
+- `scripts/lib/webhook-url.mjs` (`resolveWebhookUrl` + `WebhookConfigError`) — env > Session Config > error precedence. Personal-domain default removed from `scripts/lib/events.mjs` + `hooks/on-stop.mjs`. +22 tests.
+
+#### Plugin root resolution (#212)
+- `scripts/lib/plugin-root.mjs` — robust 4-level fallback (env CLAUDE_PLUGIN_ROOT > CODEX_PLUGIN_ROOT > walk-from-import-meta > walk-from-cwd > `PluginRootResolutionError`). `platform.mjs` delegates. Backward compat preserved. +10 tests.
+
+#### Schema enforcement
+- `learnings.jsonl` writer (#303) — Zod-equivalent validation; `evolve` SKILL.md Step 3.5 writer prompt now mandates `schema_version:1` + UUID `id` + `insight` (not `description`/`recommendation`). `scripts/migrate-learnings-jsonl.mjs` (--dry-run/--apply, idempotent). +14 tests.
+- `sessions.jsonl` writer (#304) — canonical schema header doc; `scripts/migrate-sessions-jsonl.mjs` maps OLD scalar shape → NEW `agent_summary`/`waves[]`/`total_agents`/`total_files_changed`. +19 tests.
+- `bootstrap.lock plugin_version` (#290 + #203) — `readPluginVersionFromPackageJson` + `classifyVersionMismatch` (major=alert, minor/patch=info, legacy=soft). `MS_PER_DAY` constant. Live lock backfilled with `plugin-version`.
+
+#### Discovery & ecosystem
+- `discovery-on-close` session-type-aware default (#264) — `housekeeping=false`, `feature/deep=true`; user override always wins.
+- `ecosystem-wizard` idempotent re-runs (#289) — diff-aware merge (JSON.stringify equality gate), `overwrite` param on `writeSessionConfigBlock`. +11 tests.
+- `zombie-threshold-min` end-to-end wiring (#178) — config schema (default 30 min), `parseEtimeToMinutes` + `countZombieProcesses`. Verdict escalates when `zombie>=1 AND claude_processes_count>0`. +21 tests.
+- `close` skill auto-strip `status:*` labels (#308) — `scripts/lib/issue-close-strip-labels.mjs` (glab + gh paths, idempotent, fail-open). +10 tests.
+- `skills/evolve/SKILL.md` — Type 8 entry added; counter 6→8 sync (also picked up pre-existing missing `hardware-pattern` #7 in Step 3.5 enum).
+- PSA-001 vs PSA-002 refinement (#156) — decision-tree, scope-overlap examples, separate behavior blocks; PSA-003/004 untouched. +8 tests.
+
+#### Tooling upgrades
+- ESLint 9 → 10 (#286) + `@eslint/js` 10 + `jiti` 2.6.1; 4 breaking-change rule fixes.
+- `js-yaml` devDep added — fixes pre-existing `architecture-ddd-trio` test (20 tests unblocked).
+
+#### Documentation
+- `README.md` expanded as single source (live counts: 25 skills / 10 commands / 7 agents / 6 hooks).
+- `CLAUDE.md` stripped 127 → 81 lines (pointer + runtime-critical: Session Config block byte-preserved, Destructive-Command Guard, Agent Authoring Rules, Current State).
+
+### Fixed
+
+- **#382** ecosystem-health body-status precedence — drop `curl -f` so 4xx/5xx still deliver body; add `-w 'HTTP_STATUS:%{http_code}'`; body-first JSON parse: `{status: degraded}` → DEGRADED on any 200-599. Report Format updated to list DEGRADED + DOWN as flag-worthy.
+- **#400** `sessions.jsonl` writer alias — `scripts/lib/session-schema.mjs` adds `waves_completed → total_waves` to `SESSION_KEY_ALIASES` so legacy coord-direct entries normalize cleanly. `skills/session-end/session-metrics-write.md` gains MANDATORY WRITE PATH callout forbidding hand-composed JSONL writes; `emit-session.mjs` documented as the only sanctioned writer.
+- **#32** events.jsonl `agent:"unknown"` 100%-of-the-time bug — `hooks/on-stop.mjs` `agent_name` (invented) → `agent_type` (Claude Code contract). 11 fixture rewrites; 3 new tests including a contract-pin guarding against `agent_name` reintroduction.
+- **#222** harness-audit integration JSON truncation — root cause: `spawnSync` default `maxBuffer` <12KB on some CI; fixture pollution from prior dev runs. Fix: explicit `maxBuffer=16MB`, `unlinkSync` guard in `copyFixtureToTmpdir`. 10/10 pass.
+- **#279** schema-drift CI 403 — `.gitlab-ci.yml` uses `SCHEMA_DRIFT_TOKEN` (deploy token / PAT) instead of `CI_JOB_TOKEN`; missing-token fallback skips gracefully. `docs/ci-setup.md` documents creation steps.
 
 ### Removed
-- 5 top-level .sh scripts deleted: `scripts/codex-install.sh`, `scripts/cursor-install.sh`, `scripts/run-quality-gate.sh`, `scripts/validate-plugin.sh`, `scripts/lib/fetch-baseline.sh`. (`scripts/validate-wave-scope.sh` was already absent pre-session.)
 
-### Kept (deliberate)
-- `scripts/lib/common.sh` — retained because 10 nested .sh files under `scripts/lib/gates/` (5) and `scripts/lib/validate/` (5) still source it. Follow-up #317 created for nested ports + common.sh removal.
+- `scripts/lib/common.sh` — superseded by `common.mjs` (`die`, `warn`, `requireJq`, `findProjectRoot`, `resolvePluginRoot`).
+- `scripts/lib/platform.sh` — superseded by `platform.mjs`.
+- `scripts/lib/gates/gate-{baseline,incremental,full,per-file,helpers}.sh` (5 files, 365L).
+- `scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.sh` (5 files, 458L).
+- 5 top-level .sh scripts: `codex-install.sh`, `cursor-install.sh`, `run-quality-gate.sh`, `validate-plugin.sh`, `lib/fetch-baseline.sh`.
 
-### Testing
-- Test count: 2160 → 2420 (+260):
-  - 36 tests for owner-yaml
-  - 10 tests for soul-resolve
-  - 15 tests for owner-persona-flow integration
-  - 6 tests for codex-install + 5 for cursor-install
-  - 24 for run-quality-gate + 18 for validate-wave-scope + 16 for validate-plugin
-  - 22 for fetch-baseline (rewritten from .skip placeholder)
+### Security
 
-### Closed Issues (2026-04-30 deep session)
-- #143 (vitest baseline functionally done — 2420 tests, GitLab CI green)
-- #152, #153, #154 (all superseded by v3.2.0 shipped 2026-04-27)
-- #173 (C4 consent merged into D2 question 5)
-- #175, #176, #177 (D2/D3/D4 of #161 epic — all in-repo work complete)
+- **#247** vault-backfill YAML injection (CWE-1336) — `yamlScalar(JSON.stringify)` helper applied to user-supplied `owner` and `gitlabPath`. Newline-injection regression test proves no extra YAML keys emitted. +14 tests.
+- **#108** bootstrap security — atomic lock-write, claude-init guard, cp-rP symlink fix. +7 regression tests.
 
-### New Follow-up Issue
-- **#317** — port nested gates/ + validate/ shell scripts to .mjs + remove common.sh (10 .sh files remain)
+### Closed Issues
 
----
+- **Epics:** #309 (Architecture-DDD-Trio adoption), #271 (v3.2 Autopilot), #181 (harness-retro), #265 (META-AUDIT triage), #161 (Owner Persona D-axis).
+- **Owner Persona D-axis:** #173 (consent merged), #175, #176, #177 (D2/D3/D4).
+- **Refactor splits:** #283, #284, #285, #287, #288, #122, #121, #208.
+- **Bash-free milestone:** #218, #317, #124 (Windows native superseded by v3.2.0).
+- **Bug fixes / hardening:** #303, #304, #290, #203, #289, #178, #211, #227, #228, #308, #269, #212, #214, #247, #156, #266, #264, #279, #113, #112, #222, #382, #400.
+- **AGENTS.md alias parity:** #33, #32, #30.
+- **Vault & docs:** #232, #230, #237, #223, #144, #319.
+- **Tracking & verification:** #143, #152, #153, #154, #119, #86, #174, #215, #286, #306, #108.
+- **Spawned during this cycle:** #317 (closed same cycle), #318 (G-axis tracker, kept open).
 
-### Added (Wave 5 — #317/#218 nested ports + bash-free milestone)
-- **`scripts/lib/gates/gate-helpers.mjs`** (222L, 9 named exports) — pure-ESM port of `gate-helpers.sh` (issues #218 + #317). Replaces shared bash helpers for gate handlers with: `runCheck`, `csvToJsonArray`, `findChangedFiles`, `findChangedTestFiles`, `extractCount`, `extractTestCounts`, `collectDebugArtifacts`, `extractErrorLinesJson`, `resolveTestFiles`.
-- **`scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs`** (252L total) — pure-ESM ports preserving exact JSON-on-stdout contracts and exit codes (0 informational; 0/2 for full-gate). Spawned by `scripts/run-quality-gate.mjs` via `node` (no bash dependency).
-- **`scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.mjs`** (447L total) — pure-ESM ports preserving the `  PASS:` / `  FAIL:` / `Results: N passed, M failed` orchestrator contract. No `jq` dependency.
-- **`tests/scripts/gates/`** — 103 vitest tests across 5 files covering helper unit tests + gate CLI integration (skip/pass/fail variants).
-- **`tests/scripts/validate/`** — 62 vitest tests across 5 files covering live-repo smoke + fixture failure paths (missing fields, invalid kebab-case, JSON-array `tools`, block-scalar `description`, etc.).
-- **`tests/scripts/orchestrators-e2e.test.mjs`** — 5 e2e tests covering all 4 quality-gate variants + validate-plugin orchestrator end-to-end.
-- **GitLab issue #318** — new G-tracking issue for Owner Persona baseline propagation (cross-repo follow-up to #161 D-axis).
+### Quality
 
-### Changed (Wave 5)
-- **`scripts/run-quality-gate.mjs`** — orchestrator GATE_SCRIPT map switched from `.sh` → `.mjs` (4 entries) + `spawnSync('bash', ...)` → `spawnSync('node', ...)`. Public CLI/env API unchanged.
-- **`scripts/validate-plugin.mjs`** — `runCheck()` switched from `bash` → `node` spawn; 5 call sites updated `check-X.sh` → `check-X.mjs`. Public API unchanged.
-- **`.claude/rules/cli-design.md`** — "Shared Shell Library (common.sh / common.mjs)" section replaced with "Shared Module Library (common.mjs)" reflecting bash-free state.
-- **`CONTRIBUTING.md`** — 3 lines updated: `platform.sh` → `scripts/lib/platform.mjs (detectPlatform)`, `common.sh` → `common.mjs` (with new export inventory), env-var resolution note.
+- Tests: 1871 (post-v3.2.0) → **2623** (+752), 12 skipped.
+- Typecheck: 54 files OK.
+- Lint: 0 errors / 0 warnings.
+- Coverage above thresholds 70 / 65 / 70 / 60.
+- Banner-version-sync regression test (`tests/hooks/banner-version-sync.test.mjs`) keeps `hooks/{hooks,hooks-codex}.json` echo banners aligned with `package.json`.
 
-### Removed (Wave 5)
-- **`scripts/lib/common.sh`** — superseded by `scripts/lib/common.mjs`. All 5 helpers (`die`, `warn`, `requireJq`, `findProjectRoot`, `resolvePluginRoot`) already exported from `common.mjs`.
-- **`scripts/lib/platform.sh`** — superseded by `scripts/lib/platform.mjs`.
-- **`scripts/lib/gates/gate-{baseline,incremental,full,per-file,helpers}.sh`** (5 files, 365L total).
-- **`scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.sh`** (5 files, 458L total).
+### Migration
 
-### Closed Issues (Wave 5)
-- **#161** Owner Persona Layer + Baseline Propagation — closed as D-axis-complete (D1-D4 shipped 2026-04-30, commit a992a5b); G-axis spawned as #318.
-- **#124** v3.0.0 Windows Native Support — closed as superseded by v3.2.0 (2026-04-27, e9a38bf). All acceptance verified; last bash residual eliminated in this session.
-- **#218 / #317** chore: port nested gates/ + validate/ shell scripts to .mjs — fully shipped (closed by Wave 5 commit).
+- **No breaking changes.** All public APIs (config keys, CLI flags, JSON outputs) preserved.
+- The `learnings.jsonl` and `sessions.jsonl` schema evolutions ship with idempotent migrate-* CLIs (`scripts/migrate-learnings-jsonl.mjs`, `scripts/migrate-sessions-jsonl.mjs`); existing legacy entries are normalized on next read via `SESSION_KEY_ALIASES` (read-time backwards compat).
+- `bootstrap.lock` v1 entries gain a new optional `plugin-version` field; absence triggers a `soft` info banner only.
+- The bash-free refactor is internal — `node_modules`-managed `node` is the only runtime; no `bash` is invoked from any plugin script after upgrade.
 
-### Quality (Wave 5)
-- Tests: 2420 → 2589 (+169 from new ports, +5 e2e orchestrator coverage).
-- Lint: clean (5 errors fixed inline during inter-wave Quality-Lite checkpoints).
-- Typecheck: 53 files OK.
-- `find scripts/lib -name '*.sh'` returns zero.
-
----
-
-### Added (Wave 6 — #319 vault-staleness banner + #298 evolve type 8 skeleton + #318/#314/#315 baseline-diff previews)
-- **#319** — `vault-staleness` banner wiring in `session-start` Phase 4. Helper module `scripts/lib/vault-staleness-banner.mjs` reads the last line of `.orchestrator/metrics/vault-staleness.jsonl` and emits a 2-tier severity banner (`warn`/`alert`) when `stale_count > 0`. Silent no-op on absent/malformed file or `stale_count === 0`.
-- **#298** — `/evolve` learning type 8 (`autopilot-effectiveness`) skeleton. Module `scripts/lib/evolve/autopilot-effectiveness.mjs` compares manual vs autopilot effectiveness per mode. Data-gated on ≥20 paired runs per mode (returns `[]` until threshold).
-- **`docs/baseline-diffs/`** — three cross-repo MR-ready preview documents for #318 (owner-persona), #314 (architecture rule), #315 (ADR template gate). Plugin-side artifacts; baseline MR is a separate session.
-
-### Changed (Wave 6)
-- **`skills/evolve/SKILL.md`** — Added type 8 entry. Counter sync 6→8 (also picked up the pre-existing missing `hardware-pattern` (#7) in the type enum on Step 3.5 step 4).
-- **`docs/marketplace/composio-submission.md`** — verified ship-ready (no edits required); §6 fallback link to `docs/submissions/awesome-claude-code.md` confirmed valid.
-
-### Closed Issues (Wave 6 — provisional, to be confirmed in W4 quality wave)
-- **#309** — Architecture-DDD-Trio adoption epic — all plugin-scope items shipped (3 skills + probes-arch.md + 20 tests). Cross-repo `#314`/`#315` correctly deferred to baseline MR.
-- **#271** — v3.2 Autopilot epic — Phases A/B/C-1/C-1.b/C-1.c/C-2/C-5 all shipped. Sub-issues `#297`/`#298` data-gated, remain open.
-
-### Quality (Wave 6)
-- New tests: `tests/skills/session-start/vault-staleness-banner.test.mjs`, `tests/skills/session-start/vault-staleness-skill-wiring.test.mjs`, `tests/skills/evolve/autopilot-effectiveness.test.mjs` (added by W3-A1/A2/A3).
 
 ## [3.2.0] - 2026-04-27
 
