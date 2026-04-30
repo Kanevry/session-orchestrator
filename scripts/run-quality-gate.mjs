@@ -28,7 +28,7 @@
  *   scripts/run-quality-gate.sh                  — original shell orchestrator
  *   scripts/lib/quality-gates-policy.mjs         — loadQualityGatesPolicy, resolveCommand
  *   scripts/lib/common.mjs                       — die, warn, findProjectRoot
- *   scripts/lib/gates/gate-{baseline,incremental,full,per-file}.sh
+ *   scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -54,10 +54,10 @@ const DEFAULT_LINT_CMD = 'pnpm lint';
 
 // Gate sub-script mapping
 const GATE_SCRIPT = {
-  baseline:    join(GATES_DIR, 'gate-baseline.sh'),
-  incremental: join(GATES_DIR, 'gate-incremental.sh'),
-  'full-gate': join(GATES_DIR, 'gate-full.sh'),
-  'per-file':  join(GATES_DIR, 'gate-per-file.sh'),
+  baseline:    join(GATES_DIR, 'gate-baseline.mjs'),
+  incremental: join(GATES_DIR, 'gate-incremental.mjs'),
+  'full-gate': join(GATES_DIR, 'gate-full.mjs'),
+  'per-file':  join(GATES_DIR, 'gate-per-file.mjs'),
 };
 
 // ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ const TEST_CMD      = extractCommand(policy, 'test',      'test-command',      c
 const LINT_CMD      = extractCommand(policy, 'lint',      'lint-command',      configJson, DEFAULT_LINT_CMD);
 
 // ---------------------------------------------------------------------------
-// Gate dispatch — shell-out to existing gate-*.sh sub-scripts
+// Gate dispatch — shell-out to existing gate-*.mjs sub-scripts
 // ---------------------------------------------------------------------------
 
 const gatePath = GATE_SCRIPT[variant];
@@ -192,7 +192,7 @@ const env = {
   SESSION_START_REF: sessionStartRef,
 };
 
-const result = spawnSync('bash', [gatePath], {
+const result = spawnSync('node', [gatePath], {
   env,
   stdio: 'inherit',
 });

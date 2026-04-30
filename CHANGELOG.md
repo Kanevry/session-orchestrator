@@ -53,6 +53,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### New Follow-up Issue
 - **#317** — port nested gates/ + validate/ shell scripts to .mjs + remove common.sh (10 .sh files remain)
 
+---
+
+### Added (Wave 5 — #317/#218 nested ports + bash-free milestone)
+- **`scripts/lib/gates/gate-helpers.mjs`** (222L, 9 named exports) — pure-ESM port of `gate-helpers.sh` (issues #218 + #317). Replaces shared bash helpers for gate handlers with: `runCheck`, `csvToJsonArray`, `findChangedFiles`, `findChangedTestFiles`, `extractCount`, `extractTestCounts`, `collectDebugArtifacts`, `extractErrorLinesJson`, `resolveTestFiles`.
+- **`scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs`** (252L total) — pure-ESM ports preserving exact JSON-on-stdout contracts and exit codes (0 informational; 0/2 for full-gate). Spawned by `scripts/run-quality-gate.mjs` via `node` (no bash dependency).
+- **`scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.mjs`** (447L total) — pure-ESM ports preserving the `  PASS:` / `  FAIL:` / `Results: N passed, M failed` orchestrator contract. No `jq` dependency.
+- **`tests/scripts/gates/`** — 103 vitest tests across 5 files covering helper unit tests + gate CLI integration (skip/pass/fail variants).
+- **`tests/scripts/validate/`** — 62 vitest tests across 5 files covering live-repo smoke + fixture failure paths (missing fields, invalid kebab-case, JSON-array `tools`, block-scalar `description`, etc.).
+- **`tests/scripts/orchestrators-e2e.test.mjs`** — 5 e2e tests covering all 4 quality-gate variants + validate-plugin orchestrator end-to-end.
+- **GitLab issue #318** — new G-tracking issue for Owner Persona baseline propagation (cross-repo follow-up to #161 D-axis).
+
+### Changed (Wave 5)
+- **`scripts/run-quality-gate.mjs`** — orchestrator GATE_SCRIPT map switched from `.sh` → `.mjs` (4 entries) + `spawnSync('bash', ...)` → `spawnSync('node', ...)`. Public CLI/env API unchanged.
+- **`scripts/validate-plugin.mjs`** — `runCheck()` switched from `bash` → `node` spawn; 5 call sites updated `check-X.sh` → `check-X.mjs`. Public API unchanged.
+- **`.claude/rules/cli-design.md`** — "Shared Shell Library (common.sh / common.mjs)" section replaced with "Shared Module Library (common.mjs)" reflecting bash-free state.
+- **`CONTRIBUTING.md`** — 3 lines updated: `platform.sh` → `scripts/lib/platform.mjs (detectPlatform)`, `common.sh` → `common.mjs` (with new export inventory), env-var resolution note.
+
+### Removed (Wave 5)
+- **`scripts/lib/common.sh`** — superseded by `scripts/lib/common.mjs`. All 5 helpers (`die`, `warn`, `requireJq`, `findProjectRoot`, `resolvePluginRoot`) already exported from `common.mjs`.
+- **`scripts/lib/platform.sh`** — superseded by `scripts/lib/platform.mjs`.
+- **`scripts/lib/gates/gate-{baseline,incremental,full,per-file,helpers}.sh`** (5 files, 365L total).
+- **`scripts/lib/validate/check-{plugin-json,component-paths,json-files,agents,commands}.sh`** (5 files, 458L total).
+
+### Closed Issues (Wave 5)
+- **#161** Owner Persona Layer + Baseline Propagation — closed as D-axis-complete (D1-D4 shipped 2026-04-30, commit a992a5b); G-axis spawned as #318.
+- **#124** v3.0.0 Windows Native Support — closed as superseded by v3.2.0 (2026-04-27, e9a38bf). All acceptance verified; last bash residual eliminated in this session.
+- **#218 / #317** chore: port nested gates/ + validate/ shell scripts to .mjs — fully shipped (closed by Wave 5 commit).
+
+### Quality (Wave 5)
+- Tests: 2420 → 2589 (+169 from new ports, +5 e2e orchestrator coverage).
+- Lint: clean (5 errors fixed inline during inter-wave Quality-Lite checkpoints).
+- Typecheck: 53 files OK.
+- `find scripts/lib -name '*.sh'` returns zero.
+
 ## [3.2.0] - 2026-04-27
 
 Consolidated stable release covering the v3.0.0 (Windows native), v3.1.0 (environment-aware sessions), and v3.2.0 (Mode-Selector + Autopilot) work since v2.0.0. Supersedes the `v3.0.0-rc.1` pre-release.

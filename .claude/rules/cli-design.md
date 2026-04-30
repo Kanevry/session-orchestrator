@@ -52,21 +52,18 @@ paths:
 - Configure ShellCheck via `.shellcheckrc` at project root (severity, disabled rules). See baseline `.shellcheckrc` for reference.
 - Never require global installs — npx or project-local bin.
 
-## Shared Shell Library (common.sh / common.mjs)
-- Top-level install/quality-gate scripts have been ported to `.mjs` equivalents (`scripts/codex-install.mjs`, `scripts/cursor-install.mjs`, `scripts/run-quality-gate.mjs`, etc.). New scripts should be written as `.mjs` and import from `scripts/lib/common.mjs`.
-- `scripts/lib/common.sh` is retained for the nested `.sh` scripts under `scripts/lib/gates/` and `scripts/lib/validate/` that still require a bash source context. Do not delete it.
-- Shell scripts that still need `common.sh` MUST source it via: `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `source "${SCRIPT_DIR}/lib/common.sh"`.
-- Use `parse_flags "$@"` for `--verbose`, `--json`, `--dry-run`, `--help`, `--version` flags.
-- Use `print_help "$HELP_TEXT"` and `show_version "name" "$VERSION"` for standard flag handling.
-- Use `require_commands cmd1 cmd2` to validate dependencies at startup (exits 2 if missing).
-- Use `require_env VAR1 VAR2` to validate environment variables (exits 1 if missing).
-- Use `log_info`/`log_success`/`log_warn`/`log_error` for TTY-aware colored output.
-- Use `json_output "$json"` for formatted JSON output (auto-pipes through `jq` if available).
-- Use `api_call METHOD url [auth]` for HTTP requests with timeout and error handling.
-- Use `assert_git_repo [path]` and `assert_clean_worktree [path]` for git precondition checks.
-- Use `get_git_remote_url [path]` to extract the git remote origin URL.
-- Use `iterate_repos callback_fn` to loop over all repos in `~/Projects/` with a callback function.
-- Use `setup_cleanup VAR_NAME` to register a trap that removes the directory in `$VAR_NAME` on EXIT.
+## Shared Module Library (common.mjs)
+
+The plugin uses a single shared module library — `scripts/lib/common.mjs` — for ESM utilities. The legacy `scripts/lib/common.sh` and `scripts/lib/platform.sh` shell sources have been removed (issues #218 + #317; commit history). All scripts under `scripts/lib/` are now `.mjs` and import from this module.
+
+- Top-level orchestrators (`scripts/run-quality-gate.mjs`, `scripts/validate-plugin.mjs`, `scripts/codex-install.mjs`, `scripts/cursor-install.mjs`, etc.) spawn `.mjs` sub-scripts via `node`, never `bash`.
+- Nested helpers under `scripts/lib/gates/` and `scripts/lib/validate/` are `.mjs` modules. The gates layer additionally exposes a domain-local `scripts/lib/gates/gate-helpers.mjs` for gate-specific helpers (run check, extract counts, debug-artifact collection, change-set resolution).
+- New scripts MUST be `.mjs`. Use named exports from `scripts/lib/common.mjs` for: `die`, `warn`, `requireJq`, `findProjectRoot`, `resolvePluginRoot`, `makeTmpPath`, `utcTimestamp`, and other shared helpers.
+- For platform-specific behavior, use `scripts/lib/platform.mjs`.
+- For test patterns + change-set helpers + per-gate parsing, use `scripts/lib/gates/gate-helpers.mjs`.
+- For atomic file IO + JSON helpers, use `scripts/lib/io.mjs`.
+
+There is no longer a Bash sourcing convention to follow. Cross-cutting CLI flag parsing (`--verbose`, `--json`, `--dry-run`, `--help`, `--version`) is the responsibility of each `.mjs` orchestrator using either `parseArgs` from `node:util` or a small helper in `common.mjs`.
 
 ## See Also
 development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · parallel-sessions.md · ai-agent.md

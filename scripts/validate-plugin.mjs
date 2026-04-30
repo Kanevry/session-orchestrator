@@ -61,11 +61,11 @@ let totalFail = 0;
  * Run a single sub-script from scripts/lib/validate/.
  * Returns the exit code of the sub-script (0 = all checks passed, 1 = failure).
  *
- * @param {string} script - basename of the .sh file (e.g. "check-plugin-json.sh")
+ * @param {string} script - basename of the .mjs file (e.g. "check-plugin-json.mjs")
  * @returns {number} exit code
  */
 function runCheck(script) {
-  const result = spawnSync('bash', [path.join(VALIDATE_DIR, script), PLUGIN_ROOT], {
+  const result = spawnSync('node', [path.join(VALIDATE_DIR, script), PLUGIN_ROOT], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -100,7 +100,7 @@ function runCheck(script) {
 
 let checkFailed = 0;
 
-const pluginJsonRc = runCheck('check-plugin-json.sh');
+const pluginJsonRc = runCheck('check-plugin-json.mjs');
 if (pluginJsonRc !== 0) {
   checkFailed = 1;
   process.stdout.write('\n');
@@ -111,16 +111,16 @@ if (pluginJsonRc !== 0) {
 }
 
 process.stdout.write('\n');
-if (runCheck('check-component-paths.sh') !== 0) checkFailed = 1;
+if (runCheck('check-component-paths.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-json-files.sh') !== 0) checkFailed = 1;
+if (runCheck('check-json-files.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-agents.sh') !== 0) checkFailed = 1;
+if (runCheck('check-agents.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-commands.sh') !== 0) checkFailed = 1;
+if (runCheck('check-commands.mjs') !== 0) checkFailed = 1;
 
 // ---------------------------------------------------------------------------
 // Summary

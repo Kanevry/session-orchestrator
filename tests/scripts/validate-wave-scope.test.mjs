@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -158,9 +158,12 @@ describe('validate-wave-scope.mjs — file input errors', () => {
 });
 
 describe('validate-wave-scope.mjs — stdin pipe (shebang/runnable)', () => {
-  it('cat .claude/wave-scope.json | node validate-wave-scope.mjs exits 0', () => {
+  // .claude/wave-scope.json is a gitignored runtime file; skip when absent.
+  const waveScopePath = resolve(__dirname, '../../.claude/wave-scope.json');
+  const waveScopeExists = existsSync(waveScopePath);
+
+  it.skipIf(!waveScopeExists)('cat .claude/wave-scope.json | node validate-wave-scope.mjs exits 0', () => {
     // Pipe the real .claude/wave-scope.json from the repo through stdin
-    const waveScopePath = resolve(__dirname, '../../.claude/wave-scope.json');
     const catResult = spawnSync('cat', [waveScopePath], { encoding: 'utf8' });
     expect(catResult.status).toBe(0);
 

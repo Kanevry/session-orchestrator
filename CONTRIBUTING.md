@@ -453,7 +453,7 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 | Rules (Cursor) | `.cursor/rules/*.mdc` | Cursor-native format, one per skill |
 | Agents (Claude Code) | `agents/` | Markdown format |
 | Agents (Codex) | `.codex-plugin/agents/` | TOML format |
-| Shell scripts | `scripts/` | Shared — use `$SO_*` variables from `platform.sh` |
+| Node.js scripts | `scripts/` | Shared — use `detectPlatform()` from `scripts/lib/platform.mjs` |
 
 ### Writing Platform-Portable Skills
 
@@ -484,7 +484,7 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 | `scripts/token-audit.sh` | Cross-project token efficiency audit |
 | `scripts/cursor-install.mjs` | Install Cursor rules via symlinks |
 | `scripts/lib/platform.mjs` | Platform detection — returns platform + stateDir + configFile + pluginRoot |
-| `scripts/lib/common.sh` | Shared shell utilities — die(), warn(), find_project_root() (used by install/quality-gate scripts) |
+| `scripts/lib/common.mjs` | Shared ESM utilities — die(), warn(), findProjectRoot(), resolvePluginRoot(), makeTmpPath(), utcTimestamp() |
 | `scripts/lib/worktree.mjs` | Git worktree helpers for isolated agent work |
 
 ### Running Tests
@@ -498,7 +498,7 @@ Test files are in `tests/`. Add new tests as `tests/<area>/<name>.test.mjs` foll
 
 ### Platform Variables
 
-Scripts use these environment variables (set by `platform.sh`):
+Scripts use these environment variables (resolved by `platform.mjs` — see `detectPlatform()`):
 - `SO_PLATFORM`: `claude` | `codex` | `cursor`
 - `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor`
 - `SO_CONFIG_FILE`: `CLAUDE.md` | `AGENTS.md`
