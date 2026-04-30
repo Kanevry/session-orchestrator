@@ -267,9 +267,9 @@ Opt-in webhook notifications. The `scripts/lib/webhook-url.mjs` resolver checks 
 ```yaml
 webhooks:
   slack:
-    url: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX
+    url: https://hooks.slack.com/services/REDACTED/REDACTED/REDACTED
   discord:
-    url: https://discord.com/api/webhooks/000000000000000000/xxxxxxxxxxxxxxxxxxxx
+    url: https://discord.com/api/webhooks/REDACTED/REDACTED
   generic:
     url: https://example.com/hooks/session-events
   gitlab-pipeline-status:
