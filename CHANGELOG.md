@@ -87,6 +87,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Typecheck: 53 files OK.
 - `find scripts/lib -name '*.sh'` returns zero.
 
+---
+
+### Added (Wave 6 — #319 vault-staleness banner + #298 evolve type 8 skeleton + #318/#314/#315 baseline-diff previews)
+- **#319** — `vault-staleness` banner wiring in `session-start` Phase 4. Helper module `scripts/lib/vault-staleness-banner.mjs` reads the last line of `.orchestrator/metrics/vault-staleness.jsonl` and emits a 2-tier severity banner (`warn`/`alert`) when `stale_count > 0`. Silent no-op on absent/malformed file or `stale_count === 0`.
+- **#298** — `/evolve` learning type 8 (`autopilot-effectiveness`) skeleton. Module `scripts/lib/evolve/autopilot-effectiveness.mjs` compares manual vs autopilot effectiveness per mode. Data-gated on ≥20 paired runs per mode (returns `[]` until threshold).
+- **`docs/baseline-diffs/`** — three cross-repo MR-ready preview documents for #318 (owner-persona), #314 (architecture rule), #315 (ADR template gate). Plugin-side artifacts; baseline MR is a separate session.
+
+### Changed (Wave 6)
+- **`skills/evolve/SKILL.md`** — Added type 8 entry. Counter sync 6→8 (also picked up the pre-existing missing `hardware-pattern` (#7) in the type enum on Step 3.5 step 4).
+- **`docs/marketplace/composio-submission.md`** — verified ship-ready (no edits required); §6 fallback link to `docs/submissions/awesome-claude-code.md` confirmed valid.
+
+### Closed Issues (Wave 6 — provisional, to be confirmed in W4 quality wave)
+- **#309** — Architecture-DDD-Trio adoption epic — all plugin-scope items shipped (3 skills + probes-arch.md + 20 tests). Cross-repo `#314`/`#315` correctly deferred to baseline MR.
+- **#271** — v3.2 Autopilot epic — Phases A/B/C-1/C-1.b/C-1.c/C-2/C-5 all shipped. Sub-issues `#297`/`#298` data-gated, remain open.
+
+### Quality (Wave 6)
+- New tests: `tests/skills/session-start/vault-staleness-banner.test.mjs`, `tests/skills/session-start/vault-staleness-skill-wiring.test.mjs`, `tests/skills/evolve/autopilot-effectiveness.test.mjs` (added by W3-A1/A2/A3).
+
 ## [3.2.0] - 2026-04-27
 
 Consolidated stable release covering the v3.0.0 (Windows native), v3.1.0 (environment-aware sessions), and v3.2.0 (Mode-Selector + Autopilot) work since v2.0.0. Supersedes the `v3.0.0-rc.1` pre-release.

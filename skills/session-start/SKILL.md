@@ -290,6 +290,12 @@ Group issues by:
    - **info-only version mismatch** (patch or minor version only): `"ℹ bootstrap.lock: plugin-version=<lock-ver> (current=<plugin-ver>) — minor drift only, no action required."`
    - **legacy lock without plugin-version** (soft signal only): `"ℹ bootstrap.lock: lock predates plugin-version field; consider /bootstrap --retroactive to refresh."`
 
+   Additionally, if `.orchestrator/metrics/vault-staleness.jsonl` exists in the current repo (vault-integration enabled), read the most recent line via `scripts/lib/vault-staleness-banner.mjs` (`checkVaultStaleness({repoRoot})`). When `stale_count > 0`, render a banner alongside the bootstrap-lock warning:
+   - **warn** (`stale_count > 0`, max `delta_hours <= 48`): `"⚠ vault-staleness: <N> projects stale (max delta: <X>h) — last run <timestamp>."`
+   - **alert** (`stale_count > 0`, max `delta_hours > 48`): `"⚠ vault-staleness: <N> projects stale (max delta: <X>h) — Clank-Vault-Sync cron likely broken, see agents/vault#70 fix pattern."`
+
+   The helper returns `null` (silent no-op) when the JSONL is absent, malformed, or `stale_count === 0`. Skip silently in those cases — do not block the session.
+
    All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
