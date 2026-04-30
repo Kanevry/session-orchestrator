@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **convergence-monitoring skill (#223)** — Iterative-loop convergence detector. Three signals (shrinking diff, pass-rate plateau, velocity) drive a Stop/Continue/Investigate decision at each inter-wave checkpoint. Distinct from /evolve (retrospective) and session-reviewer (correctness review): convergence-monitoring answers "are we making progress?". Primary consumer: /autoresearch loops and wave-executor inter-wave checkpoints.
+- **Baseline propagation MR (#314 #315 #318 #240)** — Cross-repo MR to `projects-baseline` vendoring `.claude/rules/architecture.md` (5 editorial patches), `.claude/rules/owner-persona.md` (new file + setup-project.sh wiring + CLAUDE.md.template bullet), `docs/adr/000-template.md` (3-criteria gate `### What qualifies` + `### What does not qualify` sub-sections), and `tests/setup-project.bats` (3 vault-provisioning test cases for #240).
+- **Plugin doc-drift sweep** — README.md skills count 25→26 (added convergence-monitoring), hook handler count 7→6 (corrected), test count 2160+→2623+ (refreshed). CLAUDE.md `## Structure` line synced.
+
 ### Fixed
 
 - **`evaluate.mjs` macOS pressure-first verdict** (commit `afcdf12`, branch `fix/macos-ram-pressure-aware-probe`) — `os.freemem()` on macOS reports only `vm_statistics.free_count` (Pages free), excluding the `inactive` pool that the OS reclaims on demand. Real-world Mac sessions with 11+ GB inactive routinely showed <1 GB "free", triggering `critical` verdict + `cap=0` (coordinator-direct) even when `memory_pressure` reported 60-80% free. Same pattern for swap: macOS accumulates swap over multi-day sessions even after pressure normalises. Fix: when `memory_pressure_pct_free >= 30%` (Activity Monitor's green/yellow boundary, `MACOS_HEALTHY_PRESSURE_PCT`), suppress free-RAM and swap signals; CPU + claude-process-count + zombie signals continue to fire. Backwards-compatible (Linux/Windows untouched). Verified live: `5219 MB swap + 0.5 GB ram_free + 81% pressure` previously → `critical / cap=0`, now → `warn / cap=null`. Aligned with new `AAG-006 Resource-Aware Throttling` rule. 72 unit tests (was 70); full suite 2629 pass. Sources: Apple "Viewing Virtual Memory Usage", OSXDaily 2026-04, psutil/psutil#1277, Cordum 2026 circuit-breaker DEGRADED-state.

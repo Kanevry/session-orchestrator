@@ -355,16 +355,16 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 
 ## Components
 
-- **25 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, **architecture**, **domain-model**, **ubiquitous-language**, autopilot, mode-selector, repo-audit
+- **26 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, **architecture**, **domain-model**, **ubiquitous-language**, autopilot, mode-selector, repo-audit, convergence-monitoring
 - **10 Commands**: /session, /go, /close, /discovery, /plan, /evolve, /bootstrap, /harness-audit, /autopilot, /repo-audit
 - **7 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer, docs-writer
-- **Hooks**: 6 event matchers covering 7 hook handlers — SessionStart (banner + init), PreToolUse/Edit\|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events). Plus the Clank Event Bus integration (`hooks/_lib/events.mjs`).
+- **Hooks**: 6 event matchers covering 6 hook handlers — SessionStart (banner + init), PreToolUse/Edit\|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (agent events). Plus the Clank Event Bus integration (`hooks/_lib/events.mjs`).
 - **Output Styles**: 3 styles (session-report, wave-summary, finding-report) for consistent reporting
 - `.orchestrator/policy/` — runtime policy files (e.g. `blocked-commands.json`, 13 rules consumed by the destructive-command guard)
 - `.claude/rules/` — always-on contributor rules (e.g. `parallel-sessions.md`)
 - `.codex-plugin/`: Codex plugin manifest (`plugin.json`) + compatibility config + 3 agent role definitions
 - `scripts/codex-install.mjs`: installs into the active Codex desktop plugin catalog or falls back to a local marketplace
-- `scripts/`: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) + shared lib (`scripts/lib/*.mjs`) + vitest suite (2160+ tests)
+- `scripts/`: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) + shared lib (`scripts/lib/*.mjs`) + vitest suite (2623+ tests)
 
 ## Destructive-Command Guard
 
