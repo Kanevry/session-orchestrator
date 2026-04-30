@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`evaluate.mjs` macOS pressure-first verdict** (commit `afcdf12`, branch `fix/macos-ram-pressure-aware-probe`) — `os.freemem()` on macOS reports only `vm_statistics.free_count` (Pages free), excluding the `inactive` pool that the OS reclaims on demand. Real-world Mac sessions with 11+ GB inactive routinely showed <1 GB "free", triggering `critical` verdict + `cap=0` (coordinator-direct) even when `memory_pressure` reported 60-80% free. Same pattern for swap: macOS accumulates swap over multi-day sessions even after pressure normalises. Fix: when `memory_pressure_pct_free >= 30%` (Activity Monitor's green/yellow boundary, `MACOS_HEALTHY_PRESSURE_PCT`), suppress free-RAM and swap signals; CPU + claude-process-count + zombie signals continue to fire. Backwards-compatible (Linux/Windows untouched). Verified live: `5219 MB swap + 0.5 GB ram_free + 81% pressure` previously → `critical / cap=0`, now → `warn / cap=null`. Aligned with new `AAG-006 Resource-Aware Throttling` rule. 72 unit tests (was 70); full suite 2629 pass. Sources: Apple "Viewing Virtual Memory Usage", OSXDaily 2026-04, psutil/psutil#1277, Cordum 2026 circuit-breaker DEGRADED-state.
+
 ## [3.3.0] - 2026-04-30
 
 Iterative release covering the work since v3.2.0 (2026-04-27): Owner Persona Layer (D-axis complete), bash-free milestone, AGENTS.md alias parity, vault-staleness banner, autopilot-effectiveness skeleton, two epic closures (#309 Architecture-DDD-Trio, #271 v3.2 Autopilot), 50+ closed sub-issues, and a major refactor pass (vault-mirror / config / categories / worktree / resource-probe splits). Tests grew 1871 → 2623 (+752). No breaking changes.

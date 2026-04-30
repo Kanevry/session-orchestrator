@@ -29,6 +29,20 @@ function bumpVerdict(current, target) {
 }
 
 /**
+ * macOS healthy-pressure threshold. When `memory_pressure_pct_free` ≥ this value,
+ * the OS reports that compressor + caches are doing their job, and `ram_free_gb`
+ * (which on macOS reflects only `Pages free`, not `inactive`) is misleading
+ * — the system has plenty of reclaimable memory. We suppress free-RAM-only
+ * verdict-bumps in that regime.
+ *
+ * Source: Apple Activity Monitor uses memory_pressure as the canonical health
+ * indicator since 10.9 Mavericks. See OSXDaily (2026-04) + Apple developer docs
+ * "Viewing Virtual Memory Usage". Threshold 30% matches the green/yellow
+ * boundary rendered by Activity Monitor (yellow at 30..50%, red at <30%).
+ */
+const MACOS_HEALTHY_PRESSURE_PCT = 30;
+
+/**
  * Evaluate a snapshot against `resource-thresholds` (from Session Config #166)
  * and return a verdict used by session-start Phase 4.5.
  * @param {object} snapshot — output of probe()
@@ -40,7 +54,7 @@ export function evaluate(snapshot, thresholds) {
   let verdict = 'green';
   let cap = null;
 
-  const { ram_free_gb, cpu_load_pct, claude_processes_count } = snapshot;
+  const { ram_free_gb, cpu_load_pct, claude_processes_count, memory_pressure_pct_free } = snapshot;
   const {
     'ram-free-min-gb': ramMin,
     'ram-free-critical-gb': ramCrit,
@@ -48,14 +62,27 @@ export function evaluate(snapshot, thresholds) {
     'concurrent-sessions-warn': concWarn,
   } = thresholds;
 
-  if (ram_free_gb < ramCrit) {
-    verdict = 'critical';
-    cap = 0;
-    reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below critical threshold ${ramCrit} GB — recommend coordinator-direct (0 agents).`);
-  } else if (ram_free_gb < ramMin) {
-    if (verdict === 'green') verdict = 'warn';
-    cap = cap === null ? 2 : Math.min(cap, 2);
-    reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below threshold ${ramMin} GB — capping agents-per-wave at 2.`);
+  // On macOS, `os.freemem()` reports only `Pages free` (excludes `inactive`),
+  // so `ram_free_gb` regularly reads sub-1 GB even when the system has 10+ GB
+  // reclaimable. When `memory_pressure` reports the system is healthy, the
+  // free-RAM-only signal is unreliable and we let pressure speak for itself.
+  const macosPressureHealthy =
+    memory_pressure_pct_free !== null &&
+    memory_pressure_pct_free !== undefined &&
+    memory_pressure_pct_free >= MACOS_HEALTHY_PRESSURE_PCT;
+
+  if (!macosPressureHealthy) {
+    if (ram_free_gb < ramCrit) {
+      verdict = 'critical';
+      cap = 0;
+      reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below critical threshold ${ramCrit} GB — recommend coordinator-direct (0 agents).`);
+    } else if (ram_free_gb < ramMin) {
+      if (verdict === 'green') verdict = 'warn';
+      cap = cap === null ? 2 : Math.min(cap, 2);
+      reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below threshold ${ramMin} GB — capping agents-per-wave at 2.`);
+    }
+  } else {
+    reasons.push(`macOS memory_pressure healthy (${memory_pressure_pct_free}% free ≥ ${MACOS_HEALTHY_PRESSURE_PCT}%) — free-RAM signal suppressed (Pages-free underreports on Darwin).`);
   }
 
   if (cpu_load_pct > cpuMax) {
@@ -88,34 +115,41 @@ export function evaluate(snapshot, thresholds) {
 
   // ---------------------------------------------------------------------------
   // Swap signal (macOS / Linux only; null = signal unavailable → no rule fires)
+  // On macOS, swap is accumulated over time and is not a real-time pressure
+  // indicator — Activity Monitor reports it under "Used" but classifies system
+  // health via memory_pressure, not swap volume. So when pressure is healthy,
+  // swap signal is treated as informational only (downgrades critical→warn).
   // ---------------------------------------------------------------------------
   const { swap_used_mb } = snapshot;
   if (swap_used_mb !== null && swap_used_mb !== undefined) {
-    if (swap_used_mb > 3072) {
+    if (swap_used_mb > 3072 && !macosPressureHealthy) {
       verdict = bumpVerdict(verdict, 'critical');
       cap = 0;
       reasons.push(`Swap usage ${swap_used_mb} MB above critical threshold 3072 MB — recommend coordinator-direct (0 agents).`);
-    } else if (swap_used_mb > 2048) {
+    } else if (swap_used_mb > 2048 && !macosPressureHealthy) {
       const newVerdict = bumpVerdict(verdict, 'degraded');
       if (newVerdict !== verdict) {
         verdict = newVerdict;
         cap = cap === null ? 2 : Math.min(cap, 2);
       }
       reasons.push(`Swap usage ${swap_used_mb} MB in degraded range (2048..3072 MB) — capping agents-per-wave at 2.`);
-    } else if (swap_used_mb > 1024) {
+    } else if (swap_used_mb > 1024 && !macosPressureHealthy) {
       const newVerdict = bumpVerdict(verdict, 'warn');
       if (newVerdict !== verdict) {
         verdict = newVerdict;
         cap = cap === null ? 2 : Math.min(cap, 2);
       }
       reasons.push(`Swap usage ${swap_used_mb} MB in warn range (1024..2048 MB) — capping agents-per-wave at 2.`);
+    } else if (swap_used_mb > 1024 && macosPressureHealthy) {
+      // Informational only: pressure says system is healthy, swap is historical.
+      reasons.push(`Swap usage ${swap_used_mb} MB present but macOS memory_pressure healthy — treating as informational (no cap).`);
     }
   }
 
   // ---------------------------------------------------------------------------
   // macOS memory_pressure signal (null = signal unavailable → no rule fires)
+  // (memory_pressure_pct_free already destructured at the top of this fn)
   // ---------------------------------------------------------------------------
-  const { memory_pressure_pct_free } = snapshot;
   if (memory_pressure_pct_free !== null && memory_pressure_pct_free !== undefined) {
     if (memory_pressure_pct_free < 5) {
       verdict = bumpVerdict(verdict, 'critical');
