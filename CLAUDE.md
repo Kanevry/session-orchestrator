@@ -73,6 +73,10 @@ plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal
 vcs: gitlab
+vault-integration:
+  enabled: true
+  vault-dir: ~/Projects/vault
+  mode: warn               # strict | warn | off
 docs-orchestrator:
   enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
   audiences: [user, dev, vault]
