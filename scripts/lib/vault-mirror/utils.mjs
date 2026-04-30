@@ -58,10 +58,10 @@ export function truncateAtWord(str, maxLen) {
   return lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
 }
 
-/** Determine if a YAML title value needs quoting (contains : # or starts with -). */
+/** Determine if a YAML title value needs quoting (contains : # \ or starts with -). */
 export function yamlQuoteIfNeeded(value) {
-  if (/[:#{}[\],&*?|<>=!%@`]/.test(value) || value.startsWith('-') || value.startsWith('"')) {
-    return `"${value.replace(/"/g, '\\"')}"`;
+  if (/[:#{}[\],&*?|<>=!%@`\\]/.test(value) || value.startsWith('-') || value.startsWith('"')) {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   return value;
 }
