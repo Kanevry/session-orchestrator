@@ -189,6 +189,86 @@ describe('resource-probe', () => {
     });
   });
 
+  describe('evaluate() — macOS pressure-first override', () => {
+    const baseSnapshot = {
+      ram_free_gb: 0.5, // simulates os.freemem() under-reporting on macOS
+      ram_used_pct: 95,
+      cpu_load_1m: 1.2,
+      cpu_load_pct: 30,
+      claude_processes_count: 1,
+      codex_processes_count: 0,
+      other_node_processes: 5,
+      zombie_processes_count: null,
+      swap_used_mb: null,
+    };
+
+    it('suppresses critical RAM verdict when memory_pressure reports system healthy (≥30% free)', () => {
+      // Real-world macOS scenario: Pages free is tiny (compressor + caches eat it)
+      // but pressure reports 65% free → system is fine. Old logic would say critical;
+      // new logic trusts pressure.
+      const snap = { ...baseSnapshot, memory_pressure_pct_free: 65 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+      expect(result.recommended_agents_per_wave_cap).toBe(null);
+      expect(result.reasons[0]).toMatch(/macOS memory_pressure healthy.*Pages-free underreports/);
+    });
+
+    it('does NOT suppress when pressure indicates yellow (<30% free)', () => {
+      const snap = { ...baseSnapshot, memory_pressure_pct_free: 25 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      // pressure 15..30 triggers warn via memory_pressure rule;
+      // and ram_free_gb 0.5 < critical 2 also still triggers critical.
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+    });
+
+    it('does NOT suppress when memory_pressure_pct_free is null (Linux/Windows)', () => {
+      const snap = { ...baseSnapshot, memory_pressure_pct_free: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+    });
+
+    it('healthy pressure suppresses RAM signal but other signals (CPU, swap) still fire', () => {
+      const snap = {
+        ...baseSnapshot,
+        memory_pressure_pct_free: 65,
+        cpu_load_pct: 95, // > cpuMax 80
+      };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => /CPU load 95/.test(r))).toBe(true);
+    });
+
+    it('healthy pressure ALSO suppresses swap signal (macOS swap is historical, not a real-time pressure indicator)', () => {
+      // Real-world: macOS often accumulates 5+ GB swap over a multi-day session
+      // even when current memory_pressure is very healthy. Activity Monitor
+      // does not flag this as a problem.
+      const snap = {
+        ...baseSnapshot,
+        memory_pressure_pct_free: 81,
+        swap_used_mb: 5219, // > 3072 critical threshold
+      };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      // Should NOT be critical — pressure is healthy, swap is informational only.
+      expect(result.verdict).not.toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).not.toBe(0);
+      expect(result.reasons.some((r) => /Swap usage 5219 MB present.*informational/.test(r))).toBe(true);
+    });
+
+    it('unhealthy pressure (<30%) lets swap critical signal through', () => {
+      const snap = {
+        ...baseSnapshot,
+        memory_pressure_pct_free: 10, // pressure-degraded range
+        swap_used_mb: 4000,
+      };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('critical');
+      expect(result.recommended_agents_per_wave_cap).toBe(0);
+    });
+  });
+
   describe('parseSwapUsageOutput()', () => {
     it('parses typical macOS sysctl vm.swapusage output', () => {
       const text = 'vm.swapusage: total = 4096.00M  used = 1234.50M  free = 2861.50M  (encrypted)';
