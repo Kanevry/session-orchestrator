@@ -6,6 +6,8 @@ import {
   readCurrentTask,
   parseRecommendations,
   updateFrontmatterFields,
+  appendDeviation,
+  markExpressPathComplete,
 } from '../../scripts/lib/state-md.mjs';
 
 const SAMPLE = `---
@@ -270,5 +272,143 @@ body
   it('updateFrontmatterFields is a no-op on contents without frontmatter', () => {
     const input = '# just a markdown file\n';
     expect(updateFrontmatterFields(input, { foo: 'bar' })).toBe(input);
+  });
+});
+
+describe('appendDeviation', () => {
+  const WITH_DEVIATIONS = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1 — Discovery
+
+## Deviations
+
+- [2026-05-01T09:00:00Z] First deviation
+- [2026-05-01T09:30:00Z] Second deviation
+
+## Wave History
+`;
+
+  const WITH_PLACEHOLDER = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## Deviations
+
+(none yet)
+
+## Wave History
+`;
+
+  const NO_DEVIATIONS = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+`;
+
+  it('appends to existing Deviations section with bullets', () => {
+    const out = appendDeviation(
+      WITH_DEVIATIONS,
+      '2026-05-01T11:00:00Z',
+      'Third deviation',
+    );
+    expect(out).toContain('- [2026-05-01T09:00:00Z] First deviation');
+    expect(out).toContain('- [2026-05-01T09:30:00Z] Second deviation');
+    expect(out).toContain('- [2026-05-01T11:00:00Z] Third deviation');
+    // New bullet should appear after the existing ones, before next heading.
+    const newIdx = out.indexOf('- [2026-05-01T11:00:00Z]');
+    const secondIdx = out.indexOf('- [2026-05-01T09:30:00Z]');
+    const waveHistoryIdx = out.indexOf('## Wave History');
+    expect(newIdx).toBeGreaterThan(secondIdx);
+    expect(newIdx).toBeLessThan(waveHistoryIdx);
+  });
+
+  it('replaces (none yet) placeholder when only that line in section', () => {
+    const out = appendDeviation(
+      WITH_PLACEHOLDER,
+      '2026-05-01T11:00:00Z',
+      'First real deviation',
+    );
+    expect(out).not.toContain('(none yet)');
+    expect(out).toContain('- [2026-05-01T11:00:00Z] First real deviation');
+  });
+
+  it('creates Deviations section when missing', () => {
+    const out = appendDeviation(
+      NO_DEVIATIONS,
+      '2026-05-01T11:00:00Z',
+      'Brand new deviation',
+    );
+    expect(out).toContain('## Deviations');
+    expect(out).toContain('- [2026-05-01T11:00:00Z] Brand new deviation');
+    // Section should appear after Current Wave content.
+    const currentWaveIdx = out.indexOf('## Current Wave');
+    const deviationsIdx = out.indexOf('## Deviations');
+    expect(deviationsIdx).toBeGreaterThan(currentWaveIdx);
+  });
+
+  it('returns input unchanged on unparseable input', () => {
+    const input = '# no frontmatter';
+    expect(appendDeviation(input, '2026-05-01T11:00:00Z', 'x')).toBe(input);
+  });
+});
+
+describe('markExpressPathComplete', () => {
+  const ACTIVE_STATE = `---
+schema-version: 1
+session-type: housekeeping
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1 — Express Path
+
+## Deviations
+
+- [2026-05-01T09:00:00Z] Initial scope adjustment
+`;
+
+  it('round-trips status:completed + Express path deviation + updated field', () => {
+    const out = markExpressPathComplete(ACTIVE_STATE, {
+      taskCount: 3,
+      sessionType: 'housekeeping',
+      expressPathEnabled: true,
+      timestamp: '2026-05-01T12:00:00Z',
+    });
+    const parsed = parseStateMd(out);
+    expect(parsed.frontmatter.status).toBe('completed');
+    expect(parsed.frontmatter.updated).toBe('2026-05-01T12:00:00Z');
+    expect(out).toContain(
+      '- [2026-05-01T12:00:00Z] Express path: 3 tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: 3 issues)',
+    );
+    // Pre-existing deviation must still be present.
+    expect(out).toContain('- [2026-05-01T09:00:00Z] Initial scope adjustment');
+  });
+
+  it('returns input unchanged on unparseable input', () => {
+    const input = 'plain markdown, no frontmatter';
+    const out = markExpressPathComplete(input, {
+      taskCount: 1,
+      timestamp: '2026-05-01T12:00:00Z',
+    });
+    expect(out).toBe(input);
   });
 });
