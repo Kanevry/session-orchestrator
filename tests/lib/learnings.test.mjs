@@ -565,3 +565,223 @@ describe('validateLearning — missing id is rejected (canonical write gate)', (
     expect(() => validateLearning(noId)).toThrow(/missing required field.*id/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — observation / lesson aliases (#Wave-2 extension)
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — observation → insight alias', () => {
+  it('renames observation to insight when insight is absent', () => {
+    const entry = { ...LEGACY() };
+    delete entry.insight;
+    entry.observation = 'observed memory leak pattern in session';
+    const result = migrateLegacyLearning(entry);
+    expect(result.insight).toBe('observed memory leak pattern in session');
+    expect(result).not.toHaveProperty('observation');
+  });
+
+  it('migrated observation record passes validateLearning', () => {
+    const entry = { ...LEGACY(), schema_version: 1 };
+    delete entry.insight;
+    entry.observation = 'RAM pressure spikes above 95% trigger OOM';
+    const migrated = migrateLegacyLearning(entry);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrated.insight).toBe('RAM pressure spikes above 95% trigger OOM');
+  });
+
+  it('does NOT overwrite existing insight with observation', () => {
+    const entry = { ...LEGACY(), insight: 'existing insight', observation: 'some observation' };
+    const result = migrateLegacyLearning(entry);
+    expect(result.insight).toBe('existing insight');
+    // observation key cleaned up since insight already present
+    expect(result).not.toHaveProperty('observation');
+  });
+});
+
+describe('migrateLegacyLearning — lesson → insight alias', () => {
+  it('renames lesson to insight when insight is absent', () => {
+    const entry = { ...LEGACY() };
+    delete entry.insight;
+    entry.lesson = 'always gate on memory before spawning agents';
+    const result = migrateLegacyLearning(entry);
+    expect(result.insight).toBe('always gate on memory before spawning agents');
+    expect(result).not.toHaveProperty('lesson');
+  });
+
+  it('migrated lesson record passes validateLearning', () => {
+    const entry = { ...LEGACY(), schema_version: 1 };
+    delete entry.insight;
+    entry.lesson = 'pnpm install --frozen-lockfile prevents lockfile drift in CI';
+    const migrated = migrateLegacyLearning(entry);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrated.insight).toBe('pnpm install --frozen-lockfile prevents lockfile drift in CI');
+  });
+});
+
+describe('migrateLegacyLearning — alias precedence (multiple aliases present)', () => {
+  it('prefers description over observation when both present and no insight', () => {
+    const entry = { ...LEGACY() };
+    delete entry.insight;
+    entry.description = 'from description field';
+    entry.observation = 'from observation field';
+    const result = migrateLegacyLearning(entry);
+    // precedence: insight > description > recommendation > observation > lesson
+    expect(result.insight).toBe('from description field');
+  });
+
+  it('prefers recommendation over observation when description absent and no insight', () => {
+    const entry = { ...LEGACY() };
+    delete entry.insight;
+    entry.recommendation = 'from recommendation field';
+    entry.observation = 'from observation field';
+    const result = migrateLegacyLearning(entry);
+    expect(result.insight).toBe('from recommendation field');
+  });
+
+  it('uses observation when only observation and lesson present (no insight/description/recommendation)', () => {
+    const entry = { ...LEGACY() };
+    delete entry.insight;
+    entry.observation = 'from observation field';
+    entry.lesson = 'from lesson field';
+    const result = migrateLegacyLearning(entry);
+    // observation takes priority over lesson
+    expect(result.insight).toBe('from observation field');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — missing evidence defaults to ""
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — missing evidence defaults to empty string', () => {
+  it('sets evidence to "" when field is absent', () => {
+    const entry = { ...LEGACY() };
+    delete entry.evidence;
+    const result = migrateLegacyLearning(entry);
+    expect(result.evidence).toBe('');
+  });
+
+  it('does not modify existing evidence value', () => {
+    const entry = { ...LEGACY(), evidence: 'existing evidence data' };
+    const result = migrateLegacyLearning(entry);
+    expect(result.evidence).toBe('existing evidence data');
+  });
+
+  it('evidence="" is preserved unchanged (idempotent)', () => {
+    const entry = { ...LEGACY(), evidence: '' };
+    const result = migrateLegacyLearning(entry);
+    expect(result.evidence).toBe('');
+  });
+
+  it('record with backfilled evidence passes validateLearning', () => {
+    const entry = { ...LEGACY(), schema_version: 1 };
+    delete entry.evidence;
+    const migrated = migrateLegacyLearning(entry);
+    expect(() => validateLearning(migrated)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — expires_at derivation from created_at
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — expires_at derived from created_at (+30 days)', () => {
+  it('sets expires_at 30 days after created_at when expires_at is absent', () => {
+    const entry = { ...LEGACY(), created_at: '2026-04-01T00:00:00Z' };
+    delete entry.expires_at;
+    const result = migrateLegacyLearning(entry);
+    expect(result.expires_at).toBe('2026-05-01T00:00:00.000Z');
+  });
+
+  it('does not overwrite existing expires_at', () => {
+    const entry = { ...LEGACY(), expires_at: '2099-12-31T00:00:00Z', created_at: '2026-04-01T00:00:00Z' };
+    const result = migrateLegacyLearning(entry);
+    expect(result.expires_at).toBe('2099-12-31T00:00:00Z');
+  });
+
+  it('leaves expires_at absent when created_at is unparsable', () => {
+    const entry = { ...LEGACY(), created_at: 'not-a-date' };
+    delete entry.expires_at;
+    const result = migrateLegacyLearning(entry);
+    expect(result).not.toHaveProperty('expires_at');
+  });
+
+  it('leaves expires_at absent when created_at is absent', () => {
+    const entry = { ...LEGACY() };
+    delete entry.expires_at;
+    delete entry.created_at;
+    const result = migrateLegacyLearning(entry);
+    expect(result).not.toHaveProperty('expires_at');
+  });
+
+  it('record with derived expires_at passes validateLearning', () => {
+    const entry = { ...LEGACY(), schema_version: 1, created_at: '2026-04-01T00:00:00Z' };
+    delete entry.expires_at;
+    const migrated = migrateLegacyLearning(entry);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrated.expires_at).toBe('2026-05-01T00:00:00.000Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — name → subject alias
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — name → subject alias', () => {
+  it('renames name to subject when subject is absent', () => {
+    const entry = { ...LEGACY() };
+    delete entry.subject;
+    entry.name = 'memory-pressure-pattern';
+    const result = migrateLegacyLearning(entry);
+    expect(result.subject).toBe('memory-pressure-pattern');
+    expect(result).not.toHaveProperty('name');
+  });
+
+  it('does NOT overwrite existing subject with name', () => {
+    const entry = { ...LEGACY(), subject: 'existing-subject', name: 'other-name' };
+    const result = migrateLegacyLearning(entry);
+    expect(result.subject).toBe('existing-subject');
+  });
+
+  it('name key is deleted when subject already exists', () => {
+    const entry = { ...LEGACY(), subject: 'existing-subject', name: 'other-name' };
+    const result = migrateLegacyLearning(entry);
+    expect(result).not.toHaveProperty('name');
+  });
+
+  it('record with migrated name→subject passes validateLearning', () => {
+    const entry = { ...LEGACY(), schema_version: 1 };
+    delete entry.subject;
+    entry.name = 'zombie-process-pattern';
+    const migrated = migrateLegacyLearning(entry);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrated.subject).toBe('zombie-process-pattern');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — full idempotency with all new transforms
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — idempotency with new transforms', () => {
+  it('running migration twice on a record with new aliases produces the same output', () => {
+    const legacy = {
+      id: 'idem-test-id',
+      type: 'recurring-issue',
+      name: 'test-subject-idem',
+      observation: 'idem observation text',
+      confidence: 0.7,
+      source_session: 'test-session',
+      created_at: '2026-04-01T00:00:00Z',
+    };
+    const once = migrateLegacyLearning(legacy);
+    const twice = migrateLegacyLearning(once);
+    expect(twice.insight).toBe(once.insight);
+    expect(twice.subject).toBe(once.subject);
+    expect(twice.evidence).toBe(once.evidence);
+    expect(twice.expires_at).toBe(once.expires_at);
+    expect(twice.schema_version).toBe(once.schema_version);
+    expect(twice).not.toHaveProperty('observation');
+    expect(twice).not.toHaveProperty('name');
+  });
+});

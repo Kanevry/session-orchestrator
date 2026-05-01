@@ -177,8 +177,15 @@ export function validateLearning(entry) {
  * Transformations applied:
  *   - `description` → `insight` (lrn-2026-04-25-xxx writer format)
  *   - `recommendation` → `insight` (retro/supabase writer format)
+ *   - `observation` → `insight` (observation field alias)
+ *   - `lesson` → `insight` (lesson field alias)
  *   - Missing `id` → `crypto.randomUUID()`
  *   - Missing `schema_version` → 1
+ *   - Missing `evidence` → `""`
+ *   - Missing `expires_at` + parsable `created_at` → `created_at + 30 days`
+ *   - `name` → `subject` (when subject is absent)
+ *
+ * Alias precedence for insight: insight > description > recommendation > observation > lesson
  *
  * The caller MUST still run validateLearning() on the result to confirm the
  * migrated record passes the full schema gate before writing.
@@ -196,7 +203,16 @@ export function migrateLegacyLearning(entry) {
     out.id = randomUUID();
   }
 
-  // Normalize insight aliases: description | recommendation → insight
+  // Normalize subject: name → subject (when subject absent)
+  if (!out.subject && typeof out.name === 'string') {
+    out.subject = out.name;
+    delete out.name;
+  } else if (out.subject && 'name' in out) {
+    // subject already present — clean up name alias key
+    delete out.name;
+  }
+
+  // Normalize insight aliases (precedence: description > recommendation > observation > lesson)
   if (!out.insight) {
     if (typeof out.description === 'string') {
       out.insight = out.description;
@@ -204,11 +220,32 @@ export function migrateLegacyLearning(entry) {
     } else if (typeof out.recommendation === 'string') {
       out.insight = out.recommendation;
       delete out.recommendation;
+    } else if (typeof out.observation === 'string') {
+      out.insight = out.observation;
+      delete out.observation;
+    } else if (typeof out.lesson === 'string') {
+      out.insight = out.lesson;
+      delete out.lesson;
     }
   } else {
     // insight is present — clean up stale alias keys to avoid confusion
     delete out.description;
     delete out.recommendation;
+    delete out.observation;
+    delete out.lesson;
+  }
+
+  // Backfill evidence with empty string when missing
+  if (!('evidence' in out)) {
+    out.evidence = '';
+  }
+
+  // Derive expires_at from created_at (+30 days) when expires_at absent
+  if (!('expires_at' in out) && typeof out.created_at === 'string') {
+    const createdMs = Date.parse(out.created_at);
+    if (!Number.isNaN(createdMs)) {
+      out.expires_at = new Date(createdMs + 30 * 86400 * 1000).toISOString();
+    }
   }
 
   // Stamp schema_version when absent

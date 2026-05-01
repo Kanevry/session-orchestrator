@@ -113,48 +113,124 @@ export function migrateEntry(entry) {
     }
   }
 
-  // agent_summary — reconstruct from scalar fields when absent
-  if (!('agent_summary' in merged)) {
-    const complete = typeof merged.agents_complete === 'number' ? merged.agents_complete : 0;
-    const partial = typeof merged.agents_partial === 'number' ? merged.agents_partial : 0;
-    const failed = typeof merged.agents_failed === 'number' ? merged.agents_failed : 0;
-    const spiral = typeof merged.agents_spiral === 'number' ? merged.agents_spiral : 0;
-    merged.agent_summary = { complete, partial, failed, spiral };
+  // waves — must be an array; scalars cannot be reconstructed into wave objects.
+  // Normalize early so wave-based derivations below can use merged.waves safely.
+  if (!Array.isArray(merged.waves)) {
+    merged.waves = [];
   }
 
-  // total_agents — derive from sum of agent_summary counters or agents_dispatched
+  // Normalize waves[].wave field: if missing, assign index+1.
+  merged.waves = merged.waves.map((w, i) => {
+    if (typeof w !== 'object' || w === null) return w;
+    if (typeof w.wave !== 'number' || w.wave < 1) {
+      return { ...w, wave: i + 1 };
+    }
+    return w;
+  });
+
+  // Helper: resolve wave agent count from varied types
+  // null → 0, number → that, array → array.length
+  function waveAgentCount(agents) {
+    if (agents === null || agents === undefined) return 0;
+    if (typeof agents === 'number') return agents;
+    if (Array.isArray(agents)) return agents.length;
+    return 0;
+  }
+
+  // Helper: classify wave status into complete/partial/failed
+  function waveStatus(status) {
+    if (status === 'done' || status === 'complete' || status === 'complete_needs_polish') {
+      return 'complete';
+    }
+    if (status === 'partial') return 'partial';
+    if (status === 'fail' || status === 'failed') return 'failed';
+    return null; // unrecognized
+  }
+
+  // agent_summary — reconstruct when absent or fill missing fields when partial.
+  if (!('agent_summary' in merged)) {
+    // v3 shape: synthesize from waves[].agents + waves[].status
+    let complete = 0;
+    let partial = 0;
+    let failed = 0;
+    for (const w of merged.waves) {
+      if (typeof w !== 'object' || w === null) continue;
+      const count = waveAgentCount(w.agents);
+      const cls = waveStatus(w.status);
+      if (cls === 'complete') complete += count;
+      else if (cls === 'partial') partial += count;
+      else if (cls === 'failed') failed += count;
+    }
+    // Fall back to old scalar fields if waves yielded nothing
+    if (complete === 0 && partial === 0 && failed === 0) {
+      complete = typeof merged.agents_complete === 'number' ? merged.agents_complete : 0;
+      partial = typeof merged.agents_partial === 'number' ? merged.agents_partial : 0;
+      failed = typeof merged.agents_failed === 'number' ? merged.agents_failed : 0;
+    }
+    const spiral = typeof merged.agents_spiral === 'number' ? merged.agents_spiral : 0;
+    merged.agent_summary = { complete, partial, failed, spiral };
+  } else if (typeof merged.agent_summary === 'object' && merged.agent_summary !== null) {
+    // Partial agent_summary (e.g., only {complete}) — fill missing keys with 0
+    const s = merged.agent_summary;
+    merged.agent_summary = {
+      complete: typeof s.complete === 'number' ? s.complete : 0,
+      partial: typeof s.partial === 'number' ? s.partial : 0,
+      failed: typeof s.failed === 'number' ? s.failed : 0,
+      spiral: typeof s.spiral === 'number' ? s.spiral : 0,
+    };
+  }
+
+  // total_agents — derive from sum of wave agent counts (v3) or old scalar fields
   if (!('total_agents' in merged)) {
     if (typeof merged.agents_dispatched === 'number') {
       merged.total_agents = merged.agents_dispatched;
+    } else if (merged.waves.length > 0) {
+      // Sum wave agent counts
+      merged.total_agents = merged.waves.reduce((sum, w) => {
+        if (typeof w !== 'object' || w === null) return sum;
+        return sum + waveAgentCount(w.agents);
+      }, 0);
     } else {
       const s = merged.agent_summary;
       merged.total_agents = (s.complete ?? 0) + (s.partial ?? 0) + (s.failed ?? 0) + (s.spiral ?? 0);
     }
   }
 
-  // total_files_changed — derive from files_changed scalar
+  // total_files_changed — derive from waves[].files arrays (unique paths) or scalar
   if (!('total_files_changed' in merged)) {
-    if (typeof merged.files_changed === 'number') {
+    // Check if any wave has files as an array
+    const hasFileArrays = merged.waves.some(
+      (w) => typeof w === 'object' && w !== null && Array.isArray(w.files)
+    );
+    if (hasFileArrays) {
+      const uniquePaths = new Set();
+      for (const w of merged.waves) {
+        if (typeof w !== 'object' || w === null || !Array.isArray(w.files)) continue;
+        for (const f of w.files) uniquePaths.add(f);
+      }
+      merged.total_files_changed = uniquePaths.size;
+    } else if (typeof merged.files_changed === 'number') {
       merged.total_files_changed = merged.files_changed;
     } else {
       merged.total_files_changed = 0;
     }
   }
 
-  // total_waves — derive from scalar wave count fields
+  // total_waves — prefer: total_waves > actual_waves > planned_waves > waves.length > 0
   if (!('total_waves' in merged)) {
-    if (typeof merged.waves_completed === 'number') {
+    if (typeof merged.actual_waves === 'number') {
+      merged.total_waves = merged.actual_waves;
+    } else if (typeof merged.planned_waves === 'number') {
+      merged.total_waves = merged.planned_waves;
+    } else if (merged.waves.length > 0) {
+      merged.total_waves = merged.waves.length;
+    } else if (typeof merged.waves_completed === 'number') {
       merged.total_waves = merged.waves_completed;
     } else if (typeof merged.waves_total === 'number') {
       merged.total_waves = merged.waves_total;
     } else {
       merged.total_waves = 0;
     }
-  }
-
-  // waves — must be an array; scalars cannot be reconstructed into wave objects
-  if (!Array.isArray(merged.waves)) {
-    merged.waves = [];
   }
 
   return merged;
