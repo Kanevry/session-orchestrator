@@ -785,3 +785,70 @@ describe('migrateLegacyLearning — idempotency with new transforms', () => {
     expect(twice).not.toHaveProperty('name');
   });
 });
+
+// ---------------------------------------------------------------------------
+// REQUIRED_FIELDS contract regression tests
+// Guards the writer-side validation contract so a future refactor cannot
+// silently remove the insight / source_session requirement without red tests.
+// ---------------------------------------------------------------------------
+
+describe('REQUIRED_FIELDS contract regression tests', () => {
+  it('validateLearning throws when insight is missing', () => {
+    const entry = LEGACY();
+    delete entry.insight;
+    expect(() => validateLearning(entry)).toThrow(ValidationError);
+    expect(() => validateLearning(entry)).toThrow('insight');
+  });
+
+  it('validateLearning throws when source_session is missing', () => {
+    const entry = LEGACY();
+    delete entry.source_session;
+    expect(() => validateLearning(entry)).toThrow(ValidationError);
+    expect(() => validateLearning(entry)).toThrow('source_session');
+  });
+
+  it('appendLearning rejects records missing insight', async () => {
+    const filePath = join(tmp, 'contract-insight.jsonl');
+    const entry = LEGACY();
+    delete entry.insight;
+    await expect(appendLearning(filePath, entry)).rejects.toThrow(ValidationError);
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('appendLearning rejects records missing source_session', async () => {
+    const filePath = join(tmp, 'contract-source-session.jsonl');
+    const entry = LEGACY();
+    delete entry.source_session;
+    await expect(appendLearning(filePath, entry)).rejects.toThrow(ValidationError);
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  // LEGACY_REQUIRED_FIELDS is declared `const` (not exported) in learnings.mjs.
+  // The four validateLearning and appendLearning tests above are the actual
+  // contract guard. The following test documents the field membership via the
+  // public API surface: a fully valid entry passes, and entries missing either
+  // field throw with the field name in the message.
+  it('error messages identify the missing field by name', () => {
+    const missingInsight = LEGACY();
+    delete missingInsight.insight;
+    let caught;
+    try {
+      validateLearning(missingInsight);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ValidationError);
+    expect(caught.message).toContain('insight');
+
+    const missingSource = LEGACY();
+    delete missingSource.source_session;
+    let caught2;
+    try {
+      validateLearning(missingSource);
+    } catch (e) {
+      caught2 = e;
+    }
+    expect(caught2).toBeInstanceOf(ValidationError);
+    expect(caught2.message).toContain('source_session');
+  });
+});

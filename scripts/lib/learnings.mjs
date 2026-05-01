@@ -240,6 +240,26 @@ export function migrateLegacyLearning(entry) {
     out.evidence = '';
   }
 
+  // Coerce legacy scope enum names to 'local' if present.
+  // These are known-bad values from earlier subsystems (vault-tools, deep-sessions,
+  // wave-executor, coordinator) that fail VALID_SCOPES validation.
+  const COERCIBLE_SCOPES = new Set(['vault-tools', 'deep-sessions', 'wave-executor', 'coordinator']);
+  if (out.scope && !VALID_SCOPES.includes(out.scope) && COERCIBLE_SCOPES.has(out.scope)) {
+    out.scope = 'local';
+  }
+
+  // Derive source_session from sessions[0] when source_session is absent/empty
+  // and sessions is a non-empty array of strings.
+  if (
+    (out.source_session === undefined || out.source_session === null || out.source_session === '')
+    && Array.isArray(out.sessions)
+    && out.sessions.length > 0
+    && typeof out.sessions[0] === 'string'
+    && out.sessions[0].length > 0
+  ) {
+    out.source_session = out.sessions[0];
+  }
+
   // Derive expires_at from created_at (+30 days) when expires_at absent
   if (!('expires_at' in out) && typeof out.created_at === 'string') {
     const createdMs = Date.parse(out.created_at);

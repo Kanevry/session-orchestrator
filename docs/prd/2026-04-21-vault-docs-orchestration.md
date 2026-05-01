@@ -46,35 +46,35 @@ Harte Evidenz aus Research-Wave vom 2026-04-21:
 
 **Sub-Epic A — Docs-Orchestrator + docs-writer Agent (session-orchestrator repo)**
 
-- [ ] **A1**: Neuer `docs-writer` Agent in `agents/docs-writer.md` (frontmatter: `name`, `description` mit `<example>`, `model: inherit`, `color`, `tools: Read, Edit, Write, Glob, Grep, Bash`)
-- [ ] **A2**: Neue Skill `skills/docs-orchestrator/SKILL.md` — orchestriert Audience-Split (User / Dev / Vault-Ops), Scope→Doku-Mapping, und dispatched `docs-writer` mit klar umrissenem Prompt
-- [ ] **A3**: session-start Integration — Phase 2.5 "Docs Planning" nach Alignment, vor session-plan. Fragt: „Welche Audiences berührt dieser Scope?" → schreibt Docs-Tasks in Wave-Plan
-- [ ] **A4**: session-plan Integration — `docs-writer` erscheint im Agent-Mapping, kriegt eigene Wave oder Inline-Tasks je Komplexität
-- [ ] **A5**: session-end Integration — Phase 3.2 "Docs Verify" nach SSOT-Update: reviewed, ob Docs-Tasks aus dem Plan tatsächlich umgesetzt wurden
-- [ ] **A6**: Session Config-Felder: `docs-orchestrator.enabled` (bool, default `false`), `docs-orchestrator.audiences` (list, default `[user, dev, vault]`), `docs-orchestrator.mode` (`warn`/`hard`, default `warn`)
-- [ ] **A7**: Konsolidierungs-Docs — `docs/vault-docs-architecture.md`: Dach-Narrativ über die 4 Skills + 1 neuer + 1 Agent (vault-sync, vault-mirror, claude-md-drift-check, daily, docs-orchestrator, docs-writer)
-- [ ] **A8**: CLAUDE.md Update im session-orchestrator Repo — dokumentiert neuen docs-orchestrator Flow + Agent
+- [x] **A1**: Neuer `docs-writer` Agent in `agents/docs-writer.md` (frontmatter: `name`, `description` mit `<example>`, `model: inherit`, `color`, `tools: Read, Edit, Write, Glob, Grep, Bash`)
+- [x] **A2**: Neue Skill `skills/docs-orchestrator/SKILL.md` — orchestriert Audience-Split (User / Dev / Vault-Ops), Scope→Doku-Mapping, und dispatched `docs-writer` mit klar umrissenem Prompt
+- [x] **A3**: session-start Integration — Phase 2.5 "Docs Planning" nach Alignment, vor session-plan. Fragt: „Welche Audiences berührt dieser Scope?" → schreibt Docs-Tasks in Wave-Plan
+- [x] **A4**: session-plan Integration — `docs-writer` erscheint im Agent-Mapping, kriegt eigene Wave oder Inline-Tasks je Komplexität
+- [x] **A5**: session-end Integration — Phase 3.2 "Docs Verify" nach SSOT-Update: reviewed, ob Docs-Tasks aus dem Plan tatsächlich umgesetzt wurden
+- [x] **A6**: Session Config-Felder: `docs-orchestrator.enabled` (bool, default `false`), `docs-orchestrator.audiences` (list, default `[user, dev, vault]`), `docs-orchestrator.mode` (`warn`/`hard`, default `warn`)
+- [x] **A7**: Konsolidierungs-Docs — `docs/vault-docs-architecture.md`: Dach-Narrativ über die 4 Skills + 1 neuer + 1 Agent (vault-sync, vault-mirror, claude-md-drift-check, daily, docs-orchestrator, docs-writer)
+- [x] **A8**: CLAUDE.md Update im session-orchestrator Repo — dokumentiert neuen docs-orchestrator Flow + Agent
 
 **Sub-Epic B — Vault-Auto-Provisioning in projects-baseline (Cross-Repo)**
 
-- [ ] **B1**: `scripts/setup-project.sh` erweitern um `.vault.yaml`-Generation (Step 4.5, nach Template-Copy) — Hard-Default, Opt-out via `--no-vault` Flag
-- [ ] **B2**: `templates/shared/.vault.yaml.template` — vorbefüllt mit `{{PROJECT_NAME}}`, `{{PROJECT_TYPE}}`, `tier: active`, `status: idea`
-- [ ] **B3**: `templates/shared/CLAUDE.md.template` erweitern — Abschnitt „Vault Integration" mit slug + tier + Hinweis auf Clank-Sync
-- [ ] **B4**: `scripts/setup-project.sh` ruft optional Vault-Folder-Create auf (wenn `$VAULT_DIR` in env gesetzt): legt `$VAULT_DIR/01-projects/<slug>/context.md` mit Stub an
-- [ ] **B5**: Alle 8 Archetypes (`nextjs-saas`, `express-service`, `docker-service`, `monorepo-oss`, `swift-app`, `swift-menubar-app`, `cli-tool`, `shared`) bekommen `docs/prd/.gitkeep` und `docs/retro/.gitkeep`
-- [ ] **B6**: `.gitlab/issue_templates/vault-registration.md` wird durch eingebauten Auto-Flow obsolet → archivieren oder als Troubleshooting-Doku re-purposen
-- [ ] **B7**: ADR-Update: `docs/adr/004-meta-vault-architecture.md` ergänzen um "Auto-Provisioning seit YYYY-MM-DD"
-- [ ] **B8**: Tests für `setup-project.sh` (bats) — decken neuen Vault-Step ab, inkl. `--no-vault` Opt-out
+- [x] **B1**: `scripts/setup-project.sh` erweitern um `.vault.yaml`-Generation (Step 4.5, nach Template-Copy) — Hard-Default, Opt-out via `--no-vault` Flag
+- [x] **B2**: `templates/shared/.vault.yaml.template` — vorbefüllt mit `{{PROJECT_NAME}}`, `{{PROJECT_TYPE}}`, `tier: active`, `status: idea`
+- [x] **B3**: `templates/shared/CLAUDE.md.template` erweitern — Abschnitt „Vault Integration" mit slug + tier + Hinweis auf Clank-Sync
+- [x] **B4**: `scripts/setup-project.sh` ruft optional Vault-Folder-Create auf (wenn `$VAULT_DIR` in env gesetzt): legt `$VAULT_DIR/01-projects/<slug>/context.md` mit Stub an
+- [x] **B5**: Alle 8 Archetypes (`nextjs-saas`, `express-service`, `docker-service`, `monorepo-oss`, `swift-app`, `swift-menubar-app`, `cli-tool`, `shared`) bekommen `docs/prd/.gitkeep` und `docs/retro/.gitkeep`
+- [x] **B6**: `.gitlab/issue_templates/vault-registration.md` wird durch eingebauten Auto-Flow obsolet → archivieren oder als Troubleshooting-Doku re-purposen
+- [x] **B7**: ADR-Update: `docs/adr/004-meta-vault-architecture.md` ergänzen um "Auto-Provisioning seit YYYY-MM-DD"
+- [x] **B8**: Tests für `setup-project.sh` (bats) — decken neuen Vault-Step ab, inkl. `--no-vault` Opt-out
 
 **Sub-Epic C — Stale-Detection + Backfill-Migration (session-orchestrator + Migrations-Tool)**
 
-- [ ] **C1**: `skills/discovery/probes/vault-staleness.mjs` — Probe: scannt `01-projects/*/_overview.md`, vergleicht `lastCommit` (im Repo via `git log`) vs. `lastSync` (aus Frontmatter). Flaggt Repos mit Δ > 24h.
-- [ ] **C2**: `skills/discovery/probes/vault-narrative-staleness.mjs` — Probe: prüft `context.md`/`decisions.md`/`people.md` auf `updated`-Feld. Threshold per Tier: `top: 30d`, `active: 60d`, `archived: 180d`.
-- [ ] **C3**: `/plan retro` Mode-Erweiterung: neuer Sub-Mode `vault-backfill` der GitLab-Gruppen scannt und ein Backfill-PRD erzeugt
-- [ ] **C4**: Neues CLI-Tool `scripts/vault-backfill.mjs` — nimmt GitLab-Gruppen-Liste, findet Repos ohne `.vault.yaml`, generiert interaktiv (oder `--yes` headless) `.vault.yaml` + Vault-Stubs. Live dry-run default.
-- [ ] **C5**: Integration in `session-end` Phase 2.3 (nach drift-check, neu): stale-check als optionale Phase, gated auf `vault-staleness.enabled: true`
-- [ ] **C6**: Session Config-Felder: `vault-staleness.enabled`, `vault-staleness.thresholds.top/active/archived` (Tage), `vault-staleness.mode` (`warn`/`hard`)
-- [ ] **C7**: Closing-Report-Integration: session-end produziert „Docs Health"-Zeile neben Quality-Gates (X/Y Projekte stale, Z needs backfill)
+- [x] **C1**: `skills/discovery/probes/vault-staleness.mjs` — Probe: scannt `01-projects/*/_overview.md`, vergleicht `lastCommit` (im Repo via `git log`) vs. `lastSync` (aus Frontmatter). Flaggt Repos mit Δ > 24h.
+- [x] **C2**: `skills/discovery/probes/vault-narrative-staleness.mjs` — Probe: prüft `context.md`/`decisions.md`/`people.md` auf `updated`-Feld. Threshold per Tier: `top: 30d`, `active: 60d`, `archived: 180d`.
+- [x] **C3**: `/plan retro` Mode-Erweiterung: neuer Sub-Mode `vault-backfill` der GitLab-Gruppen scannt und ein Backfill-PRD erzeugt
+- [x] **C4**: Neues CLI-Tool `scripts/vault-backfill.mjs` — nimmt GitLab-Gruppen-Liste, findet Repos ohne `.vault.yaml`, generiert interaktiv (oder `--yes` headless) `.vault.yaml` + Vault-Stubs. Live dry-run default.
+- [x] **C5**: Integration in `session-end` Phase 2.3 (nach drift-check, neu): stale-check als optionale Phase, gated auf `vault-staleness.enabled: true`
+- [x] **C6**: Session Config-Felder: `vault-staleness.enabled`, `vault-staleness.thresholds.top/active/archived` (Tage), `vault-staleness.mode` (`warn`/`hard`)
+- [x] **C7**: Closing-Report-Integration: session-end produziert „Docs Health"-Zeile neben Quality-Gates (X/Y Projekte stale, Z needs backfill)
 
 ### Out-of-Scope
 
@@ -356,3 +356,53 @@ Keine öffentlichen APIs. Alle Änderungen sind intern zu den beiden Repos oder 
 - Team-Vault-Sharing Epic — wenn das Plugin in Teams adoptiert wird
 - `docs-writer` Auto-ADR-Vorschläge — aus Decision-Log in session-memory
 - Cross-Repo-Dependency-Visualization im Vault (welche Projekte teilen Packages?)
+
+## Sub-Epic Status (2026-05-01)
+
+All 23 deliverables verified shipped via Wave 1 D2 audit (`.orchestrator/audits/prd-229-audit.md`). PRD checkboxes updated to reflect on-disk state. Epic close-out comment posted on issue #229.
+
+### Sub-Epic A — Docs-Orchestrator + docs-writer Agent (8/8 shipped)
+Reference commit: `771b99c` (session-orchestrator)
+
+| Item | Deliverable | Evidence |
+|------|-------------|----------|
+| A1 | docs-writer agent | `agents/docs-writer.md` |
+| A2 | docs-orchestrator skill | `skills/docs-orchestrator/SKILL.md` + `audience-mapping.md` |
+| A3 | session-start Phase 2.5 | `skills/session-start/phase-2-5-docs-planning.md` |
+| A4 | session-plan integration | `skills/session-plan/SKILL.md` Step 1.5/1.8 |
+| A5 | session-end Phase 3.2 Docs Verify | `skills/session-end/SKILL.md` |
+| A6 | Session Config fields | `docs/session-config-template.md` (`docs-orchestrator.enabled/audiences/mode`) |
+| A7 | Architecture narrative | `docs/vault-docs-architecture.md` |
+| A8 | CLAUDE.md flow doc | `CLAUDE.md` (project root) |
+
+### Sub-Epic B — Vault-Auto-Provisioning (projects-baseline) (8/8 shipped)
+Reference commit: `356c4f9` (in projects-baseline repo)
+
+| Item | Deliverable | Evidence |
+|------|-------------|----------|
+| B1 | setup-project.sh --no-vault | `scripts/setup-project.sh` Step 2b |
+| B2 | .vault.yaml.template | `templates/shared/.vault.yaml.template` |
+| B3 | CLAUDE.md.template Vault section | `templates/shared/CLAUDE.md.template` |
+| B4 | $VAULT_DIR auto-stub | `scripts/setup-project.sh` (idempotent) |
+| B5 | Archetype gitkeeps | 22 `.gitkeep` files across 8 archetypes |
+| B6 | vault-registration template repurposed | `.gitlab/issue_templates/vault-registration.md` (fallback-only) |
+| B7 | ADR addendum | `docs/adr/004-meta-vault-architecture.md` |
+| B8 | bats tests | `scripts/tests/setup-project.bats` (15 tests) |
+
+### Sub-Epic C — Stale-Detection + Backfill-Migration (7/7 shipped)
+Reference commit: `fff35f7` (session-orchestrator)
+
+| Item | Deliverable | Evidence |
+|------|-------------|----------|
+| C1 | vault-staleness probe | `skills/discovery/probes/vault-staleness.mjs` |
+| C2 | vault-narrative-staleness probe | `skills/discovery/probes/vault-narrative-staleness.mjs` |
+| C3 | /plan retro vault-backfill | `skills/plan/mode-retro.md` Phase 1.6 |
+| C4 | vault-backfill CLI | `scripts/vault-backfill.mjs` (15.4 KB) |
+| C5 | session-end staleness gate | `skills/session-end/SKILL.md` Phase 2.3 |
+| C6 | Session Config fields | `vault-staleness.enabled/mode/thresholds.{top,active,archived}` |
+| C7 | Docs Health closing report | `skills/session-end/SKILL.md` Phase 6 |
+
+### Cross-reference: closed sub-issues
+
+Plugin: #233, #234, #235, #236, #241, #242, #243 (closed against #229).
+Baseline: #231, #238, #239, #240 (closed against #229 in projects-baseline).
