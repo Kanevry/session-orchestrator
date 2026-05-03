@@ -28,7 +28,7 @@ export function emitAction(action, filePath, fileKind, id, vaultDir) {
 
 // ── Core processing ───────────────────────────────────────────────────────────
 
-export async function processLearning(entry, _lineNum, { vaultDir, dryRun, kind }) {
+export async function processLearning(entry, _lineNum, { vaultDir, dryRun, kind, force = false }) {
   const schema = detectLearningSchema(entry);
   const entryId = entry.id;
 
@@ -106,14 +106,14 @@ export async function processLearning(entry, _lineNum, { vaultDir, dryRun, kind 
       return;
     }
 
-    // Same id: check if updated would advance
+    // Same id: check if updated would advance (unless --force overrides)
     const entryUpdated = toDate(dateSource);
-    if (fm['updated'] && fm['updated'] >= entryUpdated) {
+    if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
       emitAction('skipped-noop', targetPath, kind, slug, vaultDir);
       return;
     }
 
-    // Overwrite with advanced updated date
+    // Overwrite with advanced updated date (or forced re-render)
     const content = generator(entry, slug);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
     emitAction('updated', targetPath, kind, slug, vaultDir);
@@ -126,7 +126,7 @@ export async function processLearning(entry, _lineNum, { vaultDir, dryRun, kind 
   emitAction('created', targetPath, kind, slug, vaultDir);
 }
 
-export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind }) {
+export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind, force = false }) {
   const { session_id: rawSessionId } = entry;
   const schema = detectSessionSchema(entry);
   const generator = schema === 'v2' ? generateSessionNoteV2 : generateSessionNote;
@@ -171,7 +171,7 @@ export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind }
     // Same generator: check id and updated
     if (fm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
-      if (fm['updated'] && fm['updated'] >= entryUpdated) {
+      if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
         emitAction('skipped-noop', targetPath, kind, session_id, vaultDir);
         return;
       }

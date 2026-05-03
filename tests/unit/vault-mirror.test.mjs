@@ -124,6 +124,86 @@ describe('vault-mirror CLI', () => {
     expect(JSON.parse(second.stdout.trim()).action).toBe('skipped-noop');
   });
 
+  // ── source_session wikilink emission (Obsidian graph-edge fix) ────────────
+  // Learning notes mirror to 40-learnings/ but their `source_session` field
+  // points at a 50-sessions/<id>.md note. Without a wikilink, Obsidian renders
+  // them as orphan dots. Emit `source_session: "[[id]]"` in frontmatter and
+  // `**Source session:** [[id]]` in the body so the learning is a graph edge
+  // to its source session.
+
+  it('learning v1: emits source_session as quoted wikilink in frontmatter', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+
+    const md = readFileSync(
+      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      'utf8',
+    );
+    expect(md).toMatch(/^source_session: "\[\[session-2026-04-13\]\]"$/m);
+  });
+
+  it('learning v1: emits source_session as wikilink in body line', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+
+    const md = readFileSync(
+      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      'utf8',
+    );
+    expect(md).toContain('**Source session:** [[session-2026-04-13]]');
+  });
+
+  it('learning v1: source_session wikilink uses sanitised slug for corrupted upstream values', () => {
+    // Mirror of the existing `[object` regression: link target must use the
+    // sanitised sourceTag (`object`) so YAML and wikilink syntax stay valid.
+    const entry = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-00000000aaaa',
+      type: 'architectural',
+      subject: 'wikilink-sanitise-probe',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Probe entry',
+      confidence: 0.5,
+      source_session: '[object',
+      created_at: '2026-04-23T18:19:24Z',
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, entry);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(result.status).toBe(0);
+
+    const md = readFileSync(
+      join(vaultDir, '40-learnings', 'wikilink-sanitise-probe.md'),
+      'utf8',
+    );
+    expect(md).toMatch(/^source_session: "\[\[object\]\]"$/m);
+    expect(md).not.toContain('[[[object');
+  });
+
+  // ── --force re-render flag (one-shot upgrade path for legacy notes) ───────
+
+  it('--force: re-renders existing notes even when updated would not advance', () => {
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+
+    // First run creates the file
+    const first = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(first.status).toBe(0);
+    expect(JSON.parse(first.stdout.trim()).action).toBe('created');
+
+    // Without --force, second run is a noop
+    const second = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    expect(JSON.parse(second.stdout.trim()).action).toBe('skipped-noop');
+
+    // With --force, second run rewrites and reports 'updated'
+    const third = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--force']);
+    expect(third.status).toBe(0);
+    expect(JSON.parse(third.stdout.trim()).action).toBe('updated');
+  });
+
   it('hand-written protection: file without _generator is left unchanged', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);

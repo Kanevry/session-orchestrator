@@ -48,11 +48,12 @@ const kind = getArg('--kind');
 const dryRun = args.includes('--dry-run');
 const strictSchema = args.includes('--strict-schema');
 const noCommit = args.includes('--no-commit');
+const force = args.includes('--force');
 const sessionIdArg = getArg('--session-id');
 
 if (!vaultDir || !source || !kind) {
   process.stderr.write(
-    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run] [--strict-schema] [--no-commit] [--session-id <id>]\n',
+    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run] [--strict-schema] [--no-commit] [--force] [--session-id <id>]\n',
   );
   process.exit(1);
 }
@@ -88,7 +89,7 @@ async function main() {
 
   let lineNum = 0;
   let skippedInvalidCount = 0;
-  const ctx = { vaultDir, dryRun, kind };
+  const ctx = { vaultDir, dryRun, kind, force };
 
   for (const line of lines) {
     lineNum++;

@@ -42,6 +42,14 @@ export function generateLearningNote(entry, slug) {
   // Check if expires has a value; it's optional in schema
   const expiresLine = expires ? `expires: ${expires}\n` : '';
 
+  // source_session emitted as Obsidian wikilink so the learning becomes a
+  // graph edge to its 50-sessions/<id>.md note (Properties/Links docs:
+  // wikilinks in YAML list/text properties must be quoted). Use the
+  // already-sanitised sourceTag as link target so YAML stays valid even
+  // when upstream source_session is corrupted (e.g. "[object").
+  const sourceSessionLink = `"[[${sourceTag}]]"`;
+  const sourceSessionBodyLink = `[[${sourceTag}]]`;
+
   return `---
 id: ${slug}
 type: learning
@@ -50,6 +58,7 @@ status: ${status}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
+source_session: ${sourceSessionLink}
 ${expiresLine}_generator: ${GENERATOR_MARKER}
 ---
 
@@ -57,7 +66,7 @@ ${expiresLine}_generator: ${GENERATOR_MARKER}
 
 - **Type:** ${type}
 - **Confidence:** ${confidence}
-- **Source session:** ${source_session}
+- **Source session:** ${sourceSessionBodyLink}
 
 ## Insight
 
