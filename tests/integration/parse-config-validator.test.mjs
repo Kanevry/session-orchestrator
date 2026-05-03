@@ -134,4 +134,53 @@ agents-per-wave: 6
     // If SO_CONFIG_FILE was honored, waves=9 (from AGENTS.md). If ignored, waves=3 (from CLAUDE.md).
     expect(parsed.waves).toBe(9);
   });
+
+  // -------------------------------------------------------------------------
+  // Regression: inline YAML comments on enum-validated nested values.
+  // BuchhaltGenie #1982 AC3 — a value like `mode: warn # warn | strict | off`
+  // previously parsed as `'warn # warn | strict | off'`, failing the
+  // vault-integration.mode enum (warn | strict | off). _parseKV must strip
+  // the trailing ` # ...` segment before enum coercion.
+  // -------------------------------------------------------------------------
+
+  it('parses vault-integration.mode with inline YAML comment (BG#1982 AC3)', () => {
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      `## Session Config
+
+persistence: true
+enforcement: warn
+waves: 5
+vault-integration:
+  enabled: true
+  vault-dir: ~/Projects/vault
+  mode: warn # warn | strict | off
+`
+    );
+    const out = runParseConfig(sandbox);
+    const parsed = JSON.parse(out);
+    expect(parsed['vault-integration'].mode).toBe('warn');
+    expect(parsed['vault-integration'].enabled).toBe(true);
+  });
+
+  it('parses vault-integration.mode with comment on its own line (equivalence)', () => {
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      `## Session Config
+
+persistence: true
+enforcement: warn
+waves: 5
+vault-integration:
+  enabled: true
+  vault-dir: ~/Projects/vault
+  # warn | strict | off
+  mode: warn
+`
+    );
+    const out = runParseConfig(sandbox);
+    const parsed = JSON.parse(out);
+    expect(parsed['vault-integration'].mode).toBe('warn');
+    expect(parsed['vault-integration'].enabled).toBe(true);
+  });
 });
