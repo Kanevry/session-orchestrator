@@ -774,7 +774,7 @@ describe('category 6: Config Hygiene', () => {
     expect(deadCheck.status).toBe('fail');
     expect(deadCheck.points).toBe(0);
 
-    // v2-features-section passes as "consumer repo skip" (no session-start/SKILL.md either)
+    // plugin-narrative-section passes as "consumer repo skip" (no session-start/SKILL.md either)
     const earned = totalPoints(checks);
     expect(earned).toBe(2);
   });
@@ -805,31 +805,68 @@ describe('category 6: Config Hygiene', () => {
     expect(deadBranchCheck.points).toBe(3);
   });
 
-  it('passes v2-features-section for consumer repos (no session-start/SKILL.md)', () => {
+  it('passes plugin-narrative-section for consumer repos (no session-start/SKILL.md)', () => {
     const root = tmp();
     // No skills/session-start/SKILL.md — treated as consumer repo
-    write(root, 'CLAUDE.md', '# Consumer Project\n\nNo v2.0 Features heading needed.\n');
+    write(root, 'CLAUDE.md', '# Consumer Project\n\nNo plugin narrative needed.\n');
 
     const checks = runCategory6(root);
-    const v2Check = checks.find((c) => c.check_id === 'v2-features-section');
-    expect(v2Check).toBeDefined();
-    expect(v2Check.status).toBe('pass');
-    expect(v2Check.points).toBe(2);
-    expect(v2Check.evidence.skipped).toBe(true);
+    const narrativeCheck = checks.find((c) => c.check_id === 'plugin-narrative-section');
+    expect(narrativeCheck).toBeDefined();
+    expect(narrativeCheck.status).toBe('pass');
+    expect(narrativeCheck.points).toBe(2);
+    expect(narrativeCheck.evidence.skipped).toBe(true);
   });
 
-  it('fails v2-features-section for plugin repos missing the heading', () => {
+  it('fails plugin-narrative-section for plugin repos missing any narrative anchor', () => {
     const root = tmp();
     // Plugin repo marker present
     write(root, 'skills/session-start/SKILL.md', '# Session Start\n');
-    // CLAUDE.md without ## v2.0 Features
-    write(root, 'CLAUDE.md', '# Plugin Project\n\nNo v2.0 Features heading.\n');
+    // CLAUDE.md with neither ## Current State nor ## v<n>.<n> Features
+    write(root, 'CLAUDE.md', '# Plugin Project\n\nNo narrative anchor heading.\n');
 
     const checks = runCategory6(root);
-    const v2Check = checks.find((c) => c.check_id === 'v2-features-section');
-    expect(v2Check).toBeDefined();
-    expect(v2Check.status).toBe('fail');
-    expect(v2Check.points).toBe(0);
+    const narrativeCheck = checks.find((c) => c.check_id === 'plugin-narrative-section');
+    expect(narrativeCheck).toBeDefined();
+    expect(narrativeCheck.status).toBe('fail');
+    expect(narrativeCheck.points).toBe(0);
+  });
+
+  it('passes plugin-narrative-section for plugin repos with ## Current State (post-v3 canonical)', () => {
+    const root = tmp();
+    write(root, 'skills/session-start/SKILL.md', '# Session Start\n');
+    write(root, 'CLAUDE.md', [
+      '# Plugin Project',
+      '',
+      '## Current State',
+      '',
+      '- Latest session note',
+    ].join('\n'));
+
+    const checks = runCategory6(root);
+    const narrativeCheck = checks.find((c) => c.check_id === 'plugin-narrative-section');
+    expect(narrativeCheck).toBeDefined();
+    expect(narrativeCheck.status).toBe('pass');
+    expect(narrativeCheck.points).toBe(2);
+    expect(narrativeCheck.evidence.present).toBe(true);
+  });
+
+  it('passes plugin-narrative-section for plugin repos with legacy ## v2.0 Features', () => {
+    const root = tmp();
+    write(root, 'skills/session-start/SKILL.md', '# Session Start\n');
+    write(root, 'CLAUDE.md', [
+      '# Plugin Project',
+      '',
+      '## v2.0 Features',
+      '',
+      '- Legacy plugin pre-v3',
+    ].join('\n'));
+
+    const checks = runCategory6(root);
+    const narrativeCheck = checks.find((c) => c.check_id === 'plugin-narrative-section');
+    expect(narrativeCheck).toBeDefined();
+    expect(narrativeCheck.status).toBe('pass');
+    expect(narrativeCheck.points).toBe(2);
   });
 });
 
