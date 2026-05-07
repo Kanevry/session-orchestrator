@@ -387,6 +387,27 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
      (Full Gate is NEVER skipped regardless of cache state — this is the close-safety invariant.)
    - After **Finalization**: final git status check
+5a. **Persona-reviewer dispatch** (opt-in, gated by `wave-reviewers` config):
+   - Read `wave-reviewers` from Session Config. If the key is absent or the array is empty → skip this step entirely (no-op).
+   - Applicable waves: **Impl-Core** and **Impl-Polish** only. Skip for Discovery, Quality, and Finalization waves.
+   - For each reviewer name in the array, dispatch in parallel with read-only scope. Example:
+     ```
+     // Dispatch all configured reviewers in parallel (Promise.all semantics)
+     Agent({
+       description: "Persona review — <reviewer-name> — Wave N",
+       prompt: "<include: wave scope, changed files list, relevant plan section>",
+       subagent_type: "session-orchestrator:<reviewer-name>",
+       run_in_background: false
+     })
+     ```
+   - Each reviewer writes its findings to `.orchestrator/audits/wave-reviewer-<wave>-<reviewer-name>.md`. The coordinator does NOT need to create this file — the reviewer agent writes it directly.
+   - **Findings are ADVISORY**: reviewer output never blocks the subsequent wave. After all dispatched reviewers complete:
+     - If any reviewer reports **WARN**: surface the findings to the user in the wave progress summary. Feed actionable items into the next wave's agent assignments (step 3 — Adapt Plan).
+     - If any reviewer reports **FAIL**: surface the findings prominently in the wave progress summary with a `[REVIEWER FAIL]` prefix. Still proceed to step 5 (session-reviewer) — do not halt wave execution.
+     - If all reviewers report **PASS** or produce no findings: log a one-line note and continue.
+   - **Default behaviour unchanged**: when `wave-reviewers` is absent or `[]`, this step is a no-op and the wave loop proceeds exactly as before.
+   - Supported reviewer names (plugin-provided): `architect-reviewer`, `qa-strategist`, `analyst`. Custom reviewer agents in `agents/` are also valid if their `name` frontmatter matches.
+
 5. **Session-reviewer dispatch** (after Impl-Core, Impl-Polish, and Quality waves only):
    - After **Impl-Core** and **Impl-Polish** waves, dispatch the session-reviewer agent to verify wave output:
      ```

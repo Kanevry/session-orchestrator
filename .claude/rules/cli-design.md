@@ -1,5 +1,5 @@
 ---
-paths:
+globs:
   - scripts/**
   - bin/**
   - cli/**

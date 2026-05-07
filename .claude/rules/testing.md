@@ -1,5 +1,5 @@
 ---
-paths:
+globs:
   - "**/*.test.*"
   - "**/*.spec.*"
   - tests/**

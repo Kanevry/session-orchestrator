@@ -1,15 +1,10 @@
 ---
-paths:
-  - src/app/api/**
-  - src/app/actions/**
-  - src/middleware.*
-  - src/lib/auth/**
-  - src/lib/rate-limit*
-  - src/routes/**
+globs:
+  - src/middleware*.ts
+  - src/app/**
   - next.config.*
-  - proxy.*
-  - server.*
-  - middleware.*
+  - src/lib/csp*
+  - src/lib/cors*
 ---
 
 # Security — Web & API (Path-scoped)

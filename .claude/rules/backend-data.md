@@ -1,5 +1,5 @@
 ---
-paths:
+globs:
   - src/lib/db/**
   - src/lib/cache/**
   - src/services/db/**

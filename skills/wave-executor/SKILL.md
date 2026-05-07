@@ -171,6 +171,29 @@ Each entry's `status` is initialized to `planned`. session-end Phase 3.2 (Docs V
 
 Read and follow `wave-loop.md` in this skill directory for the complete wave execution loop, including agent dispatch, output review, plan adaptation, progress updates, and scope manifest creation.
 
+### Mission-Status Updates (#340)
+
+The coordinator (you) is responsible for updating per-task mission status in STATE.md as tasks progress through the wave. Use `setMissionStatus(stateContent, taskId, status)` from `scripts/lib/state-md.mjs` and write the result back to STATE.md immediately.
+
+**Per-task transition rules (coordinator fires these, NOT wave-loop.md):**
+
+| Transition | When to fire |
+|---|---|
+| `brainstormed` → `validated` | User runs `/go` to approve the wave plan (all items simultaneously) |
+| `validated` → `in-dev` | Agent for that wave-plan item is dispatched via `Agent()` tool |
+| `in-dev` → `testing` | Quality wave begins and this item's implementation wave completed without failure |
+| `testing` → `completed` | Quality-Lite gate passes (green) for this task's wave — coordinator confirms item done |
+| Any → `brainstormed` | Item is discarded, re-planned, or rolled back |
+
+**Important scoping notes:**
+- These transitions are **coordinator-level orchestration** decisions, not part of `wave-loop.md` dispatch/review logic. Do NOT modify `wave-loop.md` to add mission-status calls.
+- `wave-loop.md` is NOT modified by #340 — the transitions listed above are called by the coordinator after observing the wave-loop outcomes.
+- Only update items whose `id` appears in the `### Wave-Plan Mission Status (machine-readable)` block emitted by session-plan. Invent no new IDs.
+- When STATE.md does not yet have a `## Mission Status` body section, `setMissionStatus` creates it automatically (see `scripts/lib/state-md.mjs`).
+- `readMissionStatus(stateContent, taskId)` from the same module returns the current status string for a task (or `null` if not found), useful for guard-checking before transitions.
+
+**Backward compat:** STATE.md files without a `## Mission Status` section are valid — absence means no status tracking was started. The helpers are no-throw on bad input.
+
 ## Circuit Breaker & Worktree Isolation
 
 > **Reference:** See `circuit-breaker.md` in this skill directory for MaxTurns enforcement, spiral detection, recovery protocol, and worktree isolation configuration. Apply those rules during every wave dispatch and post-wave review.

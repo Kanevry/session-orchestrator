@@ -112,6 +112,42 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
    - **PROCEED** — continue to Phase 2
    - **FIX REQUIRED** — address each listed item before proceeding. For quick fixes (<2 min each), fix inline. For larger items, create carryover issues (same as Phase 1.2) and note them as unresolved review findings in the Final Report
 
+### 1.9 Mission-Status Classification (when `mission-status` present in STATE.md)
+
+> Skip if `persistence` is `false` in Session Config, or if `mission-status:` is absent from STATE.md frontmatter. When absent, fall back to binary checkbox detection in 1.1–1.4 unchanged — full backward compat.
+
+When STATE.md frontmatter contains a `mission-status:` array (set by session-plan + wave-executor per #340), use the enum values to classify items into the 1.1–1.4 buckets. Read the array via `parseMissionStatus(frontmatter)` from `scripts/lib/state-md.mjs`.
+
+**Classification mapping:**
+- `status: completed` → **1.1 Done Items** (item finished; verify with evidence per 1.1)
+- `status: testing` or `status: in-dev` → **1.2 Partially Done** (carryover; document what remains)
+- `status: validated` or `status: brainstormed` → **1.3 Not Started** (carryover; check if still relevant)
+- Items NOT present in the `mission-status:` array → fall back to binary checkbox detection per 1.1–1.4 unchanged
+
+**Backward compat:** When `mission-status:` is absent from STATE.md (pre-#340 STATE.md files, or sessions where session-plan did not emit the block), behave exactly as before — enum classification is skipped entirely and 1.1–1.4 binary checkbox logic runs as the sole classification mechanism.
+
+### 1.10 Mission Status Breakdown (when `mission-status` present)
+
+> Skip if `mission-status:` is absent from STATE.md frontmatter (backward compat — no breakdown emitted).
+
+After classifying items in Phase 1.9, produce a **Mission Status breakdown** subsection as part of the closed/carryover summary output. Count the number of tasks at each enum value across ALL waves:
+
+```
+### Mission Status Breakdown
+- completed:    <N> tasks
+- testing:      <N> tasks
+- in-dev:       <N> tasks
+- validated:    <N> tasks
+- brainstormed: <N> tasks
+- Total:        <N> tasks across <W> waves
+```
+
+Rules:
+- Count each task-id entry from the `mission-status:` frontmatter array by its current `status` value.
+- `completed` maps to Phase 1.1 (Done). `testing` + `in-dev` map to Phase 1.2 (Partial). `validated` + `brainstormed` map to Phase 1.3 (Not Started).
+- Include this block in the Phase 6 Final Report under `### Carried Over` or as a standalone subsection immediately after the Completed/Carried Over/New Issues lists.
+- When all tasks are `completed`, the breakdown still appears (confirms clean session state).
+
 ## Phase 2: Quality Gate
 
 > **Verification Reference:** See `verification-checklist.md` in this skill directory for the full quality gate checklist.

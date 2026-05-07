@@ -255,6 +255,38 @@ Reads the `docs-orchestrator` config fields, auto-detects which audiences (user/
 
 **See `phase-2-5-docs-planning.md` for full details.**
 
+## Phase 2.6: Steering Docs Loading
+
+> Skip this phase silently when `.orchestrator/steering/` does not exist in the project root. This mirrors Phase 2.5's silent-no-op pattern — backward compatibility with repos that have not yet scaffolded steering docs.
+
+Check for the steering directory and load all three docs if present:
+
+```bash
+STEERING_DIR=".orchestrator/steering"
+if [ -d "$STEERING_DIR" ]; then
+  PRODUCT_MD=""
+  TECH_MD=""
+  STRUCTURE_MD=""
+  [ -f "$STEERING_DIR/product.md" ]   && PRODUCT_MD=$(cat "$STEERING_DIR/product.md")
+  [ -f "$STEERING_DIR/tech.md" ]      && TECH_MD=$(cat "$STEERING_DIR/tech.md")
+  [ -f "$STEERING_DIR/structure.md" ] && STRUCTURE_MD=$(cat "$STEERING_DIR/structure.md")
+fi
+```
+
+When at least one file is non-empty, inject the following **Steering Context** banner into the conversation context before Phase 3. This gives Phase 3 (VCS Deep Dive) and subsequent phases stable product/tech/structure facts without re-reading CLAUDE.md:
+
+```
+--- Steering Context ---
+[product.md contents — mission, target users, in-scope, out-of-scope]
+[tech.md contents — stack, commands, constraints]
+[structure.md contents — directory map, inventory, key skills]
+--- End Steering Context ---
+```
+
+If `.orchestrator/steering/` is absent or all three files are empty, proceed directly to Phase 3 with no banner and no warning. Do not treat missing steering docs as an error.
+
+**See `.orchestrator/steering/{product,tech,structure}.md` for file contents.**
+
 ## Phase 3: VCS Deep Dive (parallel)
 
 > **VCS Reference:** Detect the VCS platform per the "VCS Auto-Detection" section of the gitlab-ops skill.
@@ -489,6 +521,7 @@ After user alignment:
 | `soul.md` | Identity and communication principles |
 | `presentation-format.md` | Phase 8 output templates and AskUserQuestion examples |
 | `phase-2-5-docs-planning.md` | Phase 2.5 full procedural body — docs-orchestrator config, audience detection, AUQ confirmation, result block emission, non-overlap rules |
+| (inline) Phase 2.6 | Steering docs gate + load — reads `.orchestrator/steering/{product,tech,structure}.md`; silent no-op when directory absent |
 | `phase-4-5-resource-health.md` | Phase 4.5 full procedural body — resource probe, adaptive thresholds table, AUQ presentation, session-plan cap handoff |
 | `phase-7-5-mode-selector.md` | Phase 7.5 full procedural body — buildLiveSignals, selectMode invocation, banner rendering, AUQ ordering protocol, graceful no-op rules, accuracy learning write |
 | `phase-8-5-express-path.md` | Phase 8.5 full procedural body — activation conditions, banner, coordinator-direct execution, STATE.md logging, condition examples table |

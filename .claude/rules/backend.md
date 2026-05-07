@@ -1,17 +1,10 @@
 ---
-paths:
-  - src/app/actions/**
-  - src/app/api/**
-  - src/routes/**
-  - src/lib/errors/**
-  - src/lib/http/**
-  - src/lib/logging/**
-  - src/lib/responses/**
+globs:
+  - src/app/**
   - src/services/**
-  - api/**
-  - services/**
-  - server/**
-  - src/index.*
+  - src/lib/api/**
+  - src/routes/**
+  - src/app/api/**
 ---
 # Backend Rules (Path-scoped)
 
