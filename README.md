@@ -118,6 +118,15 @@ Windows support is **native** as of v3.0.0 — no WSL, no Git-Bash, no msys. All
 
 All platforms share the same skills, commands, hooks, and scripts. Platform-specific adaptations are handled automatically via `scripts/lib/platform.mjs`. See setup guides: [Codex](docs/codex-setup.md) | [Cursor IDE](docs/cursor-setup.md).
 
+### Cursor IDE Support
+
+The plugin ships `hooks/hooks-cursor.json` for Cursor IDE compatibility. Cursor has two key event-coverage limitations vs. Claude Code / Codex CLI:
+
+1. **No SessionStart equivalent** — Cursor lacks a conversation-start lifecycle event. Session initialization must be triggered manually via `/session`.
+2. **Post-hoc scope enforcement** — The Cursor-equivalent `afterFileEdit` hook fires AFTER the edit. The destructive-command guard (`beforeShellExecution`) is fully equivalent to Claude Code's `PreToolUse` Bash gate; scope enforcement is best-effort warn-only on Cursor.
+
+Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) → 2 handlers (`enforce-scope.mjs`, `enforce-commands.mjs`). The full event catalog and rationale lives at `hooks/hooks-cursor.json`.
+
 ## Troubleshooting
 
 ### Hooks silently no-op after install
@@ -364,7 +373,7 @@ Superpowers handles the **task layer** (TDD, debugging, brainstorming per featur
 - `.claude/rules/` — always-on contributor rules (e.g. `parallel-sessions.md`)
 - `.codex-plugin/`: Codex plugin manifest (`plugin.json`) + compatibility config + 3 agent role definitions
 - `scripts/codex-install.mjs`: installs into the active Codex desktop plugin catalog or falls back to a local marketplace
-- `scripts/`: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) + shared lib (`scripts/lib/*.mjs`) + vitest suite (2623+ tests)
+- `scripts/`: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) + shared lib (`scripts/lib/*.mjs`) + vitest suite (3591+ tests)
 
 ## Destructive-Command Guard
 

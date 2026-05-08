@@ -47,8 +47,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { digestMultiBufferSha256 } from './crypto-digest-utils.mjs';
 
 const CACHE_RELATIVE_PATH = '.orchestrator/metrics/baseline-results.jsonl';
 const DEFAULT_TTL_DAYS = 7;
@@ -64,21 +64,21 @@ const RECORD_VERSION = 1;
  * @returns {string} Hex sha256 digest.
  */
 export function computeDependencyHash(repoRoot) {
-  const hash = crypto.createHash('sha256');
+  const buffers = [];
   const pkgPath = path.join(repoRoot, 'package.json');
   if (fs.existsSync(pkgPath)) {
-    hash.update(fs.readFileSync(pkgPath));
+    buffers.push(fs.readFileSync(pkgPath));
   }
   // Prefer pnpm-lock.yaml (project standard), then package-lock.json, then yarn.lock.
   const lockCandidates = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'];
   for (const candidate of lockCandidates) {
     const candidatePath = path.join(repoRoot, candidate);
     if (fs.existsSync(candidatePath)) {
-      hash.update(fs.readFileSync(candidatePath));
+      buffers.push(fs.readFileSync(candidatePath));
       break;
     }
   }
-  return hash.digest('hex');
+  return digestMultiBufferSha256(buffers);
 }
 
 /**

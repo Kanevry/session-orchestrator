@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Deep session shipping 6 discovery-derived issues (#344 #345 #346 #347 #348 #349) — refactor + test-coverage + validator + doc-drift cluster. 5W×6A coordinator-direct on `main`, isolation:none enforcement:warn cap=6. Tests grew 3138 → 3591 (+453). validate-plugin grew 22 → 27 (+5 from new symmetry validator). No breaking changes.
+
+### Added (Unreleased)
+
+- **#344 crypto-digest-utils.mjs** — DRY 6 sha256-hash sites. NEW `scripts/lib/crypto-digest-utils.mjs` (~90L, 4 named exports: `digestSha256Short` (default 8-char hex prefix), `digestSha256` (full digest), `digestSha256WithSalt` (salt+\\x00+value pattern with required salt + TypeError validation), `digestMultiBufferSha256` (sequential multi-buffer update, array-required)). Migrated 6 callers byte-equivalent: `spiral-carryover.mjs` (computeTaskHash), `host-identity.mjs` (hashHostname — preserves salt+NUL+hostname order invariant), `quality-gates-cache.mjs` (computeDependencyHash multi-buffer), `frontmatter-guard.mjs` (computeSchemaHash), `session-registry.mjs` (repoPathHash — NOTE: keeps `crypto` import for `randomBytes`), `vault-sync-baseline.mjs` (computeSchemaHash). 29 vitest cases with hardcoded hex literals (no tautological computation). Issue closed.
+- **#347 check-hooks-symmetry validator** — NEW `scripts/lib/validate/check-hooks-symmetry.mjs` (127L after simplifier) with 4 sequential checks: (1) hooks.json↔hooks-codex.json event-key parity (must match exactly); (2) hooks-cursor.json documented-asymmetry policy via `DOCUMENTED_ASYMMETRIES` constant (9 cursor-missing-from-main + 2 cursor-only); (3) handler files exist on disk for all referenced .mjs (skips `_lib/*` library modules); (4) orphan-detection (informational PASS for unreferenced hooks/*.mjs). Wired into `scripts/validate-plugin.mjs` after L123 (2 lines added). Simplifier extracted `loadJson(filePath, required)` helper (-9L). 30 vitest cases via synthetic temp-dir fixtures + 3 real-plugin happy-path cases. Issue closed.
+
+### Tests (Unreleased)
+
+- **#345 scripts/lib/config/ unit-test cluster** — 8 NEW test files in `tests/lib/config/`, **221 cases** (target ~112, +97%). Modules: coercers (77 cases — every throw exercised, override-syntax `"6 (deep: 18, fast: 4)"` parser covered, all 11 exported coercers covered), drift-check (21), section-extractor (18), vault-sync (19), docs-orchestrator (19), vault-staleness (17), config/events-rotation (22 — for the CONFIG parser), vault-integration (28). Test-quality compliant: hardcoded expected values, no tautological computation, error-paths covered. Issue closed.
+- **#346 scripts/lib/vault-mirror/ unit-test cluster** — 5 NEW test files in `tests/lib/vault-mirror/`, **148 cases** (target ~78, +89%). Modules: utils (48 — all 7 utility functions), render-learnings (32 — schema detection + 8 v1/6 v2 throw paths + confidence boundary 0.8 + title truncation), render-sessions (36 — schema detection + 9 v1 + 7 v2 throw paths + completion-rate rounding + platform-skipped regression #343), auto-commit (11 — all 8 action paths: no-mirror-dirs, not-a-git-repo, git-add-failed, git-diff-failed, no-staged-changes, non-mirror-staged-changes, git-commit-failed, auto-commit-created), process (21 — deriveRepo regex parsing + caching, processLearning state machine, processSession sanitisation). Issue closed.
+- **#349 events-rotation.mjs unit tests** — NEW `tests/lib/events-rotation.test.mjs`, **25 cases** (target 16-18, +56%). Coverage: 9 input-validation throws (logPath/maxSizeMb/maxBackups including range boundaries), 6 early-return reasons, 4 happy-path rotations including exact-1-MiB threshold, 3 ring-buffer shifts with maxBackups=3, 3 error-handling tests via real read-only-dir injection (vi.spyOn blocked on ESM named exports — used `chmodSync(dir, 0o555)` instead). Issue closed.
+
+### Changed (Unreleased)
+
+- **#348 doc-drift sweep** — README test-count line refreshed (`2623+ tests` → `3138+ tests` in W2; bumped to `3591+ tests` in W5 to reflect post-session count) + NEW `### Cursor IDE Support` section after Platform Support documenting `hooks/hooks-cursor.json`'s 2 events and Cursor IDE limitations (no SessionStart equivalent + post-hoc afterFileEdit). PRD `2026-04-21-vault-docs-orchestration.md` Status header updated `Draft` → `Complete (2026-05-01, Epic #229 closed)` (line 360 already confirmed completion). CLAUDE.md `2026-04-30 main-2026-04-30-1635` narrative bullet stale doc-drift parenthetical replaced with `[RESOLVED 2026-05-08 in v3.4.0: ...]` historical marker. Issue closed.
+
+### Quality (Unreleased)
+
+- typecheck: 66/66 OK (was 65; +1 NEW module crypto-digest-utils.mjs)
+- lint: 0 errors (5 inline coordinator fixes during inter-wave Quality-Lite: 3 unused imports + 2 unused-vars in `tests/lib/vault-mirror/{auto-commit,process}.test.mjs`)
+- tests: **3591 passed / 12 skipped / 0 failed** (was 3138, **+453 NEW tests**)
+- validate-plugin: **27 passed, 0 failed** (was 22; +5 from new check-hooks-symmetry validator)
+
 ## [3.4.0] - 2026-05-08
 
 Deep session shipping 7 issues (#327 #328 #330 #342 #332 #325 #326) on top of the prior consolidated `[Unreleased]` work since v3.3.0 (Benchmark P1-P5, convergence-monitoring, baseline propagation, doc-drift sweep, #321/#323/#343/#329/#322/#324, #320 Express Path persistence). 5W×6A coordinator-direct on `main`, isolation:none enforcement:warn cap=6. Tests grew 2942 → 3138 (+196). No breaking changes.

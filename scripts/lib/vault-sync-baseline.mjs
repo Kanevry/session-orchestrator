@@ -16,7 +16,7 @@
  * Issue: #327 vault-sync baseline-diff reporting.
  */
 
-import { createHash } from 'node:crypto';
+import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -34,7 +34,7 @@ import { dirname } from 'node:path';
  * @returns {string} 8-character lowercase hex prefix of SHA-256 digest
  */
 export function computeSchemaHash(schemaText) {
-  return createHash('sha256').update(schemaText, 'utf8').digest('hex').slice(0, 8);
+  return digestSha256Short(schemaText);
 }
 
 // ---------------------------------------------------------------------------

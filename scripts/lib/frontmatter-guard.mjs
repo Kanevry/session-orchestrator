@@ -9,7 +9,7 @@
  * Uses `node:fs` and `node:crypto` only — no external dependencies.
  */
 
-import { createHash } from 'node:crypto';
+import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -126,7 +126,7 @@ export function readVaultSchema() {
  * @returns {string}
  */
 export function computeSchemaHash(schemaText) {
-  return createHash('sha256').update(schemaText).digest('hex').slice(0, 8);
+  return digestSha256Short(schemaText);
 }
 
 /**

@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { digestSha256 } from './crypto-digest-utils.mjs';
 
 import { appendFileSync, mkdirSync } from 'node:fs';
 
@@ -66,7 +67,7 @@ export function repoPathHash(absPath) {
   if (typeof absPath !== 'string' || absPath.length === 0) {
     throw new TypeError('repoPathHash: absPath must be a non-empty string');
   }
-  return crypto.createHash('sha256').update(path.resolve(absPath)).digest('hex');
+  return digestSha256(path.resolve(absPath));
 }
 
 function _assertSessionId(sessionId) {

@@ -23,7 +23,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { digestSha256Short } from './crypto-digest-utils.mjs';
 
 /**
  * Compute a stable 8-char sha256 hash of a task description.
@@ -33,8 +33,7 @@ import { createHash } from 'node:crypto';
  * @returns {string} 8 lowercase hex chars
  */
 export function computeTaskHash(taskDescription) {
-  const input = String(taskDescription ?? '');
-  return createHash('sha256').update(input, 'utf8').digest('hex').slice(0, 8);
+  return digestSha256Short(taskDescription);
 }
 
 /**

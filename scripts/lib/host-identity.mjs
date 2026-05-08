@@ -31,7 +31,7 @@
 
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { digestSha256WithSalt } from './crypto-digest-utils.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { SO_OS, SO_PLATFORM } from './platform.mjs';
@@ -94,11 +94,7 @@ export function classifyHost(osName, arch, cpuModel) {
  * leaking the actual hostname.
  */
 export function hashHostname(hostname, salt) {
-  const h = createHash('sha256');
-  h.update(String(salt));
-  h.update('\x00');
-  h.update(String(hostname));
-  return h.digest('hex');
+  return digestSha256WithSalt(hostname, { salt: String(salt) });
 }
 
 // ---------------------------------------------------------------------------
