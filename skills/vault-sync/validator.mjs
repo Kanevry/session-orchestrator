@@ -109,6 +109,37 @@ const checkExpires = args.includes('--check-expires');
 // Parse --exclude <glob> (repeatable)
 let mode = 'hard';
 const excludePatterns = [];
+
+// ── Unconditional config-loaded excludes (issue #329) ──────────────────────
+// Read `vault-sync.exclude` from <VAULT_DIR>/CLAUDE.md (or AGENTS.md) BEFORE
+// parsing argv so that bare invocations (no caller, no --exclude flags) still
+// honour the project's configured exclusion list. CLI --exclude flags below
+// are additive — they extend (do not replace) the config-loaded list.
+//
+// Resolution order for the directory:
+//   1. process.env.VAULT_DIR (absolute or relative to cwd)
+//   2. process.cwd() fallback
+//
+// Wrapped in try/catch: missing CLAUDE.md, missing module, or parse error all
+// degrade silently to "no config excludes" — the validator must continue to
+// work on repos that have no project-instruction file.
+try {
+  const configDir = process.env.VAULT_DIR ? resolve(process.env.VAULT_DIR) : process.cwd();
+  const instr = resolveInstructionFile(configDir);
+  if (instr && existsSync(instr.path)) {
+    const content = readFileSync(instr.path, 'utf8');
+    const { _parseVaultSync } = await import('../../scripts/lib/config/vault-sync.mjs');
+    const parsed = _parseVaultSync(content);
+    if (Array.isArray(parsed.exclude)) {
+      for (const pat of parsed.exclude) {
+        if (typeof pat === 'string' && pat.length > 0) excludePatterns.push(pat);
+      }
+    }
+  }
+} catch {
+  // Silent fallback: validator must work without CLAUDE.md / config parser.
+}
+
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--mode') {

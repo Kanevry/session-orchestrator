@@ -412,10 +412,7 @@ export async function cleanupAllWorktrees() {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace helpers — re-exported from workspace.mjs (issue #287)
+// Workspace helpers (issue #287, #322): live in scripts/lib/workspace.mjs.
+// Import directly from './workspace.mjs' — no re-export here to avoid the
+// circular dependency workspace.mjs ←→ worktree.mjs.
 // ---------------------------------------------------------------------------
-// These three functions were extracted to scripts/lib/workspace.mjs to keep
-// worktree.mjs focused on git worktree lifecycle operations.
-// The re-export shim preserves backward compatibility for all existing imports.
-
-export { resolveWorkspaceRoot, restoreCoordinatorCwd, validatePathInWorkspace } from './workspace.mjs';

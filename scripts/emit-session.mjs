@@ -30,6 +30,8 @@ import {
   validateSession,
   ValidationError,
   CURRENT_SESSION_SCHEMA_VERSION,
+  clampTimestampsMonotonic,
+  aliasLegacyEndedAt,
 } from './lib/session-schema.mjs';
 
 function parseArgs(argv) {
@@ -79,9 +81,35 @@ async function main() {
     process.exit(2);
   }
 
+  // Pre-validation repairs (issue #321):
+  //   1. Alias legacy `ended_at` -> `completed_at` for pre-canonical writers.
+  //   2. Clamp completed_at < started_at inversions (clock-skew or manual
+  //      STATE.md frontmatter edits) before validate would reject them.
+  let repaired = aliasLegacyEndedAt(parsed);
+  if (repaired !== parsed && repaired._completed_at_conflict === true) {
+    process.stderr.write(
+      `emit-session: WARN session_id=${repaired.session_id ?? '<unknown>'}: ` +
+        `both completed_at and ended_at present and differ; preferring completed_at\n`
+    );
+  }
+  const beforeClamp = repaired;
+  repaired = clampTimestampsMonotonic(repaired);
+  if (repaired !== beforeClamp && repaired._clamped === true) {
+    const startedMs = Date.parse(repaired.started_at);
+    const origMs = Date.parse(repaired._original_completed_at);
+    const deltaSec = Number.isFinite(startedMs - origMs)
+      ? Math.round((startedMs - origMs) / 1000)
+      : null;
+    process.stderr.write(
+      `emit-session: WARN session_id=${repaired.session_id ?? '<unknown>'}: ` +
+        `completed_at < started_at (delta=${deltaSec}s); clamped completed_at to started_at ` +
+        `(original preserved as _original_completed_at=${repaired._original_completed_at})\n`
+    );
+  }
+
   let validated;
   try {
-    validated = validateSession(parsed);
+    validated = validateSession(repaired);
   } catch (err) {
     if (err instanceof ValidationError) {
       process.stderr.write(`emit-session: validation failed: ${err.message}\n`);

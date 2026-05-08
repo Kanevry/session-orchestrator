@@ -158,3 +158,104 @@ describe('emit-session.mjs CLI', () => {
     expect(r.stdout).toMatch(/Usage: node scripts\/emit-session\.mjs/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #321 — pre-validation repair integration (clamp + alias)
+// ---------------------------------------------------------------------------
+
+describe('emit-session.mjs CLI — #321 pre-validation repair', () => {
+  let tmp;
+  let targetFile;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'emit-session-321-'));
+    targetFile = join(tmp, 'sessions.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('clamps inversion: exits 0 (clamped, not error) and writes appended record', () => {
+    const entry = validEntry({
+      session_id: 'inv-clamp-1',
+      started_at: '2026-04-24T16:30:00Z',
+      completed_at: '2026-04-24T16:00:00Z',
+    });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    expect(existsSync(targetFile)).toBe(true);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written._clamped).toBe(true);
+    expect(written.completed_at).toBe('2026-04-24T16:30:00Z');
+    expect(written._original_completed_at).toBe('2026-04-24T16:00:00Z');
+  });
+
+  it('clamps inversion: STDERR contains WARN session_id=... and clamped phrasing', () => {
+    const entry = validEntry({
+      session_id: 'inv-clamp-2',
+      started_at: '2026-04-24T16:30:00Z',
+      completed_at: '2026-04-24T16:00:00Z',
+    });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.stderr).toMatch(/WARN session_id=inv-clamp-2/);
+    expect(r.stderr).toMatch(/clamped/);
+  });
+
+  it('clamps inversion: STDOUT remains a single parseable JSON line (no warn leakage)', () => {
+    const entry = validEntry({
+      session_id: 'inv-clamp-3',
+      started_at: '2026-04-24T16:30:00Z',
+      completed_at: '2026-04-24T16:00:00Z',
+    });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    const stdoutLines = r.stdout.split('\n').filter((l) => l.length > 0);
+    expect(stdoutLines).toHaveLength(1);
+    const parsed = JSON.parse(stdoutLines[0]);
+    expect(parsed.action).toBe('appended');
+    expect(parsed.session_id).toBe('inv-clamp-3');
+    // Sanity: STDOUT should not contain WARN markers
+    expect(r.stdout).not.toMatch(/WARN/);
+  });
+
+  it('legacy ended_at only: exit 0, appended record carries completed_at', () => {
+    const entry = validEntry();
+    delete entry.completed_at;
+    entry.ended_at = '2026-04-24T16:30:00Z';
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written.completed_at).toBe('2026-04-24T16:30:00Z');
+    // ended_at preserved alongside aliased completed_at — not stripped by emit-session
+    // (only duration_ms is dropped by aliasLegacyEndedAt; the canonical schema
+    // does not reject extra ended_at as it is an unknown additive field).
+    expect(written.ended_at).toBe('2026-04-24T16:30:00Z');
+  });
+
+  it('both completed_at + ended_at differing: STDERR mentions conflict, prefers completed_at', () => {
+    const entry = validEntry({
+      session_id: 'conflict-1',
+      started_at: '2026-04-24T16:00:00Z',
+      completed_at: '2026-04-24T16:30:00Z',
+    });
+    entry.ended_at = '2026-04-24T17:00:00Z';
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/conflict/i);
+    expect(r.stderr).toMatch(/preferring completed_at/);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written.completed_at).toBe('2026-04-24T16:30:00Z');
+    expect(written._completed_at_conflict).toBe(true);
+  });
+
+  it('already-canonical input: no clamp/alias warns on STDERR', () => {
+    const entry = validEntry();
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written._clamped).toBeUndefined();
+    expect(written._completed_at_conflict).toBeUndefined();
+    expect(written._original_completed_at).toBeUndefined();
+  });
+});

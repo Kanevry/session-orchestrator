@@ -49,6 +49,55 @@ export const VALID_SCOPES = Object.freeze(['local', 'private', 'public']);
 export const CURRENT_ANONYMIZATION_VERSION = 1;
 
 /**
+ * Per-type TTL policy (in days) for `expires_at` derivation.
+ *
+ * Used by `deriveExpiresAt(createdAt, type)` and by `appendLearning()` when a
+ * caller omits `expires_at`. Issue #323 (learnings missing expires_at).
+ *
+ * Tier rationale:
+ *  - 30d: high-churn signals (mode-selector accuracy is recalculated weekly)
+ *  - 45d: medium-churn signals (file/sizing/recurrence change with codebase)
+ *  - 60d: hardware patterns + DEFAULT (per-host data, slow drift)
+ *  - 90d: stable workflow/proven/anti-patterns + autopilot effectiveness
+ *
+ * Adding a new type? Default to 60d unless empirical decay suggests otherwise.
+ * `default` is the fallback for types not listed (e.g., legacy `pattern`,
+ * `deviation-pattern`, `lifecycle-pattern`).
+ */
+export const LEARNING_TTL_DAYS = Object.freeze({
+  'mode-selector-accuracy': 30,
+  'hardware-pattern': 60,
+  'fragile-file': 45,
+  'effective-sizing': 45,
+  'recurring-issue': 45,
+  'workflow-pattern': 90,
+  'proven-pattern': 90,
+  'anti-pattern': 90,
+  'autopilot-effectiveness': 90,
+  default: 60,
+});
+
+/**
+ * Derive an ISO 8601 `expires_at` timestamp from `created_at` + type-specific TTL.
+ *
+ * Policy lookup: `LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default`.
+ * If `createdAt` is missing or unparseable, falls back to `new Date()`
+ * (so a derivable expiry is always returned — the caller never gets undefined).
+ *
+ * @param {string|undefined} createdAt — ISO 8601 string or any Date.parse-able input
+ * @param {string|undefined} type — learning record type
+ * @returns {string} ISO 8601 expires_at
+ */
+export function deriveExpiresAt(createdAt, type) {
+  const ttlDays = LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default;
+  let baseMs = typeof createdAt === 'string' ? Date.parse(createdAt) : NaN;
+  if (!Number.isFinite(baseMs)) {
+    baseMs = Date.now();
+  }
+  return new Date(baseMs + ttlDays * 86400 * 1000).toISOString();
+}
+
+/**
  * Current learnings-record schema version.
  *
  * Records are tagged with `schema_version` at write time. Records without the
@@ -391,8 +440,24 @@ export async function readLearnings(filePath) {
  * @returns {Promise<object>} validated entry
  */
 export async function appendLearning(filePath, entry) {
+  // Ensure created_at is set first — many writers omit it, and expires_at
+  // derivation depends on it. Use ISO 8601 UTC.
+  const createdAt =
+    typeof entry?.created_at === 'string' && entry.created_at.length > 0
+      ? entry.created_at
+      : new Date().toISOString();
+
+  // Auto-stamp expires_at when caller omits it (issue #323). If caller
+  // PASSES expires_at (even an empty string is treated as omitted), respect it.
+  const expiresAt =
+    typeof entry?.expires_at === 'string' && entry.expires_at.length > 0
+      ? entry.expires_at
+      : deriveExpiresAt(createdAt, entry?.type);
+
   const stamped = {
     ...entry,
+    created_at: createdAt,
+    expires_at: expiresAt,
     schema_version: entry?.schema_version ?? CURRENT_SCHEMA_VERSION,
   };
   const validated = validateLearning(stamped);

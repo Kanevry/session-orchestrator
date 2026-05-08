@@ -9,7 +9,7 @@
  * rewrite, read with malformed lines), filters (scope/host_class/type).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,8 @@ import {
   VALID_SCOPES,
   CURRENT_ANONYMIZATION_VERSION,
   CURRENT_SCHEMA_VERSION,
+  deriveExpiresAt,
+  LEARNING_TTL_DAYS,
 } from '../../scripts/lib/learnings.mjs';
 
 const LEGACY = () => ({
@@ -850,5 +852,157 @@ describe('REQUIRED_FIELDS contract regression tests', () => {
     }
     expect(caught2).toBeInstanceOf(ValidationError);
     expect(caught2.message).toContain('source_session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveExpiresAt — issue #323 (W2 — type-specific TTL derivation)
+// ---------------------------------------------------------------------------
+
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
+
+describe('deriveExpiresAt', () => {
+  it('happy path: mode-selector-accuracy returns +30 days exactly', () => {
+    const result = deriveExpiresAt('2026-05-01T00:00:00Z', 'mode-selector-accuracy');
+    expect(result).toBe('2026-05-31T00:00:00.000Z');
+  });
+
+  it('default fallback: unknown type returns +60 days', () => {
+    const result = deriveExpiresAt('2026-05-01T00:00:00Z', 'totally-unknown-type-xyz');
+    expect(result).toBe('2026-06-30T00:00:00.000Z');
+  });
+
+  it('unparseable createdAt returns a non-undefined ISO string (Date.now() fallback)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T12:00:00.000Z'));
+    try {
+      const result = deriveExpiresAt('not-a-date', 'fragile-file');
+      expect(result).not.toBeUndefined();
+      expect(typeof result).toBe('string');
+      expect(result).toMatch(ISO_8601_RE);
+      // 2026-05-08 + 45 days (fragile-file TTL) = 2026-06-22
+      expect(result).toBe('2026-06-22T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('missing createdAt (undefined) falls back to now() + TTL', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T00:00:00.000Z'));
+    try {
+      const result = deriveExpiresAt(undefined, 'workflow-pattern');
+      // 2026-05-08 + 90 days (workflow-pattern TTL) = 2026-08-06
+      expect(result).toBe('2026-08-06T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('all 9 keys in LEARNING_TTL_DAYS round-trip correctly', () => {
+    const baseIso = '2026-05-01T00:00:00Z';
+    const baseMs = Date.parse(baseIso);
+    const keys = Object.keys(LEARNING_TTL_DAYS);
+    // Sanity: confirm we have at least the 9 named keys + 'default' (10 total)
+    expect(keys.length).toBeGreaterThanOrEqual(10);
+
+    for (const key of keys) {
+      const ttlDays = LEARNING_TTL_DAYS[key];
+      const expectedMs = baseMs + ttlDays * 86400 * 1000;
+      const expectedIso = new Date(expectedMs).toISOString();
+      const result = deriveExpiresAt(baseIso, key === 'default' ? 'a-type-not-mapped' : key);
+      expect(result).toBe(expectedIso);
+    }
+  });
+
+  it('returns ISO 8601 formatted string', () => {
+    const result = deriveExpiresAt('2026-05-01T00:00:00Z', 'recurring-issue');
+    expect(result).toMatch(ISO_8601_RE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendLearning — auto-stamp expires_at + created_at (issue #323)
+// ---------------------------------------------------------------------------
+
+describe('appendLearning — auto-stamp expires_at and created_at (#323)', () => {
+  it('auto-stamps expires_at when caller omits it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T00:00:00.000Z'));
+    try {
+      const filePath = join(tmp, 'autostamp-expires.jsonl');
+      const entry = LEGACY();
+      delete entry.expires_at;
+      // Keep created_at for predictable expiry derivation
+      entry.created_at = '2026-05-01T00:00:00Z';
+      entry.type = 'mode-selector-accuracy'; // 30d TTL
+      await appendLearning(filePath, entry);
+
+      const content = readFileSync(filePath, 'utf8').trim();
+      const written = JSON.parse(content);
+      expect(written.expires_at).toBe('2026-05-31T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('respects caller-supplied expires_at (idempotent: callers value wins)', async () => {
+    const filePath = join(tmp, 'caller-supplied-expires.jsonl');
+    const entry = { ...LEGACY(), expires_at: '2099-12-31T00:00:00.000Z' };
+    await appendLearning(filePath, entry);
+
+    const content = readFileSync(filePath, 'utf8').trim();
+    const written = JSON.parse(content);
+    expect(written.expires_at).toBe('2099-12-31T00:00:00.000Z');
+  });
+
+  it('sets created_at to now() ISO when caller omits it', async () => {
+    vi.useFakeTimers();
+    const fakeNow = new Date('2026-05-08T15:30:45.000Z');
+    vi.setSystemTime(fakeNow);
+    try {
+      const filePath = join(tmp, 'autostamp-created.jsonl');
+      const entry = LEGACY();
+      delete entry.created_at;
+      delete entry.expires_at;
+      await appendLearning(filePath, entry);
+
+      const content = readFileSync(filePath, 'utf8').trim();
+      const written = JSON.parse(content);
+      expect(written.created_at).toBe('2026-05-08T15:30:45.000Z');
+      expect(written.created_at).toMatch(ISO_8601_RE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses type-specific TTL (autopilot-effectiveness → 90d) not default', async () => {
+    const filePath = join(tmp, 'autopilot-ttl.jsonl');
+    const entry = { ...LEGACY(), type: 'autopilot-effectiveness', created_at: '2026-05-01T00:00:00Z' };
+    delete entry.expires_at;
+    await appendLearning(filePath, entry);
+
+    const content = readFileSync(filePath, 'utf8').trim();
+    const written = JSON.parse(content);
+    // 2026-05-01 + 90 days = 2026-07-30
+    expect(written.expires_at).toBe('2026-07-30T00:00:00.000Z');
+    // Sanity: ensure NOT the 60d default
+    expect(written.expires_at).not.toBe('2026-06-30T00:00:00.000Z');
+  });
+
+  it('caller-supplied empty-string expires_at is treated as omitted (auto-derives)', async () => {
+    const filePath = join(tmp, 'empty-expires.jsonl');
+    const entry = {
+      ...LEGACY(),
+      expires_at: '',
+      created_at: '2026-05-01T00:00:00Z',
+      type: 'fragile-file', // 45d
+    };
+    await appendLearning(filePath, entry);
+
+    const content = readFileSync(filePath, 'utf8').trim();
+    const written = JSON.parse(content);
+    // 2026-05-01 + 45 days = 2026-06-15
+    expect(written.expires_at).toBe('2026-06-15T00:00:00.000Z');
   });
 });

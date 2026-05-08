@@ -1228,3 +1228,179 @@ describe('vault-mirror auto-commit (#31)', () => {
     expect(actions.find((a) => a.action === 'auto-commit-skipped' && a.reason === 'not-a-git-repo')).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #343 — render-sessions.mjs V1/V2 frontmatter (skip-emit + repo)
+// ---------------------------------------------------------------------------
+
+import {
+  generateSessionNote,
+  generateSessionNoteV2,
+} from '../../scripts/lib/vault-mirror/render-sessions.mjs';
+
+const V1_ENTRY = () => ({
+  session_id: 'session-2026-04-13',
+  session_type: 'feature',
+  platform: 'darwin',
+  started_at: '2026-04-13T08:00:00Z',
+  completed_at: '2026-04-13T10:00:00Z',
+  duration_seconds: 7200,
+  total_waves: 3,
+  total_agents: 6,
+  total_files_changed: 12,
+  agent_summary: { complete: 5, partial: 1, failed: 0, spiral: 0 },
+  waves: [
+    { wave: 1, role: 'Planning', agent_count: 1, files_changed: 2, quality: 'ok' },
+    { wave: 2, role: 'Implementation', agent_count: 3, files_changed: 8, quality: 'ok' },
+    { wave: 3, role: 'QA', agent_count: 2, files_changed: 2, quality: 'ok' },
+  ],
+  effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
+});
+
+const V2_ENTRY = () => ({
+  session_id: 'session-v2-2026-05-08',
+  session_type: 'deep',
+  started_at: '2026-05-08T08:00:00Z',
+  completed_at: '2026-05-08T10:00:00Z',
+  duration_seconds: 7200,
+  branch: 'main',
+  planned_issues: 3,
+  files_changed: 12,
+  issues_closed: [101, 102],
+  issues_created: [201],
+  waves: [
+    { wave: 1, role: 'Discovery', agents: 2, agents_done: 2, agents_partial: 0, agents_failed: 0, dispatch: 'parallel', duration_s: 600 },
+    { wave: 2, role: 'Implementation', agents: 4, agents_done: 4, agents_partial: 0, agents_failed: 0, dispatch: 'parallel', duration_s: 1800 },
+  ],
+  effectiveness: { completion_rate: 1.0, carryover: 0 },
+});
+
+describe('generateSessionNote V1 — frontmatter skip-emit + platform (#343)', () => {
+  it('does NOT emit literal "undefined" when platform is undefined', () => {
+    const entry = V1_ENTRY();
+    delete entry.platform;
+    const out = generateSessionNote(entry, {});
+    expect(out).not.toContain('undefined');
+    expect(out).not.toContain('Platform:** undefined');
+  });
+
+  it('emits Platform bullet when entry.platform = "darwin"', () => {
+    const entry = V1_ENTRY();
+    entry.platform = 'darwin';
+    const out = generateSessionNote(entry, {});
+    expect(out).toContain(' · **Platform:** darwin');
+  });
+
+  it('emits repo: line in frontmatter when options.repo is set', () => {
+    const out = generateSessionNote(V1_ENTRY(), { repo: 'Kanevry/session-orchestrator' });
+    // Frontmatter line: ^repo: <value>$ (multiline regex — find one matching line)
+    expect(out).toMatch(/^repo: Kanevry\/session-orchestrator$/m);
+  });
+
+  it('does NOT emit repo: line when options.repo is omitted', () => {
+    const out = generateSessionNote(V1_ENTRY(), {});
+    expect(out).not.toMatch(/^repo: /m);
+    expect(out).not.toContain('repo: undefined');
+  });
+
+  it('does NOT emit repo: line when options is the default (no second arg)', () => {
+    const out = generateSessionNote(V1_ENTRY());
+    expect(out).not.toMatch(/^repo: /m);
+    expect(out).not.toContain('repo: undefined');
+  });
+});
+
+describe('generateSessionNoteV2 — frontmatter skip-emit + repo (#343)', () => {
+  it('emits repo: line in frontmatter when options.repo is set', () => {
+    const out = generateSessionNoteV2(V2_ENTRY(), { repo: 'org/name' });
+    expect(out).toMatch(/^repo: org\/name$/m);
+  });
+
+  it('does NOT emit repo: line when options.repo is omitted', () => {
+    const out = generateSessionNoteV2(V2_ENTRY(), {});
+    expect(out).not.toMatch(/^repo: /m);
+    expect(out).not.toContain('repo: undefined');
+  });
+
+  it('does NOT emit repo: line when options is the default (no second arg)', () => {
+    const out = generateSessionNoteV2(V2_ENTRY());
+    expect(out).not.toMatch(/^repo: /m);
+    expect(out).not.toContain('repo: undefined');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #343 — process.mjs::deriveRepo (origin parsing + cwd fallback + caching)
+// ---------------------------------------------------------------------------
+
+import { vi } from 'vitest';
+
+describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
+  // Reset _cachedRepo in process.mjs between tests by re-importing the module
+  // fresh under vi.resetModules(). Each test gets its own mock + cache state.
+  it('parses ssh origin: git@gitlab.example:org/name.git -> "org/name"', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return {
+        ...actual,
+        execFileSync: vi.fn(() => 'git@gitlab.example:org/name.git\n'),
+      };
+    });
+    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    expect(deriveRepo()).toBe('org/name');
+    vi.doUnmock('node:child_process');
+  });
+
+  it('parses https origin: https://github.com/Kanevry/session-orchestrator.git -> "Kanevry/session-orchestrator"', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return {
+        ...actual,
+        execFileSync: vi.fn(() => 'https://github.com/Kanevry/session-orchestrator.git\n'),
+      };
+    });
+    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    expect(deriveRepo()).toBe('Kanevry/session-orchestrator');
+    vi.doUnmock('node:child_process');
+  });
+
+  it('falls back to path.basename(process.cwd()) when execFileSync throws', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return {
+        ...actual,
+        execFileSync: vi.fn(() => {
+          throw new Error('not a git repo');
+        }),
+      };
+    });
+    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const { basename } = await import('node:path');
+    expect(deriveRepo()).toBe(basename(process.cwd()));
+    vi.doUnmock('node:child_process');
+  });
+
+  it('is cached: execFileSync invoked at most once across multiple deriveRepo() calls', async () => {
+    vi.resetModules();
+    const mockExec = vi.fn(() => 'git@github.com:cached/repo.git\n');
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return {
+        ...actual,
+        execFileSync: mockExec,
+      };
+    });
+    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const r1 = deriveRepo();
+    const r2 = deriveRepo();
+    const r3 = deriveRepo();
+    expect(r1).toBe('cached/repo');
+    expect(r2).toBe('cached/repo');
+    expect(r3).toBe('cached/repo');
+    expect(mockExec).toHaveBeenCalledTimes(1);
+    vi.doUnmock('node:child_process');
+  });
+});

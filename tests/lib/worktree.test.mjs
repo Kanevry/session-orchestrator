@@ -414,13 +414,16 @@ describe.skipIf(!gitAvailable).sequential('worktree hardening helpers (#219)', (
     // Import the module after chdir so it picks up the correct repo root via
     // process.cwd(). Use a cache-busting query param to force a fresh module
     // instance separate from the one loaded by the first describe block.
+    const [worktreeMod, workspaceMod] = await Promise.all([
+      import('../../scripts/lib/worktree.mjs?hardening'),
+      import('../../scripts/lib/workspace.mjs?hardening'),
+    ]);
+    ({ createWorktree, removeWorktree } = worktreeMod);
     ({
       resolveWorkspaceRoot,
       restoreCoordinatorCwd,
       validatePathInWorkspace,
-      createWorktree,
-      removeWorktree,
-    } = await import('../../scripts/lib/worktree.mjs?hardening'));
+    } = workspaceMod);
   });
 
   afterAll(async () => {

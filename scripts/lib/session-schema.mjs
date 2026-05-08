@@ -114,22 +114,113 @@ function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// ---------------------------------------------------------------------------
+// Pre-validation repair helpers (issue #321)
+// ---------------------------------------------------------------------------
+
 /**
- * Validate a session entry for writing. Throws ValidationError on any
- * required-field/type/range violation. Returns a NEW object (input is not
- * mutated) with `schema_version` stamped to CURRENT_SESSION_SCHEMA_VERSION
- * if absent. Does NOT apply SESSION_KEY_ALIASES — aliasing is the read-path
- * concern of normalizeSession.
+ * Clamp `completed_at` to be >= `started_at` when an inversion is detected.
  *
- * @param {object} entry
- * @returns {object} validated entry (new object)
+ * Defends against clock skew, manual STATE.md frontmatter edits, and any
+ * other writer that produces a `completed_at < started_at` violation. Rather
+ * than throw and lose the session record entirely, we mathematically clamp
+ * `completed_at` to equal `started_at` (duration = 0) and tag the entry with
+ * forensics fields so the original timestamp is recoverable.
+ *
+ * Behaviour:
+ *   - If either field is absent, return the entry unchanged (let validate
+ *     surface the missing-field error).
+ *   - If either field is unparsable, return the entry unchanged (validate
+ *     will surface the parse error with a clearer message).
+ *   - If `completed_at >= started_at`, return the entry unchanged.
+ *   - Otherwise return a NEW object with:
+ *       completed_at: <started_at>
+ *       _clamped: true
+ *       _original_completed_at: <orig completed_at>
+ *
+ * Never throws. Caller is responsible for emitting any warning log.
+ *
+ * @param {object} entry — session record (may be the raw input)
+ * @returns {object} either the original entry (no clamp needed) or a NEW
+ *                   object with clamp applied + forensics fields
  */
-export function validateSession(entry) {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-    throw new ValidationError('session must be an object');
+export function clampTimestampsMonotonic(entry) {
+  if (!isPlainObject(entry)) return entry;
+  if (typeof entry.started_at !== 'string' || typeof entry.completed_at !== 'string') {
+    return entry;
+  }
+  const startedMs = Date.parse(entry.started_at);
+  const completedMs = Date.parse(entry.completed_at);
+  if (Number.isNaN(startedMs) || Number.isNaN(completedMs)) return entry;
+  if (completedMs >= startedMs) return entry;
+  return {
+    ...entry,
+    completed_at: entry.started_at,
+    _clamped: true,
+    _original_completed_at: entry.completed_at,
+  };
+}
+
+/**
+ * Migrate legacy `ended_at` + `duration_ms` shape to canonical
+ * `completed_at` (issue #321). Some pre-canonical writers produced records
+ * with `ended_at` instead of `completed_at`; this helper aliases the field
+ * so the canonical validator does not reject the record on a missing
+ * required field.
+ *
+ * Behaviour:
+ *   - If `completed_at` is absent and `ended_at` is a string, alias
+ *     `completed_at <- ended_at`.
+ *   - If both `completed_at` and `ended_at` are present and DIFFER, prefer
+ *     `completed_at` (do not overwrite) and tag `_completed_at_conflict: true`
+ *     for forensics.
+ *   - If both `completed_at` and `started_at` end up present, drop the now-
+ *     redundant `duration_ms` (derivable; canonical schema uses
+ *     `duration_seconds`).
+ *
+ * Never throws. Returns either the original entry (no migration needed) or
+ * a NEW object with the migration applied.
+ *
+ * @param {object} entry — session record
+ * @returns {object} either the original entry or a NEW object
+ */
+export function aliasLegacyEndedAt(entry) {
+  if (!isPlainObject(entry)) return entry;
+  const hasCompleted = typeof entry.completed_at === 'string';
+  const hasEnded = typeof entry.ended_at === 'string';
+  if (!hasCompleted && !hasEnded) return entry;
+
+  let next = entry;
+
+  if (!hasCompleted && hasEnded) {
+    next = { ...entry, completed_at: entry.ended_at };
+  } else if (hasCompleted && hasEnded && entry.completed_at !== entry.ended_at) {
+    next = { ...entry, _completed_at_conflict: true };
   }
 
-  // schema_version (optional on write; stamped if absent).
+  // Drop derivable duration_ms once we have both start + completed.
+  if (
+    'duration_ms' in next &&
+    typeof next.completed_at === 'string' &&
+    typeof next.started_at === 'string'
+  ) {
+    if (next === entry) next = { ...entry };
+    delete next.duration_ms;
+  }
+
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// validateSession sub-validators (module-private)
+// ---------------------------------------------------------------------------
+//
+// Each helper throws ValidationError on the first violation it detects,
+// preserving the original error message + ordering of the monolithic
+// validateSession() body. Helpers are intentionally not exported; the
+// public contract is validateSession() alone.
+
+function _validateSchemaVersion(entry) {
   if ('schema_version' in entry && entry.schema_version !== undefined) {
     if (entry.schema_version !== 0 && entry.schema_version !== 1) {
       throw new ValidationError(
@@ -137,27 +228,31 @@ export function validateSession(entry) {
       );
     }
   }
+}
 
-  // Required fields — existence.
+function _validateRequiredFields(entry) {
   for (const field of REQUIRED_FIELDS) {
     if (!(field in entry)) {
       throw new ValidationError(`session missing required field: ${field}`);
     }
   }
+}
 
-  // session_id — non-empty string.
+function _validateSessionId(entry) {
   if (typeof entry.session_id !== 'string' || entry.session_id.length === 0) {
     throw new ValidationError('session_id must be a non-empty string');
   }
+}
 
-  // session_type — enum.
+function _validateSessionType(entry) {
   if (!VALID_SESSION_TYPES.includes(entry.session_type)) {
     throw new ValidationError(
       `session_type must be one of ${VALID_SESSION_TYPES.join('|')}, got: ${entry.session_type}`
     );
   }
+}
 
-  // started_at / completed_at — parsable ISO, ordering.
+function _validateTimestamps(entry) {
   if (typeof entry.started_at !== 'string') {
     throw new ValidationError('started_at must be an ISO timestamp string');
   }
@@ -177,7 +272,9 @@ export function validateSession(entry) {
       `completed_at (${entry.completed_at}) must be >= started_at (${entry.started_at})`
     );
   }
+}
 
+function _validateWaves(entry) {
   // total_waves — non-negative number.
   if (typeof entry.total_waves !== 'number' || entry.total_waves < 0) {
     throw new ValidationError(`total_waves must be a non-negative number, got: ${entry.total_waves}`);
@@ -199,8 +296,9 @@ export function validateSession(entry) {
       throw new ValidationError(`waves[${i}].role must be a non-empty string`);
     }
   }
+}
 
-  // agent_summary — object with 4 required numeric >= 0 fields.
+function _validateAgentSummary(entry) {
   if (!isPlainObject(entry.agent_summary)) {
     throw new ValidationError('agent_summary must be an object');
   }
@@ -225,8 +323,9 @@ export function validateSession(entry) {
       `total_files_changed must be a non-negative number, got: ${entry.total_files_changed}`
     );
   }
+}
 
-  // Optional fields — light type checks only.
+function _validateOptionalFields(entry) {
   if (entry.effectiveness !== undefined && entry.effectiveness !== null) {
     if (!isPlainObject(entry.effectiveness)) {
       throw new ValidationError('effectiveness must be an object or null');
@@ -279,6 +378,31 @@ export function validateSession(entry) {
       throw new ValidationError('issues_created must be an array of numbers');
     }
   }
+}
+
+/**
+ * Validate a session entry for writing. Throws ValidationError on any
+ * required-field/type/range violation. Returns a NEW object (input is not
+ * mutated) with `schema_version` stamped to CURRENT_SESSION_SCHEMA_VERSION
+ * if absent. Does NOT apply SESSION_KEY_ALIASES — aliasing is the read-path
+ * concern of normalizeSession.
+ *
+ * @param {object} entry
+ * @returns {object} validated entry (new object)
+ */
+export function validateSession(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ValidationError('session must be an object');
+  }
+
+  _validateSchemaVersion(entry);
+  _validateRequiredFields(entry);
+  _validateSessionId(entry);
+  _validateSessionType(entry);
+  _validateTimestamps(entry);
+  _validateWaves(entry);
+  _validateAgentSummary(entry);
+  _validateOptionalFields(entry);
 
   // Return a NEW object — stamp schema_version if missing.
   return {

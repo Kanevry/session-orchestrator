@@ -6,13 +6,46 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
 import { detectLearningSchema, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
 import { detectSessionSchema, generateSessionNote, generateSessionNoteV2 } from './render-sessions.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
+
+// ── repo derivation ───────────────────────────────────────────────────────────
+
+let _cachedRepo = null;
+
+/**
+ * Derive the canonical repo identifier for cross-repo vault aggregation (issue #343).
+ *
+ * Strategy: parse `git remote get-url origin` and extract the org/name pair
+ * (e.g. `git@github.com:Kanevry/session-orchestrator.git` → `Kanevry/session-orchestrator`).
+ * Falls back to `path.basename(process.cwd())` when not in a git repo or origin
+ * is unavailable. Cached per-process — repo identity does not change mid-run.
+ */
+export function deriveRepo() {
+  if (_cachedRepo !== null) return _cachedRepo;
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    // Match git@host:org/name(.git)? OR https://host/org/name(.git)?
+    const sshMatch = url.match(/[:/]([^:/]+\/[^/]+?)(?:\.git)?$/);
+    if (sshMatch && sshMatch[1]) {
+      _cachedRepo = sshMatch[1];
+      return _cachedRepo;
+    }
+  } catch {
+    // git unavailable or no origin configured — fall through
+  }
+  _cachedRepo = basename(process.cwd());
+  return _cachedRepo;
+}
 
 // ── Action output ─────────────────────────────────────────────────────────────
 
@@ -149,7 +182,15 @@ export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind, 
   const targetDir = join(resolve(vaultDir), '50-sessions');
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
+  // Canonical filename pattern (issue #343): `<session_id>.md` where session_id
+  // follows `<branch>-<YYYY-MM-DD>-<HHmm>-<slug>` per the session-id schema.
+  // session_id has been validated/sanitised above (isValidSlug → subjectToSlug
+  // → uuid fallback). Historical filename inconsistencies in 50-sessions/ are
+  // pre-existing on-disk artefacts and are NOT retroactively renamed here.
   const targetPath = join(targetDir, `${session_id}.md`);
+
+  // Derive repo once per session so V1+V2 frontmatter both carry it (issue #343).
+  const repo = deriveRepo();
 
   if (existsSync(targetPath)) {
     const existingContent = readFileSync(targetPath, 'utf8');
@@ -175,7 +216,7 @@ export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind, 
         emitAction('skipped-noop', targetPath, kind, session_id, vaultDir);
         return;
       }
-      const content = generator(entry);
+      const content = generator(entry, { repo });
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
       emitAction('updated', targetPath, kind, session_id, vaultDir);
       return;
@@ -183,7 +224,7 @@ export async function processSession(entry, _lineNum, { vaultDir, dryRun, kind, 
   }
 
   // File does not exist — create
-  const content = generator(entry);
+  const content = generator(entry, { repo });
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
   emitAction('created', targetPath, kind, session_id, vaultDir);
 }

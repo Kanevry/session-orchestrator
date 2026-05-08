@@ -17,6 +17,8 @@ import {
   ValidationError,
   validateSession,
   normalizeSession,
+  clampTimestampsMonotonic,
+  aliasLegacyEndedAt,
 } from '../../scripts/lib/session-schema.mjs';
 import { migrateEntry } from '../../scripts/migrate-sessions-jsonl.mjs';
 
@@ -532,5 +534,241 @@ describe('migrateEntry — idempotency (#304)', () => {
     // schema_version preserved by validateSession stamp
     const validated = validateSession(migrated);
     expect(validated.schema_version).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #321 — clampTimestampsMonotonic (pre-validation repair)
+// ---------------------------------------------------------------------------
+
+describe('clampTimestampsMonotonic (#321)', () => {
+  it('returns input unchanged when entry has neither timestamp', () => {
+    const entry = { session_id: 'sess-no-ts' };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged when entry is non-object (null)', () => {
+    expect(clampTimestampsMonotonic(null)).toBe(null);
+  });
+
+  it('returns input unchanged when entry is non-object (string)', () => {
+    expect(clampTimestampsMonotonic('nope')).toBe('nope');
+  });
+
+  it('returns input unchanged when entry is an array', () => {
+    const arr = [1, 2, 3];
+    expect(clampTimestampsMonotonic(arr)).toBe(arr);
+  });
+
+  it('returns input unchanged when only started_at is present', () => {
+    const entry = { session_id: 's', started_at: '2026-04-24T08:00:00Z' };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged when only completed_at is present', () => {
+    const entry = { session_id: 's', completed_at: '2026-04-24T08:00:00Z' };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged when started_at is unparsable (NaN)', () => {
+    const entry = {
+      session_id: 's',
+      started_at: 'not-a-date',
+      completed_at: '2026-04-24T08:00:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged when completed_at is unparsable (NaN)', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: 'still-not-a-date',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged when completed_at equals started_at', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T08:00:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+    expect(out._clamped).toBeUndefined();
+  });
+
+  it('returns input unchanged when completed_at is later than started_at', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T09:30:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toBe(entry);
+    expect(out._clamped).toBeUndefined();
+  });
+
+  it('returns a NEW object when inversion detected (does not mutate input)', () => {
+    const entry = {
+      session_id: 'inv-1',
+      started_at: '2026-04-24T10:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+    };
+    const snapshot = JSON.parse(JSON.stringify(entry));
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).not.toBe(entry);
+    // Original input unmodified
+    expect(entry).toEqual(snapshot);
+    expect(entry._clamped).toBeUndefined();
+    expect(entry.completed_at).toBe('2026-04-24T09:00:00Z');
+  });
+
+  it('clamps completed_at to equal started_at on inversion', () => {
+    const entry = {
+      session_id: 'inv-2',
+      started_at: '2026-04-24T10:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out.completed_at).toBe('2026-04-24T10:00:00Z');
+    expect(out.completed_at).toBe(out.started_at);
+  });
+
+  it('sets _clamped: true on the clamped record', () => {
+    const entry = {
+      session_id: 'inv-3',
+      started_at: '2026-04-24T10:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out._clamped).toBe(true);
+  });
+
+  it('preserves _original_completed_at with the original value', () => {
+    const original = '2026-04-24T09:00:00Z';
+    const entry = {
+      session_id: 'inv-4',
+      started_at: '2026-04-24T10:00:00Z',
+      completed_at: original,
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out._original_completed_at).toBe(original);
+  });
+
+  it('1h inversion: deterministic clamp result (started_at preserved, completed_at = started_at)', () => {
+    const entry = {
+      session_id: 'inv-1h',
+      started_at: '2026-04-24T11:00:00Z',
+      completed_at: '2026-04-24T10:00:00Z',
+    };
+    const out = clampTimestampsMonotonic(entry);
+    expect(out).toEqual({
+      session_id: 'inv-1h',
+      started_at: '2026-04-24T11:00:00Z',
+      completed_at: '2026-04-24T11:00:00Z',
+      _clamped: true,
+      _original_completed_at: '2026-04-24T10:00:00Z',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #321 — aliasLegacyEndedAt (pre-validation repair)
+// ---------------------------------------------------------------------------
+
+describe('aliasLegacyEndedAt (#321)', () => {
+  it('returns input unchanged when neither completed_at nor ended_at present', () => {
+    const entry = { session_id: 's', started_at: '2026-04-24T08:00:00Z' };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out).toBe(entry);
+  });
+
+  it('returns input unchanged on non-object input (null / string / array)', () => {
+    expect(aliasLegacyEndedAt(null)).toBe(null);
+    expect(aliasLegacyEndedAt('nope')).toBe('nope');
+    const arr = [];
+    expect(aliasLegacyEndedAt(arr)).toBe(arr);
+  });
+
+  it('aliases ended_at -> completed_at when only ended_at present', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      ended_at: '2026-04-24T09:00:00Z',
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out).not.toBe(entry);
+    expect(out.completed_at).toBe('2026-04-24T09:00:00Z');
+    expect(out.ended_at).toBe('2026-04-24T09:00:00Z');
+    expect(out._completed_at_conflict).toBeUndefined();
+  });
+
+  it('prefers completed_at and tags _completed_at_conflict when both present and differ', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+      ended_at: '2026-04-24T09:30:00Z',
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out).not.toBe(entry);
+    expect(out.completed_at).toBe('2026-04-24T09:00:00Z'); // preferred
+    expect(out.ended_at).toBe('2026-04-24T09:30:00Z'); // preserved
+    expect(out._completed_at_conflict).toBe(true);
+  });
+
+  it('leaves both unchanged + no conflict tag when both present and equal', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+      ended_at: '2026-04-24T09:00:00Z',
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out.completed_at).toBe('2026-04-24T09:00:00Z');
+    expect(out.ended_at).toBe('2026-04-24T09:00:00Z');
+    expect(out._completed_at_conflict).toBeUndefined();
+  });
+
+  it('drops duration_ms once both started_at and completed_at end up present (alias path)', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      ended_at: '2026-04-24T09:00:00Z',
+      duration_ms: 3600000,
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out.completed_at).toBe('2026-04-24T09:00:00Z');
+    expect('duration_ms' in out).toBe(false);
+  });
+
+  it('drops duration_ms when completed_at already canonical and started_at present', () => {
+    const entry = {
+      session_id: 's',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+      ended_at: '2026-04-24T09:00:00Z',
+      duration_ms: 3600000,
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect('duration_ms' in out).toBe(false);
+  });
+
+  it('leaves duration_ms intact when started_at is absent', () => {
+    const entry = {
+      session_id: 's',
+      ended_at: '2026-04-24T09:00:00Z',
+      duration_ms: 3600000,
+    };
+    const out = aliasLegacyEndedAt(entry);
+    expect(out.completed_at).toBe('2026-04-24T09:00:00Z');
+    expect(out.duration_ms).toBe(3600000);
   });
 });

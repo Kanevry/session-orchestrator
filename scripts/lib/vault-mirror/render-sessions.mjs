@@ -9,6 +9,16 @@ import { toDate } from './utils.mjs';
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
 /**
+ * Frontmatter line emitter — skips emission when value is null/undefined/empty
+ * to avoid template-literal coercion bugs (e.g. `platform: undefined` → "undefined").
+ * Returns the formatted line with trailing newline, or empty string to skip.
+ */
+function fmLine(key, value) {
+  if (value === null || value === undefined || value === '') return '';
+  return `${key}: ${value}\n`;
+}
+
+/**
  * Session JSONL has two producer schemas in production:
  *   v1 (legacy): total_waves, total_agents, total_files_changed, agent_summary, waves[{agent_count, files_changed, quality}]
  *   v2 (S69+):   files_changed (top-level), waves[{agents, agents_done, agents_partial, agents_failed, dispatch, duration_s}]
@@ -18,7 +28,7 @@ export function detectSessionSchema(entry) {
   return entry && entry.total_agents === undefined && entry.files_changed !== undefined ? 'v2' : 'v1';
 }
 
-export function generateSessionNote(entry) {
+export function generateSessionNote(entry, options = {}) {
   const REQUIRED_SESSION_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'total_waves', 'total_agents', 'total_files_changed', 'agent_summary', 'waves', 'effectiveness'];
   for (const field of REQUIRED_SESSION_FIELDS) {
     if (entry[field] === null || entry[field] === undefined) {
@@ -72,6 +82,13 @@ export function generateSessionNote(entry) {
     )
     .join('\n');
 
+  // Skip-emit guard: avoid `platform: undefined` literal coercion (issue #343).
+  const platformBullet = (platform === null || platform === undefined || platform === '')
+    ? ''
+    : ` · **Platform:** ${platform}`;
+
+  const { repo } = options;
+
   return `---
 id: ${session_id}
 type: session
@@ -80,12 +97,12 @@ status: verified
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-_generator: ${GENERATOR_MARKER}
+${fmLine('repo', repo)}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
 
-- **Type:** ${session_type} · **Platform:** ${platform}
+- **Type:** ${session_type}${platformBullet}
 - **Duration:** ${durationMin}m (${started_at} → ${completed_at})
 - **Waves:** ${total_waves} · **Agents:** ${total_agents} · **Files changed:** ${total_files_changed}
 - **Effectiveness:** planned=${planned_issues}, completed=${completed}, carryover=${carryover}, emergent=${emergent}, rate=${ratePercent}
@@ -102,7 +119,7 @@ ${waveRows}
 `;
 }
 
-export function generateSessionNoteV2(entry) {
+export function generateSessionNoteV2(entry, options = {}) {
   const REQUIRED_SESSION_V2_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'waves', 'files_changed', 'effectiveness'];
   for (const field of REQUIRED_SESSION_V2_FIELDS) {
     if (entry[field] === null || entry[field] === undefined) {
@@ -147,6 +164,8 @@ export function generateSessionNoteV2(entry) {
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
   const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
 
+  const { repo } = options;
+
   return `---
 id: ${session_id}
 type: session
@@ -155,7 +174,7 @@ status: verified
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-_generator: ${GENERATOR_MARKER}
+${fmLine('repo', repo)}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}

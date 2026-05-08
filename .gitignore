@@ -30,6 +30,8 @@ Thumbs.db
 # Per-project session metrics (local-only observability data)
 .orchestrator/metrics/*.jsonl
 .orchestrator/metrics/*.jsonl.bak-*
+.orchestrator/metrics/*.jsonl.bak.*
+.orchestrator/metrics/*.jsonl.archive-*
 
 # Vitest coverage artifacts (#263)
 coverage/

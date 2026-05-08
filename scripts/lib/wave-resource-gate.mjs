@@ -14,56 +14,50 @@ import { probe } from './resource-probe.mjs';
 // ---------------------------------------------------------------------------
 
 /**
- * Evaluate whether the wave can be dispatched at the planned agent count.
- * @param {object} opts
- * @param {object} opts.config - Parsed Session Config (from parse-config.sh output)
- * @param {number} opts.plannedAgents - Number of agents the session-plan wants to dispatch
- * @param {string} opts.waveRole - e.g. "Impl-Core", "Quality"
- * @param {object} [opts.probeOverride] - {ramFreeGb, cpuLoadPct, concurrentSessions} for
- *   testing; when omitted, calls resource-probe
- * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct", agents: number, reasons: string[], measurements: object}>}
+ * Extract resource measurements either from a test override or by calling
+ * the live resource probe. Returns either a measurements object or a sentinel
+ * `{ probeFailed: true }` indicating the caller should short-circuit with a
+ * "proceed" decision.
+ *
+ * @param {object} opts - Same opts shape as evaluateWaveResourceGate
+ * @returns {Promise<{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number} | {probeFailed: true}>}
  */
-export async function evaluateWaveResourceGate(opts) {
-  const { config, plannedAgents, probeOverride } = opts;
+async function extractMeasurements(opts) {
+  const { probeOverride } = opts;
 
-  // Rule 1: resource-awareness disabled — skip all probing.
-  if (config['resource-awareness'] === false) {
+  if (probeOverride !== undefined && probeOverride !== null) {
     return {
-      decision: 'proceed',
-      agents: plannedAgents,
-      reasons: ['resource-awareness disabled in Session Config'],
-      measurements: {},
+      ramFreeGb: probeOverride.ramFreeGb,
+      cpuLoadPct: probeOverride.cpuLoadPct,
+      concurrentSessions: probeOverride.concurrentSessions,
     };
   }
 
-  // Rule 2: probe the system (or use override for tests).
-  let ramFreeGb;
-  let cpuLoadPct;
-  let concurrentSessions;
-
-  if (probeOverride !== undefined && probeOverride !== null) {
-    ramFreeGb = probeOverride.ramFreeGb;
-    cpuLoadPct = probeOverride.cpuLoadPct;
-    concurrentSessions = probeOverride.concurrentSessions;
-  } else {
-    let snapshot;
-    try {
-      snapshot = await probe({ skipProcessCounts: false });
-    } catch {
-      return {
-        decision: 'proceed',
-        agents: plannedAgents,
-        reasons: ['probe failed (ignored)'],
-        measurements: {},
-      };
-    }
-    ramFreeGb = snapshot.ram_free_gb;
-    cpuLoadPct = snapshot.cpu_load_pct;
-    // concurrent sessions: number of claude processes found by the probe.
-    concurrentSessions = snapshot.claude_processes_count ?? 0;
+  let snapshot;
+  try {
+    snapshot = await probe({ skipProcessCounts: false });
+  } catch {
+    return { probeFailed: true };
   }
+  return {
+    ramFreeGb: snapshot.ram_free_gb,
+    cpuLoadPct: snapshot.cpu_load_pct,
+    // concurrent sessions: number of claude processes found by the probe.
+    concurrentSessions: snapshot.claude_processes_count ?? 0,
+  };
+}
 
-  const measurements = { ramFreeGb, cpuLoadPct, concurrentSessions };
+/**
+ * Apply the gate decision rule sequence (rules 3-8) given measurements and
+ * config. Returns the full gate result.
+ *
+ * @param {{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number}} measurements
+ * @param {object} opts - Same opts shape as evaluateWaveResourceGate
+ * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
+ */
+function applyDecisionRules(measurements, opts) {
+  const { config, plannedAgents } = opts;
+  const { ramFreeGb, cpuLoadPct, concurrentSessions } = measurements;
   const T = config['resource-thresholds'];
 
   // Rule 3: resource-thresholds missing → degrade to proceed (defensive).
@@ -131,6 +125,44 @@ export async function evaluateWaveResourceGate(opts) {
     reasons: ['all thresholds within bounds'],
     measurements,
   };
+}
+
+/**
+ * Evaluate whether the wave can be dispatched at the planned agent count.
+ * @param {object} opts
+ * @param {object} opts.config - Parsed Session Config (from parse-config.sh output)
+ * @param {number} opts.plannedAgents - Number of agents the session-plan wants to dispatch
+ * @param {string} opts.waveRole - e.g. "Impl-Core", "Quality"
+ * @param {object} [opts.probeOverride] - {ramFreeGb, cpuLoadPct, concurrentSessions} for
+ *   testing; when omitted, calls resource-probe
+ * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct", agents: number, reasons: string[], measurements: object}>}
+ */
+export async function evaluateWaveResourceGate(opts) {
+  const { config, plannedAgents } = opts;
+
+  // Rule 1: resource-awareness disabled — skip all probing.
+  if (config['resource-awareness'] === false) {
+    return {
+      decision: 'proceed',
+      agents: plannedAgents,
+      reasons: ['resource-awareness disabled in Session Config'],
+      measurements: {},
+    };
+  }
+
+  // Rule 2: probe the system (or use override for tests).
+  const measured = await extractMeasurements(opts);
+  if ('probeFailed' in measured) {
+    return {
+      decision: 'proceed',
+      agents: plannedAgents,
+      reasons: ['probe failed (ignored)'],
+      measurements: {},
+    };
+  }
+
+  // Rules 3-8: apply decision rule sequence.
+  return applyDecisionRules(measured, opts);
 }
 
 /**
