@@ -68,10 +68,10 @@ describe('selectMode — scaffold contract', () => {
       { recommendedMode: 'garbage' },
     ];
 
-    it('every return has exactly 4 keys: alternatives, confidence, mode, rationale', () => {
+    it('every return has exactly 5 keys: alternatives, confidence, context_pressure, mode, rationale', () => {
       for (const input of cases) {
         const r = selectMode(input);
-        expect(Object.keys(r).sort()).toEqual(['alternatives', 'confidence', 'mode', 'rationale']);
+        expect(Object.keys(r).sort()).toEqual(['alternatives', 'confidence', 'context_pressure', 'mode', 'rationale']);
       }
     });
 

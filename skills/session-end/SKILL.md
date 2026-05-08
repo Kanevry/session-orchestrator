@@ -327,6 +327,26 @@ Calls `computeV0Recommendation({completionRate, carryoverRatio, carryoverIssues}
 
 **See `phase-3-7a-recommendations.md` for full details.**
 
+## Phase 3.8: Session Lock Release (#330)
+
+> Gate: Only run if `persistence` is `true` in Session Config. Skip silently otherwise.
+
+After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendations are written (Phase 3.7a), release the distributed session-lock so the next session can acquire it cleanly:
+
+```javascript
+import { release } from 'scripts/lib/session-lock.mjs';
+const result = release({ sessionId, repoRoot: process.cwd() });
+// result.ok is always true unless a filesystem error occurred.
+// result.deleted === true  → lock file removed successfully.
+// result.deleted === false → lock was absent or belonged to a different session_id (silent-OK).
+```
+
+If `result.deleted === false`, log `info: session-lock not released — already absent or session_id mismatch (no action needed)` and continue. This is a non-error state.
+
+If `result.ok === false` (rare filesystem error), log `⚠ session-lock: release failed — <result.reason>` and continue. Do NOT block the close for a lock-release failure — the TTL provides automatic expiry for the next session.
+
+The lock is released here — AFTER all STATE.md writes are complete and BEFORE the commit is staged in Phase 4.1. This ordering ensures a clean handover: the lock file is absent from the working tree when the commit is assembled, so it is not accidentally staged.
+
 ## Phase 4: Commit & Push
 
 ### 4.1 Stage Changes
@@ -463,6 +483,7 @@ Present to the user:
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |
+| (inline) Phase 3.8 | Session Lock Release — `release()` call, silent-OK on mismatch/absent, non-fatal on fs-error, ordering note (after STATE.md writes, before Phase 4 commit staging) |
 
 ## Anti-Patterns
 

@@ -55,6 +55,21 @@ const TIER_MODE_MAP = {
  * @property {object[]|null} [backlog] - Reserved for Phase B-3.
  * @property {BootstrapLock|null} [bootstrapLock] - Bootstrap lock tier info.
  * @property {object|null} [vaultStaleness] - Reserved.
+ * @property {string|null} [taskDescriptionText] - Joined PRD/issue body text for keyword scan (context-pressure #332).
+ */
+
+/**
+ * @typedef {Object} ContextPressureComponents
+ * @property {number} scope - Scope component contribution (0.0–0.5).
+ * @property {number} keywords - Cross-cutting keyword component contribution (0 or 0.25).
+ * @property {number} carryover - Carryover component contribution (0.0–0.25).
+ */
+
+/**
+ * @typedef {Object} ContextPressureResult
+ * @property {number} score - Aggregate pressure score 0.0–1.0.
+ * @property {ContextPressureComponents} components - Per-component breakdown.
+ * @property {'low'|'medium'|'high'} level - Bucketed level from score.
  */
 
 /**
@@ -63,6 +78,7 @@ const TIER_MODE_MAP = {
  * @property {string} rationale - Single-line, ≤120 chars.
  * @property {number} confidence - 0.0 (pure fallback) to 1.0 (high confidence).
  * @property {Array<{mode: string, confidence: number}>} alternatives - 0-3 entries; may be empty.
+ * @property {ContextPressureResult} context_pressure - Context-pressure signal (#332).
  */
 
 // ---------------------------------------------------------------------------
@@ -99,6 +115,17 @@ function safeArray(v) {
 }
 
 /**
+ * Return signals.bootstrapLock when it is a non-null object, otherwise null.
+ * @param {Signals} signals
+ * @returns {object|null}
+ */
+function safeBootstrapLock(signals) {
+  return (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
+    ? signals.bootstrapLock
+    : null;
+}
+
+/**
  * Return true if any "active signal" field is non-trivially present.
  * Used to decide whether alternatives should be computed (branch 3).
  *
@@ -117,8 +144,7 @@ function safeArray(v) {
 function hasActiveSignals(signals) {
   const ls = safeArray(signals.learnings);
   const rs = safeArray(signals.recentSessions);
-  const bl = signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object';
-  return ls.length > 0 || rs.length > 0 || bl;
+  return ls.length > 0 || rs.length > 0 || safeBootstrapLock(signals) !== null;
 }
 
 /**
@@ -132,9 +158,7 @@ function hasActiveSignals(signals) {
 function computeDelta(candidateMode, signals) {
   const recentSessions = safeArray(signals.recentSessions);
   const learnings = safeArray(signals.learnings);
-  const bootstrapLock = (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
-    ? signals.bootstrapLock
-    : null;
+  const bootstrapLock = safeBootstrapLock(signals);
 
   // --- Recent-sessions trend bonus (max +0.15) ---
   let trendBonus = 0;
@@ -219,7 +243,33 @@ function computeDelta(candidateMode, signals) {
     penalty += 0.10;
   }
 
-  return trendBonus + tierBonus + learningsBonus - penalty;
+  // --- Context-pressure modulation (#332) ---
+  // Pure additive delta on top of existing signal modulation.
+  // Only applies when at least one context-pressure input is explicitly present
+  // (topPriorities supplied, taskDescriptionText supplied, or sessions have
+  // effectiveness data). When all inputs are absent, pressure is undefined →
+  // treat as neutral (no adjustment). This preserves backward-compatibility for
+  // callers that do not yet supply the new pressure-specific signal fields.
+  const hasPressureInputs =
+    (signals.topPriorities !== null && signals.topPriorities !== undefined) ||
+    (typeof signals.taskDescriptionText === 'string' && signals.taskDescriptionText.length > 0) ||
+    safeArray(signals.recentSessions).some(
+      (s) => s !== null && typeof s === 'object' && typeof s.effectiveness === 'object' && s.effectiveness !== null,
+    );
+
+  let pressureDelta = 0;
+  if (hasPressureInputs) {
+    const pressure = computeContextPressure(signals);
+    if (pressure.level === 'high') {
+      if (candidateMode === 'feature') pressureDelta = -0.15;
+      else if (candidateMode === 'housekeeping') pressureDelta = -0.10;
+    } else if (pressure.level === 'low') {
+      if (candidateMode === 'feature') pressureDelta = +0.05;
+    }
+    // level === 'medium': no adjustment
+  }
+
+  return trendBonus + tierBonus + learningsBonus - penalty + pressureDelta;
 }
 
 /**
@@ -271,10 +321,8 @@ function buildAlternatives(chosenMode, signals) {
 function buildPassthroughRationale(mode, confidence, signals) {
   const recentSessions = safeArray(signals.recentSessions);
   const last3 = recentSessions.slice(-3);
-  const bootstrapLock = (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
-    ? signals.bootstrapLock
-    : null;
-  const tier = bootstrapLock ? (typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null) : null;
+  const bootstrapLock = safeBootstrapLock(signals);
+  const tier = bootstrapLock && typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
 
   const hasTrend = last3.length >= 3 &&
     last3.every((s) => typeof s === 'object' && s !== null && s.session_type === mode);
@@ -296,6 +344,101 @@ function buildPassthroughRationale(mode, confidence, signals) {
 
   // Clamp to 120 chars (safety net)
   return rationale.slice(0, 120);
+}
+
+// ---------------------------------------------------------------------------
+// Context-pressure signal (#332)
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex for cross-cutting keyword detection in task description text.
+ * Matches phrases that indicate large, scope-spanning work.
+ */
+const CROSS_CUTTING_PATTERN =
+  /across all|every (skill|agent|repo)|repo-?wide|cross-cutting|rename across|massive refactor/i;
+
+/**
+ * Compute context-pressure score (0.0–1.0) for the proposed work.
+ * High pressure → recommend deferring scope or preferring deep mode over feature.
+ *
+ * Inputs (read from signals):
+ *   - signals.topPriorities: number[]|undefined — count used as proxy for scope
+ *   - signals.recentSessions: array — tail-5 used to derive carryover_ratio from
+ *       session.effectiveness.carryover / session.effectiveness.planned_issues
+ *   - signals.taskDescriptionText: string|undefined — joined PRD/issue body for keyword scan
+ *
+ * Score components (additive, clamped to [0, 1]):
+ *   - scope:    min(0.5, max(0, (priorityCount - 3) / 10))
+ *   - keywords: +0.25 if CROSS_CUTTING_PATTERN matches taskDescriptionText
+ *   - carryover: min(0.25, max(0, carryoverRatio - 0.3))
+ *
+ * Returns level buckets: score < 0.3 → 'low'; 0.3–0.7 → 'medium'; ≥ 0.7 → 'high'.
+ *
+ * Pure function: no I/O, no side effects. Missing/invalid fields → 0 contribution.
+ *
+ * @param {Signals & { taskDescriptionText?: string|null }} signals
+ * @returns {ContextPressureResult}
+ */
+export function computeContextPressure(signals) {
+  // --- Scope component ---
+  const priorities = safeArray(signals?.topPriorities);
+  const priorityCount = priorities.length;
+  const scopeComponent = clamp((priorityCount - 3) / 10, 0, 0.5);
+
+  // --- Cross-cutting keywords component ---
+  const text = typeof signals?.taskDescriptionText === 'string' ? signals.taskDescriptionText : '';
+  const keywordsComponent = text.length > 0 && CROSS_CUTTING_PATTERN.test(text) ? 0.25 : 0;
+
+  // --- Carryover component ---
+  // Derive carryover ratio from tail-5 recent sessions using
+  // effectiveness.carryover / effectiveness.planned_issues (sessions.jsonl schema).
+  // Falls back gracefully when fields are absent (contributes 0).
+  const recentSessions = safeArray(signals?.recentSessions);
+  const last5 = recentSessions.slice(-5);
+  let derivedCarryoverRatio = 0;
+  if (last5.length > 0) {
+    let validCount = 0;
+    let ratioSum = 0;
+    for (const session of last5) {
+      if (session === null || typeof session !== 'object') continue;
+      const eff = session.effectiveness;
+      if (eff === null || typeof eff !== 'object') continue;
+      const carryover =
+        typeof eff.carryover === 'number' && !Number.isNaN(eff.carryover) ? eff.carryover : null;
+      const planned =
+        typeof eff.planned_issues === 'number' &&
+        !Number.isNaN(eff.planned_issues) &&
+        eff.planned_issues > 0
+          ? eff.planned_issues
+          : null;
+      if (carryover !== null && planned !== null) {
+        ratioSum += carryover / planned;
+        validCount++;
+      }
+    }
+    if (validCount > 0) {
+      derivedCarryoverRatio = ratioSum / validCount;
+    }
+  }
+  const carryoverComponent = clamp(derivedCarryoverRatio - 0.3, 0, 0.25);
+
+  const score = round2(clamp(scopeComponent + keywordsComponent + carryoverComponent, 0, 1));
+
+  /** @type {'low'|'medium'|'high'} */
+  let level;
+  if (score < 0.3) level = 'low';
+  else if (score < 0.7) level = 'medium';
+  else level = 'high';
+
+  return {
+    score,
+    components: {
+      scope: round2(scopeComponent),
+      keywords: round2(keywordsComponent),
+      carryover: round2(carryoverComponent),
+    },
+    level,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +471,7 @@ export function selectMode(signals) {
       rationale: 'scaffold: null signals → default',
       confidence: 0.0,
       alternatives: [],
+      context_pressure: computeContextPressure({}),
     };
   }
 
@@ -351,6 +495,7 @@ export function selectMode(signals) {
         { mode: 'feature', confidence: 0.3 },
         { mode: 'discovery', confidence: 0.25 },
       ],
+      context_pressure: computeContextPressure(signals),
     };
   }
 
@@ -365,6 +510,7 @@ export function selectMode(signals) {
         { mode: 'feature', confidence: 0.3 },
         { mode: 'plan-retro', confidence: 0.2 },
       ],
+      context_pressure: computeContextPressure(signals),
     };
   }
 
@@ -373,7 +519,15 @@ export function selectMode(signals) {
   if (typeof m === 'string' && isValidMode(m)) {
     const delta = computeDelta(m, signals);
     const confidence = round2(clamp(0.5 + delta, 0.0, 0.9));
-    const rationale = buildPassthroughRationale(m, confidence, signals);
+    const pressure = computeContextPressure(signals);
+    let rationale = buildPassthroughRationale(m, confidence, signals);
+
+    // Annotate rationale with pressure level when non-trivial (≤120 char limit).
+    if (pressure.level !== 'low') {
+      const pressureAnnotation = `; pressure:${pressure.level}(${pressure.score})`;
+      rationale = (rationale + pressureAnnotation).slice(0, 120);
+    }
+
     const alternatives = buildAlternatives(m, signals);
 
     // Global-max swap (#299): the primary recommendation must be the
@@ -393,6 +547,7 @@ export function selectMode(signals) {
         rationale: `global-max swap: ${promoted.mode} (${promoted.confidence}) outranked passthrough ${m} (${confidence})`.slice(0, 120),
         confidence: promoted.confidence,
         alternatives: reranked,
+        context_pressure: pressure,
       };
     }
 
@@ -401,6 +556,7 @@ export function selectMode(signals) {
       rationale,
       confidence,
       alternatives,
+      context_pressure: pressure,
     };
   }
 
@@ -410,5 +566,6 @@ export function selectMode(signals) {
     rationale: 'missing/invalid recommendedMode → default',
     confidence: 0.0,
     alternatives: [],
+    context_pressure: computeContextPressure(signals),
   };
 }

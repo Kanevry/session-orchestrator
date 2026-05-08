@@ -251,6 +251,51 @@ The schema block in `validator.mjs` is delimited by:
 | `2` | Source or target file not found. |
 | `3` | Malformed sentinels (BEGIN/END markers missing or out of order in `validator.mjs`). |
 
+## Modes (#327)
+
+The validator supports three operating modes via `--mode=<value>`. Default is `hard` (legacy enforcement).
+
+| Mode | Purpose | Exit code |
+|---|---|---|
+| `baseline` | Snapshot current errors+warnings into `<vault-dir>/.orchestrator/metrics/vault-sync-baseline.json` with schema-hash header | 0 |
+| `diff` | Show only NEW errors since baseline. Schema-hash mismatch falls back to full enforcement with WARN. | 0 if `new_errors === []`, 1 otherwise |
+| `full` | Legacy enforcement (same as `hard`). Reports all errors. | 0 if no errors, 1 otherwise |
+| `hard` | Alias of `full` (backward-compat). | as above |
+| `warn` | Reports errors but always exits 0. | 0 |
+| `off` | Skip validation entirely. | 0 |
+
+### Baseline file shape
+
+```json
+{
+  "schema_hash": "a1b2c3d4",
+  "generated_at": "2026-05-08T05:30:00Z",
+  "vault_dir": "/Users/.../vault",
+  "error_count": 12,
+  "warning_count": 3,
+  "errors": [...],
+  "warnings": [...]
+}
+```
+
+### Diff output (stdout, mode=diff)
+
+```json
+{
+  "new_errors": [...],
+  "resolved_errors": [...],
+  "baseline_count": 12,
+  "current_count": 14,
+  "schema_hash": "a1b2c3d4"
+}
+```
+
+### Schema-hash mismatch
+
+When the vendored zod schema in `validator.mjs` changes, the schema-hash in the baseline file won't match. The validator emits `WARN: baseline outdated (hash=<old>, current=<new>) — please re-snapshot via --mode=baseline` to stderr and falls back to full enforcement. Re-run `--mode=baseline` once to refresh.
+
+> **Inter-wave integration:** the wave-executor Quality-Lite checkpoint prefers `--mode=diff` once a baseline exists, surfacing only regressions introduced by that wave. See `skills/wave-executor/SKILL.md` § Vault-Sync Diff Reporting (#327).
+
 ## References
 
 - `<project>/scripts/vault/validate.ts` -- reference implementation of the validator (Layer A/C entry point)

@@ -312,6 +312,32 @@ After the Finalization wave completes successfully:
 2. If `persistence: true`, suggest invoking `/close` to finalize the session. If `persistence: false`, note that the session is complete (no STATE.md to close — session-end would be a no-op).
 3. Do NOT auto-commit — `/close` handles that with proper verification
 
+## Vault-Sync Diff Reporting (#327)
+
+When the inter-wave Quality-Lite checkpoint invokes vault-sync, it should prefer `--mode=diff` over full enforcement so the coordinator sees only regressions introduced by the current wave — not pre-existing issues that were already present at session start.
+
+**Preferred checkpoint invocation (once a baseline exists):**
+
+```bash
+VAULT_DIR=<vault-dir> bash skills/vault-sync/validator.sh --mode diff
+```
+
+The diff JSON block (`{ new_errors, resolved_errors, baseline_count, current_count, schema_hash }`) is emitted to stdout. The coordinator parses it and surfaces a compact summary in the inter-wave checkpoint output. Focus on `new_errors` only — `resolved_errors` are informational.
+
+**First-run bootstrap:** if no baseline file exists at `<vault-dir>/.orchestrator/metrics/vault-sync-baseline.json`, the coordinator runs `--mode=baseline` once before the next wave starts, then switches to `--mode=diff` for all subsequent checkpoints.
+
+**Schema migration:** when the vendored schema in `validator.mjs` changes, the schema-hash in the existing baseline won't match. The validator falls back to full enforcement and emits a WARN to stderr. The coordinator must re-run `--mode=baseline` manually before resuming diff-mode checkpoints.
+
+**Configuration:** diff-mode is enabled by default once a baseline exists. To force full enforcement at any checkpoint, set `vault-sync.mode: full` in Session Config or pass `--mode full` explicitly.
+
+> **Cross-reference:** baseline file shape, diff output schema, and schema-hash mismatch handling are documented in `skills/vault-sync/SKILL.md` § Modes (#327).
+
+## Frontmatter-Guard (#328)
+
+When an agent's task scope includes vault paths (`~/Projects/vault/` or vault subdirectories such as `40-learnings/`, `50-sessions/`, `03-daily/`, `01-projects/`), the wave-executor injects a deterministic frontmatter-schema snippet into the agent's prompt. This eliminates the recurring failure class where agents guess at enum values for `type`, `status`, or `tags`.
+
+See `wave-loop.md` § Pre-Dispatch: Frontmatter-Guard Injection for the exact contract. The snippet generator is `scripts/lib/frontmatter-guard.mjs` (skill: `skills/frontmatter-guard/`).
+
 ## Anti-Patterns
 
 - **NEVER** run `run_in_background: true` during waves — you lose coordination ability

@@ -35,9 +35,16 @@
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
+import {
+  computeSchemaHash,
+  writeBaseline,
+  readBaseline,
+  diffBaseline,
+} from '../../scripts/lib/vault-sync-baseline.mjs';
 
 // ── Inline vendored schema (mirrors projects-baseline vault-frontmatter.ts) ──
 // ── BEGIN GENERATED SCHEMA (sync-vault-schema.mjs) — do not edit between sentinels ──
@@ -101,11 +108,38 @@ const vaultFrontmatterSchema = z
   .passthrough();
 // ── END GENERATED SCHEMA ──
 
+// ── Schema hash (module-scope cached) ───────────────────────────────────────
+// Extract the vendored schema text between the BEGIN/END sentinels in this
+// file's own source and compute a stable 8-char SHA-256 prefix. Used by
+// --mode=baseline (to stamp snapshots) and --mode=diff (to detect schema drift
+// between a stored baseline and the current validator revision).
+const _schemaHash = (() => {
+  try {
+    const selfPath = fileURLToPath(import.meta.url);
+    const src = readFileSync(selfPath, 'utf8');
+    const begin = '── BEGIN GENERATED SCHEMA';
+    const end = '── END GENERATED SCHEMA ──';
+    const beginIdx = src.indexOf(begin);
+    const endIdx = src.indexOf(end);
+    if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return 'unknown';
+    const schemaBlock = src.slice(beginIdx, endIdx + end.length);
+    return computeSchemaHash(schemaBlock);
+  } catch {
+    return 'unknown';
+  }
+})();
+
 // ── CLI args ────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const checkExpires = args.includes('--check-expires');
 
-// Parse --mode <hard|warn|off> (default: hard)
+// Parse --mode <hard|warn|off|baseline|diff|full> (default: hard)
+//   hard      — legacy alias; identical to full enforcement
+//   full      — enforce: exit 1 on errors
+//   warn      — report but exit 0
+//   off       — skip entirely
+//   baseline  — write snapshot then exit 0
+//   diff      — compare against snapshot, emit JSON diff
 // Parse --exclude <glob> (repeatable)
 let mode = 'hard';
 const excludePatterns = [];
@@ -144,22 +178,22 @@ for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--mode') {
     const v = args[i + 1];
-    if (v === 'hard' || v === 'warn' || v === 'off') {
+    if (v === 'hard' || v === 'warn' || v === 'off' || v === 'baseline' || v === 'diff' || v === 'full') {
       mode = v;
     } else {
       process.stderr.write(
-        `validator.mjs: invalid --mode value "${v}" (expected hard|warn|off)\n`,
+        `validator.mjs: invalid --mode value "${v}" (expected hard|warn|off|baseline|diff|full)\n`,
       );
       process.exit(2);
     }
     i++;
   } else if (a.startsWith('--mode=')) {
     const v = a.slice('--mode='.length);
-    if (v === 'hard' || v === 'warn' || v === 'off') {
+    if (v === 'hard' || v === 'warn' || v === 'off' || v === 'baseline' || v === 'diff' || v === 'full') {
       mode = v;
     } else {
       process.stderr.write(
-        `validator.mjs: invalid --mode value "${v}" (expected hard|warn|off)\n`,
+        `validator.mjs: invalid --mode value "${v}" (expected hard|warn|off|baseline|diff|full)\n`,
       );
       process.exit(2);
     }
@@ -478,6 +512,94 @@ for (const file of mdFiles) {
 }
 
 const hasErrors = errors.length > 0;
+
+// ── mode=baseline ─────────────────────────────────────────────────────────
+// Serialize current errors + warnings as a snapshot, then exit 0.
+if (mode === 'baseline') {
+  const baselinePath = join(vaultDir, '.orchestrator', 'metrics', 'vault-sync-baseline.json');
+  writeBaseline(baselinePath, {
+    errors,
+    warnings,
+    schemaHash: _schemaHash,
+    isoTimestamp: new Date().toISOString(),
+    vaultDir,
+  });
+  process.stderr.write(
+    `WRITE: baseline -> ${baselinePath} (${errors.length} errors, ${warnings.length} warnings)\n`,
+  );
+  process.exit(0);
+}
+
+// ── mode=diff ─────────────────────────────────────────────────────────────
+// Read a prior baseline, compute set-differences, emit JSON diff to stdout.
+if (mode === 'diff') {
+  const baselinePath = join(vaultDir, '.orchestrator', 'metrics', 'vault-sync-baseline.json');
+  const baseline = readBaseline(baselinePath);
+
+  if (!baseline) {
+    // No baseline file at all — fall back to full enforcement.
+    process.stderr.write(
+      `WARN: no baseline found at ${baselinePath} — falling back to full enforcement. Run --mode=baseline to create a snapshot.\n`,
+    );
+    const statusFull = hasErrors ? 'invalid' : 'ok';
+    emit({
+      status: statusFull,
+      mode: 'diff-fallback-full',
+      vault_dir: vaultDir,
+      files_checked: filesChecked,
+      excluded_count: excludedCount,
+      files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+      errors,
+      warnings,
+    });
+    process.exit(hasErrors ? 1 : 0);
+  }
+
+  if (baseline.schemaHash !== _schemaHash) {
+    process.stderr.write(
+      `WARN: baseline outdated (hash=${baseline.schemaHash}, current=${_schemaHash}) — please re-snapshot via --mode=baseline\n`,
+    );
+    // Schema drift — fall back to full enforcement.
+    const statusFull = hasErrors ? 'invalid' : 'ok';
+    emit({
+      status: statusFull,
+      mode: 'diff-fallback-full',
+      vault_dir: vaultDir,
+      files_checked: filesChecked,
+      excluded_count: excludedCount,
+      files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+      errors,
+      warnings,
+    });
+    process.exit(hasErrors ? 1 : 0);
+  }
+
+  const errorDiff = diffBaseline({ baselineErrors: baseline.errors, currentErrors: errors });
+  const warningDiff = diffBaseline({ baselineErrors: baseline.warnings, currentErrors: warnings });
+
+  emit({
+    new_errors: errorDiff.newErrors,
+    resolved_errors: errorDiff.resolvedErrors,
+    new_warnings: warningDiff.newErrors,
+    resolved_warnings: warningDiff.resolvedErrors,
+    baseline_count: errorDiff.baselineCount,
+    current_count: errorDiff.currentCount,
+    schema_hash: _schemaHash,
+    vault_dir: vaultDir,
+    files_checked: filesChecked,
+    excluded_count: excludedCount,
+    files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+  });
+
+  process.stderr.write(
+    `baseline=${errorDiff.baselineCount} current=${errorDiff.currentCount} new=${errorDiff.newErrors.length} resolved=${errorDiff.resolvedErrors.length}\n`,
+  );
+
+  process.exit(errorDiff.newErrors.length === 0 ? 0 : 1);
+}
+
+// ── mode=full | hard | warn ───────────────────────────────────────────────
+// 'full' and 'hard' are identical (hard is the legacy alias).
 // In warn mode, errors are reported but the status is "ok" for exit-code purposes.
 // The errors array is still populated so the caller can surface them as warnings.
 const status = hasErrors ? (mode === 'warn' ? 'ok' : 'invalid') : 'ok';
@@ -492,4 +614,4 @@ emit({
   warnings,
 });
 
-process.exit(hasErrors && mode === 'hard' ? 1 : 0);
+process.exit(hasErrors && (mode === 'hard' || mode === 'full') ? 1 : 0);

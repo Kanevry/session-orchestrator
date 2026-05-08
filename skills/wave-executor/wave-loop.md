@@ -246,6 +246,30 @@ The snapshot is stored under `refs/so-snapshots/<sessionId>/wave-<N>-pre-dispatc
 
 See issue #196 for the full rationale. This is complementary to the untracked-overlap check above (#180 is scope-level detection; this is working-tree-level backup).
 
+#### Pre-Dispatch: Frontmatter-Guard Injection (#328)
+
+Before constructing each agent's prompt, decide if the schema snippet must be injected:
+
+1. Compute task vault-scope: `import { detectVaultTaskScope } from 'scripts/lib/frontmatter-guard.mjs'`. Pass the agent's task description + file scope (paths the agent is allowed to write).
+2. **If vault-scoped (returns `true`):**
+   a. Call `readVaultSchema()` from the same module.
+   b. If the schema read returned non-null, call `generateFrontmatterSnippet(schema)` to get a Markdown block.
+   c. Prepend the block to the agent's prompt under a clear separator:
+
+      ```
+      <FRONTMATTER-GUARD>
+      <generated snippet>
+      </FRONTMATTER-GUARD>
+
+      <original prompt>
+      ```
+   d. If `readVaultSchema()` returned `null` (schema source absent), emit stderr WARN `Frontmatter-guard: schema source missing at <path> — agent prompts will not include schema enums`. Continue dispatch without injection (do NOT block).
+3. **If not vault-scoped:** dispatch as today, no injection.
+
+Performance note: `readVaultSchema()` caches by file mtime, so repeated calls within a wave are free. The schema read happens at most once per wave-executor run.
+
+Behaviour change: agents writing vault notes now receive the canonical schema enums + per-type examples directly in their prompt context. This eliminates the agent-guessing failure class documented in #328.
+
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
 When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.

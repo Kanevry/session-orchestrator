@@ -18,4 +18,6 @@ If the pre-check passes, invoke the session-end skill.
 
 Verify ALL planned work, create issues for gaps, commit cleanly, and mirror if configured.
 
+- Releases the distributed session-lock (`.orchestrator/session.lock`) before the Phase 4 commit is staged. See `skills/session-end/SKILL.md` § Phase 3.8: Session Lock Release (#330).
+
 Do NOT skip any verification step. Evidence before assertions.

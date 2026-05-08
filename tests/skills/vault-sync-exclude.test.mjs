@@ -60,7 +60,7 @@ afterEach(() => {
  */
 function runValidator(vaultDir, extraArgs = [], options = {}) {
   const { cwd = vaultDir, env: extraEnv = {} } = options;
-  let stdout = '';
+  let stdout;
   let stderr = '';
   let exitCode = 0;
   try {
