@@ -1,355 +1,27 @@
 /**
  * Phase B-1 Mode-Selector heuristic v1 (issue #291, Epic #271).
  *
+ * Thin orchestrator — delegates to submodules (W1A2 split, issue #358).
  * Pure function: same inputs → same outputs, zero side effects, no I/O.
- * Consumes Phase A signals (recommendedMode, carryoverRatio, completionRate) plus
- * Phase B signals (learnings, recentSessions, bootstrapLock) to produce a
- * confidence-weighted mode recommendation with ranked alternatives.
+ *
+ * Public API:
+ *   selectMode(signals) → Recommendation
+ *   computeContextPressure  (re-export from context-pressure.mjs)
  */
 
 import { isValidMode } from './recommendations-v0.mjs';
+import { DEFAULT_MODE } from './mode-selector/constants.mjs';
+import { computeDelta, round2 } from './mode-selector/scoring.mjs';
+import { buildAlternatives } from './mode-selector/alternatives.mjs';
+import { buildPassthroughRationale } from './mode-selector/rationale.mjs';
 import { computeContextPressure } from './mode-selector/context-pressure.mjs';
+export { computeContextPressure };
 
-/** @type {'feature'} */
-const DEFAULT_MODE = 'feature';
-
-/** All valid mode values — mirrors VALID_MODES in recommendations-v0.mjs. */
-const ALL_MODES = ['housekeeping', 'feature', 'deep', 'discovery', 'evolve', 'plan-retro'];
-
-/**
- * Bootstrap tier → preferred mode alignment map.
- * @type {Record<string, string>}
- */
-const TIER_MODE_MAP = {
-  fast: 'housekeeping',
-  standard: 'feature',
-  deep: 'deep',
-};
-
-/**
- * @typedef {Object} RecentSession
- * @property {string} [session_type] - Mode used for that session.
- * @property {number} [completion_rate] - 0.0-1.0 completion rate.
- */
-
-/**
- * @typedef {Object} Learning
- * @property {string} [type] - Learning type (e.g. 'effective-sizing', 'scope-guidance').
- * @property {string} [subject] - Subject text for matching.
- * @property {string} [expires_at] - ISO date string.
- */
-
-/**
- * @typedef {Object} BootstrapLock
- * @property {string} [tier] - Bootstrap tier: 'fast' | 'standard' | 'deep'.
- */
-
-/**
- * @typedef {Object} Signals
- * @property {string|null} [recommendedMode] - Phase A `recommended-mode`.
- * @property {Array<number|string>|null} [topPriorities] - Phase A top-priorities (informational).
- * @property {number|null} [carryoverRatio] - Phase A carryover-ratio (0.0-1.0).
- * @property {number|null} [completionRate] - Phase A completion-rate (0.0-1.0).
- * @property {string|null} [previousRationale] - Phase A rationale (informational).
- * @property {Learning[]|null} [learnings] - Active learnings for hints.
- * @property {RecentSession[]|null} [recentSessions] - Recent session history.
- * @property {object[]|null} [backlog] - Reserved for Phase B-3.
- * @property {BootstrapLock|null} [bootstrapLock] - Bootstrap lock tier info.
- * @property {object|null} [vaultStaleness] - Reserved.
- * @property {string|null} [taskDescriptionText] - Joined PRD/issue body text for keyword scan (context-pressure #332).
- */
-
-/**
- * @typedef {Object} ContextPressureComponents
- * @property {number} scope - Scope component contribution (0.0–0.5).
- * @property {number} keywords - Cross-cutting keyword component contribution (0 or 0.25).
- * @property {number} carryover - Carryover component contribution (0.0–0.25).
- */
-
-/**
- * @typedef {Object} ContextPressureResult
- * @property {number} score - Aggregate pressure score 0.0–1.0.
- * @property {ContextPressureComponents} components - Per-component breakdown.
- * @property {'low'|'medium'|'high'} level - Bucketed level from score.
- */
-
-/**
- * @typedef {Object} Recommendation
- * @property {'housekeeping'|'feature'|'deep'|'discovery'|'evolve'|'plan-retro'} mode
- * @property {string} rationale - Single-line, ≤120 chars.
- * @property {number} confidence - 0.0 (pure fallback) to 1.0 (high confidence).
- * @property {Array<{mode: string, confidence: number}>} alternatives - 0-3 entries; may be empty.
- * @property {ContextPressureResult} context_pressure - Context-pressure signal (#332).
- */
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Clamp a number to [min, max].
- * @param {number} v
- * @param {number} min
- * @param {number} max
- * @returns {number}
- */
+// clamp inlined — used only in selectMode; avoids importing scoring helpers
+// for a single expression.
 function clamp(v, min, max) {
   return Math.min(max, Math.max(min, v));
 }
-
-/**
- * Round to 2 decimal places (avoids floating-point drift in comparisons).
- * @param {number} v
- * @returns {number}
- */
-function round2(v) {
-  return Math.round(v * 100) / 100;
-}
-
-/**
- * Safely coerce to an array (returns [] for non-arrays, null, undefined).
- * @param {unknown} v
- * @returns {any[]}
- */
-function safeArray(v) {
-  return Array.isArray(v) ? v : [];
-}
-
-/**
- * Return signals.bootstrapLock when it is a non-null object, otherwise null.
- * @param {Signals} signals
- * @returns {object|null}
- */
-function safeBootstrapLock(signals) {
-  return (signals.bootstrapLock !== null && typeof signals.bootstrapLock === 'object')
-    ? signals.bootstrapLock
-    : null;
-}
-
-/**
- * Return true if any "active signal" field is non-trivially present.
- * Used to decide whether alternatives should be computed (branch 3).
- *
- * "Non-trivially present" means:
- *   - learnings: non-empty array
- *   - recentSessions: non-empty array
- *   - bootstrapLock: non-null object
- *
- * When no active signals exist, all modes score identically at base 0.5
- * so alternatives carry no information. Return [] to keep the passthrough
- * contract stable (existing tests assert alternatives === [] for bare calls).
- *
- * @param {Signals} signals
- * @returns {boolean}
- */
-function hasActiveSignals(signals) {
-  const ls = safeArray(signals.learnings);
-  const rs = safeArray(signals.recentSessions);
-  return ls.length > 0 || rs.length > 0 || safeBootstrapLock(signals) !== null;
-}
-
-/**
- * Compute the bonus+penalty score delta for a candidate mode given the
- * provided signals. Returns a number in the range (-0.30, +0.35).
- *
- * @param {string} candidateMode
- * @param {Signals} signals
- * @returns {number} delta (positive bonuses − negative penalties)
- */
-function computeDelta(candidateMode, signals) {
-  const recentSessions = safeArray(signals.recentSessions);
-  const learnings = safeArray(signals.learnings);
-  const bootstrapLock = safeBootstrapLock(signals);
-
-  // --- Recent-sessions trend bonus (max +0.15) ---
-  let trendBonus = 0;
-  const last3 = recentSessions.slice(-3);
-  if (last3.length >= 3) {
-    const allMatch = last3.every(
-      (s) => typeof s === 'object' && s !== null && s.session_type === candidateMode,
-    );
-    if (allMatch) {
-      const avgCompletion =
-        last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
-        3;
-      trendBonus = avgCompletion >= 0.9 ? 0.15 : 0.075;
-    }
-  }
-
-  // --- Bootstrap-tier alignment bonus (max +0.10) ---
-  let tierBonus = 0;
-  if (bootstrapLock !== null) {
-    const tier = typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
-    if (tier !== null && TIER_MODE_MAP[tier] === candidateMode) {
-      tierBonus = 0.10;
-    }
-  }
-
-  // --- Learnings-hint bonus (max +0.10) ---
-  let learningsBonus = 0;
-  const HINT_TYPES = new Set(['effective-sizing', 'scope-guidance']);
-  const modeKeyword = candidateMode.toLowerCase();
-  for (const learning of learnings) {
-    if (
-      typeof learning === 'object' &&
-      learning !== null &&
-      typeof learning.type === 'string' &&
-      HINT_TYPES.has(learning.type) &&
-      typeof learning.subject === 'string' &&
-      learning.subject.toLowerCase().includes(modeKeyword)
-    ) {
-      learningsBonus = Math.min(learningsBonus + 0.05, 0.10);
-    }
-  }
-
-  // --- Conflict penalties (max −0.30) ---
-  let penalty = 0;
-
-  // Penalty: recent sessions trend strongly suggests a DIFFERENT mode
-  if (last3.length >= 3) {
-    const otherModes = ALL_MODES.filter((m) => m !== candidateMode);
-    for (const otherMode of otherModes) {
-      const allOther = last3.every(
-        (s) => typeof s === 'object' && s !== null && s.session_type === otherMode,
-      );
-      if (allOther) {
-        const avgCompletion =
-          last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
-          3;
-        if (avgCompletion >= 0.9) {
-          penalty += 0.10;
-          break; // only one other dominant mode possible
-        }
-      }
-    }
-  }
-
-  // Penalty: bootstrap tier maps to a different mode than candidateMode
-  if (bootstrapLock !== null) {
-    const tier = typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
-    if (tier !== null) {
-      const alignedMode = TIER_MODE_MAP[tier];
-      if (alignedMode !== undefined && alignedMode !== candidateMode) {
-        penalty += 0.10;
-      }
-    }
-  }
-
-  // Penalty: high carryover but not in 'deep' mode
-  const carryoverRatio =
-    typeof signals.carryoverRatio === 'number' && !Number.isNaN(signals.carryoverRatio)
-      ? signals.carryoverRatio
-      : null;
-  if (carryoverRatio !== null && carryoverRatio >= 0.2 && candidateMode !== 'deep') {
-    penalty += 0.10;
-  }
-
-  // --- Context-pressure modulation (#332) ---
-  // Pure additive delta on top of existing signal modulation.
-  // Only applies when at least one context-pressure input is explicitly present
-  // (topPriorities supplied, taskDescriptionText supplied, or sessions have
-  // effectiveness data). When all inputs are absent, pressure is undefined →
-  // treat as neutral (no adjustment). This preserves backward-compatibility for
-  // callers that do not yet supply the new pressure-specific signal fields.
-  const hasPressureInputs =
-    (signals.topPriorities !== null && signals.topPriorities !== undefined) ||
-    (typeof signals.taskDescriptionText === 'string' && signals.taskDescriptionText.length > 0) ||
-    safeArray(signals.recentSessions).some(
-      (s) => s !== null && typeof s === 'object' && typeof s.effectiveness === 'object' && s.effectiveness !== null,
-    );
-
-  let pressureDelta = 0;
-  if (hasPressureInputs) {
-    const pressure = computeContextPressure(signals);
-    if (pressure.level === 'high') {
-      if (candidateMode === 'feature') pressureDelta = -0.15;
-      else if (candidateMode === 'housekeeping') pressureDelta = -0.10;
-    } else if (pressure.level === 'low') {
-      if (candidateMode === 'feature') pressureDelta = +0.05;
-    }
-    // level === 'medium': no adjustment
-  }
-
-  return trendBonus + tierBonus + learningsBonus - penalty + pressureDelta;
-}
-
-/**
- * Score a candidate mode: base 0.5 + delta, clamped to [0.0, 0.9].
- *
- * @param {string} candidateMode
- * @param {Signals} signals
- * @returns {number}
- */
-function scoreMode(candidateMode, signals) {
-  return round2(clamp(0.5 + computeDelta(candidateMode, signals), 0.0, 0.9));
-}
-
-/**
- * Build the alternatives array for branch 3 (passthrough-weighted).
- * Returns 0–3 entries sorted by confidence descending, each with confidence >= 0.1.
- *
- * When no active signals are present, returns [] (all modes score identically
- * at 0.5, so alternatives carry no information — and this preserves the
- * existing passthrough test contract).
- *
- * @param {string} chosenMode
- * @param {Signals} signals
- * @returns {Array<{mode: string, confidence: number}>}
- */
-function buildAlternatives(chosenMode, signals) {
-  if (!hasActiveSignals(signals)) {
-    return [];
-  }
-
-  const otherModes = ALL_MODES.filter((m) => m !== chosenMode);
-  const scored = otherModes
-    .map((m) => ({ mode: m, confidence: scoreMode(m, signals) }))
-    .filter((e) => e.confidence >= 0.1)
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 3);
-
-  return scored;
-}
-
-/**
- * Build a rationale string for branch 3 based on the dominant factor.
- *
- * @param {string} mode
- * @param {number} confidence
- * @param {Signals} signals
- * @returns {string}
- */
-function buildPassthroughRationale(mode, confidence, signals) {
-  const recentSessions = safeArray(signals.recentSessions);
-  const last3 = recentSessions.slice(-3);
-  const bootstrapLock = safeBootstrapLock(signals);
-  const tier = bootstrapLock && typeof bootstrapLock.tier === 'string' ? bootstrapLock.tier : null;
-
-  const hasTrend = last3.length >= 3 &&
-    last3.every((s) => typeof s === 'object' && s !== null && s.session_type === mode);
-  const hasTierAlign = tier !== null && TIER_MODE_MAP[tier] === mode;
-  const hasSignals = hasActiveSignals(signals);
-
-  let rationale;
-  if (!hasSignals) {
-    rationale = 'passthrough of Phase A recommended-mode — stale signals';
-  } else if (hasTrend && hasTierAlign) {
-    rationale = 'passthrough reinforced by recent-sessions trend + bootstrap tier';
-  } else if (hasTrend) {
-    rationale = 'passthrough reinforced by recent-sessions trend';
-  } else if (hasTierAlign) {
-    rationale = `passthrough reinforced by bootstrap tier (${tier})`;
-  } else {
-    rationale = 'passthrough of Phase A recommended-mode';
-  }
-
-  // Clamp to 120 chars (safety net)
-  return rationale.slice(0, 120);
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /**
  * Deterministic mode selection for session-start.
@@ -366,8 +38,8 @@ function buildPassthroughRationale(mode, confidence, signals) {
  *   3. PASSTHROUGH-WEIGHTED — valid recommendedMode + signal scoring
  *   4. DEFAULT   — no valid mode, no spiral/carryover trigger
  *
- * @param {Signals|null|undefined} signals
- * @returns {Recommendation}
+ * @param {import('./mode-selector/constants.mjs').Signals|null|undefined} signals
+ * @returns {import('./mode-selector/constants.mjs').Recommendation}
  */
 export function selectMode(signals) {
   // Null-guard: treat null/undefined as empty signals object.
@@ -466,7 +138,7 @@ export function selectMode(signals) {
     };
   }
 
-  // Branch 5 — DEFAULT: no valid mode signal and no spiral/carryover trigger
+  // Branch 4 — DEFAULT: no valid mode signal and no spiral/carryover trigger
   return {
     mode: DEFAULT_MODE,
     rationale: 'missing/invalid recommendedMode → default',
@@ -475,6 +147,3 @@ export function selectMode(signals) {
     context_pressure: computeContextPressure(signals),
   };
 }
-
-// Barrel re-export so callers importing from mode-selector.mjs continue to work.
-export { computeContextPressure } from './mode-selector/context-pressure.mjs';

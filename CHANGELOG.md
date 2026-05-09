@@ -13,6 +13,7 @@ Four deep sessions on top of v3.4.0 — all on `main`, isolation:none enforcemen
 2. **2026-05-09 deep-1** — 5 repo-audit cluster (#350 #351 #352 #353 #354): DX + security tooling. CI security gates (gitleaks + npm-audit), git-hooks (Husky + commitlint + lint-staged), Prettier ignore-rules expansion, CLAUDE.md trim + vault long-form archival. Tests stable at 3591 (config-only changes).
 3. **2026-05-09 deep-2** — 4-issue parallel-subagent cluster (#355 #356 #357 #358): CI critical fix + 16-module test backfill + 4 complexity-hotspot splits + 9th autopilot kill-switch. **5 waves × 6 parallel subagents** (first non-coord-direct deep session in 14+ session streak — explicit user override). Tests 3591 → 3888 (+297). 5 NEW production submodules + 1 NEW schema-leaf (Q3 follow-up).
 4. **2026-05-09 deep-3** — 5-issue Anthropic-canonical agent-authoring alignment cluster (#359 #360 #361 #362 #363): primary-source-grounded refactor of all 10 agent files + validator alignment with [code.claude.com/sub-agents](https://code.claude.com/docs/en/sub-agents). Tests 3888 → 3896 (+8 net; existing color-pin tests rewritten, new validator-form tests added). 4 NEW frontmatter-validator behaviors (tools-array form, full model IDs, expanded color palette, error-message expansion). All 10 agents now Anthropic-reference-compliant for body length (500-3000w) + Output Format + Edge Cases sections.
+5. **2026-05-09 deep-4** — 6-hotspot-split cluster (deep-4): 6 file-disjoint hotspots ≥400 LOC split into submodules <300 LOC each. Public APIs preserved via barrel re-exports — zero behavior change. Tests 3896 → 4430 (+534). 26 NEW `*.test.mjs` files. validate-plugin 27/27.
 
 No breaking changes.
 
@@ -89,11 +90,24 @@ No breaking changes.
 
 - **#348 doc-drift sweep** — README test-count line refreshed (`2623+ tests` → `3138+ tests` in W2; bumped to `3591+ tests` in W5 to reflect post-session count) + NEW `### Cursor IDE Support` section after Platform Support documenting `hooks/hooks-cursor.json`'s 2 events and Cursor IDE limitations (no SessionStart equivalent + post-hoc afterFileEdit). PRD `2026-04-21-vault-docs-orchestration.md` Status header updated `Draft` → `Complete (2026-05-01, Epic #229 closed)` (line 360 already confirmed completion). CLAUDE.md `2026-04-30 main-2026-04-30-1635` narrative bullet stale doc-drift parenthetical replaced with `[RESOLVED 2026-05-08 in v3.4.0: ...]` historical marker. Issue closed.
 
+### Refactor (Unreleased) — 2026-05-09 deep-4
+
+- **Hotspot-splits cluster (deep-4, 2026-05-09)**: 6 file-disjoint hotspots ≥400 LOC split into submodules <300 LOC each. Public APIs preserved via barrel re-exports — zero behavior change.
+  - `scripts/lib/state-md.mjs` (563→31 LOC barrel) — split into `state-md/{yaml-parser, frontmatter-mutators, body-sections, mission-status, recommendations}.mjs`
+  - `scripts/lib/mode-selector.mjs` (480→149 LOC orchestrator) — split into `mode-selector/{constants, scoring, alternatives, rationale, context-pressure}.mjs`
+  - `scripts/lib/session-schema.mjs` (462→70 LOC barrel) — split into `session-schema/{constants, validator, normalizer, timestamps, aliases}.mjs`
+  - `scripts/lib/owner-config.mjs` (459→28 LOC wrapper) — split into `owner-config/{constants, error, defaults, coerce, validate, merge, index}.mjs`
+  - `scripts/lib/worktree.mjs` (418→15 LOC barrel) — split into `worktree/{constants, meta, listing, lifecycle, index}.mjs`
+  - `scripts/lib/autopilot.mjs` (418→39 LOC barrel) — split into `autopilot/{kill-switches, flags, telemetry, loop}.mjs`. The legacy `scripts/lib/autopilot-telemetry.mjs` is retained as a one-line backward-compat re-export.
+- **Test coverage**: +534 net tests (3896→4430), 26 new `*.test.mjs` files under `tests/lib/{state-md,mode-selector,session-schema,owner-config,worktree,autopilot}/**`. The `tests/lib/refactor-stability.test.mjs` adapter extended 24→46 tests pinning all 6 hotspot public APIs.
+- **Quality gates**: typecheck 66/66 OK · lint 0 errors · validate-plugin 27/27 · doc-consistency 0 findings · test-quality audit 0 anti-pattern violations.
+- **Pattern**: 5W×6A coordinator-direct parallel dispatch with file-disjoint allowedPaths per agent. Continues the deep-2 (2026-05-09) hotspot-split pattern.
+
 ### Quality (Unreleased)
 
 - typecheck: 66/66 OK (was 65 at v3.4.0; +1 NEW module crypto-digest-utils.mjs in deep-2)
 - lint: 0 errors
-- tests: **3591 passed / 12 skipped / 0 failed** (was 3138 at v3.4.0, **+453 in deep-2**, stable in deep-1 — config-only changes)
+- tests: **4430 passed / 12 skipped / 0 failed** (was 3138 at v3.4.0, **+453 in deep-2**, stable in deep-1, **+297 in deep-2** [#355–#358], **+8 in deep-3** [#359–#363], **+534 in deep-4**)
 - validate-plugin: **27 passed, 0 failed** (was 22 at v3.4.0; +5 from check-hooks-symmetry validator in deep-2)
 - CI security gates pre-validated locally: gitleaks 0 leaks (258 commits), npm audit 0 vulnerabilities (production deps, audit-level=high)
 

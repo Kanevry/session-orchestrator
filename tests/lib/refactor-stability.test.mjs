@@ -237,3 +237,215 @@ describe('refactor-stability — learnings.mjs public API after #358 split', () 
     expect(typeof mod.LEARNING_TTL_DAYS).toBe('object');
   });
 });
+
+// ---------------------------------------------------------------------------
+// session-schema.mjs — after W2 fresh split
+// ---------------------------------------------------------------------------
+
+describe('refactor-stability — session-schema.mjs public API after W2 split', () => {
+  it('exports all 7 expected symbols', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(mod.ValidationError).toBeDefined();
+    expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBeDefined();
+    expect(mod.SESSION_KEY_ALIASES).toBeDefined();
+    expect(mod.validateSession).toBeDefined();
+    expect(mod.normalizeSession).toBeDefined();
+    expect(mod.clampTimestampsMonotonic).toBeDefined();
+    expect(mod.aliasLegacyEndedAt).toBeDefined();
+  });
+
+  it('CURRENT_SESSION_SCHEMA_VERSION === 1', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
+  });
+
+  it('SESSION_KEY_ALIASES is frozen with key count in range [1, 50]', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(Object.isFrozen(mod.SESSION_KEY_ALIASES)).toBe(true);
+    // Floor/ceiling per test-quality.md "Dynamic Artifact Counts" rule.
+    // Current count: 11 safe-rename aliases. Allow growth but catch empty export.
+    const keyCount = Object.keys(mod.SESSION_KEY_ALIASES).length;
+    expect(keyCount).toBeGreaterThanOrEqual(1);
+    expect(keyCount).toBeLessThanOrEqual(50);
+  });
+
+  it('ValidationError is a class; instances have the correct name and inherit Error', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(typeof mod.ValidationError).toBe('function');
+    const err = new mod.ValidationError('test message');
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('ValidationError');
+    expect(err.message).toBe('test message');
+  });
+
+  it('smoke: validateSession({}) throws ValidationError (missing required field)', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(() => mod.validateSession({})).toThrow(mod.ValidationError);
+  });
+
+  it('smoke: normalizeSession({}) returns an object (never throws)', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const result = mod.normalizeSession({});
+    expect(typeof result).toBe('object');
+    // schema_version tagged as 0 for records without it (legacy sentinel)
+    expect(result.schema_version).toBe(0);
+  });
+
+  it('smoke: clampTimestampsMonotonic is a function that returns unchanged entry when timestamps are valid', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(typeof mod.clampTimestampsMonotonic).toBe('function');
+    const entry = { started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T01:00:00Z' };
+    const result = mod.clampTimestampsMonotonic(entry);
+    // No inversion — should be returned unchanged
+    expect(result.completed_at).toBe('2026-01-01T01:00:00Z');
+    expect(result._clamped).toBeUndefined();
+  });
+
+  it('smoke: aliasLegacyEndedAt is a function that aliases ended_at to completed_at', async () => {
+    const mod = await import('../../scripts/lib/session-schema.mjs');
+    expect(typeof mod.aliasLegacyEndedAt).toBe('function');
+    const entry = { started_at: '2026-01-01T00:00:00Z', ended_at: '2026-01-01T01:00:00Z' };
+    const result = mod.aliasLegacyEndedAt(entry);
+    expect(result.completed_at).toBe('2026-01-01T01:00:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// owner-config.mjs — after W2 fresh split
+// ---------------------------------------------------------------------------
+
+describe('refactor-stability — owner-config.mjs public API after W2 split', () => {
+  it('exports all 10 expected symbols', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(mod.CURRENT_OWNER_SCHEMA_VERSION).toBeDefined();
+    expect(mod.VALID_TONE_STYLES).toBeDefined();
+    expect(mod.VALID_OUTPUT_LEVELS).toBeDefined();
+    expect(mod.VALID_PREAMBLE_LEVELS).toBeDefined();
+    expect(mod.VALID_COMMENTS_LEVELS).toBeDefined();
+    expect(mod.OwnerConfigError).toBeDefined();
+    expect(mod.defaults).toBeDefined();
+    expect(mod.validate).toBeDefined();
+    expect(mod.coerce).toBeDefined();
+    expect(mod.merge).toBeDefined();
+  });
+
+  it('CURRENT_OWNER_SCHEMA_VERSION === 1', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(mod.CURRENT_OWNER_SCHEMA_VERSION).toBe(1);
+  });
+
+  it('all VALID_* arrays are frozen with expected member counts', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    // Floor/ceiling per test-quality.md "Dynamic Artifact Counts" rule.
+    expect(Object.isFrozen(mod.VALID_TONE_STYLES)).toBe(true);
+    expect(mod.VALID_TONE_STYLES.length).toBeGreaterThanOrEqual(2);
+    expect(mod.VALID_TONE_STYLES.length).toBeLessThanOrEqual(10);
+
+    expect(Object.isFrozen(mod.VALID_OUTPUT_LEVELS)).toBe(true);
+    expect(mod.VALID_OUTPUT_LEVELS.length).toBeGreaterThanOrEqual(2);
+    expect(mod.VALID_OUTPUT_LEVELS.length).toBeLessThanOrEqual(10);
+
+    expect(Object.isFrozen(mod.VALID_PREAMBLE_LEVELS)).toBe(true);
+    expect(mod.VALID_PREAMBLE_LEVELS.length).toBeGreaterThanOrEqual(2);
+    expect(mod.VALID_PREAMBLE_LEVELS.length).toBeLessThanOrEqual(10);
+
+    expect(Object.isFrozen(mod.VALID_COMMENTS_LEVELS)).toBe(true);
+    expect(mod.VALID_COMMENTS_LEVELS.length).toBeGreaterThanOrEqual(1);
+    expect(mod.VALID_COMMENTS_LEVELS.length).toBeLessThanOrEqual(10);
+  });
+
+  it('OwnerConfigError is a class extending Error with .errors array', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(typeof mod.OwnerConfigError).toBe('function');
+    const err = new mod.OwnerConfigError('bad config', ['field A is missing']);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('OwnerConfigError');
+    expect(Array.isArray(err.errors)).toBe(true);
+    expect(err.errors).toContain('field A is missing');
+  });
+
+  it('smoke: defaults() returns object with schema-version field equal to CURRENT_OWNER_SCHEMA_VERSION', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(typeof mod.defaults).toBe('function');
+    const d = mod.defaults();
+    expect(typeof d).toBe('object');
+    expect(d['schema-version']).toBe(mod.CURRENT_OWNER_SCHEMA_VERSION);
+  });
+
+  it('smoke: validate({}) returns {ok: false, errors: [...], value: null}', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(typeof mod.validate).toBe('function');
+    const result = mod.validate({});
+    expect(result.ok).toBe(false);
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.value).toBeNull();
+  });
+
+  it('smoke: coerce({}) throws OwnerConfigError', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(typeof mod.coerce).toBe('function');
+    expect(() => mod.coerce({})).toThrow(mod.OwnerConfigError);
+  });
+
+  it('smoke: merge(null, null) returns a default-filled object', async () => {
+    const mod = await import('../../scripts/lib/owner-config.mjs');
+    expect(typeof mod.merge).toBe('function');
+    const result = mod.merge(null, null);
+    expect(typeof result).toBe('object');
+    expect(result['schema-version']).toBe(mod.CURRENT_OWNER_SCHEMA_VERSION);
+    expect(typeof result.owner).toBe('object');
+    expect(typeof result.tone).toBe('object');
+    expect(typeof result.efficiency).toBe('object');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// worktree.mjs — after W2 fresh split
+// ---------------------------------------------------------------------------
+
+describe('refactor-stability — worktree.mjs public API after W2 split', () => {
+  it('exports all 7 expected symbols', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    expect(mod.WORKTREE_META_DIR).toBeDefined();
+    expect(mod.metaPathFor).toBeDefined();
+    expect(mod.applyWorktreeExcludes).toBeDefined();
+    expect(mod.cleanupAllWorktrees).toBeDefined();
+    expect(mod.createWorktree).toBeDefined();
+    expect(mod.listWorktrees).toBeDefined();
+    expect(mod.removeWorktree).toBeDefined();
+  });
+
+  it('WORKTREE_META_DIR is a string ending with the expected segment', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    expect(typeof mod.WORKTREE_META_DIR).toBe('string');
+    // The canonical path ends with 'worktree-meta' — catch accidental renames.
+    expect(mod.WORKTREE_META_DIR.endsWith('worktree-meta')).toBe(true);
+  });
+
+  it('metaPathFor is a function; returns a string containing the given suffix', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    expect(typeof mod.metaPathFor).toBe('function');
+    const result = mod.metaPathFor('test-suffix');
+    expect(typeof result).toBe('string');
+    expect(result).toContain('test-suffix');
+  });
+
+  it('all async lifecycle functions are present and typeof === "function"', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    // Do NOT call createWorktree/cleanupAllWorktrees — they touch git.
+    expect(typeof mod.createWorktree).toBe('function');
+    expect(typeof mod.removeWorktree).toBe('function');
+    expect(typeof mod.cleanupAllWorktrees).toBe('function');
+  });
+
+  it('applyWorktreeExcludes is a function', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    expect(typeof mod.applyWorktreeExcludes).toBe('function');
+  });
+
+  it('listWorktrees is a function', async () => {
+    const mod = await import('../../scripts/lib/worktree.mjs');
+    expect(typeof mod.listWorktrees).toBe('function');
+  });
+});

@@ -2,6 +2,6 @@
 version: 1
 tier: deep
 archetype: node-minimal
-timestamp: 2026-04-17T13:05:00Z
+timestamp: 2026-05-09T08:00:00Z
 source: retroactive
-plugin-version: 3.3.0
+plugin-version: 3.4.0
