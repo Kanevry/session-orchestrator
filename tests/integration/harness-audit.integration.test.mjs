@@ -372,3 +372,58 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
     expect(names).toContain('Policy Freshness');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression #356 — stdout integrity: JSON must not be truncated at the CI
+// pipe buffer boundary (~8 KiB on many Linux kernels). Previously,
+// process.exit(0) was called immediately after process.stdout.write(), which
+// could terminate the process before the async pipe flush completed, silently
+// cutting the JSON at byte 8188.
+// ---------------------------------------------------------------------------
+
+describe('harness-audit stdout integrity (regression #356)', { timeout: 20000 }, () => {
+  it('emits a complete, parseable JSON object and stdout length exceeds CI failure boundary', () => {
+    // Use the clean-repo fixture — its real output is ~12-13 KB locally; CI was
+    // truncating at 8188 bytes. This test catches that regression by asserting
+    // both a byte-length floor and full JSON parseability.
+    const root = mkdtempSync(join(tmpdir(), 'so-harness-audit-reg356-'));
+    const isWindows = process.platform === 'win32';
+
+    try {
+      // Copy fixture into the tmpdir
+      if (isWindows) {
+        const cpResult = spawnSync('xcopy', [FIXTURE_DIR, root, '/E', '/I', '/Q'], { encoding: 'utf8' });
+        if (cpResult.status !== 0) throw new Error(`xcopy failed: ${cpResult.stderr}`);
+      } else {
+        const cpResult = spawnSync('cp', ['-R', FIXTURE_DIR + '/.', root], { encoding: 'utf8' });
+        if (cpResult.status !== 0) throw new Error(`cp failed: ${cpResult.stderr}`);
+      }
+
+      const result = spawnSync('node', [SCRIPT_PATH], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 18000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+
+      expect(result.status).toBe(0);
+
+      // Floor check: real output is ~12-13 KB; CI was truncating at 8188 bytes.
+      // 8500 sits above the failure boundary without pinning an exact size
+      // (per test-quality.md "Dynamic Artifact Counts" floor/ceiling rule).
+      expect(result.stdout.length).toBeGreaterThan(8500);
+
+      // The output must parse as valid JSON — truncation produces a SyntaxError.
+      expect(() => JSON.parse(result.stdout)).not.toThrow();
+
+      // Closing-brace check: a truncated JSON object will not end with '}'.
+      // Use .trim() to ignore the trailing newline that the script emits.
+      const trimmed = result.stdout.trim();
+      expect(trimmed.endsWith('}')).toBe(true);
+    } finally {
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch { /* best-effort cleanup */ }
+    }
+  });
+});

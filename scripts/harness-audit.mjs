@@ -252,14 +252,25 @@ const output = {
   repository: gitMeta,
 };
 
-// Write stdout (without session_id — session_id only in audit.jsonl)
-process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+// Write stdout (without session_id — session_id only in audit.jsonl).
+// Use the write callback to ensure the stdout buffer has fully drained before
+// running any subsequent I/O or exiting. On CI runners the process can exit
+// before the pipe buffer flushes, truncating the JSON at the OS pipe boundary
+// (8 KiB on many Linux kernels). Pattern A — drain-aware write (issue #356).
+const jsonStr = JSON.stringify(output, null, 2) + '\n';
+process.stdout.write(jsonStr, (err) => {
+  if (err) {
+    process.stderr.write(`harness-audit: stdout write error: ${err.message}\n`);
+    process.exit(2);
+    return; // prevent fall-through to success-path side effects on stdout failure (#356 Q1)
+  }
 
-// Append to audit.jsonl (with session_id)
-appendAuditRecord(auditRoot, { session_id: sessionId, ...output });
+  // Append to audit.jsonl (with session_id) — runs only after stdout drains
+  appendAuditRecord(auditRoot, { session_id: sessionId, ...output });
 
-// Write stderr summary
-writeSummary(categoryResults, summary);
+  // Write stderr summary
+  writeSummary(categoryResults, summary);
 
-// Always exit 0
-process.exit(0);
+  // Always exit 0
+  process.exit(0);
+});

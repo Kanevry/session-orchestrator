@@ -7,12 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Two deep sessions on top of v3.4.0 — both coordinator-direct on `main`, isolation:none enforcement:warn cap=6.
+Three deep sessions on top of v3.4.0 — all on `main`, isolation:none enforcement:warn cap=6.
 
 1. **2026-05-08 deep-2** — 6 discovery-derived issues (#344 #345 #346 #347 #348 #349): refactor + test-coverage + validator + doc-drift. Tests 3138 → 3591 (+453). validate-plugin 22 → 27.
 2. **2026-05-09 deep-1** — 5 repo-audit cluster (#350 #351 #352 #353 #354): DX + security tooling. CI security gates (gitleaks + npm-audit), git-hooks (Husky + commitlint + lint-staged), Prettier ignore-rules expansion, CLAUDE.md trim + vault long-form archival. Tests stable at 3591 (config-only changes).
+3. **2026-05-09 deep-2** — 4-issue parallel-subagent cluster (#355 #356 #357 #358): CI critical fix + 16-module test backfill + 4 complexity-hotspot splits + 9th autopilot kill-switch. **5 waves × 6 parallel subagents** (first non-coord-direct deep session in 14+ session streak — explicit user override). Tests 3591 → 3888 (+297). 5 NEW production submodules + 1 NEW schema-leaf (Q3 follow-up).
 
 No breaking changes.
+
+### Fixed (Unreleased) — 2026-05-09 deep-2 (#355–#358)
+
+- **#356 — harness-audit JSON truncation at byte 8188 (10+ failed CI runs since 2026-05-01)** — `scripts/harness-audit.mjs:256` was async-writing the final JSON to stdout, then immediately calling `appendAuditRecord()` + `writeSummary()` + `process.exit(0)`. On CI runners (both GitLab and GitHub Actions, both macOS and Windows), the process exited before the stdout pipe drained, truncating output at the OS pipe-buffer boundary (8 KiB on many Linux kernels = 8188 = 8192 − 4). Local runs were green because pipes drain instantly on dev hardware. **Fix:** Pattern A drain-aware `process.stdout.write(payload, callback)` — `appendAuditRecord` + `writeSummary` + `process.exit(0)` now run inside the drain callback. Q1 follow-up: added explicit `return;` after the error-path `process.exit(2)` to prevent fall-through to success-path side effects on stdout-write failure. NEW regression test in `tests/integration/harness-audit.integration.test.mjs` asserts `stdout.length > 8500` (floor above CI failure boundary, per test-quality.md floor/ceiling rule) AND `JSON.parse(stdout)` does not throw AND `stdout.trim().endsWith('}')`. Local verification: 12,519 bytes ending with `}\n`. Issue closed.
+
+### Added (Unreleased) — 2026-05-09 deep-2 (#355–#358)
+
+- **#355 — autopilot cumulative token-budget kill-switch (cross-repo from baseline#252)** — 9th kill-switch (`TOKEN_BUDGET_EXCEEDED: 'token-budget-exceeded'`). Implemented per the 9-step plan in the issue body: `FLAG_BOUNDS.maxTokens = { min: 0, max: 10_000_000, default: 500_000 }`; new entry in `KILL_SWITCHES`; check in `preIterationKillSwitch` after MAX_HOURS, before RESOURCE_OVERLOAD (cheap check first); accumulator in `runLoop` after `state.iterations_completed += 1` reading `sessionResult.usage.output_tokens` (or `total_tokens` as fallback); `total_tokens_used` field on `AutopilotState`; additive update to `skills/wave-executor/SKILL.md` Return Shape Contract documenting the `usage?` field. **Forward-compat:** when sessionRunner doesn't emit `usage`, `cumulativeTokens` stays 0 and the kill-switch never fires. Q4 follow-up: defaulted `opts.maxTokens` resolution to `0` (off, opt-in) instead of `FLAG_BOUNDS.maxTokens.default` to prevent a silent 500k cap on every existing caller once wave-executor starts populating `usage`. 3 NEW tests in `tests/lib/autopilot.test.mjs` (fires correctly, forward-compat preserved, accumulator monotonic). Issue closed.
+- **#357 — backfill 16 untested modules in `scripts/lib/`** — 16 NEW `*.test.mjs` files, ~3,000 LOC of previously per-file-untested production code now covered. Distributed across 5 W2/W3 batches (file-disjoint, parallel-safe per W1 D5 conflict matrix). +297 net tests (3591 → 3888). Coverage:
+  - `tests/lib/harness-audit/categories/category{1..7}.test.mjs` (7 NEW, 58 tests) — happy-path + failure + edge per category
+  - `tests/lib/resource-probe/{probe-platform,evaluate,parsers}.test.mjs` (3 NEW, 99 tests) — pure functions hardcode-asserted, mocked spawn for branch coverage
+  - `tests/lib/{owner-interview,workspace}.test.mjs` (2 NEW, 34 tests) — mocked owner-yaml + zx git
+  - `tests/lib/ecosystem-wizard/{config-writer,wizard-prompt}.test.mjs` (2 NEW, 42 tests) — file-I/O + readline answer-injection
+  - `tests/lib/vault-backfill/{glab,template}.test.mjs` (2 NEW, 32 tests) — mocked spawnSync + template cache
+  - All files follow `.claude/rules/test-quality.md`: hardcoded expected values, floor/ceiling for dynamic counts, no Assert-Nothing / Test-the-Mock / Tautological Computation. Issue closed.
+- **#358 — 4 complexity hotspots split into submodules** — 5 NEW production submodules:
+  - `scripts/lib/autopilot/kill-switches.mjs` (148 LOC) — `KILL_SWITCHES` enum (now 9 entries) + `preIterationKillSwitch` + `postSessionKillSwitch`. `autopilot.mjs` 535 → 412 LOC.
+  - `scripts/lib/state-md/recommendations.mjs` (57 LOC) — `parseRecommendations`. `state-md.mjs` 610 → 563 LOC.
+  - `scripts/lib/mode-selector/context-pressure.mjs` (157 LOC) — `computeContextPressure` + 3 inlined helpers. `mode-selector.mjs` 572 → 480 LOC. Per W1 D3 risk warning, full per-signal scorer split (carryover/confidence/bootstrap/learnings) deferred — only the cleanly-separable `computeContextPressure` extracted this session.
+  - `scripts/lib/learnings/io.mjs` (120 LOC) + `scripts/lib/learnings/filters.mjs` (43 LOC). `learnings.mjs` 529 → 39 LOC barrel after Q3 follow-up.
+  - **Q3 follow-up:** NEW `scripts/lib/learnings/schema.mjs` leaf (~330 LOC) — extracts the schema/validator layer to break the circular-import topology that the original split produced (`learnings.mjs` re-exporting children that imported back from parent). Both children now import from sibling `./schema.mjs`; `learnings.mjs` is a thin barrel. Unidirectional dependency graph: `schema → io → filters → barrel` (no cycle).
+  - All 4 hotspots now < 500 LOC. All public APIs preserved via barrel re-exports — verified by NEW `tests/lib/refactor-stability.test.mjs` (24 adapter tests asserting symbol presence + 1 smoke call per re-export). Issue closed.
+
+### Quality verification
+
+- 184 test files / **3888 pass** / 11 skip / 0 fail (baseline 3591 → +297). typecheck 66/66. lint 0 errors. validate-plugin 27/27. check-doc-consistency 0 findings. harness-audit emits 12,519 bytes ending with `}\n` locally — root cause of the 10+ run CI streak fixed.
+
+### Carry-forward (next session)
+
+- W4 Q2 MEDIUM: `tests/lib/resource-probe/probe-platform.test.mjs` overly-generous predicate for `processCounts` null-output branch; `tests/lib/workspace.test.mjs` runtime branching in test body. Both work correctly today; tighten in next session.
+- W4 Q3 MEDIUM: `state-md/recommendations.mjs` and `learnings/filters.mjs` are shallow per LANGUAGE.md. Justification today is the LOC budget; future split should target contract-boundary seams instead.
+- W4 Q3 MEDIUM: `clamp` / `round2` / `safeArray` duplicated between `mode-selector.mjs` and `mode-selector/context-pressure.mjs` (4 lines each). Extract to a private `mode-selector/_helpers.mjs` when the deferred scorer split lands.
+- W4 Q5 MEDIUM: pre-existing silent-drop of `malformed` in `scripts/export-hw-learnings.mjs:343` — the `readLearnings` extraction surfaced the contract; surface it in stderr in a follow-up.
+- W4 Q4: plumb `--max-tokens` through `parseFlags()` + `commands/autopilot.md` so the CLI surface matches the runtime opt.
 
 ### Added (Unreleased) — 2026-05-09 deep-1 (#350–#354)
 

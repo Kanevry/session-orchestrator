@@ -39,13 +39,14 @@ describe('autopilot — exported constants', () => {
     expect(SCHEMA_VERSION).toBe(1);
   });
 
-  it('KILL_SWITCHES enumerates all 8 kill-switches (5 pre-iteration + 3 post-session)', () => {
+  it('KILL_SWITCHES enumerates all 9 kill-switches (6 pre-iteration + 3 post-session)', () => {
     const values = Object.values(KILL_SWITCHES);
     expect(values).toContain('max-sessions-reached');
     expect(values).toContain('max-hours-exceeded');
     expect(values).toContain('resource-overload');
     expect(values).toContain('low-confidence-fallback');
     expect(values).toContain('user-abort');
+    expect(values).toContain('token-budget-exceeded');
     expect(values).toContain('spiral');
     expect(values).toContain('failed-wave');
     expect(values).toContain('carryover-too-high');
@@ -67,6 +68,7 @@ describe('autopilot — exported constants', () => {
     expect(FLAG_BOUNDS.maxSessions).toEqual({ min: 1, max: 50, default: 5 });
     expect(FLAG_BOUNDS.maxHours).toEqual({ min: 0.5, max: 24.0, default: 4.0 });
     expect(FLAG_BOUNDS.confidenceThreshold).toEqual({ min: 0, max: 1, default: 0.85 });
+    expect(FLAG_BOUNDS.maxTokens).toEqual({ min: 0, max: 10_000_000, default: 500_000 });
   });
 });
 
@@ -798,6 +800,99 @@ describe('runLoop — kill-switch: carryover-too-high', () => {
     });
     expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
     expect(state.iterations_completed).toBe(1);
+  });
+});
+
+describe('runLoop — kill-switch: token-budget-exceeded', () => {
+  it('fires TOKEN_BUDGET_EXCEEDED when cumulative output tokens >= maxTokens', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-r${runs}`,
+        usage: { output_tokens: 600_000 },
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      maxTokens: 500_000,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'token-budget-test',
+    });
+    expect(runs).toBe(1);
+    expect(state.iterations_completed).toBe(1);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.TOKEN_BUDGET_EXCEEDED);
+    expect(state.kill_switch_detail).toMatch(/cumulative_tokens=\d+.*max-tokens=\d+/);
+    expect(state.total_tokens_used).toBe(600_000);
+  });
+
+  it('forward-compat: sessionRunner omitting usage lets loop run to MAX_SESSIONS_REACHED', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-r${runs}`,
+        // No usage field — older sessionRunner contract
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 3,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      maxTokens: 500_000,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'token-compat-test',
+    });
+    expect(runs).toBe(3);
+    expect(state.iterations_completed).toBe(3);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    expect(state.total_tokens_used).toBe(0);
+  });
+
+  it('accumulator is monotonic — halts at iteration 3 when 3×100k >= 250k threshold', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    let runs = 0;
+    const sessionRunner = async ({ autopilotRunId }) => {
+      runs += 1;
+      return {
+        session_id: `${autopilotRunId}-r${runs}`,
+        usage: { output_tokens: 100_000 },
+      };
+    };
+    const state = await runLoop({
+      maxSessions: 10,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      maxTokens: 250_000,
+      sessionRunner,
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'token-accumulate-test',
+    });
+    // After iter 1: 100k < 250k → continue
+    // After iter 2: 200k < 250k → continue
+    // After iter 3: 300k >= 250k → fire at start of iter 4 (pre-check uses value from last iter)
+    // Actually: pre-check at start of iter 4 sees cumulativeTokens=300k >= 250k → halts
+    expect(runs).toBe(3);
+    expect(state.iterations_completed).toBe(3);
+    expect(state.kill_switch).toBe(KILL_SWITCHES.TOKEN_BUDGET_EXCEEDED);
+    expect(state.total_tokens_used).toBe(300_000);
+    expect(state.kill_switch_detail).toMatch(/cumulative_tokens=300000/);
+    expect(state.kill_switch_detail).toMatch(/max-tokens=250000/);
   });
 });
 

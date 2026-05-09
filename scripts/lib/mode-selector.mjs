@@ -8,6 +8,7 @@
  */
 
 import { isValidMode } from './recommendations-v0.mjs';
+import { computeContextPressure } from './mode-selector/context-pressure.mjs';
 
 /** @type {'feature'} */
 const DEFAULT_MODE = 'feature';
@@ -347,101 +348,6 @@ function buildPassthroughRationale(mode, confidence, signals) {
 }
 
 // ---------------------------------------------------------------------------
-// Context-pressure signal (#332)
-// ---------------------------------------------------------------------------
-
-/**
- * Regex for cross-cutting keyword detection in task description text.
- * Matches phrases that indicate large, scope-spanning work.
- */
-const CROSS_CUTTING_PATTERN =
-  /across all|every (skill|agent|repo)|repo-?wide|cross-cutting|rename across|massive refactor/i;
-
-/**
- * Compute context-pressure score (0.0–1.0) for the proposed work.
- * High pressure → recommend deferring scope or preferring deep mode over feature.
- *
- * Inputs (read from signals):
- *   - signals.topPriorities: number[]|undefined — count used as proxy for scope
- *   - signals.recentSessions: array — tail-5 used to derive carryover_ratio from
- *       session.effectiveness.carryover / session.effectiveness.planned_issues
- *   - signals.taskDescriptionText: string|undefined — joined PRD/issue body for keyword scan
- *
- * Score components (additive, clamped to [0, 1]):
- *   - scope:    min(0.5, max(0, (priorityCount - 3) / 10))
- *   - keywords: +0.25 if CROSS_CUTTING_PATTERN matches taskDescriptionText
- *   - carryover: min(0.25, max(0, carryoverRatio - 0.3))
- *
- * Returns level buckets: score < 0.3 → 'low'; 0.3–0.7 → 'medium'; ≥ 0.7 → 'high'.
- *
- * Pure function: no I/O, no side effects. Missing/invalid fields → 0 contribution.
- *
- * @param {Signals & { taskDescriptionText?: string|null }} signals
- * @returns {ContextPressureResult}
- */
-export function computeContextPressure(signals) {
-  // --- Scope component ---
-  const priorities = safeArray(signals?.topPriorities);
-  const priorityCount = priorities.length;
-  const scopeComponent = clamp((priorityCount - 3) / 10, 0, 0.5);
-
-  // --- Cross-cutting keywords component ---
-  const text = typeof signals?.taskDescriptionText === 'string' ? signals.taskDescriptionText : '';
-  const keywordsComponent = text.length > 0 && CROSS_CUTTING_PATTERN.test(text) ? 0.25 : 0;
-
-  // --- Carryover component ---
-  // Derive carryover ratio from tail-5 recent sessions using
-  // effectiveness.carryover / effectiveness.planned_issues (sessions.jsonl schema).
-  // Falls back gracefully when fields are absent (contributes 0).
-  const recentSessions = safeArray(signals?.recentSessions);
-  const last5 = recentSessions.slice(-5);
-  let derivedCarryoverRatio = 0;
-  if (last5.length > 0) {
-    let validCount = 0;
-    let ratioSum = 0;
-    for (const session of last5) {
-      if (session === null || typeof session !== 'object') continue;
-      const eff = session.effectiveness;
-      if (eff === null || typeof eff !== 'object') continue;
-      const carryover =
-        typeof eff.carryover === 'number' && !Number.isNaN(eff.carryover) ? eff.carryover : null;
-      const planned =
-        typeof eff.planned_issues === 'number' &&
-        !Number.isNaN(eff.planned_issues) &&
-        eff.planned_issues > 0
-          ? eff.planned_issues
-          : null;
-      if (carryover !== null && planned !== null) {
-        ratioSum += carryover / planned;
-        validCount++;
-      }
-    }
-    if (validCount > 0) {
-      derivedCarryoverRatio = ratioSum / validCount;
-    }
-  }
-  const carryoverComponent = clamp(derivedCarryoverRatio - 0.3, 0, 0.25);
-
-  const score = round2(clamp(scopeComponent + keywordsComponent + carryoverComponent, 0, 1));
-
-  /** @type {'low'|'medium'|'high'} */
-  let level;
-  if (score < 0.3) level = 'low';
-  else if (score < 0.7) level = 'medium';
-  else level = 'high';
-
-  return {
-    score,
-    components: {
-      scope: round2(scopeComponent),
-      keywords: round2(keywordsComponent),
-      carryover: round2(carryoverComponent),
-    },
-    level,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -569,3 +475,6 @@ export function selectMode(signals) {
     context_pressure: computeContextPressure(signals),
   };
 }
+
+// Barrel re-export so callers importing from mode-selector.mjs continue to work.
+export { computeContextPressure } from './mode-selector/context-pressure.mjs';

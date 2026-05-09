@@ -7,10 +7,10 @@
  *   - writeAutopilotJsonl(state, path): atomic tmp+rename writer
  *   - KILL_SWITCHES, FLAG_BOUNDS, SCHEMA_VERSION constants
  *
- * 8 of 8 kill-switches enforced (5 pre-iteration + 3 post-session):
+ * 9 of 9 kill-switches enforced (6 pre-iteration + 3 post-session):
  *   max-sessions-reached, max-hours-exceeded, resource-overload,
- *   low-confidence-fallback, user-abort, spiral, failed-wave,
- *   carryover-too-high.
+ *   low-confidence-fallback, user-abort, token-budget-exceeded,
+ *   spiral, failed-wave, carryover-too-high.
  *
  * Pure orchestration: all I/O (session lifecycle, mode selection, resource
  * probing, peer count, wall clock) is injected via opts so the loop is unit-
@@ -28,6 +28,10 @@
  *       planned_issues?: number,                //   when planned_issues > 0
  *       carryover?: number,
  *       ...
+ *     },
+ *     usage?: {                                 // optional; absence → token accumulator stays 0
+ *       output_tokens?: number,                 // #355 token-budget-exceeded kill-switch
+ *       total_tokens?: number,                  // accepted as fallback when output_tokens absent
  *     }
  *   }
  *
@@ -45,29 +49,23 @@
 // Telemetry helpers extracted to autopilot-telemetry.mjs (issue #326).
 import { writeAutopilotJsonl, defaultRunId, readHostClass, finalizeState } from './autopilot-telemetry.mjs';
 
+// Kill-switch constants and evaluators extracted to submodule (issue #358).
+import { KILL_SWITCHES, preIterationKillSwitch, postSessionKillSwitch } from './autopilot/kill-switches.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 export const SCHEMA_VERSION = 1;
 
-export const KILL_SWITCHES = Object.freeze({
-  // Pre-iteration kill-switches (Phase C-1, #295)
-  MAX_SESSIONS_REACHED: 'max-sessions-reached',
-  MAX_HOURS_EXCEEDED: 'max-hours-exceeded',
-  RESOURCE_OVERLOAD: 'resource-overload',
-  LOW_CONFIDENCE_FALLBACK: 'low-confidence-fallback',
-  USER_ABORT: 'user-abort',
-  // Post-session kill-switches (Phase C-1.b, #300)
-  SPIRAL: 'spiral',
-  FAILED_WAVE: 'failed-wave',
-  CARRYOVER_TOO_HIGH: 'carryover-too-high',
-});
+// Re-export KILL_SWITCHES so existing callers importing from autopilot.mjs continue to resolve.
+export { KILL_SWITCHES };
 
 export const FLAG_BOUNDS = Object.freeze({
   maxSessions: { min: 1, max: 50, default: 5 },
   maxHours: { min: 0.5, max: 24.0, default: 4.0 },
   confidenceThreshold: { min: 0.0, max: 1.0, default: 0.85 },
+  maxTokens: { min: 0, max: 10_000_000, default: 500_000 },
 });
 
 /** Default peer Claude-process count above which `resource-overload` fires when verdict is critical. */
@@ -147,116 +145,6 @@ export function parseFlags(argv) {
 }
 
 // ---------------------------------------------------------------------------
-// Kill-switch evaluation (pure functions)
-// ---------------------------------------------------------------------------
-
-/**
- * Pre-iteration kill-switch checks. Pure: all inputs are state values, no I/O.
- * Returns `{kill, detail}` or `null` when the loop may proceed.
- *
- * @param {object} args
- * @param {number} args.iterationsCompleted
- * @param {number} args.maxSessions
- * @param {number} args.elapsedMs
- * @param {number} args.maxHoursMs
- * @param {string|null} args.resourceVerdict — 'green' | 'warn' | 'critical' | null
- * @param {number|null} args.peerCount
- * @param {number} args.peerAbortThreshold
- * @param {boolean} args.aborted
- */
-function preIterationKillSwitch(args) {
-  if (args.aborted) {
-    return { kill: KILL_SWITCHES.USER_ABORT, detail: 'AbortSignal triggered before iteration' };
-  }
-  if (args.iterationsCompleted >= args.maxSessions) {
-    return {
-      kill: KILL_SWITCHES.MAX_SESSIONS_REACHED,
-      detail: `iterations_completed=${args.iterationsCompleted} >= max-sessions=${args.maxSessions}`,
-    };
-  }
-  if (args.elapsedMs >= args.maxHoursMs) {
-    const elapsedH = Math.round((args.elapsedMs / 3_600_000) * 100) / 100;
-    const maxH = Math.round((args.maxHoursMs / 3_600_000) * 100) / 100;
-    return {
-      kill: KILL_SWITCHES.MAX_HOURS_EXCEEDED,
-      detail: `elapsed=${elapsedH}h >= max-hours=${maxH}h`,
-    };
-  }
-  if (
-    args.resourceVerdict === 'critical' &&
-    typeof args.peerCount === 'number' &&
-    args.peerCount > args.peerAbortThreshold
-  ) {
-    return {
-      kill: KILL_SWITCHES.RESOURCE_OVERLOAD,
-      detail: `verdict=critical peers=${args.peerCount} > threshold=${args.peerAbortThreshold}`,
-    };
-  }
-  return null;
-}
-
-/**
- * Post-session kill-switch checks. Pure: reads only fields on `sessionResult`
- * (see the `sessionRunner` return-shape contract in the file header) and the
- * configured `carryoverThreshold`. Returns `{kill, detail}` to fire a kill
- * or `null` when the loop may proceed.
- *
- * Field semantics:
- *   - `spiral`             ← `agent_summary.spiral > 0`         (count of spiraled agents)
- *   - `failed-wave`        ← `agent_summary.failed > 0`         (count of failed agents)
- *   - `carryover-too-high` ← `effectiveness.planned_issues > 0`
- *                            AND `effectiveness.carryover / effectiveness.planned_issues > carryoverThreshold`
- *
- * Absent fields are treated as "no signal" — the loop continues. This is
- * deliberate: when a `sessionRunner` (e.g. an older wave-executor wrapper)
- * does not yet emit `agent_summary` or `effectiveness`, the post-session
- * gates are silently no-op and only pre-iteration gates apply.
- *
- * @param {object | null | undefined} sessionResult
- * @param {{carryoverThreshold: number}} args
- * @returns {{kill: string, detail: string} | null}
- */
-function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
-  if (!sessionResult || typeof sessionResult !== 'object') return null;
-
-  const agentSummary = sessionResult.agent_summary;
-  if (agentSummary && typeof agentSummary === 'object') {
-    const spiralCount = Number(agentSummary.spiral);
-    if (Number.isFinite(spiralCount) && spiralCount > 0) {
-      return {
-        kill: KILL_SWITCHES.SPIRAL,
-        detail: `agent_summary.spiral=${spiralCount} > 0`,
-      };
-    }
-    const failedCount = Number(agentSummary.failed);
-    if (Number.isFinite(failedCount) && failedCount > 0) {
-      return {
-        kill: KILL_SWITCHES.FAILED_WAVE,
-        detail: `agent_summary.failed=${failedCount} > 0`,
-      };
-    }
-  }
-
-  const effectiveness = sessionResult.effectiveness;
-  if (effectiveness && typeof effectiveness === 'object') {
-    const planned = Number(effectiveness.planned_issues);
-    const carryover = Number(effectiveness.carryover);
-    if (Number.isFinite(planned) && planned > 0 && Number.isFinite(carryover)) {
-      const ratio = carryover / planned;
-      if (ratio > carryoverThreshold) {
-        const ratioPct = Math.round(ratio * 100) / 100;
-        return {
-          kill: KILL_SWITCHES.CARRYOVER_TOO_HIGH,
-          detail: `carryover/planned=${ratioPct} > threshold=${carryoverThreshold} (carryover=${carryover}, planned=${planned})`,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // runLoop — main controller
 // ---------------------------------------------------------------------------
 
@@ -278,6 +166,7 @@ function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
  * @property {string|null} resource_verdict_at_start
  * @property {boolean} fallback_to_manual
  * @property {boolean} dry_run
+ * @property {number} total_tokens_used
  */
 
 /**
@@ -306,6 +195,7 @@ function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
  * @param {number} [opts.peerAbortThreshold] — overrides DEFAULT_PEER_ABORT_THRESHOLD.
  * @param {number} [opts.carryoverThreshold] — overrides DEFAULT_CARRYOVER_THRESHOLD; ratio above which
  *   `carryover-too-high` fires post-session.
+ * @param {number} [opts.maxTokens] - cumulative output token cap; loop halts when reached
  * @returns {Promise<AutopilotState>}
  */
 export async function runLoop(opts = {}) {
@@ -376,6 +266,7 @@ export async function runLoop(opts = {}) {
     resource_verdict_at_start: initialVerdict,
     fallback_to_manual: false,
     dry_run: dryRun,
+    total_tokens_used: 0,
   };
 
   // Dry-run short-circuits: emit a state record without invoking the lifecycle.
@@ -390,6 +281,7 @@ export async function runLoop(opts = {}) {
   // We re-run pre-iteration checks at the top of every iteration; the order
   // is deliberate: user-abort first (cheapest), then sessions/hours, then
   // resource-overload (requires peerCount probe).
+  let cumulativeTokens = 0;
   for (;;) {
     // Check inexpensive pre-conditions first.
     const elapsedMs = nowMs() - startedAtMs;
@@ -420,6 +312,14 @@ export async function runLoop(opts = {}) {
       peerCount,
       peerAbortThreshold,
       aborted: isAborted(),
+      cumulativeTokensUsed: cumulativeTokens,
+      // Default to 0 (off) when caller omits — kill-switch only activates on
+      // explicit opt-in via `opts.maxTokens` (or future --max-tokens CLI flag).
+      // FLAG_BOUNDS.maxTokens.default (500_000) documents the recommended cap
+      // when the caller chooses to enable, but does NOT auto-activate the
+      // switch. The check at kill-switches.mjs guards on `> 0`, so 0 is a
+      // safe "off" sentinel. Q4 finding (#355).
+      maxTokens: opts.maxTokens ?? 0,
     });
     if (preCheck !== null) {
       state.kill_switch = preCheck.kill;
@@ -479,6 +379,18 @@ export async function runLoop(opts = {}) {
       state.sessions.push(sessionResult.session_id);
     }
     state.iterations_completed += 1;
+
+    // Accumulate output tokens for TOKEN_BUDGET_EXCEEDED kill-switch (#355).
+    // Forward-compat: when sessionRunner doesn't emit `usage`, accumulator stays at 0.
+    if (sessionResult && typeof sessionResult.usage === 'object' && sessionResult.usage !== null) {
+      const outTokens = Number(
+        sessionResult.usage.output_tokens ?? sessionResult.usage.total_tokens
+      );
+      if (Number.isFinite(outTokens) && outTokens > 0) {
+        cumulativeTokens += outTokens;
+      }
+    }
+    state.total_tokens_used = cumulativeTokens;
 
     // Post-session kill-switches (Phase C-1.b — spiral / failed-wave / carryover-too-high).
     const postCheck = postSessionKillSwitch(sessionResult, { carryoverThreshold });
