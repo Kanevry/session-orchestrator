@@ -49,7 +49,7 @@ Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-de
 
 ## Current State
 
-- **Plugin version:** v3.4.0 (released 2026-05-08, GitHub + GitLab tag). Previous releases v3.3.0 (2026-04-30) and v3.2.0 (2026-04-27) at https://github.com/Kanevry/session-orchestrator/releases.
+- **Plugin version:** v3.5.0 (released 2026-05-09, GitHub + GitLab tag). Previous releases v3.4.0 (2026-05-08), v3.3.0 (2026-04-30), v3.2.0 (2026-04-27) at https://github.com/Kanevry/session-orchestrator/releases.
 - **Active epic:** none — v3.2 Autopilot epic (#271) closed 2026-04-30 (all phases A/B/C-1/C-1.b/C-1.c/C-2/C-5 shipped). Sub-issues #297 (calibration, needs ≥10 RUNS) + #298 (evolve type 8, needs runtime data) remain data-gated on autopilot RUN-Volumen, not on code.
 - **Stack:** Node 20+, vitest 4.1.5, ESLint 10. Run `npm ci` after cloning. Test: `npm test`. Lint: `npm run lint`. Coverage thresholds 70/65/70/60.
 - **Tests:** 4430 passed / 12 skipped (stable 2026-05-09 deep-4; +534 net from deep-3 hotspot-splits). validate-plugin 27/27, typecheck 66/66, lint 0, doc-consistency 0 findings. CI security gates: gitleaks 0 leaks (258 commits), npm audit 0 vulnerabilities.

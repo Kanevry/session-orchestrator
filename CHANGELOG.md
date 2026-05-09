@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Four deep sessions on top of v3.4.0 — all on `main`, isolation:none enforcement:warn cap=6.
+_No unreleased changes yet._
+
+## [3.5.0] - 2026-05-09
+
+Four deep sessions on top of v3.4.0 plus a non-tracked architectural refactor. Twenty issues closed (#344 to #363), tests grew from 3138 to **4430** (+1292), zero CI regressions, zero breaking changes. All sessions on `main`, isolation:none, enforcement:warn, cap=6.
 
 1. **2026-05-08 deep-2** — 6 discovery-derived issues (#344 #345 #346 #347 #348 #349): refactor + test-coverage + validator + doc-drift. Tests 3138 → 3591 (+453). validate-plugin 22 → 27.
 2. **2026-05-09 deep-1** — 5 repo-audit cluster (#350 #351 #352 #353 #354): DX + security tooling. CI security gates (gitleaks + npm-audit), git-hooks (Husky + commitlint + lint-staged), Prettier ignore-rules expansion, CLAUDE.md trim + vault long-form archival. Tests stable at 3591 (config-only changes).
