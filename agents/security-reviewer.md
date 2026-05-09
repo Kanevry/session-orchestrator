@@ -130,6 +130,31 @@ At the end of the report:
 - Phase 3 (assessment) complete: yes/no
 ```
 
+### Worked example — fully filled-in HIGH finding
+
+What a single complete finding looks like, with all required fields populated. This is illustrative, not a real vulnerability in this repo:
+
+```
+### [HIGH] Unparameterized user input in invoice search query
+
+- **File**: src/services/invoice-search.ts:87
+- **Category**: sql_injection
+- **Confidence**: 0.95
+- **Issue**: User-supplied `filter` query parameter is interpolated into a raw SQL `WHERE` clause without parameterization, bypassing the project's standard `db.query` parameterized-query pattern used elsewhere in the same file (lines 42, 65).
+- **Exploit scenario**: An authenticated user submits `GET /api/invoices?filter=' OR 1=1; DROP TABLE invoices;--`. The interpolated query becomes `SELECT * FROM invoices WHERE customer LIKE '%' OR 1=1; DROP TABLE invoices;--%'`, executing the dropped-table side effect. Even without DDL privileges, the `OR 1=1` segment leaks every invoice across all tenants.
+- **Impact**: Cross-tenant data exfiltration (every invoice in the DB visible to any authenticated user); DDL execution depending on DB role; auditable as a CWE-89 SQL injection.
+- **Remediation**: Replace the template-literal interpolation with the project's existing parameterized helper: `db.query('SELECT * FROM invoices WHERE customer LIKE $1', [\`%${filter}%\`])`. The same file uses this pattern at line 42 — match it.
+```
+
+Notes on the example:
+- **Concrete file:line** — not "somewhere in invoice-search". Lookup-able in 2 seconds.
+- **Concrete payload** — the exploit string, not "an attacker could inject SQL". Reviewer can verify the exploitability claim by reading the line.
+- **Comparative reference** — calls out the *project's existing* parameterized pattern (line 42). Phase 1 (context research) feeds Phase 3 here.
+- **Numeric confidence** — 0.95 means "could write a working PoC against this code". Reserved for clear-cut cases.
+- **Concise impact** — one sentence each on data, system, and audit dimensions.
+
+Findings should aim for this level of specificity. Vague reports waste reviewer time and erode trust in the agent's output.
+
 ## Severity Calibration
 
 - **HIGH**: Directly exploitable → RCE, data breach, auth bypass. Attacker action is straightforward; no exotic conditions required.

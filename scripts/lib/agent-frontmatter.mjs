@@ -19,8 +19,14 @@ import { readFileSync } from 'node:fs';
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
-const ALLOWED_MODELS = new Set(['inherit', 'sonnet', 'opus', 'haiku']);
-const ALLOWED_COLORS = new Set(['blue', 'cyan', 'green', 'yellow', 'magenta', 'red']);
+// Aliases per https://code.claude.com/docs/en/sub-agents § model resolution.
+// Full model IDs (claude-{opus|sonnet|haiku}-N-N[-YYYYMMDD]) also accepted via MODEL_ID_RE.
+const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku']);
+const MODEL_ID_RE = /^claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?$/;
+
+// Canonical Anthropic palette (red|blue|green|yellow|purple|orange|pink|cyan)
+// plus magenta from plugin-dev SKILL.md for backward-compat.
+const ALLOWED_COLORS = new Set(['blue', 'cyan', 'green', 'yellow', 'magenta', 'red', 'purple', 'orange', 'pink']);
 
 /**
  * name must be 3–50 chars, lowercase letters, digits, hyphens only,
@@ -148,11 +154,11 @@ export function validateAgentFrontmatter(frontmatter) {
       rule: 'required',
       message: 'model is required',
     });
-  } else if (!ALLOWED_MODELS.has(model)) {
+  } else if (!ALLOWED_MODEL_ALIASES.has(model) && !MODEL_ID_RE.test(model)) {
     errors.push({
       path: 'model',
       rule: 'enum',
-      message: `model must be one of ${[...ALLOWED_MODELS].map((m) => JSON.stringify(m)).join('|')} (got ${JSON.stringify(model)})`,
+      message: `model must be one of ${[...ALLOWED_MODEL_ALIASES].map((m) => JSON.stringify(m)).join('|')} or a full model ID like "claude-opus-4-7" (got ${JSON.stringify(model)})`,
     });
   }
 
@@ -173,15 +179,39 @@ export function validateAgentFrontmatter(frontmatter) {
   }
 
   // --- tools (optional) ---
+  // Both forms accepted per Anthropic canonical:
+  //   1. Comma-separated string: "Read, Edit, Write"
+  //   2. JSON array:             ["Read","Edit","Write"]
+  // Reject only malformed arrays (non-string elements, parse failures).
   const tools = frontmatter['tools'];
-  if (tools !== undefined && tools !== '') {
+  if (tools !== undefined && tools !== '' && typeof tools === 'string') {
     if (tools.startsWith('[')) {
-      errors.push({
-        path: 'tools',
-        rule: 'no-json-array',
-        message:
-          'tools must be a comma-separated string (e.g. "Read, Edit, Write"), not a JSON array (e.g. ["Read","Edit"])',
-      });
+      let parsed;
+      try {
+        parsed = JSON.parse(tools);
+      } catch {
+        errors.push({
+          path: 'tools',
+          rule: 'malformed-array',
+          message: `tools is a malformed JSON array: ${tools}`,
+        });
+        parsed = null;
+      }
+      if (parsed !== null) {
+        if (!Array.isArray(parsed)) {
+          errors.push({
+            path: 'tools',
+            rule: 'array-expected',
+            message: `tools must be an array when using JSON form (got ${typeof parsed})`,
+          });
+        } else if (!parsed.every((t) => typeof t === 'string')) {
+          errors.push({
+            path: 'tools',
+            rule: 'array-strings-only',
+            message: 'tools array must contain only string elements',
+          });
+        }
+      }
     }
   }
 

@@ -2,7 +2,7 @@
 name: session-reviewer
 description: Use this agent between waves or at session end to verify work quality against the session plan. Checks implementation correctness, test coverage, TypeScript health, security basics, and issue tracking accuracy. <example>Context: Impl-Core wave is complete, coordinator needs quality check before Impl-Polish. user: "Impl-Core wave done, review before continuing" assistant: "I'll dispatch the session-reviewer to verify Impl-Core outputs." <commentary>Inter-wave quality gate ensures issues are caught early, not at session end.</commentary></example> <example>Context: Session end, verifying all work before committing. user: "/close" assistant: "Running session-reviewer to verify all session work before committing." <commentary>Final quality gate before any code is committed.</commentary></example>
 model: sonnet
-color: cyan
+color: pink
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -49,6 +49,53 @@ Check changed files for error handling patterns that silently suppress failures:
 - Event handlers that silently fail: `try { ... } catch { /* continue */ }`
 
 For each finding, assess whether the error suppression is intentional (e.g., graceful UI degradation, optional cache lookup) or a bug (e.g., data pipeline silently dropping records, API endpoint swallowing auth errors).
+
+#### Differentiation — graceful degradation vs. bug
+
+The hard part of silent-failure review is distinguishing legitimate fallbacks from bugs that the same syntax can express. Use these patterns:
+
+```ts
+// GRACEFUL — optional cache lookup
+const cached = await redis.get(key).catch(() => null);
+if (cached) return cached;
+// Fallback to DB is intentional. catch() returns null which is valid sentinel for "no cache".
+
+// BUG — auth error swallowed
+const session = await getSession().catch(() => null);
+if (!session) return defaultData;
+// catch() suppresses any auth/network error and returns default data.
+// The user might be unauthenticated AND the auth service might be down —
+// no way to distinguish from this code. Should propagate auth errors.
+
+// GRACEFUL — optional feature flag
+const flags = await fetchFlags().catch(() => ({}));
+return flags.experimentalUI ?? false;
+// Empty object is valid: missing flags == feature off. No data loss, no security impact.
+
+// BUG — data pipeline drops records silently
+for (const item of batch) {
+  try {
+    await persist(item);
+  } catch (e) {
+    console.error('Skipped item', e); // ← silent data loss
+  }
+}
+// Records vanish. Should at minimum collect failures and surface them, ideally retry or DLQ.
+
+// GRACEFUL — UI render fallback
+{user?.avatar ? <Avatar src={user.avatar} /> : <DefaultAvatar />}
+// Truly optional rendering, no logic affected.
+
+// BUG — config load swallowed
+let config;
+try { config = JSON.parse(readFileSync('config.json')); } catch { config = {}; }
+// App proceeds with empty config — likely produces broken downstream behavior.
+// Should fail loudly at startup; runtime error from missing config is better than silent misbehavior.
+```
+
+**Heuristic rules:**
+- *Graceful* if: failure is recoverable, fallback path is observable to caller, no security/data integrity impact.
+- *Bug* if: failure indicates a real problem the operator needs to know about, fallback masks the failure entirely, or impacts data integrity / auth / billing.
 
 ### 7. Test Depth Check
 For each changed source file that has corresponding tests:

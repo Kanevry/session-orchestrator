@@ -119,39 +119,57 @@ color: blue
 });
 
 // ---------------------------------------------------------------------------
-// Agent with tools as JSON array (forbidden)
+// Agent with tools as JSON array (accepted — Anthropic canonical)
+// Source: https://code.claude.com/docs/en/sub-agents and plugins/plugin-dev/agents/*.md
+// which all use array form. Both string and array form must validate.
 // ---------------------------------------------------------------------------
 
-describe('check-agents.mjs — tools as JSON array', () => {
+describe('check-agents.mjs — tools as JSON array (accepted)', () => {
   let dir;
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-  it('exits 1 when agent tools field is a JSON array', () => {
+  it('exits 0 when agent tools field is a valid JSON array of strings', () => {
     dir = makeFixture();
-    writeAgent(dir, 'bad-tools.md', `---
-name: bad-tools
+    writeAgent(dir, 'array-tools.md', `---
+name: array-tools
 description: Some description inline here
 model: inherit
 color: blue
-tools: ["Read", "Edit"]
+tools: ["Read", "Edit", "Grep"]
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 1 when JSON array contains a non-string element', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'bad-array-tools.md', `---
+name: bad-array-tools
+description: Some description inline here
+model: inherit
+color: blue
+tools: ["Read", 42, "Grep"]
 ---
 `);
     const r = run(dir);
     expect(r.status).toBe(1);
+    expect(r.stdout).toContain('tools array must contain only string elements');
   });
 
-  it('emits FAIL line mentioning comma-separated string when tools is a JSON array', () => {
+  it('exits 1 when tools value is malformed JSON (trailing comma)', () => {
     dir = makeFixture();
-    writeAgent(dir, 'bad-tools.md', `---
-name: bad-tools
+    writeAgent(dir, 'malformed-tools.md', `---
+name: malformed-tools
 description: Some description inline here
 model: inherit
 color: blue
-tools: ["Read", "Edit"]
+tools: ["Read", "Edit",]
 ---
 `);
     const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: bad-tools.md: tools must be a comma-separated string, not a JSON array');
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('malformed JSON array');
   });
 });
 
@@ -225,7 +243,57 @@ color: blue
 ---
 `);
     const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: bad-model.md: model must be one of inherit|sonnet|opus|haiku (got: \'gpt-4\')');
+    expect(r.stdout).toContain("FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku or a full model ID like 'claude-opus-4-7' (got: 'gpt-4')");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent with model as full model ID (accepted — canonical doc)
+// Source: https://code.claude.com/docs/en/sub-agents § Supported frontmatter fields:
+//   "Use a full model ID such as `claude-opus-4-7` or `claude-sonnet-4-6`."
+// ---------------------------------------------------------------------------
+
+describe('check-agents.mjs — model as full model ID (accepted)', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('exits 0 when agent model is a full claude-opus-4-7 ID', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'full-id.md', `---
+name: full-id
+description: Some description inline here
+model: claude-opus-4-7
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent model is a full claude-sonnet-4-6 ID', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'sonnet-id.md', `---
+name: sonnet-id
+description: Some description inline here
+model: claude-sonnet-4-6
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent model is a dated full ID like claude-haiku-4-5-20251001', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'dated-id.md', `---
+name: dated-id
+description: Some description inline here
+model: claude-haiku-4-5-20251001
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
   });
 });
 
@@ -237,13 +305,13 @@ describe('check-agents.mjs — invalid color value', () => {
   let dir;
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-  it('exits 1 when agent color field has an invalid value', () => {
+  it('exits 1 when agent color field is not in the canonical palette', () => {
     dir = makeFixture();
     writeAgent(dir, 'bad-color.md', `---
 name: bad-color
 description: Some description inline here
 model: inherit
-color: purple
+color: turquoise
 ---
 `);
     const r = run(dir);
@@ -256,11 +324,62 @@ color: purple
 name: bad-color
 description: Some description inline here
 model: inherit
+color: turquoise
+---
+`);
+    const r = run(dir);
+    expect(r.stdout).toContain("FAIL: bad-color.md: color must be one of blue|cyan|green|yellow|magenta|red|purple|orange|pink (got: 'turquoise')");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent with canonical-palette colors (purple/orange/pink) — all accepted
+// Source: https://code.claude.com/docs/en/sub-agents § color values:
+//   "Accepts `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, or `cyan`"
+// Plus `magenta` from plugin-dev SKILL.md for backward-compat with our existing agents.
+// ---------------------------------------------------------------------------
+
+describe('check-agents.mjs — canonical color palette (purple/orange/pink accepted)', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('exits 0 when agent color is purple', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'purple-agent.md', `---
+name: purple-agent
+description: Some description inline here
+model: inherit
 color: purple
 ---
 `);
     const r = run(dir);
-    expect(r.stdout).toContain("  FAIL: bad-color.md: color must be one of blue|cyan|green|yellow|magenta|red (got: 'purple')");
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent color is orange', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'orange-agent.md', `---
+name: orange-agent
+description: Some description inline here
+model: inherit
+color: orange
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent color is pink', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'pink-agent.md', `---
+name: pink-agent
+description: Some description inline here
+model: inherit
+color: pink
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
   });
 });
 

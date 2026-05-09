@@ -127,7 +127,7 @@ describe('validateAgentFrontmatter', () => {
   });
 
   it('accepts all valid color values', () => {
-    for (const color of ['blue', 'cyan', 'green', 'yellow', 'magenta', 'red']) {
+    for (const color of ['blue', 'cyan', 'green', 'yellow', 'magenta', 'red', 'purple', 'orange', 'pink']) {
       const fm = { name: 'my-agent', description: 'Desc.', model: 'inherit', color };
       expect(validateAgentFrontmatter(fm).ok, `color=${color}`).toBe(true);
     }
@@ -144,15 +144,36 @@ describe('validateAgentFrontmatter', () => {
     expect(validateAgentFrontmatter(fm).ok).toBe(true);
   });
 
-  // --- Negative: JSON-array tools ---
-  it('rejects tools as JSON array string', () => {
+  // --- Tools accepts both comma-string and JSON-array forms (Anthropic canonical) ---
+  it('accepts tools as JSON array of strings', () => {
     const result = parseAgentFrontmatter(validContents({ tools: '["Read", "Edit"]' }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const v = validateAgentFrontmatter(result.frontmatter);
+      expect(v.ok).toBe(true);
+    }
+  });
+
+  it('rejects tools as JSON array containing non-string element', () => {
+    const result = parseAgentFrontmatter(validContents({ tools: '["Read", 42]' }));
     expect(result.ok).toBe(true);
     if (result.ok) {
       const v = validateAgentFrontmatter(result.frontmatter);
       expect(v.ok).toBe(false);
       if (!v.ok) {
-        expect(v.errors.some((e) => e.path === 'tools' && e.rule === 'no-json-array')).toBe(true);
+        expect(v.errors.some((e) => e.path === 'tools' && e.rule === 'array-strings-only')).toBe(true);
+      }
+    }
+  });
+
+  it('rejects tools as malformed JSON array (trailing comma)', () => {
+    const result = parseAgentFrontmatter(validContents({ tools: '["Read",]' }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const v = validateAgentFrontmatter(result.frontmatter);
+      expect(v.ok).toBe(false);
+      if (!v.ok) {
+        expect(v.errors.some((e) => e.path === 'tools' && e.rule === 'malformed-array')).toBe(true);
       }
     }
   });
@@ -173,7 +194,8 @@ describe('validateAgentFrontmatter', () => {
 
   // --- Negative: invalid color ---
   it('rejects invalid color', () => {
-    const result = parseAgentFrontmatter(validContents({ color: 'purple' }));
+    // 'turquoise' is outside the canonical 8-color palette + magenta
+    const result = parseAgentFrontmatter(validContents({ color: 'turquoise' }));
     expect(result.ok).toBe(true);
     if (result.ok) {
       const v = validateAgentFrontmatter(result.frontmatter);
@@ -303,10 +325,10 @@ describe('docs-writer agent frontmatter', () => {
     if (parsed.ok) expect(parsed.frontmatter['name']).toBe('docs-writer');
   });
 
-  it('has color === "blue"', () => {
+  it('has color === "cyan"', () => {
     const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.frontmatter['color']).toBe('blue');
+    if (parsed.ok) expect(parsed.frontmatter['color']).toBe('cyan');
   });
 
   it('has model === "inherit"', () => {

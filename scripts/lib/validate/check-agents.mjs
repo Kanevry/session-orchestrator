@@ -139,31 +139,53 @@ if (mdFiles.length === 0) {
       }
     }
 
-    // model: must be one of inherit | sonnet | opus | haiku
+    // model: alias (inherit|sonnet|opus|haiku) OR full model ID (claude-{opus|sonnet|haiku}-N-N[-YYYYMMDD])
+    // Per https://code.claude.com/docs/en/sub-agents — the canonical doc accepts both.
     if (hasField(frontmatter, 'model')) {
       const modelVal = getField(frontmatter, 'model');
-      if (modelVal === null || !/^(inherit|sonnet|opus|haiku)$/.test(modelVal)) {
+      const modelRe = /^(inherit|sonnet|opus|haiku|claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?)$/;
+      if (modelVal === null || !modelRe.test(modelVal)) {
         const got = modelVal ?? '';
-        fail(`${agentName}: model must be one of inherit|sonnet|opus|haiku (got: '${got}')`);
+        fail(`${agentName}: model must be inherit|sonnet|opus|haiku or a full model ID like 'claude-opus-4-7' (got: '${got}')`);
       }
     }
 
-    // color: must be one of blue | cyan | green | yellow | magenta | red
+    // color: canonical Anthropic palette (red|blue|green|yellow|purple|orange|pink|cyan) plus magenta from plugin-dev SKILL.md.
+    // Source: https://code.claude.com/docs/en/sub-agents § Supported frontmatter fields.
     if (hasField(frontmatter, 'color')) {
       const colorVal = getField(frontmatter, 'color');
-      if (colorVal === null || !/^(blue|cyan|green|yellow|magenta|red)$/.test(colorVal)) {
+      const colorRe = /^(blue|cyan|green|yellow|magenta|red|purple|orange|pink)$/;
+      if (colorVal === null || !colorRe.test(colorVal)) {
         const got = colorVal ?? '';
-        fail(`${agentName}: color must be one of blue|cyan|green|yellow|magenta|red (got: '${got}')`);
+        fail(`${agentName}: color must be one of blue|cyan|green|yellow|magenta|red|purple|orange|pink (got: '${got}')`);
       }
     }
 
-    // tools: optional — but when present must be a comma-separated string, not a JSON array or YAML block scalar
+    // tools: optional. Accepts BOTH forms per Anthropic canonical:
+    //   1. Comma-separated string: `tools: Read, Grep, Glob`
+    //   2. JSON array:             `tools: ["Read", "Grep", "Glob"]`
+    // Anthropic's own reference agents (plugins/plugin-dev/agents/*) use array form.
+    // Reject only YAML block scalars (`>` or `|`) and malformed arrays (e.g. trailing comma, non-string elements).
     if (hasField(frontmatter, 'tools')) {
       const toolsVal = getField(frontmatter, 'tools');
-      if (toolsVal !== null && /^\[/.test(toolsVal)) {
-        fail(`${agentName}: tools must be a comma-separated string, not a JSON array (got: '${toolsVal}')`);
-      } else if (toolsVal !== null && /^[>|]/.test(toolsVal)) {
-        fail(`${agentName}: tools must be a comma-separated string, not a YAML block scalar (got: '${toolsVal}')`);
+      if (toolsVal !== null && /^[>|]/.test(toolsVal)) {
+        fail(`${agentName}: tools must be a comma-separated string or JSON array, not a YAML block scalar (got: '${toolsVal}')`);
+      } else if (toolsVal !== null && /^\[/.test(toolsVal)) {
+        // JSON-array form — parse and validate each element is a string
+        let parsed;
+        try {
+          parsed = JSON.parse(toolsVal);
+        } catch {
+          fail(`${agentName}: tools is a malformed JSON array (got: '${toolsVal}')`);
+          parsed = null;
+        }
+        if (parsed !== null) {
+          if (!Array.isArray(parsed)) {
+            fail(`${agentName}: tools must be an array when using JSON form (got: '${toolsVal}')`);
+          } else if (!parsed.every((t) => typeof t === 'string')) {
+            fail(`${agentName}: tools array must contain only string elements (got: '${toolsVal}')`);
+          }
+        }
       }
     }
   }
