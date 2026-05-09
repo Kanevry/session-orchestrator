@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Deep session shipping 6 discovery-derived issues (#344 #345 #346 #347 #348 #349) — refactor + test-coverage + validator + doc-drift cluster. 5W×6A coordinator-direct on `main`, isolation:none enforcement:warn cap=6. Tests grew 3138 → 3591 (+453). validate-plugin grew 22 → 27 (+5 from new symmetry validator). No breaking changes.
+Two deep sessions on top of v3.4.0 — both coordinator-direct on `main`, isolation:none enforcement:warn cap=6.
 
-### Added (Unreleased)
+1. **2026-05-08 deep-2** — 6 discovery-derived issues (#344 #345 #346 #347 #348 #349): refactor + test-coverage + validator + doc-drift. Tests 3138 → 3591 (+453). validate-plugin 22 → 27.
+2. **2026-05-09 deep-1** — 5 repo-audit cluster (#350 #351 #352 #353 #354): DX + security tooling. CI security gates (gitleaks + npm-audit), git-hooks (Husky + commitlint + lint-staged), Prettier ignore-rules expansion, CLAUDE.md trim + vault long-form archival. Tests stable at 3591 (config-only changes).
+
+No breaking changes.
+
+### Added (Unreleased) — 2026-05-09 deep-1 (#350–#354)
+
+- **#350 gitleaks pre-commit + CI step** — `.gitleaks.toml` (already tracked from prior baseline-vendor work) extended with plugin-specific allowlist patterns (`.test.mjs` / `.spec.mjs` / `tests/` / skill+rule+command+agent Markdown / `AGENTS.md` / `README.md` / `CHANGELOG.md`). NEW `gitleaks-scan` job in `.gitlab-ci.yml` (new `security` stage, runs first, fails on findings). NEW `security` job in `.github/workflows/test.yml` (gates `test` job via `needs:`, uses `gitleaks/gitleaks-action@v2.3.7` pinned by SHA). NEW `.husky/pre-commit` invocation `gitleaks protect --staged --redact --no-banner` with graceful skip when binary absent. Local dry-run: 0 leaks across 258 commits. Issue closed.
+- **#351 npm audit step in CI pipelines** — NEW `npm-audit` job in `.gitlab-ci.yml` (`security` stage, runs `npm audit --audit-level=high --omit=dev`, configurable via `AUDIT_LEVEL` CI variable for false-positive triage). Mirrored as a step in the GitHub `security` job. Local dry-run: 0 vulnerabilities. Bypass mechanism documented in yaml comment. Issue closed.
+- **#352 Husky + commitlint + lint-staged** — NEW `.husky/pre-commit` (gitleaks + lint-staged) + `.husky/commit-msg` (commitlint). NEW `commitlint.config.mjs` (extends `@commitlint/config-conventional`, type-enum matches `.claude/rules/development.md`, `header-max-length: 120`). NEW `.lintstagedrc.mjs` (`*.mjs → eslint --fix`). `package.json` adds 4 devDeps (husky 9.1.7, @commitlint/cli + config-conventional 19.6.0, lint-staged 15.2.10) + `prepare: husky` + `format` / `format:check` scripts. README `## Development` section gains "Pre-commit hooks" subsection documenting the `npx husky` post-install requirement (because `.npmrc` ships `ignore-scripts=true` for SEC-020 supply-chain defence). Issue closed.
+
+### Changed (Unreleased) — 2026-05-09 deep-1 (#350–#354)
+
+- **#353 Prettier configs** — `.prettierrc` already existed (committed 2026-04-19); `.prettierignore` extended from 5 to 24 lines (added `coverage/`, `dist/`, `build/`, lock-file siblings, `.husky/_/`, backup patterns; preserved existing `*.md` + `docs/` + `.orchestrator/` ignores). `package.json` adds `format` / `format:check` scripts (prettier already devDep). Repo-audit's `quality.prettier-config: fail` was a glob false-negative — file is committed and content is canonical. Issue closed.
+- **#354 CLAUDE.md trim** — Working-tree compaction completed: HEAD CLAUDE.md (110L) → working tree (88L), within ≤100L lean target. Two verbose multi-paragraph session bullets (2026-05-08 deep-2 + 2026-05-08 PM v3.4.0) extracted from HEAD and prepended to `~/Projects/vault/01-projects/session-orchestrator/decisions.md` (191L → 260L, +69L). Migration disclaimer in vault note updated with `**Update 2026-05-09:**` annotation. Information-loss check: every removed bullet now in vault. Issue closed.
+
+### Added (Unreleased) — 2026-05-08 deep-2 (#344, #347)
 
 - **#344 crypto-digest-utils.mjs** — DRY 6 sha256-hash sites. NEW `scripts/lib/crypto-digest-utils.mjs` (~90L, 4 named exports: `digestSha256Short` (default 8-char hex prefix), `digestSha256` (full digest), `digestSha256WithSalt` (salt+\\x00+value pattern with required salt + TypeError validation), `digestMultiBufferSha256` (sequential multi-buffer update, array-required)). Migrated 6 callers byte-equivalent: `spiral-carryover.mjs` (computeTaskHash), `host-identity.mjs` (hashHostname — preserves salt+NUL+hostname order invariant), `quality-gates-cache.mjs` (computeDependencyHash multi-buffer), `frontmatter-guard.mjs` (computeSchemaHash), `session-registry.mjs` (repoPathHash — NOTE: keeps `crypto` import for `randomBytes`), `vault-sync-baseline.mjs` (computeSchemaHash). 29 vitest cases with hardcoded hex literals (no tautological computation). Issue closed.
 - **#347 check-hooks-symmetry validator** — NEW `scripts/lib/validate/check-hooks-symmetry.mjs` (127L after simplifier) with 4 sequential checks: (1) hooks.json↔hooks-codex.json event-key parity (must match exactly); (2) hooks-cursor.json documented-asymmetry policy via `DOCUMENTED_ASYMMETRIES` constant (9 cursor-missing-from-main + 2 cursor-only); (3) handler files exist on disk for all referenced .mjs (skips `_lib/*` library modules); (4) orphan-detection (informational PASS for unreferenced hooks/*.mjs). Wired into `scripts/validate-plugin.mjs` after L123 (2 lines added). Simplifier extracted `loadJson(filePath, required)` helper (-9L). 30 vitest cases via synthetic temp-dir fixtures + 3 real-plugin happy-path cases. Issue closed.
@@ -26,10 +42,11 @@ Deep session shipping 6 discovery-derived issues (#344 #345 #346 #347 #348 #349)
 
 ### Quality (Unreleased)
 
-- typecheck: 66/66 OK (was 65; +1 NEW module crypto-digest-utils.mjs)
-- lint: 0 errors (5 inline coordinator fixes during inter-wave Quality-Lite: 3 unused imports + 2 unused-vars in `tests/lib/vault-mirror/{auto-commit,process}.test.mjs`)
-- tests: **3591 passed / 12 skipped / 0 failed** (was 3138, **+453 NEW tests**)
-- validate-plugin: **27 passed, 0 failed** (was 22; +5 from new check-hooks-symmetry validator)
+- typecheck: 66/66 OK (was 65 at v3.4.0; +1 NEW module crypto-digest-utils.mjs in deep-2)
+- lint: 0 errors
+- tests: **3591 passed / 12 skipped / 0 failed** (was 3138 at v3.4.0, **+453 in deep-2**, stable in deep-1 — config-only changes)
+- validate-plugin: **27 passed, 0 failed** (was 22 at v3.4.0; +5 from check-hooks-symmetry validator in deep-2)
+- CI security gates pre-validated locally: gitleaks 0 leaks (258 commits), npm audit 0 vulnerabilities (production deps, audit-level=high)
 
 ## [3.4.0] - 2026-05-08
 

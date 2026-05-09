@@ -32,6 +32,8 @@ Thumbs.db
 .orchestrator/metrics/*.jsonl.bak-*
 .orchestrator/metrics/*.jsonl.bak.*
 .orchestrator/metrics/*.jsonl.archive-*
+.orchestrator/metrics/repo-audit-*.json
+.orchestrator/metrics/sweep.log
 
 # Vitest coverage artifacts (#263)
 coverage/

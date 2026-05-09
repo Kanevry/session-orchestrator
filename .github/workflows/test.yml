@@ -13,7 +13,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Security gates — run on Linux only, fail fast (#350, #351)
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 1
+
+      - name: gitleaks scan
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+      - name: Setup Node 20
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v4.1.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: npm audit (production deps, high+)
+        # --audit-level=high matches `audit-level=high` in .npmrc.
+        # --omit=dev: only production deps gate the pipeline. Dev deps may
+        # carry advisories without affecting shipped runtime.
+        run: npm audit --audit-level=high --omit=dev
+
   test:
+    needs: security
     strategy:
       fail-fast: false
       matrix:

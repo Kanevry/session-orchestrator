@@ -424,6 +424,23 @@ Additional scripts:
 - `npm run test:watch` — vitest in watch mode
 - `npm run lint` / `npm run lint:fix` — ESLint v9 + Prettier
 - `npm run typecheck` — `node --check` on every `.mjs` file (syntactic-only; no TypeScript yet)
+- `npm run format` / `npm run format:check` — Prettier (write / check)
+
+### Pre-commit hooks (Husky + commitlint + lint-staged) — #352
+
+`.npmrc` ships with `ignore-scripts=true` (SEC-020 supply-chain defence), so the `prepare` script does **not** auto-run on `npm install`. After cloning, run husky once manually:
+
+```bash
+npm install
+npx husky                  # one-time setup — wires git hooks via .husky/_/
+```
+
+After that, `git commit` will:
+
+- **pre-commit**: run `lint-staged` (ESLint `--fix` on staged `*.mjs` files) — and (after #350 polish) gitleaks scan on staged files.
+- **commit-msg**: validate Conventional Commits format via commitlint.
+
+To bypass (rare; emergencies only): `git commit --no-verify`. CI re-runs everything that pre-commit ran, plus more.
 
 The legacy `bats` shell suite (`scripts/test/run-all.sh`) is retained for historical reference but is **deprecated** and will be removed in a future release. Do not add new tests there — use `tests/**/*.test.mjs` under vitest.
 

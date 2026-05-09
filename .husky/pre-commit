@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Husky v9+ — pre-commit hook
+#
+# Two stages, fail-fast:
+#   1. gitleaks (#350) — scan staged changes for secrets.
+#      Skipped silently if gitleaks is not installed locally
+#      (CI still runs it via gitleaks-scan job in .gitlab-ci.yml).
+#   2. lint-staged (#352) — eslint --fix on staged *.mjs.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --no-banner --config .gitleaks.toml || {
+    echo "✗ gitleaks: secret detected in staged changes. Commit blocked." >&2
+    echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
+    exit 1
+  }
+fi
+
+npx lint-staged

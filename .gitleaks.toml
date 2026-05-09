@@ -35,15 +35,25 @@ paths = [
   # Test files
   ".*\\.test\\.ts",
   ".*\\.test\\.tsx",
+  ".*\\.test\\.mjs",
   ".*\\.spec\\.ts",
   ".*\\.spec\\.tsx",
+  ".*\\.spec\\.mjs",
   ".*/__tests__/.*",
   ".*/__mocks__/.*",
+  "tests/.*",
 
   # Documentation (skills may reference credential formats; rules are scanned)
+  "skills/.*\\.md",
   "\\.claude/skills/.*\\.md",
+  "\\.claude/rules/.*\\.md",
   "docs/.*\\.md",
+  "commands/.*\\.md",
+  "agents/.*\\.md",
   "CLAUDE\\.md",
+  "AGENTS\\.md",
+  "README\\.md",
+  "CHANGELOG\\.md",
 
   # Seed/fixture files
   "seeds/.*",

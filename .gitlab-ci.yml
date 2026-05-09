@@ -18,6 +18,7 @@
 #   Leave that file untouched — it serves the public GitHub mirror only.
 
 stages:
+  - security
   - test
   - verify
   - coverage
@@ -53,6 +54,47 @@ variables:
         - package-lock.json
     paths:
       - node_modules/
+
+# ---------------------------------------------------------------------------
+# Stage: security (#350, #351)
+#
+# Two gates run before tests:
+#   gitleaks-scan  — scans the working tree for committed secrets
+#   npm-audit      — runs `npm audit --audit-level=high --omit=dev`
+#
+# Both fail the pipeline on findings. The npm-audit job uses
+# --audit-level=high (matches `audit-level=high` in .npmrc); to bypass a
+# false positive temporarily, override per-pipeline via CI variable
+# AUDIT_LEVEL=critical (still gates on critical) — never silently ignore.
+# ---------------------------------------------------------------------------
+
+gitleaks-scan:
+  stage: security
+  image: zricethezav/gitleaks:latest
+  interruptible: true
+  timeout: 5m
+  script:
+    - gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+npm-audit:
+  stage: security
+  image: node:${NODE_VERSION}
+  interruptible: true
+  timeout: 5m
+  variables:
+    AUDIT_LEVEL: "high"
+  script:
+    # --omit=dev: only production deps gate the pipeline. Dev deps may
+    # carry advisories without affecting shipped runtime.
+    # --audit-level: high by default; set AUDIT_LEVEL=critical via CI
+    # variable to temporarily lower the bar while triaging a false positive.
+    - npm audit --audit-level=${AUDIT_LEVEL} --omit=dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ---------------------------------------------------------------------------
 # Stage: test
