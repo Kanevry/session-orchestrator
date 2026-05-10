@@ -263,7 +263,7 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
     const mod = await import('../../scripts/lib/session-schema.mjs');
     expect(Object.isFrozen(mod.SESSION_KEY_ALIASES)).toBe(true);
     // Floor/ceiling per test-quality.md "Dynamic Artifact Counts" rule.
-    // Current count: 11 safe-rename aliases. Allow growth but catch empty export.
+    // Current count: 13 safe-rename aliases. Allow growth but catch empty export.
     const keyCount = Object.keys(mod.SESSION_KEY_ALIASES).length;
     expect(keyCount).toBeGreaterThanOrEqual(1);
     expect(keyCount).toBeLessThanOrEqual(50);

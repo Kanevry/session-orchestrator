@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -725,5 +725,53 @@ describe('runLoop — state shape and telemetry record', () => {
     });
     expect(state.total_tokens_used).toBe(0);
     expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STALL_TIMEOUT wire-up (issue #371)
+// ---------------------------------------------------------------------------
+
+describe('runLoop — STALL_TIMEOUT wire-up (issue #371)', () => {
+  it('increments state.stall_recovery_count when STALL_TIMEOUT fires', async () => {
+    // Seed a stale autopilot.jsonl at a DIFFERENT path than the loop's output —
+    // this lets us pre-stale the sampler input without contaminating the
+    // loop's own append-once write.
+    const stalePath = path.join(tmp, 'stale-autopilot.jsonl');
+    writeFileSync(stalePath, JSON.stringify({ marker: 'old' }) + '\n');
+    // Force a fixed clock so we control deltaMs deterministically.
+    const fakeNow = 2_000_000_000_000;
+    const staleMs = fakeNow - 1000 * 1000; // 1000s in the past (>= 600 threshold)
+    utimesSync(stalePath, new Date(staleMs), new Date(staleMs));
+
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const state = await runLoop({
+      maxSessions: 5,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner: async ({ autopilotRunId }) => ({
+        session_id: `${autopilotRunId}-r1`,
+        agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+      }),
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'stall-recovery-test',
+      // Point the STALL sampler at the stale path; supply the fixed clock.
+      autopilotJsonlPath: stalePath,
+      stallTimeoutSeconds: 600,
+      nowMs: () => fakeNow,
+    });
+
+    expect(state.kill_switch).toBe(KILL_SWITCHES.STALL_TIMEOUT);
+    expect(state.stall_recovery_count).toBe(1);
+    expect(state.kill_switch_detail).toMatch(/stalled \d+s/);
+
+    // Verify the JSONL record carries the recovery counter through telemetry.
+    const records = readFileSync(jsonlPath, 'utf8').trim().split('\n');
+    const last = JSON.parse(records[records.length - 1]);
+    expect(last.stall_recovery_count).toBe(1);
+    expect(last.kill_switch).toBe('stall-timeout');
   });
 });

@@ -9,6 +9,8 @@
  * No circular imports: this module does NOT import from autopilot.mjs.
  */
 
+import { sampleProgress } from './stall-sampler.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -106,25 +108,32 @@ export function preIterationKillSwitch(args) {
  * Absent fields are treated as "no signal" — the loop continues.
  *
  * @param {object | null | undefined} sessionResult
- * @param {{carryoverThreshold: number}} args
+ * @param {object} opts
+ * @param {number} opts.carryoverThreshold
+ * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler input
+ * @param {number} [opts.stallTimeoutSeconds] — STALL_TIMEOUT threshold (default 600)
+ * @param {() => number} [opts.nowMs] — wall-clock supplier (DI seam for tests)
  * @returns {{kill: string, detail: string} | null}
  */
-export function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
+export function postSessionKillSwitch(sessionResult, opts) {
   if (!sessionResult || typeof sessionResult !== 'object') return null;
+  const { carryoverThreshold } = opts;
 
-  // STALL_TIMEOUT (ADR-364) — scaffold only, sampler deferred.
-  // When the sampler ships in a follow-up issue, replace the const below with
-  // the real check; until then, this evaluator MUST return null unconditionally
-  // so the kill-switch never fires from the scaffold alone (per ADR §3 risk #2).
-  //
-  // Wire-up follow-up: scripts/lib/autopilot/loop.mjs runLoop sampler at 30s
-  // intervals; emits one autopilot.jsonl entry on fire (NOT failures.jsonl —
-  // see ADR-364 cross-connections doc rule 4).
-  // Default threshold when sampler ships: STALL_TIMEOUT_SECONDS_DEFAULT = 600
-  const STALL_TIMEOUT_SAMPLER_WIRED = false; // flip to true when sampler ships
-  if (STALL_TIMEOUT_SAMPLER_WIRED) {
-    // sampler logic goes here
-    return { kill: KILL_SWITCHES.STALL_TIMEOUT, detail: 'sampler-not-wired' };
+  // STALL_TIMEOUT (ADR-364 §3, issue #371) — one-strike v1.
+  // Sampler reads autopilot.jsonl mtime; missing file → stallSeconds=0 → no kill
+  // (documented contract: missing file is NOT a kill condition).
+  // Events route to autopilot.jsonl, NOT failures.jsonl (ADR-364 cross-connections rule 4).
+  const stallTimeoutSeconds = opts.stallTimeoutSeconds ?? 600;
+  const stallSample = sampleProgress({
+    autopilotJsonlPath: opts.autopilotJsonlPath,
+    stallTimeoutSeconds,
+    nowMs: opts.nowMs,
+  });
+  if (!stallSample.progressed && stallSample.stallSeconds >= stallTimeoutSeconds) {
+    return {
+      kill: KILL_SWITCHES.STALL_TIMEOUT,
+      detail: `stalled ${stallSample.stallSeconds}s ≥ threshold ${stallTimeoutSeconds}s (marker=${stallSample.marker})`,
+    };
   }
 
   const agentSummary = sessionResult.agent_summary;

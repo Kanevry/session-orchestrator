@@ -33,6 +33,7 @@ export const CURRENT_SESSION_SCHEMA_VERSION = 1;
  */
 export const SESSION_KEY_ALIASES = Object.freeze({
   type: 'session_type',
+  mode: 'session_type',
   closed_issues: 'issues_closed',
   new_issues: 'issues_created',
   issues_filed: 'issues_created',

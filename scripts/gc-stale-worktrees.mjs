@@ -24,6 +24,8 @@ import fsP from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { validateWorkspacePath } from './lib/worktree/lifecycle.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -568,6 +570,13 @@ EXIT CODES
   if (!isDryRun) {
     for (const r of buckets.orphanStale) {
       try {
+        const isValid = validateWorkspacePath(r.worktree.wtPath, worktreeRoot);
+        if (!isValid) {
+          process.stderr.write(
+            `gc-stale-worktrees: refusing to remove out-of-root path: ${r.worktree.wtPath}\n`
+          );
+          continue;
+        }
         await fsP.rm(r.worktree.wtPath, { recursive: true, force: true });
         removed.push(r.worktree.wtPath);
       } catch (err) {

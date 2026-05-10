@@ -31,6 +31,10 @@ describe('SESSION_KEY_ALIASES', () => {
     expect(SESSION_KEY_ALIASES.type).toBe('session_type');
   });
 
+  it('maps mode → session_type (#373)', () => {
+    expect(SESSION_KEY_ALIASES.mode).toBe('session_type');
+  });
+
   it('maps closed_issues → issues_closed', () => {
     expect(SESSION_KEY_ALIASES.closed_issues).toBe('issues_closed');
   });
@@ -47,8 +51,10 @@ describe('SESSION_KEY_ALIASES', () => {
     expect(SESSION_KEY_ALIASES.files_changed).toBe('total_files_changed');
   });
 
-  it('has at least 10 declared entries (completeness floor)', () => {
-    expect(Object.keys(SESSION_KEY_ALIASES).length).toBeGreaterThanOrEqual(10);
+  it('has at least 13 declared entries (completeness floor — grows additively, see test-quality.md dynamic-count carve-out)', () => {
+    const count = Object.keys(SESSION_KEY_ALIASES).length;
+    expect(count).toBeGreaterThanOrEqual(13);
+    expect(count).toBeLessThanOrEqual(40);
   });
 
   it('all values are non-empty strings', () => {

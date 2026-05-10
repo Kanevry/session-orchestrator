@@ -90,11 +90,13 @@ describe('validateWorkspacePath — purity contract (ADR-364 §5)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADR-364 §5 DoD — zero production call-sites
+// Production call-site allowlist (#370 wired the first sanctioned call-site).
+// Was "zero call-sites" pre-#370 (deep-3 ADR-364 §5 DoD); flipped to allowlist
+// when #370 landed gc-stale-worktrees defence-in-depth wiring.
 // ---------------------------------------------------------------------------
 
-describe('ADR-364 §5 DoD — zero production call-sites', () => {
-  it('helper is not invoked outside lifecycle.mjs and the test file', async () => {
+describe('production call-site allowlist (#370)', () => {
+  it('helper is invoked only from sanctioned files', async () => {
     const { execSync } = await import('node:child_process');
     const out = execSync(
       "rg -l 'validateWorkspacePath\\(' scripts/ tests/ | sort",
@@ -102,6 +104,7 @@ describe('ADR-364 §5 DoD — zero production call-sites', () => {
     );
     const files = out.trim().split('\n').filter(Boolean);
     const allowed = [
+      'scripts/gc-stale-worktrees.mjs',
       'scripts/lib/worktree/lifecycle.mjs',
       'tests/lib/worktree/validate-workspace-path.test.mjs',
     ];

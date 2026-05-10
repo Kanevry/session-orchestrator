@@ -54,6 +54,9 @@ function clampNumber(value, { min, max, fallback }) {
  * @param {string} [opts.jsonlPath] @param {string} [opts.runId] @param {string} [opts.branch]
  * @param {string} [opts.hostJsonPath] @param {number} [opts.peerAbortThreshold]
  * @param {number} [opts.carryoverThreshold] @param {number} [opts.maxTokens]
+ * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler input (defaults to jsonlPath)
+ * @param {number} [opts.stallTimeoutSeconds] — STALL_TIMEOUT threshold seconds (default 600)
+ * @param {string} [opts.worktreePath] @param {string} [opts.parentRunId]
  * @returns {Promise<AutopilotState>}
  */
 export async function runLoop(opts = {}) {
@@ -245,9 +248,18 @@ export async function runLoop(opts = {}) {
     }
     state.total_tokens_used = cumulativeTokens;
 
-    // Post-session kill-switches (Phase C-1.b — spiral / failed-wave / carryover-too-high).
-    const postCheck = postSessionKillSwitch(sessionResult, { carryoverThreshold });
+    // Post-session kill-switches (Phase C-1.b — spiral / failed-wave / carryover-too-high;
+    // Phase C-2 / ADR-364 — stall-timeout via sampler).
+    const postCheck = postSessionKillSwitch(sessionResult, {
+      carryoverThreshold,
+      autopilotJsonlPath: opts.autopilotJsonlPath ?? jsonlPath,
+      stallTimeoutSeconds: opts.stallTimeoutSeconds ?? 600,
+      nowMs: opts.nowMs,
+    });
     if (postCheck !== null) {
+      if (postCheck.kill === KILL_SWITCHES.STALL_TIMEOUT) {
+        state.stall_recovery_count += 1;
+      }
       state.kill_switch = postCheck.kill;
       state.kill_switch_detail = postCheck.detail;
       break;

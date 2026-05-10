@@ -7,7 +7,7 @@
  * CLI tests invoke the script via child_process.spawnSync (fork-pool safe).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
@@ -421,6 +421,147 @@ describe('gc-stale-worktrees — CLI', () => {
     const parsed = JSON.parse(chunks.join(''));
     expect(parsed.kept).toHaveLength(0);
     expect(parsed.orphanStale).toHaveLength(0);
+  });
+
+  it('still removes orphan-stale entries whose wtPath is inside worktreeRoot (regression canary for #370 guard)', async () => {
+    // Regression canary: confirms validateWorkspacePath defence-in-depth
+    // does NOT break the normal removal path. A normal orphan-stale entry
+    // whose wtPath sits inside worktreeRoot must still be deleted under --apply.
+    const suffix = 'normal-stale';
+    const wtPath = makeWorktreeDir(layout.worktreeRoot, suffix);
+    writeWorktreeMeta(layout.metaDir, suffix, {
+      createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
+    });
+
+    expect(existsSync(wtPath)).toBe(true);
+
+    await main({
+      worktreeRoot: layout.worktreeRoot,
+      metaDir: layout.metaDir,
+      repoRoot: layout.repoRoot,
+      argv: ['--apply'],
+    });
+
+    expect(existsSync(wtPath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --apply guards out-of-root paths (#370 defence-in-depth)
+// ---------------------------------------------------------------------------
+
+describe('gc-stale-worktrees — --apply guards out-of-root paths', () => {
+  let layout;
+
+  beforeEach(() => {
+    layout = makeTmpLayout();
+  });
+
+  afterEach(() => {
+    rmSync(layout.tmp, { recursive: true, force: true });
+    vi.resetModules();
+    vi.doUnmock('../../scripts/lib/worktree/lifecycle.mjs');
+  });
+
+  it('refuses to remove orphan-stale entry whose wtPath fails validateWorkspacePath', async () => {
+    // Force the defence-in-depth guard to fire by mocking the validator to
+    // return false for any input. This simulates a hypothetical future bug
+    // where the discovered wtPath escapes worktreeRoot (e.g. via meta-driven
+    // path injection, symlink resolution, or a leaky discoverWorktrees).
+    //
+    // Falsification check: if validateWorkspacePath returned `true` for all
+    // inputs (i.e. the guard was a no-op), the rm() call would proceed and
+    // existsSync(wtPath) would be false at the end. We assert the opposite.
+    vi.resetModules();
+    vi.doMock('../../scripts/lib/worktree/lifecycle.mjs', async (importOriginal) => {
+      const actual = await importOriginal();
+      return { ...actual, validateWorkspacePath: () => false };
+    });
+
+    // Set up a normal orphan-stale entry (would otherwise be removed).
+    const suffix = 'poison';
+    const wtPath = makeWorktreeDir(layout.worktreeRoot, suffix);
+    writeWorktreeMeta(layout.metaDir, suffix, {
+      createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
+    });
+
+    // Capture stderr to verify the refusal message.
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    // Suppress stdout (human-readable bucket summary).
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    let capturedStderr;
+    try {
+      // Dynamic re-import so the production module picks up the mocked validator.
+      const mod = await import('../../scripts/gc-stale-worktrees.mjs');
+      await mod.main({
+        worktreeRoot: layout.worktreeRoot,
+        metaDir: layout.metaDir,
+        repoRoot: layout.repoRoot,
+        argv: ['--apply'],
+      });
+      // Capture stderr calls BEFORE restoring spies — mockRestore clears the
+      // mock.calls history on some vitest versions.
+      capturedStderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+
+    // Assertion (a): the directory still exists — guard prevented rm.
+    expect(existsSync(wtPath)).toBe(true);
+
+    // Assertion (b): stderr received the refusal message containing the path.
+    expect(capturedStderr).toContain('refusing to remove out-of-root path');
+    expect(capturedStderr).toContain(wtPath);
+  });
+
+  it('continues processing remaining orphan-stale entries when one is refused', async () => {
+    // Verifies the `continue` (not throw) in the guard. When the first
+    // entry is refused, the second normal entry must still be removed.
+    //
+    // Mock validateWorkspacePath to return false ONLY for the poisoned wtPath
+    // and true for everything else, so the loop processes both entries.
+    const poisonSuffix = 'poison2';
+    const poisonWtPath = makeWorktreeDir(layout.worktreeRoot, poisonSuffix);
+    writeWorktreeMeta(layout.metaDir, poisonSuffix, {
+      createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
+    });
+
+    const normalSuffix = 'normal2';
+    const normalWtPath = makeWorktreeDir(layout.worktreeRoot, normalSuffix);
+    writeWorktreeMeta(layout.metaDir, normalSuffix, {
+      createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
+    });
+
+    vi.resetModules();
+    vi.doMock('../../scripts/lib/worktree/lifecycle.mjs', async (importOriginal) => {
+      const actual = await importOriginal();
+      return {
+        ...actual,
+        validateWorkspacePath: (computed) => computed !== poisonWtPath,
+      };
+    });
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    try {
+      const mod = await import('../../scripts/gc-stale-worktrees.mjs');
+      await mod.main({
+        worktreeRoot: layout.worktreeRoot,
+        metaDir: layout.metaDir,
+        repoRoot: layout.repoRoot,
+        argv: ['--apply'],
+      });
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+
+    // Poisoned entry preserved; normal entry removed → loop continued past refusal.
+    expect(existsSync(poisonWtPath)).toBe(true);
+    expect(existsSync(normalWtPath)).toBe(false);
   });
 });
 

@@ -47,16 +47,11 @@ describe('historical sessions.jsonl entries — additive contract (ADR-364 DoD-1
           // Apply the full production read-path in the correct order:
           // 1. aliasLegacyEndedAt: ended_at → completed_at (issue #321)
           // 2. migrateEntry: normalizeSession aliases + legacy-shape
-          //    reconstruction (total_agents, waves array synthesis, etc.)
-          // 3. Additional inline alias: some 2026-05-10 entries use `mode`
-          //    instead of `session_type` (not yet in SESSION_KEY_ALIASES).
-          //    This alias proves ADR-364 additive contract without modifying
-          //    out-of-scope production files.
+          //    reconstruction (total_agents, waves array synthesis, etc.).
+          //    normalizeSession applies SESSION_KEY_ALIASES, including
+          //    `mode → session_type` (#373).
           const withEndedAt = aliasLegacyEndedAt(parsed);
           const migrated = migrateEntry(withEndedAt);
-          if (!('session_type' in migrated) && typeof migrated.mode === 'string') {
-            migrated.session_type = migrated.mode;
-          }
           validateSession(migrated);
         } catch (err) {
           failures.push(`line ${idx + 1} (session_id=${parsed.session_id ?? '?'}): ${err.message}`);
