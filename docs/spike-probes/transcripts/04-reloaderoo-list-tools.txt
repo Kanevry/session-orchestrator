@@ -1,0 +1,23 @@
+Error: Server does not support completions (required for completion/complete)
+{
+  "tools": [
+    {
+      "name": "session_config",
+      "description": "Reads Session Config section from the project instruction file (CLAUDE.md or AGENTS.md alias)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "session_metrics",
+      "description": "Reads the last 5 session metrics entries from .orchestrator/metrics/sessions.jsonl",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}

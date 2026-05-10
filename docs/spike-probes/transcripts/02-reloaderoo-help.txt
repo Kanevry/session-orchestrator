@@ -1,0 +1,39 @@
+Usage: reloaderoo [options] [command]
+
+Two modes, one tool:
+• Proxy MCP server that adds support for hot-reloading MCP servers.
+• CLI tool for inspecting MCP servers.
+
+Options:
+  -V, --version    output the version number
+  -h, --help       display help for command
+
+Commands:
+  proxy [options]  Run as MCP proxy server (default behavior)
+  inspect          Inspect and debug MCP servers
+  info [options]   Display version and configuration information
+  help [command]   display help for command
+
+Examples:
+  # MCP Server Mode:
+  $ reloaderoo -- node my-server.js                       # Hot-reloadable MCP proxy server
+  $ reloaderoo proxy -- python server.py                 # Explicit proxy mode
+  
+  # CLI Tools Mode:
+  $ reloaderoo inspect list-tools -- node server.js      # Debug server tools
+  $ reloaderoo inspect call-tool weather --params '{"location": "NYC"}' -- node server.js
+  $ reloaderoo info                                       # System information
+
+Mode Selection:
+  • No arguments or just '--' → MCP server mode
+  • CLI arguments/flags        → CLI tools mode  
+
+Environment Variables:
+  MCPDEV_PROXY_LOG_LEVEL      Set default log level
+  MCPDEV_PROXY_LOG_FILE       Custom log file path  
+  MCPDEV_PROXY_RESTART_LIMIT  Default restart limit
+  MCPDEV_PROXY_AUTO_RESTART   Enable/disable auto-restart (true/false)
+  MCPDEV_PROXY_TIMEOUT        Operation timeout in milliseconds
+  MCPDEV_PROXY_CWD            Default working directory
+  MCPDEV_PROXY_DEBUG_MODE     Enable debug mode (true/false)
+

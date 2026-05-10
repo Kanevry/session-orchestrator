@@ -1,0 +1,14 @@
+{"event":"stop","timestamp":"2026-05-10T14:18:59.220Z","session_id":"bed53b02-91d2-4beb-96c0-88ba27dac7a5","wave":0,"branch":"main","commit":"0c74f1fbde1875285e1f5a01249d9fa630b9e4eb","duration_ms":0}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:22:36.116Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:22:40.137Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:22:58.819Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:23:36.970Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:23:39.877Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:23:41.812Z","agent":"Explore"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:28:52.729Z","agent":"session-orchestrator:docs-writer"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:28:54.660Z","agent":"session-orchestrator:docs-writer"}
+{"event":"subagent_stop","timestamp":"2026-05-10T14:30:07.495Z","agent":"session-orchestrator:docs-writer"}
+
+--- File stats ---
+Lines: 1425, Size: 184K
+Event types: subagent_stop=911, stop=362, orchestrator.session.started=135, test/other=16

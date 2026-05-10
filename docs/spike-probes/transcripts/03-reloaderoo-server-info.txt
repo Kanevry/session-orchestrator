@@ -1,0 +1,10 @@
+Error: Server does not support completions (required for completion/complete)
+{
+  "protocolVersion": "2024-11-05",
+  "capabilities": {
+    "tools": {}
+  }
+}
+--- Quiet flag note ---
+With --quiet: 'Error: Server does not support completions' printed to stdout (not suppressed)
+Without --quiet: JSON output on stdout + error on stderr (exit 0 in both cases)

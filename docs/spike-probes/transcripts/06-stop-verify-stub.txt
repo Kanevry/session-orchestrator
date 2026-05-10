@@ -1,0 +1,11 @@
+=== Probe 3a: stop_hook_active=true with failing cmd → expect exit 0 ===
+[probe3a] exit=0
+
+=== Probe 3b: stop_hook_active=false, verification passes → expect exit 0 ===
+[probe3b] exit=0
+
+=== Probe 3c: stop_hook_active=false, verification fails → expect exit 2 ===
+[probe3c] exit=2
+
+=== Probe 3d: stop_hook_active=true, verification fails → must still be exit 0 ===
+[probe3d] exit=0
