@@ -20,6 +20,13 @@ import {
 } from './constants.mjs';
 
 // ---------------------------------------------------------------------------
+// Module-private enums
+// ---------------------------------------------------------------------------
+
+/** Valid values for the optional `expected_cost_tier` field (ADR-364). */
+const EXPECTED_COST_TIERS = Object.freeze(['quick', 'standard', 'deep']);
+
+// ---------------------------------------------------------------------------
 // Error class
 // ---------------------------------------------------------------------------
 
@@ -211,6 +218,50 @@ function _validateOptionalFields(entry) {
       entry.issues_created.some((n) => typeof n !== 'number')
     ) {
       throw new ValidationError('issues_created must be an array of numbers');
+    }
+  }
+
+  // ADR-364 optional additive fields — remote-agent substrate thin-slice.
+  // All are nullable; null is treated as "not provided" and passes without
+  // further checks. Only non-null present values are type/range validated.
+
+  if (entry.agent_identity !== undefined && entry.agent_identity !== null) {
+    if (typeof entry.agent_identity !== 'string' || entry.agent_identity.length === 0) {
+      throw new ValidationError('agent_identity must be a non-empty string or null');
+    }
+  }
+  if (entry.worktree_path !== undefined && entry.worktree_path !== null) {
+    if (typeof entry.worktree_path !== 'string' || entry.worktree_path.length === 0) {
+      throw new ValidationError('worktree_path must be a non-empty string or null');
+    }
+  }
+  if (entry.parent_run_id !== undefined && entry.parent_run_id !== null) {
+    if (typeof entry.parent_run_id !== 'string' || entry.parent_run_id.length === 0) {
+      throw new ValidationError('parent_run_id must be a non-empty string or null');
+    }
+  }
+  if (entry.lease_acquired_at !== undefined && entry.lease_acquired_at !== null) {
+    if (typeof entry.lease_acquired_at !== 'string') {
+      throw new ValidationError('lease_acquired_at must be an ISO 8601 timestamp string or null');
+    }
+    if (Number.isNaN(Date.parse(entry.lease_acquired_at))) {
+      throw new ValidationError(
+        `lease_acquired_at is not a parsable timestamp: ${entry.lease_acquired_at}`
+      );
+    }
+  }
+  if (entry.lease_ttl_seconds !== undefined && entry.lease_ttl_seconds !== null) {
+    if (!Number.isFinite(entry.lease_ttl_seconds) || entry.lease_ttl_seconds < 0) {
+      throw new ValidationError(
+        `lease_ttl_seconds must be a non-negative finite number or null, got: ${entry.lease_ttl_seconds}`
+      );
+    }
+  }
+  if (entry.expected_cost_tier !== undefined && entry.expected_cost_tier !== null) {
+    if (!EXPECTED_COST_TIERS.includes(entry.expected_cost_tier)) {
+      throw new ValidationError(
+        `expected_cost_tier must be one of ${EXPECTED_COST_TIERS.join('|')} or null, got: ${entry.expected_cost_tier}`
+      );
     }
   }
 }

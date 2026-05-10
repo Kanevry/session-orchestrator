@@ -549,6 +549,93 @@ describe('runLoop — fallback-to-manual', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ADR-364 additive fields — opts.worktreePath / opts.parentRunId / stall_recovery_count
+// ---------------------------------------------------------------------------
+
+describe('runLoop — ADR-364 additive fields', () => {
+  it('worktree_path and parent_run_id from opts appear in the JSONL record', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner: async ({ autopilotRunId }) => ({ session_id: `${autopilotRunId}-x` }),
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'adr364-with-opts',
+      worktreePath: '/tmp/wt-foo',
+      parentRunId: 'parent-r1',
+    });
+    const record = JSON.parse(readFileSync(jsonlPath, 'utf8').trim().split('\n').pop());
+    expect(record.worktree_path).toBe('/tmp/wt-foo');
+    expect(record.parent_run_id).toBe('parent-r1');
+    expect(record.stall_recovery_count).toBe(0);
+  });
+
+  it('worktree_path and parent_run_id default to null when opts omit them', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const state = await runLoop({
+      maxSessions: 1,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      sessionRunner: async ({ autopilotRunId }) => ({ session_id: `${autopilotRunId}-x` }),
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'adr364-defaults',
+      // worktreePath and parentRunId intentionally absent
+    });
+    expect(state.worktree_path).toBeNull();
+    expect(state.parent_run_id).toBeNull();
+    expect(state.stall_recovery_count).toBe(0);
+  });
+
+  it('stall_recovery_count is 0 in dry-run short-circuit path', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    const state = await runLoop({
+      dryRun: true,
+      maxSessions: 5,
+      maxHours: 4,
+      sessionRunner: async () => ({ session_id: 'x' }),
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'adr364-dryrun',
+      worktreePath: '/tmp/wt-dry',
+      parentRunId: 'parent-dry',
+    });
+    expect(state.worktree_path).toBe('/tmp/wt-dry');
+    expect(state.parent_run_id).toBe('parent-dry');
+    expect(state.stall_recovery_count).toBe(0);
+  });
+
+  it('JSONL record written for opts-with-values contains non-null worktree_path and parent_run_id', async () => {
+    const { modeSelector, resourceEvaluator, peerCounter } = makeMocks();
+    await runLoop({
+      dryRun: true,
+      maxSessions: 1,
+      maxHours: 1,
+      sessionRunner: async () => ({ session_id: 'x' }),
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'adr364-jsonl-verify',
+      worktreePath: '/tmp/wt-bar',
+      parentRunId: 'parent-bar',
+    });
+    const record = JSON.parse(readFileSync(jsonlPath, 'utf8').trim());
+    expect(record.worktree_path).toBe('/tmp/wt-bar');
+    expect(record.parent_run_id).toBe('parent-bar');
+    expect(record.stall_recovery_count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // State shape + telemetry
 // ---------------------------------------------------------------------------
 

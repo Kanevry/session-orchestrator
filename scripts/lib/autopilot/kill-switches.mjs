@@ -21,6 +21,8 @@ export const KILL_SWITCHES = Object.freeze({
   LOW_CONFIDENCE_FALLBACK: 'low-confidence-fallback',
   USER_ABORT: 'user-abort',
   TOKEN_BUDGET_EXCEEDED: 'token-budget-exceeded',
+  // Post-iteration kill-switches (Phase C-2, ADR-364)
+  STALL_TIMEOUT: 'stall-timeout', // ADR-364 §3; default 600s; sampler deferred to follow-up issue
   // Post-session kill-switches (Phase C-1.b, #300)
   SPIRAL: 'spiral',
   FAILED_WAVE: 'failed-wave',
@@ -109,6 +111,21 @@ export function preIterationKillSwitch(args) {
  */
 export function postSessionKillSwitch(sessionResult, { carryoverThreshold }) {
   if (!sessionResult || typeof sessionResult !== 'object') return null;
+
+  // STALL_TIMEOUT (ADR-364) — scaffold only, sampler deferred.
+  // When the sampler ships in a follow-up issue, replace the const below with
+  // the real check; until then, this evaluator MUST return null unconditionally
+  // so the kill-switch never fires from the scaffold alone (per ADR §3 risk #2).
+  //
+  // Wire-up follow-up: scripts/lib/autopilot/loop.mjs runLoop sampler at 30s
+  // intervals; emits one autopilot.jsonl entry on fire (NOT failures.jsonl —
+  // see ADR-364 cross-connections doc rule 4).
+  // Default threshold when sampler ships: STALL_TIMEOUT_SECONDS_DEFAULT = 600
+  const STALL_TIMEOUT_SAMPLER_WIRED = false; // flip to true when sampler ships
+  if (STALL_TIMEOUT_SAMPLER_WIRED) {
+    // sampler logic goes here
+    return { kill: KILL_SWITCHES.STALL_TIMEOUT, detail: 'sampler-not-wired' };
+  }
 
   const agentSummary = sessionResult.agent_summary;
   if (agentSummary && typeof agentSummary === 'object') {

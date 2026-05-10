@@ -13,6 +13,7 @@ import {
   VALID_SESSION_TYPES,
   REQUIRED_FIELDS,
   AGENT_SUMMARY_FIELDS,
+  OPTIONAL_FIELDS,
 } from '../../../scripts/lib/session-schema/constants.mjs';
 
 describe('CURRENT_SESSION_SCHEMA_VERSION', () => {
@@ -115,5 +116,57 @@ describe('AGENT_SUMMARY_FIELDS', () => {
 
   it('has exactly 4 fields', () => {
     expect(AGENT_SUMMARY_FIELDS).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OPTIONAL_FIELDS (ADR-364 thin-slice)
+// ---------------------------------------------------------------------------
+
+describe('OPTIONAL_FIELDS', () => {
+  it('is a frozen array', () => {
+    expect(Array.isArray(OPTIONAL_FIELDS)).toBe(true);
+    expect(Object.isFrozen(OPTIONAL_FIELDS)).toBe(true);
+  });
+
+  it('has exactly 6 fields', () => {
+    expect(OPTIONAL_FIELDS).toHaveLength(6);
+  });
+
+  it('contains agent_identity', () => {
+    expect(OPTIONAL_FIELDS).toContain('agent_identity');
+  });
+
+  it('contains worktree_path', () => {
+    expect(OPTIONAL_FIELDS).toContain('worktree_path');
+  });
+
+  it('contains parent_run_id', () => {
+    expect(OPTIONAL_FIELDS).toContain('parent_run_id');
+  });
+
+  it('contains lease_acquired_at', () => {
+    expect(OPTIONAL_FIELDS).toContain('lease_acquired_at');
+  });
+
+  it('contains lease_ttl_seconds', () => {
+    expect(OPTIONAL_FIELDS).toContain('lease_ttl_seconds');
+  });
+
+  it('contains expected_cost_tier', () => {
+    expect(OPTIONAL_FIELDS).toContain('expected_cost_tier');
+  });
+
+  it('fields appear in stable canonical order', () => {
+    expect(OPTIONAL_FIELDS[0]).toBe('agent_identity');
+    expect(OPTIONAL_FIELDS[1]).toBe('worktree_path');
+    expect(OPTIONAL_FIELDS[2]).toBe('parent_run_id');
+    expect(OPTIONAL_FIELDS[3]).toBe('lease_acquired_at');
+    expect(OPTIONAL_FIELDS[4]).toBe('lease_ttl_seconds');
+    expect(OPTIONAL_FIELDS[5]).toBe('expected_cost_tier');
+  });
+
+  it('has no overlap with REQUIRED_FIELDS', () => {
+    expect(REQUIRED_FIELDS.some((f) => OPTIONAL_FIELDS.includes(f))).toBe(false);
   });
 });

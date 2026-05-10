@@ -74,3 +74,17 @@ export const REQUIRED_FIELDS = Object.freeze([
  * non-negative numbers.
  */
 export const AGENT_SUMMARY_FIELDS = Object.freeze(['complete', 'partial', 'failed', 'spiral']);
+
+/**
+ * Optional additive fields introduced for the remote-agent substrate (ADR-364 thin-slice).
+ * These are NOT in REQUIRED_FIELDS — older entries lacking them validate cleanly.
+ * Validator: see `_validateOptionalFields` in validator.mjs.
+ */
+export const OPTIONAL_FIELDS = Object.freeze([
+  'agent_identity',
+  'worktree_path',
+  'parent_run_id',
+  'lease_acquired_at',
+  'lease_ttl_seconds',
+  'expected_cost_tier',
+]);

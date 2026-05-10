@@ -203,6 +203,93 @@ describe('readHostClass — host.json parsing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ADR-364 additive fields — round-trip + legacy + forward-compat
+// ---------------------------------------------------------------------------
+
+describe('ADR-364 additive fields', () => {
+  it('happy path: worktree_path, parent_run_id, stall_recovery_count survive write+read', () => {
+    const jsonlPath = path.join(tmp, 'adr364.jsonl');
+    const state = {
+      run_id: 'adr364-r1',
+      started_at: '2026-05-10T00:00:00.000Z',
+      worktree_path: '/tmp/wt-x',
+      parent_run_id: 'parent-uuid',
+      stall_recovery_count: 2,
+    };
+
+    writeAutopilotJsonl(state, jsonlPath);
+
+    const parsed = JSON.parse(readFileSync(jsonlPath, 'utf8').trim());
+    expect(parsed.worktree_path).toBe('/tmp/wt-x');
+    expect(parsed.parent_run_id).toBe('parent-uuid');
+    expect(parsed.stall_recovery_count).toBe(2);
+  });
+
+  it('round-trip safety: legacy entry without the 3 new fields parses without throwing', () => {
+    const jsonlPath = path.join(tmp, 'legacy.jsonl');
+    // Simulate a legacy record written before ADR-364
+    const legacyState = {
+      schema_version: 1,
+      autopilot_run_id: 'legacy-r1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:05:00.000Z',
+      duration_seconds: 300,
+      iterations_completed: 2,
+    };
+    writeAutopilotJsonl(legacyState, jsonlPath);
+
+    const content = readFileSync(jsonlPath, 'utf8').trim();
+    expect(() => JSON.parse(content)).not.toThrow();
+    const parsed = JSON.parse(content);
+    expect(parsed.autopilot_run_id).toBe('legacy-r1');
+    // New fields are simply absent — no error
+    expect(parsed.worktree_path).toBeUndefined();
+    expect(parsed.parent_run_id).toBeUndefined();
+    expect(parsed.stall_recovery_count).toBeUndefined();
+  });
+
+  it('forward-compat: entry with 3 new fields plus 1 unknown extra key parses without throwing', () => {
+    const jsonlPath = path.join(tmp, 'future.jsonl');
+    const futureState = {
+      run_id: 'future-r1',
+      worktree_path: '/tmp/wt-future',
+      parent_run_id: 'parent-future',
+      stall_recovery_count: 0,
+      // Hypothetical future key unknown to current consumers
+      verification_budget_remaining: 5,
+    };
+    writeAutopilotJsonl(futureState, jsonlPath);
+
+    const content = readFileSync(jsonlPath, 'utf8').trim();
+    expect(() => JSON.parse(content)).not.toThrow();
+    const parsed = JSON.parse(content);
+    expect(parsed.worktree_path).toBe('/tmp/wt-future');
+    expect(parsed.parent_run_id).toBe('parent-future');
+    expect(parsed.stall_recovery_count).toBe(0);
+    // Unknown extra key is preserved, not stripped
+    expect(parsed.verification_budget_remaining).toBe(5);
+  });
+
+  it('defaults: worktree_path and parent_run_id written as null (not undefined)', () => {
+    const jsonlPath = path.join(tmp, 'defaults.jsonl');
+    const state = {
+      run_id: 'defaults-r1',
+      worktree_path: null,
+      parent_run_id: null,
+      stall_recovery_count: 0,
+    };
+
+    writeAutopilotJsonl(state, jsonlPath);
+
+    const parsed = JSON.parse(readFileSync(jsonlPath, 'utf8').trim());
+    // JSON.stringify preserves null; undefined would be stripped
+    expect(parsed.worktree_path).toBeNull();
+    expect(parsed.parent_run_id).toBeNull();
+    expect(parsed.stall_recovery_count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // finalizeState — mutation
 // ---------------------------------------------------------------------------
 

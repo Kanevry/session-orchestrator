@@ -25,6 +25,7 @@ import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { WORKTREE_META_DIR, DEFAULT_EXCLUDE_PATTERNS } from './constants.mjs';
 import { _writeWorktreeMeta } from './meta.mjs';
 import { listWorktrees, applyWorktreeExcludes } from './listing.mjs';
+import { isPathInside } from '../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -54,6 +55,38 @@ function _worktreeInfo(suffix) {
   const branch = `so-worktree-${suffix}`;
   const wtPath = path.join(os.tmpdir(), 'so-worktrees', branch);
   return { branch, wtPath };
+}
+
+// ---------------------------------------------------------------------------
+// validateWorkspacePath
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that a computed worktree path is contained within `root`.
+ *
+ * PURE function — no I/O, no side effects. Operates on string inputs only.
+ * Detects: `..` traversal, absolute paths outside root, empty/identical paths,
+ * UNC paths on Windows, and null-byte injection.
+ * Does NOT detect symlink-escape — symlinks are resolved by the filesystem at
+ * write time, not by this helper. Callers that require symlink-safety must run
+ * `fs.realpathSync(computed)` first and pass the resolved path to this helper.
+ *
+ * Delegates CWE-23 hardening to `isPathInside` from `../path-utils.mjs`, which
+ * is the single source of truth for path-traversal safety in this plugin.
+ *
+ * @param {string} computed The path that will be used as the worktree.
+ * @param {string} root The allowed root containing legitimate worktrees.
+ * @returns {boolean} true when `computed` is a strict descendant of `root`.
+ * @throws {TypeError} when either argument is not a non-empty string.
+ *
+ * Used by ADR-364 thin-slice substrate; no production call-sites in this slice.
+ * Will be wired into createWorktree in a follow-up that introduces user-controlled
+ * worktree paths.
+ */
+export function validateWorkspacePath(computed, root) {
+  // isPathInside already validates non-empty strings and throws TypeError on
+  // invalid input — propagate those errors directly to the caller.
+  return isPathInside(computed, root);
 }
 
 // ---------------------------------------------------------------------------

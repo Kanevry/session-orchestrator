@@ -36,6 +36,7 @@ function clampNumber(value, { min, max, fallback }) {
  * @property {string|null} kill_switch @property {string|null} kill_switch_detail @property {string[]} sessions
  * @property {string|null} host_class @property {string|null} resource_verdict_at_start
  * @property {boolean} fallback_to_manual @property {boolean} dry_run @property {number} total_tokens_used
+ * @property {string|null} worktree_path @property {string|null} parent_run_id @property {number} stall_recovery_count
  */
 
 /**
@@ -124,6 +125,10 @@ export async function runLoop(opts = {}) {
     fallback_to_manual: false,
     dry_run: dryRun,
     total_tokens_used: 0,
+    // ADR-364 additive fields — forward-compat; callers may omit, defaults are null/0.
+    worktree_path: opts.worktreePath ?? null,
+    parent_run_id: opts.parentRunId ?? null,
+    stall_recovery_count: 0,
   };
 
   // Dry-run short-circuits: emit a state record without invoking the lifecycle.

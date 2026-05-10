@@ -348,3 +348,111 @@ describe('validateSession — optional fields', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// ADR-364 optional additive fields
+// ---------------------------------------------------------------------------
+
+describe('ADR-364 optional additive fields', () => {
+  it('happy path: entry with all 6 ADR-364 fields populated with valid values passes', () => {
+    const v = validateSession({
+      ...VALID(),
+      agent_identity: 'agent-a',
+      worktree_path: '/tmp/so-worktrees/wt-1',
+      parent_run_id: 'run-uuid',
+      lease_acquired_at: '2026-05-10T18:00:00Z',
+      lease_ttl_seconds: 600,
+      expected_cost_tier: 'standard',
+    });
+    expect(v.agent_identity).toBe('agent-a');
+    expect(v.worktree_path).toBe('/tmp/so-worktrees/wt-1');
+    expect(v.parent_run_id).toBe('run-uuid');
+    expect(v.lease_acquired_at).toBe('2026-05-10T18:00:00Z');
+    expect(v.lease_ttl_seconds).toBe(600);
+    expect(v.expected_cost_tier).toBe('standard');
+  });
+
+  it('legacy compatibility: entry omitting all 6 ADR-364 fields passes (additive contract DoD)', () => {
+    // This is the canonical DoD assertion: older entries without any of the
+    // new fields must validate cleanly with no modification required.
+    expect(() => validateSession(VALID())).not.toThrow();
+  });
+
+  it('throws when agent_identity is an empty string', () => {
+    expect(() => validateSession({ ...VALID(), agent_identity: '' })).toThrow(
+      /agent_identity must be a non-empty string or null/
+    );
+  });
+
+  it('throws when agent_identity is a number (wrong type)', () => {
+    expect(() => validateSession({ ...VALID(), agent_identity: 42 })).toThrow(
+      /agent_identity must be a non-empty string or null/
+    );
+  });
+
+  it('throws when lease_acquired_at is not a parsable date string', () => {
+    expect(() => validateSession({ ...VALID(), lease_acquired_at: 'not-a-date' })).toThrow(
+      /lease_acquired_at is not a parsable timestamp/
+    );
+  });
+
+  it('throws when lease_ttl_seconds is negative', () => {
+    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: -1 })).toThrow(
+      /lease_ttl_seconds must be a non-negative finite number or null/
+    );
+  });
+
+  it('throws when lease_ttl_seconds is a non-number string', () => {
+    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: 'abc' })).toThrow(
+      /lease_ttl_seconds must be a non-negative finite number or null/
+    );
+  });
+
+  it('throws when expected_cost_tier is not in the allowed enum', () => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'enterprise' })).toThrow(
+      /expected_cost_tier must be one of quick\|standard\|deep or null/
+    );
+  });
+
+  it('throws when expected_cost_tier is a number (wrong type)', () => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: 5 })).toThrow(
+      /expected_cost_tier must be one of quick\|standard\|deep or null/
+    );
+  });
+
+  it('explicit null for agent_identity is tolerated (treated as not provided)', () => {
+    expect(() => validateSession({ ...VALID(), agent_identity: null })).not.toThrow();
+  });
+
+  it('explicit null for worktree_path is tolerated', () => {
+    expect(() => validateSession({ ...VALID(), worktree_path: null })).not.toThrow();
+  });
+
+  it('explicit null for parent_run_id is tolerated', () => {
+    expect(() => validateSession({ ...VALID(), parent_run_id: null })).not.toThrow();
+  });
+
+  it('explicit null for lease_acquired_at is tolerated', () => {
+    expect(() => validateSession({ ...VALID(), lease_acquired_at: null })).not.toThrow();
+  });
+
+  it('explicit null for lease_ttl_seconds is tolerated', () => {
+    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: null })).not.toThrow();
+  });
+
+  it('explicit null for expected_cost_tier is tolerated', () => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: null })).not.toThrow();
+  });
+
+  it('accepts expected_cost_tier: quick', () => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'quick' })).not.toThrow();
+  });
+
+  it('accepts expected_cost_tier: deep', () => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'deep' })).not.toThrow();
+  });
+
+  it('accepts lease_ttl_seconds: 0 (boundary — zero is valid)', () => {
+    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: 0 })).not.toThrow();
+  });
+});
