@@ -15,6 +15,7 @@ import {
   writeFileSync,
   rmSync,
   existsSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -512,7 +513,9 @@ describe('gc-stale-worktrees — --apply guards out-of-root paths', () => {
     expect(existsSync(wtPath)).toBe(true);
 
     // Assertion (b): stderr received the refusal message containing the path.
-    expect(capturedStderr).toContain('refusing to remove out-of-root path');
+    // Message changed in #374: realpathSync now runs before validateWorkspacePath,
+    // so the guard fires as a symlink-escape refusal rather than an out-of-root-path refusal.
+    expect(capturedStderr).toContain('refusing to remove symlink-escape:');
     expect(capturedStderr).toContain(wtPath);
   });
 
@@ -522,8 +525,12 @@ describe('gc-stale-worktrees — --apply guards out-of-root paths', () => {
     //
     // Mock validateWorkspacePath to return false ONLY for the poisoned wtPath
     // and true for everything else, so the loop processes both entries.
+    // Note: the production code now calls validateWorkspacePath with the
+    // realpathSync-resolved path (#374), so we resolve the poison path for
+    // the mock comparison.
     const poisonSuffix = 'poison2';
     const poisonWtPath = makeWorktreeDir(layout.worktreeRoot, poisonSuffix);
+    const resolvedPoisonWtPath = realpathSync(poisonWtPath);
     writeWorktreeMeta(layout.metaDir, poisonSuffix, {
       createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
     });
@@ -539,7 +546,8 @@ describe('gc-stale-worktrees — --apply guards out-of-root paths', () => {
       const actual = await importOriginal();
       return {
         ...actual,
-        validateWorkspacePath: (computed) => computed !== poisonWtPath,
+        // Production passes realpathSync(wtPath) as first arg (#374), so compare against resolved path.
+        validateWorkspacePath: (computed) => computed !== resolvedPoisonWtPath,
       };
     });
 
@@ -562,6 +570,79 @@ describe('gc-stale-worktrees — --apply guards out-of-root paths', () => {
     // Poisoned entry preserved; normal entry removed → loop continued past refusal.
     expect(existsSync(poisonWtPath)).toBe(true);
     expect(existsSync(normalWtPath)).toBe(false);
+  });
+
+  it('refuses to remove symlink-escape: validateWorkspacePath receives resolved path (#374)', async () => {
+    // Adversarial test for #374 defence-in-depth.
+    //
+    // Scenario: a worktree entry whose nominal wtPath looks legitimate (inside
+    // worktreeRoot by string comparison) but whose realpathSync-resolved path
+    // escapes to a different location on the filesystem.  This can occur when
+    // intermediate path components are symlinks (CWE-59).
+    //
+    // Implementation: mock validateWorkspacePath to:
+    //   (a) capture the actual argument the production code passes, and
+    //   (b) return false for the resolved path (simulates a detected escape).
+    // We verify two things:
+    //   1. The argument received is the realpathSync-resolved form (not the raw wtPath).
+    //   2. The guard fires and the directory is preserved (not deleted).
+    //
+    // Falsification check: if the production code passed the raw wtPath (pre-#374),
+    // the captured argument would equal wtPath (no /private prefix on macOS) and
+    // the directory would either still exist (if mock returns false for raw path too)
+    // or would be deleted (if the raw path bypassed a real check). The distinction
+    // is in assertion (1): the resolved prefix (/private on macOS, unchanged on Linux).
+
+    const suffix = 'escape-check';
+    const wtPath = makeWorktreeDir(layout.worktreeRoot, suffix);
+    const resolvedWtPath = realpathSync(wtPath); // /private/var/... on macOS
+    writeWorktreeMeta(layout.metaDir, suffix, {
+      createdAt: new Date(Date.now() - MS_8_DAYS).toISOString(),
+    });
+
+    let capturedValidateArg;
+    vi.resetModules();
+    vi.doMock('../../scripts/lib/worktree/lifecycle.mjs', async (importOriginal) => {
+      const actual = await importOriginal();
+      return {
+        ...actual,
+        validateWorkspacePath: (computed) => {
+          capturedValidateArg = computed; // capture what the production code passes
+          return false; // simulate escape detection → refuse deletion
+        },
+      };
+    });
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    let capturedStderr;
+    try {
+      const mod = await import('../../scripts/gc-stale-worktrees.mjs');
+      await mod.main({
+        worktreeRoot: layout.worktreeRoot,
+        metaDir: layout.metaDir,
+        repoRoot: layout.repoRoot,
+        argv: ['--apply'],
+      });
+      // Capture before mockRestore clears call history.
+      capturedStderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+
+    // Assertion (1): production code passes the realpathSync-resolved path (#374 fix).
+    // On macOS /var/... resolves to /private/var/...; on Linux they are identical.
+    // Either way, the resolved form must equal realpathSync(wtPath).
+    expect(capturedValidateArg).toBe(resolvedWtPath);
+
+    // Assertion (2): guard fired → directory preserved (not deleted).
+    expect(existsSync(wtPath)).toBe(true);
+
+    // Assertion (3): stderr contains the symlink-escape refusal line with the original wtPath.
+    expect(capturedStderr).toMatch(/refusing to remove symlink-escape:/);
+    expect(capturedStderr).toContain(join(layout.worktreeRoot, `so-worktree-${suffix}`));
   });
 });
 

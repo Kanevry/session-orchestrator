@@ -20,6 +20,7 @@
  */
 
 import fs from 'node:fs';
+import { realpathSync } from 'node:fs';
 import fsP from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -568,17 +569,38 @@ EXIT CODES
 
   const removed = [];
   if (!isDryRun) {
+    // CWE-59 hardening (#374): resolve symlinks in worktreeRoot once so that
+    // validateWorkspacePath comparisons use a fully-resolved parent path.
+    let resolvedWorktreeRoot;
+    try {
+      resolvedWorktreeRoot = realpathSync(worktreeRoot);
+    } catch {
+      // worktreeRoot vanished between discovery and apply — bail out.
+      resolvedWorktreeRoot = worktreeRoot;
+    }
+
     for (const r of buckets.orphanStale) {
       try {
-        const isValid = validateWorkspacePath(r.worktree.wtPath, worktreeRoot);
-        if (!isValid) {
+        // Resolve symlinks in the entry path before validation + rm to prevent symlink-escape.
+        // Residual TOCTOU between realpathSync and fsP.rm is accepted — Node has no O_NOFOLLOW rm equivalent.
+        let resolved;
+        try {
+          resolved = realpathSync(r.worktree.wtPath);
+        } catch (err) {
           process.stderr.write(
-            `gc-stale-worktrees: refusing to remove out-of-root path: ${r.worktree.wtPath}\n`
+            `gc-stale-worktrees: refusing entry, realpath failed: ${err.message}\n`
           );
           continue;
         }
-        await fsP.rm(r.worktree.wtPath, { recursive: true, force: true });
-        removed.push(r.worktree.wtPath);
+        const isValid = validateWorkspacePath(resolved, resolvedWorktreeRoot);
+        if (!isValid) {
+          process.stderr.write(
+            `gc-stale-worktrees: refusing to remove symlink-escape: ${r.worktree.wtPath} → ${resolved}\n`
+          );
+          continue;
+        }
+        await fsP.rm(resolved, { recursive: true, force: true });
+        removed.push(resolved);
       } catch (err) {
         process.stderr.write(
           `gc-stale-worktrees: failed to remove ${r.worktree.wtPath}: ${err.message}\n`
