@@ -406,7 +406,11 @@ async function main() {
   process.stdout.write(JSON.stringify(summary) + '\n');
 }
 
-main().catch((err) => {
-  process.stderr.write(`migrate-sessions-jsonl: unexpected error: ${err?.stack ?? err}\n`);
-  process.exit(2);
-});
+// Run main() only when this file is invoked directly as a CLI, not when imported.
+// Prevents process.exit during test-time imports (#368).
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    process.stderr.write(`migrate-sessions-jsonl: unexpected error: ${err?.stack ?? err}\n`);
+    process.exit(2);
+  });
+}

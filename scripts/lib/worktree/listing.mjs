@@ -9,7 +9,7 @@
  * lifecycle import chain (lifecycle imports listing, not the reverse).
  */
 
-import { $ } from 'zx';
+import { $ as defaultDollar } from 'zx';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -20,11 +20,15 @@ import path from 'node:path';
 /**
  * List all git worktrees in the current repository.
  *
+ * @param {object} [opts]
+ * @param {Function} [opts.$]  Optional zx-compatible executor. Defaults to real zx.$.
+ *   Tests pass a mock here to avoid vi.mock('zx') under fork pool.
  * @returns {Promise<Array<{path: string, branch: string, head: string}>>}
  *   Array of worktree descriptors; empty array if none or on parse error.
  */
-export async function listWorktrees() {
-  const git = $({ cwd: process.cwd() });
+export async function listWorktrees(opts = {}) {
+  const dollar = opts.$ ?? defaultDollar;
+  const git = dollar({ cwd: process.cwd() });
   let output;
   try {
     const result = await git`git worktree list --porcelain`;

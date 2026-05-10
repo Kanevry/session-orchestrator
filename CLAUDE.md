@@ -47,6 +47,10 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 
 Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-dev/skills/agent-development/SKILL.md
 
+## Operational Rules <!-- consistency:exempt:runtime-only -->
+
+- **CI status MUST be surfaced at session-start** — Local-only test runs are insufficient evidence of CI green. The 8-pipeline silent regression (2026-05-09 deep-3 → 2026-05-10 deep-1, fixed in deep-2) is the cautionary tale. Phase 4 of session-start invokes `scripts/lib/ci-status-banner.mjs` via `checkCiStatus({ repoRoot })` to render a 🚨 banner when CI is red on HEAD. Never assume CI is green from `npm test` results alone.
+
 ## Current State
 
 - **Plugin version:** v3.5.0 (released 2026-05-09, GitHub + GitLab tag). Previous releases v3.4.0 (2026-05-08), v3.3.0 (2026-04-30), v3.2.0 (2026-04-27) at https://github.com/Kanevry/session-orchestrator/releases.

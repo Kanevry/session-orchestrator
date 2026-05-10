@@ -22,6 +22,25 @@ import {
 } from '../../scripts/lib/session-schema.mjs';
 import { migrateEntry } from '../../scripts/migrate-sessions-jsonl.mjs';
 
+// Defensive guard: surface process.exit() during test setup as a thrown error
+// rather than letting it crash the vitest worker (#368).
+vi.spyOn(process, 'exit').mockImplementation((code) => {
+  throw new Error(`Unexpected process.exit(${code}) during test setup`);
+});
+
+// ---------------------------------------------------------------------------
+// module-import safety
+// ---------------------------------------------------------------------------
+
+describe('module-import safety', () => {
+  it('importing migrate-sessions-jsonl does not trigger process.exit', () => {
+    // The vi.spyOn(process, 'exit') guard at module top would throw if main()
+    // ran on import. If we get here, the CLI guard in migrate-sessions-jsonl.mjs
+    // is functioning correctly. (Regression guard for #368.)
+    expect(process.exit).toHaveBeenCalledTimes(0);
+  });
+});
+
 const VALID = () => ({
   session_id: 'sess-2026-04-24-test',
   session_type: 'deep',

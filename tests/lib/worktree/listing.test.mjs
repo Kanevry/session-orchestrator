@@ -4,7 +4,11 @@
  * Unit tests for scripts/lib/worktree/listing.mjs.
  * Covers listWorktrees (porcelain parsing) and applyWorktreeExcludes (fs removal).
  *
- * zx is mocked so no real git subprocess is invoked.
+ * listWorktrees tests inject a mock $ executor via the opts.$ parameter, so
+ * these tests do NOT depend on vi.mock('zx') — making them safe under
+ * pool: 'forks' where vi.mock factory closures are re-evaluated per fork
+ * (GitLab issue #367).
+ *
  * fs operations in applyWorktreeExcludes tests use real tmpdir fixtures.
  */
 
@@ -12,28 +16,31 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { listWorktrees, applyWorktreeExcludes } from '../../../scripts/lib/worktree/listing.mjs';
 
 // ---------------------------------------------------------------------------
-// Module-level mock — must be hoisted
+// Mock-executor factory — no vi.mock('zx') needed
 // ---------------------------------------------------------------------------
 
-// Shared state for the $ callable mock.
-let mockStdout = '';
-let mockShouldThrow = false;
-
-vi.mock('zx', () => {
-  // Inner tagged-template function returned by $({ cwd }).
-  const tagFn = vi.fn().mockImplementation(() => {
-    if (mockShouldThrow) return Promise.reject(new Error('git failure'));
-    return Promise.resolve({ stdout: mockStdout });
-  });
-  // $ is called with options object → returns tagFn.
-  const $fn = Object.assign(
+/**
+ * Build a mock zx-compatible $ executor for listWorktrees DI injection.
+ *
+ * @param {object} [opts]
+ * @param {string}  [opts.stdout='']        Porcelain output to resolve with.
+ * @param {boolean} [opts.shouldThrow=false] If true, the tag-fn rejects with Error('git failure').
+ * @returns {Function}  A vi.fn() that behaves like zx's $({ cwd })`` pattern.
+ */
+function makeMockDollar({ stdout = '', shouldThrow = false } = {}) {
+  const tagFn = vi.fn().mockImplementation(() =>
+    shouldThrow
+      ? Promise.reject(new Error('git failure'))
+      : Promise.resolve({ stdout })
+  );
+  return Object.assign(
     vi.fn().mockImplementation(() => tagFn),
     { verbose: false, quiet: true }
   );
-  return { $: $fn };
-});
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,8 +50,6 @@ let sandbox;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'listing-test-'));
-  mockStdout = '';
-  mockShouldThrow = false;
 });
 
 afterEach(() => {
@@ -58,29 +63,27 @@ afterEach(() => {
 
 describe('listWorktrees', () => {
   it('returns an empty array when git command fails', async () => {
-    mockShouldThrow = true;
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ shouldThrow: true });
+    const result = await listWorktrees({ $: $mock });
     expect(result).toEqual([]);
   });
 
   it('returns an empty array when output is empty', async () => {
-    mockStdout = '';
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: '' });
+    const result = await listWorktrees({ $: $mock });
     expect(result).toEqual([]);
   });
 
   it('parses a single worktree record from porcelain output', async () => {
-    mockStdout = [
+    const porcelain = [
       'worktree /repo',
       'HEAD abc123def456abc123def456abc123def456abc12',
       'branch refs/heads/main',
       '',
     ].join('\n');
 
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: porcelain });
+    const result = await listWorktrees({ $: $mock });
 
     expect(result).toHaveLength(1);
     expect(result[0].path).toBe('/repo');
@@ -89,21 +92,21 @@ describe('listWorktrees', () => {
   });
 
   it('strips refs/heads/ prefix from branch field', async () => {
-    mockStdout = [
+    const porcelain = [
       'worktree /repo',
       'HEAD aaaa',
       'branch refs/heads/feature/my-branch',
       '',
     ].join('\n');
 
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: porcelain });
+    const result = await listWorktrees({ $: $mock });
 
     expect(result[0].branch).toBe('feature/my-branch');
   });
 
   it('parses two worktree records correctly', async () => {
-    mockStdout = [
+    const porcelain = [
       'worktree /repo',
       'HEAD aaa',
       'branch refs/heads/main',
@@ -114,8 +117,8 @@ describe('listWorktrees', () => {
       '',
     ].join('\n');
 
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: porcelain });
+    const result = await listWorktrees({ $: $mock });
 
     expect(result).toHaveLength(2);
     expect(result[1].branch).toBe('so-worktree-wave1');
@@ -124,20 +127,16 @@ describe('listWorktrees', () => {
 
   it('handles trailing record without trailing blank line', async () => {
     // No trailing newline — tests the flush-after-loop logic.
-    mockStdout = 'worktree /repo\nHEAD abc\nbranch refs/heads/main';
-
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: 'worktree /repo\nHEAD abc\nbranch refs/heads/main' });
+    const result = await listWorktrees({ $: $mock });
 
     expect(result).toHaveLength(1);
     expect(result[0].path).toBe('/repo');
   });
 
   it('returns empty branch string when branch line is absent', async () => {
-    mockStdout = 'worktree /repo\nHEAD abc\n\n';
-
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const result = await listWorktrees();
+    const $mock = makeMockDollar({ stdout: 'worktree /repo\nHEAD abc\n\n' });
+    const result = await listWorktrees({ $: $mock });
 
     expect(result[0].branch).toBe('');
   });
@@ -152,7 +151,6 @@ describe('applyWorktreeExcludes', () => {
     const targetDir = join(sandbox, 'node_modules');
     mkdirSync(targetDir);
 
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await applyWorktreeExcludes(sandbox, ['node_modules']);
 
     expect(existsSync(targetDir)).toBe(false);
@@ -162,7 +160,6 @@ describe('applyWorktreeExcludes', () => {
     mkdirSync(join(sandbox, 'src'));
     mkdirSync(join(sandbox, 'node_modules'));
 
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await applyWorktreeExcludes(sandbox, ['node_modules']);
 
     expect(existsSync(join(sandbox, 'src'))).toBe(true);
@@ -172,14 +169,12 @@ describe('applyWorktreeExcludes', () => {
   it('resolves without throwing when patterns is empty', async () => {
     mkdirSync(join(sandbox, 'node_modules'));
 
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await expect(applyWorktreeExcludes(sandbox, [])).resolves.toBeUndefined();
 
     expect(existsSync(join(sandbox, 'node_modules'))).toBe(true);
   });
 
   it('resolves without throwing when a pattern does not exist', async () => {
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await expect(applyWorktreeExcludes(sandbox, ['does-not-exist'])).resolves.toBeUndefined();
   });
 
@@ -187,7 +182,6 @@ describe('applyWorktreeExcludes', () => {
     const nestedDir = join(sandbox, 'src', 'node_modules');
     mkdirSync(nestedDir, { recursive: true });
 
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await applyWorktreeExcludes(sandbox, ['node_modules']);
 
     // Top-level does not exist, nested must survive.
@@ -198,7 +192,6 @@ describe('applyWorktreeExcludes', () => {
     mkdirSync(join(sandbox, 'dist'));
     mkdirSync(join(sandbox, '.next'));
 
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
     await applyWorktreeExcludes(sandbox, ['dist', '.next']);
 
     expect(existsSync(join(sandbox, 'dist'))).toBe(false);
