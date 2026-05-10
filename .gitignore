@@ -57,6 +57,11 @@ docs/specs/
 # fresh each run; no value pinning a lockfile for the sub-package)
 skills/vault-sync/package-lock.json
 
+# pnpm lockfile artifact: this repo uses npm (package-lock.json), but some test
+# fixtures or contributor environments may generate pnpm-lock.yaml as a side-effect.
+# Never commit it — it would diverge from the canonical npm lockfile.
+pnpm-lock.yaml
+
 # Environment
 .env.production
 .env.*.local
