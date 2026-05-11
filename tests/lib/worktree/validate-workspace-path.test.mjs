@@ -105,6 +105,7 @@ describe('production call-site allowlist (#370)', () => {
     const files = out.trim().split('\n').filter(Boolean);
     const allowed = [
       'scripts/gc-stale-worktrees.mjs',
+      'scripts/lib/autopilot/worktree-pipeline.mjs',
       'scripts/lib/worktree/lifecycle.mjs',
       'tests/lib/worktree/validate-workspace-path.test.mjs',
     ];

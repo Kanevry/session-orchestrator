@@ -25,6 +25,25 @@ Four deep sessions on top of v3.4.0. Twenty issues closed, plus a non-tracked ar
 
 For the full version history see [CHANGELOG.md](CHANGELOG.md).
 
+### Multi-Story Autopilot (v3.6 Phase D — thin-slice scaffold)
+
+`scripts/autopilot-multi.mjs` adds a `--multi-story` orchestration mode that runs N parallel issue pipelines in isolated git worktrees with per-loop kill-switches. Built on the ADR-364 substrate (sessions.jsonl optional fields, autopilot.jsonl extensions, `STALL_TIMEOUT` kill-switch, `gc-stale-worktrees`, `validateWorkspacePath`).
+
+**Status:** v1 thin-slice (deep-1 2026-05-11). Production: dry-run plan and basic apply mode. Phase D.2 follow-ups: cross-loop commit-wait, real SIGTERM cohort enforcement, on-green MR-draft trigger.
+
+```bash
+# Dry-run plan (default, safe)
+node scripts/autopilot-multi.mjs --dry-run --json
+
+# Apply mode (real glab issue fetch + worktree spawn)
+node scripts/autopilot-multi.mjs --apply --max-stories 3 --max-hours 4
+
+# With draft-MR creation
+node scripts/autopilot-multi.mjs --apply --draft-mr on-loop-start
+```
+
+See [`commands/autopilot-multi.md`](commands/autopilot-multi.md) or `node scripts/autopilot-multi.mjs --help` for the full flag reference.
+
 ## Install
 
 > **Prerequisite:** Node.js 20 or later. Check with `node --version`. v3.x runs as ES modules and requires a real Node runtime, no Bash shim. [Install Node.js](https://nodejs.org/).

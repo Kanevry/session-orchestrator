@@ -237,6 +237,27 @@ export function migrateEntry(entry) {
 }
 
 // ---------------------------------------------------------------------------
+// v1 → v2 migration skeleton (gated on #372)
+// ---------------------------------------------------------------------------
+
+/**
+ * v1 → v2 migration skeleton. Gated on #372 schema-version v2 bump.
+ * Currently identity (returns entry unchanged). When the v2 bump lands,
+ * this function will normalize Phase D fields (blocked_by_issue,
+ * aborted_by_cohort, spiral_recovery_count) into the canonical shape.
+ *
+ * Eligible after 3 historical-entries CI runs green, currently 3/3 post
+ * pipeline 3839.
+ *
+ * @param {object} entry — a session record
+ * @returns {object} the same entry, unmodified for now
+ */
+export function migrateV1ToV2(entry) {
+  // SKELETON: identity migration. Real logic deferred to follow-up after #372.
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
 // Outcome classification per line
 // ---------------------------------------------------------------------------
 

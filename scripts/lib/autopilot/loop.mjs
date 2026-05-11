@@ -37,6 +37,9 @@ function clampNumber(value, { min, max, fallback }) {
  * @property {string|null} host_class @property {string|null} resource_verdict_at_start
  * @property {boolean} fallback_to_manual @property {boolean} dry_run @property {number} total_tokens_used
  * @property {string|null} worktree_path @property {string|null} parent_run_id @property {number} stall_recovery_count
+ * @property {number|null} blocked_by_issue — Phase D (#341): issue number this loop was waiting on (OPEN-4 commit-deps); null when not blocked
+ * @property {boolean} aborted_by_cohort — Phase D (#341): set by cohort-abort policy (OPEN-5); mutated by W3 P5 orchestration-glue, not by runLoop itself
+ * @property {number} spiral_recovery_count — Phase D (#341): increments on first SPIRAL retry; mirrors stall_recovery_count pattern
  */
 
 /**
@@ -57,6 +60,7 @@ function clampNumber(value, { min, max, fallback }) {
  * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler input (defaults to jsonlPath)
  * @param {number} [opts.stallTimeoutSeconds] — STALL_TIMEOUT threshold seconds (default 600)
  * @param {string} [opts.worktreePath] @param {string} [opts.parentRunId]
+ * @param {number} [opts.blockedByIssue] — Phase D (#341) forward-compat: issue number this loop is waiting on (OPEN-4 commit-deps); callers may omit, defaults to null
  * @returns {Promise<AutopilotState>}
  */
 export async function runLoop(opts = {}) {
@@ -132,6 +136,10 @@ export async function runLoop(opts = {}) {
     worktree_path: opts.worktreePath ?? null,
     parent_run_id: opts.parentRunId ?? null,
     stall_recovery_count: 0,
+    // Phase D (#341) cross-loop telemetry — additive, forward-compat.
+    blocked_by_issue: opts.blockedByIssue ?? null,   // {number|null} — which issue this loop was waiting on (OPEN-4 commit-deps)
+    aborted_by_cohort: false,                         // {boolean} — set by cohort-abort policy (OPEN-5)
+    spiral_recovery_count: 0,                         // {number} — increments on first SPIRAL retry, mirrors stall_recovery_count pattern
   };
 
   // Dry-run short-circuits: emit a state record without invoking the lifecycle.
