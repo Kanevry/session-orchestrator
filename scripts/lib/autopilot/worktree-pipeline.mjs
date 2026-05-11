@@ -10,7 +10,12 @@
 //   - scripts/lib/autopilot/loop.mjs (substrate: forward-compat params)
 //   - scripts/lib/worktree/lifecycle.mjs (substrate: validateWorkspacePath)
 
-import { $ as realZx } from 'zx';
+// NOTE: zx is imported LAZILY inside functions that need it (see lazyZx() helper).
+// Top-level `import { $ as realZx } from 'zx'` caused fork-pool fragility — when this
+// module is loaded in a worker fork before tests like tests/lib/worktree/constants.test.mjs
+// run, vi.mock('zx', ...) factories in those test files cannot re-route the cached
+// import. Pipeline 3848 (commit 1347c7a) failed for this reason. Lazy import preserves
+// module-load order isolation. Pattern matches deep-2 #367 DI-seam migration.
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -138,7 +143,7 @@ export async function setupWorktree(context, opts = {}) {
     worktreeRoot = WORKTREE_ROOT_DEFAULT,
   } = context;
 
-  const exec = opts.$ ?? realZx;
+  const exec = opts.$ ?? (await import('zx')).$;
 
   const wtPath = path.join(worktreeRoot, repoBasename(repoRoot), String(issueIid));
 
