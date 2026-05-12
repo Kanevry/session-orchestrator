@@ -8,6 +8,7 @@
  *
  * Exports:
  *   SCHEMA_VERSION
+ *   appendJsonlAtomic(record, jsonlPath)               — shared atomic tmp+rename helper
  *   writeAutopilotJsonl(state, jsonlPath)              — atomic tmp+rename JSONL writer
  *   defaultRunId(branch, nowMs)                        — autopilot_run_id builder
  *   readHostClass(hostJsonPath)                        — reads host.json host_class field
@@ -16,7 +17,7 @@
  *   linkChildLoopToCoordinator(childRunId, parentRunId)— Phase D linkage documentation helper
  */
 
-import { writeFileSync, renameSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
+import { writeFileSync, renameSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -25,6 +26,37 @@ import crypto from 'node:crypto';
 // ---------------------------------------------------------------------------
 
 export const SCHEMA_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// Shared atomic JSONL append helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomically append a record as a JSONL line to `jsonlPath`.
+ * Strategy: read existing file content → append new line in memory →
+ * write to a tmp file in the same directory → rename tmp → final path.
+ * Crash-safe: a partial tmpfile is never visible at the destination path.
+ * POSIX rename(2) is atomic within the same filesystem.
+ *
+ * The directory must already exist (callers are responsible for mkdirSync).
+ *
+ * @param {object} record    — the record to serialize as a JSONL line
+ * @param {string} jsonlPath — destination JSONL path
+ */
+export function appendJsonlAtomic(record, jsonlPath) {
+  let existing;
+  try {
+    existing = readFileSync(jsonlPath, 'utf8');
+  } catch {
+    existing = '';
+  }
+  if (existing.length > 0 && !existing.endsWith('\n')) existing += '\n';
+
+  const line = JSON.stringify(record) + '\n';
+  const tmp = `${jsonlPath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  writeFileSync(tmp, existing + line, 'utf8');
+  renameSync(tmp, jsonlPath);
+}
 
 // ---------------------------------------------------------------------------
 // JSONL writer (atomic tmp + rename)
@@ -50,18 +82,7 @@ export function writeAutopilotJsonl(state, jsonlPath) {
   const dir = path.dirname(jsonlPath);
   mkdirSync(dir, { recursive: true });
 
-  let existing;
-  try {
-    existing = readFileSync(jsonlPath, 'utf8');
-  } catch {
-    existing = '';
-  }
-  if (existing.length > 0 && !existing.endsWith('\n')) existing += '\n';
-
-  const line = JSON.stringify(state) + '\n';
-  const tmp = `${jsonlPath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  writeFileSync(tmp, existing + line, 'utf8');
-  renameSync(tmp, jsonlPath);
+  appendJsonlAtomic(state, jsonlPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +200,7 @@ export function writeMultiStoryCoordinatorEntry(entry, jsonlPath = DEFAULT_AUTOP
   };
 
   try {
-    appendFileSync(jsonlPath, JSON.stringify(record) + '\n', { encoding: 'utf8' });
+    appendJsonlAtomic(record, jsonlPath);
   } catch (err) {
     console.error(`[telemetry] writeMultiStoryCoordinatorEntry failed: ${err.message}`);
     // Do NOT throw — telemetry failures must not crash the orchestrator

@@ -18,7 +18,7 @@
 // module-load order isolation. Pattern matches deep-2 #367 DI-seam migration.
 import path from 'node:path';
 import os from 'node:os';
-import fs from 'node:fs';
+import fs, { realpathSync } from 'node:fs';
 import { runLoop } from './loop.mjs';
 import { maybeCreateDraftMR } from './mr-draft.mjs';
 import { validateWorkspacePath } from '../worktree/lifecycle.mjs';
@@ -145,14 +145,44 @@ export async function setupWorktree(context, opts = {}) {
 
   const exec = opts.$ ?? (await import('zx')).$;
 
-  const wtPath = path.join(worktreeRoot, repoBasename(repoRoot), String(issueIid));
+  // CWE-59 hardening (#375): resolve symlinks in worktreeRoot ONCE so that
+  // validateWorkspacePath comparisons use a fully-resolved parent path.
+  // macOS gotcha: /var → /private/var, so worktreeRoot must be resolved FIRST,
+  // and wtPath must be derived from the resolved root — otherwise the ENOENT
+  // fallback path stays as /var/... while resolvedWorktreeRoot is /private/var/...
+  // causing legitimate paths to false-reject (mirrors #374 pattern).
+  let resolvedWorktreeRoot;
+  try {
+    resolvedWorktreeRoot = realpathSync(worktreeRoot);
+  } catch {
+    // worktreeRoot missing — fall back to unresolved; validateWorkspacePath
+    // will still catch string-level traversal attempts.
+    resolvedWorktreeRoot = worktreeRoot;
+  }
 
-  // SEC-013 / ADR-364: validate path BEFORE any filesystem write.
-  const valid = validateWorkspacePath(wtPath, worktreeRoot);
+  // Compute wtPath from the resolved root so path comparisons are consistent.
+  const wtPath = path.join(resolvedWorktreeRoot, repoBasename(repoRoot), String(issueIid));
+
+  // Resolve symlinks in wtPath to prevent symlink-escape between path
+  // computation and the eventual git worktree add call.
+  // ENOENT is expected when the worktree doesn't exist yet — use raw path.
+  let resolvedWtPath;
+  try {
+    resolvedWtPath = realpathSync(wtPath);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    resolvedWtPath = wtPath; // path doesn't exist yet — no symlink to resolve
+  }
+
+  // SEC-013 / ADR-364: validate resolved path BEFORE any filesystem write.
+  const valid = validateWorkspacePath(resolvedWtPath, resolvedWorktreeRoot);
   if (!valid) {
+    process.stderr.write(
+      `worktree-pipeline: refusing to setup symlink-escape: ${wtPath} → ${resolvedWtPath}\n`,
+    );
     throw new WorktreeBoundaryError(
-      `worktree-pipeline: computed path '${wtPath}' escapes root '${worktreeRoot}'`,
-      { computed: wtPath, root: worktreeRoot },
+      `worktree-pipeline: computed path '${resolvedWtPath}' escapes root '${resolvedWorktreeRoot}'`,
+      { computed: resolvedWtPath, root: resolvedWorktreeRoot },
     );
   }
 

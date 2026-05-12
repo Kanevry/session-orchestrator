@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync as realRealpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -184,7 +184,10 @@ describe('setupWorktree', () => {
     const ctx = makeContext({ repoRoot, worktreeRoot, issueIid: 42 });
     const result = await setupWorktree(ctx, { $: $mock });
 
-    const expectedPath = path.join(worktreeRoot, 'my-repo', '42');
+    // Use the resolved worktreeRoot because setupWorktree now resolves symlinks
+    // (macOS /var → /private/var gotcha — mirrors #374/#375 fix).
+    const resolvedRoot = realRealpathSync(worktreeRoot);
+    const expectedPath = path.join(resolvedRoot, 'my-repo', '42');
     expect(result.wtPath).toBe(expectedPath);
   });
 
@@ -204,8 +207,12 @@ describe('setupWorktree', () => {
 
   it('returns reused: true and does NOT call $ when wtPath already has a .git file', async () => {
     const worktreeRoot = path.join(tmp, 'wt-root');
+    mkdirSync(worktreeRoot, { recursive: true });
     const repoRoot = path.join(tmp, 'my-proj');
-    const wtPath = path.join(worktreeRoot, 'my-proj', '55');
+    // Use resolved root so the fixture path matches the resolved wtPath the
+    // production code derives after realpathSync (macOS /var→/private/var).
+    const resolvedRoot = realRealpathSync(worktreeRoot);
+    const wtPath = path.join(resolvedRoot, 'my-proj', '55');
 
     mkdirSync(wtPath, { recursive: true });
     writeFileSync(path.join(wtPath, '.git'), 'gitdir: ../.git/worktrees/55');
@@ -254,6 +261,82 @@ describe('setupWorktree', () => {
     expect(result.reused).toBe(false);
     // $ should have been called at least twice (first throw, then HEAD fallback)
     expect($mock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('adversarial: realpathSync returning an out-of-tree path causes WorktreeBoundaryError', async () => {
+    // Verify the security invariant: when realpathSync resolves wtPath to a path
+    // outside worktreeRoot (symlink-escape scenario), setupWorktree MUST throw
+    // WorktreeBoundaryError and NOT proceed to git worktree add.
+    //
+    // Pattern: vi.doMock + dynamic re-import (mirrors #374 / deep-1 #370 approach).
+    // We intercept node:fs to inject an adversarial realpathSync that returns an
+    // out-of-tree path while keeping fs.existsSync returning false (no-op path).
+    //
+    // Observable invariants verified:
+    //  1. WorktreeBoundaryError is thrown (guard fires)
+    //  2. The error message contains the resolved out-of-tree path
+    //  3. git worktree add (opts.$) is NOT called (attack blocked before FS write)
+    //  4. Stderr contains the symlink-escape warning
+    const worktreeRoot = path.join(tmp, 'safe-root');
+    mkdirSync(worktreeRoot, { recursive: true });
+    // Resolve the real worktreeRoot to handle macOS /var→/private/var before
+    // injecting the mock (the production code resolves it with realpathSync too).
+    const resolvedWorktreeRoot = realRealpathSync(worktreeRoot);
+    const outOfTreePath = path.join(tmp, 'EVIL-OUTSIDE-ROOT', 'escaped');
+
+    // Spy on stderr to capture the rejection message.
+    const stderrChunks = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    });
+
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual('node:fs');
+      return {
+        ...actual,
+        realpathSync: (p) => {
+          // For the worktreeRoot resolution call, return the real resolved root.
+          if (p === worktreeRoot) return resolvedWorktreeRoot;
+          // For the wtPath resolution call, simulate a symlink escape.
+          return outOfTreePath;
+        },
+      };
+    });
+
+    const { setupWorktree: freshSetupWorktree, WorktreeBoundaryError: FreshWBE } =
+      await import('../../../scripts/lib/autopilot/worktree-pipeline.mjs?adv-test-1');
+
+    const repoRoot = path.join(tmp, 'my-repo');
+    const ctx = {
+      issueIid: 1,
+      issueTitle: 'adv-test',
+      branchName: 'issue-1',
+      parentRunId: 'p',
+      repoRoot,
+      worktreeRoot,
+    };
+    const $mock = makeMockDollar();
+
+    const thrownError = await freshSetupWorktree(ctx, { $: $mock }).catch((e) => e);
+
+    // 1. Guard fires: WorktreeBoundaryError is thrown.
+    expect(thrownError).toBeInstanceOf(FreshWBE);
+
+    // 2. Error message contains the out-of-tree resolved path (not the raw wtPath).
+    expect(thrownError.message).toContain(outOfTreePath);
+
+    // 3. git worktree add must NOT have been called (attack blocked before FS write).
+    expect($mock).not.toHaveBeenCalled();
+
+    // 4. Stderr warning mirrors gc-stale-worktrees #374 format:
+    //    "refusing to setup symlink-escape: <wtPath> → <resolved>"
+    const stderrOutput = stderrChunks.join('');
+    expect(stderrOutput).toMatch(/refusing to setup symlink-escape:/);
+    expect(stderrOutput).toContain(outOfTreePath);
+
+    stderrSpy.mockRestore();
+    vi.doUnmock('node:fs');
   });
 });
 

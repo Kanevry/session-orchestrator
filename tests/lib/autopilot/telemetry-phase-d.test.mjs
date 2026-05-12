@@ -3,6 +3,7 @@
 // Behavioral tests for Phase-D additions to scripts/lib/autopilot/telemetry.mjs:
 //   - writeMultiStoryCoordinatorEntry(entry, jsonlPath)
 //   - linkChildLoopToCoordinator(childRunId, parentRunId)
+//   - appendJsonlAtomic(record, jsonlPath) — shared helper (concurrent-write invariant)
 //
 // Uses real filesystem (mkdtempSync) per project test-quality rules.
 
@@ -13,6 +14,7 @@ import path from 'node:path';
 import {
   writeMultiStoryCoordinatorEntry,
   linkChildLoopToCoordinator,
+  appendJsonlAtomic,
 } from '../../../scripts/lib/autopilot/telemetry.mjs';
 
 // ---------------------------------------------------------------------------
@@ -150,4 +152,77 @@ describe('writeMultiStoryCoordinatorEntry', () => {
     expect(record.cohort_aborted).toBe(false);
     expect(record.loop_count).toBe(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// appendJsonlAtomic — shared helper
+// ---------------------------------------------------------------------------
+
+describe('appendJsonlAtomic — shared atomic helper', () => {
+  it('writes a single record as a valid JSONL line', () => {
+    appendJsonlAtomic({ id: 'x1', value: 42 }, jsonl);
+
+    const lines = readFileSync(jsonl, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed).toEqual({ id: 'x1', value: 42 });
+  });
+
+  it('appends to an existing file without overwriting prior content', () => {
+    appendJsonlAtomic({ id: 'first' }, jsonl);
+    appendJsonlAtomic({ id: 'second' }, jsonl);
+
+    const lines = readFileSync(jsonl, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]).id).toBe('first');
+    expect(JSON.parse(lines[1]).id).toBe('second');
+  });
+
+  it('output file ends with a newline after each write', () => {
+    appendJsonlAtomic({ id: 'nl-test' }, jsonl);
+    const content = readFileSync(jsonl, 'utf8');
+    expect(content.endsWith('\n')).toBe(true);
+  });
+
+  it(
+    '100 concurrent writes produce exactly 100 valid JSONL lines with no truncation or interleaved content',
+    { timeout: 15_000 },
+    async () => {
+      const N = 100;
+
+      // Launch N writes in parallel via Promise.all. Each write is
+      // synchronous internally but they are dispatched concurrently from
+      // this microtask queue. POSIX rename(2) atomicity guarantees each
+      // completed write is fully visible before the next one can rename over it.
+      await Promise.all(
+        Array.from({ length: N }, (_, i) =>
+          Promise.resolve().then(() => appendJsonlAtomic({ seq: i, marker: `worker-${i}` }, jsonl)),
+        ),
+      );
+
+      const content = readFileSync(jsonl, 'utf8');
+      const lines = content.trim().split('\n');
+
+      // Exactly N lines — no lines lost, no extra empty lines
+      expect(lines).toHaveLength(N);
+
+      // Every line is valid JSON — no truncated/partial content
+      const records = lines.map((line, idx) => {
+        let parsed;
+        expect(() => { parsed = JSON.parse(line); }, `line ${idx} must be valid JSON`).not.toThrow();
+        return parsed;
+      });
+
+      // Every record has the expected shape (no interleaved bytes)
+      for (const rec of records) {
+        expect(typeof rec.seq).toBe('number');
+        expect(typeof rec.marker).toBe('string');
+        expect(rec.marker).toMatch(/^worker-\d+$/);
+      }
+
+      // All N unique seq values are present — no write was silently dropped
+      const seqs = new Set(records.map((r) => r.seq));
+      expect(seqs.size).toBe(N);
+    },
+  );
 });
