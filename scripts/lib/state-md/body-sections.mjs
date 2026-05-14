@@ -105,6 +105,30 @@ export function appendDeviation(contents, isoTimestamp, message) {
 }
 
 /**
+ * Records an auto-commit checkpoint in the `## Deviations` section of STATE.md.
+ *
+ * Phase-1 stub — appends a human-readable deviation entry only. Does NOT perform
+ * any git operations. The procedural commit body (`scripts/lib/auto-commit.mjs`)
+ * is deferred to V3.6 (GitLab #214). Until then, callers (wave-executor coordinator)
+ * invoke this function AFTER the git commit succeeds to create the audit trail.
+ *
+ * @param {string} contents - current STATE.md text
+ * @param {object} options
+ * @param {string} options.sha - short git SHA of the auto-commit (e.g. 'a1b2c3d')
+ * @param {number} options.waveN - wave number that triggered the checkpoint
+ * @param {string} options.waveResultSummary - one-line summary, e.g. 'Impl-Core, Quality-Lite PASS, 12 files'
+ * @param {string} [options.timestamp] - ISO 8601 UTC; defaults to current time
+ * @returns {string} updated STATE.md text
+ */
+export function recordAutoCommit(contents, options) {
+  const opts = options || {};
+  const { sha, waveN, waveResultSummary } = opts;
+  const timestamp = opts.timestamp ?? new Date().toISOString();
+  const message = `Wave ${waveN} auto-commit: ${sha} (${waveResultSummary})`;
+  return appendDeviation(contents, timestamp, message);
+}
+
+/**
  * Finalizes a STATE.md after express-path coord-direct execution.
  * Sets `status: completed`, appends an `Express path:` deviation, refreshes `updated`.
  * No-op (returns input unchanged) if `contents` is unparseable.

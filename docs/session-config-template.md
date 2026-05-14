@@ -120,6 +120,7 @@ grounding-check: true                  # session-end Phase 1.1a planned-vs-touch
 grounding-injection-max-files: 3       # 0 disables (#85)
 isolation: auto                        # worktree | none | auto (graduated default #194)
 max-turns: auto                        # housekeeping=8, feature=15, deep=25
+auto-commit-per-wave: false            # opt-in: commit after each wave's Quality-Lite PASS (default false; V3.6 plumbing)
 ```
 
 Read by: `skills/session-start/SKILL.md`, `skills/session-end/SKILL.md`, `hooks/pre-edit-scope.mjs`, `hooks/pre-bash-destructive-guard.mjs`, `hooks/pre-bash-enforce-commands.mjs`, `hooks/post-edit-validate.mjs`.
@@ -386,6 +387,7 @@ grounding-check: true
 grounding-injection-max-files: 3
 isolation: auto
 max-turns: auto
+auto-commit-per-wave: false            # opt-in: commit after each wave's Quality-Lite PASS (V3.6 plumbing)
 
 # Env-aware
 resource-awareness: true

@@ -19,6 +19,7 @@ export {
   readCurrentTask,
   appendDeviation,
   markExpressPathComplete,
+  recordAutoCommit,
 } from './state-md/body-sections.mjs';
 
 export {
