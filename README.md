@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-4897%20passing-brightgreen.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-4944%20passing-brightgreen.svg)](#development)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
@@ -227,7 +227,7 @@ Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) routed t
 
 ## Components
 
-- **30 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, architecture, domain-model, ubiquitous-language, autopilot, mode-selector, repo-audit, convergence-monitoring, using-orchestrator, frontmatter-guard, test-runner, playwright-driver (session-start sub-files: `phase-2-5-docs-planning.md`, `phase-4-5-resource-health.md`, `phase-7-5-mode-selector.md`, `phase-8-5-express-path.md`)
+- **31 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, architecture, domain-model, ubiquitous-language, autopilot, mode-selector, repo-audit, convergence-monitoring, using-orchestrator, frontmatter-guard, test-runner, playwright-driver, peekaboo-driver (session-start sub-files: `phase-2-5-docs-planning.md`, `phase-4-5-resource-health.md`, `phase-7-5-mode-selector.md`, `phase-8-5-express-path.md`)
 - **11 Commands**: `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`
 - **11 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer, docs-writer, architect-reviewer, qa-strategist, analyst, ux-evaluator
 - **10 hook event matchers / 10 handlers**: SessionStart (banner + init), PreToolUse/Edit\|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (telemetry), PostToolUseFailure (corrective context), PostToolBatch (wave signal), SubagentStart (telemetry), CwdChanged (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
@@ -235,7 +235,7 @@ Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) routed t
 - **`.orchestrator/policy/`**: runtime policy files, e.g. `blocked-commands.json` with 13 rules consumed by the destructive-command guard
 - **`.claude/rules/`**: always-on contributor rules, e.g. `parallel-sessions.md` (PSA-001 through PSA-004)
 - **`.codex-plugin/`**: Codex plugin manifest (`plugin.json`), compatibility config, 3 agent role definitions
-- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 4897 tests
+- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 4944 tests
 
 ## Comparison
 

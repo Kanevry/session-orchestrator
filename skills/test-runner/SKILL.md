@@ -7,8 +7,7 @@ model-preference-codex: gpt-5.4
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Agentic end-to-end test orchestrator. Resolves target + profile, dispatches
-  the right driver(s) (playwright for web today, peekaboo for macOS once
-  #381 lands), invokes the ux-evaluator agent (opus, read-only) against
+  the right driver(s) (playwright for web today, peekaboo for macOS (issue #381)), invokes the ux-evaluator agent (opus, read-only) against
   driver artifacts, reconciles findings with the open issue tracker via
   scripts/lib/test-runner/issue-reconcile.mjs, and writes report.md +
   JSONL roll-up. Wraps upstream tools (no forks). Hard-gates Playwright MCP
@@ -48,7 +47,7 @@ Resolution order (first match wins):
 2. **Policy file lookup** — `.orchestrator/policy/test-profiles.json` by target name (if present)
 3. **Convention-based detection** (marker files):
    - `playwright.config.{ts,js}` present → target type `web`, dispatch `playwright-driver`
-   - `Package.swift` present → target type `mac`, dispatch `peekaboo-driver` (placeholder — #381 not yet shipped)
+   - `Package.swift` present → target type `mac`, dispatch `peekaboo-driver` (see `skills/peekaboo-driver/SKILL.md`)
 4. **Fallback** → emit error and halt:
    ```
    Error: Cannot resolve target — provide --target or add .orchestrator/policy/test-profiles.json
@@ -93,13 +92,41 @@ Log: `playwright-driver exited [code] — [N] test files captured under ${RUN_DI
 
 ### macOS (peekaboo-driver)
 
-> **Placeholder — #381 not yet shipped.** When this branch is reached, emit:
->
-> ```
-> peekaboo-driver: not yet available (issue #381). Skipping macOS dispatch.
-> ```
->
-> Continue to Phase 3. When #381 lands, replace this paragraph with the dispatch contract from `skills/peekaboo-driver/SKILL.md`.
+> See `skills/peekaboo-driver/SKILL.md` for the full dispatch contract, permission probe, and artifact layout.
+
+**Pre-dispatch platform check:** The driver's Phase 1 gate handles the platform and version checks (`darwin` + macOS 15.0+) and exits 0 (non-fatal skip) on incompatible systems. The orchestrator does not need to replicate these checks.
+
+**Permission probe:** The driver runs its own Phase 2 permission probe via `peekaboo permissions status --json`. If required permissions (Screen Recording, Accessibility) are not granted, the driver surfaces an AUQ and exits 2 on failure. The orchestrator treats exit 2 as a driver-framework error, not a test failure.
+
+**Invocation:**
+
+```bash
+# All inputs via environment variables — no positional arguments
+RUN_DIR="${RUN_DIR}" TARGET="${TARGET}" PROFILE="${PROFILE}" bash skills/peekaboo-driver/SKILL.md
+```
+
+**Outputs the orchestrator must parse:**
+
+| Artifact | Description |
+|---|---|
+| `${RUN_DIR}/exit_code` | Plain integer file written by driver before exit |
+| `${RUN_DIR}/results.json` | Driver summary: `exit_code`, `scenarios_attempted`, `scenarios_passed`, `scenarios_failed` |
+| `${RUN_DIR}/ax-snapshots/<scenario>.json` | peekaboo AX-tree output per scenario |
+| `${RUN_DIR}/ax-snapshots/glass-modifiers-<ts>.json` | Liquid Glass conformance artifact (consumed by ux-evaluator Check 4) |
+| `${RUN_DIR}/screenshots/<step>-<ts>.png` | Per-step screenshots (evidence for ux-evaluator findings) |
+| `${RUN_DIR}/console.ndjson` | Driver log events as NDJSON |
+
+**Exit-code semantics:**
+
+| Code | Meaning | Orchestrator Action |
+|---|---|---|
+| 0 | All captures succeeded (or platform skip) | Record pass or skip, continue to Phase 3 |
+| 1 | At least one capture failed | Failures become findings (non-fatal) — continue to Phase 3 |
+| 2 | Framework error (missing binary, permission denied, OS mismatch) | Surface as driver error; still continue to Phase 3 with available artifacts |
+
+Capture exit code. Exit 1 (capture failures) produces findings for the UX evaluator — it is NOT fatal for the orchestrator. Exit 2 (framework error) is surfaced in the report but does not halt Phase 3. Continue to Phase 3 regardless of exit code.
+
+Log: `peekaboo-driver exited [code] — [N] scenarios captured under ${RUN_DIR}`
 
 ## Phase 3: UX Evaluator Dispatch
 
@@ -285,7 +312,7 @@ Test Runner complete: run_id=<runId> findings=[total] issues_created=[N] duratio
 
 ## Anti-Patterns
 
-- **DO NOT** invoke Playwright or Peekaboo directly from the coordinator prompt — always dispatch via the wrapper skills (`skills/playwright-driver/SKILL.md`, future `skills/peekaboo-driver/SKILL.md`).
+- **DO NOT** invoke Playwright or Peekaboo directly from the coordinator prompt — always dispatch via the wrapper skills (`skills/playwright-driver/SKILL.md`, `skills/peekaboo-driver/SKILL.md`).
 - **DO NOT** inline AX-tree dumps or screenshots into coordinator or agent prompt context — artifacts go to disk under `${RUN_DIR}`.
 - **DO NOT** re-file existing findings — fingerprint-based dedup via `issue-reconcile.mjs` is mandatory every run.
 - **DO NOT** use `@playwright/mcp` for browser drive — R5 hard-gate enforced by `scripts/lib/test-runner/check-playwright-mcp-canary.mjs` (4× token cost per Microsoft benchmark).

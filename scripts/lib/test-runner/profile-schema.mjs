@@ -116,6 +116,12 @@ function parseProfileEntry(value) {
   ) {
     return { success: false, error: makeError('timeout_ms must be a positive integer') };
   }
+  // SEC-PD-LOW-3: V8 setTimeout uses int32 — values > 2^31-1 silently overflow to immediate-fire.
+  // Practical ceiling is 1 hour for test profiles.
+  const MAX_TIMEOUT_MS = 3_600_000;  // 1 hour
+  if (timeout_ms > MAX_TIMEOUT_MS) {
+    return { success: false, error: makeError(`timeout_ms must not exceed ${MAX_TIMEOUT_MS} (1 hour)`) };
+  }
 
   // description (optional string)
   if (v.description !== undefined && typeof v.description !== 'string') {
