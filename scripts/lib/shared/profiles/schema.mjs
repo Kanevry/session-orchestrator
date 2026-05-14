@@ -1,5 +1,5 @@
 /**
- * test-runner/profile-schema.mjs — Validation schemas for test profile entries.
+ * shared/profiles/schema.mjs — Validation schemas for test profile entries.
  *
  * Zod was not available in this project's node_modules at implementation time
  * (issue #383 part 3), so validation is implemented as a hand-rolled validator
@@ -12,6 +12,8 @@
  * Both exports expose a `.safeParse(value)` method returning
  * `{ success: true, data }` or `{ success: false, error: ZodLike }`.
  */
+
+import { isPathInside } from '../../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -91,6 +93,11 @@ function parseProfileEntry(value) {
   const rubric = v.rubric === undefined ? 'skills/test-runner/rubric-v1.md' : v.rubric;
   if (typeof rubric !== 'string') {
     return { success: false, error: makeError('rubric must be a string') };
+  }
+  // SEC-IR-LOW-3: rubric must stay within project root
+  const projectRoot = process.cwd();
+  if (!isPathInside(rubric, projectRoot)) {
+    return { success: false, error: makeError('rubric path escapes project root') };
   }
 
   // checks (optional array of strings)

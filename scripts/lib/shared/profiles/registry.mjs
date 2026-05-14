@@ -1,5 +1,5 @@
 /**
- * test-runner/profile-registry.mjs — Pure loader for test profile registry.
+ * shared/profiles/registry.mjs — Pure loader for test profile registry.
  *
  * Reads `.orchestrator/policy/test-profiles.json`, validates each entry
  * against profileRegistrySchema, and exposes pure helper accessors.
@@ -16,7 +16,7 @@
  */
 
 import fsPromises from 'node:fs/promises';
-import { profileEntrySchema, profileRegistrySchema } from './profile-schema.mjs';
+import { profileEntrySchema, profileRegistrySchema } from './schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Default path

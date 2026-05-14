@@ -319,6 +319,8 @@ indicates a translucent/blurred background that uses:
 - Peekaboo screenshot of the non-compliant surface (referenced in `evidence_path`).
 - The AX-path or frame identifier (referenced in `locator`).
 
+> **Note (v1):** peekaboo-driver may emit `ax-snapshots/glass-modifiers-*.json` artifacts carrying `schema_version: v1, status: stub` for forward compatibility. The v1 rubric does NOT read these — Check 4 operates from screenshots + AX dump annotations only. Future ux-evaluator versions may consume the JSON to classify frames directly.
+
 **Fingerprint inputs:**
 - `scope = 'liquid-glass'`
 - `checkId = 'missing-glassEffect'`

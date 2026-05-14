@@ -355,6 +355,84 @@ describe('runner run-dir creation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests 18–22: reporter syntax regression canary (#395)
+//
+// The W2-W3 fix replaced the old `html:<path>,json:<path>` syntax (which
+// Playwright rejected as "Cannot find module 'html:<path>'") with
+// comma-separated reporter NAMES + env-var-based path injection.
+// These tests are regression canaries: they MUST fail if the old syntax is
+// reintroduced.
+// ---------------------------------------------------------------------------
+
+describe('runner reporter syntax (#395 regression canary)', () => {
+  async function captureSpawnArgs({ target = '/tmp/fake-target' } = {}) {
+    setScenario({ target });
+    const exitCodePromise = resolvingExitSpy();
+    let capturedArgs = null;
+    let capturedEnv = null;
+    const spawnFn = vi.fn((_cmd, args, spawnOpts) => {
+      capturedArgs = args;
+      capturedEnv = spawnOpts.env;
+      return makeProc({ exitCode: 0 });
+    });
+    const fakeFs = makeFakeFs({ existsResults: { [`${target}/package.json`]: false } });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    await exitCodePromise;
+    return { capturedArgs, capturedEnv };
+  }
+
+  it('passes --reporter with comma-separated names (html,json), not html:<path> or json:<path>', async () => {
+    const { capturedArgs } = await captureSpawnArgs();
+    const reporterIdx = capturedArgs.indexOf('--reporter');
+    expect(reporterIdx).not.toBe(-1);
+    expect(capturedArgs[reporterIdx + 1]).toBe('html,json');
+  });
+
+  it('does NOT include any arg matching /html:/ in the playwright argv (regression canary)', async () => {
+    const { capturedArgs } = await captureSpawnArgs();
+    const broken = capturedArgs.some((a) => /html:/.test(a));
+    expect(broken).toBe(false);
+  });
+
+  it('does NOT include any arg matching /json:/ in the playwright argv (regression canary)', async () => {
+    const { capturedArgs } = await captureSpawnArgs();
+    const broken = capturedArgs.some((a) => /json:/.test(a));
+    expect(broken).toBe(false);
+  });
+
+  it('sets PLAYWRIGHT_HTML_OUTPUT_DIR env var to a non-empty string', async () => {
+    const { capturedEnv } = await captureSpawnArgs();
+    expect(typeof capturedEnv.PLAYWRIGHT_HTML_OUTPUT_DIR).toBe('string');
+    expect(capturedEnv.PLAYWRIGHT_HTML_OUTPUT_DIR.length).toBeGreaterThan(0);
+  });
+
+  it('sets PLAYWRIGHT_JSON_OUTPUT_FILE env var to a non-empty string', async () => {
+    const { capturedEnv } = await captureSpawnArgs();
+    expect(typeof capturedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE).toBe('string');
+    expect(capturedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE.length).toBeGreaterThan(0);
+  });
+
+  it('sets PLAYWRIGHT_HTML_OPEN to "never"', async () => {
+    const { capturedEnv } = await captureSpawnArgs();
+    expect(capturedEnv.PLAYWRIGHT_HTML_OPEN).toBe('never');
+  });
+
+  it('passes --output followed by a path ending in test-results', async () => {
+    const { capturedArgs } = await captureSpawnArgs();
+    const outputIdx = capturedArgs.indexOf('--output');
+    expect(outputIdx).not.toBe(-1);
+    expect(capturedArgs[outputIdx + 1]).toMatch(/test-results$/);
+  });
+
+  it('passes --trace followed by "on"', async () => {
+    const { capturedArgs } = await captureSpawnArgs();
+    const traceIdx = capturedArgs.indexOf('--trace');
+    expect(traceIdx).not.toBe(-1);
+    expect(capturedArgs[traceIdx + 1]).toBe('on');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 17: exit_code file written with the resolved exit code
 // ---------------------------------------------------------------------------
 

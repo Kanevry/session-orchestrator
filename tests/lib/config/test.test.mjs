@@ -115,6 +115,32 @@ describe('_parseTest — inline YAML comments stripped', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Path-traversal validation for profiles-path (#390)
+// ---------------------------------------------------------------------------
+
+describe('_parseTest — profiles-path path-traversal rejection', () => {
+  it('falls back to default when profiles-path is a relative traversal (../etc/passwd)', () => {
+    const content = 'test:\n  profiles-path: ../etc/passwd\n';
+    expect(_parseTest(content)['profiles-path']).toBe('.orchestrator/policy/test-profiles.json');
+  });
+
+  it('falls back to default when profiles-path is an absolute path outside the project (/etc/passwd)', () => {
+    const content = 'test:\n  profiles-path: /etc/passwd\n';
+    expect(_parseTest(content)['profiles-path']).toBe('.orchestrator/policy/test-profiles.json');
+  });
+
+  it('accepts a repo-relative profiles-path inside the project (skills/test-runner/whatever.json)', () => {
+    const content = 'test:\n  profiles-path: skills/test-runner/whatever.json\n';
+    expect(_parseTest(content)['profiles-path']).toBe('skills/test-runner/whatever.json');
+  });
+
+  it('accepts a deep-traversal rejection — multiple ../ segments still fall back to default', () => {
+    const content = 'test:\n  profiles-path: ../../../../../../etc/shadow\n';
+    expect(_parseTest(content)['profiles-path']).toBe('.orchestrator/policy/test-profiles.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Block boundary — stops at next top-level key
 // ---------------------------------------------------------------------------
 

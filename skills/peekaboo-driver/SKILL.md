@@ -10,7 +10,7 @@ description: Thin driver wrapper around steipete/peekaboo (MIT, macOS-only). Dis
 
 ## Soul
 
-> See [soul.md](./soul.md).
+Before anything else, read and internalize `soul.md` in this skill directory. It defines WHO you are — a thin executor, not an orchestrator. Every action in this session should reflect that identity.
 
 ## Phase 0: Bootstrap Gate
 
@@ -86,13 +86,17 @@ Required: **Screen Recording** (hard), **Accessibility** (hard). Optional: **Eve
 
 Surface missing required permissions via AskUserQuestion (per `ask-via-tool.md` AUQ-003). Do not auto-grant — macOS requires manual user action in System Settings.
 
+If `$MISSING` from Phase 2 contains more than one permission, present **one AUQ per missing permission** in the order they appear. The user can grant or skip each independently; the driver re-checks after each grant (one full Phase 2 sweep per round).
+
+For each `${PERM_NAME}` in `$MISSING`:
+
 ```
 AskUserQuestion({
   questions: [{
-    question: "Screen Recording permission is required but not granted. Open System Settings > Privacy & Security > Screen Recording, enable the terminal entry, then confirm here.",
-    header: "Missing Permission: Screen Recording",
+    question: `${PERM_NAME} permission is required but not granted. Open System Settings > Privacy & Security > ${PERM_NAME}, enable the terminal entry, then confirm here.`,
+    header: `Missing Permission: ${PERM_NAME}`,
     options: [
-      { label: "Granted — continue (Recommended)", description: "I have enabled Screen Recording in System Settings." },
+      { label: "Granted — continue (Recommended)", description: `I have enabled ${PERM_NAME} in System Settings.` },
       { label: "Skip this run", description: "Abort peekaboo-driver. Test-runner will record a framework-error finding." }
     ],
     multiSelect: false
@@ -100,7 +104,7 @@ AskUserQuestion({
 })
 ```
 
-After confirmation, re-probe. If still not granted or user selects Skip, exit 2 (fatal). Do NOT attempt any capture without required permissions — the binary will fail ungracefully.
+After confirmation, re-probe (`$MISSING` Phase 2 sweep). If still not granted or user selects Skip for any permission, exit 2 (fatal). Do NOT attempt any capture without required permissions — the binary will fail ungracefully.
 
 ## Canonical Usage
 
@@ -150,6 +154,7 @@ For SwiftUI 26+ targets (projects with `Package.swift` declaring `.iOS("26")` or
 cat > "${RUN_DIR}/ax-snapshots/glass-modifiers-$(date +%s%3N).json" <<EOF
 {
   "schema_version": "v1",
+  "status": "stub",
   "run_id": "${RUN_ID}",
   "captured_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "glassEffect_frames": [],

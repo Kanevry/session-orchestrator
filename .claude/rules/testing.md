@@ -95,6 +95,32 @@ globs:
 - Coverage regex: `/All files[^|]*\|[^|]*\s+([\d\.]+)/` extracts percentage for MR badges.
 - Failed tests block merge. No exceptions.
 
+### Shared-Hardware Runner Contention (Mac shell executors)
+
+Shell-executor runners that share a host with an active Claude Code session can be CPU-starved when concurrent Claude processes climb past ~10. Symptom: vitest tests that pass locally in <2min hit `testTimeout` (default `10_000`) on the runner. **This is an operator/concurrency issue, not a test or code regression.** Do not treat it as a flaky-test problem and do not widen timeouts globally to paper over it.
+
+- **Cautionary tale:** Pipeline #3940 (2026-05-14 deep-1) failed with 7 `testTimeout` fails after 34m total (test job 18.7min, gitleaks 7m58s) on the GitLab Mac runner. Same commit, same tests passed locally in <2min (4897p/11s). Local re-run of the 7 failing tests: 90/90 green. Resource probe at session-start showed 14 Claude processes — well above the `concurrent-sessions-warn=5` threshold.
+- **Diagnostic signal:** if local `npm test` is green and CI fails only with `testTimeout` (not assertion failures), check the host's Claude-process count before re-running:
+  ```bash
+  pgrep -fc 'claude' # count of active Claude processes on this host
+  ```
+  A count ≥10 against a shared shell-executor runner is the smoking gun.
+
+**Mitigations, in order of effort:**
+
+1. **Avoid concurrent sessions during CI runs (primary).** Do not start a new Claude Code session in this repo while a CI pipeline is in flight on the same host. The session-start resource-probe banner (threshold `concurrent-sessions-warn=5`) is the active signal — treat it as load-shedding guidance, not a passive note.
+2. **Raise the per-test vitest timeout only when contention is expected:**
+   ```ts
+   // vitest.config.ts — ceiling for a contended Mac runner
+   export default defineConfig({ test: { testTimeout: 30_000 } });
+   ```
+   Trade-off: real hangs take longer to surface. Do not push past `30_000` as a default.
+3. **Offload heavy CI to a dedicated runner** when the pattern becomes recurring — the resource probe is the trigger, not a single failed pipeline.
+
+What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen timeout values on quiet runners to "stabilise" — that masks real perf regressions where they should be loudest.
+
+Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-claude-load` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9). `/evolve` rotates the rule if the signal stops applying.
+
 ## E2E Best Practices
 - Use data-testid attributes for stable selectors.
 - Avoid `page.waitForTimeout()` — use `page.waitForSelector()` or `expect().toBeVisible()`.

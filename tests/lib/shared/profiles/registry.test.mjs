@@ -1,7 +1,7 @@
 /**
- * tests/lib/test-runner/profile-registry.test.mjs
+ * tests/lib/shared/profiles/registry.test.mjs
  *
- * Unit tests for scripts/lib/test-runner/profile-registry.mjs.
+ * Unit tests for scripts/lib/shared/profiles/registry.mjs.
  *
  * Coverage:
  *   - loadProfiles: happy path, FILE_NOT_FOUND, PARSE_ERROR, SCHEMA_INVALID,
@@ -24,13 +24,13 @@ import {
   getProfile,
   validateProfile,
   ProfileRegistryError,
-} from '../../../scripts/lib/test-runner/profile-registry.mjs';
+} from '../../../../scripts/lib/shared/profiles/registry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Path to the seed registry shipped in the repo
 const SEED_PROFILES_PATH = path.resolve(
   __dirname,
-  '../../../.orchestrator/policy/test-profiles.json',
+  '../../../../.orchestrator/policy/test-profiles.json',
 );
 
 // ---------------------------------------------------------------------------

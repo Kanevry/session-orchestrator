@@ -29,7 +29,7 @@ import realFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { getProfile, loadProfiles, validateProfile } from '../test-runner/profile-registry.mjs';
+import { getProfile, loadProfiles, validateProfile } from '../shared/profiles/registry.mjs';
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -117,7 +117,10 @@ export default async function run(opts = {}) {
     process.exit(2);
   }
 
-  // SEC-PD-MED-2: reject runDir values that would break the --reporter "html:...,json:..." comma+colon split
+  // SEC-PD-MED-2: reject runDir values containing commas or colons as defensive
+  // path-sanitization (original rationale: reporter comma+colon split is now obsolete
+  // after the 2026-05-14 deep-3 reporter fix — paths flow via env vars, not CLI string).
+  // Kept as belt-and-braces against pathological run-dirs; revisit alongside #390 path-traversal.
   if (/[,:]/.test(runDir)) {
     console.error('runner: --run-dir must not contain commas or colons');
     process.exit(2);
@@ -171,11 +174,15 @@ export default async function run(opts = {}) {
   // Build Playwright args
   // -------------------------------------------------------------------------
 
+  // Playwright reporter syntax: comma-separated reporter NAMES, paths via env vars.
+  // Canonical: https://playwright.dev/docs/test-reporters#html-reporter (PLAYWRIGHT_HTML_OUTPUT_DIR)
+  // and #json-reporter (PLAYWRIGHT_JSON_OUTPUT_FILE). The previous `html:<path>` form
+  // was Jest/Vitest syntax — Playwright rejected it as `Cannot find module 'html:<path>'`.
   const playwrightArgs = [
     'playwright',
     'test',
     '--output', path.join(runDir, 'test-results'),
-    '--reporter', `html:${path.join(runDir, 'report')},json:${path.join(runDir, 'results.json')}`,
+    '--reporter', 'html,json',
     '--trace', 'on',
   ];
 
@@ -212,6 +219,12 @@ export default async function run(opts = {}) {
     cwd: targetPath,
     signal: controller.signal,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      PLAYWRIGHT_HTML_OUTPUT_DIR: path.join(runDir, 'report'),
+      PLAYWRIGHT_JSON_OUTPUT_FILE: path.join(runDir, 'results.json'),
+      PLAYWRIGHT_HTML_OPEN: 'never',
+    },
   });
 
   proc.stdout.pipe(logStream, { end: false });

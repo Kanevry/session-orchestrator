@@ -62,12 +62,21 @@ The orchestrator (`skills/test-runner/`) dispatches this driver via Bash. Sessio
 RUN_ID="${pid}-${ms_timestamp}"      # from scripts/lib/test-runner/artifact-paths.mjs:makeRunId()
 RUN_DIR=".orchestrator/metrics/test-runs/${RUN_ID}"
 
+# Output paths via env vars (Playwright canonical):
+#   PLAYWRIGHT_HTML_OUTPUT_DIR=${RUN_DIR}/report
+#   PLAYWRIGHT_JSON_OUTPUT_FILE=${RUN_DIR}/results.json
+#   PLAYWRIGHT_HTML_OPEN=never
+PLAYWRIGHT_HTML_OUTPUT_DIR="${RUN_DIR}/report" \
+PLAYWRIGHT_JSON_OUTPUT_FILE="${RUN_DIR}/results.json" \
+PLAYWRIGHT_HTML_OPEN=never \
 playwright test \
   --output "${RUN_DIR}/test-results" \
-  --reporter "html:${RUN_DIR}/report,json:${RUN_DIR}/results.json" \
+  --reporter html,json \
   --trace on \
   --project chromium
 ```
+
+> Canonical: see https://playwright.dev/docs/test-reporters — reporter names are comma-separated; paths flow via env vars. See `scripts/lib/playwright-driver/runner.mjs` for the canonical invocation.
 
 The orchestrator provides `RUN_ID` and `RUN_DIR` via environment variables. The driver reads these, executes Playwright, and exits. Nothing else.
 
@@ -147,12 +156,21 @@ The test-runner profile registry (`.orchestrator/policy/test-profiles.json`) con
 ### Invocation Shape
 
 ```bash
-bash -c "playwright test \
+# Output paths via env vars (Playwright canonical):
+#   PLAYWRIGHT_HTML_OUTPUT_DIR=${RUN_DIR}/report
+#   PLAYWRIGHT_JSON_OUTPUT_FILE=${RUN_DIR}/results.json
+#   PLAYWRIGHT_HTML_OPEN=never
+bash -c "PLAYWRIGHT_HTML_OUTPUT_DIR=${RUN_DIR}/report \
+  PLAYWRIGHT_JSON_OUTPUT_FILE=${RUN_DIR}/results.json \
+  PLAYWRIGHT_HTML_OPEN=never \
+  playwright test \
   --output ${RUN_DIR}/test-results \
-  --reporter html:${RUN_DIR}/report,json:${RUN_DIR}/results.json \
+  --reporter html,json \
   --trace on \
   --project ${PROFILE_PROJECT:-chromium}"
 ```
+
+> Canonical: see https://playwright.dev/docs/test-reporters — reporter names are comma-separated; paths flow via env vars. See `scripts/lib/playwright-driver/runner.mjs` for the canonical invocation.
 
 ### Exit Codes
 

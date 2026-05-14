@@ -6,6 +6,9 @@
  * as part of the /test epic (#378) Track B wiring.
  */
 
+import path from 'node:path';
+import { isPathInside } from '../path-utils.mjs';
+
 /**
  * Parse the top-level `test:` YAML block from markdown content.
  * Returns defaults when the block is absent.
@@ -71,7 +74,15 @@ export function _parseTest(content) {
         if (v) tcDefaultProfile = v;
         break;
       case 'profiles-path':
-        if (v) tcProfilesPath = v;
+        if (v) {
+          // SEC-IR-LOW-2: reject path-traversal in profiles-path (CWE-23)
+          const projectRoot = process.cwd();
+          const resolved = path.resolve(projectRoot, v);
+          if (isPathInside(resolved, projectRoot)) {
+            tcProfilesPath = v;
+          }
+          // Silent skip on traversal — matches the lenient pattern used by other case branches
+        }
         break;
       case 'mode':
         if (validModes.has(v.toLowerCase())) tcMode = v.toLowerCase();

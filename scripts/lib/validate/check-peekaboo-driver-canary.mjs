@@ -77,6 +77,7 @@ const DOCUMENTATION_MARKERS = [
 const SCAN_ROOTS = [
   'skills/peekaboo-driver',
   'scripts/lib/test-runner',
+  'scripts/lib/shared/profiles',
 ];
 
 const SCAN_EXTENSIONS = ['.md', '.mjs', '.js', '.ts'];

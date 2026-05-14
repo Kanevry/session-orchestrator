@@ -1,7 +1,7 @@
 /**
- * tests/lib/test-runner/profile-schema.test.mjs
+ * tests/lib/shared/profiles/schema.test.mjs
  *
- * Unit tests for scripts/lib/test-runner/profile-schema.mjs.
+ * Unit tests for scripts/lib/shared/profiles/schema.mjs.
  *
  * Coverage:
  *   - profileEntrySchema.safeParse: happy paths (seed profiles), field validation,
@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   profileEntrySchema,
   profileRegistrySchema,
-} from '../../../scripts/lib/test-runner/profile-schema.mjs';
+} from '../../../../scripts/lib/shared/profiles/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Happy path — seed profiles parse cleanly
@@ -149,6 +149,62 @@ describe('profileEntrySchema — defaults applied', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rubric path-traversal validation (#391)
+// ---------------------------------------------------------------------------
+
+describe('profileEntrySchema — rubric path-traversal rejection', () => {
+  it('accepts the default rubric value skills/test-runner/rubric-v1.md (critical regression guard)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      rubric: 'skills/test-runner/rubric-v1.md',
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.rubric).toBe('skills/test-runner/rubric-v1.md');
+  });
+
+  it('accepts an explicit relative rubric path inside the project', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      rubric: 'docs/custom-rubric.md',
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.rubric).toBe('docs/custom-rubric.md');
+  });
+
+  it('rejects a relative traversal rubric path (../../../etc/passwd)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      rubric: '../../../etc/passwd',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('rubric');
+  });
+
+  it('rejects an absolute rubric path outside the project (/etc/passwd)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      rubric: '/etc/passwd',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('rubric');
+  });
+
+  it('throws on an empty string rubric (isPathInside rejects empty child)', () => {
+    expect(() =>
+      profileEntrySchema.safeParse({
+        name: 'test',
+        driver: 'playwright',
+        rubric: '',
+      }),
+    ).toThrow('non-empty string');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // profileRegistrySchema — rejects registry with an invalid entry
 // ---------------------------------------------------------------------------
 
@@ -163,5 +219,63 @@ describe('profileRegistrySchema', () => {
     const result = profileRegistrySchema.safeParse(input);
     expect(result.success).toBe(false);
     expect(result.error.message).toContain('bad-profile');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// timeout_ms boundary validation (SEC-PD-LOW-3 regression guard)
+// ---------------------------------------------------------------------------
+
+describe('profileEntrySchema — timeout_ms boundary cases', () => {
+  it('rejects timeout_ms = 0', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      timeout_ms: 0,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('timeout_ms');
+  });
+
+  it('rejects timeout_ms = -1', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      timeout_ms: -1,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('timeout_ms');
+  });
+
+  it('rejects non-integer timeout_ms (120000.5)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      timeout_ms: 120000.5,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('timeout_ms');
+  });
+
+  it('rejects timeout_ms exceeding 1-hour ceiling (3_600_001)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      timeout_ms: 3_600_001,
+    });
+    expect(result.success).toBe(false);
+    // The exact MAX_TIMEOUT_MS value 3600000 should appear in the error message
+    // per SEC-PD-LOW-3 inline rationale
+    expect(result.error.issues[0].message).toMatch(/3600000|ceiling|exceed/);
+  });
+
+  it('accepts timeout_ms at exactly the 1-hour ceiling (3_600_000)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      timeout_ms: 3_600_000,
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.timeout_ms).toBe(3_600_000);
   });
 });
