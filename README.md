@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.6.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-5001%20passing-brightgreen.svg)](#development)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
@@ -13,23 +13,23 @@ Session orchestration for Claude Code, Codex CLI, and Cursor IDE. It turns ad-ho
 
 > **Project-instruction file:** the per-repo config host is `CLAUDE.md` (or `AGENTS.md` on Codex CLI). Both files are transparent aliases. Pick one, never both. Resolution rule: [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md).
 
-## What's new in v3.5.0
+## What's new in v3.6.0
 
-Four deep sessions on top of v3.4.0. Twenty issues closed, plus a non-tracked architectural refactor. Tests grew from 3138 to **4430** (+1292) since the v3.4.0 cut.
+Five deep sessions plus three intermediate fix-clusters since v3.5.0. The headline is **`/test`** — an agentic end-to-end test orchestrator with a 4-check UX rubric, two drivers (Playwright + Peekaboo), a `ux-evaluator` reviewer agent, and issue-tracker reconciliation. Tests grew from 4430 to **5001** (+571), validate-plugin 27 → **43** (+16 R5 grep-canaries). Zero CI regressions, zero breaking changes.
 
-- **CI security gates** (#350 #351). Gitleaks (37 rules, 0 leaks across 258 commits) and `npm audit` now run on every push, GitLab and GitHub mirrored. Husky + commitlint + lint-staged ship pre-commit defence in depth.
-- **9th autopilot kill-switch** (#355). `TOKEN_BUDGET_EXCEEDED` is opt-in via `opts.maxTokens`, forward-compatible with sessionRunner builds that don't yet emit `usage`. Defaults to off so existing callers stay green.
-- **CI fix that mattered** (#356). `harness-audit` was truncating its JSON output at byte 8188 on every CI runner since 2026-05-01. Local runs were green because pipes drain instantly on dev hardware. Pattern A drain-aware stdout fixed it. Ten-plus failed CI runs now resolved.
-- **Anthropic-canonical agent authoring** (#359 to #363). Validator and all 10 agent files re-aligned with [code.claude.com/sub-agents](https://code.claude.com/docs/en/sub-agents). `tools` accepts both forms, color palette expanded to 9 distinct values, full model IDs allowed alongside aliases. Implementer agents normalised to the 500 to 3000 word body range with proper Output-Format and Edge-Cases sections.
-- **Hotspot-splits refactor**. Six files at or above 400 LOC split into submodules under 300 LOC each. Public APIs preserved via barrel re-exports, verified by 26 new test files (+534 tests). Zero behaviour change, much better navigability for future contributors.
+- **`/test` command** (#378–#407). Drives web flows (Playwright) and macOS native UI (Peekaboo); evaluates artifacts against [`skills/test-runner/rubric-v1.md`](skills/test-runner/rubric-v1.md) (onboarding step-count ≤7, axe critical/serious, console-errors, Apple-Liquid-Glass `.glassEffect()` conformance on SwiftUI 26+); reconciles findings with the open issue tracker via `scripts/lib/test-runner/issue-reconcile.mjs`. Wraps upstream tools — no forks. Hard-gates Playwright MCP for browser drive (4× token cost vs CLI per Microsoft's own benchmark).
+- **`scripts/lib/path-utils.mjs`** with `validatePathInsideProject(p, root)` (#402). Two-phase lexical + realpath guard returning a tagged-union `{ ok, realPath, lexicalPath, reason }`. Adopted at three callsites with 3-line adapters that preserve each callsite's original semantics (silent-skip vs throw vs hard-error). DEEP module per LANGUAGE.md.
+- **`@lib/*` vitest alias rollout** (#401, #407). 33 test files migrated from `'../../../../scripts/lib/…'` to `'@lib/…'`. Eliminates the import-depth churn that surfaces every time a source file is renamed. Remainder (~25 files + 2 dynamic-import files) tracked in #407.
+- **Autopilot `--multi-story`** (#341, ADR-364 thin-slice). `scripts/autopilot-multi.mjs` runs N parallel issue pipelines in isolated git worktrees with per-loop kill-switches. Built on the ADR-364 substrate (sessions.jsonl optional fields, `STALL_TIMEOUT` kill-switch, `gc-stale-worktrees` realpathSync symlink-escape defence, `validateWorkspacePath`).
+- **CI restoration** (#367–#369). The 8-pipeline silent regression introduced 2026-05-09 (deep-3) was fixed in 2026-05-10 (deep-2). Root cause: `skills/vault-sync/pnpm-lock.yaml` tracked despite `.gitignore:63` forbidding it — lockfile conflict + `engine-strict=true` → silent `npm install` exit-1. Also: `.github/workflows/test.yml` `fetch-depth: 1 → 0` for gitleaks revision-range.
 
 For the full version history see [CHANGELOG.md](CHANGELOG.md).
 
-### Multi-Story Autopilot (v3.6 Phase D — thin-slice scaffold)
+### Multi-Story Autopilot
 
-`scripts/autopilot-multi.mjs` adds a `--multi-story` orchestration mode that runs N parallel issue pipelines in isolated git worktrees with per-loop kill-switches. Built on the ADR-364 substrate (sessions.jsonl optional fields, autopilot.jsonl extensions, `STALL_TIMEOUT` kill-switch, `gc-stale-worktrees`, `validateWorkspacePath`).
+`scripts/autopilot-multi.mjs` adds a `--multi-story` orchestration mode that runs N parallel issue pipelines in isolated git worktrees with per-loop kill-switches. Built on the ADR-364 substrate (sessions.jsonl optional fields, autopilot.jsonl extensions, `STALL_TIMEOUT` kill-switch, `gc-stale-worktrees` realpathSync defence, `validateWorkspacePath`).
 
-**Status:** v1 thin-slice (deep-1 2026-05-11). Production: dry-run plan and basic apply mode. Phase D.2 follow-ups: cross-loop commit-wait, real SIGTERM cohort enforcement, on-green MR-draft trigger.
+**Status:** v1 shipped in v3.6.0. Production: dry-run plan and basic apply mode. Follow-ups: cross-loop commit-wait, real SIGTERM cohort enforcement, on-green MR-draft trigger.
 
 ```bash
 # Dry-run plan (default, safe)
@@ -235,7 +235,7 @@ Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) routed t
 - **`.orchestrator/policy/`**: runtime policy files, e.g. `blocked-commands.json` with 13 rules consumed by the destructive-command guard
 - **`.claude/rules/`**: always-on contributor rules, e.g. `parallel-sessions.md` (PSA-001 through PSA-004)
 - **`.codex-plugin/`**: Codex plugin manifest (`plugin.json`), compatibility config, 3 agent role definitions
-- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 4944 tests
+- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 5001 tests
 
 ## Comparison
 
@@ -312,7 +312,7 @@ Clone, install, verify in three commands:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git && cd session-orchestrator
 npm install
-npm test        # vitest, 4430 tests
+npm test        # vitest, 5001 tests
 ```
 
 Additional scripts:

@@ -9,6 +9,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes yet._
 
+## [3.6.0] - 2026-05-14
+
+Five deep sessions plus three intermediate fix-clusters since v3.5.0. The headline feature is the agentic `/test` command — a web/macOS end-to-end test orchestrator with a 4-check UX rubric, two test drivers (Playwright + Peekaboo), a `ux-evaluator` reviewer agent, and issue-tracker reconciliation. Tests grew from 4430 to **5001** (+571), validate-plugin 27 → **43** (+16 R5 grep-canaries), zero breaking changes, zero CI regressions.
+
+1. **2026-05-10 deep — ADR-364 thin-slice (#364–#374)** — autopilot `--multi-story` v1 scaffold (`scripts/autopilot-multi.mjs`), `gc-stale-worktrees` defence (#374 realpathSync symlink-escape fix), `validateWorkspacePath`, lazy `zx` import to dodge a CI fork-pool regression (#341).
+2. **2026-05-10 deep-2 — CI restoration (#367 #368 #369)** — 8-pipeline silent regression fixed (root cause: `skills/vault-sync/pnpm-lock.yaml` tracked despite gitignore conflict with `engine-strict=true`).
+3. **2026-05-14 deep-1 (Track A) — `/test` command Track A (#379 #380 #382)** — `agents/ux-evaluator.md` (4-check rubric: onboarding step-count ≤7, axe critical/serious, console-errors, Apple-Liquid-Glass `.glassEffect()` conformance on SwiftUI 26+), `skills/playwright-driver/SKILL.md` (MCP-wired driver with screenshots / traces / `axe-*.json` / `console.ndjson` artifact layout), `skills/test-runner/` skeleton (phase model: Setup → Drive → Evaluate → Reconcile → Report), 4 NEW helper modules in `scripts/lib/test-runner/`. validate-plugin 28 → 31.
+4. **2026-05-14 deep-1 — `/test` command + CI restore + reconcile glab (#383 #384 #388 #389)** — `commands/test.md` + Session Config `test:` block + profile registry schema (web-gate + mac-gate seeds at `.orchestrator/policy/test-profiles.json`), extended `issue-reconcile.mjs` with `listExistingFindings/createFinding/updateFinding/triageDecision` + sentinel-injection hardening + maxBuffer/body-length cap parity with `mr-draft.mjs`. validate-plugin 31/31.
+5. **2026-05-14 deep-2 — `/test` Track B + mechanism-proof (#381 #385)** — `skills/peekaboo-driver/SKILL.md` (macOS native UI driver, 3-phase platform + permissions + remediation gate, AX-snapshot pattern), `scripts/lib/playwright-driver/runner.mjs` (260 LOC `spawn` + `AbortSignal` + profile registry integration + axe-core soft-skip + exit-code mapping 0/1/2), mechanism-proof via `--dry-run` against aiat-pmo-module. validate-plugin 31 → 34.
+6. **2026-05-14 deep-3 — `/test` live-run + cluster (#385 #390 #391 #393 #394 #387 #392)** — first end-to-end live execution against EspoCRM-on-aiat-pmo-module, runner reporter syntax fix (`html,json` canonical, not `html:<path>` Jest-style), `isPathInside` traversal validation in `config/test.mjs` and `profiles/schema.mjs`, peekaboo SKILL.md polish, `.claude/rules/testing.md` § "Shared-Hardware Runner Contention (Mac shell executors)" subsection added. validate-plugin 34 → 36.
+7. **2026-05-14 deep-4 — `/test` pipeline housekeeping (#395 #396 #397 #398 #399 #400 #401)** — Division-of-Responsibility doc-sync (driver writes scaffold + HTML/JSON/traces; test fixture writes `ax-snapshots/` + `axe-*.json` + `console.ndjson`), `shared/profiles` → `profiles/` rename, runDir path-traversal hard-error guard, AbortController test gap closed, two-phase realpath guard in 3 callsites, `@lib/*` vitest alias scaffolded, `RUBRIC_GLASS_V2=1` env-gate for glass-modifiers stub. validate-plugin 36 → 39.
+8. **2026-05-14 deep-5 — `validatePathInsideProject` helper + @lib alias rollout + boundary tests (#402 #404 #405 #406; #407 filed)** — NEW `scripts/lib/path-utils.mjs` `validatePathInsideProject(p, root)` (tagged-union `{ ok, realPath, lexicalPath, reason }`, adopted at all 3 callsites with 3-line adapters preserving each callsite's original semantics), 33 test files migrated to `@lib` vitest alias, NEW `tests/lib/playwright-driver/runner-boundary.test.mjs` (3 falsification tests: PATH_MAX-via-traversal, null-byte env-strip, double-abort idempotency), TOCTOU fix in `tcProfilesPath` storage (symmetric in `schema.mjs` rubric), `mkdtempSync` worktree-freshness flake eliminated. validate-plugin 39 → **43**. Tests 4982 → **5001p/0f/12s**.
+
+No breaking changes. The `/test` command and `commands/autopilot.md --multi-story` are opt-in additions; existing `/session`, `/go`, `/close` flows are byte-equivalent.
+
+### Added (Unreleased) — /test command (#378–#407)
+
+- **`/test` command** (commands/test.md, 86 LOC) — agentic end-to-end test orchestrator. Drives web flows (Playwright) and macOS native UI (Peekaboo); evaluates against `skills/test-runner/rubric-v1.md`; reconciles findings with the open issue tracker via `scripts/lib/test-runner/issue-reconcile.mjs`. Wraps upstream tools (no forks). Hard-gates Playwright MCP for browser drive (4× token cost vs CLI per Microsoft's own benchmark).
+- **`skills/test-runner/`** — phase model (Setup → Drive → Evaluate → Reconcile → Report), profile registry with web-gate + mac-gate seeds, `rubric-v1.md` (4 checks).
+- **`skills/playwright-driver/`** — thin driver wrapper around `playwright@1.60.0`. Captures token-frugal AX-tree snapshots + screenshots + console.ndjson under `.orchestrator/metrics/test-runs/<run-id>/`. `runner.mjs` (260 LOC) with `spawn` + `AbortSignal` + axe-core soft-skip + DI seams.
+- **`skills/peekaboo-driver/`** — thin driver wrapper around `@steipete/peekaboo@3.1.2`. Captures native macOS UI snapshots. 3-phase guard (platform + permissions + remediation).
+- **`agents/ux-evaluator.md`** — read-only opus agent that applies the 4-check rubric (onboarding step-count ≤7, axe critical/serious, console-errors visible to user, Apple-Liquid-Glass `.glassEffect()` conformance on SwiftUI 26+) against driver-captured artifacts and emits stable-fingerprint findings JSON.
+- **`scripts/lib/path-utils.mjs`** — `validatePathInsideProject(p, root)` two-phase lexical+realpath guard with tagged-union return. Adopted at 3 callsites with 3-line adapters preserving silent-skip vs throw vs hard-error semantics.
+- **`scripts/lib/test-runner/`** — `fingerprint.mjs`, `artifact-paths.mjs`, `issue-reconcile.mjs`, profile registry+schema. Pure helper modules, DI-friendly.
+- **R5 grep-canary validators** — `check-playwright-mcp-canary.mjs`, `check-peekaboo-driver-canary.mjs`, `check-path-utils-canary.mjs` extend `validate-plugin.mjs` from 28 to 43 PASS checks.
+
+### Added (Unreleased) — autopilot multi-story (#364–#374, #341)
+
+- **`scripts/autopilot-multi.mjs`** — `--multi-story` orchestration mode running N parallel issue pipelines in isolated git worktrees with per-loop kill-switches. Built on the ADR-364 substrate (sessions.jsonl optional fields, autopilot.jsonl extensions, `STALL_TIMEOUT` kill-switch, `gc-stale-worktrees`, `validateWorkspacePath`).
+- **`gc-stale-worktrees`** — realpathSync symlink-escape defence (#374) prevents removal of worktrees that resolve outside the configured root.
+
+### Changed (Unreleased)
+
+- **`shared/profiles` → `profiles/` rename** (#400) — 6 mechanical refs + 2 `git mv` + 3 new R5 anchor canaries (ARCH-PD-MED-3 closure).
+- **`@lib/*` vitest alias** — 33 test files now use `import … from '@lib/…'` instead of `'../../../../scripts/lib/…'` (reduces relocation churn). Remainder (~25 files + 2 dynamic-import files) deferred to #407.
+- **CLAUDE.md trim** — 46.3k → 8.9k chars. 5 deep-session narratives moved to vault `decisions.md` as canonical long-form; CLAUDE.md keeps one-line summaries + commit index.
+- **README test-count badge** — 4944 → 5001.
+- **`.gitignore`** — `.orchestrator/scratch/` added; `.orchestrator/metrics/test-runs/` covered.
+
+### Fixed (Unreleased)
+
+- **CI red on `cb3e942` (#367–#369)** — 8-pipeline silent regression. Root cause: `skills/vault-sync/pnpm-lock.yaml` tracked despite `.gitignore:63` forbidding it — lockfile conflict + `engine-strict=true` → silent `npm install` exit-1. Also: `.github/workflows/test.yml` `fetch-depth: 1 → 0` (gitleaks revision-range was breaking).
+- **runner.mjs reporter syntax bug (deep-3)** — Playwright rejected `--reporter html:<path>,json:<path>` (Jest/Vitest-style) with "Cannot find module 'html:<path>'". Fixed inline via canonical `--reporter html,json` + env vars `PLAYWRIGHT_HTML_OUTPUT_DIR` / `PLAYWRIGHT_JSON_OUTPUT_FILE` / `PLAYWRIGHT_HTML_OPEN=never`. 8 regression canaries with `/html:/` + `/json:/` Jest-style substring-rejection lockdown added by Q1 test-writer in deep-3.
+- **runDir path-traversal MED (#398)** — `scripts/lib/playwright-driver/runner.mjs:110` lacked traversal check on `path.join(runsRoot, runId)`. Hardened with `isPathInside` guard + Phase 2 realpath upgrade in deep-4 Q-polish.
+- **TOCTOU in `tcProfilesPath` storage (#405)** — raw user-supplied path stored before realpath resolution. Now stores `result.realPath || result.lexicalPath`. Symmetric pattern applied to `profiles/schema.mjs` rubric storage as Q2-LOW-2.
+- **worktree-freshness flake (#406)** — `mkdtempSync` per-run unique suffix replaces `randomUUID()` suffix (atomicity + cleanup parity with existing `tmpdir()` pattern). 3/3 clean post-fix.
+- **AbortController test gap (#399)** — 5 falsification-passing tests cover timer-firing on timeout, AbortSignal propagation, clearTimeout on normal exit, exit-code 2 mapping on SIGTERM, custom `timeout_ms` from profile-registry override.
+- **`glabPath` arbitrary-binary injection (Q2 HIGH deep-1)** — removed `glabPath` parameter from `issue-reconcile.mjs`; replaced with `opts.execFile` DI seam mirroring `mr-draft.mjs`. `checkBodyLength` added (Q2 MED-1). Sanitizer regex flag `→ gi` (Q2 MED-2). +11 regression tests.
+
+### Quality verification
+
+- 5001 vitest passing, 12 skipped, 0 failed (was 4430 at v3.5.0 cut, **+571 tests**)
+- typecheck 67/67
+- lint 0 errors
+- validate-plugin 43/43 (was 27/27 at v3.5.0 cut, **+16 R5 grep-canary checks**)
+- doc-consistency 0 findings
+- gitleaks 0 leaks
+- npm audit 0 high-severity vulnerabilities
+
+### Components (current)
+
+- 32 skills (added: `test-runner`, `playwright-driver`, `peekaboo-driver`, `frontmatter-guard` from v3.4.0 onward)
+- 12 commands (added: `/test`)
+- 11 agents (added: `ux-evaluator`)
+- 10 hook event matchers / 10 handlers
+
+### Carryover to v3.7.0 cycle
+
+- **#386** — mac-gate end2end (bootstrap-cost gated)
+- **#403** — `RUBRIC_GLASS_V2` profile-config flag (v2 rubric gated)
+- **#407** — @lib alias rollout remainder (~25 test files + 2 dynamic-import files)
+- **#41** — `feat(gitlab-portfolio)`: cross-repo issue dashboard skill
+- **#42** — `bug session-end quality-gate must execute test-command in execution env`
+- **#35–#40** — `superpowers-adoption` umbrella + 6 sub-issues (read-only, brainstorm, verification-before-completion, bite-sized plans, receiving-code-review, systematic-debugging)
+- **#297 / #298** — data-gated on autopilot RUN-Volumen (need ≥10 runs)
+
 ## [3.5.0] - 2026-05-09
 
 Four deep sessions on top of v3.4.0 plus a non-tracked architectural refactor. Twenty issues closed (#344 to #363), tests grew from 3138 to **4430** (+1292), zero CI regressions, zero breaking changes. All sessions on `main`, isolation:none, enforcement:warn, cap=6.

@@ -49,6 +49,11 @@ coverage/
 .orchestrator/audits/
 .orchestrator/drafts/
 
+# Per-session scratch (W5 narratives, drafts) and test-run artifacts
+# (from /test command runs); never committed to plugin source
+.orchestrator/scratch/
+.orchestrator/metrics/test-runs/
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
