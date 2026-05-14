@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkCiStatus, DEFAULT_TIMEOUT_MS } from '../../scripts/lib/ci-status-banner.mjs';
+import { checkCiStatus, DEFAULT_TIMEOUT_MS } from '@lib/ci-status-banner.mjs';
 
 // ── DI helpers ────────────────────────────────────────────────────────────────
 //

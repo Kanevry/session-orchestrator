@@ -19,7 +19,7 @@ import {
   normalizeSession,
   clampTimestampsMonotonic,
   aliasLegacyEndedAt,
-} from '../../scripts/lib/session-schema.mjs';
+} from '@lib/session-schema.mjs';
 import { migrateEntry } from '../../scripts/migrate-sessions-jsonl.mjs';
 
 // Defensive guard: surface process.exit() during test setup as a thrown error

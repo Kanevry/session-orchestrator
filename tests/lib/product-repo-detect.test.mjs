@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { detectProductRepo, hasVaultConfig } from '../../scripts/lib/product-repo-detect.mjs';
+import { detectProductRepo, hasVaultConfig } from '@lib/product-repo-detect.mjs';
 
 function makeTmpDir() {
   return mkdtempSync(join(tmpdir(), 'product-repo-detect-'));

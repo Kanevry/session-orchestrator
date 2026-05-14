@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { fingerprintFinding } from '../../../scripts/lib/test-runner/fingerprint.mjs';
+import { fingerprintFinding } from '@lib/test-runner/fingerprint.mjs';
 
 // ---------------------------------------------------------------------------
 // Stability — same inputs always produce the same output

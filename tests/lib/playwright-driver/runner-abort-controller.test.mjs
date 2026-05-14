@@ -25,7 +25,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 
-import run from '../../../scripts/lib/playwright-driver/runner.mjs';
+import run from '@lib/playwright-driver/runner.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

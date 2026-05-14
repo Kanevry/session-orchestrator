@@ -15,8 +15,8 @@ import {
   candidateToLearning,
   DEFAULT_THRESHOLDS,
   HW_SIGNALS,
-} from '../../scripts/lib/hardware-pattern-detector.mjs';
-import { validateLearning } from '../../scripts/lib/learnings.mjs';
+} from '@lib/hardware-pattern-detector.mjs';
+import { validateLearning } from '@lib/learnings.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures

@@ -13,9 +13,7 @@
  * `{ success: true, data }` or `{ success: false, error: ZodLike }`.
  */
 
-import path from 'node:path';
-import { realpathSync } from 'node:fs';
-import { isPathInside } from '../path-utils.mjs';
+import { validatePathInsideProject } from '../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -97,21 +95,11 @@ function parseProfileEntry(value) {
     return { success: false, error: makeError('rubric must be a string') };
   }
   // SEC-IR-LOW-3 + SEC-Q2-LOW-1: rubric must stay within project root; also reject symlink-escape (CWE-23)
-  // Phase 1 — lexical guard (also validates non-empty input; throws TypeError on empty string via isPathInside).
+  // Two-phase guard (Phase 1 lexical + Phase 2 realpath-when-exists) delegated to validatePathInsideProject.
   const projectRoot = process.cwd();
-  if (!isPathInside(rubric, projectRoot)) {
+  const rubricGuard = validatePathInsideProject(rubric, projectRoot);
+  if (!rubricGuard.ok) {
     return { success: false, error: makeError('rubric path escapes project root') };
-  }
-  // Phase 2 — symlink-escape guard: when the path exists on disk, resolve symlinks and re-check.
-  // A symlink pointing outside the project must be rejected even if its textual path appears inside.
-  const resolved = path.resolve(projectRoot, rubric);
-  try {
-    const resolvedReal = realpathSync(resolved);
-    if (!isPathInside(resolvedReal, projectRoot)) {
-      return { success: false, error: makeError('rubric path escapes project root') };
-    }
-  } catch {
-    // path not on disk yet — lexical check above is sufficient (no symlink to follow)
   }
 
   // checks (optional array of strings)
@@ -149,12 +137,15 @@ function parseProfileEntry(value) {
     return { success: false, error: makeError('description must be a string') };
   }
 
+  // SEC-Q2-LOW-2 (deep-5): store resolved rubric path (realPath when exists, else lexicalPath)
+  // to defeat post-validation symlink-swap TOCTOU. Mirrors the #405 pattern in config/test.mjs.
+  const resolvedRubric = rubricGuard.realPath ?? rubricGuard.lexicalPath;
   /** @type {Record<string, unknown>} */
   const data = {
     name: v.name,
     driver: v.driver,
     mode,
-    rubric,
+    rubric: resolvedRubric,
     timeout_ms,
   };
 

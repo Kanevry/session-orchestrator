@@ -7,15 +7,18 @@
  * Issue #130 — Wave 4 (Quality) of v3.0.0 migration.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import {
   isPathInside,
   relativeFromRoot,
   normalizeCase,
   sameDrive,
   CWE_23_ATTACK_PATTERNS,
-} from '../../scripts/lib/path-utils.mjs';
+  validatePathInsideProject,
+} from '@lib/path-utils.mjs';
 
 // ── isPathInside — positive (descendant returns true) ─────────────────────────
 
@@ -319,4 +322,147 @@ describe('integration: isPathInside and relativeFromRoot are consistent', () => 
     expect(isPathInside(p, p)).toBe(false);
     expect(relativeFromRoot(p, p)).toBe('.');
   });
+});
+
+// ── validatePathInsideProject ─────────────────────────────────────────────────
+
+describe('validatePathInsideProject — Phase 1 lexical + Phase 2 realpath guard', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'path-utils-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // (a) lexical pass + path does not exist → ok: true, realPath: undefined
+  it('non-existent path inside root: ok=true, realPath undefined, lexicalPath resolved', () => {
+    const result = validatePathInsideProject('subdir/file.txt', tmpDir);
+    expect(result.ok).toBe(true);
+    expect(result.realPath).toBeUndefined();
+    expect(result.lexicalPath).toBe(path.resolve(tmpDir, 'subdir/file.txt'));
+  });
+
+  // (b) lexical pass + realpath pass → ok: true, realPath set
+  it('existing file inside root: ok=true, realPath is set to resolved path', () => {
+    // Use realpath of tmpDir as root: on macOS /var is a symlink to /private/var,
+    // so realpathSync resolves the root to avoid Phase 2 false-positive rejections.
+    const realRoot = fs.realpathSync(tmpDir);
+    const subDir = path.join(realRoot, 'subdir');
+    fs.mkdirSync(subDir);
+    const filePath = path.join(subDir, 'file.txt');
+    fs.writeFileSync(filePath, 'hello');
+    const result = validatePathInsideProject('subdir/file.txt', realRoot);
+    expect(result.ok).toBe(true);
+    expect(result.realPath).toBe(filePath);
+    expect(result.lexicalPath).toBe(filePath);
+  });
+
+  // (c) lexical pass + realpath ESCAPE via symlink → ok: false, reason: 'symlink'
+  it.skipIf(process.platform === 'win32')(
+    'symlink inside root pointing outside: ok=false, reason=symlink',
+    () => {
+      // Use realpath of tmpDir to avoid macOS /var → /private/var symlink confusion
+      const realRoot = fs.realpathSync(tmpDir);
+      const linkPath = path.join(realRoot, 'escape-link');
+      fs.symlinkSync('/etc', linkPath);
+      const result = validatePathInsideProject('escape-link', realRoot);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('symlink');
+    },
+  );
+
+  // (d) lexical fail via relative escape
+  it('relative escape via ../../: ok=false, reason=lexical', () => {
+    const result = validatePathInsideProject('../../../etc/passwd', tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lexical');
+  });
+
+  // (e) lexical fail via absolute path outside root
+  it('absolute path outside root (/etc/passwd): ok=false, reason=lexical', () => {
+    const result = validatePathInsideProject('/etc/passwd', tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lexical');
+  });
+
+  // (f) empty string input
+  it('empty string input: ok=false, reason=input', () => {
+    const result = validatePathInsideProject('', tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('input');
+    expect(result.error).toMatch(/non-empty/);
+  });
+
+  // (g) null-byte in input
+  it('null-byte in input: ok=false, reason=input', () => {
+    const result = validatePathInsideProject('file\0.txt', tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('input');
+    expect(result.error).toMatch(/null byte/);
+  });
+
+  // (h) non-string input (null)
+  it('null input: ok=false, reason=input', () => {
+    const result = validatePathInsideProject(null, tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('input');
+  });
+
+  // (i) input that resolves exactly to root (boundary — isPathInside rejects equality)
+  it('input resolving exactly to root boundary: ok=false, reason=lexical', () => {
+    // path.resolve(tmpDir, '.') === tmpDir — isPathInside(x, x) returns false
+    const result = validatePathInsideProject('.', tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lexical');
+  });
+
+  // (j) relative path that resolves inside root (non-existent)
+  it('relative path inside root (non-existent): ok=true, realPath undefined', () => {
+    const result = validatePathInsideProject('src/index.js', tmpDir);
+    expect(result.ok).toBe(true);
+    expect(result.realPath).toBeUndefined();
+    expect(result.lexicalPath).toBe(path.resolve(tmpDir, 'src/index.js'));
+  });
+
+  // (k) very deep traversal — 100 repetitions of '../' → lexical rejection
+  it('very deep traversal (100x "../"): ok=false, reason=lexical', () => {
+    const deepTraversal = '../'.repeat(100) + 'etc/passwd';
+    const result = validatePathInsideProject(deepTraversal, tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lexical');
+  });
+
+  // (l) trailing slash on valid subdir — path.resolve normalises it, ENOENT → ok=true
+  it('trailing slash on non-existent subdir: ok=true, lexicalPath same as without slash', () => {
+    const withSlash = validatePathInsideProject('subdir/', tmpDir);
+    const withoutSlash = validatePathInsideProject('subdir', tmpDir);
+    expect(withSlash.ok).toBe(true);
+    expect(withSlash.realPath).toBeUndefined();
+    expect(withSlash.lexicalPath).toBe(path.resolve(tmpDir, 'subdir'));
+    expect(withSlash.lexicalPath).toBe(withoutSlash.lexicalPath);
+  });
+
+  // (m) two-hop symlink chain (A→B→C) all inside project — ok=true, realPath resolves to C
+  it.skipIf(process.platform === 'win32')(
+    'two-hop symlink chain inside root: ok=true, realPath resolves to final target',
+    () => {
+      const realRoot = fs.realpathSync(tmpDir);
+      // C: real file
+      const targetFile = path.join(realRoot, 'target.txt');
+      fs.writeFileSync(targetFile, 'data');
+      // B → C
+      const linkB = path.join(realRoot, 'link-b.txt');
+      fs.symlinkSync(targetFile, linkB);
+      // A → B
+      const linkA = path.join(realRoot, 'link-a.txt');
+      fs.symlinkSync(linkB, linkA);
+      const result = validatePathInsideProject('link-a.txt', realRoot);
+      expect(result.ok).toBe(true);
+      // realPath must resolve all hops to the canonical target file
+      expect(result.realPath).toBe(targetFile);
+    },
+  );
 });

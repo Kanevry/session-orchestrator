@@ -41,8 +41,8 @@ import {
   createFinding,
   listExistingFindings,
   updateFinding,
-} from '../../../scripts/lib/test-runner/issue-reconcile.mjs';
-import { fingerprintFinding } from '../../../scripts/lib/test-runner/fingerprint.mjs';
+} from '@lib/test-runner/issue-reconcile.mjs';
+import { fingerprintFinding } from '@lib/test-runner/fingerprint.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared test-finding factory

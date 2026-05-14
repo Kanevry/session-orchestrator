@@ -17,10 +17,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
+import fs, { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { _parseTest } from '../../../scripts/lib/config/test.mjs';
+import { _parseTest } from '@lib/config/test.mjs';
 
 const DEFAULTS = {
   enabled: false,
@@ -64,9 +64,12 @@ describe('_parseTest — individual field overrides', () => {
     expect(_parseTest(content)['default-profile']).toBe('full');
   });
 
-  it('parses profiles-path: custom path', () => {
+  it('parses profiles-path: custom path (stored as resolved absolute path, #405 TOCTOU fix)', () => {
     const content = 'test:\n  profiles-path: .custom/profiles.json\n';
-    expect(_parseTest(content)['profiles-path']).toBe('.custom/profiles.json');
+    // After #402+#405: stored value is the resolved absolute path (not raw v).
+    // .custom/profiles.json does not exist on disk — realPath is null, lexicalPath is used.
+    const expected = path.resolve(process.cwd(), '.custom/profiles.json');
+    expect(_parseTest(content)['profiles-path']).toBe(expected);
   });
 
   it('parses mode: strict', () => {
@@ -133,8 +136,11 @@ describe('_parseTest — profiles-path path-traversal rejection', () => {
   });
 
   it('accepts a repo-relative profiles-path inside the project (skills/test-runner/whatever.json)', () => {
+    // After #402+#405: stored value is the resolved absolute path (not raw v).
+    // skills/test-runner/whatever.json does not exist on disk — realPath is null, lexicalPath is used.
     const content = 'test:\n  profiles-path: skills/test-runner/whatever.json\n';
-    expect(_parseTest(content)['profiles-path']).toBe('skills/test-runner/whatever.json');
+    const expected = path.resolve(process.cwd(), 'skills/test-runner/whatever.json');
+    expect(_parseTest(content)['profiles-path']).toBe(expected);
   });
 
   it('accepts a deep-traversal rejection — multiple ../ segments still fall back to default', () => {
@@ -196,6 +202,88 @@ describe('_parseTest — profiles-path Phase 2 symlink-escape guard (#397)', () 
 });
 
 // ---------------------------------------------------------------------------
+// TOCTOU fix: stored path is realpath, not raw input (#405 / SEC-Q2-LOW-1)
+//
+// Before the fix: tcProfilesPath = v (raw symlink name).
+// After the fix:  tcProfilesPath = result.realPath || result.lexicalPath.
+//
+// This test creates a valid intra-project symlink pointing to a tempdir target
+// inside the project, parses the config, and asserts the stored value is the
+// canonical realpath of the symlink — not the original symlink name.
+// Skipped automatically if symlink creation fails (e.g. Windows without elevation).
+// ---------------------------------------------------------------------------
+
+describe('_parseTest — profiles-path TOCTOU: stored as realpath, not raw input (#405)', () => {
+  it('stores realpath of a valid in-project symlink, not the raw symlink name', () => {
+    // Create a real file inside the project root to use as the symlink target.
+    // (Symlink must point to an existing path so realpathSync resolves it.)
+    const targetName = `.toctou-target-${Date.now()}.json`;
+    const targetPath = path.join(process.cwd(), targetName);
+    const symlinkName = `.toctou-link-${Date.now()}.json`;
+    const symlinkPath = path.join(process.cwd(), symlinkName);
+
+    try {
+      fs.writeFileSync(targetPath, '{}', 'utf8');
+    } catch {
+      return; // Can't write test file — skip silently.
+    }
+
+    try {
+      fs.symlinkSync(targetPath, symlinkPath);
+    } catch {
+      // symlinkSync not available on this platform — skip test.
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+      return;
+    }
+
+    try {
+      const content = `test:\n  profiles-path: ${symlinkName}\n`;
+      const result = _parseTest(content);
+      // The stored value must be the canonical realpath of the target,
+      // NOT the raw symlink name and NOT the lexical resolved symlink path.
+      const expectedRealPath = realpathSync(symlinkPath);
+      expect(result['profiles-path']).toBe(expectedRealPath);
+      // Paranoia: confirm the stored value differs from the raw symlink name,
+      // which is the TOCTOU-vulnerable form the bug previously stored.
+      const rawSymlinkResolved = path.resolve(process.cwd(), symlinkName);
+      // realpath of the symlink = realpath of the target (they are the same file).
+      // The test only fails if we accidentally stored the unresolved form.
+      expect(result['profiles-path']).not.toBe(symlinkName);
+      expect(result['profiles-path']).not.toBe(rawSymlinkResolved);
+    } finally {
+      try { fs.unlinkSync(symlinkPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOCTOU fix: existing plain file (relative path) stores realPath, not raw v (#405)
+//
+// The _parseTest TOCTOU test (above) covers a symlink pointing to an in-project
+// target: stored = realpath(target). This test covers the simpler case: a plain
+// relative path to an existing, non-symlink file inside the project — stored
+// value is realpathSync of that file (which equals the lexical path for plain files),
+// NOT the raw relative string that was in the config.
+// ---------------------------------------------------------------------------
+
+describe('_parseTest — profiles-path existing plain file stores realPath not raw input (#405)', () => {
+  it('stores resolved absolute path for a relative path to an existing in-project file', () => {
+    // .orchestrator/policy/test-profiles.json exists on disk (part of the repo).
+    // After #405: stored = result.realPath (realpathSync result) because Phase 2 succeeds.
+    // For a plain file with no symlinks, realpathSync returns the absolute path,
+    // which equals path.resolve(cwd, relativePath) — NOT the raw relative string 'x/y.json'.
+    const content = 'test:\n  profiles-path: .orchestrator/policy/test-profiles.json\n';
+    const result = _parseTest(content);
+    // Must NOT be the raw relative string
+    expect(result['profiles-path']).not.toBe('.orchestrator/policy/test-profiles.json');
+    // Must be the resolved absolute path
+    const expectedAbsolute = path.resolve(process.cwd(), '.orchestrator/policy/test-profiles.json');
+    expect(result['profiles-path']).toBe(expectedAbsolute);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Block boundary — stops at next top-level key
 // ---------------------------------------------------------------------------
 
@@ -224,16 +312,32 @@ describe('_parseTest — profiles-path boundary coverage (#401 GAP-Q4-4)', () =>
 
   it('accepts a dot-resolved profiles-path that resolves inside the project (./skills/../.orchestrator/policy/test-profiles.json)', () => {
     // path.resolve normalises the dot-segments; the resolved path is inside project root.
-    // The file .orchestrator/policy/test-profiles.json exists on disk, so Phase 2 also passes.
+    // The file .orchestrator/policy/test-profiles.json exists on disk, so Phase 2 (realpath) runs.
+    // After #402+#405: stored value is realPath (symlink-resolved canonical path), not raw v.
     const content = 'test:\n  profiles-path: ./skills/../.orchestrator/policy/test-profiles.json\n';
-    expect(_parseTest(content)['profiles-path']).toBe('./skills/../.orchestrator/policy/test-profiles.json');
+    const expectedLexical = path.resolve(process.cwd(), './skills/../.orchestrator/policy/test-profiles.json');
+    let expected;
+    try {
+      expected = realpathSync(expectedLexical);
+    } catch {
+      expected = expectedLexical;
+    }
+    expect(_parseTest(content)['profiles-path']).toBe(expected);
   });
 
   it('accepts an absolute profiles-path that resolves to a file inside the project root', () => {
     // isPathInside(absolutePath, cwd) is true when the absolute path IS a descendant of cwd.
     // The silent-skip guard only rejects paths that escape the root, not absolute-but-inside paths.
+    // After #402+#405: stored value is realPath (symlink-resolved canonical path).
+    // For a plain file with no symlinks, realpathSync(absolutePath) === absolutePath.
     const absolutePath = process.cwd() + '/.orchestrator/policy/test-profiles.json';
     const content = `test:\n  profiles-path: ${absolutePath}\n`;
-    expect(_parseTest(content)['profiles-path']).toBe(absolutePath);
+    let expected;
+    try {
+      expected = realpathSync(absolutePath);
+    } catch {
+      expected = absolutePath;
+    }
+    expect(_parseTest(content)['profiles-path']).toBe(expected);
   });
 });

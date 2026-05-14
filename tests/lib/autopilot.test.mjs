@@ -13,9 +13,9 @@ import {
   DEFAULT_PEER_ABORT_THRESHOLD,
   DEFAULT_JSONL_PATH,
   DEFAULT_CARRYOVER_THRESHOLD,
-} from '../../scripts/lib/autopilot.mjs';
-import { buildLiveSignals } from '../../scripts/lib/build-live-signals.mjs';
-import { selectMode } from '../../scripts/lib/mode-selector.mjs';
+} from '@lib/autopilot.mjs';
+import { buildLiveSignals } from '@lib/build-live-signals.mjs';
+import { selectMode } from '@lib/mode-selector.mjs';
 import { writeFileSync, mkdirSync } from 'node:fs';
 
 let tmp;

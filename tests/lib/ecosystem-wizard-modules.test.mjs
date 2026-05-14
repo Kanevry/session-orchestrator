@@ -9,18 +9,18 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { detectCiProvider } from '../../scripts/lib/ecosystem-wizard/ci-detector.mjs';
+import { detectCiProvider } from '@lib/ecosystem-wizard/ci-detector.mjs';
 import {
   detectPackageManagerFromRoot,
   readPackageScripts,
-} from '../../scripts/lib/ecosystem-wizard/package-manager-detector.mjs';
+} from '@lib/ecosystem-wizard/package-manager-detector.mjs';
 import {
   parseCommaSeparated,
   parseEndpoints,
   parsePipelines,
-} from '../../scripts/lib/ecosystem-wizard/config-parser.mjs';
-import { validateEcosystemPolicy } from '../../scripts/lib/ecosystem-wizard/config-writer.mjs';
-import * as barrel from '../../scripts/lib/ecosystem-wizard.mjs';
+} from '@lib/ecosystem-wizard/config-parser.mjs';
+import { validateEcosystemPolicy } from '@lib/ecosystem-wizard/config-writer.mjs';
+import * as barrel from '@lib/ecosystem-wizard.mjs';
 
 let sandbox;
 

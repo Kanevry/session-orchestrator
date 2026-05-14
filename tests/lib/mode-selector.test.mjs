@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectMode } from '../../scripts/lib/mode-selector.mjs';
+import { selectMode } from '@lib/mode-selector.mjs';
 
 describe('selectMode — scaffold contract', () => {
   describe('fallback paths', () => {

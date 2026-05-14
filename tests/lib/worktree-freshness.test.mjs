@@ -514,14 +514,19 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness roundtrip (createW
 
   it('roundtrip: createWorktree persists meta → checkWorktreeBaseRefFresh returns pass', async () => {
     let wtPath;
+    let tmpDir;
+    let testSuffix;
     try {
-      wtPath = await createWorktree('rt-fresh-test', 'HEAD');
+      // Per-run unique suffix to avoid collisions from stale cleanup (#406)
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'so-wt-fresh-rt-'));
+      testSuffix = path.basename(tmpDir).replace(/^so-wt-fresh-rt-/, '');
+      wtPath = await createWorktree(testSuffix, 'HEAD');
 
       // No new commits since worktree creation — freshness check must return pass.
       // Use cwd: roundtripRepo so checkWorktreeBaseRefFresh resolves meta + git
       // against the same temp repo that createWorktree (via zx) used.
       const result = await checkWorktreeBaseRefFresh({
-        suffix: 'rt-fresh-test',
+        suffix: testSuffix,
         targetBranch: 'main',
         cwd: roundtripRepo,
       });
@@ -531,6 +536,9 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness roundtrip (createW
     } finally {
       if (wtPath) {
         await removeWorktree(wtPath).catch(() => {});
+      }
+      if (tmpDir) {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }
     }
   }, 30000);

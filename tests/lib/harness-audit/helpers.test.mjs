@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { pass, fail, _resetWarnFlags } from '../../../scripts/lib/harness-audit/categories/helpers.mjs';
+import { pass, fail, _resetWarnFlags } from '@lib/harness-audit/categories/helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Lifecycle

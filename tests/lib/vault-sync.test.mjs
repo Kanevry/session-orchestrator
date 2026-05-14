@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { _parseVaultSync } from '../../scripts/lib/config/vault-sync.mjs';
+import { _parseVaultSync } from '@lib/config/vault-sync.mjs';
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 

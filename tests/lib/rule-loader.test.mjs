@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadApplicableRules } from '../../scripts/lib/rule-loader.mjs';
+import { loadApplicableRules } from '@lib/rule-loader.mjs';
 
 // ---------------------------------------------------------------------------
 // Temp directory management

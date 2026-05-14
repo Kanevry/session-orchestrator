@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { validateWorkspacePath } from '../../../scripts/lib/worktree/lifecycle.mjs';
+import { validateWorkspacePath } from '@lib/worktree/lifecycle.mjs';
 
 // ---------------------------------------------------------------------------
 // Table-driven cases (ADR-364 §5 DoD — ≥6 mandatory cases)

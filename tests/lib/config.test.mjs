@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '../../scripts/lib/config.mjs';
+import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '@lib/config.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

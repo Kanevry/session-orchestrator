@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeContextPressure } from '../../scripts/lib/mode-selector.mjs';
+import { computeContextPressure } from '@lib/mode-selector.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

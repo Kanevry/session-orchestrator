@@ -12,8 +12,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runEcosystemWizard } from '../../../scripts/lib/ecosystem-wizard/wizard-prompt.mjs';
-import { writePolicyFile } from '../../../scripts/lib/ecosystem-wizard/config-writer.mjs';
+import { runEcosystemWizard } from '@lib/ecosystem-wizard/wizard-prompt.mjs';
+import { writePolicyFile } from '@lib/ecosystem-wizard/config-writer.mjs';
 
 let sandbox;
 

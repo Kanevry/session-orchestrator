@@ -131,6 +131,9 @@ if (runCheck('check-playwright-mcp-canary.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-peekaboo-driver-canary.mjs') !== 0) checkFailed = 1;
 
+process.stdout.write('\n');
+if (runCheck('check-path-utils-canary.mjs') !== 0) checkFailed = 1;
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

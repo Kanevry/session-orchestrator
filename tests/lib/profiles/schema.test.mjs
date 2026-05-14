@@ -146,7 +146,10 @@ describe('profileEntrySchema — defaults applied', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data.mode).toBe('headless');
-    expect(result.data.rubric).toBe('skills/test-runner/rubric-v1.md');
+    // After SEC-Q2-LOW-2 (deep-5): rubric is stored as resolved absolute path (realpath when exists).
+    expect(result.data.rubric).toBe(
+      fs.realpathSync(path.resolve(process.cwd(), 'skills/test-runner/rubric-v1.md'))
+    );
     expect(result.data.timeout_ms).toBe(120000);
   });
 });
@@ -163,7 +166,10 @@ describe('profileEntrySchema — rubric path-traversal rejection', () => {
       rubric: 'skills/test-runner/rubric-v1.md',
     });
     expect(result.success).toBe(true);
-    expect(result.data.rubric).toBe('skills/test-runner/rubric-v1.md');
+    // After SEC-Q2-LOW-2 (deep-5): rubric stored as realpath when target exists.
+    expect(result.data.rubric).toBe(
+      fs.realpathSync(path.resolve(process.cwd(), 'skills/test-runner/rubric-v1.md'))
+    );
   });
 
   it('accepts an explicit relative rubric path inside the project', () => {
@@ -173,7 +179,10 @@ describe('profileEntrySchema — rubric path-traversal rejection', () => {
       rubric: 'docs/custom-rubric.md',
     });
     expect(result.success).toBe(true);
-    expect(result.data.rubric).toBe('docs/custom-rubric.md');
+    // docs/custom-rubric.md doesn't exist → falls back to lexicalPath (path.resolve).
+    expect(result.data.rubric).toBe(
+      path.resolve(process.cwd(), 'docs/custom-rubric.md')
+    );
   });
 
   it('rejects a relative traversal rubric path (../../../etc/passwd)', () => {
@@ -196,14 +205,14 @@ describe('profileEntrySchema — rubric path-traversal rejection', () => {
     expect(result.error.issues[0].message).toContain('rubric');
   });
 
-  it('throws on an empty string rubric (isPathInside rejects empty child)', () => {
-    expect(() =>
-      profileEntrySchema.safeParse({
-        name: 'test',
-        driver: 'playwright',
-        rubric: '',
-      }),
-    ).toThrow('non-empty string');
+  it('rejects an empty string rubric (validatePathInsideProject rejects empty input)', () => {
+    const result = profileEntrySchema.safeParse({
+      name: 'test',
+      driver: 'playwright',
+      rubric: '',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error.issues[0].message).toContain('rubric');
   });
 });
 

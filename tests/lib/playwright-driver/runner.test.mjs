@@ -33,7 +33,7 @@ import { Readable, Writable } from 'node:stream';
 // Import the module under test
 // ---------------------------------------------------------------------------
 
-import run from '../../../scripts/lib/playwright-driver/runner.mjs';
+import run from '@lib/playwright-driver/runner.mjs';
 
 // ---------------------------------------------------------------------------
 // Fake Writable stream (satisfies proc.stdout.pipe(logStream))

@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildLiveSignals } from '../../scripts/lib/build-live-signals.mjs';
-import { selectMode } from '../../scripts/lib/mode-selector.mjs';
+import { buildLiveSignals } from '@lib/build-live-signals.mjs';
+import { selectMode } from '@lib/mode-selector.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers

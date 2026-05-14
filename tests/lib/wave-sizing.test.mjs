@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveIsolation, resolveEnforcement } from '../../scripts/lib/wave-sizing.mjs';
+import { resolveIsolation, resolveEnforcement } from '@lib/wave-sizing.mjs';
 
 // ---------------------------------------------------------------------------
 // resolveIsolation — graduation table

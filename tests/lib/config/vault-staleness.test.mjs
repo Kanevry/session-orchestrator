@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { _parseVaultStaleness } from '../../../scripts/lib/config/vault-staleness.mjs';
+import { _parseVaultStaleness } from '@lib/config/vault-staleness.mjs';
 
 const DEFAULTS = {
   enabled: false,

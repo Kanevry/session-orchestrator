@@ -10,8 +10,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, utimesSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runLoop } from '../../../scripts/lib/autopilot/loop.mjs';
-import { KILL_SWITCHES } from '../../../scripts/lib/autopilot/kill-switches.mjs';
+import { runLoop } from '@lib/autopilot/loop.mjs';
+import { KILL_SWITCHES } from '@lib/autopilot/kill-switches.mjs';
 
 let tmp;
 let jsonlPath;

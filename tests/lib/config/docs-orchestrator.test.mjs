@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { _parseDocsOrchestrator } from '../../../scripts/lib/config/docs-orchestrator.mjs';
+import { _parseDocsOrchestrator } from '@lib/config/docs-orchestrator.mjs';
 
 const DEFAULTS = {
   enabled: false,

@@ -8,7 +8,7 @@ import {
   updateFrontmatterFields,
   appendDeviation,
   markExpressPathComplete,
-} from '../../scripts/lib/state-md.mjs';
+} from '@lib/state-md.mjs';
 
 const SAMPLE = `---
 schema-version: 1

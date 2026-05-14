@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { _parseDriftCheck } from '../../../scripts/lib/config/drift-check.mjs';
+import { _parseDriftCheck } from '@lib/config/drift-check.mjs';
 
 const DEFAULTS = {
   enabled: false,

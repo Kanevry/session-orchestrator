@@ -23,7 +23,7 @@ import {
   axSnapshotsDir,
   consoleLogPath,
   jsonlRollupPath,
-} from '../../../scripts/lib/test-runner/artifact-paths.mjs';
+} from '@lib/test-runner/artifact-paths.mjs';
 
 // ---------------------------------------------------------------------------
 // makeRunId

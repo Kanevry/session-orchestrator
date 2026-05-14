@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeV0Recommendation, isValidMode } from '../../scripts/lib/recommendations-v0.mjs';
+import { computeV0Recommendation, isValidMode } from '@lib/recommendations-v0.mjs';
 
 describe('computeV0Recommendation', () => {
   describe('rule branches', () => {

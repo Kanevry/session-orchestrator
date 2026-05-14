@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { _parseEventsRotation } from '../../../scripts/lib/config/events-rotation.mjs';
+import { _parseEventsRotation } from '@lib/config/events-rotation.mjs';
 
 const DEFAULTS = {
   enabled: true,

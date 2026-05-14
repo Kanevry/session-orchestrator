@@ -6,15 +6,16 @@
  * as part of the /test epic (#378) Track B wiring.
  */
 
-import path from 'node:path';
-import { realpathSync } from 'node:fs';
-import { isPathInside } from '../path-utils.mjs';
+import { validatePathInsideProject } from '../path-utils.mjs';
 
 /**
  * Parse the top-level `test:` YAML block from markdown content.
  * Returns defaults when the block is absent.
  * @param {string} content — full CLAUDE.md / AGENTS.md content
  * @returns {{enabled: boolean, "default-profile": string, "profiles-path": string, mode: string, "retention-days": number}}
+ *   `profiles-path` is stored as an absolute path (realpath-resolved when the target exists,
+ *   lexically-resolved via `path.resolve(cwd, v)` when the target does not exist yet) —
+ *   defeats post-validation symlink-swap TOCTOU (#405, deep-4 deep-5).
  */
 export function _parseTest(content) {
   const defaults = {
@@ -76,25 +77,16 @@ export function _parseTest(content) {
         break;
       case 'profiles-path':
         if (v) {
-          // SEC-IR-LOW-2 + SEC-Q2-LOW-1: reject path-traversal and symlink-escape in profiles-path (CWE-23)
-          // Phase 1 — lexical guard: reject traversal-escaped paths without filesystem access.
-          // Phase 2 — symlink-escape guard: when the path exists, resolve symlinks and re-check.
+          // SEC-IR-LOW-2 + SEC-Q2-LOW-1 + #402 + #405:
+          // Delegate two-phase path-traversal + symlink-escape guard to the shared helper.
+          // Store the resolved path (not raw v) to defeat TOCTOU symlink-swap attacks (#405).
           const projectRoot = process.cwd();
-          const resolved = path.resolve(projectRoot, v);
-          if (isPathInside(resolved, projectRoot)) {
-            // Phase 2: if path already exists on disk, verify realpath stays inside project root.
-            let symlinksOk = true;
-            try {
-              const resolvedReal = realpathSync(resolved);
-              if (!isPathInside(resolvedReal, projectRoot)) {
-                symlinksOk = false;
-              }
-            } catch {
-              // path not on disk yet — lexical check is sufficient
-            }
-            if (symlinksOk) tcProfilesPath = v;
+          const result = validatePathInsideProject(v, projectRoot);
+          if (result.ok) {
+            // Store resolved path, not raw v, to defeat TOCTOU symlink-swap (#405)
+            tcProfilesPath = result.realPath || result.lexicalPath;
           }
-          // Silent skip on traversal/symlink-escape — matches the lenient pattern used by other case branches
+          // Silent skip on failure — matches the lenient pattern of other case branches
         }
         break;
       case 'mode':

@@ -26,7 +26,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { maybeRotate } from '../../scripts/lib/events-rotation.mjs';
+import { maybeRotate } from '@lib/events-rotation.mjs';
 
 describe('maybeRotate', () => {
   let tmpDir;

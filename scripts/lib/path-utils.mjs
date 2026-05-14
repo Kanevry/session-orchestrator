@@ -3,14 +3,16 @@
  *
  * SECURITY-CRITICAL: Backs enforce-scope.mjs (CWE-23 protection).
  *
- * All functions are pure (no filesystem I/O). Callers must resolve symlinks
- * explicitly if symlink semantics are relevant — this module does NOT follow
- * symlinks to avoid TOCTOU vulnerabilities.
+ * Most functions are pure (no filesystem I/O). The exception is
+ * validatePathInsideProject, which performs a two-phase lexical + realpath
+ * guard and calls realpathSync on Phase 2. All other exported helpers remain
+ * pure and do not follow symlinks.
  *
  * Part of v3.0.0 migration (Epic #124, issue #130).
  */
 
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -131,4 +133,40 @@ export function sameDrive(a, b) {
   const rootA = path.parse(path.resolve(a)).root.toLowerCase();
   const rootB = path.parse(path.resolve(b)).root.toLowerCase();
   return rootA === rootB;
+}
+
+/**
+ * Two-phase path-traversal + symlink-escape guard.
+ * Phase 1: lexical isPathInside check (rejects ../ traversal).
+ * Phase 2: realpath resolution + isPathInside (rejects symlink escape).
+ * ENOENT in Phase 2 is swallowed — lexical check is sufficient when path does not yet exist.
+ *
+ * @param {string} input - User-supplied path (relative or absolute)
+ * @param {string} root - Trusted parent directory (absolute)
+ * @returns {{ok: true, realPath: string|undefined, lexicalPath: string} | {ok: false, reason: 'lexical'|'symlink'|'input', error?: string}}
+ */
+export function validatePathInsideProject(input, root) {
+  // 1. Input validation
+  if (typeof input !== 'string' || input.length === 0) {
+    return { ok: false, reason: 'input', error: 'input must be a non-empty string' };
+  }
+  if (input.includes('\0')) {
+    return { ok: false, reason: 'input', error: 'input contains null byte' };
+  }
+  // 2. Phase 1: lexical
+  const lexicalPath = path.resolve(root, input);
+  if (!isPathInside(lexicalPath, root)) {
+    return { ok: false, reason: 'lexical' };
+  }
+  // 3. Phase 2: realpath (ENOENT swallowed; other errors propagate — SEC-Q2-LOW-1)
+  try {
+    const realPath = realpathSync(lexicalPath);
+    if (!isPathInside(realPath, root)) {
+      return { ok: false, reason: 'symlink' };
+    }
+    return { ok: true, realPath, lexicalPath };
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') throw err;
+    return { ok: true, realPath: undefined, lexicalPath };
+  }
 }
