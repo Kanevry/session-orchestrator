@@ -46,7 +46,7 @@ variables:
     - git config --global user.name "CI Runner"
     - npm ci
     # Install nested vault-sync deps (zod, yaml) — ignored by root npm ci
-    - (cd skills/vault-sync && npm install --no-audit --no-fund --silent)
+    - (cd skills/vault-sync && npm install --no-audit --no-fund)
   cache:
     key:
       prefix: ${CI_CACHE_VERSION}

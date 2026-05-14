@@ -120,15 +120,35 @@ After the agent completes, verify `${RUN_DIR}/findings.jsonl` exists. If missing
 
 ## Phase 4: Issue Reconciliation
 
-Read `${RUN_DIR}/findings.jsonl`. For each finding, call `reconcileFinding({finding, existingFingerprints, glabPath})` from `scripts/lib/test-runner/issue-reconcile.mjs`.
+Read `${RUN_DIR}/findings.jsonl`. Use the helpers in `scripts/lib/test-runner/issue-reconcile.mjs` for all glab/gh interactions — never call `glab` or `gh` directly.
+
+### Available Helper Functions (issue-reconcile.mjs)
+
+| Function | Purpose |
+|---|---|
+| `listExistingFindings({glabPath, project, label, maxBuffer})` | Query the tracker for all open `from:test-runner` issues; returns `{ok, issues[], fingerprints: Set}` |
+| `createFinding({glabPath, project, fingerprint, title, body, labels, dryRun, maxBuffer})` | Create a new issue; returns `{ok, action: 'create', iid?, command?}` |
+| `updateFinding({glabPath, project, iid, comment, dryRun, maxBuffer})` | Add a comment to an existing issue; returns `{ok, action: 'comment', command?}` |
+| `triageDecision(finding, candidates)` | Pure decision: fingerprint-exact → `ignore`; Levenshtein ≤ 2 on title → `update`; else → `create` |
+| `reconcileFinding({finding, existingFingerprints, glabPath, dryRun})` | Track-A legacy helper — single-finding create-or-noop using a pre-built fingerprint Set |
+
+Security notes (ADR-364 §C5, #388, #389):
+- All execFile calls use `maxBuffer: 4 MB` and `shell: false`.
+- Bodies > 65 536 bytes are rejected with `{ok: false, error: {code: 'BODY_TOO_LARGE', ...}}`.
+- `**Fingerprint:**` literals in free-text fields are replaced with `__Fingerprint__` before the authoritative sentinel line is appended (sentinel-injection hardening, #388).
 
 ### Existing-Fingerprint Dedup
 
 Before iterating findings, build the dedup set once:
 
-1. Call `glab issue list --label from:test-runner --output json` (via `issue-reconcile.mjs` — never call `glab` directly).
-2. Extract `**Fingerprint:** \`<16-hex>\`` from each issue body.
-3. Build a `Set<string>`, pass to each `reconcileFinding()` call.
+```js
+import { listExistingFindings } from 'scripts/lib/test-runner/issue-reconcile.mjs';
+
+const listResult = await listExistingFindings({ glabPath });
+// listResult.ok === false → log and continue with empty Set (conservative)
+const existingFingerprints = listResult.ok ? listResult.fingerprints : new Set();
+const existingIssues = listResult.ok ? listResult.issues : [];
+```
 
 If the glab query fails, log the error and proceed with an empty fingerprint set (conservative: may create duplicate issues, safer than silently skipping).
 
@@ -141,6 +161,8 @@ If the glab query fails, log the error and proceed with an empty fingerprint set
 | `medium` | Batched AUQ triage (see below) |
 | `low` | Batched AUQ triage (see below) |
 
+For `critical` and `high`, call `triageDecision(finding, existingIssues)` first. If `action === 'ignore'`, skip. If `action === 'update'`, call `updateFinding()`. If `action === 'create'`, call `createFinding()`.
+
 ### Batched AUQ Triage (medium / low)
 
 Group `medium` and `low` findings and present via a single `AskUserQuestion` call (mirror the discovery skill's Phase 5 Step 3 pattern):
@@ -148,26 +170,42 @@ Group `medium` and `low` findings and present via a single `AskUserQuestion` cal
 ```js
 AskUserQuestion({
   questions: [{
-    question: `[N] medium/low findings:\n\n${findingsList}`,
-    header: "Test Runner: medium / low findings",
+    question: `<N> medium/low findings to triage. How to handle?`,
+    header: "Test-runner triage",
     options: [
-      { label: "Create issues for all (Recommended)", description: "File issues for each finding" },
-      { label: "Review individually", description: "Walk through each finding one by one" },
-      { label: "Dismiss all", description: "Skip all medium/low findings this run" }
+      {
+        label: "Create all (Recommended)",
+        description: "File <N> new issues, all with label from:test-runner"
+      },
+      {
+        label: "Review each",
+        description: "Walk through findings individually with create/update/ignore"
+      },
+      {
+        label: "Skip all",
+        description: "Dismiss medium/low; only critical/high get auto-filed"
+      }
     ],
     multiSelect: false
   }]
 })
 ```
 
-If "Review individually" selected, present each finding via its own AUQ call (same pattern as discovery skill Phase 5 Step 2).
+**"Create all"**: For each medium/low finding call `triageDecision(finding, existingIssues)`:
+- `ignore` → skip silently.
+- `update` → call `updateFinding({iid: target, comment, ...})`.
+- `create` → call `createFinding({fingerprint, title, body, labels, ...})`.
+
+**"Review each"**: Walk through findings one by one. For each, call `triageDecision` to get the recommended action, then present a per-finding AUQ with three options (Create / Update existing `#<iid>` / Skip). Honour the user's selection.
+
+**"Skip all"**: Dismiss all medium/low findings without filing. Log `skipped: N medium/low findings (user dismissed)`.
 
 ### Reconcile Outcomes
 
-Collect outcomes from `reconcileFinding()` calls into three buckets:
+Collect outcomes from reconciliation calls into three buckets:
 - `created[]` — issue IIDs of newly created issues
 - `commented[]` — issue IIDs of existing issues that received a new comment
-- `noop[]` — issue IIDs where the fingerprint already existed and no action was taken
+- `noop[]` — fingerprints/IIDs where no action was taken (dedup hit or user dismissed)
 
 Pass these buckets to Phase 5.
 

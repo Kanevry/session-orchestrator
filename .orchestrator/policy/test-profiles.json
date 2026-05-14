@@ -1,0 +1,24 @@
+{
+  "web-gate": {
+    "name": "web-gate",
+    "target": null,
+    "driver": "playwright",
+    "mode": "headless",
+    "rubric": "skills/test-runner/rubric-v1.md",
+    "checks": ["onboarding", "axe", "console"],
+    "tags": ["smoke", "web"],
+    "timeout_ms": 120000,
+    "description": "Default web target smoke test profile via Playwright"
+  },
+  "mac-gate": {
+    "name": "mac-gate",
+    "target": null,
+    "driver": "peekaboo",
+    "mode": "headed",
+    "rubric": "skills/test-runner/rubric-v1.md",
+    "checks": ["onboarding", "glass"],
+    "tags": ["smoke", "mac"],
+    "timeout_ms": 180000,
+    "description": "macOS app smoke test profile via peekaboo (driver landing in #381)"
+  }
+}

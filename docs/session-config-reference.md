@@ -372,6 +372,29 @@ events-rotation:
 
 **Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now `events.jsonl.1`); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
 
+## Test
+
+Opt-in configuration for the `/test` agentic end-to-end test command (Epic #378, issue #383). When `enabled: true`, the `/test` command reads this block to determine which profile to run, where the profile registry lives, how to handle issue reconciliation findings, and how long to retain test-run artifacts. Projects that have not configured this block leave all fields at their defaults and are unaffected — `/test` will report "test is disabled" and exit unless `enabled` is set to `true`.
+
+All fields live under a top-level `test` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+test:
+  enabled: false                                         # master toggle
+  default-profile: smoke                                 # profile name used when no --profile flag given
+  profiles-path: .orchestrator/policy/test-profiles.json # profile registry location
+  mode: warn                                             # warn | strict | off
+  retention-days: 30                                     # artifact retention in days
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `test.enabled` | boolean | `false` | Master toggle for the `/test` agentic end-to-end test command. When `false`, `/test` reports "test is disabled" and exits. |
+| `test.default-profile` | string | `smoke` | Profile name used when no `--profile` flag or positional arg is given. Must match a key in the profile registry at `profiles-path`. |
+| `test.profiles-path` | string | `.orchestrator/policy/test-profiles.json` | Path (relative to repo root) where the test profile registry lives. |
+| `test.mode` | string (`warn` \| `strict` \| `off`) | `warn` | Issue reconciliation severity. `warn` files findings non-blockingly. `strict` blocks session-end on HIGH/CRITICAL findings. `off` skips reconciliation entirely. |
+| `test.retention-days` | integer | `30` | Days to retain `.orchestrator/metrics/test-runs/<run-id>/` artifacts before cleanup. Set to `0` to disable cleanup. |
+
 ## STATE.md Schema §Recommendations (v1.1)
 
 > Added by Epic #271 Phase A (issues #272–#275). **Additive** — `schema-version` remains `1`. Absence of all 5 fields is a valid `schema-version: 1` STATE.md meaning "no recommendation available" (pre-v1.1 compatibility). Readers MUST treat missing fields identically to explicit nulls.

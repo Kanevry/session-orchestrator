@@ -42,6 +42,7 @@ import { _parseDocsOrchestrator } from './config/docs-orchestrator.mjs';
 import { _parseVaultStaleness } from './config/vault-staleness.mjs';
 import { _parseEventsRotation } from './config/events-rotation.mjs';
 import { _parseVaultIntegration, _parseResourceThresholds } from './config/vault-integration.mjs';
+import { _parseTest } from './config/test.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -220,6 +221,9 @@ export function parseSessionConfig(mdContent) {
   // events-rotation: parsed from full content (standalone top-level block)
   const eventsRotation = _parseEventsRotation(mdContent);
 
+  // test: parsed from full content (standalone top-level block, /test epic #378)
+  const testConfig = _parseTest(mdContent);
+
   return {
     'agents-per-wave': agentsPerWave,
     'waves': waves,
@@ -277,6 +281,7 @@ export function parseSessionConfig(mdContent) {
     'docs-orchestrator': docsOrchestrator,
     'vault-staleness': vaultStaleness,
     'events-rotation': eventsRotation,
+    'test': testConfig,
   };
 }
 

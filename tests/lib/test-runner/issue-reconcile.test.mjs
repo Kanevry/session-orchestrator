@@ -10,16 +10,38 @@
  *   - validateFinding: severity, ARG_BOUNDARY_DANGEROUS rejection per field, null/missing
  *   - existingFingerprints validation: must be a Set
  *   - body checks: fingerprint line, severity/check/locator, labels, null-byte guard
- *   - execFile error paths: BINARY_NOT_FOUND (ENOENT via non-existent binary),
- *     EXEC_FAILURE (real binary exits non-zero)
+ *   - execFile error paths: BINARY_NOT_FOUND (ENOENT via execFile DI seam),
+ *     EXEC_FAILURE (execFile DI seam that throws non-ENOENT)
  *
- * For execFile error paths we use real binaries via glabPath injection —
+ * Track B extensions (W2/W3 — issues #383, #384, #388, #389):
+ *   - triageDecision: fingerprint exact match → ignore, fuzzy title match → update,
+ *     no match → create, confidence values, empty candidates
+ *   - sanitizeRecommendation (#388): **Fingerprint:** replaced with __Fingerprint__,
+ *     non-string passthrough, multiple occurrences
+ *   - createFinding (#384): dryRun returns command, body > 65536 bytes → BODY_TOO_LARGE (#389),
+ *     title containing newline → VALIDATION, BINARY_NOT_FOUND via execFile DI seam
+ *   - listExistingFindings (#384): DI via execFile seam returning empty JSON array
+ *
+ * Security hardening regressions (ADR-364 §C5 HIGH + #388 MED + #389 MED):
+ *   - HIGH: glabPath removed — all 4 functions ignore caller-supplied binary path;
+ *     execFile DI seam (opts.execFile) is the only injection point
+ *   - MED-1: reconcileFinding body-length cap enforced via BODY_TOO_LARGE
+ *   - MED-2: sanitizeRecommendation uses gi flag — lowercase + mixed-case variants caught
+ *
+ * For execFile error paths we inject a synthetic execFile function —
  * no vi.mock needed, avoids fork-pool fragility (pattern from mr-draft.test.mjs).
  * All expected values are hardcoded literals — no production-logic mirroring.
  */
 
 import { describe, it, expect } from 'vitest';
-import { reconcileFinding, ReconcileError } from '../../../scripts/lib/test-runner/issue-reconcile.mjs';
+import {
+  reconcileFinding,
+  ReconcileError,
+  triageDecision,
+  createFinding,
+  listExistingFindings,
+  updateFinding,
+} from '../../../scripts/lib/test-runner/issue-reconcile.mjs';
 import { fingerprintFinding } from '../../../scripts/lib/test-runner/fingerprint.mjs';
 
 // ---------------------------------------------------------------------------
@@ -419,27 +441,45 @@ describe('reconcileFinding — existingFingerprints validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// execFile error paths — real binary injection via glabPath parameter
+// execFile error paths — synthetic execFile DI seam (no real binary spawned)
 // ---------------------------------------------------------------------------
 
-describe('reconcileFinding — BINARY_NOT_FOUND via non-existent glabPath', () => {
-  it('throws ReconcileError when glabPath points to a non-existent binary', async () => {
+/** Synthetic execFile that throws ENOENT (simulates missing binary). */
+function makeEnoentExecFile() {
+  return async (_bin, _args, _opts) => {
+    const err = new Error("ENOENT: no such file or directory, spawn 'glab'");
+    err.code = 'ENOENT';
+    throw err;
+  };
+}
+
+/** Synthetic execFile that throws a non-zero exit error (simulates EXEC_FAILURE). */
+function makeFailingExecFile() {
+  return async (_bin, _args, _opts) => {
+    const err = new Error('Command failed: exited with code 1');
+    err.code = 1;
+    throw err;
+  };
+}
+
+describe('reconcileFinding — BINARY_NOT_FOUND via execFile DI seam', () => {
+  it('throws ReconcileError when execFile throws ENOENT', async () => {
     await expect(
       reconcileFinding({
         finding: validFinding(),
         existingFingerprints: new Set(),
-        glabPath: '/definitely/not/a/real/binary/xyz_nonexistent_4829',
+        execFile: makeEnoentExecFile(),
         dryRun: false,
       }),
     ).rejects.toThrow(ReconcileError);
   });
 
-  it('error has code BINARY_NOT_FOUND when binary is not found (ENOENT)', async () => {
+  it('error has code BINARY_NOT_FOUND when execFile throws ENOENT', async () => {
     try {
       await reconcileFinding({
         finding: validFinding(),
         existingFingerprints: new Set(),
-        glabPath: '/definitely/not/a/real/binary/xyz_nonexistent_4829',
+        execFile: makeEnoentExecFile(),
         dryRun: false,
       });
       expect.fail('should have thrown');
@@ -448,29 +488,28 @@ describe('reconcileFinding — BINARY_NOT_FOUND via non-existent glabPath', () =
     }
   });
 
-  it('BINARY_NOT_FOUND error message includes the binary path', async () => {
+  it('BINARY_NOT_FOUND error message mentions glab (the allowlisted binary)', async () => {
     try {
       await reconcileFinding({
         finding: validFinding(),
         existingFingerprints: new Set(),
-        glabPath: '/definitely/not/a/real/binary/xyz_nonexistent_4829',
+        execFile: makeEnoentExecFile(),
         dryRun: false,
       });
       expect.fail('should have thrown');
     } catch (err) {
-      expect(err.message).toContain('/definitely/not/a/real/binary/xyz_nonexistent_4829');
+      expect(err.message).toContain('glab');
     }
   });
 });
 
-describe('reconcileFinding — EXEC_FAILURE via binary that exits non-zero', () => {
-  it('throws ReconcileError(EXEC_FAILURE) when binary exits with non-zero code', async () => {
-    // /usr/bin/false exits with code 1 — triggers EXEC_FAILURE (not ENOENT)
+describe('reconcileFinding — EXEC_FAILURE via execFile DI seam', () => {
+  it('throws ReconcileError(EXEC_FAILURE) when execFile exits non-zero', async () => {
     try {
       await reconcileFinding({
         finding: validFinding(),
         existingFingerprints: new Set(),
-        glabPath: '/usr/bin/false',
+        execFile: makeFailingExecFile(),
         dryRun: false,
       });
       expect.fail('should have thrown');
@@ -478,5 +517,456 @@ describe('reconcileFinding — EXEC_FAILURE via binary that exits non-zero', () 
       expect(err).toBeInstanceOf(ReconcileError);
       expect(err.code).toBe('EXEC_FAILURE');
     }
+  });
+});
+
+// ===========================================================================
+// Track B extensions — triageDecision, createFinding, listExistingFindings
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// triageDecision — pure function
+// ---------------------------------------------------------------------------
+
+describe('triageDecision — fingerprint exact match', () => {
+  it('returns action "ignore" when a candidate body contains the exact fingerprint', () => {
+    const finding = {
+      fingerprint: 'abcd1234ef567890',
+      title: 'Color contrast insufficient',
+    };
+    const candidates = [
+      {
+        iid: 42,
+        title: 'Some issue',
+        body: '**Fingerprint:** `abcd1234ef567890`\n**Severity:** high',
+      },
+    ];
+    const result = triageDecision(finding, candidates);
+    expect(result.action).toBe('ignore');
+    expect(result.target).toBe(42);
+    expect(result.reason).toBe('fingerprint exact match');
+  });
+
+  it('confidence is 1.0 on fingerprint exact match', () => {
+    const finding = {
+      fingerprint: 'abcd1234ef567890',
+      title: 'Some title',
+    };
+    const candidates = [
+      {
+        iid: 7,
+        title: 'Old issue',
+        body: '**Fingerprint:** `abcd1234ef567890`',
+      },
+    ];
+    const result = triageDecision(finding, candidates);
+    expect(result.confidence).toBe(1.0);
+  });
+});
+
+describe('triageDecision — fuzzy title match', () => {
+  it('returns action "update" when a candidate title has Levenshtein distance ≤ 2', () => {
+    const finding = {
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'Fix color contrast',
+    };
+    const candidates = [
+      {
+        iid: 12,
+        title: 'Fix colour contrast',
+        body: '**Fingerprint:** `cccc2222dddd3333`',
+      },
+    ];
+    const result = triageDecision(finding, candidates);
+    expect(result.action).toBe('update');
+    expect(result.target).toBe(12);
+    expect(result.reason).toBe('fuzzy title match');
+  });
+
+  it('confidence is 0.7 on fuzzy title match', () => {
+    const finding = {
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'Fix color contrast',
+    };
+    const candidates = [
+      {
+        iid: 12,
+        title: 'Fix colour contrast',
+        body: '**Fingerprint:** `cccc2222dddd3333`',
+      },
+    ];
+    const result = triageDecision(finding, candidates);
+    expect(result.confidence).toBe(0.7);
+  });
+});
+
+describe('triageDecision — no match', () => {
+  it('returns action "create" when no candidate matches', () => {
+    const finding = {
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'Completely unique issue title here',
+    };
+    const candidates = [
+      {
+        iid: 5,
+        title: 'Unrelated issue about login',
+        body: '**Fingerprint:** `cccc2222dddd3333`',
+      },
+    ];
+    const result = triageDecision(finding, candidates);
+    expect(result.action).toBe('create');
+    expect(result.reason).toBe('no match');
+    expect(result.confidence).toBe(1.0);
+  });
+
+  it('returns action "create" with empty candidates list', () => {
+    const finding = {
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'Some finding title',
+    };
+    const result = triageDecision(finding, []);
+    expect(result.action).toBe('create');
+    expect(result.reason).toBe('no match');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeRecommendation — tested indirectly via createFinding dryRun body
+// ---------------------------------------------------------------------------
+// sanitizeRecommendation is not exported, so we test its effect through the
+// public API: reconcileFinding dryRun with a crafted recommendation.
+
+describe('sanitizeRecommendation (#388) — via reconcileFinding body', () => {
+  it('replaces **Fingerprint:** literal in recommendation with __Fingerprint__', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: 'See **Fingerprint:** `aaaa0000bbbb1111` for tracking',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    // The sentinel injection attack should be neutralized
+    expect(body).toContain('__Fingerprint__');
+    expect(body).not.toContain('**Fingerprint:** `aaaa0000bbbb1111`');
+  });
+
+  it('leaves the authoritative fingerprint sentinel intact (only free-text is sanitized)', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: 'See **Fingerprint:** `aaaa0000bbbb1111` for tracking',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    // The real fingerprint sentinel appended by buildIssueBody must still appear
+    expect(body).toMatch(/\*\*Fingerprint:\*\* `[0-9a-f]{16}`/);
+  });
+
+  it('replaces all occurrences of **Fingerprint:** in the recommendation', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: '**Fingerprint:** first, **Fingerprint:** second',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    // Both occurrences must be sanitized — no raw **Fingerprint:** should survive
+    // except the authoritative sentinel which uses backtick form with a hex value
+    const unsanitizedCount = (body.match(/\*\*Fingerprint:\*\* (?!`[0-9a-f]{16}`)/g) || []).length;
+    expect(unsanitizedCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFinding — dryRun mode
+// ---------------------------------------------------------------------------
+
+describe('createFinding — dryRun mode', () => {
+  it('returns ok: true with action "create" and a command array without spawning', async () => {
+    const result = await createFinding({
+      fingerprint: 'abcd1234ef567890',
+      title: 'Test finding title',
+      body: 'Test body content',
+      dryRun: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('create');
+    expect(Array.isArray(result.command)).toBe(true);
+    expect(result.command[0]).toBe('issue');
+    expect(result.command[1]).toBe('create');
+  });
+
+  it('dryRun command contains --title with the supplied title', async () => {
+    const result = await createFinding({
+      fingerprint: 'abcd1234ef567890',
+      title: 'Specific issue title',
+      body: 'body text',
+      dryRun: true,
+    });
+    const titleIdx = result.command.indexOf('--title');
+    expect(result.command[titleIdx + 1]).toBe('Specific issue title');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFinding — body > 65536 bytes → BODY_TOO_LARGE (#389)
+// ---------------------------------------------------------------------------
+
+describe('createFinding — BODY_TOO_LARGE (#389)', () => {
+  it('returns ok: false with code BODY_TOO_LARGE when body exceeds 65536 bytes', async () => {
+    // 65537 ASCII characters = 65537 bytes > 65536 limit
+    const oversizedBody = 'x'.repeat(65537);
+    const result = await createFinding({
+      fingerprint: 'abcd1234ef567890',
+      title: 'Test title',
+      body: oversizedBody,
+      dryRun: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('BODY_TOO_LARGE');
+  });
+
+  it('BODY_TOO_LARGE error message mentions the byte limits', async () => {
+    const oversizedBody = 'y'.repeat(65537);
+    const result = await createFinding({
+      fingerprint: 'abcd1234ef567890',
+      title: 'Test title',
+      body: oversizedBody,
+      dryRun: true,
+    });
+    expect(result.error.message).toContain('65536');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFinding — arg-boundary rejection on title containing newline
+// ---------------------------------------------------------------------------
+
+describe('createFinding — newline in title rejected', () => {
+  it('returns ok: false with code VALIDATION when title contains a newline', async () => {
+    const result = await createFinding({
+      fingerprint: 'abcd1234ef567890',
+      title: 'Injected\nnewline',
+      body: 'body text',
+      dryRun: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('VALIDATION');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFinding — BINARY_NOT_FOUND via execFile DI seam
+// ---------------------------------------------------------------------------
+
+describe('createFinding — BINARY_NOT_FOUND via execFile DI seam', () => {
+  it('returns ok: false with code BINARY_NOT_FOUND when execFile throws ENOENT', async () => {
+    const result = await createFinding({
+      execFile: makeEnoentExecFile(),
+      fingerprint: 'abcd1234ef567890',
+      title: 'Test finding',
+      body: 'test body',
+      dryRun: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('BINARY_NOT_FOUND');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listExistingFindings — DI via execFile seam returning JSON
+// ---------------------------------------------------------------------------
+
+describe('listExistingFindings — DI via execFile seam returning empty JSON array', () => {
+  it('returns ok: true with empty issues and fingerprints when execFile returns []', async () => {
+    const fakeExecFile = async (_bin, _args, _opts) => ({ stdout: '[]', stderr: '' });
+    const result = await listExistingFindings({
+      execFile: fakeExecFile,
+      label: 'from:test-runner',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.issues).toEqual([]);
+    expect(result.fingerprints).toBeInstanceOf(Set);
+    expect(result.fingerprints.size).toBe(0);
+  });
+
+  it('returns ok: true with extracted fingerprints when execFile returns issues with bodies', async () => {
+    const issues = [
+      { iid: 1, title: 'Issue 1', description: '**Fingerprint:** `abcd1234ef567890`\n' },
+      { iid: 2, title: 'Issue 2', description: '**Fingerprint:** `1234abcd5678efab`\n' },
+    ];
+    const fakeExecFile = async (_bin, _args, _opts) => ({
+      stdout: JSON.stringify(issues),
+      stderr: '',
+    });
+    const result = await listExistingFindings({ execFile: fakeExecFile });
+    expect(result.ok).toBe(true);
+    expect(result.fingerprints.has('abcd1234ef567890')).toBe(true);
+    expect(result.fingerprints.has('1234abcd5678efab')).toBe(true);
+  });
+
+  it('returns ok: false with BINARY_NOT_FOUND when execFile throws ENOENT', async () => {
+    const result = await listExistingFindings({ execFile: makeEnoentExecFile() });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('BINARY_NOT_FOUND');
+  });
+});
+
+// ===========================================================================
+// Security hardening regressions (#388 MED-2 + #389 MED-1 + ADR-364 HIGH)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// HIGH regression: glabPath is ignored — allowlisted binary always used
+// ---------------------------------------------------------------------------
+
+describe('Security HIGH — glabPath no longer accepted; execFile DI seam is the only injection point', () => {
+  it('reconcileFinding: execFile receives the allowlisted binary name "glab", never a caller-supplied path', async () => {
+    const capturedBins = [];
+    const spyExecFile = async (bin, _args, _opts) => {
+      capturedBins.push(bin);
+      const { stdout } = { stdout: 'https://gitlab.example.com/-/issues/99' };
+      return { stdout };
+    };
+    await reconcileFinding({
+      finding: validFinding(),
+      existingFingerprints: new Set(),
+      execFile: spyExecFile,
+      dryRun: false,
+    });
+    // The binary passed to execFile must always be the allowlisted bare name.
+    expect(capturedBins).toHaveLength(1);
+    expect(capturedBins[0]).toBe('glab');
+  });
+
+  it('createFinding: execFile receives "glab" (allowlisted), not an attacker-supplied path', async () => {
+    const capturedBins = [];
+    const spyExecFile = async (bin, _args, _opts) => {
+      capturedBins.push(bin);
+      return { stdout: 'https://gitlab.example.com/-/issues/42' };
+    };
+    await createFinding({
+      execFile: spyExecFile,
+      fingerprint: 'abcd1234ef567890',
+      title: 'Test issue',
+      body: 'test body',
+      dryRun: false,
+    });
+    expect(capturedBins).toHaveLength(1);
+    expect(capturedBins[0]).toBe('glab');
+  });
+
+  it('listExistingFindings: execFile receives "glab" (allowlisted)', async () => {
+    const capturedBins = [];
+    const spyExecFile = async (bin, _args, _opts) => {
+      capturedBins.push(bin);
+      return { stdout: '[]' };
+    };
+    await listExistingFindings({ execFile: spyExecFile });
+    expect(capturedBins).toHaveLength(1);
+    expect(capturedBins[0]).toBe('glab');
+  });
+
+  it('updateFinding: execFile receives "glab" (allowlisted)', async () => {
+    const capturedBins = [];
+    const spyExecFile = async (bin, _args, _opts) => {
+      capturedBins.push(bin);
+      return { stdout: '' };
+    };
+    await updateFinding({
+      execFile: spyExecFile,
+      iid: 1,
+      comment: 'test comment',
+      dryRun: false,
+    });
+    expect(capturedBins).toHaveLength(1);
+    expect(capturedBins[0]).toBe('glab');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MED-1 regression: reconcileFinding body-length cap (#389)
+// ---------------------------------------------------------------------------
+
+describe('Security MED-1 — reconcileFinding BODY_TOO_LARGE body-length cap (#389)', () => {
+  it('throws ReconcileError with code BODY_TOO_LARGE when rendered body exceeds 65536 bytes', async () => {
+    // description alone is 70000 bytes → buildIssueBody will produce a body > 65536 bytes
+    const longDescription = 'A'.repeat(70000);
+    await expect(
+      reconcileFinding({
+        finding: validFinding({ description: longDescription }),
+        existingFingerprints: new Set(),
+        dryRun: true,
+      }),
+    ).rejects.toThrow(ReconcileError);
+  });
+
+  it('BODY_TOO_LARGE error code is set on the thrown ReconcileError', async () => {
+    const longDescription = 'B'.repeat(70000);
+    try {
+      await reconcileFinding({
+        finding: validFinding({ description: longDescription }),
+        existingFingerprints: new Set(),
+        dryRun: true,
+      });
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err.code).toBe('BODY_TOO_LARGE');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MED-2 regression: sanitizeRecommendation case-insensitive flag (#388)
+// ---------------------------------------------------------------------------
+// sanitizeRecommendation is not exported; we test via reconcileFinding body.
+
+describe('Security MED-2 — sanitizeRecommendation gi flag covers case variants (#388)', () => {
+  it('sanitizes lowercase **fingerprint:** variant in recommendation', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: 'See **fingerprint:** `aaaa0000bbbb1111` for tracking',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    expect(body).toContain('__Fingerprint__');
+    expect(body).not.toContain('**fingerprint:** `aaaa0000bbbb1111`');
+  });
+
+  it('sanitizes ALLCAPS **FINGERPRINT:** variant in recommendation', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: 'See **FINGERPRINT:** `aaaa0000bbbb1111` for tracking',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    expect(body).toContain('__Fingerprint__');
+    expect(body).not.toContain('**FINGERPRINT:** `aaaa0000bbbb1111`');
+  });
+
+  it('sanitizes mixed-case **FingerPrint:** variant in recommendation', async () => {
+    const result = await reconcileFinding({
+      finding: validFinding({
+        recommendation: '**FingerPrint:** is the mixed-case variant',
+      }),
+      existingFingerprints: new Set(),
+      dryRun: true,
+    });
+    const descIdx = result.command.indexOf('--description');
+    const body = result.command[descIdx + 1];
+    expect(body).toContain('__Fingerprint__');
+    expect(body).not.toContain('**FingerPrint:**');
   });
 });
