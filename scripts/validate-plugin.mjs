@@ -125,6 +125,9 @@ if (runCheck('check-commands.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-hooks-symmetry.mjs') !== 0) checkFailed = 1;
 
+process.stdout.write('\n');
+if (runCheck('check-playwright-mcp-canary.mjs') !== 0) checkFailed = 1;
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
