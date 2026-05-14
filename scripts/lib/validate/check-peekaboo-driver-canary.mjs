@@ -77,7 +77,7 @@ const DOCUMENTATION_MARKERS = [
 const SCAN_ROOTS = [
   'skills/peekaboo-driver',
   'scripts/lib/test-runner',
-  'scripts/lib/shared/profiles',
+  'scripts/lib/profiles',
 ];
 
 const SCAN_EXTENSIONS = ['.md', '.mjs', '.js', '.ts'];
@@ -142,6 +142,57 @@ if (violations.length === 0) {
       `${v.file}:${v.line} — '${v.text}' (matches forbidden pattern; ` +
       `if intentional documentation, add a HARD-GATE marker on the line)`,
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Check 2–4: anchor canaries — required vocabulary in SKILL.md (#401 GAP-Q4-5)
+// ---------------------------------------------------------------------------
+
+console.log('');
+console.log('--- Check 2: peekaboo SKILL.md anchor — "thin executor" (driver identity) ---');
+
+const SKILL_MD = join(pluginRoot, 'skills/peekaboo-driver/SKILL.md');
+
+if (!existsSync(SKILL_MD)) {
+  // SKILL.md absent in this plugin root — same graceful handling as absent scan roots in Check 1.
+  pass('skills/peekaboo-driver/SKILL.md does not exist yet (no anchor checks needed)');
+
+  console.log('');
+  console.log('--- Check 3: peekaboo SKILL.md anchor — "$MISSING" (permission-flow vocab) ---');
+  pass('skills/peekaboo-driver/SKILL.md does not exist yet (no anchor checks needed)');
+
+  console.log('');
+  console.log('--- Check 4: peekaboo SKILL.md anchor — "status: stub" (glass-modifiers v1 schema marker) ---');
+  pass('skills/peekaboo-driver/SKILL.md does not exist yet (no anchor checks needed)');
+} else {
+  const skillText = readFileSync(SKILL_MD, 'utf8');
+
+  // Anchor 1: "thin executor" — driver identity vocabulary
+  if (/thin executor/.test(skillText)) {
+    pass('SKILL.md contains required anchor "thin executor" (driver identity)');
+  } else {
+    fail('SKILL.md missing required anchor "thin executor" — driver identity vocabulary must be present');
+  }
+
+  console.log('');
+  console.log('--- Check 3: peekaboo SKILL.md anchor — "$MISSING" (permission-flow vocab) ---');
+
+  // Anchor 2: "$MISSING" — permission-flow vocabulary
+  if (/\$MISSING/.test(skillText)) {
+    pass('SKILL.md contains required anchor "$MISSING" (permission-flow vocabulary)');
+  } else {
+    fail('SKILL.md missing required anchor "$MISSING" — permission-flow vocabulary must be present');
+  }
+
+  console.log('');
+  console.log('--- Check 4: peekaboo SKILL.md anchor — "status: stub" (glass-modifiers v1 schema marker) ---');
+
+  // Anchor 3: "status: stub" — glass-modifiers v1 schema marker
+  if (/"status":\s*"stub"/.test(skillText)) {
+    pass('SKILL.md contains required anchor "status: stub" (glass-modifiers v1 schema marker)');
+  } else {
+    fail('SKILL.md missing required anchor "status: stub" — glass-modifiers v1 schema marker must be present');
   }
 }
 

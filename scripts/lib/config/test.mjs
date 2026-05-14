@@ -7,6 +7,7 @@
  */
 
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { isPathInside } from '../path-utils.mjs';
 
 /**
@@ -75,13 +76,25 @@ export function _parseTest(content) {
         break;
       case 'profiles-path':
         if (v) {
-          // SEC-IR-LOW-2: reject path-traversal in profiles-path (CWE-23)
+          // SEC-IR-LOW-2 + SEC-Q2-LOW-1: reject path-traversal and symlink-escape in profiles-path (CWE-23)
+          // Phase 1 — lexical guard: reject traversal-escaped paths without filesystem access.
+          // Phase 2 — symlink-escape guard: when the path exists, resolve symlinks and re-check.
           const projectRoot = process.cwd();
           const resolved = path.resolve(projectRoot, v);
           if (isPathInside(resolved, projectRoot)) {
-            tcProfilesPath = v;
+            // Phase 2: if path already exists on disk, verify realpath stays inside project root.
+            let symlinksOk = true;
+            try {
+              const resolvedReal = realpathSync(resolved);
+              if (!isPathInside(resolvedReal, projectRoot)) {
+                symlinksOk = false;
+              }
+            } catch {
+              // path not on disk yet — lexical check is sufficient
+            }
+            if (symlinksOk) tcProfilesPath = v;
           }
-          // Silent skip on traversal — matches the lenient pattern used by other case branches
+          // Silent skip on traversal/symlink-escape — matches the lenient pattern used by other case branches
         }
         break;
       case 'mode':

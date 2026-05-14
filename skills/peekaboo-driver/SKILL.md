@@ -88,6 +88,8 @@ Surface missing required permissions via AskUserQuestion (per `ask-via-tool.md` 
 
 If `$MISSING` from Phase 2 contains more than one permission, present **one AUQ per missing permission** in the order they appear. The user can grant or skip each independently; the driver re-checks after each grant (one full Phase 2 sweep per round).
 
+The loop executes once per permission in `$MISSING`, exiting after Phase 3 permission re-probe shows all required permissions granted or the user selects Skip for the current permission.
+
 For each `${PERM_NAME}` in `$MISSING`:
 
 ```
@@ -151,7 +153,9 @@ Key fields in the `see --json` output the ux-evaluator reads: `snapshot_id` (cap
 For SwiftUI 26+ targets (projects with `Package.swift` declaring `.iOS("26")` or `.macOS("26")+`), emit a conformance artifact alongside the AX snapshot:
 
 ```bash
-cat > "${RUN_DIR}/ax-snapshots/glass-modifiers-$(date +%s%3N).json" <<EOF
+# Gate: glass-modifiers emit is opt-in for v2 rubric forward-compat (v1 rubric does not consume).
+if [ "${RUBRIC_GLASS_V2:-0}" = "1" ]; then
+  cat > "${RUN_DIR}/ax-snapshots/glass-modifiers-$(date +%s%3N).json" <<EOF
 {
   "schema_version": "v1",
   "status": "stub",
@@ -162,6 +166,7 @@ cat > "${RUN_DIR}/ax-snapshots/glass-modifiers-$(date +%s%3N).json" <<EOF
   "blur_modifier_frames": []
 }
 EOF
+fi
 ```
 
 The ux-evaluator Check 4 reads this file. `glassEffect_frames` = compliant (uses `.glassEffect()`). `legacy_material_frames` = non-compliant (uses `.background(.thinMaterial)` etc.). `blur_modifier_frames` = non-compliant (uses `.blur(radius:)` as background). In v1 the arrays are always empty — the evaluator falls back to screenshot-only analysis. Do NOT emit a bare `{}` — use the full schema structure with empty arrays.
@@ -189,7 +194,7 @@ All inputs via environment variables. No positional arguments accepted.
 - `${RUN_DIR}/exit_code` — plain integer file written by driver before exit
 - `${RUN_DIR}/results.json` — driver summary with `exit_code`, `scenarios_attempted`, `scenarios_passed`, `scenarios_failed`
 - `${RUN_DIR}/ax-snapshots/<scenario>.json` — peekaboo AX-tree output per scenario
-- `${RUN_DIR}/ax-snapshots/glass-modifiers-<ts>.json` — Liquid Glass conformance artifact (consumed by ux-evaluator Check 4)
+- `${RUN_DIR}/ax-snapshots/glass-modifiers-<ts>.json` — Liquid Glass conformance artifact (consumed by ux-evaluator Check 4; only emitted when `RUBRIC_GLASS_V2=1` env var is set — see Phase 4 emission block)
 - `${RUN_DIR}/screenshots/<step>-<ts>.png` — per-step screenshots (evidence for ux-evaluator findings)
 - `${RUN_DIR}/console.ndjson` — driver log events as NDJSON
 

@@ -25,11 +25,12 @@
  */
 
 import { spawn as realSpawn } from 'node:child_process';
-import realFs from 'node:fs';
+import realFs, { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { getProfile, loadProfiles, validateProfile } from '../shared/profiles/registry.mjs';
+import { getProfile, loadProfiles, validateProfile } from '../profiles/registry.mjs';
+import { isPathInside } from '../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -126,6 +127,28 @@ export default async function run(opts = {}) {
     process.exit(2);
   }
 
+  // #398: path-traversal guard — runDir must be strictly inside
+  // .orchestrator/metrics/test-runs/ relative to cwd (CWE-22).
+  // Phase 1: lexical check (fast; catches obvious traversal before the dir exists).
+  const testRunsRoot = path.resolve(process.cwd(), '.orchestrator/metrics/test-runs')
+  if (!isPathInside(runDir, testRunsRoot)) {
+    console.error(
+      `runner: --run-dir must be inside .orchestrator/metrics/test-runs/ (got: ${runDir})`
+    )
+    process.exit(2)
+  }
+  // Phase 2: realpath check — resolves symlinks so an evil_link → /tmp/outside escape
+  // is rejected even when the lexical path looks safe (CWE-22 symlink variant).
+  try {
+    const realRunDir = realpathSync(runDir);
+    if (!isPathInside(realRunDir, testRunsRoot)) {
+      console.error('runner: --run-dir resolves (via symlink) outside .orchestrator/metrics/test-runs');
+      process.exit(2);
+    }
+  } catch {
+    // runDir doesn't exist yet — no symlink to follow; lexical check sufficient.
+  }
+
   if (!profileName) {
     console.error('runner: --profile (or env PROFILE) is required');
     process.exit(2);
@@ -202,6 +225,13 @@ export default async function run(opts = {}) {
   // -------------------------------------------------------------------------
 
   fsImpl.mkdirSync(path.join(runDir, 'test-results'), { recursive: true });
+
+  // #396: pre-create artifact namespace directories so test fixtures don't fail
+  // on missing parent paths. `test-results/` is created by Playwright via --output.
+  // `console.log` is created by createWriteStream below. AX + screenshots dirs are
+  // written by fixtures — pre-creating ensures a clean artifact layout on every run.
+  fsImpl.mkdirSync(path.join(runDir, 'ax-snapshots'), { recursive: true });
+  fsImpl.mkdirSync(path.join(runDir, 'screenshots'), { recursive: true });
 
   // -------------------------------------------------------------------------
   // Spawn Playwright

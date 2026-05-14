@@ -121,9 +121,16 @@ const ORIG_RUN_DIR = process.env.RUN_DIR;
 const ORIG_PROFILE = process.env.PROFILE;
 const ORIG_TARGET = process.env.TARGET;
 
+// Default runDir must be strictly inside .orchestrator/metrics/test-runs/
+// relative to process.cwd() so the #398 path-traversal guard passes.
+// The fakeFs DI seam intercepts all mkdirSync/writeFileSync calls, so no
+// real directory is created on disk.
+const TEST_RUNS_ROOT = path.join(process.cwd(), '.orchestrator/metrics/test-runs');
+const DEFAULT_TEST_RUN_DIR = path.join(TEST_RUNS_ROOT, 'runner-test-run-001');
+
 function setScenario({ runDir, profile, target, dryRun } = {}) {
   process.argv = process.argv.slice(0, 2);
-  process.env.RUN_DIR = runDir ?? '/tmp/run-001';
+  process.env.RUN_DIR = runDir ?? DEFAULT_TEST_RUN_DIR;
   process.env.PROFILE = profile ?? 'web-gate';
   if (target !== undefined) process.env.TARGET = target;
   else delete process.env.TARGET;
@@ -162,10 +169,10 @@ describe('runner module contract', () => {
 
 describe('runner missing or invalid required args', () => {
   it('exits 2 when PROFILE is absent (profileName is empty, never reaches spawn)', async () => {
-    // runDir resolves to cwd() when empty, which is truthy, so only the
-    // profileName check triggers here.
+    // runDir must be inside .orchestrator/metrics/test-runs/ so only the
+    // profileName check triggers here (not the #398 path-traversal guard).
     process.argv = process.argv.slice(0, 2);
-    process.env.RUN_DIR = '/tmp/run-no-profile';
+    process.env.RUN_DIR = path.join(TEST_RUNS_ROOT, 'runner-test-no-profile');
     delete process.env.PROFILE;
 
     const spy = throwingExitSpy();
@@ -306,7 +313,7 @@ describe('runner axe-core presence check', () => {
 describe('runner tilde expansion', () => {
   it('expands ~/my-app in --target to $HOME/my-app before passing to spawn', async () => {
     process.argv = process.argv.slice(0, 2).concat(['--target', '~/my-app']);
-    process.env.RUN_DIR = '/tmp/run-tilde';
+    process.env.RUN_DIR = path.join(TEST_RUNS_ROOT, 'runner-test-tilde');
     process.env.PROFILE = 'web-gate';
     delete process.env.TARGET;
 
@@ -449,5 +456,100 @@ describe('runner exit_code file', () => {
     );
     expect(exitCodeEntries).toHaveLength(1);
     expect(exitCodeEntries[0][1]).toBe('0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: #398 runDir path-traversal guard
+//
+// The guard checks that runDir is strictly inside
+// .orchestrator/metrics/test-runs/ (resolved against cwd). Any path outside
+// that root must trigger process.exit(2) BEFORE spawn is called.
+// ---------------------------------------------------------------------------
+
+describe('runner #398 runDir path-traversal guard', () => {
+  it('exits 2 when runDir is /etc/passwd (absolute path outside allowed root)', async () => {
+    process.argv = process.argv.slice(0, 2);
+    process.env.RUN_DIR = '/etc/passwd';
+    process.env.PROFILE = 'web-gate';
+    delete process.env.TARGET;
+
+    const spy = throwingExitSpy();
+    const spawnFn = vi.fn();
+    await expect(run({ fs: makeFakeFs(), spawn: spawnFn })).rejects.toThrow('exit:2');
+    expect(spy).toHaveBeenCalledWith(2);
+    // Guard must fire before spawn is ever reached
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('exits 2 when runDir is a path-traversal attempt (../.orchestrator/../../etc escape)', async () => {
+    process.argv = process.argv.slice(0, 2);
+    // Lexically appears to start with test-runs but resolves outside via ..
+    process.env.RUN_DIR = path.join(
+      TEST_RUNS_ROOT,
+      '../../../etc/passwd',
+    );
+    process.env.PROFILE = 'web-gate';
+    delete process.env.TARGET;
+
+    const spy = throwingExitSpy();
+    const spawnFn = vi.fn();
+    await expect(run({ fs: makeFakeFs(), spawn: spawnFn })).rejects.toThrow('exit:2');
+    expect(spy).toHaveBeenCalledWith(2);
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('passes the guard when runDir is a legitimate child of .orchestrator/metrics/test-runs/', async () => {
+    process.argv = process.argv.slice(0, 2);
+    // Use a valid runDir already proven by other tests — guard must NOT fire.
+    process.env.RUN_DIR = path.join(TEST_RUNS_ROOT, 'guard-pass-test-001');
+    process.env.PROFILE = 'web-gate';
+    process.env.TARGET = '/tmp/fake-target';
+
+    // Use resolvingExitSpy so run() completes normally (exit 0 or 1, not 2-guard).
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    const fakeFs = makeFakeFs({ existsResults: { '/tmp/fake-target/package.json': false } });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    const code = await exitCodePromise;
+    // The guard did NOT fire — spawn was called and run completed.
+    expect(spawnFn).toHaveBeenCalledOnce();
+    expect(code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: mkdirSync pre-creates ax-snapshots/ and screenshots/ (#396)
+//
+// runner.mjs creates these two artifact namespace directories BEFORE spawning
+// Playwright so test fixtures don't fail on missing parent paths.
+// These tests verify the directories are created with { recursive: true }.
+// ---------------------------------------------------------------------------
+
+describe('runner pre-creates ax-snapshots/ and screenshots/ directories', () => {
+  it('calls mkdirSync for a directory ending in "ax-snapshots" with { recursive: true }', async () => {
+    setScenario({ target: '/tmp/fake-target' });
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    const fakeFs = makeFakeFs({ existsResults: { '/tmp/fake-target/package.json': false } });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    await exitCodePromise;
+    const axSnapshotCall = fakeFs._mkdirCalls.find(
+      (c) => c.dir.endsWith('ax-snapshots') && c.opts && c.opts.recursive === true,
+    );
+    expect(axSnapshotCall).toBeDefined();
+  });
+
+  it('calls mkdirSync for a directory ending in "screenshots" with { recursive: true }', async () => {
+    setScenario({ target: '/tmp/fake-target' });
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    const fakeFs = makeFakeFs({ existsResults: { '/tmp/fake-target/package.json': false } });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    await exitCodePromise;
+    const screenshotCall = fakeFs._mkdirCalls.find(
+      (c) => c.dir.endsWith('screenshots') && c.opts && c.opts.recursive === true,
+    );
+    expect(screenshotCall).toBeDefined();
   });
 });

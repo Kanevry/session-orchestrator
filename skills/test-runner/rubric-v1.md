@@ -115,10 +115,14 @@ a step does not count as a separate step. A branch path (e.g., "optional profile
 setup") counts only if the user cannot skip it.
 
 **Evidence required:**
-- AX-tree snapshot with each step's primary heading text and a screenshot per step.
-- The driver must have navigated through the full onboarding sequence and captured
-  an AX snapshot at each step transition. If the driver did not cover the full flow,
-  the evaluator logs a warning and emits no finding (evidence requirement is not met).
+- AX-tree snapshot with each step's primary heading text and a screenshot per step
+  (both written by test fixtures in the target repo to `<run-dir>/ax-snapshots/` and
+  `<run-dir>/screenshots/` — runner.mjs pre-creates these directories but does not
+  emit the content).
+- The test fixtures must have navigated through the full onboarding sequence and
+  captured an AX snapshot at each step transition. If the fixtures did not cover the
+  full flow, the evaluator logs a warning and emits no finding (evidence requirement
+  is not met).
 
 **Fingerprint inputs:**
 - `scope = 'onboarding'`
@@ -169,6 +173,9 @@ for the reconcile pipeline's per-finding issue creation to handle economically.
 | `'minor'` | (not a finding in v1) |
 
 **Artifact location:** `<run-dir>/ax-snapshots/axe-*.json`
+(written by test fixture using `@axe-core/playwright`; runner.mjs pre-creates the
+`ax-snapshots/` directory but does NOT write these files — axe-core SOFT-SKIPs
+if `@axe-core/playwright` is absent from the target repo)
 
 Each file is a JSON array of axe-core `Result` objects. The evaluator iterates every
 result entry in every snapshot file and emits one finding per unique
@@ -238,8 +245,10 @@ likely to slip through until a real user reports it.
 | Uncaught exception / unhandled rejection | HIGH |
 | Visible HTTP 4xx/5xx (resource load failure in UI) | MEDIUM |
 
-**Artifact location:** `<run-dir>/console.log` (NDJSON — one JSON object per line,
-written by the Playwright driver fixture). Each line has the shape:
+**Artifact location:** `<run-dir>/console.log` — runner.mjs appends raw Playwright
+process stdout/stderr to this file; structured NDJSON `{ts, type, text, location}`
+entries are fixture-emitted via `page.on('console', ...)` and are what the evaluator
+parses. Each line has the shape:
 `{"ts":<epoch-ms>,"type":"error"|"warning"|...,"text":"<message>","location":{...}}`.
 The evaluator parses each line as JSON and inspects the `type` and `text` fields.
 If the file is absent, skip check 3.

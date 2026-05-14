@@ -17,6 +17,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { _parseTest } from '../../../scripts/lib/config/test.mjs';
 
 const DEFAULTS = {
@@ -141,6 +144,58 @@ describe('_parseTest — profiles-path path-traversal rejection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 2 symlink-escape guard for profiles-path (#397 / SEC-Q2-LOW-1)
+//
+// When the path EXISTS on disk and is a symlink pointing outside the project
+// root, Phase 2 (realpathSync) must reject it and fall back to the default.
+// The test creates a real temp directory, a real symlink, and cleans up after.
+// Skipped automatically on platforms where fs.symlinkSync fails (e.g. Windows
+// without elevated privileges).
+// ---------------------------------------------------------------------------
+
+describe('_parseTest — profiles-path Phase 2 symlink-escape guard (#397)', () => {
+  it('falls back to default when profiles-path resolves to a symlink pointing outside project root', () => {
+    // Create a temp dir outside the project root to use as the symlink target.
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'so-symlink-test-'));
+    } catch {
+      // Can't create temp dir — skip silently.
+      return;
+    }
+
+    // Place the symlink inside the project root so the lexical (Phase 1) check passes,
+    // but make it point to the external tmpDir so Phase 2 (realpathSync) rejects it.
+    const symlinkName = `symlink-escape-test-${Date.now()}.json`;
+    const symlinkPath = path.join(process.cwd(), symlinkName);
+
+    // Create the actual file inside tmpDir so the symlink is NOT dangling.
+    // Without the target file, realpathSync throws ENOENT → the catch block
+    // falls through to "path not on disk yet" and Phase 2 is skipped.
+    const targetFile = path.join(tmpDir, 'escape.json');
+    try {
+      fs.writeFileSync(targetFile, '{}', 'utf8');
+      fs.symlinkSync(targetFile, symlinkPath);
+    } catch {
+      // symlinkSync not available on this platform — skip test.
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      return;
+    }
+
+    try {
+      const content = `test:\n  profiles-path: ${symlinkName}\n`;
+      // Phase 1 passes (symlink is inside project root lexically).
+      // Phase 2 must reject (realpath of symlink points outside project root).
+      const result = _parseTest(content);
+      expect(result['profiles-path']).toBe('.orchestrator/policy/test-profiles.json');
+    } finally {
+      try { fs.unlinkSync(symlinkPath); } catch { /* ignore */ }
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Block boundary — stops at next top-level key
 // ---------------------------------------------------------------------------
 
@@ -153,5 +208,32 @@ describe('_parseTest — block boundary', () => {
   it('does not bleed default-profile from a subsequent block', () => {
     const content = 'test:\n  enabled: true\nother:\n  default-profile: bleed\n';
     expect(_parseTest(content)['default-profile']).toBe('smoke');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// profiles-path boundary coverage (#401 GAP-Q4-4)
+// ---------------------------------------------------------------------------
+
+describe('_parseTest — profiles-path boundary coverage (#401 GAP-Q4-4)', () => {
+  it('falls back to default when profiles-path is an empty string', () => {
+    // Empty string is falsy — the `if (v)` guard in case 'profiles-path' silently skips it.
+    const content = "test:\n  profiles-path: ''\n";
+    expect(_parseTest(content)['profiles-path']).toBe('.orchestrator/policy/test-profiles.json');
+  });
+
+  it('accepts a dot-resolved profiles-path that resolves inside the project (./skills/../.orchestrator/policy/test-profiles.json)', () => {
+    // path.resolve normalises the dot-segments; the resolved path is inside project root.
+    // The file .orchestrator/policy/test-profiles.json exists on disk, so Phase 2 also passes.
+    const content = 'test:\n  profiles-path: ./skills/../.orchestrator/policy/test-profiles.json\n';
+    expect(_parseTest(content)['profiles-path']).toBe('./skills/../.orchestrator/policy/test-profiles.json');
+  });
+
+  it('accepts an absolute profiles-path that resolves to a file inside the project root', () => {
+    // isPathInside(absolutePath, cwd) is true when the absolute path IS a descendant of cwd.
+    // The silent-skip guard only rejects paths that escape the root, not absolute-but-inside paths.
+    const absolutePath = process.cwd() + '/.orchestrator/policy/test-profiles.json';
+    const content = `test:\n  profiles-path: ${absolutePath}\n`;
+    expect(_parseTest(content)['profiles-path']).toBe(absolutePath);
   });
 });

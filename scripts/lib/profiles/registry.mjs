@@ -1,5 +1,5 @@
 /**
- * shared/profiles/registry.mjs — Pure loader for test profile registry.
+ * profiles/registry.mjs — Pure loader for test profile registry.
  *
  * Reads `.orchestrator/policy/test-profiles.json`, validates each entry
  * against profileRegistrySchema, and exposes pure helper accessors.

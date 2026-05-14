@@ -1,5 +1,5 @@
 /**
- * shared/profiles/schema.mjs — Validation schemas for test profile entries.
+ * profiles/schema.mjs — Validation schemas for test profile entries.
  *
  * Zod was not available in this project's node_modules at implementation time
  * (issue #383 part 3), so validation is implemented as a hand-rolled validator
@@ -13,7 +13,9 @@
  * `{ success: true, data }` or `{ success: false, error: ZodLike }`.
  */
 
-import { isPathInside } from '../../path-utils.mjs';
+import path from 'node:path';
+import { realpathSync } from 'node:fs';
+import { isPathInside } from '../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -94,10 +96,22 @@ function parseProfileEntry(value) {
   if (typeof rubric !== 'string') {
     return { success: false, error: makeError('rubric must be a string') };
   }
-  // SEC-IR-LOW-3: rubric must stay within project root
+  // SEC-IR-LOW-3 + SEC-Q2-LOW-1: rubric must stay within project root; also reject symlink-escape (CWE-23)
+  // Phase 1 — lexical guard (also validates non-empty input; throws TypeError on empty string via isPathInside).
   const projectRoot = process.cwd();
   if (!isPathInside(rubric, projectRoot)) {
     return { success: false, error: makeError('rubric path escapes project root') };
+  }
+  // Phase 2 — symlink-escape guard: when the path exists on disk, resolve symlinks and re-check.
+  // A symlink pointing outside the project must be rejected even if its textual path appears inside.
+  const resolved = path.resolve(projectRoot, rubric);
+  try {
+    const resolvedReal = realpathSync(resolved);
+    if (!isPathInside(resolvedReal, projectRoot)) {
+      return { success: false, error: makeError('rubric path escapes project root') };
+    }
+  } catch {
+    // path not on disk yet — lexical check above is sufficient (no symlink to follow)
   }
 
   // checks (optional array of strings)

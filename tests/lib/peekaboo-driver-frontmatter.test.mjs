@@ -261,3 +261,40 @@ describe('peekaboo-driver body length', () => {
     expect(bodyLines.length).toBeLessThanOrEqual(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 16: RUBRIC_GLASS_V2 env-gate canary
+//
+// The glass-modifiers emit block is gated on ${RUBRIC_GLASS_V2:-0} = "1" so
+// that v1 rubric runs do NOT emit the artifact and existing evaluator tests
+// are not broken by the new conformance field.
+//
+// This canary asserts:
+//   (a) The env-gate pattern is documented in the SKILL.md body.
+//   (b) The emit is conditional (the "if" / gate line appears before the cat block).
+// If someone removes the gate and makes glass-modifiers emit unconditionally,
+// this test will fail — catching the regression before rubric-v1 evaluators break.
+// ---------------------------------------------------------------------------
+
+describe('peekaboo-driver RUBRIC_GLASS_V2 env-gate canary', () => {
+  it('body documents the RUBRIC_GLASS_V2 environment variable', () => {
+    expect(body).toContain('RUBRIC_GLASS_V2');
+  });
+
+  it('body gates glass-modifiers emit on RUBRIC_GLASS_V2=1 (conditional emit, not unconditional)', () => {
+    // The guard line uses the bash idiom: [ "${RUBRIC_GLASS_V2:-0}" = "1" ]
+    // Verify the gate is present AND precedes the `cat >` emit command for glass-modifiers.
+    // We search for the `cat >` write command specifically (not documentation lines
+    // that reference the artifact name in prose).
+    const gateLineIdx = bodyLines.findIndex((l) => l.includes('RUBRIC_GLASS_V2:-0'));
+    // The actual emit line is the `cat >` command that writes the glass-modifiers file.
+    const emitLineIdx = bodyLines.findIndex((l) =>
+      l.includes('cat >') && l.includes('glass-modifiers-'),
+    );
+    // Both must exist.
+    expect(gateLineIdx).not.toBe(-1);
+    expect(emitLineIdx).not.toBe(-1);
+    // Gate must appear before the emit.
+    expect(gateLineIdx).toBeLessThan(emitLineIdx);
+  });
+});

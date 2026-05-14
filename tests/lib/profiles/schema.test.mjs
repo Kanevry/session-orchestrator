@@ -1,7 +1,7 @@
 /**
- * tests/lib/shared/profiles/schema.test.mjs
+ * tests/lib/profiles/schema.test.mjs
  *
- * Unit tests for scripts/lib/shared/profiles/schema.mjs.
+ * Unit tests for scripts/lib/profiles/schema.mjs.
  *
  * Coverage:
  *   - profileEntrySchema.safeParse: happy paths (seed profiles), field validation,
@@ -13,10 +13,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   profileEntrySchema,
   profileRegistrySchema,
-} from '../../../../scripts/lib/shared/profiles/schema.mjs';
+} from '@lib/profiles/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Happy path — seed profiles parse cleanly
@@ -201,6 +204,60 @@ describe('profileEntrySchema — rubric path-traversal rejection', () => {
         rubric: '',
       }),
     ).toThrow('non-empty string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 symlink-escape guard for rubric field (#397 / SEC-Q2-LOW-1)
+//
+// When the rubric path EXISTS on disk and is a symlink pointing outside the
+// project root, Phase 2 (realpathSync) must reject it and return an error.
+// The test creates a real temp directory, a real symlink, and cleans up after.
+// Skipped automatically on platforms where fs.symlinkSync fails.
+// ---------------------------------------------------------------------------
+
+describe('profileEntrySchema — rubric Phase 2 symlink-escape guard (#397)', () => {
+  it('rejects a rubric path that is a symlink pointing outside the project root', () => {
+    // Create a temp dir outside the project root.
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'so-schema-symlink-'));
+    } catch {
+      return; // Can't create temp dir — skip silently.
+    }
+
+    // Place the symlink inside the project root (so Phase 1 lexical check passes)
+    // but point it to the external tmpDir target (so Phase 2 rejects it).
+    const symlinkName = `rubric-escape-test-${Date.now()}.md`;
+    const symlinkPath = path.join(process.cwd(), symlinkName);
+
+    // Create the actual file inside tmpDir so the symlink is NOT dangling.
+    // Without the target file, realpathSync throws ENOENT → the catch block
+    // falls through to "lexical check sufficient" → no rejection.
+    const targetFile = path.join(tmpDir, 'escape.md');
+    try {
+      fs.writeFileSync(targetFile, '# escape target\n', 'utf8');
+      fs.symlinkSync(targetFile, symlinkPath);
+    } catch {
+      // symlinkSync not available on this platform — skip test.
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      return;
+    }
+
+    try {
+      // Lexically the symlink name is inside the project root (Phase 1 passes).
+      // Phase 2 (realpathSync) resolves the symlink → outside the root → rejected.
+      const result = profileEntrySchema.safeParse({
+        name: 'test',
+        driver: 'playwright',
+        rubric: symlinkName,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error.issues[0].message).toContain('rubric');
+    } finally {
+      try { fs.unlinkSync(symlinkPath); } catch { /* ignore */ }
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });
 

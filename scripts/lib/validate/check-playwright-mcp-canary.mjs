@@ -81,7 +81,7 @@ const DOCUMENTATION_MARKERS = [
 const SCAN_ROOTS = [
   'skills/playwright-driver',
   'scripts/lib/test-runner',
-  'scripts/lib/shared/profiles',
+  'scripts/lib/profiles',
 ];
 
 const SCAN_EXTENSIONS = ['.md', '.mjs', '.js', '.ts'];

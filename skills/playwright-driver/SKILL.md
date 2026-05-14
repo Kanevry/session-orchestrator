@@ -92,13 +92,17 @@ All artifacts land under `${RUN_DIR}/`. Structure:
   test-results/
     <test-name>/
       trace.zip         # Playwright trace bundle (open via `playwright show-trace`)
-  screenshots/
-    <test-name>-<step>.png   # per-step screenshots (configured in playwright.config.ts)
-  ax-snapshots/
+  screenshots/          # pre-created by runner.mjs; content written by test fixtures
+    <test-name>-<step>.png   # per-step screenshots (written by test fixture via page.screenshot())
+  ax-snapshots/         # pre-created by runner.mjs; content written by test fixtures
     <test-name>.yaml    # Playwright AX-tree dump via page.accessibility.snapshot() (written by test fixture, NOT by driver)
     axe-<route-slug>-<timestamp>.json  # axe-core JSON output (written by test fixture using @axe-core/playwright, NOT by driver)
-  console.log           # NDJSON console output (one entry per line)
+  console.log           # NDJSON console output (written by test fixture via page.on('console', ...), NOT by driver)
 ```
+
+**Division of responsibility:**
+- **runner.mjs (driver):** spawns `playwright test`, sets reporter env vars (`PLAYWRIGHT_HTML_OUTPUT_DIR`, `PLAYWRIGHT_JSON_OUTPUT_FILE`, `PLAYWRIGHT_HTML_OPEN`), pre-creates `ax-snapshots/` and `screenshots/` directories before spawn so test fixtures can write into them without racing, captures the process exit code, and routes reporter output to `results.json` / `report/`.
+- **Test fixtures (in target repo):** navigate pages, emit AX-tree snapshots, run axe-core scans, capture screenshots, and append console NDJSON — all using the `RUN_DIR` env var provided by the driver.
 
 **Token discipline:** NEVER inline AX-tree dumps into the coordinator context — they balloon to 50–200K tokens. Always write to disk under `${RUN_DIR}/ax-snapshots/`. The `ux-evaluator` agent reads from disk, not from prompt context.
 
