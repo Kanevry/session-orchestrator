@@ -21,6 +21,11 @@
  *   parent_session_id string | null — session that spawned this subagent
  *   token_input       integer | null — prompt token count for this subagent
  *   token_output      integer | null — completion token count for this subagent
+ *
+ * OTel aliases (optional, stop-only, additive — #411, schema_version=1 backwards-compat):
+ *   gen_ai.usage.input_tokens   integer | null — alias of token_input
+ *   gen_ai.usage.output_tokens  integer | null — alias of token_output
+ *   gen_ai.system               'anthropic'    — AI provider identifier
  */
 
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
@@ -148,6 +153,29 @@ export function validateSubagent(entry) {
     }
   }
 
+  // OTel alias — #411 additive, schema_version=1 backwards-compat
+  const otelInputTokens = entry['gen_ai.usage.input_tokens'];
+  if (otelInputTokens !== undefined && otelInputTokens !== null) {
+    if (typeof otelInputTokens !== 'number' || !Number.isInteger(otelInputTokens) || otelInputTokens < 0) {
+      throw new ValidationError('gen_ai.usage.input_tokens must be a non-negative integer or null', 'gen_ai.usage.input_tokens');
+    }
+  }
+
+  // OTel alias — #411 additive, schema_version=1 backwards-compat
+  const otelOutputTokens = entry['gen_ai.usage.output_tokens'];
+  if (otelOutputTokens !== undefined && otelOutputTokens !== null) {
+    if (typeof otelOutputTokens !== 'number' || !Number.isInteger(otelOutputTokens) || otelOutputTokens < 0) {
+      throw new ValidationError('gen_ai.usage.output_tokens must be a non-negative integer or null', 'gen_ai.usage.output_tokens');
+    }
+  }
+
+  // OTel alias — #411 additive, schema_version=1 backwards-compat
+  if (entry['gen_ai.system'] !== undefined && entry['gen_ai.system'] !== null) {
+    if (typeof entry['gen_ai.system'] !== 'string') {
+      throw new ValidationError('gen_ai.system must be a string or null', 'gen_ai.system');
+    }
+  }
+
   return entry;
 }
 
@@ -172,6 +200,10 @@ export function normalizeSubagent(entry) {
     parent_session_id: entry.parent_session_id ?? null,
     token_input: entry.token_input ?? null,
     token_output: entry.token_output ?? null,
+    // OTel alias — #411 additive, schema_version=1 backwards-compat
+    'gen_ai.usage.input_tokens': entry['gen_ai.usage.input_tokens'] ?? null,
+    'gen_ai.usage.output_tokens': entry['gen_ai.usage.output_tokens'] ?? null,
+    'gen_ai.system': entry['gen_ai.system'] ?? null,
   };
 }
 

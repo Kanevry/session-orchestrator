@@ -6,14 +6,11 @@
  *   fetchIssuesMultiRepo(opts)    — parallel multi-repo fetch via Promise.allSettled
  *   summarizeRepo(issues, opts)   — compute per-repo summary stats
  *
- * Security: uses execFile (never exec/execSync with shell strings) — SEC-006.
- * Testable: accepts execFile as an injected dependency.
+ * Security: uses spawn (never exec/execSync with shell strings) — SEC-006.
+ * Testable: accepts spawn as an injected dependency.
  */
 
-import { execFile as _execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(_execFile);
+import { spawn as _spawn } from 'node:child_process';
 
 /** Default timeout per repo CLI invocation (ms). */
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -54,28 +51,62 @@ export function normalizeIssue(issue, vcs, repo) {
 // ── CLI invocation helpers ─────────────────────────────────────────────────────
 
 /**
- * Run a CLI command with a timeout race. Kills nothing explicitly — Node
- * garbage-collects the child once the process exits or the timeout fires.
+ * Run a CLI command with genuine process termination on timeout.
+ *
+ * Uses spawn() + AbortController so the child process is actually killed via
+ * SIGTERM when the timeout fires — unlike the previous Promise.race approach
+ * which abandoned the child without sending any signal. This ensures no orphan
+ * processes are left behind on slow repos, directly addressing GitHub #45 (LOW
+ * execFile AbortSignal resource hygiene) and matching the playwright-driver
+ * precedent established in runner.mjs (issue #399).
  *
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ timeoutMs?: number, execFile?: Function }} opts
+ * @param {{ timeoutMs?: number, spawn?: Function }} opts
  * @returns {Promise<{ stdout: string, stderr: string }>}
  */
 async function execWithTimeout(cmd, args, opts = {}) {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, execFile = execFileAsync } = opts;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, spawn: spawnImpl = _spawn } = opts;
 
-  // AbortController is used to signal the timeout branch; the child process
-  // itself is not aborted here since promisify(execFile) does not expose the
-  // child handle. The race simply lets the outer caller handle the timeout error.
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`timeout: ${cmd} ${args[0]} after ${timeoutMs}ms`)), timeoutMs),
-  );
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
-  return Promise.race([
-    execFile(cmd, args, { env: process.env }),
-    timeoutPromise,
-  ]);
+  try {
+    const proc = spawnImpl(cmd, args, {
+      env: process.env,
+      signal: controller.signal,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (chunk) => { stdout += chunk; });
+    proc.stderr.on('data', (chunk) => { stderr += chunk; });
+
+    return await new Promise((resolve, reject) => {
+      proc.on('error', (err) => {
+        if (err.name === 'AbortError') {
+          reject(new Error(`timeout: ${cmd} ${args[0]} after ${timeoutMs}ms`));
+        } else {
+          reject(err);
+        }
+      });
+      proc.on('close', (code, signal) => {
+        if (signal === 'SIGTERM' || code === null) {
+          reject(new Error(`timeout: ${cmd} ${args[0]} after ${timeoutMs}ms`));
+        } else if (code !== 0) {
+          const err = new Error(`exit ${code}: ${cmd} ${args[0]}`);
+          err.stdout = stdout;
+          err.stderr = stderr;
+          reject(err);
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+    });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 }
 
 // ── Single-repo fetch ─────────────────────────────────────────────────────────
@@ -88,7 +119,7 @@ async function execWithTimeout(cmd, args, opts = {}) {
  *   vcs: 'gitlab'|'github',
  *   perPage?: number,
  *   timeoutMs?: number,
- *   execFile?: Function,
+ *   spawn?: Function,
  * }} opts
  * @returns {Promise<{ ok: true, issues: NormalizedIssue[] } | { ok: false, error: string }>}
  */
@@ -98,7 +129,7 @@ export async function fetchRepoIssues(opts) {
     vcs,
     perPage = DEFAULT_PER_PAGE,
     timeoutMs = DEFAULT_TIMEOUT_MS,
-    execFile = execFileAsync,
+    spawn = _spawn,
   } = opts;
 
   if (!repo || typeof repo !== 'string') {
@@ -130,7 +161,7 @@ export async function fetchRepoIssues(opts) {
   }
 
   try {
-    const result = await execWithTimeout(cmd, args, { timeoutMs, execFile });
+    const result = await execWithTimeout(cmd, args, { timeoutMs, spawn });
     const raw = String(result.stdout ?? '').trim();
     if (!raw) {
       return { ok: false, error: `${cmd} returned empty output for ${repo}` };
@@ -204,7 +235,7 @@ function createSemaphore(limit) {
  *   perPage?: number,
  *   timeoutMs?: number,
  *   concurrency?: number,
- *   execFile?: Function,
+ *   spawn?: Function,
  * }} opts
  * @returns {Promise<Map<string, { ok: boolean, issues?: NormalizedIssue[], error?: string }>>}
  */
@@ -214,7 +245,7 @@ export async function fetchIssuesMultiRepo(opts) {
     perPage = DEFAULT_PER_PAGE,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     concurrency = DEFAULT_CONCURRENCY,
-    execFile = execFileAsync,
+    spawn = _spawn,
   } = opts;
 
   if (!Array.isArray(repos) || repos.length === 0) {
@@ -227,7 +258,7 @@ export async function fetchIssuesMultiRepo(opts) {
   const tasks = repos.map(({ repo, vcs }) => async () => {
     await semaphore.acquire();
     try {
-      const result = await fetchRepoIssues({ repo, vcs, perPage, timeoutMs, execFile });
+      const result = await fetchRepoIssues({ repo, vcs, perPage, timeoutMs, spawn });
       resultMap.set(repo, result);
     } catch (err) {
       // Should not happen since fetchRepoIssues never throws, but be defensive.

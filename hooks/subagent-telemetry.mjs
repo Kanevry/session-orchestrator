@@ -105,12 +105,20 @@ async function main() {
       typeof input.duration_ms === 'number' && input.duration_ms >= 0
         ? Math.round(input.duration_ms)
         : 0;
-    if (typeof input.token_input === 'number' && Number.isInteger(input.token_input) && input.token_input >= 0) {
-      record.token_input = input.token_input;
-    }
-    if (typeof input.token_output === 'number' && Number.isInteger(input.token_output) && input.token_output >= 0) {
-      record.token_output = input.token_output;
-    }
+    const tokenInput =
+      typeof input.token_input === 'number' && Number.isInteger(input.token_input) && input.token_input >= 0
+        ? input.token_input
+        : null;
+    const tokenOutput =
+      typeof input.token_output === 'number' && Number.isInteger(input.token_output) && input.token_output >= 0
+        ? input.token_output
+        : null;
+    if (tokenInput !== null) record.token_input = tokenInput;
+    if (tokenOutput !== null) record.token_output = tokenOutput;
+    // OTel alias — #411 additive, schema_version=1 backwards-compat
+    record['gen_ai.usage.input_tokens'] = tokenInput;
+    record['gen_ai.usage.output_tokens'] = tokenOutput;
+    record['gen_ai.system'] = 'anthropic';
   }
 
   await appendSubagent(JSONL_PATH, record);

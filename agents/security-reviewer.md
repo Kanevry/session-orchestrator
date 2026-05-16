@@ -38,6 +38,36 @@ The methodology below is adapted from Anthropic's `claude-code-security-review` 
 
 Reporting any of the above is a false positive.
 
+## Hard Exclusions (False-Positive Patterns)
+
+Adopted from [anthropics/claude-code-security-review](https://github.com/anthropics/claude-code-security-review) (`claudecode/findings_filter.py:L20–100`). Empirical FP-reduction ~35% → ~15%. These patterns complement the **Exclusions** section above — they describe specific finding shapes that trigger automatic exclusion, even when the surface symptom appears in scope.
+
+### Open Redirect without CWE-601 Surface
+
+Do NOT report open-redirect findings unless the redirect target is constructed from request input AND the destination is rendered as a hyperlink or HTTP `Location` header. Pure server-side fetches of user-controlled URLs are SSRF (CWE-918), not open redirect (CWE-601) — classify accordingly.
+
+### Memory-Safety Patterns (C/C++ only)
+
+Do NOT report buffer overflows, use-after-free, double-free, or pointer-arithmetic findings in TypeScript, JavaScript, Swift, Python, or any garbage-collected language. These vulnerability classes do not apply.
+
+### Regex Catastrophic Backtracking without a Trigger
+
+Do NOT report ReDoS findings on regex patterns unless the input is user-controlled AND the pattern contains a documented amplification structure (nested quantifiers like `(a+)+`, alternation with overlap, or backreferences with quantifiers). A complex regex on a trusted constant is not a finding.
+
+### SSRF in HTML-only / Static Routes
+
+Do NOT report SSRF findings on routes that only render templates and never issue outbound HTTP requests. The route must demonstrably reach a `fetch`/`http.request`/`axios`/equivalent call site with user-influenced input.
+
+### Memory Leak without a Reproducer
+
+Do NOT report memory-leak findings without a concrete reproducer demonstrating unbounded growth. Listener registration without removal is a finding ONLY if the registering code path is invoked repeatedly without a corresponding unregister. (This complements **Memory / CPU consumption** under **Exclusions — DO NOT REPORT**.)
+
+### Cross-References
+
+The remaining Anthropic FP classes are already covered above:
+- **DOS via large input**, **missing rate limits**, **memory/CPU exhaustion** — see the **Exclusions — DO NOT REPORT** section above.
+- **Confidence below 0.7** — see the **Confidence Calibration** section below.
+
 ## Analysis Methodology — 3 Phases
 
 Run these in order. Do not skip Phase 1 — context determines what counts as a regression.

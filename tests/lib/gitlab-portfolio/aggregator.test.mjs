@@ -1,10 +1,39 @@
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import {
   normalizeIssue,
   fetchRepoIssues,
   fetchIssuesMultiRepo,
   summarizeRepo,
 } from '@lib/gitlab-portfolio/aggregator.mjs';
+
+// ── spawn mock helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Create a spawn mock that emits EventEmitter events matching the child_process
+ * spawn API expected by execWithTimeout in aggregator.mjs.
+ *
+ * @param {string} stdoutStr  - data emitted on proc.stdout
+ * @param {string} stderrStr  - data emitted on proc.stderr
+ * @param {number} exitCode   - exit code emitted on 'close'
+ * @param {Error|null} errorToEmit - if set, emit 'error' instead of 'close'
+ */
+function makeSpawnMock(stdoutStr, stderrStr = '', exitCode = 0, errorToEmit = null) {
+  return vi.fn(() => {
+    const proc = new EventEmitter();
+    proc.stdout = Readable.from([stdoutStr]);
+    proc.stderr = Readable.from([stderrStr]);
+    setImmediate(() => {
+      if (errorToEmit) {
+        proc.emit('error', errorToEmit);
+      } else {
+        proc.emit('close', exitCode, null);
+      }
+    });
+    return proc;
+  });
+}
 
 // Fixed reference time: 2026-01-15T00:00:00Z
 const NOW = new Date('2026-01-15T00:00:00Z');
@@ -112,12 +141,12 @@ describe('fetchRepoIssues — happy path', () => {
         web_url: 'https://gitlab.example.com/org/repo/-/issues/5',
       },
     ]);
-    const mockExecFile = vi.fn().mockResolvedValue({ stdout: glabOutput, stderr: '' });
+    const mockSpawn = makeSpawnMock(glabOutput);
 
     const result = await fetchRepoIssues({
       repo: 'org/repo',
       vcs: 'gitlab',
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
     expect(result.ok).toBe(true);
@@ -152,12 +181,12 @@ describe('fetchRepoIssues — happy path', () => {
         url: 'https://github.com/org/repo/issues/2',
       },
     ]);
-    const mockExecFile = vi.fn().mockResolvedValue({ stdout: ghOutput, stderr: '' });
+    const mockSpawn = makeSpawnMock(ghOutput);
 
     const result = await fetchRepoIssues({
       repo: 'org/repo',
       vcs: 'github',
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
     expect(result.ok).toBe(true);
@@ -182,12 +211,12 @@ describe('fetchRepoIssues — error paths', () => {
   });
 
   it('returns ok:false when CLI returns empty stdout', async () => {
-    const mockExecFile = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mockSpawn = makeSpawnMock('');
 
     const result = await fetchRepoIssues({
       repo: 'org/repo',
       vcs: 'gitlab',
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
     expect(result.ok).toBe(false);
@@ -195,12 +224,12 @@ describe('fetchRepoIssues — error paths', () => {
   });
 
   it('returns ok:false when CLI returns invalid JSON', async () => {
-    const mockExecFile = vi.fn().mockResolvedValue({ stdout: 'not-json', stderr: '' });
+    const mockSpawn = makeSpawnMock('not-json');
 
     const result = await fetchRepoIssues({
       repo: 'org/repo',
       vcs: 'gitlab',
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
     expect(result.ok).toBe(false);
@@ -246,17 +275,27 @@ describe('fetchIssuesMultiRepo — parallel batch', () => {
       },
     ]);
 
-    // First call succeeds (a/repo), second call throws (b/repo)
-    const mockExecFile = vi.fn()
-      .mockResolvedValueOnce({ stdout: successOutput, stderr: '' })
-      .mockRejectedValueOnce(new Error('network error'));
+    // First call succeeds (a/repo), second call emits an error (b/repo).
+    // Each fetchRepoIssues invocation gets its own spawn mock via the concurrency
+    // semaphore — we rotate between two mocks using a call-count closure.
+    let callCount = 0;
+    const mockSpawn = vi.fn(() => {
+      callCount++;
+      if (callCount === 1) {
+        // a/repo: success
+        return makeSpawnMock(successOutput)();
+      } else {
+        // b/repo: error
+        return makeSpawnMock('', '', 0, new Error('network error'))();
+      }
+    });
 
     const resultMap = await fetchIssuesMultiRepo({
       repos: [
         { repo: 'a/repo', vcs: 'gitlab' },
         { repo: 'b/repo', vcs: 'gitlab' },
       ],
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
     expect(resultMap).toBeInstanceOf(Map);
