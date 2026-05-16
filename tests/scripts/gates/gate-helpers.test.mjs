@@ -190,10 +190,31 @@ describe('runCheck', () => {
   });
 
   it('returns status=pass and output for a succeeding command', () => {
-    const result = runCheck('echo hi');
+    // Use a real shell command that is not an echo stub (echo stubs are short-circuited).
+    const result = runCheck('node -e "process.stdout.write(\'hi\')"');
     expect(result.status).toBe('pass');
     expect(result.output).toContain('hi');
     expect(result.exitCode).toBe(0);
+  });
+
+  it('stub short-circuit: echo stub returns stubbed echo result without executing', () => {
+    const result = runCheck('echo "stub"');
+    expect(result).toEqual({
+      status: 'pass',
+      output: '(stubbed: echo)',
+      exitCode: 0,
+      stubbed: { kind: 'echo' },
+    });
+  });
+
+  it('stub short-circuit: noop stub ":" returns stubbed noop result without executing', () => {
+    const result = runCheck(':');
+    expect(result).toEqual({
+      status: 'pass',
+      output: '(stubbed: noop)',
+      exitCode: 0,
+      stubbed: { kind: 'noop' },
+    });
   });
 
   it('returns status=fail for a failing command', () => {

@@ -85,6 +85,11 @@ export function validateSessionConfig(config) {
     for (const msg of vsErrs) errors.push({ path: 'vault-staleness', rule: 'object', message: msg });
   }
 
+  if (config['gitlab-portfolio'] !== undefined && config['gitlab-portfolio'] !== null) {
+    const gpErrs = validateGitlabPortfolio(config['gitlab-portfolio']);
+    for (const msg of gpErrs) errors.push({ path: 'gitlab-portfolio', rule: 'object', message: msg });
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -249,6 +254,49 @@ export function validateResourceThresholds(obj) {
   }
   if (obj['ssh-no-docker'] !== undefined && typeof obj['ssh-no-docker'] !== 'boolean') {
     errs.push('resource-thresholds.ssh-no-docker must be a boolean');
+  }
+  return errs;
+}
+
+/**
+ * Validate the gitlab-portfolio sub-object.
+ * @param {unknown} obj
+ * @returns {string[]} array of error messages (empty = valid)
+ */
+export function validateGitlabPortfolio(obj) {
+  if (obj === null || typeof obj !== 'object') return ['gitlab-portfolio must be an object'];
+  const errs = [];
+  const VALID_MODES = new Set(['warn', 'strict', 'off']);
+  const KNOWN_KEYS = new Set(['enabled', 'mode', 'stale-days', 'critical-labels']);
+
+  if (obj['enabled'] !== undefined && typeof obj['enabled'] !== 'boolean') {
+    errs.push('gitlab-portfolio.enabled must be boolean');
+  }
+  if (obj['mode'] !== undefined && !VALID_MODES.has(obj['mode'])) {
+    errs.push(`gitlab-portfolio.mode must be one of ${[...VALID_MODES].join('|')}`);
+  }
+  if (obj['stale-days'] !== undefined) {
+    const v = obj['stale-days'];
+    if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v) || v < 1) {
+      errs.push('gitlab-portfolio.stale-days must be an integer >= 1');
+    }
+  }
+  if (obj['critical-labels'] !== undefined) {
+    if (!Array.isArray(obj['critical-labels'])) {
+      errs.push('gitlab-portfolio.critical-labels must be an array of non-empty strings');
+    } else {
+      for (const label of obj['critical-labels']) {
+        if (typeof label !== 'string' || label.length === 0) {
+          errs.push('gitlab-portfolio.critical-labels entries must be non-empty strings');
+          break;
+        }
+      }
+    }
+  }
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_KEYS.has(key)) {
+      errs.push(`gitlab-portfolio.${key}: unknown field`);
+    }
   }
   return errs;
 }

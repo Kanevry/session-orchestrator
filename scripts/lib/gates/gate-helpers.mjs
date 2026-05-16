@@ -8,6 +8,7 @@
 
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { detectStubCommand } from './echo-stub-detect.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal pattern helpers
@@ -39,11 +40,16 @@ function isTestFile(filePath) {
  * Execute a shell command and return a structured result.
  *
  * @param {string} cmd - Shell command to run, or `"skip"` / empty to skip.
- * @returns {{ status: 'pass'|'fail'|'skip', output: string, exitCode: number }}
+ * @returns {{ status: 'pass'|'fail'|'skip', output: string, exitCode: number, stubbed?: { kind: 'echo'|'noop' } }}
  */
 export function runCheck(cmd) {
   if (!cmd || cmd === 'skip') {
     return { status: 'skip', output: '', exitCode: 0 };
+  }
+
+  const stub = detectStubCommand(cmd);
+  if (stub.isStub) {
+    return { status: 'pass', output: `(stubbed: ${stub.kind})`, exitCode: 0, stubbed: { kind: stub.kind } };
   }
 
   try {

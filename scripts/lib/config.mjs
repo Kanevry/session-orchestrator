@@ -43,6 +43,7 @@ import { _parseVaultStaleness } from './config/vault-staleness.mjs';
 import { _parseEventsRotation } from './config/events-rotation.mjs';
 import { _parseVaultIntegration, _parseResourceThresholds } from './config/vault-integration.mjs';
 import { _parseTest } from './config/test.mjs';
+import { _parseGitlabPortfolio } from './config/gitlab-portfolio.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -224,6 +225,9 @@ export function parseSessionConfig(mdContent) {
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
+  // gitlab-portfolio: parsed from full content (standalone top-level block, GH #41)
+  const gitlabPortfolio = _parseGitlabPortfolio(mdContent);
+
   return {
     'agents-per-wave': agentsPerWave,
     'waves': waves,
@@ -282,6 +286,7 @@ export function parseSessionConfig(mdContent) {
     'vault-staleness': vaultStaleness,
     'events-rotation': eventsRotation,
     'test': testConfig,
+    'gitlab-portfolio': gitlabPortfolio,
   };
 }
 

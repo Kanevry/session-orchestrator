@@ -59,6 +59,12 @@ const debugArtifacts = collectDebugArtifacts(sessionStartRef);
 // --- Duration ---
 const durationSeconds = Math.round((Date.now() - startTime) / 1000);
 
+// --- Stub map ---
+const stubbed = {};
+if (tcResult.stubbed) stubbed.typecheck = tcResult.stubbed;
+if (testResult.stubbed) stubbed.test = testResult.stubbed;
+if (lintResult.stubbed) stubbed.lint = lintResult.stubbed;
+
 // --- Output ---
 const output = {
   variant: 'full-gate',
@@ -67,6 +73,7 @@ const output = {
   test: { status: testResult.status, total: testTotal, passed: testPassed },
   lint: { status: lintResult.status, warnings: lintWarnings },
   debug_artifacts: debugArtifacts,
+  stubbed,
 };
 
 process.stdout.write(JSON.stringify(output) + '\n');

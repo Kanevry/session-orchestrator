@@ -159,6 +159,58 @@ describe('gate-full — all pass', () => {
 });
 
 // ---------------------------------------------------------------------------
+// stubbed field in emitted JSON
+// ---------------------------------------------------------------------------
+
+describe('gate-full — stubbed field in emitted JSON', () => {
+  it('JSON contains stubbed as an empty object when all commands are real (not stubs)', () => {
+    const r = run({
+      TYPECHECK_CMD: 'node -e "process.exit(0)"',
+      TEST_CMD: 'node -e "process.exit(0)"',
+      LINT_CMD: 'node -e "process.exit(0)"',
+    });
+    const json = JSON.parse(r.stdout);
+    expect(json.stubbed).toEqual({});
+  });
+
+  it('JSON contains stubbed key even when all checks are skipped', () => {
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
+    const json = JSON.parse(r.stdout);
+    expect(json).toHaveProperty('stubbed');
+    expect(json.stubbed).toEqual({});
+  });
+
+  it('JSON stubbed.test is { kind: "echo" } when TEST_CMD is an echo stub', () => {
+    const r = run({
+      TYPECHECK_CMD: 'node -e "process.exit(0)"',
+      TEST_CMD: 'echo "no tests yet"',
+      LINT_CMD: 'node -e "process.exit(0)"',
+    });
+    const json = JSON.parse(r.stdout);
+    expect(json.stubbed.test).toEqual({ kind: 'echo' });
+  });
+
+  it('overall exit code is 0 (pass) when TEST_CMD is an echo stub', () => {
+    const r = run({
+      TYPECHECK_CMD: 'node -e "process.exit(0)"',
+      TEST_CMD: 'echo "no tests yet"',
+      LINT_CMD: 'node -e "process.exit(0)"',
+    });
+    expect(r.status).toBe(0);
+  });
+
+  it('JSON test.status is "pass" when TEST_CMD is an echo stub', () => {
+    const r = run({
+      TYPECHECK_CMD: 'node -e "process.exit(0)"',
+      TEST_CMD: 'echo "no tests yet"',
+      LINT_CMD: 'node -e "process.exit(0)"',
+    });
+    const json = JSON.parse(r.stdout);
+    expect(json.test.status).toBe('pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Missing env vars
 // ---------------------------------------------------------------------------
 

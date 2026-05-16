@@ -68,27 +68,27 @@ describe('gate-baseline — skip+skip', () => {
 
 describe('gate-baseline — passing commands', () => {
   it('typecheck=pass when TYPECHECK_CMD succeeds', () => {
-    const r = run({ TYPECHECK_CMD: 'echo TC_OK', TEST_CMD: 'skip' });
+    const r = run({ TYPECHECK_CMD: 'node -e "console.log(\'TC_OK\')"', TEST_CMD: 'skip' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.typecheck).toBe('pass');
   });
 
   it('typecheck_output contains the command output', () => {
-    const r = run({ TYPECHECK_CMD: 'echo TC_OK', TEST_CMD: 'skip' });
+    const r = run({ TYPECHECK_CMD: 'node -e "console.log(\'TC_OK\')"', TEST_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
     expect(json.typecheck_output).toContain('TC_OK');
   });
 
   it('test=pass when TEST_CMD succeeds', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'echo TEST_OK' });
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "console.log(\'TEST_OK\')"' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.test).toBe('pass');
   });
 
   it('test_output contains the command output', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'echo TEST_OK' });
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "console.log(\'TEST_OK\')"' });
     const json = JSON.parse(r.stdout);
     expect(json.test_output).toContain('TEST_OK');
   });
