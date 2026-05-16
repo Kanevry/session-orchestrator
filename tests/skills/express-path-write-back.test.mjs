@@ -6,7 +6,7 @@ import {
   appendDeviation,
   markExpressPathComplete,
   parseStateMd,
-} from '../../scripts/lib/state-md.mjs';
+} from '@lib/state-md.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..');

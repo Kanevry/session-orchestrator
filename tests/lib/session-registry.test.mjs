@@ -15,7 +15,7 @@ import {
   sweepZombies,
   deregisterSelf,
   logSweepEvent,
-} from '../../scripts/lib/session-registry.mjs';
+} from '@lib/session-registry.mjs';
 
 describe('session-registry', () => {
   let tmpBase;

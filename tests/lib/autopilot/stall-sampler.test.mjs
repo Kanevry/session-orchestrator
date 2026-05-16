@@ -16,7 +16,7 @@ import path from 'node:path';
 import {
   sampleProgress,
   SAMPLE_CADENCE_MS,
-} from '../../../scripts/lib/autopilot/stall-sampler.mjs';
+} from '@lib/autopilot/stall-sampler.mjs';
 
 let tmp;
 let jsonlPath;

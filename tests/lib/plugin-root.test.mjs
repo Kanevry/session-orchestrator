@@ -43,7 +43,7 @@ function makeTmpPluginDir(name = 'session-orchestrator') {
 // ---------------------------------------------------------------------------
 
 // Dynamically import so ESM module cache is shared; env stubs apply per-call.
-const { resolvePluginRoot, PluginRootResolutionError } = await import('../../scripts/lib/plugin-root.mjs');
+const { resolvePluginRoot, PluginRootResolutionError } = await import('@lib/plugin-root.mjs');
 
 // ---------------------------------------------------------------------------
 // Test suites

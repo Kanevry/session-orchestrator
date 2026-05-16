@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   detectPackageManager,
   defaultQualityGateCommands,
-} from '../../scripts/lib/package-manager.mjs';
+} from '@lib/package-manager.mjs';
 
 let sandbox;
 

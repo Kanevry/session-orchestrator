@@ -13,7 +13,7 @@ import {
   VALID_OUTPUT_LEVELS,
   VALID_PREAMBLE_LEVELS,
   VALID_COMMENTS_LEVELS,
-} from '../../../scripts/lib/owner-config/constants.mjs';
+} from '@lib/owner-config/constants.mjs';
 
 describe('constants — CURRENT_OWNER_SCHEMA_VERSION', () => {
   it('is the integer 1', () => {

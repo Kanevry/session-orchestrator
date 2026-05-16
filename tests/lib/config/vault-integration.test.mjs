@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   _parseVaultIntegration,
   _parseResourceThresholds,
-} from '../../../scripts/lib/config/vault-integration.mjs';
+} from '@lib/config/vault-integration.mjs';
 
 // ---------------------------------------------------------------------------
 // _parseVaultIntegration

@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import {
   checkUntrackedOverlap,
   listUntracked,
-} from '../../scripts/lib/pre-dispatch-check.mjs';
+} from '@lib/pre-dispatch-check.mjs';
 
 // ---------------------------------------------------------------------------
 // Test repo helpers

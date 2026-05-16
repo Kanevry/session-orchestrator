@@ -8,7 +8,7 @@ import {
   detectSessionSchema,
   generateSessionNote,
   generateSessionNoteV2,
-} from '../../../scripts/lib/vault-mirror/render-sessions.mjs';
+} from '@lib/vault-mirror/render-sessions.mjs';
 
 // ── detectSessionSchema ───────────────────────────────────────────────────────
 

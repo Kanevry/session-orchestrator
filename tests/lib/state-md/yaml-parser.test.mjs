@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseStateMd, serializeStateMd } from '../../../scripts/lib/state-md/yaml-parser.mjs';
+import { parseStateMd, serializeStateMd } from '@lib/state-md/yaml-parser.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

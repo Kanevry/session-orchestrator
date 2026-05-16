@@ -23,7 +23,7 @@ import {
   exportHwLearnings,
   promoteHwLearnings,
 } from '../../scripts/export-hw-learnings.mjs';
-import { CURRENT_ANONYMIZATION_VERSION } from '../../scripts/lib/learnings.mjs';
+import { CURRENT_ANONYMIZATION_VERSION } from '@lib/learnings.mjs';
 
 const GENERATED_AT = '2026-04-19T14:00:00Z';
 

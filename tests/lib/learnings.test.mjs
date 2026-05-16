@@ -29,7 +29,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   deriveExpiresAt,
   LEARNING_TTL_DAYS,
-} from '../../scripts/lib/learnings.mjs';
+} from '@lib/learnings.mjs';
 
 const LEGACY = () => ({
   id: 'test-id-1',

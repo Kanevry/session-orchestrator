@@ -16,8 +16,8 @@ import {
   parseStateMd,
   updateFrontmatterFields,
   parseRecommendations,
-} from '../../scripts/lib/state-md.mjs';
-import { computeV0Recommendation } from '../../scripts/lib/recommendations-v0.mjs';
+} from '@lib/state-md.mjs';
+import { computeV0Recommendation } from '@lib/recommendations-v0.mjs';
 
 let tmp;
 

@@ -16,6 +16,10 @@
  *   emit-system <message>  — calls emitSystemMessage(message). Exits 0.
  */
 
+// NOTE: This file is spawned as a CHILD Node process by tests/lib/io.test.mjs
+// (spawnSync(process.execPath, [DRIVER, ...])). The child Node process does NOT
+// run under vitest, so it has no `@lib` alias resolution. Keep this import as a
+// raw relative path — do not convert to `@lib/io.mjs` (#407 alias rollout exempt).
 import { readStdin, emitAllow, emitDeny, emitWarn, emitSystemMessage } from '../../scripts/lib/io.mjs';
 
 const [, , mode, ...rest] = process.argv;

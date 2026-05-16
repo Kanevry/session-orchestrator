@@ -47,7 +47,7 @@ function walkMjs(dir, acc = []) {
 async function importEventsWithDir(dir) {
   process.env.CLAUDE_PROJECT_DIR = dir;
   vi.resetModules();
-  return import('../../scripts/lib/events.mjs');
+  return import('@lib/events.mjs');
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ async function importEventsWithDir(dir) {
 describe('DEFAULT_EVENT_URL removed (#228)', () => {
   it('scripts/lib/events.mjs does not export DEFAULT_EVENT_URL', async () => {
     vi.resetModules();
-    const mod = await import('../../scripts/lib/events.mjs');
+    const mod = await import('@lib/events.mjs');
     expect(mod.DEFAULT_EVENT_URL).toBeUndefined();
   });
 

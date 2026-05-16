@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runProbe as runStaleness } from '../../../skills/discovery/probes/vault-staleness.mjs';
 import { runProbe as runNarrative } from '../../../skills/discovery/probes/vault-narrative-staleness.mjs';
-import { validateVaultStaleness } from '../../../scripts/lib/config-schema.mjs';
+import { validateVaultStaleness } from '@lib/config-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths

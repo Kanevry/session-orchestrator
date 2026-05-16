@@ -4,7 +4,7 @@ import {
   formatErrors,
   validateDocsOrchestrator,
   validateVaultStaleness,
-} from '../../scripts/lib/config-schema.mjs';
+} from '@lib/config-schema.mjs';
 
 function baseConfig(overrides = {}) {
   return {

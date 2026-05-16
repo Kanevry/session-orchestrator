@@ -18,7 +18,7 @@ import {
   computeSchemaHash,
   generateFrontmatterSnippet,
   detectVaultTaskScope,
-} from '../../scripts/lib/frontmatter-guard.mjs';
+} from '@lib/frontmatter-guard.mjs';
 
 // ---------------------------------------------------------------------------
 // Minimal schema fixture used by generateFrontmatterSnippet tests

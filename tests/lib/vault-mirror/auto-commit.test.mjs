@@ -60,7 +60,7 @@ describe('autoCommitVaultMirror — action emission', () => {
 
   async function getAutoCommit() {
     vi.resetModules();
-    const mod = await import('../../../scripts/lib/vault-mirror/auto-commit.mjs');
+    const mod = await import('@lib/vault-mirror/auto-commit.mjs');
     return mod.autoCommitVaultMirror;
   }
 

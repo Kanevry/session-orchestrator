@@ -26,7 +26,7 @@ vi.mock('zx', () => ({
   ),
 }));
 
-vi.mock('../../scripts/lib/worktree.mjs', () => ({
+vi.mock('@lib/worktree.mjs', () => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
 }));
 
@@ -63,7 +63,7 @@ describe('resolveWorkspaceRoot', () => {
     const origCwd = process.cwd();
     process.chdir(sandbox);
 
-    const { resolveWorkspaceRoot } = await import('../../scripts/lib/workspace.mjs');
+    const { resolveWorkspaceRoot } = await import('@lib/workspace.mjs');
     const root = await resolveWorkspaceRoot();
 
     process.chdir(origCwd);
@@ -83,7 +83,7 @@ describe('resolveWorkspaceRoot', () => {
     const origCwd = process.cwd();
     process.chdir(sandbox);
 
-    const { resolveWorkspaceRoot } = await import('../../scripts/lib/workspace.mjs');
+    const { resolveWorkspaceRoot } = await import('@lib/workspace.mjs');
     const root = await resolveWorkspaceRoot();
 
     process.chdir(origCwd);
@@ -100,7 +100,7 @@ describe('resolveWorkspaceRoot', () => {
     const origCwd = process.cwd();
     process.chdir(empty);
 
-    const { resolveWorkspaceRoot } = await import('../../scripts/lib/workspace.mjs');
+    const { resolveWorkspaceRoot } = await import('@lib/workspace.mjs');
 
     await expect(resolveWorkspaceRoot()).rejects.toThrow('resolveWorkspaceRoot:');
 
@@ -124,7 +124,7 @@ describe('restoreCoordinatorCwd', () => {
     const origCwd = process.cwd();
     process.chdir(sandbox);
 
-    const { restoreCoordinatorCwd } = await import('../../scripts/lib/workspace.mjs');
+    const { restoreCoordinatorCwd } = await import('@lib/workspace.mjs');
     const result = await restoreCoordinatorCwd();
 
     process.chdir(origCwd);
@@ -144,7 +144,7 @@ describe('restoreCoordinatorCwd', () => {
     const origCwd = process.cwd();
     process.chdir(sandbox);
 
-    const { restoreCoordinatorCwd } = await import('../../scripts/lib/workspace.mjs');
+    const { restoreCoordinatorCwd } = await import('@lib/workspace.mjs');
     const result = await restoreCoordinatorCwd();
 
     process.chdir(origCwd);
@@ -168,41 +168,41 @@ describe('restoreCoordinatorCwd', () => {
 
 describe('validatePathInWorkspace', () => {
   it('accepts a path that is a descendant of the workspace root', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     const target = join(sandbox, 'src', 'index.ts');
     const result = await validatePathInWorkspace(target, sandbox);
     expect(result).toBe(true);
   });
 
   it('rejects the workspace root itself (must be a descendant, not equal)', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     const result = await validatePathInWorkspace(sandbox, sandbox);
     expect(result).toBe(false);
   });
 
   it('rejects a sibling path outside the workspace root', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     const sibling = join(sandbox, '..', 'other-repo', 'file.ts');
     const result = await validatePathInWorkspace(sibling, sandbox);
     expect(result).toBe(false);
   });
 
   it('rejects a path inside .claude/worktrees/ subtree', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     const worktreePath = join(sandbox, '.claude', 'worktrees', 'agent1', 'src', 'file.ts');
     const result = await validatePathInWorkspace(worktreePath, sandbox);
     expect(result).toBe(false);
   });
 
   it('rejects a path inside .codex/worktrees/ subtree', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     const worktreePath = join(sandbox, '.codex', 'worktrees', 'agent2', 'file.ts');
     const result = await validatePathInWorkspace(worktreePath, sandbox);
     expect(result).toBe(false);
   });
 
   it('accepts a path that starts with "worktrees" but not in the excluded subtrees', async () => {
-    const { validatePathInWorkspace } = await import('../../scripts/lib/workspace.mjs');
+    const { validatePathInWorkspace } = await import('@lib/workspace.mjs');
     // A directory named "worktrees-backup" inside src should NOT be rejected
     const validPath = join(sandbox, 'src', 'worktrees-backup', 'file.ts');
     const result = await validatePathInWorkspace(validPath, sandbox);

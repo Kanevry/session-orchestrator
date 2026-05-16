@@ -18,7 +18,7 @@ import {
   _coerceObject,
   _coerceBoolObject,
   _coerceMaxTurns,
-} from '../../../scripts/lib/config/coercers.mjs';
+} from '@lib/config/coercers.mjs';
 
 // ---------------------------------------------------------------------------
 // _getVal

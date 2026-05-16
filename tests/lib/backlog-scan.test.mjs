@@ -5,7 +5,7 @@ import {
   detectVcs,
   clearBacklogCache,
   STALE_THRESHOLD_DAYS,
-} from '../../scripts/lib/backlog-scan.mjs';
+} from '@lib/backlog-scan.mjs';
 
 const NOW = Date.parse('2026-04-25T00:00:00Z');
 

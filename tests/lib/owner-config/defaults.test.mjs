@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { defaults } from '../../../scripts/lib/owner-config/defaults.mjs';
+import { defaults } from '@lib/owner-config/defaults.mjs';
 
 describe('defaults()', () => {
   it('returns schema-version 1', () => {

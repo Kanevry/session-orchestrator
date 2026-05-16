@@ -10,7 +10,7 @@ import {
   DEFAULT_JSONL_PATH,
   DEFAULT_CARRYOVER_THRESHOLD,
   parseFlags,
-} from '../../../scripts/lib/autopilot/flags.mjs';
+} from '@lib/autopilot/flags.mjs';
 
 // ---------------------------------------------------------------------------
 // FLAG_BOUNDS — frozen identity + content

@@ -12,7 +12,7 @@ import {
   buildLearning,
   DEFAULT_MIN_PAIRED_RUNS,
   KNOWN_MODES,
-} from '../../../scripts/lib/evolve/autopilot-effectiveness.mjs';
+} from '@lib/evolve/autopilot-effectiveness.mjs';
 
 const NOW_ISO = '2026-04-30T12:00:00.000Z';
 

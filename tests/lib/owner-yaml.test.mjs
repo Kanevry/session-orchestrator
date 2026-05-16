@@ -18,7 +18,7 @@ import {
   loadOwnerConfig,
   writeOwnerConfig,
   getDefaults,
-} from '../../scripts/lib/owner-yaml.mjs';
+} from '@lib/owner-yaml.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

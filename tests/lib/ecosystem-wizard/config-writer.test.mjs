@@ -19,7 +19,7 @@ import {
   resolveConfigFile,
   readExistingEcosystemConfig,
   buildPolicyObject,
-} from '../../../scripts/lib/ecosystem-wizard/config-writer.mjs';
+} from '@lib/ecosystem-wizard/config-writer.mjs';
 
 let sandbox;
 

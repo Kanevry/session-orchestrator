@@ -28,7 +28,7 @@ import {
   swapUsedMb,
   memoryPressurePctFree,
   runCommand,
-} from '../../../scripts/lib/resource-probe/probe-platform.mjs';
+} from '@lib/resource-probe/probe-platform.mjs';
 
 // ---------------------------------------------------------------------------
 // ramSnapshot()

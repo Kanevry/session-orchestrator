@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import {
   loadOwnerConfig,
   resolveOwnerConfigPath,
-} from '../../scripts/lib/owner-config-loader.mjs';
+} from '@lib/owner-config-loader.mjs';
 
 const HEX64 = 'a'.repeat(64);
 

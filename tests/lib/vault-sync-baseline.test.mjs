@@ -22,7 +22,7 @@ import {
   writeBaseline,
   readBaseline,
   diffBaseline,
-} from '../../scripts/lib/vault-sync-baseline.mjs';
+} from '@lib/vault-sync-baseline.mjs';
 
 let tmp;
 

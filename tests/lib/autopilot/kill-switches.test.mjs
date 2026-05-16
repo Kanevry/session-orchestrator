@@ -14,7 +14,7 @@ import {
   KILL_SWITCHES,
   preIterationKillSwitch,
   postSessionKillSwitch,
-} from '../../../scripts/lib/autopilot/kill-switches.mjs';
+} from '@lib/autopilot/kill-switches.mjs';
 
 // ---------------------------------------------------------------------------
 // KILL_SWITCHES enum

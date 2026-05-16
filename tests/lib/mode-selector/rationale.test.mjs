@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPassthroughRationale } from '../../../scripts/lib/mode-selector/rationale.mjs';
+import { buildPassthroughRationale } from '@lib/mode-selector/rationale.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

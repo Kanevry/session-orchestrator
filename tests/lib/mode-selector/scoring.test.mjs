@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDelta, scoreMode, round2, safeArray, safeBootstrapLock } from '../../../scripts/lib/mode-selector/scoring.mjs';
+import { computeDelta, scoreMode, round2, safeArray, safeBootstrapLock } from '@lib/mode-selector/scoring.mjs';
 
 // ---------------------------------------------------------------------------
 // round2

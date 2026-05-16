@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import {
   migrateLegacyLearning,
   validateLearning,
-} from '../../scripts/lib/learnings.mjs';
+} from '@lib/learnings.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixture helper — minimal canonical learning (pre-migration shape)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAlternatives, hasActiveSignals } from '../../../scripts/lib/mode-selector/alternatives.mjs';
+import { buildAlternatives, hasActiveSignals } from '@lib/mode-selector/alternatives.mjs';
 
 // ---------------------------------------------------------------------------
 // hasActiveSignals

@@ -20,7 +20,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { emitSystemMessage } from '../../scripts/lib/io.mjs';
+import { emitSystemMessage } from '@lib/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

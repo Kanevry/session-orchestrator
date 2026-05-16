@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import * as ownerConfigIndex from '../../../scripts/lib/owner-config/index.mjs';
+import * as ownerConfigIndex from '@lib/owner-config/index.mjs';
 
 describe('owner-config/index.mjs — all 10 public symbols present', () => {
   it('exports CURRENT_OWNER_SCHEMA_VERSION as an integer', () => {

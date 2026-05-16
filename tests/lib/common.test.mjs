@@ -20,7 +20,7 @@ import {
   readJson,
   writeJson,
   appendJsonl,
-} from '../../scripts/lib/common.mjs';
+} from '@lib/common.mjs';
 
 // ---------------------------------------------------------------------------
 // Cleanup tracking — remove all temp files/dirs created during tests

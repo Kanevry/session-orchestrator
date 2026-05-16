@@ -22,7 +22,7 @@ import {
   defaultRunId,
   readHostClass,
   finalizeState,
-} from '../../../scripts/lib/autopilot/telemetry.mjs';
+} from '@lib/autopilot/telemetry.mjs';
 
 let tmp;
 

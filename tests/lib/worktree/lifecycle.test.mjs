@@ -10,9 +10,9 @@
  *
  * Mocking strategy:
  *   - vi.mock('zx')          — suppress real git calls; $ is a vi.fn()
- *   - vi.mock('../../../scripts/lib/worktree/listing.mjs') — listWorktrees/applyWorktreeExcludes
- *   - vi.mock('../../../scripts/lib/worktree/meta.mjs')    — _writeWorktreeMeta (meta write)
- *   - vi.mock('../../../scripts/lib/config.mjs')           — readConfigFile/parseSessionConfig
+ *   - vi.mock('@lib/worktree/listing.mjs') — listWorktrees/applyWorktreeExcludes
+ *   - vi.mock('@lib/worktree/meta.mjs')    — _writeWorktreeMeta (meta write)
+ *   - vi.mock('@lib/config.mjs')           — readConfigFile/parseSessionConfig
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -53,17 +53,17 @@ vi.mock('zx', () => {
   };
 });
 
-vi.mock('../../../scripts/lib/worktree/listing.mjs', () => ({
+vi.mock('@lib/worktree/listing.mjs', () => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
   applyWorktreeExcludes: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../scripts/lib/worktree/meta.mjs', () => ({
+vi.mock('@lib/worktree/meta.mjs', () => ({
   metaPathFor: vi.fn().mockImplementation((suffix) => `/mock/meta/${suffix}.json`),
   _writeWorktreeMeta: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../scripts/lib/config.mjs', () => ({
+vi.mock('@lib/config.mjs', () => ({
   readConfigFile: vi.fn().mockResolvedValue(''),
   parseSessionConfig: vi.fn().mockReturnValue({}),
 }));
@@ -91,9 +91,9 @@ afterEach(() => {
 
 describe('createWorktree', () => {
   it('returns the wtPath under os.tmpdir()', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { applyWorktreeExcludes } = await import('@lib/worktree/listing.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     // git rev-parse HEAD → sha; git worktree add → success
     mockGitResponses = [
@@ -110,8 +110,8 @@ describe('createWorktree', () => {
   });
 
   it('includes suffix in the branch name passed to _writeWorktreeMeta', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     mockGitResponses = [{ stdout: 'sha1\n' }, { stdout: '' }];
     await createWorktree('my-wave');
@@ -122,8 +122,8 @@ describe('createWorktree', () => {
   });
 
   it('passes the baseRef to _writeWorktreeMeta', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     mockGitResponses = [{ stdout: 'cafebabe\n' }, { stdout: '' }];
     await createWorktree('ref-check', 'main');
@@ -134,8 +134,8 @@ describe('createWorktree', () => {
   });
 
   it('defaults baseRef to HEAD when not supplied', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     mockGitResponses = [{ stdout: 'headsha\n' }, { stdout: '' }];
     await createWorktree('default-ref');
@@ -145,8 +145,8 @@ describe('createWorktree', () => {
   });
 
   it('passes explicit excludePatterns to applyWorktreeExcludes', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { applyWorktreeExcludes } = await import('@lib/worktree/listing.mjs');
 
     mockGitResponses = [{ stdout: 'sha\n' }, { stdout: '' }];
     await createWorktree('excl', 'HEAD', { excludePatterns: ['build'] });
@@ -156,8 +156,8 @@ describe('createWorktree', () => {
   });
 
   it('passes [] to applyWorktreeExcludes when options.excludePatterns is []', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { applyWorktreeExcludes } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { applyWorktreeExcludes } = await import('@lib/worktree/listing.mjs');
 
     mockGitResponses = [{ stdout: 'sha\n' }, { stdout: '' }];
     await createWorktree('no-excl', 'HEAD', { excludePatterns: [] });
@@ -167,8 +167,8 @@ describe('createWorktree', () => {
   });
 
   it('continues without throwing when meta write fails (non-fatal)', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     _writeWorktreeMeta.mockRejectedValueOnce(new Error('disk full'));
     mockGitResponses = [{ stdout: 'sha\n' }, { stdout: '' }];
@@ -181,8 +181,8 @@ describe('createWorktree', () => {
   });
 
   it('emits a console.warn when meta write fails', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
 
     _writeWorktreeMeta.mockRejectedValueOnce(new Error('quota exceeded'));
     mockGitResponses = [{ stdout: 'sha\n' }, { stdout: '' }];
@@ -196,7 +196,7 @@ describe('createWorktree', () => {
   });
 
   it('throws when second git worktree add also fails', async () => {
-    const { createWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
 
     // rev-parse succeeds, first add fails, cleanup no-ops, second add fails
     mockGitResponses = [
@@ -220,13 +220,13 @@ describe('createWorktree', () => {
 
 describe('removeWorktree', () => {
   it('resolves without throwing when path does not exist', async () => {
-    const { removeWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
+    const { removeWorktree } = await import('@lib/worktree/lifecycle.mjs');
     const fakePath = join(tmpdir(), 'does-not-exist-xyz-abc');
     await expect(removeWorktree(fakePath)).resolves.toBeUndefined();
   });
 
   it('resolves without throwing when the path exists', async () => {
-    const { removeWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
+    const { removeWorktree } = await import('@lib/worktree/lifecycle.mjs');
     const wtPath = join(sandbox, 'fake-wt');
     mkdirSync(wtPath);
 
@@ -240,7 +240,7 @@ describe('removeWorktree', () => {
   });
 
   it('logs error warning when worktree has uncommitted changes', async () => {
-    const { removeWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
+    const { removeWorktree } = await import('@lib/worktree/lifecycle.mjs');
     const wtPath = join(sandbox, 'dirty-wt');
     mkdirSync(wtPath);
 
@@ -258,7 +258,7 @@ describe('removeWorktree', () => {
   });
 
   it('does NOT delete branch when name does not match so-worktree-*', async () => {
-    const { removeWorktree } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
+    const { removeWorktree } = await import('@lib/worktree/lifecycle.mjs');
     const wtPath = join(sandbox, 'foreign-wt');
     mkdirSync(wtPath);
 
@@ -282,16 +282,16 @@ describe('removeWorktree', () => {
 
 describe('cleanupAllWorktrees', () => {
   it('resolves without throwing even when listWorktrees returns empty', async () => {
-    const { cleanupAllWorktrees } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { cleanupAllWorktrees } = await import('@lib/worktree/lifecycle.mjs');
+    const { listWorktrees } = await import('@lib/worktree/listing.mjs');
     listWorktrees.mockResolvedValueOnce([]);
 
     await expect(cleanupAllWorktrees()).resolves.toBeUndefined();
   });
 
   it('calls removeWorktree for each so-worktree-* worktree', async () => {
-    const { cleanupAllWorktrees } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { cleanupAllWorktrees } = await import('@lib/worktree/lifecycle.mjs');
+    const { listWorktrees } = await import('@lib/worktree/listing.mjs');
 
     const wtA = join(tmpdir(), 'so-worktrees', 'so-worktree-a');
     const wtB = join(tmpdir(), 'so-worktrees', 'so-worktree-b');
@@ -310,8 +310,8 @@ describe('cleanupAllWorktrees', () => {
   });
 
   it('does not remove main worktree (branch does not match so-worktree-*)', async () => {
-    const { cleanupAllWorktrees } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { cleanupAllWorktrees } = await import('@lib/worktree/lifecycle.mjs');
+    const { listWorktrees } = await import('@lib/worktree/listing.mjs');
 
     listWorktrees.mockResolvedValueOnce([
       { path: '/repo', branch: 'main', head: 'abc' },
@@ -327,8 +327,8 @@ describe('cleanupAllWorktrees', () => {
   });
 
   it('resolves without throwing when listWorktrees throws', async () => {
-    const { cleanupAllWorktrees } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { cleanupAllWorktrees } = await import('@lib/worktree/lifecycle.mjs');
+    const { listWorktrees } = await import('@lib/worktree/listing.mjs');
 
     listWorktrees.mockRejectedValueOnce(new Error('git exploded'));
 
@@ -336,8 +336,8 @@ describe('cleanupAllWorktrees', () => {
   });
 
   it('calls git worktree prune even when no so-worktree-* entries exist', async () => {
-    const { cleanupAllWorktrees } = await import('../../../scripts/lib/worktree/lifecycle.mjs');
-    const { listWorktrees } = await import('../../../scripts/lib/worktree/listing.mjs');
+    const { cleanupAllWorktrees } = await import('@lib/worktree/lifecycle.mjs');
+    const { listWorktrees } = await import('@lib/worktree/listing.mjs');
 
     listWorktrees.mockResolvedValueOnce([]);
 

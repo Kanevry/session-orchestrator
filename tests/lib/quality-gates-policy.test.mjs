@@ -6,7 +6,7 @@ import {
   loadQualityGatesPolicy,
   resolveCommand,
   configKeyToPolicyKey,
-} from '../../scripts/lib/quality-gates-policy.mjs';
+} from '@lib/quality-gates-policy.mjs';
 
 let sandbox;
 

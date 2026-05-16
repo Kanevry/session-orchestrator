@@ -19,9 +19,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
-import { getDefaults, loadOwnerConfig, writeOwnerConfig, validateOwnerConfig } from '../../scripts/lib/owner-yaml.mjs';
-import { getInterviewQuestions, applyInterviewAnswers, runOwnerInterview } from '../../scripts/lib/owner-interview.mjs';
-import { resolveSoul, loadAndResolveSoul } from '../../scripts/lib/soul-resolve.mjs';
+import { getDefaults, loadOwnerConfig, writeOwnerConfig, validateOwnerConfig } from '@lib/owner-yaml.mjs';
+import { getInterviewQuestions, applyInterviewAnswers, runOwnerInterview } from '@lib/owner-interview.mjs';
+import { resolveSoul, loadAndResolveSoul } from '@lib/soul-resolve.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

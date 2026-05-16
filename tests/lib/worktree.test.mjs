@@ -123,7 +123,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
     process.chdir(repoDir);
     // Import after chdir so zx uses the temp repo.
     ({ createWorktree, removeWorktree, listWorktrees, cleanupAllWorktrees, metaPathFor, WORKTREE_META_DIR } =
-      await import('../../scripts/lib/worktree.mjs'));
+      await import('@lib/worktree.mjs'));
   });
 
   afterAll(async () => {
@@ -415,8 +415,8 @@ describe.skipIf(!gitAvailable).sequential('worktree hardening helpers (#219)', (
     // process.cwd(). Use a cache-busting query param to force a fresh module
     // instance separate from the one loaded by the first describe block.
     const [worktreeMod, workspaceMod] = await Promise.all([
-      import('../../scripts/lib/worktree.mjs?hardening'),
-      import('../../scripts/lib/workspace.mjs?hardening'),
+      import('@lib/worktree.mjs?hardening'),
+      import('@lib/workspace.mjs?hardening'),
     ]);
     ({ createWorktree, removeWorktree } = worktreeMod);
     ({
@@ -588,7 +588,7 @@ describe.sequential('applyWorktreeExcludes (issue #192)', () => {
   let applyWorktreeExcludes;
 
   beforeAll(async () => {
-    ({ applyWorktreeExcludes } = await import('../../scripts/lib/worktree.mjs'));
+    ({ applyWorktreeExcludes } = await import('@lib/worktree.mjs'));
   });
 
   /**

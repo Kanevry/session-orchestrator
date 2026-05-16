@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { loadApplicableRules } from '../../scripts/lib/rule-loader.mjs';
+import { loadApplicableRules } from '@lib/rule-loader.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RULES_DIR = join(REPO_ROOT, '.claude', 'rules');

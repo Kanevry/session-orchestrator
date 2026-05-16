@@ -8,9 +8,9 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { merge } from '../../../scripts/lib/owner-config/merge.mjs';
-import { defaults } from '../../../scripts/lib/owner-config/defaults.mjs';
-import { CURRENT_OWNER_SCHEMA_VERSION } from '../../../scripts/lib/owner-config/constants.mjs';
+import { merge } from '@lib/owner-config/merge.mjs';
+import { defaults } from '@lib/owner-config/defaults.mjs';
+import { CURRENT_OWNER_SCHEMA_VERSION } from '@lib/owner-config/constants.mjs';
 
 describe('merge() — null/undefined/empty inputs', () => {
   it('returns the canonical defaults when both inputs are empty objects', () => {

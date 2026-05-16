@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ValidationError,
   validateSession,
-} from '../../../scripts/lib/session-schema/validator.mjs';
+} from '@lib/session-schema/validator.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixture

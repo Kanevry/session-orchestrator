@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import {
   checkVaultStaleness,
   renderBanner,
-} from '../../../scripts/lib/vault-staleness-banner.mjs';
+} from '@lib/vault-staleness-banner.mjs';
 
 // ---------------------------------------------------------------------------
 // Tmpdir helpers — one isolated repoRoot per test, cleaned up in afterEach.

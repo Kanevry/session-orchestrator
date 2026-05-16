@@ -18,7 +18,7 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { maybeRotate } from '../../scripts/lib/events-rotation.mjs';
+import { maybeRotate } from '@lib/events-rotation.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

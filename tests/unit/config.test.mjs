@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseSessionConfig } from '../../scripts/lib/config.mjs';
+import { parseSessionConfig } from '@lib/config.mjs';
 
 const CONFIG_HEADER = '## Session Config\n\n';
 

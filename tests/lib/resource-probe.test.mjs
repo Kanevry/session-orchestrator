@@ -8,7 +8,7 @@ import {
   parseMemoryPressureOutput,
   parseEtimeToMinutes,
   countZombieProcesses,
-} from '../../scripts/lib/resource-probe.mjs';
+} from '@lib/resource-probe.mjs';
 
 const DEFAULT_THRESHOLDS = {
   'ram-free-min-gb': 4,

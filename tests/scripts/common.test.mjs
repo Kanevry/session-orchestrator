@@ -32,19 +32,19 @@ describe('die', () => {
   });
 
   it('writes "ERROR: <message>" to stderr', async () => {
-    const { die } = await import('../../scripts/lib/common.mjs');
+    const { die } = await import('@lib/common.mjs');
     try { die('something failed'); } catch { /* swallow exit mock */ }
     expect(stderrSpy).toHaveBeenCalledWith('ERROR: something failed\n');
   });
 
   it('calls process.exit(1)', async () => {
-    const { die } = await import('../../scripts/lib/common.mjs');
+    const { die } = await import('@lib/common.mjs');
     try { die('boom'); } catch { /* swallow exit mock */ }
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('does not write to stdout', async () => {
-    const { die } = await import('../../scripts/lib/common.mjs');
+    const { die } = await import('@lib/common.mjs');
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try { die('nope'); } catch { /* swallow exit mock */ }
     expect(stdoutSpy).not.toHaveBeenCalled();
@@ -68,13 +68,13 @@ describe('warn', () => {
   });
 
   it('writes "WARNING: <message>" to stderr', async () => {
-    const { warn } = await import('../../scripts/lib/common.mjs');
+    const { warn } = await import('@lib/common.mjs');
     warn('heads up');
     expect(stderrSpy).toHaveBeenCalledWith('WARNING: heads up\n');
   });
 
   it('does not exit the process', async () => {
-    const { warn } = await import('../../scripts/lib/common.mjs');
+    const { warn } = await import('@lib/common.mjs');
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {});
     warn('non-fatal');
     expect(exitSpy).not.toHaveBeenCalled();
@@ -82,7 +82,7 @@ describe('warn', () => {
   });
 
   it('does not write to stdout', async () => {
-    const { warn } = await import('../../scripts/lib/common.mjs');
+    const { warn } = await import('@lib/common.mjs');
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     warn('quiet');
     expect(stdoutSpy).not.toHaveBeenCalled();
@@ -97,7 +97,7 @@ describe('warn', () => {
 describe('requireJq', () => {
   it('does not throw when jq is available (live system check)', async () => {
     // jq is required in the dev environment (common.sh already gates on it)
-    const { requireJq } = await import('../../scripts/lib/common.mjs');
+    const { requireJq } = await import('@lib/common.mjs');
     // If jq is not installed this test is informational — skip gracefully
     try {
       expect(() => requireJq()).not.toThrow();
@@ -108,7 +108,7 @@ describe('requireJq', () => {
 
   it('throws an Error when jq is not on PATH', async () => {
     // Force PATH to an empty string so execSync cannot find jq
-    const { requireJq } = await import('../../scripts/lib/common.mjs');
+    const { requireJq } = await import('@lib/common.mjs');
     const savedPath = process.env.PATH;
     process.env.PATH = '';
     try {
@@ -119,7 +119,7 @@ describe('requireJq', () => {
   });
 
   it('thrown error message mentions "jq"', async () => {
-    const { requireJq } = await import('../../scripts/lib/common.mjs');
+    const { requireJq } = await import('@lib/common.mjs');
     const savedPath = process.env.PATH;
     process.env.PATH = '';
     try {
@@ -130,7 +130,7 @@ describe('requireJq', () => {
   });
 
   it('thrown error message mentions install instructions', async () => {
-    const { requireJq } = await import('../../scripts/lib/common.mjs');
+    const { requireJq } = await import('@lib/common.mjs');
     const savedPath = process.env.PATH;
     process.env.PATH = '';
     try {
@@ -164,7 +164,7 @@ describe('findProjectRoot', () => {
   });
 
   it('returns the directory containing CLAUDE.md when found', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'CLAUDE.md'), '# test', 'utf8');
     const sub = path.join(tmpBase, 'sub', 'deep');
     await fs.mkdir(sub, { recursive: true });
@@ -172,7 +172,7 @@ describe('findProjectRoot', () => {
   });
 
   it('returns the directory containing .claude/ when found', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     const claudeDir = path.join(tmpBase, '.claude');
     await fs.mkdir(claudeDir, { recursive: true });
     const sub = path.join(tmpBase, 'nested');
@@ -181,13 +181,13 @@ describe('findProjectRoot', () => {
   });
 
   it('returns the directory containing AGENTS.md when found', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'AGENTS.md'), '# test', 'utf8');
     expect(findProjectRoot(tmpBase)).toBe(tmpBase);
   });
 
   it('returns startDir when no markers are found', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     // Use a truly bare temp dir with no Claude markers in ancestors
     // (we use a random subfolder under /tmp which shouldn't have markers)
     const bare = path.join(tmpBase, 'bare');
@@ -200,14 +200,14 @@ describe('findProjectRoot', () => {
   });
 
   it('respects CLAUDE_PROJECT_DIR env var when it contains CLAUDE.md', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'CLAUDE.md'), '# fast path', 'utf8');
     process.env.CLAUDE_PROJECT_DIR = tmpBase;
     expect(findProjectRoot('/tmp')).toBe(tmpBase);
   });
 
   it('ignores CLAUDE_PROJECT_DIR when it lacks markers', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     const emptyDir = path.join(tmpBase, 'empty');
     await fs.mkdir(emptyDir, { recursive: true });
     process.env.CLAUDE_PROJECT_DIR = emptyDir;
@@ -217,14 +217,14 @@ describe('findProjectRoot', () => {
   });
 
   it('respects CODEX_PROJECT_DIR env var when it contains AGENTS.md', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'AGENTS.md'), '# codex', 'utf8');
     process.env.CODEX_PROJECT_DIR = tmpBase;
     expect(findProjectRoot('/tmp')).toBe(tmpBase);
   });
 
   it('returns an absolute path', async () => {
-    const { findProjectRoot } = await import('../../scripts/lib/common.mjs');
+    const { findProjectRoot } = await import('@lib/common.mjs');
     const result = findProjectRoot(tmpBase);
     expect(path.isAbsolute(result)).toBe(true);
   });
@@ -252,19 +252,19 @@ describe('resolvePluginRoot', () => {
   });
 
   it('returns CLAUDE_PLUGIN_ROOT when set to an existing directory', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     process.env.CLAUDE_PLUGIN_ROOT = tmpBase;
     expect(resolvePluginRoot()).toBe(tmpBase);
   });
 
   it('returns CODEX_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT is absent', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     process.env.CODEX_PLUGIN_ROOT = tmpBase;
     expect(resolvePluginRoot()).toBe(tmpBase);
   });
 
   it('finds a directory containing skills/ via callerUrl walk', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     // Create a fake plugin dir with skills/ inside tmpBase
     const skillsDir = path.join(tmpBase, 'skills');
     await fs.mkdir(skillsDir, { recursive: true });
@@ -276,7 +276,7 @@ describe('resolvePluginRoot', () => {
   });
 
   it('finds a directory containing plugin.json via callerUrl walk', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'plugin.json'), '{}', 'utf8');
     const sub = path.join(tmpBase, 'scripts');
     await fs.mkdir(sub, { recursive: true });
@@ -285,7 +285,7 @@ describe('resolvePluginRoot', () => {
   });
 
   it('throws when no plugin markers found and env vars are unset', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     // Point callerUrl at a truly bare directory with no plugin markers up the tree.
     // /tmp itself should not be a plugin root.
     const bare = path.join(tmpBase, 'bare', 'deep');
@@ -308,13 +308,13 @@ describe('resolvePluginRoot', () => {
   });
 
   it('returns an absolute path', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     process.env.CLAUDE_PLUGIN_ROOT = tmpBase;
     expect(path.isAbsolute(resolvePluginRoot())).toBe(true);
   });
 
   it('ignores CLAUDE_PLUGIN_ROOT when it does not exist as a directory', async () => {
-    const { resolvePluginRoot } = await import('../../scripts/lib/common.mjs');
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
     process.env.CLAUDE_PLUGIN_ROOT = path.join(tmpBase, 'nonexistent-dir');
     // Falls through to next levels; cwd walk finds the actual plugin root
     try {

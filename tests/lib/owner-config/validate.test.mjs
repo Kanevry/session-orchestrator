@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { validate } from '../../../scripts/lib/owner-config/validate.mjs';
+import { validate } from '@lib/owner-config/validate.mjs';
 
 const HEX64 = 'a'.repeat(64);
 

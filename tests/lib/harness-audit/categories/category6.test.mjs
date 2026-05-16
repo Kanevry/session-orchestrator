@@ -17,7 +17,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { runCategory6 } from '../../../../scripts/lib/harness-audit/categories/category6.mjs';
+import { runCategory6 } from '@lib/harness-audit/categories/category6.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

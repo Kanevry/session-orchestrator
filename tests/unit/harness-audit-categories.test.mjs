@@ -26,7 +26,7 @@ import {
   runCategory5,
   runCategory6,
   runCategory7,
-} from '../../scripts/lib/harness-audit/categories.mjs';
+} from '@lib/harness-audit/categories.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

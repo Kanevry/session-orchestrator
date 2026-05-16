@@ -27,7 +27,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { execFileSync } = await import('node:child_process');
-const { stripStatusLabels } = await import('../../scripts/lib/issue-close-strip-labels.mjs');
+const { stripStatusLabels } = await import('@lib/issue-close-strip-labels.mjs');
 
 // ---------------------------------------------------------------------------
 // Helpers

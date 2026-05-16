@@ -19,7 +19,7 @@ import {
   digestSha256,
   digestSha256WithSalt,
   digestMultiBufferSha256,
-} from '../../scripts/lib/crypto-digest-utils.mjs';
+} from '@lib/crypto-digest-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // digestSha256Short

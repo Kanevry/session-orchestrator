@@ -16,7 +16,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readSubagents } from '../../scripts/lib/subagents-schema.mjs';
+import { readSubagents } from '@lib/subagents-schema.mjs';
 
 const HOOK = new URL('../../hooks/subagent-telemetry.mjs', import.meta.url).pathname;
 const JSONL_REL = join('.orchestrator', 'metrics', 'subagents.jsonl');

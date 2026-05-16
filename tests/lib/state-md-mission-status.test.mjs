@@ -3,7 +3,7 @@ import {
   parseStateMd,
   parseMissionStatus,
   writeMissionStatus,
-} from '../../scripts/lib/state-md.mjs';
+} from '@lib/state-md.mjs';
 
 /**
  * Minimal valid STATE.md fixture (no mission-status key).

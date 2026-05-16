@@ -13,7 +13,7 @@ import {
   writeSessionConfigBlock,
   writePolicyFile,
   runEcosystemWizard,
-} from '../../scripts/lib/ecosystem-wizard.mjs';
+} from '@lib/ecosystem-wizard.mjs';
 
 let sandbox;
 

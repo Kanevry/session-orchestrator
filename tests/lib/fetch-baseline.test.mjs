@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import { fetchBaselineFile } from '../../scripts/lib/fetch-baseline.mjs';
+import { fetchBaselineFile } from '@lib/fetch-baseline.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');

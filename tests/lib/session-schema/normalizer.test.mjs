@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { normalizeSession } from '../../../scripts/lib/session-schema/normalizer.mjs';
+import { normalizeSession } from '@lib/session-schema/normalizer.mjs';
 
 let errSpy;
 beforeEach(() => {

@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseStateMd } from '../../../scripts/lib/state-md/yaml-parser.mjs';
+import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
   readCurrentTask,
   appendDeviation,
   markExpressPathComplete,
-} from '../../../scripts/lib/state-md/body-sections.mjs';
+} from '@lib/state-md/body-sections.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

@@ -17,8 +17,8 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import { validateSession } from '../../../scripts/lib/session-schema/validator.mjs';
-import { aliasLegacyEndedAt } from '../../../scripts/lib/session-schema/aliases.mjs';
+import { validateSession } from '@lib/session-schema/validator.mjs';
+import { aliasLegacyEndedAt } from '@lib/session-schema/aliases.mjs';
 import { migrateEntry } from '../../../scripts/migrate-sessions-jsonl.mjs';
 
 const path = '.orchestrator/metrics/sessions.jsonl';

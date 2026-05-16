@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { OwnerConfigError } from '../../../scripts/lib/owner-config/error.mjs';
+import { OwnerConfigError } from '@lib/owner-config/error.mjs';
 
 describe('OwnerConfigError', () => {
   it('is an instance of Error', () => {

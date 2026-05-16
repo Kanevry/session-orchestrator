@@ -21,7 +21,7 @@ import {
   defaultRunId,
   readHostClass,
   finalizeState,
-} from '../../scripts/lib/autopilot-telemetry.mjs';
+} from '@lib/autopilot-telemetry.mjs';
 
 // Back-compat: also importable from autopilot.mjs
 import {
@@ -29,7 +29,7 @@ import {
   defaultRunId as defaultRunIdViaBarrel,
   readHostClass as readHostClassViaBarrel,
   finalizeState as finalizeStateViaBarrel,
-} from '../../scripts/lib/autopilot.mjs';
+} from '@lib/autopilot.mjs';
 
 let tmp;
 

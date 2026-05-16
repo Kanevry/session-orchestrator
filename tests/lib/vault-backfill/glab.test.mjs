@@ -25,7 +25,7 @@ import {
   glabRun,
   parseRepoList,
   setVerbose,
-} from '../../../scripts/lib/vault-backfill/glab.mjs';
+} from '@lib/vault-backfill/glab.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

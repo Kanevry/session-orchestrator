@@ -14,7 +14,7 @@ import {
   findChangedFiles,
   findChangedTestFiles,
   resolveTestFiles,
-} from '../../../scripts/lib/gates/gate-helpers.mjs';
+} from '@lib/gates/gate-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // csvToJsonArray

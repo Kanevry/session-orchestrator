@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_MODE, ALL_MODES, TIER_MODE_MAP } from '../../../scripts/lib/mode-selector/constants.mjs';
+import { DEFAULT_MODE, ALL_MODES, TIER_MODE_MAP } from '@lib/mode-selector/constants.mjs';
 
 describe('constants — DEFAULT_MODE', () => {
   it('DEFAULT_MODE is the string "feature"', () => {

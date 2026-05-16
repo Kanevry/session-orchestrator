@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { evaluate } from '../../../scripts/lib/resource-probe/evaluate.mjs';
+import { evaluate } from '@lib/resource-probe/evaluate.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures

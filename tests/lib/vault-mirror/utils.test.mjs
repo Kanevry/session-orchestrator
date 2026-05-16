@@ -13,7 +13,7 @@ import {
   truncateAtWord,
   yamlQuoteIfNeeded,
   parseFrontmatter,
-} from '../../../scripts/lib/vault-mirror/utils.mjs';
+} from '@lib/vault-mirror/utils.mjs';
 
 // ── subjectToSlug ─────────────────────────────────────────────────────────────
 

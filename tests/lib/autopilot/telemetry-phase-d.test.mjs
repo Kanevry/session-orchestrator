@@ -15,7 +15,7 @@ import {
   writeMultiStoryCoordinatorEntry,
   linkChildLoopToCoordinator,
   appendJsonlAtomic,
-} from '../../../scripts/lib/autopilot/telemetry.mjs';
+} from '@lib/autopilot/telemetry.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared tmp directory per test

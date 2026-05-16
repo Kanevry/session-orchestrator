@@ -35,7 +35,7 @@ afterEach(() => {
 
 describe('metaPathFor', () => {
   it('returns an absolute path ending with <suffix>.json', async () => {
-    const { metaPathFor } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { metaPathFor } = await import('@lib/worktree/meta.mjs');
     const result = metaPathFor('my-suffix');
     expect(result.endsWith('my-suffix.json')).toBe(true);
     // Must be absolute.
@@ -43,8 +43,8 @@ describe('metaPathFor', () => {
   });
 
   it('constructs path under WORKTREE_META_DIR relative to process.cwd()', async () => {
-    const { metaPathFor } = await import('../../../scripts/lib/worktree/meta.mjs');
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { metaPathFor } = await import('@lib/worktree/meta.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const cwd = process.cwd();
     const result = metaPathFor('wave1');
     // Expected: <cwd>/<WORKTREE_META_DIR>/wave1.json
@@ -52,7 +52,7 @@ describe('metaPathFor', () => {
   });
 
   it('embeds the suffix as the filename stem', async () => {
-    const { metaPathFor } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { metaPathFor } = await import('@lib/worktree/meta.mjs');
     const result = metaPathFor('agent-5');
     expect(basename(result)).toBe('agent-5.json');
   });
@@ -64,7 +64,7 @@ describe('metaPathFor', () => {
 
 describe('_writeWorktreeMeta', () => {
   it('writes a JSON file with all required fields', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
     const suffix = 'write-test';
     const info = {
       branch: `so-worktree-${suffix}`,
@@ -76,7 +76,7 @@ describe('_writeWorktreeMeta', () => {
 
     await _writeWorktreeMeta(suffix, info);
 
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const metaPath = join(sandbox, WORKTREE_META_DIR, `${suffix}.json`);
     expect(existsSync(metaPath)).toBe(true);
 
@@ -90,8 +90,8 @@ describe('_writeWorktreeMeta', () => {
   });
 
   it('creates the meta directory if it does not exist', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const suffix = 'dir-create';
     const metaDir = join(sandbox, WORKTREE_META_DIR);
 
@@ -110,8 +110,8 @@ describe('_writeWorktreeMeta', () => {
   });
 
   it('write is atomic — no .tmp file left on disk after success', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const suffix = 'atomic-test';
 
     await _writeWorktreeMeta(suffix, {
@@ -128,8 +128,8 @@ describe('_writeWorktreeMeta', () => {
   });
 
   it('sets baseSha to null when null is provided', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const suffix = 'null-sha';
 
     await _writeWorktreeMeta(suffix, {
@@ -146,8 +146,8 @@ describe('_writeWorktreeMeta', () => {
   });
 
   it('overwrites an existing meta file without error', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
-    const { WORKTREE_META_DIR } = await import('../../../scripts/lib/worktree/constants.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
+    const { WORKTREE_META_DIR } = await import('@lib/worktree/constants.mjs');
     const suffix = 'overwrite';
 
     const base = {
@@ -167,7 +167,7 @@ describe('_writeWorktreeMeta', () => {
   });
 
   it('throws when repoRoot is a file (mkdir fails)', async () => {
-    const { _writeWorktreeMeta } = await import('../../../scripts/lib/worktree/meta.mjs');
+    const { _writeWorktreeMeta } = await import('@lib/worktree/meta.mjs');
     // Point repoRoot to a path that cannot contain subdirectories (a file)
     const { writeFileSync } = await import('node:fs');
     const blockingFile = join(sandbox, 'blocking');

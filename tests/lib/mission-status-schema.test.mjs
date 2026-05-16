@@ -4,7 +4,7 @@ import {
   isValidMissionStatus,
   isValidMissionStatusTransition,
   validateMissionStatusEntry,
-} from '../../scripts/lib/mission-status-schema.mjs';
+} from '@lib/mission-status-schema.mjs';
 
 // Test 1: MISSION_STATUS_VALUES is frozen and contains exactly the 5 expected values in order
 describe('MISSION_STATUS_VALUES', () => {

@@ -52,7 +52,7 @@ describe('deriveRepo', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'git@github.com:org/repo.git\n') };
     });
-    const { deriveRepo } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('org/repo');
   });
 
@@ -62,7 +62,7 @@ describe('deriveRepo', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'https://gitlab.example.com/Kanevry/session-orchestrator.git\n') };
     });
-    const { deriveRepo } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('Kanevry/session-orchestrator');
   });
 
@@ -75,7 +75,7 @@ describe('deriveRepo', () => {
         execFileSync: vi.fn(() => { throw new Error('not a git repo'); }),
       };
     });
-    const { deriveRepo } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     const { basename } = await import('node:path');
     expect(deriveRepo()).toBe(basename(process.cwd()));
   });
@@ -87,7 +87,7 @@ describe('deriveRepo', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: mockExec };
     });
-    const { deriveRepo } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     deriveRepo();
     deriveRepo();
     deriveRepo();
@@ -108,7 +108,7 @@ describe('emitAction', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
     });
-    const { emitAction } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/40-learnings/my-learning.md';
     const { lines } = captureStdout(() => emitAction('created', filePath, 'learning', 'my-id', vaultDir));
@@ -124,7 +124,7 @@ describe('emitAction', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
     });
-    const { emitAction } = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/50-sessions/session.md';
     const { lines } = captureStdout(() => emitAction('created', filePath, 'session', 'sess-id', vaultDir));
@@ -158,7 +158,7 @@ describe('processLearning', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
     });
-    const mod = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
   }
 
@@ -322,7 +322,7 @@ describe('processSession', () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
     });
-    const mod = await import('../../../scripts/lib/vault-mirror/process.mjs');
+    const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processSession;
   }
 

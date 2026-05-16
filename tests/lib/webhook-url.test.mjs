@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   resolveWebhookUrl,
   WebhookConfigError,
-} from '../../scripts/lib/webhook-url.mjs';
+} from '@lib/webhook-url.mjs';
 
 // ---------------------------------------------------------------------------
 // Env-variable cleanup helpers

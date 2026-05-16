@@ -21,7 +21,7 @@ import {
   countProcessMatches,
   parseSwapUsageOutput,
   parseMemoryPressureOutput,
-} from '../../../scripts/lib/resource-probe/parsers.mjs';
+} from '@lib/resource-probe/parsers.mjs';
 
 // ---------------------------------------------------------------------------
 // parseEtimeToMinutes

@@ -20,8 +20,8 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { runCategory3 } from '../../../../scripts/lib/harness-audit/categories/category3.mjs';
-import { _resetWarnFlags } from '../../../../scripts/lib/harness-audit/categories/helpers.mjs';
+import { runCategory3 } from '@lib/harness-audit/categories/category3.mjs';
+import { _resetWarnFlags } from '@lib/harness-audit/categories/helpers.mjs';
 
 /**
  * Write a file, creating intermediate directories as needed.

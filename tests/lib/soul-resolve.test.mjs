@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
-import { resolveSoul, loadAndResolveSoul } from '../../scripts/lib/soul-resolve.mjs';
-import { getDefaults } from '../../scripts/lib/owner-yaml.mjs';
+import { resolveSoul, loadAndResolveSoul } from '@lib/soul-resolve.mjs';
+import { getDefaults } from '@lib/owner-yaml.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

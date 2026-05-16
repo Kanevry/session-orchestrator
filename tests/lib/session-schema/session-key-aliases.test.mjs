@@ -17,8 +17,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { SESSION_KEY_ALIASES } from '../../../scripts/lib/session-schema/constants.mjs';
-import { normalizeSession } from '../../../scripts/lib/session-schema/normalizer.mjs';
+import { SESSION_KEY_ALIASES } from '@lib/session-schema/constants.mjs';
+import { normalizeSession } from '@lib/session-schema/normalizer.mjs';
 
 describe('SESSION_KEY_ALIASES — per-alias normalization', () => {
   /** @type {Array<[string, string]>} */

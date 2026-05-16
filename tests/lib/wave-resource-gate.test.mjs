@@ -18,7 +18,7 @@ import { describe, test, expect } from 'vitest';
 import {
   evaluateWaveResourceGate,
   formatGateReport,
-} from '../../scripts/lib/wave-resource-gate.mjs';
+} from '@lib/wave-resource-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -172,20 +172,20 @@ describe('evaluateWaveResourceGate', () => {
     // unreachable probe code path. We use vi.doMock on the resource-probe module.
     const { vi } = await import('vitest');
     vi.resetModules();
-    vi.doMock('../../scripts/lib/resource-probe.mjs', () => ({
+    vi.doMock('@lib/resource-probe.mjs', () => ({
       probe: async () => {
         throw new Error('synthetic probe failure');
       },
     }));
     const { evaluateWaveResourceGate: evalGate } = await import(
-      '../../scripts/lib/wave-resource-gate.mjs'
+      '@lib/wave-resource-gate.mjs'
     );
     const result = await evalGate({
       config: makeConfig(),
       plannedAgents: 5,
       waveRole: 'Impl-Core',
     });
-    vi.doUnmock('../../scripts/lib/resource-probe.mjs');
+    vi.doUnmock('@lib/resource-probe.mjs');
     vi.resetModules();
     expect(result.decision).toBe('proceed');
     expect(result.agents).toBe(5);

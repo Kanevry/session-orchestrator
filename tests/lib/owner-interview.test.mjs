@@ -24,7 +24,7 @@ import { join } from 'node:path';
 // our tests provide a fixture name so we can exercise the write path.
 // ---------------------------------------------------------------------------
 
-vi.mock('../../scripts/lib/owner-yaml.mjs', async (importOriginal) => {
+vi.mock('@lib/owner-yaml.mjs', async (importOriginal) => {
   const original = await importOriginal();
   return {
     ...original,
@@ -41,7 +41,7 @@ import {
   getInterviewQuestions,
   applyInterviewAnswers,
   runOwnerInterview,
-} from '../../scripts/lib/owner-interview.mjs';
+} from '@lib/owner-interview.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-test tmpdir — owner.yaml writes go here, never to ~/.config

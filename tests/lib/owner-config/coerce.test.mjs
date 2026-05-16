@@ -8,8 +8,8 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { coerce } from '../../../scripts/lib/owner-config/coerce.mjs';
-import { OwnerConfigError } from '../../../scripts/lib/owner-config/error.mjs';
+import { coerce } from '@lib/owner-config/coerce.mjs';
+import { OwnerConfigError } from '@lib/owner-config/error.mjs';
 
 const HEX64 = 'b'.repeat(64);
 

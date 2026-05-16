@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { migrateEntry } from '../../scripts/migrate-sessions-jsonl.mjs';
-import { validateSession } from '../../scripts/lib/session-schema.mjs';
+import { validateSession } from '@lib/session-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

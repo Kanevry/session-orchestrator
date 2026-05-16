@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { runCategory5 } from '../../../../scripts/lib/harness-audit/categories/category5.mjs';
+import { runCategory5 } from '@lib/harness-audit/categories/category5.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

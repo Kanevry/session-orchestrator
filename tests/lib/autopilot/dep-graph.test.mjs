@@ -12,7 +12,7 @@ import {
   topologicalSort,
   nextReady,
   detectCycles,
-} from '../../../scripts/lib/autopilot/dep-graph.mjs';
+} from '@lib/autopilot/dep-graph.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers — build typed Issue objects for use in table rows.

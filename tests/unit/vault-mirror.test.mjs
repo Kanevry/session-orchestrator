@@ -1236,7 +1236,7 @@ describe('vault-mirror auto-commit (#31)', () => {
 import {
   generateSessionNote,
   generateSessionNoteV2,
-} from '../../scripts/lib/vault-mirror/render-sessions.mjs';
+} from '@lib/vault-mirror/render-sessions.mjs';
 
 const V1_ENTRY = () => ({
   session_id: 'session-2026-04-13',
@@ -1347,7 +1347,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
         execFileSync: vi.fn(() => 'git@gitlab.example:org/name.git\n'),
       };
     });
-    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('org/name');
     vi.doUnmock('node:child_process');
   });
@@ -1361,7 +1361,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
         execFileSync: vi.fn(() => 'https://github.com/Kanevry/session-orchestrator.git\n'),
       };
     });
-    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('Kanevry/session-orchestrator');
     vi.doUnmock('node:child_process');
   });
@@ -1377,7 +1377,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
         }),
       };
     });
-    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     const { basename } = await import('node:path');
     expect(deriveRepo()).toBe(basename(process.cwd()));
     vi.doUnmock('node:child_process');
@@ -1393,7 +1393,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
         execFileSync: mockExec,
       };
     });
-    const { deriveRepo } = await import('../../scripts/lib/vault-mirror/process.mjs');
+    const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     const r1 = deriveRepo();
     const r2 = deriveRepo();
     const r3 = deriveRepo();

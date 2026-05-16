@@ -410,7 +410,7 @@ describe('template loading', () => {
 // Scenario 12: renderTemplate unit tests
 // ---------------------------------------------------------------------------
 
-import { renderTemplate } from '../../scripts/lib/vault-backfill/template.mjs';
+import { renderTemplate } from '@lib/vault-backfill/template.mjs';
 
 describe('renderTemplate (unit)', () => {
   // Build a template that covers all substitution tokens.
@@ -492,7 +492,7 @@ describe('renderTemplate (unit)', () => {
 // Scenario 13: pathToSlug unit tests
 // ---------------------------------------------------------------------------
 
-import { pathToSlug } from '../../scripts/lib/vault-backfill/template.mjs';
+import { pathToSlug } from '@lib/vault-backfill/template.mjs';
 
 describe('pathToSlug (unit)', () => {
   it('already-kebab slug is unchanged', () => {
@@ -524,7 +524,7 @@ describe('pathToSlug (unit)', () => {
 // Scenario 14: validateManifest unit tests
 // ---------------------------------------------------------------------------
 
-import { validateManifest } from '../../scripts/lib/vault-backfill/manifest.mjs';
+import { validateManifest } from '@lib/vault-backfill/manifest.mjs';
 
 describe('validateManifest (unit)', () => {
   /**
@@ -687,7 +687,7 @@ describe('validateManifest (unit)', () => {
 // Scenario 15: yamlScalar — unit tests (Issue #247, CWE-1336)
 // ---------------------------------------------------------------------------
 
-import { yamlScalar } from '../../scripts/lib/vault-backfill/template.mjs';
+import { yamlScalar } from '@lib/vault-backfill/template.mjs';
 
 describe('yamlScalar (unit, #247)', () => {
   it('wraps a plain ASCII string in double quotes', () => {

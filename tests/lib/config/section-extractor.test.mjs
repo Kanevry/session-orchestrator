@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   _extractConfigSection,
   _parseKV,
-} from '../../../scripts/lib/config/section-extractor.mjs';
+} from '@lib/config/section-extractor.mjs';
 
 // ---------------------------------------------------------------------------
 // _extractConfigSection

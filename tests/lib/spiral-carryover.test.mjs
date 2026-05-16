@@ -36,7 +36,7 @@ const {
   computeTaskHash,
   findExistingCarryover,
   createSpiralCarryoverIssue,
-} = await import('../../scripts/lib/spiral-carryover.mjs');
+} = await import('@lib/spiral-carryover.mjs');
 
 // ---------------------------------------------------------------------------
 // Helpers

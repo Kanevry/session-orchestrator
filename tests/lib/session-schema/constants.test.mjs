@@ -14,7 +14,7 @@ import {
   REQUIRED_FIELDS,
   AGENT_SUMMARY_FIELDS,
   OPTIONAL_FIELDS,
-} from '../../../scripts/lib/session-schema/constants.mjs';
+} from '@lib/session-schema/constants.mjs';
 
 describe('CURRENT_SESSION_SCHEMA_VERSION', () => {
   it('is the number 1', () => {

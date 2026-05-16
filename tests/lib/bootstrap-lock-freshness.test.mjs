@@ -7,7 +7,7 @@ import {
   parseBootstrapLock,
   checkBootstrapLockFreshness,
   classifyVersionMismatch,
-} from '../../scripts/lib/bootstrap-lock-freshness.mjs';
+} from '@lib/bootstrap-lock-freshness.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

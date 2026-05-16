@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseStateMd } from '../../../scripts/lib/state-md/yaml-parser.mjs';
+import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
   touchUpdatedField,
   updateFrontmatterFields,
-} from '../../../scripts/lib/state-md/frontmatter-mutators.mjs';
+} from '@lib/state-md/frontmatter-mutators.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

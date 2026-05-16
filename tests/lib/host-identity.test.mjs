@@ -11,7 +11,7 @@ import {
   collectPrivateInfo,
   getHostFingerprint,
   resolveSalt,
-} from '../../scripts/lib/host-identity.mjs';
+} from '@lib/host-identity.mjs';
 
 describe('host-identity', () => {
   let tmpDir;

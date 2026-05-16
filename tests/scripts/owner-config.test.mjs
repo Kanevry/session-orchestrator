@@ -19,7 +19,7 @@ import {
   CURRENT_OWNER_SCHEMA_VERSION,
   VALID_TONE_STYLES,
   VALID_OUTPUT_LEVELS,
-} from '../../scripts/lib/owner-config.mjs';
+} from '@lib/owner-config.mjs';
 
 const HEX64 = 'a'.repeat(64);
 

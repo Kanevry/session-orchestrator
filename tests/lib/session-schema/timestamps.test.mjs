@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { clampTimestampsMonotonic } from '../../../scripts/lib/session-schema/timestamps.mjs';
+import { clampTimestampsMonotonic } from '@lib/session-schema/timestamps.mjs';
 
 // ---------------------------------------------------------------------------
 // No-op paths (entry returned unchanged by reference)

@@ -22,7 +22,7 @@ import {
   setupWorktree,
   teardownWorktree,
   runStoryPipeline,
-} from '../../../scripts/lib/autopilot/worktree-pipeline.mjs';
+} from '@lib/autopilot/worktree-pipeline.mjs';
 
 // ---------------------------------------------------------------------------
 // DI factory helpers
@@ -305,7 +305,7 @@ describe('setupWorktree', () => {
     });
 
     const { setupWorktree: freshSetupWorktree, WorktreeBoundaryError: FreshWBE } =
-      await import('../../../scripts/lib/autopilot/worktree-pipeline.mjs?adv-test-1');
+      await import('@lib/autopilot/worktree-pipeline.mjs?adv-test-1');
 
     const repoRoot = path.join(tmp, 'my-repo');
     const ctx = {

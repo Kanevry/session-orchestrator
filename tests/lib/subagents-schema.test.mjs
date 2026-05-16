@@ -28,7 +28,7 @@ import {
   migrateLegacySubagent,
   appendSubagent,
   readSubagents,
-} from '../../scripts/lib/subagents-schema.mjs';
+} from '@lib/subagents-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures

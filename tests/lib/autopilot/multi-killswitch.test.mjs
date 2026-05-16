@@ -10,7 +10,7 @@ import {
   evaluateMultiKillSwitches,
   decideCohortAction,
   shouldStopOrchestrator,
-} from '../../../scripts/lib/autopilot/multi-killswitch.mjs';
+} from '@lib/autopilot/multi-killswitch.mjs';
 
 // ---------------------------------------------------------------------------
 // STALE_SUBAGENT_MIN constant

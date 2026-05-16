@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listWorktrees, applyWorktreeExcludes } from '../../../scripts/lib/worktree/listing.mjs';
+import { listWorktrees, applyWorktreeExcludes } from '@lib/worktree/listing.mjs';
 
 // ---------------------------------------------------------------------------
 // Mock-executor factory — no vi.mock('zx') needed

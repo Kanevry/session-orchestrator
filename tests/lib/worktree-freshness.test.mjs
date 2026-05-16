@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 
 // checkWorktreeBaseRefFresh uses execFileSync (not zx), so it picks up process.cwd()
 // dynamically. Import at module level is safe — cwd is passed explicitly via `cwd` param.
-import { checkWorktreeBaseRefFresh } from '../../scripts/lib/worktree-freshness.mjs';
+import { checkWorktreeBaseRefFresh } from '@lib/worktree-freshness.mjs';
 
 // Note: createWorktree / removeWorktree use zx which captures cwd at import time.
 // The roundtrip test (test 8) imports these in a dedicated beforeAll AFTER chdir,
@@ -504,7 +504,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness roundtrip (createW
     roundtripRepo = await makeTempRepo();
     process.chdir(roundtripRepo);
     // Import after chdir so zx picks up the temp repo as its cwd.
-    ({ createWorktree, removeWorktree } = await import('../../scripts/lib/worktree.mjs'));
+    ({ createWorktree, removeWorktree } = await import('@lib/worktree.mjs'));
   });
 
   afterAll(async () => {

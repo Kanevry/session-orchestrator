@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { aliasLegacyEndedAt } from '../../../scripts/lib/session-schema/aliases.mjs';
+import { aliasLegacyEndedAt } from '@lib/session-schema/aliases.mjs';
 
 // ---------------------------------------------------------------------------
 // Pass-through (no mutation / no migration needed)

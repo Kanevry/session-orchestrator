@@ -8,7 +8,7 @@ import {
   LEARNING_TYPE,
   INITIAL_CONFIDENCE,
   DEFAULT_EXPIRY_DAYS,
-} from '../../scripts/lib/mode-selector-accuracy.mjs';
+} from '@lib/mode-selector-accuracy.mjs';
 
 let tmp;
 let learningsPath;

@@ -34,7 +34,7 @@ import {
   listSnapshots,
   deleteSnapshot,
   gcSnapshots,
-} from '../../scripts/lib/coordinator-snapshot.mjs';
+} from '@lib/coordinator-snapshot.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

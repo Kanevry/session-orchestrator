@@ -20,7 +20,7 @@ import {
   checkExistingMR,
   buildMrBody,
   maybeCreateDraftMR,
-} from '../../../scripts/lib/autopilot/mr-draft.mjs';
+} from '@lib/autopilot/mr-draft.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared helpers

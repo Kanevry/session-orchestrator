@@ -28,7 +28,7 @@ async function importEventsWithDir(dir) {
   // platform.mjs fast-path: CLAUDE_PROJECT_DIR beats CWD walk.
   process.env.CLAUDE_PROJECT_DIR = dir;
   vi.resetModules();
-  return import('../../scripts/lib/events.mjs');
+  return import('@lib/events.mjs');
 }
 
 // ---------------------------------------------------------------------------
@@ -37,19 +37,19 @@ async function importEventsWithDir(dir) {
 
 describe('eventsFilePath', () => {
   it('returns an absolute path', async () => {
-    const { eventsFilePath } = await import('../../scripts/lib/events.mjs');
+    const { eventsFilePath } = await import('@lib/events.mjs');
     expect(path.isAbsolute(eventsFilePath())).toBe(true);
   });
 
   it('ends with .orchestrator/metrics/events.jsonl', async () => {
-    const { eventsFilePath } = await import('../../scripts/lib/events.mjs');
+    const { eventsFilePath } = await import('@lib/events.mjs');
     const fp = eventsFilePath();
     const normalised = fp.split(path.sep).join('/');
     expect(normalised.endsWith('.orchestrator/metrics/events.jsonl')).toBe(true);
   });
 
   it('contains the ".orchestrator" segment', async () => {
-    const { eventsFilePath } = await import('../../scripts/lib/events.mjs');
+    const { eventsFilePath } = await import('@lib/events.mjs');
     expect(eventsFilePath()).toContain('.orchestrator');
   });
 });

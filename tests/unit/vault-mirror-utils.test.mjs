@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { load as parseYaml } from 'js-yaml';
 
-import { yamlQuoteIfNeeded } from '../../scripts/lib/vault-mirror/utils.mjs';
+import { yamlQuoteIfNeeded } from '@lib/vault-mirror/utils.mjs';
 
 describe('yamlQuoteIfNeeded', () => {
   it('returns value unquoted when no special chars are present', () => {

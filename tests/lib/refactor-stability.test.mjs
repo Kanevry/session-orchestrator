@@ -22,7 +22,7 @@ import { describe, it, expect } from 'vitest';
 
 describe('refactor-stability — autopilot.mjs public API after #358 split', () => {
   it('exports KILL_SWITCHES as a frozen object with expected key count', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(mod.KILL_SWITCHES).toBeDefined();
     expect(typeof mod.KILL_SWITCHES).toBe('object');
     expect(Object.isFrozen(mod.KILL_SWITCHES)).toBe(true);
@@ -40,7 +40,7 @@ describe('refactor-stability — autopilot.mjs public API after #358 split', () 
   });
 
   it('exports FLAG_BOUNDS as a frozen object with the 4 expected bound keys', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(mod.FLAG_BOUNDS).toBeDefined();
     expect(Object.isFrozen(mod.FLAG_BOUNDS)).toBe(true);
     expect(typeof mod.FLAG_BOUNDS.maxSessions).toBe('object');
@@ -50,12 +50,12 @@ describe('refactor-stability — autopilot.mjs public API after #358 split', () 
   });
 
   it('exports parseFlags as a function', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(typeof mod.parseFlags).toBe('function');
   });
 
   it('smoke: parseFlags([]) returns defaults from FLAG_BOUNDS', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     const result = mod.parseFlags([]);
     expect(typeof result.maxSessions).toBe('number');
     expect(typeof result.maxHours).toBe('number');
@@ -67,12 +67,12 @@ describe('refactor-stability — autopilot.mjs public API after #358 split', () 
   });
 
   it('exports runLoop as a function', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(typeof mod.runLoop).toBe('function');
   });
 
   it('exports telemetry re-exports: writeAutopilotJsonl, defaultRunId, readHostClass, finalizeState', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(typeof mod.writeAutopilotJsonl).toBe('function');
     expect(typeof mod.defaultRunId).toBe('function');
     expect(typeof mod.readHostClass).toBe('function');
@@ -80,7 +80,7 @@ describe('refactor-stability — autopilot.mjs public API after #358 split', () 
   });
 
   it('exports SCHEMA_VERSION as a number', async () => {
-    const mod = await import('../../scripts/lib/autopilot.mjs');
+    const mod = await import('@lib/autopilot.mjs');
     expect(typeof mod.SCHEMA_VERSION).toBe('number');
     expect(mod.SCHEMA_VERSION).toBe(1);
   });
@@ -92,18 +92,18 @@ describe('refactor-stability — autopilot.mjs public API after #358 split', () 
 
 describe('refactor-stability — state-md.mjs public API after #358 split', () => {
   it('exports parseRecommendations (re-exported from state-md/recommendations.mjs)', async () => {
-    const mod = await import('../../scripts/lib/state-md.mjs');
+    const mod = await import('@lib/state-md.mjs');
     expect(typeof mod.parseRecommendations).toBe('function');
   });
 
   it('smoke: parseRecommendations({}) returns null — no recommendation keys present', async () => {
-    const mod = await import('../../scripts/lib/state-md.mjs');
+    const mod = await import('@lib/state-md.mjs');
     const result = mod.parseRecommendations({});
     expect(result).toBeNull();
   });
 
   it('smoke: parseRecommendations with a known key returns an object with mode/priorities/rationale fields', async () => {
-    const mod = await import('../../scripts/lib/state-md.mjs');
+    const mod = await import('@lib/state-md.mjs');
     const result = mod.parseRecommendations({ 'recommended-mode': 'feature' });
     expect(result).not.toBeNull();
     expect(typeof result).toBe('object');
@@ -115,7 +115,7 @@ describe('refactor-stability — state-md.mjs public API after #358 split', () =
   });
 
   it('exports core state-md functions: parseStateMd, serializeStateMd, touchUpdatedField, updateFrontmatterFields', async () => {
-    const mod = await import('../../scripts/lib/state-md.mjs');
+    const mod = await import('@lib/state-md.mjs');
     expect(typeof mod.parseStateMd).toBe('function');
     expect(typeof mod.serializeStateMd).toBe('function');
     expect(typeof mod.touchUpdatedField).toBe('function');
@@ -123,7 +123,7 @@ describe('refactor-stability — state-md.mjs public API after #358 split', () =
   });
 
   it('exports readCurrentTask, appendDeviation, parseMissionStatus, writeMissionStatus, setMissionStatus, readMissionStatus', async () => {
-    const mod = await import('../../scripts/lib/state-md.mjs');
+    const mod = await import('@lib/state-md.mjs');
     expect(typeof mod.readCurrentTask).toBe('function');
     expect(typeof mod.appendDeviation).toBe('function');
     expect(typeof mod.parseMissionStatus).toBe('function');
@@ -139,17 +139,17 @@ describe('refactor-stability — state-md.mjs public API after #358 split', () =
 
 describe('refactor-stability — mode-selector.mjs public API after #358 split', () => {
   it('exports selectMode as a function', async () => {
-    const mod = await import('../../scripts/lib/mode-selector.mjs');
+    const mod = await import('@lib/mode-selector.mjs');
     expect(typeof mod.selectMode).toBe('function');
   });
 
   it('exports computeContextPressure (re-exported from mode-selector/context-pressure.mjs)', async () => {
-    const mod = await import('../../scripts/lib/mode-selector.mjs');
+    const mod = await import('@lib/mode-selector.mjs');
     expect(typeof mod.computeContextPressure).toBe('function');
   });
 
   it('smoke: selectMode(null) returns a Recommendation with required fields', async () => {
-    const mod = await import('../../scripts/lib/mode-selector.mjs');
+    const mod = await import('@lib/mode-selector.mjs');
     const result = mod.selectMode(null);
     expect(typeof result).toBe('object');
     expect(typeof result.mode).toBe('string');
@@ -160,7 +160,7 @@ describe('refactor-stability — mode-selector.mjs public API after #358 split',
   });
 
   it('smoke: computeContextPressure({}) returns score/components/level', async () => {
-    const mod = await import('../../scripts/lib/mode-selector.mjs');
+    const mod = await import('@lib/mode-selector.mjs');
     const result = mod.computeContextPressure({});
     expect(typeof result.score).toBe('number');
     expect(result.score).toBeGreaterThanOrEqual(0);
@@ -177,27 +177,27 @@ describe('refactor-stability — mode-selector.mjs public API after #358 split',
 
 describe('refactor-stability — learnings.mjs public API after #358 split', () => {
   it('exports validateLearning and normalizeLearning as functions', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(typeof mod.validateLearning).toBe('function');
     expect(typeof mod.normalizeLearning).toBe('function');
   });
 
   it('exports I/O re-exports: readLearnings, appendLearning, rewriteLearnings', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(typeof mod.readLearnings).toBe('function');
     expect(typeof mod.appendLearning).toBe('function');
     expect(typeof mod.rewriteLearnings).toBe('function');
   });
 
   it('exports filter re-exports: filterByScope, filterByHostClass, filterByType', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(typeof mod.filterByScope).toBe('function');
     expect(typeof mod.filterByHostClass).toBe('function');
     expect(typeof mod.filterByType).toBe('function');
   });
 
   it('exports ValidationError class', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(typeof mod.ValidationError).toBe('function');
     const err = new mod.ValidationError('test');
     expect(err).toBeInstanceOf(Error);
@@ -206,17 +206,17 @@ describe('refactor-stability — learnings.mjs public API after #358 split', () 
   });
 
   it('smoke: validateLearning({}) throws ValidationError (missing required field: id)', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(() => mod.validateLearning({})).toThrow(mod.ValidationError);
   });
 
   it('smoke: validateLearning(null) throws ValidationError', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(() => mod.validateLearning(null)).toThrow(mod.ValidationError);
   });
 
   it('smoke: normalizeLearning returns object with scope/host_class/anonymized defaults', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     const input = { id: 'x', type: 'fragile-file', subject: 's', insight: 'i',
       evidence: 'e', confidence: 0.8, source_session: 'test', created_at: '2026-01-01T00:00:00Z',
       expires_at: '2026-06-01T00:00:00Z' };
@@ -228,7 +228,7 @@ describe('refactor-stability — learnings.mjs public API after #358 split', () 
   });
 
   it('exports constants: VALID_SCOPES, CURRENT_SCHEMA_VERSION, LEARNING_TTL_DAYS', async () => {
-    const mod = await import('../../scripts/lib/learnings.mjs');
+    const mod = await import('@lib/learnings.mjs');
     expect(Array.isArray(mod.VALID_SCOPES)).toBe(true);
     expect(mod.VALID_SCOPES).toContain('local');
     expect(mod.VALID_SCOPES).toContain('private');
@@ -244,7 +244,7 @@ describe('refactor-stability — learnings.mjs public API after #358 split', () 
 
 describe('refactor-stability — session-schema.mjs public API after W2 split', () => {
   it('exports all 7 expected symbols', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(mod.ValidationError).toBeDefined();
     expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBeDefined();
     expect(mod.SESSION_KEY_ALIASES).toBeDefined();
@@ -255,12 +255,12 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
   });
 
   it('CURRENT_SESSION_SCHEMA_VERSION === 1', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
   });
 
   it('SESSION_KEY_ALIASES is frozen with key count in range [1, 50]', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(Object.isFrozen(mod.SESSION_KEY_ALIASES)).toBe(true);
     // Floor/ceiling per test-quality.md "Dynamic Artifact Counts" rule.
     // Current count: 13 safe-rename aliases. Allow growth but catch empty export.
@@ -270,7 +270,7 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
   });
 
   it('ValidationError is a class; instances have the correct name and inherit Error', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(typeof mod.ValidationError).toBe('function');
     const err = new mod.ValidationError('test message');
     expect(err).toBeInstanceOf(Error);
@@ -279,12 +279,12 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
   });
 
   it('smoke: validateSession({}) throws ValidationError (missing required field)', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(() => mod.validateSession({})).toThrow(mod.ValidationError);
   });
 
   it('smoke: normalizeSession({}) returns an object (never throws)', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     const result = mod.normalizeSession({});
     expect(typeof result).toBe('object');
     // schema_version tagged as 0 for records without it (legacy sentinel)
@@ -292,7 +292,7 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
   });
 
   it('smoke: clampTimestampsMonotonic is a function that returns unchanged entry when timestamps are valid', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(typeof mod.clampTimestampsMonotonic).toBe('function');
     const entry = { started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T01:00:00Z' };
     const result = mod.clampTimestampsMonotonic(entry);
@@ -302,7 +302,7 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
   });
 
   it('smoke: aliasLegacyEndedAt is a function that aliases ended_at to completed_at', async () => {
-    const mod = await import('../../scripts/lib/session-schema.mjs');
+    const mod = await import('@lib/session-schema.mjs');
     expect(typeof mod.aliasLegacyEndedAt).toBe('function');
     const entry = { started_at: '2026-01-01T00:00:00Z', ended_at: '2026-01-01T01:00:00Z' };
     const result = mod.aliasLegacyEndedAt(entry);
@@ -316,7 +316,7 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
 
 describe('refactor-stability — owner-config.mjs public API after W2 split', () => {
   it('exports all 10 expected symbols', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(mod.CURRENT_OWNER_SCHEMA_VERSION).toBeDefined();
     expect(mod.VALID_TONE_STYLES).toBeDefined();
     expect(mod.VALID_OUTPUT_LEVELS).toBeDefined();
@@ -330,12 +330,12 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
   });
 
   it('CURRENT_OWNER_SCHEMA_VERSION === 1', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(mod.CURRENT_OWNER_SCHEMA_VERSION).toBe(1);
   });
 
   it('all VALID_* arrays are frozen with expected member counts', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     // Floor/ceiling per test-quality.md "Dynamic Artifact Counts" rule.
     expect(Object.isFrozen(mod.VALID_TONE_STYLES)).toBe(true);
     expect(mod.VALID_TONE_STYLES.length).toBeGreaterThanOrEqual(2);
@@ -355,7 +355,7 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
   });
 
   it('OwnerConfigError is a class extending Error with .errors array', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(typeof mod.OwnerConfigError).toBe('function');
     const err = new mod.OwnerConfigError('bad config', ['field A is missing']);
     expect(err).toBeInstanceOf(Error);
@@ -365,7 +365,7 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
   });
 
   it('smoke: defaults() returns object with schema-version field equal to CURRENT_OWNER_SCHEMA_VERSION', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(typeof mod.defaults).toBe('function');
     const d = mod.defaults();
     expect(typeof d).toBe('object');
@@ -373,7 +373,7 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
   });
 
   it('smoke: validate({}) returns {ok: false, errors: [...], value: null}', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(typeof mod.validate).toBe('function');
     const result = mod.validate({});
     expect(result.ok).toBe(false);
@@ -383,13 +383,13 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
   });
 
   it('smoke: coerce({}) throws OwnerConfigError', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(typeof mod.coerce).toBe('function');
     expect(() => mod.coerce({})).toThrow(mod.OwnerConfigError);
   });
 
   it('smoke: merge(null, null) returns a default-filled object', async () => {
-    const mod = await import('../../scripts/lib/owner-config.mjs');
+    const mod = await import('@lib/owner-config.mjs');
     expect(typeof mod.merge).toBe('function');
     const result = mod.merge(null, null);
     expect(typeof result).toBe('object');
@@ -406,7 +406,7 @@ describe('refactor-stability — owner-config.mjs public API after W2 split', ()
 
 describe('refactor-stability — worktree.mjs public API after W2 split', () => {
   it('exports all 7 expected symbols', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     expect(mod.WORKTREE_META_DIR).toBeDefined();
     expect(mod.metaPathFor).toBeDefined();
     expect(mod.applyWorktreeExcludes).toBeDefined();
@@ -417,14 +417,14 @@ describe('refactor-stability — worktree.mjs public API after W2 split', () => 
   });
 
   it('WORKTREE_META_DIR is a string ending with the expected segment', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     expect(typeof mod.WORKTREE_META_DIR).toBe('string');
     // The canonical path ends with 'worktree-meta' — catch accidental renames.
     expect(mod.WORKTREE_META_DIR.endsWith('worktree-meta')).toBe(true);
   });
 
   it('metaPathFor is a function; returns a string containing the given suffix', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     expect(typeof mod.metaPathFor).toBe('function');
     const result = mod.metaPathFor('test-suffix');
     expect(typeof result).toBe('string');
@@ -432,7 +432,7 @@ describe('refactor-stability — worktree.mjs public API after W2 split', () => 
   });
 
   it('all async lifecycle functions are present and typeof === "function"', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     // Do NOT call createWorktree/cleanupAllWorktrees — they touch git.
     expect(typeof mod.createWorktree).toBe('function');
     expect(typeof mod.removeWorktree).toBe('function');
@@ -440,12 +440,12 @@ describe('refactor-stability — worktree.mjs public API after W2 split', () => 
   });
 
   it('applyWorktreeExcludes is a function', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     expect(typeof mod.applyWorktreeExcludes).toBe('function');
   });
 
   it('listWorktrees is a function', async () => {
-    const mod = await import('../../scripts/lib/worktree.mjs');
+    const mod = await import('@lib/worktree.mjs');
     expect(typeof mod.listWorktrees).toBe('function');
   });
 });

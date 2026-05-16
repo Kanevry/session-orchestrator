@@ -23,7 +23,7 @@ import {
   commandMatchesBlocked,
   suggestForScopeViolation,
   suggestForCommandBlock,
-} from '../../scripts/lib/hardening.mjs';
+} from '@lib/hardening.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

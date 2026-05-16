@@ -41,7 +41,7 @@ function writeFakeTemplate(dir, content = FAKE_TEMPLATE_CONTENT) {
 // slugToHumanName + pathToSlug — no side-effects; import once
 // ---------------------------------------------------------------------------
 
-import { slugToHumanName, pathToSlug } from '../../../scripts/lib/vault-backfill/template.mjs';
+import { slugToHumanName, pathToSlug } from '@lib/vault-backfill/template.mjs';
 
 describe('slugToHumanName', () => {
   it('converts a multi-word kebab slug to Title Case', () => {
@@ -130,7 +130,7 @@ describe('loadTemplate', () => {
     writeFakeTemplate(tmpDir, FAKE_TEMPLATE_CONTENT);
     process.env.PROJECTS_BASELINE_DIR = tmpDir;
 
-    const { loadTemplate } = await import('../../../scripts/lib/vault-backfill/template.mjs');
+    const { loadTemplate } = await import('@lib/vault-backfill/template.mjs');
     const dieFn = vi.fn();
     const result = loadTemplate(dieFn);
 
@@ -145,7 +145,7 @@ describe('loadTemplate', () => {
     process.env.PROJECTS_BASELINE_DIR = emptyDir;
 
     try {
-      const { loadTemplate } = await import('../../../scripts/lib/vault-backfill/template.mjs');
+      const { loadTemplate } = await import('@lib/vault-backfill/template.mjs');
       const dieFn = vi.fn();
       loadTemplate(dieFn);
 
@@ -164,7 +164,7 @@ describe('loadTemplate', () => {
     process.env.PROJECTS_BASELINE_DIR = tmpDir;
 
     // Dynamic import after resetModules gives a fresh module with null cache
-    const mod = await import('../../../scripts/lib/vault-backfill/template.mjs');
+    const mod = await import('@lib/vault-backfill/template.mjs');
     const dieFn = vi.fn();
 
     // First call — populates cache
@@ -184,7 +184,7 @@ describe('loadTemplate', () => {
     writeFakeTemplate(tmpDir, customContent);
     process.env.PROJECTS_BASELINE_DIR = tmpDir;
 
-    const { loadTemplate, TEMPLATE_PATH } = await import('../../../scripts/lib/vault-backfill/template.mjs');
+    const { loadTemplate, TEMPLATE_PATH } = await import('@lib/vault-backfill/template.mjs');
     const dieFn = vi.fn();
     const result = loadTemplate(dieFn);
 

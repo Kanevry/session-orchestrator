@@ -11,12 +11,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { syncRules } from '../../scripts/lib/rules-sync.mjs';
+import { syncRules } from '@lib/rules-sync.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// NOTE: `new URL(...)` does NOT resolve vitest's `@lib` alias — it does standard
+// URL resolution. SCRIPT_PATH is passed to a spawned child Node process that has
+// no `@lib` alias either. Keep this string as a raw relative path (#407 exempt).
 const SCRIPT_PATH = fileURLToPath(new URL('../../scripts/lib/rules-sync.mjs', import.meta.url));
 
 function makeTmp() {

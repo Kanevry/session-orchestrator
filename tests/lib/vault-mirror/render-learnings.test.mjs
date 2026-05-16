@@ -8,7 +8,7 @@ import {
   detectLearningSchema,
   generateLearningNote,
   generateLearningNoteV2,
-} from '../../../scripts/lib/vault-mirror/render-learnings.mjs';
+} from '@lib/vault-mirror/render-learnings.mjs';
 
 // ── detectLearningSchema ──────────────────────────────────────────────────────
 

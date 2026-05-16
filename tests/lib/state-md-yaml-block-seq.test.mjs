@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseStateMd,
   serializeStateMd,
-} from '../../scripts/lib/state-md.mjs';
+} from '@lib/state-md.mjs';
 
 const WITH_DOCS_TASKS = `---
 schema-version: 1

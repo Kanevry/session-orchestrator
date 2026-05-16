@@ -32,7 +32,7 @@ import {
   loadLatestBaselineResult,
   isCacheValid,
   shouldSkipIncremental,
-} from '../../scripts/lib/quality-gates-cache.mjs';
+} from '@lib/quality-gates-cache.mjs';
 
 const GIT_ENV = {
   ...process.env,

@@ -24,7 +24,7 @@ import {
   resolveProjectDir,
   resolveStateDir,
   resolveConfigFile,
-} from '../../scripts/lib/platform.mjs';
+} from '@lib/platform.mjs';
 
 // ---------------------------------------------------------------------------
 // 1. Module loads without error — all exports are defined

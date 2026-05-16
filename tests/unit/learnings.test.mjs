@@ -19,7 +19,7 @@ import {
   appendLearning,
   CURRENT_SCHEMA_VERSION,
   ValidationError,
-} from '../../scripts/lib/learnings.mjs';
+} from '@lib/learnings.mjs';
 
 const LEGACY = () => ({
   id: 'schema-test-1',

@@ -6,7 +6,7 @@ import {
   parseAgentFrontmatter,
   validateAgentFrontmatter,
   validateAgentFile,
-} from '../../scripts/lib/agent-frontmatter.mjs';
+} from '@lib/agent-frontmatter.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');

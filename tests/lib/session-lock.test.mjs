@@ -21,7 +21,7 @@ import {
   forceAcquire,
   release,
   checkStale,
-} from '../../scripts/lib/session-lock.mjs';
+} from '@lib/session-lock.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
 const DEAD_PID = 999999;
