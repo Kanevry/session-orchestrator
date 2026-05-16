@@ -21,7 +21,12 @@ export default defineConfig({
     // The schema-drift gate is enforced by the .gitlab-ci.yml `schema-drift`
     // stage via the sync-vault-schema.mjs script directly, not via vitest.
     // Local dev can still run: `npx vitest skills/vault-sync/tests/schema-drift.test.mjs`.
-    testTimeout: 10000,
+    // CI override (30 s) tolerates concurrent-Claude CPU starvation on the
+    // shared Mac shell-executor runner (testing.md > Shared-Hardware Runner
+    // Contention, #392 cautionary tale, #408 mitigation). Local dev keeps
+    // 10 s for fast hang detection. Per testing.md: 30 s is the ceiling
+    // — do not push higher as a default.
+    testTimeout: process.env.CI ? 30000 : 10000,
     // pool: 'forks' + teardownTimeout are belt+suspenders hardening against
     // tinypool worker-exit hangs. Integration tests spawn subprocesses (hooks,
     // registry, snapshots); process-fork pool has cleaner teardown than the
