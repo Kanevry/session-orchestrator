@@ -74,7 +74,14 @@ variables:
 
 gitleaks-scan:
   stage: security
-  image: zricethezav/gitleaks:latest
+  # zricethezav/gitleaks:latest has `gitleaks` as ENTRYPOINT, which causes
+  # the default GitLab Runner script-wrapper (`sh -c <script>`) to fail with
+  # `unknown command "sh" for "gitleaks"`. Override the entrypoint to an
+  # empty string so the runner can invoke `sh` directly. See #408 (recurrence
+  # of cb3e942-era CI-image breakage).
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
   interruptible: true
   timeout: 5m
   script:
