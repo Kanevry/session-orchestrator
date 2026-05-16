@@ -227,15 +227,15 @@ Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) routed t
 
 ## Components
 
-- **34 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, architecture, domain-model, ubiquitous-language, autopilot, mode-selector, repo-audit, convergence-monitoring, using-orchestrator, frontmatter-guard, test-runner, playwright-driver, peekaboo-driver, memory-cleanup, gitlab-portfolio (session-start sub-files: `phase-2-5-docs-planning.md`, `phase-4-5-resource-health.md`, `phase-7-5-mode-selector.md`, `phase-8-5-express-path.md`)
-- **14 Commands**: `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`
+- **37 Skills**: bootstrap, session-start, session-plan, wave-executor, session-end, claude-md-drift-check, ecosystem-health, gitlab-ops, quality-gates, discovery, plan, evolve, vault-sync, vault-mirror, daily, docs-orchestrator, skill-creator, mcp-builder, hook-development, architecture, domain-model, ubiquitous-language, autopilot, mode-selector, repo-audit, convergence-monitoring, using-orchestrator, frontmatter-guard, test-runner, playwright-driver, peekaboo-driver, memory-cleanup, gitlab-portfolio, brainstorm, debug, write-executable-plan (session-start sub-files: `phase-2-5-docs-planning.md`, `phase-4-5-resource-health.md`, `phase-7-5-mode-selector.md`, `phase-8-5-express-path.md`)
+- **16 Commands**: `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`
 - **11 Agents**: code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, session-reviewer, docs-writer, architect-reviewer, qa-strategist, analyst, ux-evaluator
 - **10 hook event matchers / 10 handlers**: SessionStart (banner + init), PreToolUse/Edit\|Write (scope enforcement), PreToolUse/Bash (destructive-command guard + enforce-commands), PostToolUse (edit validation), Stop (session events), SubagentStop (telemetry), PostToolUseFailure (corrective context), PostToolBatch (wave signal), SubagentStart (telemetry), CwdChanged (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
 - **Output Styles**: 3 (session-report, wave-summary, finding-report) for consistent reporting
 - **`.orchestrator/policy/`**: runtime policy files, e.g. `blocked-commands.json` with 13 rules consumed by the destructive-command guard
 - **`.claude/rules/`**: always-on contributor rules, e.g. `parallel-sessions.md` (PSA-001 through PSA-004)
 - **`.codex-plugin/`**: Codex plugin manifest (`plugin.json`), compatibility config, 3 agent role definitions
-- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 5129 tests
+- **`scripts/`**: deterministic scripts (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 5256 tests
 
 ## Comparison
 

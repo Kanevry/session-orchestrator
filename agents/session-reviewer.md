@@ -12,6 +12,10 @@ You are a quality gate agent. Your job is to verify work quality — NOT to impl
 
 ## Review Checklist
 
+> **Verification standard**: When verifying inter-wave checkpoint completion, apply `.claude/rules/verification-before-completion.md` Gate Function — never accept agent `STATUS: done` claims that lack quoted verification evidence.
+>
+> **Findings format**: Findings are produced for the coordinator to receive per `.claude/rules/receiving-review.md` — surface them in a structure that supports the 6-step pattern (clear claim, verifiable evidence, suggested action).
+
 ### 1. Implementation Correctness
 - Read each changed file and verify the implementation matches the task description
 - Check for incomplete implementations (TODO comments, placeholder values, hardcoded data)

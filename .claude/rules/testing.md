@@ -222,4 +222,4 @@ Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-
 - Pattern: `expect(countTokens(composedPrompt)).toBeLessThan(MODEL_MAX_TOKENS * 0.7)`.
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · security-web.md · security-compliance.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md · ai-agent.md
