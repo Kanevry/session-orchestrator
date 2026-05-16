@@ -1,11 +1,18 @@
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import { main } from '@lib/gitlab-portfolio/cli.mjs';
+
+// Vault dir must be inside os.homedir() to pass validatePathInsideProject (#44 SEC fix).
+// The path does not need to exist — validatePathInsideProject swallows ENOENT.
+const TEST_VAULT_DIR = path.join(os.homedir(), '_test-vault-gitlab-portfolio');
 
 // ── Fixture helpers ────────────────────────────────────────────────────────────
 
 function makeMinimalConfig(overrides = {}) {
   return {
-    'vault-integration': { 'vault-dir': '/vault' },
+    'vault-integration': { 'vault-dir': TEST_VAULT_DIR },
     'gitlab-portfolio': { enabled: true, mode: 'warn', 'stale-days': 30, 'critical-labels': ['priority:critical'] },
     ...overrides,
   };
@@ -25,8 +32,8 @@ function makeSuccessfulDeps(extraOverrides = {}) {
     parseConfig: vi.fn().mockReturnValue(makeMinimalConfig()),
     readConfig: vi.fn().mockResolvedValue('# mock config'),
     discoverRepos: vi.fn().mockResolvedValue([
-      { slug: 'repo-a', repo: 'org/repo-a', vcs: 'gitlab', overviewPath: '/vault/01-projects/repo-a/_overview.md' },
-      { slug: 'repo-b', repo: 'org/repo-b', vcs: 'github', overviewPath: '/vault/01-projects/repo-b/_overview.md' },
+      { slug: 'repo-a', repo: 'org/repo-a', vcs: 'gitlab', overviewPath: path.join(TEST_VAULT_DIR, '01-projects/repo-a/_overview.md') },
+      { slug: 'repo-b', repo: 'org/repo-b', vcs: 'github', overviewPath: path.join(TEST_VAULT_DIR, '01-projects/repo-b/_overview.md') },
     ]),
     fetchIssues: vi.fn().mockResolvedValue(new Map([
       ['org/repo-a', { ok: true, issues: [] }],
@@ -34,7 +41,7 @@ function makeSuccessfulDeps(extraOverrides = {}) {
     ])),
     summarize: vi.fn().mockReturnValue(summaryFixture),
     render: vi.fn().mockReturnValue('---\n_generator: session-orchestrator-gitlab-portfolio@1\n---\n# Portfolio\n'),
-    write: vi.fn().mockReturnValue({ action: 'written', path: '/vault/01-projects/_PORTFOLIO.md' }),
+    write: vi.fn().mockReturnValue({ action: 'written', path: path.join(TEST_VAULT_DIR, '01-projects/_PORTFOLIO.md') }),
     now: () => new Date('2026-01-15T00:00:00Z'),
     fs: {
       readFile: vi.fn().mockRejectedValue(new Error('ENOENT')), // No existing file
@@ -92,7 +99,7 @@ describe('main — gitlab-portfolio.enabled: false', () => {
   it('returns exitCode 0 and action disabled when feature is disabled', async () => {
     const deps = {
       parseConfig: vi.fn().mockReturnValue({
-        'vault-integration': { 'vault-dir': '/vault' },
+        'vault-integration': { 'vault-dir': TEST_VAULT_DIR },
         'gitlab-portfolio': { enabled: false },
       }),
       readConfig: vi.fn().mockResolvedValue('# mock config'),
@@ -172,7 +179,7 @@ describe('main — happy path with all deps mocked', () => {
 describe('main — --dry-run flag', () => {
   it('returns exitCode 0 and action dry-run when write returns dry-run', async () => {
     const deps = makeSuccessfulDeps({
-      write: vi.fn().mockReturnValue({ action: 'dry-run', path: '/vault/01-projects/_PORTFOLIO.md' }),
+      write: vi.fn().mockReturnValue({ action: 'dry-run', path: path.join(TEST_VAULT_DIR, '01-projects/_PORTFOLIO.md') }),
     });
 
     const result = await main(['--dry-run'], deps);
@@ -182,7 +189,7 @@ describe('main — --dry-run flag', () => {
   });
 
   it('passes dryRun:true to the write dep when --dry-run is set', async () => {
-    const mockWrite = vi.fn().mockReturnValue({ action: 'dry-run', path: '/vault/01-projects/_PORTFOLIO.md' });
+    const mockWrite = vi.fn().mockReturnValue({ action: 'dry-run', path: path.join(TEST_VAULT_DIR, '01-projects/_PORTFOLIO.md') });
     const deps = makeSuccessfulDeps({ write: mockWrite });
 
     await main(['--dry-run'], deps);
@@ -199,7 +206,7 @@ describe('main — strict mode with failed repos', () => {
   it('returns exitCode 2 when mode is strict and 1 repo fetch fails', async () => {
     const deps = makeSuccessfulDeps({
       parseConfig: vi.fn().mockReturnValue({
-        'vault-integration': { 'vault-dir': '/vault' },
+        'vault-integration': { 'vault-dir': TEST_VAULT_DIR },
         'gitlab-portfolio': { enabled: true, mode: 'strict', 'stale-days': 30, 'critical-labels': [] },
       }),
       fetchIssues: vi.fn().mockResolvedValue(new Map([
@@ -217,7 +224,7 @@ describe('main — strict mode with failed repos', () => {
   it('returns exitCode 0 when mode is warn and 1 repo fetch fails', async () => {
     const deps = makeSuccessfulDeps({
       parseConfig: vi.fn().mockReturnValue({
-        'vault-integration': { 'vault-dir': '/vault' },
+        'vault-integration': { 'vault-dir': TEST_VAULT_DIR },
         'gitlab-portfolio': { enabled: true, mode: 'warn', 'stale-days': 30, 'critical-labels': [] },
       }),
       fetchIssues: vi.fn().mockResolvedValue(new Map([
@@ -259,6 +266,120 @@ describe('main — config load failure', () => {
 
     const result = await main([], deps);
 
+    expect(result.exitCode).toBe(2);
+    expect(result.action).toBe('error');
+  });
+});
+
+// ── --vault-dir path-traversal guard (#44) ────────────────────────────────────
+
+describe('main — --vault-dir path-traversal guard (#44)', () => {
+  /**
+   * Minimal deps that let the pipeline reach the path-traversal guard.
+   * The guard fires AFTER config is loaded and the enabled flag is checked,
+   * but BEFORE discoverRepos — so only parseConfig + readConfig are needed.
+   */
+  function makeGuardDeps() {
+    return {
+      parseConfig: vi.fn().mockReturnValue({
+        'vault-integration': { 'vault-dir': TEST_VAULT_DIR },
+        'gitlab-portfolio': { enabled: true, mode: 'warn', 'stale-days': 30, 'critical-labels': [] },
+      }),
+      readConfig: vi.fn().mockResolvedValue('# mock config'),
+    };
+  }
+
+  it('rejects --vault-dir outside os.homedir() with exitCode 2 (lexical guard)', async () => {
+    // Arrange
+    const deps = makeGuardDeps();
+
+    // Act — /tmp is outside os.homedir() on macOS/Linux; lexical phase catches it
+    const result = await main(['--vault-dir', '/tmp/etc'], deps);
+
+    // Assert
+    expect(result.exitCode).toBe(2);
+    expect(result.action).toBe('error');
+  });
+
+  it('rejects --vault-dir with relative traversal sequence outside home with exitCode 2 (lexical guard)', async () => {
+    // Arrange
+    const deps = makeGuardDeps();
+
+    // Act — even though expandHome keeps this relative, path.resolve(home, '../../etc') escapes home
+    const result = await main(['--vault-dir', '../../etc'], deps);
+
+    // Assert
+    expect(result.exitCode).toBe(2);
+    expect(result.action).toBe('error');
+  });
+
+  it('rejects --vault-dir equal to os.homedir() itself with exitCode 2 (must be a child, not root)', async () => {
+    // Arrange — vault-dir must be a CHILD of ~, not ~ itself
+    const deps = makeGuardDeps();
+
+    // Act
+    const result = await main(['--vault-dir', os.homedir()], deps);
+
+    // Assert
+    expect(result.exitCode).toBe(2);
+    expect(result.action).toBe('error');
+  });
+
+  it('accepts --vault-dir that is a valid child of os.homedir() (guard does not reject)', async () => {
+    // Arrange — TEST_VAULT_DIR is inside os.homedir() (defined at file top)
+    const deps = makeGuardDeps();
+
+    // Act — guard passes; pipeline reaches discoverRepos which is not injected here,
+    // so it will throw → exitCode 2 action error, but NOT due to the path guard.
+    // We confirm the guard itself didn't fire by checking discoverRepos was attempted.
+    // To isolate: we inject a discoverRepos that returns [] so the pipeline completes cleanly.
+    const fullDeps = {
+      ...deps,
+      discoverRepos: vi.fn().mockResolvedValue([]),
+      fetchIssues: vi.fn(),
+      summarize: vi.fn(),
+      render: vi.fn(),
+      write: vi.fn(),
+      now: () => new Date('2026-01-15T00:00:00Z'),
+      fs: {
+        readFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
+        readdir: vi.fn(),
+        stat: vi.fn(),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+        mkdirSync: vi.fn(),
+        existsSync: vi.fn().mockReturnValue(false),
+      },
+    };
+
+    const result = await main(['--vault-dir', TEST_VAULT_DIR], fullDeps);
+
+    // Guard passed — pipeline reached discoverRepos and found no repos (exitCode 0, action no-repos)
+    expect(result.exitCode).toBe(0);
+    expect(result.action).toBe('no-repos');
+    // Confirm discoverRepos was actually called (guard did not short-circuit before it)
+    expect(fullDeps.discoverRepos).toHaveBeenCalledOnce();
+  });
+
+  it('rejects --vault-dir that is a symlink inside home but resolves outside home with exitCode 2 (symlink guard)', async () => {
+    // Arrange — create a real symlink inside os.homedir() pointing to /tmp (outside home).
+    // Lexical phase: the symlink path IS inside home → passes Phase 1.
+    // Realpath phase: /tmp is NOT inside home → rejected in Phase 2.
+    const symlinkParent = mkdtempSync(path.join(os.homedir(), '.test-sym-'));
+    const symlinkPath = path.join(symlinkParent, 'escape');
+    let result;
+    try {
+      symlinkSync('/tmp', symlinkPath);
+
+      const deps = makeGuardDeps();
+
+      // Act
+      result = await main(['--vault-dir', symlinkPath], deps);
+    } finally {
+      rmSync(symlinkParent, { recursive: true, force: true });
+    }
+
+    // Assert
     expect(result.exitCode).toBe(2);
     expect(result.action).toBe('error');
   });

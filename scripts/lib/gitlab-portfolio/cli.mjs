@@ -30,6 +30,7 @@ import { readFile } from 'node:fs/promises';
 
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
+import { validatePathInsideProject } from '../path-utils.mjs';
 
 import { discoverVaultRepos } from './vcs-detect.mjs';
 import { fetchIssuesMultiRepo, summarizeRepo } from './aggregator.mjs';
@@ -223,6 +224,24 @@ EXIT CODES
       `gitlab-portfolio: vault-integration.vault-dir not configured in Session Config\n` +
       `  Add "vault-dir: ~/Projects/vault" under vault-integration: in CLAUDE.md (or AGENTS.md on Codex CLI)\n`,
     );
+    return { exitCode: 2, action: 'error', reposScanned: 0, reposFailed: 0 };
+  }
+
+  // ── Path-traversal guard (CWE-22, GH #44) ─────────────────────────────────
+  // Both lexical (../ traversal) and symlink-escape checks must pass.
+  // Root: os.homedir() — vault is a per-user resource; must reside under ~.
+  const vaultDirRoot = path.resolve(os.homedir());
+  const vaultDirValidation = validatePathInsideProject(resolvedVaultDir, vaultDirRoot);
+  if (!vaultDirValidation.ok) {
+    if (vaultDirValidation.reason === 'symlink') {
+      process.stderr.write(
+        `gitlab-portfolio: --vault-dir resolves (via symlink) outside your home directory\n`,
+      );
+    } else {
+      process.stderr.write(
+        `gitlab-portfolio: --vault-dir must be inside your home directory (got: ${resolvedVaultDir})\n`,
+      );
+    }
     return { exitCode: 2, action: 'error', reposScanned: 0, reposFailed: 0 };
   }
 

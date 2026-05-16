@@ -2,7 +2,8 @@
 
 > Tracking issue: [#213](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/213)  
 > Target list: https://github.com/ComposioHQ/awesome-claude-plugins  
-> Status: DRAFT — awaiting manual fork + PR
+> Status: DRAFT — awaiting manual fork + PR  
+> PR body: [docs/submissions/composio-awesome-claude-plugins-pr-body.md](../submissions/composio-awesome-claude-plugins-pr-body.md)
 
 ---
 
@@ -22,7 +23,7 @@ The 9 existing categories cover tool integrations, language-specific surfaces (f
 Under the proposed new section heading `### Session & Workflow Orchestration`:
 
 ```
-- **session-orchestrator** — Structured 5-wave session orchestration (Discovery / Impl-Core / Polish / Quality / Finalization) with autopilot CLI, role-based parallel agents, GitLab+GitHub integration, and persistence via STATE.md. Cross-platform (Claude Code + Codex CLI + Cursor IDE). [Repo](https://github.com/Kanevry/session-orchestrator) · [Latest v3.2.0](https://github.com/Kanevry/session-orchestrator/releases/tag/v3.2.0)
+- **session-orchestrator** — Structured 5-wave session orchestration (Discovery / Impl-Core / Polish / Quality / Finalization) with role-based parallel agents, GitLab+GitHub integration, inter-wave quality gates, cross-session learning via `.orchestrator/metrics/learnings.jsonl`, and persistence via STATE.md. Includes 37 skills, 16 commands, 11 agents, `/test` agentic end-to-end orchestrator, and autopilot `--multi-story` for parallel worktree pipelines. Cross-platform (Claude Code + Codex CLI + Cursor IDE). [Repo](https://github.com/Kanevry/session-orchestrator) · [Latest v3.6.0](https://github.com/Kanevry/session-orchestrator/releases/tag/v3.6.0)
 ```
 
 If the maintainer rejects the new category, use this identical line under `### Developer Productivity`.
@@ -35,15 +36,20 @@ If the maintainer rejects the new category, use this identical line under `### D
 |---|---|---|---|
 | **Primary function** | End-to-end session lifecycle management | Task delegation to sub-agents | Issue backlog management |
 | **Category filed under** | (proposed) Session & Workflow Orchestration | Backend & Architecture | Developer Productivity |
-| **Execution model** | 5-wave sequential with inter-wave quality gates | Parallel task dispatch | Single-agent backlog triage |
-| **Autopilot / headless mode** | Yes — `--headless` flag, walk-away CLI | No | No |
+| **Execution model** | 5 typed waves with inter-wave quality gates | 4-phase sequential with parallel subagents | Single-agent backlog triage |
+| **Autopilot / headless mode** | Yes — `--headless` + `--multi-story` parallel worktrees | No | No |
 | **State persistence** | STATE.md + sessions.jsonl (survives interrupts) | None documented | None documented |
-| **Multi-platform** | Claude Code + Codex CLI + Cursor IDE | Claude Code only | Claude Code only |
-| **VCS integration** | GitLab + GitHub (issues, MRs, hooks) | Git basics | GitHub issues |
+| **Cross-session learning** | Confidence-scored `.orchestrator/metrics/learnings.jsonl`, opt-in `/evolve` review | Session archival to `docs/maestro/` | None documented |
+| **Multi-platform** | Claude Code + Codex CLI + Cursor IDE (3) | Gemini CLI + Claude Code + Codex + Qwen Code (4) | Claude Code only |
+| **VCS integration** | GitLab-first dual support (GitHub mirror), issues, MRs, hooks | Runtime-agnostic | GitHub issues |
+| **Specialist components** | 37 skills, 16 commands, 11 agents, 11 hook handlers | Specialist agent types | Single agent |
 | **Destructive-op guard** | PreToolUse hook with policy file | None | None |
-| **Version shipped** | v3.2.0 (stable, tagged) | Not versioned | Not versioned |
+| **Version shipped** | v3.6.0 (stable, tagged) | Not versioned | Not versioned |
 
-Key differentiator: session-orchestrator manages the *session itself* as a first-class artifact — scoping, waving, quality-gating, and closing — rather than delegating individual tasks or managing a backlog in isolation.
+Key differentiators vs maestro-orchestrate:
+- **Wave-based progressive execution** with typed inter-wave quality gates (vs maestro 4-phase sequential)
+- **GitLab-first dual VCS** with GitHub mirror support (vs maestro runtime-agnostic)
+- **Cross-session learning** via confidence-scored `learnings.jsonl`, opt-in `/evolve` review (vs maestro session archival without learning extraction)
 
 ---
 
@@ -54,7 +60,7 @@ Key differentiator: session-orchestrator manages the *session itself* as a first
 3. Open `README.md` in the fork.
 4. **If proposing new category:** Find the last existing `##` section. Insert a new `## Session & Workflow Orchestration` section after `## Developer Productivity`. Add the entry line from §2 inside the new section.
 5. **If falling back:** Find `## Developer Productivity`. Insert the entry line in alphabetical order (after `backlog`).
-6. Commit with message: `Add session-orchestrator (v3.2.0) — Session & Workflow Orchestration`.
+6. Commit with message: `Add session-orchestrator (v3.6.0) — Session & Workflow Orchestration`.
 7. Open PR from `Kanevry:add-session-orchestrator` → `ComposioHQ:main`.
 8. Paste the PR title + body from §5.
 9. Once PR URL is available, paste it into GitLab issue #213 as a comment.
@@ -65,33 +71,12 @@ Key differentiator: session-orchestrator manages the *session itself* as a first
 
 ### Title
 ```
-Add session-orchestrator (v3.2.0) — Session & Workflow Orchestration
+Add session-orchestrator (v3.6.0) — Session & Workflow Orchestration
 ```
 
 ### Body
 
-```markdown
-## What this adds
-
-**session-orchestrator** (v3.2.0, MIT) — a Claude Code plugin that manages the full session lifecycle through a structured 5-wave pattern (Discovery → Impl-Core → Polish → Quality → Finalization), with an autopilot headless CLI, role-based parallel agents, GitLab+GitHub integration, and STATE.md persistence.
-
-Repo: https://github.com/Kanevry/session-orchestrator  
-Release: https://github.com/Kanevry/session-orchestrator/releases/tag/v3.2.0  
-Cross-platform: Claude Code, Codex CLI, Cursor IDE.
-
-## Category proposal
-
-I've proposed a new **"Session & Workflow Orchestration"** section. Rationale: the existing categories cover tool integrations and language-specific surfaces; none covers plugins whose core value is structuring the Claude *session itself*. Two existing entries (`maestro-orchestrate`, `backlog`) are adjacent but filed under categories that describe their secondary surface.
-
-If you prefer to avoid a new category, I'm happy to move this entry under **Developer Productivity** — just say the word and I'll update the PR.
-
-## Checklist
-
-- [x] Entry follows existing formatting conventions (dash + bold name + em dash + description + links)
-- [x] Repo is public and the v3.2.0 release is tagged "Latest"
-- [x] MIT licensed
-- [x] No affiliate links
-```
+See [`docs/submissions/composio-awesome-claude-plugins-pr-body.md`](../submissions/composio-awesome-claude-plugins-pr-body.md) for the copy-paste-ready PR body.
 
 ---
 
@@ -102,7 +87,7 @@ If you prefer to avoid a new category, I'm happy to move this entry under **Deve
 | Maintainer rejects new category | Update PR: move entry to `## Developer Productivity` (alphabetical after `backlog`). Comment on #213. |
 | PR stalls > 4 weeks | Mirror entry to `hesreallyhim/awesome-claude-code` under "Agent Skills" (submission draft already exists at `docs/submissions/awesome-claude-code.md`). |
 | Repository archived or unmaintained | Close #213 as won't-fix; note in GitLab #152 v3 release tracking. |
-| Entry text needs update for v3.3+ | Amend the PR description or open a follow-up PR referencing the new release tag. |
+| Entry text needs update for v3.7+ | Amend the PR description or open a follow-up PR referencing the new release tag. |
 
 ---
 

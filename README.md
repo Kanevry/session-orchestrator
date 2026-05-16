@@ -254,6 +254,20 @@ Active Cursor hooks: 2 events (`afterFileEdit`, `beforeShellExecution`) routed t
 
 The design goal is engineering quality. Every wave exits verified, every unfinished issue gets a carryover ticket, every session closes with a clean commit.
 
+### vs. maestro-orchestrate
+
+Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and session-orchestrator coordinate multi-agent work in long-running AI coding sessions. They differ in scope and execution model:
+
+| Axis | session-orchestrator | maestro-orchestrate |
+|---|---|---|
+| Execution model | 5 typed waves (Discovery → Impl-Core → Impl-Polish → Quality → Finalization) with inter-wave quality gates and confidence-scored session-reviewer | 4-phase sequential model with parallel subagents |
+| Runtime coverage | Claude Code + Codex CLI + Cursor IDE (3) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
+| VCS integration | GitLab-first with GitHub mirror (auto-detected); 11 hook handlers + 16 commands wire to both | Runtime-agnostic; VCS work delegated to user |
+| Cross-session learning | Confidence-scored entries in `.orchestrator/metrics/learnings.jsonl`; surfaced at session-start; opt-in `/evolve` review | Session archival to `docs/maestro/` without explicit learning extraction |
+| Specialist agents | 11 typed agents (code-implementer, security-reviewer, test-writer, qa-strategist, etc.) | 39 specialist agents across design/impl/review/debugging/security/compliance |
+
+We see the two plugins as complementary rather than competing: session-orchestrator focuses on a single wave-based lifecycle with VCS+learning integration, while maestro-orchestrate optimises for multi-runtime parallel specialist delivery.
+
 ## VCS auto-detection
 
 Session Orchestrator detects your VCS from the git remote URL:

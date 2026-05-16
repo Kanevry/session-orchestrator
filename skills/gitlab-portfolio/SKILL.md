@@ -102,6 +102,17 @@ gitlab-portfolio:
 | `stale-days` | `30` | Issues older than N days are flagged stale. |
 | `critical-labels` | `["priority:critical","priority:high"]` | Label substrings that classify an issue as critical (case-insensitive). |
 
+### Security
+
+**`--vault-dir` validation (SEC, GH #44).** The `--vault-dir` CLI argument and `vault-integration.vault-dir` Session Config value are validated against the user's home directory via `validatePathInsideProject` (`scripts/lib/path-utils.mjs`). Both phases apply:
+
+- **Lexical:** paths containing `..` traversal that resolve outside `os.homedir()` are rejected (`exit 2`).
+- **Symlink:** paths whose real-path (after symlink resolution) escapes `os.homedir()` are rejected (`exit 2`).
+
+Configure `vault-integration.vault-dir` only with user-controlled paths under `~`. The same guard applies to the implicit Phase 2.7 portfolio snapshot at session-start. Reference: CWE-22 path traversal · `.claude/rules/security.md` SEC-014 adjacent guidance.
+
+**Note:** `vault-dir` must be a CHILD of `~` (the home directory), not `~` itself. The guard uses strict `isPathInside` semantics, which require a proper descendant path.
+
 ## CLI
 
 ```bash
