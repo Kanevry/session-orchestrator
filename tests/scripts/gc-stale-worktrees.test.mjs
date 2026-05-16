@@ -29,6 +29,10 @@ import { classifyWorktree, discoverWorktrees, isPidAlive, main } from '../../scr
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'gc-stale-worktrees.mjs');
 
+// Normalize CRLF → LF so Windows spawnSync output matches Linux/macOS in
+// string assertions (.toContain / .split('\n') / regex match). No-op on LF.
+const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -379,7 +383,7 @@ describe('gc-stale-worktrees — CLI', () => {
       encoding: 'utf8',
     });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('mutually exclusive');
+    expect(norm(r.stderr)).toContain('mutually exclusive');
   });
 
   it('--help exits 0 with usage text', () => {
@@ -387,9 +391,10 @@ describe('gc-stale-worktrees — CLI', () => {
       encoding: 'utf8',
     });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('gc-stale-worktrees.mjs');
-    expect(r.stdout).toContain('--apply');
-    expect(r.stdout).toContain('--dry-run');
+    const stdout = norm(r.stdout);
+    expect(stdout).toContain('gc-stale-worktrees.mjs');
+    expect(stdout).toContain('--apply');
+    expect(stdout).toContain('--dry-run');
   });
 
   it('-h is an alias for --help', () => {
@@ -397,7 +402,7 @@ describe('gc-stale-worktrees — CLI', () => {
       encoding: 'utf8',
     });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('--help');
+    expect(norm(r.stdout)).toContain('--help');
   });
 
   it('runs cleanly with no worktrees (empty directory)', async () => {

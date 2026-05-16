@@ -25,8 +25,15 @@ const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Normalize CRLF → LF so Windows spawnSync output matches Linux/macOS in
+// string assertions (.toContain / .split('\n') / regex match). No-op on LF.
+const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
+
 function runValidator(pluginRoot) {
-  return spawnSync('node', [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
+  const r = spawnSync(process.execPath, [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
+  // Normalize stdout/stderr in-place so all downstream string assertions
+  // (`.toContain` / `.split('\n')` / regex) are CRLF-safe on Windows.
+  return { ...r, stdout: norm(r.stdout), stderr: norm(r.stderr) };
 }
 
 /**

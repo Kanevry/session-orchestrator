@@ -35,7 +35,7 @@ import {
   existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -163,19 +163,25 @@ function makeTick(verdict, date = '2026-04-27') {
 
 // ── Run helper ────────────────────────────────────────────────────────────────
 
+// Normalize CRLF → LF so Windows spawnSync output matches Linux/macOS in
+// string assertions and parseActions(.split('\n')). No-op on LF.
+const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
+
 function runWatcher(args, { fixtureDir, callLog } = {}) {
   const env = {
     ...process.env,
-    PATH: `${FIXTURES_DIR}:${process.env.PATH}`,
+    PATH: `${FIXTURES_DIR}${delimiter}${process.env.PATH}`,
     GLAB_FIXTURE_DIR: fixtureDir ?? '',
     ...(callLog ? { GLAB_CALL_LOG: callLog } : {}),
   };
 
-  return spawnSync(process.execPath, [SCRIPT, '--glab-bin', STUB_GLAB, ...args], {
+  const r = spawnSync(process.execPath, [SCRIPT, '--glab-bin', STUB_GLAB, ...args], {
     encoding: 'utf8',
     env,
     timeout: 30_000,
   });
+  // Normalize stdout/stderr in-place so parseActions and `.toContain` are CRLF-safe.
+  return { ...r, stdout: norm(r.stdout), stderr: norm(r.stderr) };
 }
 
 /**

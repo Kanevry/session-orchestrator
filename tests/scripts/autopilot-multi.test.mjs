@@ -31,6 +31,10 @@ const SCRIPT = path.resolve(
   'autopilot-multi.mjs',
 );
 
+// Normalize CRLF → LF so Windows spawnSync output matches Linux/macOS in
+// string assertions (.toContain / .toMatch / .trim().match). No-op on LF.
+const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
+
 // ---------------------------------------------------------------------------
 // 1. Import-safety canary
 // ---------------------------------------------------------------------------
@@ -233,19 +237,19 @@ describe('main (CLI via spawnSync)', () => {
   it('--help exits 0 and stdout contains USAGE:', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('USAGE:');
+    expect(norm(r.stdout)).toContain('USAGE:');
   });
 
   it('--help stdout contains --max-stories option documentation', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('--max-stories');
+    expect(norm(r.stdout)).toContain('--max-stories');
   });
 
   it('--version exits 0 and stdout matches semver', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--version'], { encoding: 'utf8' });
     expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(norm(r.stdout).trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('--dry-run --json exits 0 and emits a JSON envelope with success:true', () => {
@@ -277,12 +281,12 @@ describe('main (CLI via spawnSync)', () => {
 
   it('--draft-mr foo stderr contains descriptive error message', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--draft-mr', 'foo'], { encoding: 'utf8' });
-    expect(r.stderr).toContain('--draft-mr must be one of');
+    expect(norm(r.stderr)).toContain('--draft-mr must be one of');
   });
 
   it('--dry-run --apply stderr contains mutex error message', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--apply'], { encoding: 'utf8' });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('mutually exclusive');
+    expect(norm(r.stderr)).toContain('mutually exclusive');
   });
 });
