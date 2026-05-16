@@ -6,7 +6,7 @@
 
 ## Structure
 
-See [`README.md`](./README.md#components) for the canonical inventory (32 skills, 12 commands, 11 agents, 10 hook event matchers / 10 hook handlers). Runtime layout: `skills/`, `commands/`, `agents/`, `hooks/`, `.orchestrator/policy/`, `.claude/rules/`. Stable product/tech/structure context lives at `.orchestrator/steering/{product,tech,structure}.md` and is injected at session-start Phase 2.6 (when present).
+See [`README.md`](./README.md#components) for the canonical inventory (33 skills, 13 commands, 11 agents, 10 hook event matchers / 10 hook handlers). Runtime layout: `skills/`, `commands/`, `agents/`, `hooks/`, `.orchestrator/policy/`, `.claude/rules/`. Stable product/tech/structure context lives at `.orchestrator/steering/{product,tech,structure}.md` and is injected at session-start Phase 2.6 (when present).
 
 ## Destructive-Command Guard
 

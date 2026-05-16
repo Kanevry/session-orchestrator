@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **`/memory-cleanup` command + skill** — Manual memory consolidation (Dream-equivalent). Ports the previously personal `~/.claude/skills/memory-cleanup/` into the plugin so all users get it. Implements the 4-phase Dream process (Orient → Gather Signal → Consolidate → Prune & Index) against `~/.claude/projects/*/memory/`. Components: 33 skills (+1 `memory-cleanup`), 13 commands (+1 `/memory-cleanup`). validate-plugin 43/43.
 
 ## [3.6.0] - 2026-05-14
 
