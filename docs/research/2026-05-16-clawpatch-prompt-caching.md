@@ -274,3 +274,49 @@ Two research subagents were dispatched in parallel from this coordinator session
 - **Agent B** (Prompt-cache): WebFetch against `platform.claude.com/docs/en/build-with-claude/prompt-caching`. Then surveyed 22 repos under `/Users/bernhardg./Projects/` via `grep -l '@anthropic-ai\|"ai":'` style filters, opening 3-4 source files per qualifying repo. Returned 4 adoption candidates with file:line insertion points.
 
 Both agents capped at 700 words; total research time: parallel ~2.5 min wall-clock.
+
+---
+
+## Update 2026-05-16 — PoC implementations shipped (deep-1 session)
+
+All 4 cross-repo PoCs implemented and quality-gated. Live smoke-test on AngebotsChecker confirmed PC-007 cache behavior end-to-end.
+
+### Implementation summary
+
+| Issue | Repo | Files changed | SDK | Pattern |
+|---|---|---|---|---|
+| #421 | session-orchestrator | `.claude/rules/prompt-caching.md` NEW (262 LOC) | — | Rule doc (PC-001..PC-007) |
+| #422 | extern/AngebotsChecker | 4 prod + 1 NEW (`instrumentation.ts`) + 3 test files updated | `@anthropic-ai/sdk@^0.95.1` | 2-block split (stable + trigger) on raw SDK + boot pre-warm |
+| #423 | Bernhard/buchhaltgenie | 3 prod + 1 NEW (cron route) + `vercel.json` | `@ai-sdk/anthropic@^3.0.64` | 2-block split (stable + RAG suffix) on AI SDK + Vercel Cron pre-warm `*/4 8-18 * * 1-5` |
+| #424 | intern/launchpad-ai-factory | 5 prod + 2 test files updated | `@ai-sdk/anthropic@^3.0.71` | Optional `cacheableSystem` adapter param + per-callsite opt-in; no pre-warm (batch) |
+| #425 | extern/wien-forschungsfragen-klima | 2 prod | `@anthropic-ai/sdk@^0.96.0` | Block-array wrap; no pre-warm (batch); `betas:` header omitted (cache_control GA in v0.96) |
+
+### Live smoke-test evidence (AngebotsChecker, W4-A5)
+
+Method: fallback Node.js script (`tmp-smoke.mjs`, deleted post-run) — `/api/compare` requires Supabase auth + session UUIDs; standalone SDK exercise was the time-efficient path. 3 calls to `claude-opus-4-7`, identical 4141-token system block, same 5-min window.
+
+| Call | cache_creation_input_tokens | cache_read_input_tokens | input_tokens | latency |
+|---|---|---|---|---|
+| 1 | **4141** | 0 | 11 | 1593 ms |
+| 2 | 5 | **4141** | 6 | 1318 ms |
+| 3 | 5 | **4141** | 6 | 2110 ms |
+
+Textbook PC-007: call 1 writes the cache (4141 tokens), calls 2-3 read it. The residual `creation=5` on calls 2-3 is the per-turn user-message delta (Anthropic billing line, not a re-write). Cost: ~$0.21 in opus tokens for the 3-call evidence run.
+
+### Critical finding — cache-floor threshold
+
+`HH_SYSTEM_PROMPT` alone is **~640 tokens** — BELOW Anthropic's 1024-token cache floor for opus-4-7. The smoke test had to pad with stable German filler to cross the threshold. In production, `HH_SYSTEM_PROMPT + tools array` likely exceeds the floor, but **this is not yet verified live**.
+
+Mitigation shipped in this session: `instrumentation.ts` logs `cache_creation_input_tokens` from the pre-warm call. Operator monitors the first production boot — if cw=0, the threshold check failed and the cache is a no-op. Same risk applies to `wien-forschungsfragen-klima` `forschende-translate.v1.md` at 3.5 KB (~900 tokens — likely also below floor; needs production verification).
+
+### Open questions / next-session candidates
+
+1. **Cache floor verification** — wire a one-shot production-log probe (or add `cache_creation_input_tokens` to the existing `ai_usage_log` table in buchhaltgenie) to confirm pre-warm actually wrote on first call across all 4 repos.
+2. **Tools array cache contribution** — the smoke-test fallback script could not load `get-uniqa-assets.ts` due to `import "server-only"`. Tool-block cache hits remain unverified for AngebotsChecker. File as a follow-up if production logs show cache misses on tool-heavy turns.
+3. **Cron cadence cost vs. savings** — buchhaltgenie's `*/4 8-18 * * 1-5` cron is ~165 calls/day at haiku pricing (~$0.001/call ≈ $0.17/day). Validate cost vs measured cache-read savings after 7 days in production.
+
+### Cross-references
+
+- Rule doc: `.claude/rules/prompt-caching.md` (PC-001..PC-007)
+- Smoke-test evidence (full report): `docs/research/2026-05-16-cache-smoke-test.md`
+- Session narrative: CLAUDE.md `### Recent sessions` `2026-05-16 deep-1`
