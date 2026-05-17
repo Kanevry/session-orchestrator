@@ -1,0 +1,14 @@
+[
+  {
+    "name": "ecosystem-health",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/scripts/lib/ecosystem-health.mjs --watch",
+    "description": "Ecosystem repo health watcher (CI status, branch drift, stale baselines across vault-registered projects). Emits one NDJSON line per detected state change.",
+    "when": "always"
+  },
+  {
+    "name": "convergence-monitor",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/scripts/lib/convergence-monitor.mjs --tail",
+    "description": "Wave convergence telemetry monitor — tails .orchestrator/metrics/events.jsonl + sessions.jsonl, surfaces convergence signals (shrinking diff, pass-rate plateau, velocity).",
+    "when": "on-skill-invoke:wave-executor"
+  }
+]

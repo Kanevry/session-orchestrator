@@ -1,5 +1,6 @@
 ---
 description: Run a lightweight Socratic design dialogue (3-5 AUQ rounds) and write a spec markdown file before any implementation work. Use BEFORE /plan feature when scope/UX is ambiguous.
+disable-model-invocation: true
 argument-hint: "[topic-or-feature-slug]"
 ---
 

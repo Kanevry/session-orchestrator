@@ -110,6 +110,13 @@ async function main() {
     typeof input?.parent_session_id === 'string'
       ? input.parent_session_id
       : undefined;
+  // wave_signal is set by the orchestrator when a wave completes.
+  const waveSignal =
+    typeof input?.wave_signal === 'string' ? input.wave_signal : null;
+  const nextWaveRole =
+    typeof input?.next_wave_role === 'string' ? input.next_wave_role : null;
+  const waveNumber =
+    typeof input?.wave_number === 'number' ? input.wave_number : null;
 
   // Build the last_batch signal. Only include optional fields when present
   // to keep the session file lean.
@@ -119,6 +126,7 @@ async function main() {
     completed_at: completedAt,
     ...(agentId !== undefined ? { agent_id: agentId } : {}),
     ...(parentSessionId !== undefined ? { parent_session_id: parentSessionId } : {}),
+    ...(waveSignal !== null ? { wave_signal: waveSignal } : {}),
   };
 
   const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
@@ -127,6 +135,23 @@ async function main() {
     ...current,
     last_batch: lastBatch,
   }));
+
+  // If a wave-complete signal is present, surface it as additionalContext so
+  // Claude sees the state change at the next turn boundary.
+  // PostToolBatch hookSpecificOutput shape per CC docs:
+  //   { hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "<string>" } }
+  if (waveSignal === 'wave-complete') {
+    const waveLabel = waveNumber !== null ? `Wave ${waveNumber}` : 'Wave';
+    const nextRole = nextWaveRole ?? 'unknown';
+    const context = `${waveLabel} complete. Next agent role: ${nextRole}. ` +
+      `Batch ${batchId ?? 'n/a'} (${batchSize ?? 'n/a'} tools) resolved at ${completedAt}.`;
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolBatch',
+        additionalContext: context,
+      },
+    }));
+  }
 }
 
 // Exit 0 always — informational hook must never block Claude.

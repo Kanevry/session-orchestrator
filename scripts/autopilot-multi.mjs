@@ -13,7 +13,7 @@
 // CLI guard at bottom — top-level main() never runs on import (deep-2 #368).
 
 import { parseArgs } from 'node:util';
-import { execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -39,6 +39,9 @@ OPTIONS:
   --apply                     Execute the plan (mutex with --dry-run)
   --json                      Machine-readable output to stdout
   --verbose                   Diagnostic output to stderr
+  --deconflict-paths <glob>   Required when bg-isolation=none AND max-stories>1.
+                              Confirms per-story file ownership is planned.
+                              See .claude/rules/parallel-sessions.md PSA-001/002/003.
   -h, --help                  Show this help and exit
   --version                   Print version and exit
 
@@ -60,6 +63,10 @@ const FLAGS = {
   'verbose':            { type: 'boolean', default: false },
   'help':               { type: 'boolean', default: false, short: 'h' },
   'version':            { type: 'boolean', default: false },
+  // bg-isolation: none requires explicit file-scope deconfliction acknowledgement
+  // when max-stories > 1. Pass a glob to confirm per-story file ownership is
+  // planned. See .claude/rules/parallel-sessions.md PSA-001/002/003 and #431.
+  'deconflict-paths':   { type: 'string',  default: ''    },
 };
 
 const VALID_DRAFT_MR_POLICIES = new Set(['off', 'on-loop-start', 'on-green']);
@@ -84,6 +91,7 @@ const VALID_DRAFT_MR_POLICIES = new Set(['off', 'on-loop-start', 'on-green']);
  *   verbose: boolean,
  *   help: boolean,
  *   version: boolean,
+ *   deconflictPaths: string,
  * }}
  */
 export function parseFlags(argv) {
@@ -145,10 +153,11 @@ export function parseFlags(argv) {
     stallTimeoutSeconds,
     dryRun,
     apply,
-    json:    /** @type {boolean} */ (values['json']),
-    verbose: /** @type {boolean} */ (values['verbose']),
-    help:    /** @type {boolean} */ (values['help']),
-    version: /** @type {boolean} */ (values['version']),
+    json:             /** @type {boolean} */ (values['json']),
+    verbose:          /** @type {boolean} */ (values['verbose']),
+    help:             /** @type {boolean} */ (values['help']),
+    version:          /** @type {boolean} */ (values['version']),
+    deconflictPaths:  /** @type {string} */  (values['deconflict-paths'] ?? ''),
   };
 }
 
@@ -211,6 +220,35 @@ export function buildOrchestratorState(flags, snapshot, issues, parentRunId = ''
       apply:                flags.apply,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session Config helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Load Session Config via `node scripts/parse-config.mjs` (same subprocess
+ * pattern used by scripts/autopilot.mjs). Returns null on failure — callers
+ * apply their own defaults.
+ *
+ * @returns {object|null}
+ */
+function loadSessionConfig() {
+  try {
+    const scriptPath = path.resolve(
+      new URL('.', import.meta.url).pathname,
+      'parse-config.mjs',
+    );
+    const result = spawnSync(
+      process.execPath,
+      [scriptPath],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    if (result.status !== 0 || !result.stdout) return null;
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,10 +336,14 @@ let STALE_SUBAGENT_MIN = 'stale-subagent-min';
  *
  * @param {{ issues: Array<object>, parentRunId: string, flags: object }} state
  * @param {{ depGraph: object, wtPipeline: object, mkLib: object, probe: object }} libs
- * @param {object} [opts]
+ * @param {{ bgIsolation?: string, [key: string]: unknown }} [opts]
  * @returns {Promise<{ success: boolean, data: object }>}
  */
-async function runApplyLoop(state, libs, _opts) {
+async function runApplyLoop(state, libs, opts) {
+  // bg-isolation routing: "none" → skip worktree creation and spawn sub-sessions
+  // in the main tree. "worktree" (default) → each story pipeline creates its
+  // own worktree via worktree-pipeline.mjs (existing path).
+  const bgIsolation = opts?.bgIsolation ?? 'worktree';
   const { depGraph, wtPipeline, mkLib, probe } = libs;
   const { flags } = state;
 
@@ -394,6 +436,11 @@ async function runApplyLoop(state, libs, _opts) {
       };
       allLoops.push(registration);
 
+      // bg-isolation: "none" → main-tree spawn (no worktree, faster for
+      // monorepos with heavy build state but requires file-scope discipline).
+      // bg-isolation: "worktree" (default) → per-story worktree isolation.
+      // worktree-pipeline.mjs respects the bgIsolation option and skips
+      // EnterWorktree when set to "none".
       const promise = wtPipeline.runStoryPipeline({
         issueIid:       issue.iid,
         issueTitle:     issue.title,
@@ -401,6 +448,7 @@ async function runApplyLoop(state, libs, _opts) {
         parentRunId:    state.parentRunId,
         repoRoot:       process.cwd(),
         draftMrPolicy:  flags.draftMrPolicy,
+        bgIsolation,
         // TODO Phase D.2: on-green MR-draft trigger — loop result does not
         //   yet signal "first green test"; wire once runStoryPipeline
         //   propagates a firstGreenAt timestamp in StoryResult.
@@ -559,7 +607,51 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // 4. Dynamic-import sibling libs (graceful degradation)
+  // 4. Read Session Config and enforce bg-isolation policy (#431)
+  //
+  // bg-isolation: "none" — skip worktree creation; spawn sub-sessions in the
+  // main tree.  Requires file-scope discipline: with >1 concurrent story,
+  // agents WILL edit the same working copy simultaneously.  A hard-error fires
+  // unless --deconflict-paths=<glob> is provided to signal that the operator
+  // has planned per-story file ownership.
+  //
+  // bg-isolation: "worktree" (default) — each story gets its own git worktree;
+  // safe for parallel writes but costs disk space and EnterWorktree latency.
+  //
+  // Caution: CC 2.1.133 silently flipped worktree.baseRef default from "head"
+  // to "origin/<default>", breaking users relying on unpushed commits.  Apply
+  // the same operator-awareness here: any future CC change to worktree defaults
+  // may silently affect this path.  See #431 and SKILL.md § bg-isolation.
+  // -------------------------------------------------------------------------
+  const sessionConfig = loadSessionConfig();
+  const bgIsolation = /** @type {string} */ (
+    sessionConfig?.autopilot?.['bg-isolation'] ?? 'worktree'
+  );
+
+  if (bgIsolation === 'none' && flags.maxStories > 1 && !flags.deconflictPaths) {
+    // Hard-error per PSA-001/002/003 — see .claude/rules/parallel-sessions.md
+    const msg =
+      `autopilot-multi: bg-isolation: "none" with --max-stories=${flags.maxStories} ` +
+      `requires explicit file-scope deconfliction. ` +
+      `Set max-stories=1 OR provide --deconflict-paths=<glob> to confirm you have ` +
+      `planned per-story file ownership. ` +
+      `See .claude/rules/parallel-sessions.md PSA-001/002/003.`;
+    process.stderr.write(`${msg}\n`);
+    if (flags.json) {
+      writeJsonEnvelope(false, null, { code: 'BG_ISOLATION_CONFLICT', message: msg });
+    }
+    exitFn(1);
+    return;
+  }
+
+  diag(
+    `bg-isolation=${bgIsolation}` +
+    (bgIsolation === 'none' ? ' (main-tree mode; worktree creation skipped)' : ''),
+    flags.verbose,
+  );
+
+  // -------------------------------------------------------------------------
+  // 5. Dynamic-import sibling libs (graceful degradation)
   // -------------------------------------------------------------------------
   let buildGraph, nextReady, calculateConcurrencyCap, probe;
   let depGraphMod, mkLibMod, wtPipelineMod, resourceProbeMod;
@@ -585,7 +677,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // 5. Resource probe + concurrency cap advisory
+  // 6. Resource probe + concurrency cap advisory
   // -------------------------------------------------------------------------
   let snapshot = null;
   try {
@@ -611,7 +703,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   );
 
   // -------------------------------------------------------------------------
-  // 6. Build issue backlog
+  // 7. Build issue backlog
   // -------------------------------------------------------------------------
   let issues;
 
@@ -635,7 +727,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // 7. Build dep-graph + initial schedulable set
+  // 8. Build dep-graph + initial schedulable set
   // -------------------------------------------------------------------------
   const graph       = buildGraph(issues);
   const initialSet  = nextReady(graph, new Set(), new Set());
@@ -646,7 +738,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   );
 
   // -------------------------------------------------------------------------
-  // 8. Dry-run path (default): emit orchestration plan
+  // 9. Dry-run path (default): emit orchestration plan
   // -------------------------------------------------------------------------
   if (flags.dryRun) {
     const plan = buildOrchestratorState(flags, snapshot, issues, parentRunId);
@@ -670,7 +762,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // 9. Apply path: run the multi-story orchestration loop
+  // 10. Apply path: run the multi-story orchestration loop
   // -------------------------------------------------------------------------
   const state = buildOrchestratorState(flags, snapshot, issues, parentRunId);
   const libs  = {
@@ -679,8 +771,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     mkLib:    mkLibMod,
     probe:      resourceProbeMod,
   };
+  // Pass bgIsolation into opts so runApplyLoop can route the dispatch path.
+  // bg-isolation: "none" → spawn sub-sessions in the main tree (no worktree creation).
+  // bg-isolation: "worktree" (default) → each story pipeline creates its own worktree.
+  const runOpts = { ...opts, bgIsolation };
 
-  const result = await runApplyLoop(state, libs, opts);
+  const result = await runApplyLoop(state, libs, runOpts);
 
   if (flags.json) {
     console.log(JSON.stringify(result));

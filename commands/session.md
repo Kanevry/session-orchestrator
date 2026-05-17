@@ -1,5 +1,6 @@
 ---
 description: Start a development session (housekeeping, feature, deep)
+disable-model-invocation: true
 argument-hint: [housekeeping|feature|deep]
 ---
 

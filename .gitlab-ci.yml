@@ -19,6 +19,7 @@
 
 stages:
   - security
+  - validate
   - test
   - verify
   - coverage
@@ -106,6 +107,30 @@ npm-audit:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Stage: validate
+#
+# plugin-schema-validate — verify .claude-plugin manifests conform to the
+# canonical schemastore.org JSON Schema definitions (issue #433).
+# Uses ajv-cli to validate both plugin.json and marketplace.json against
+# the fetched schemas. Runs on changes to .claude-plugin/*.json or CI config.
+# ---------------------------------------------------------------------------
+
+plugin-schema-validate:
+  stage: validate
+  image: node:22-alpine
+  interruptible: true
+  timeout: 5m
+  script:
+    - npm install -g ajv-cli ajv-formats
+    - ajv validate -c ajv-formats -s "https://json.schemastore.org/claude-code-plugin-manifest.json" -d .claude-plugin/plugin.json --strict=false
+    - ajv validate -c ajv-formats -s "https://json.schemastore.org/claude-code-marketplace.json" -d .claude-plugin/marketplace.json --strict=false
+  rules:
+    - changes:
+        - .claude-plugin/*.json
+        - .gitlab-ci.yml
+  allow_failure: false
 
 # ---------------------------------------------------------------------------
 # Stage: test

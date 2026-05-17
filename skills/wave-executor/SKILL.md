@@ -2,11 +2,12 @@
 name: wave-executor
 user-invocable: false
 tags: [orchestration, execution, agents, waves]
+model: sonnet
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
 description: >
-  Executes the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
+  Use this skill when executing the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
   quality checks, plan adaptation, and progress tracking. Core orchestration engine for
   feature and deep sessions. Triggered by /go command.
 ---

@@ -49,15 +49,17 @@ const TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 
 /**
  * Emit the JSONL result line to stderr.
- * @param {string} file     - relative file path
+ * @param {string} file            - relative file path
  * @param {'pass'|'fail'|'skip'} status
  * @param {number} [duration_ms]   - omit for skip
- * @param {string} [reason]        - only for skip
+ * @param {string} [reason]        - human-readable reason for skip or fail
+ * @param {string} [remediation]   - actionable fix hint for fail status only
  */
-function emitResult(file, status, duration_ms, reason) {
+function emitResult(file, status, duration_ms, reason, remediation) {
   const obj = { check: 'typecheck', status, file };
   if (typeof duration_ms === 'number') obj.duration_ms = duration_ms;
   if (reason !== undefined) obj.reason = reason;
+  if (remediation !== undefined) obj.remediation = remediation;
   process.stderr.write(JSON.stringify(obj) + '\n');
 }
 
@@ -120,7 +122,7 @@ function _tryWhich(name) {
  *
  * @param {string} cmd
  * @param {string[]} args
- * @returns {{status: 'pass'|'fail'|'timeout', duration_ms: number}}
+ * @returns {{status: 'pass'|'fail', duration_ms: number, reason?: string}}
  */
 function runTypecheck(cmd, args) {
   const controller = new AbortController();
@@ -143,11 +145,17 @@ function runTypecheck(cmd, args) {
 
   // AbortError or SIGTERM from timeout
   if (spawnResult.error?.name === 'AbortError' || spawnResult.signal === 'SIGTERM') {
-    return { status: 'fail', duration_ms };
+    return { status: 'fail', duration_ms, reason: 'typecheck timed out after 2s' };
   }
 
-  const status = spawnResult.status === 0 ? 'pass' : 'fail';
-  return { status, duration_ms };
+  if (spawnResult.status !== 0) {
+    // Capture the first non-empty line of stderr/stdout as a compact reason.
+    const combined = ((spawnResult.stderr ?? '') + (spawnResult.stdout ?? '')).trim();
+    const firstLine = combined.split('\n').find((l) => l.trim()) ?? 'typecheck exited non-zero';
+    return { status: 'fail', duration_ms, reason: firstLine.slice(0, 256) };
+  }
+
+  return { status: 'pass', duration_ms };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,10 +207,14 @@ async function main() {
   }
 
   // G7: run typecheck with 2s timeout (REQ-02)
-  const { status, duration_ms } = runTypecheck(tc.cmd, tc.args);
+  const { status, duration_ms, reason } = runTypecheck(tc.cmd, tc.args);
 
   // G8: emit JSONL result to stderr
-  emitResult(relPath, status, duration_ms);
+  const remediation =
+    status === 'fail'
+      ? 'Run `npm run typecheck` to see full error context, then fix the type at the cited location.'
+      : undefined;
+  emitResult(relPath, status, duration_ms, reason, remediation);
 
   process.exit(0);
 }

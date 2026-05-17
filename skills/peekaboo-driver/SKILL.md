@@ -2,8 +2,9 @@
 name: peekaboo-driver
 user-invocable: false
 tags: [test, driver, macos, peekaboo]
+model: haiku
 model-preference: sonnet
-description: Thin driver wrapper around steipete/peekaboo (MIT, macOS-only). Dispatched by `skills/test-runner/` to capture native-UI AX-tree snapshots + screenshots on macOS 15+ targets, and exits with deterministic JSON output the orchestrator can parse.
+description: Use this skill when driving native-UI AX-tree snapshots and screenshots via steipete/peekaboo (MIT, macOS-only). Dispatched by `skills/test-runner/` to capture native-UI AX-tree snapshots + screenshots on macOS 15+ targets, and exits with deterministic JSON output the orchestrator can parse.
 ---
 
 # Peekaboo Driver Skill

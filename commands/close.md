@@ -1,5 +1,6 @@
 ---
 description: End session with verification, commits, and documentation
+disable-model-invocation: true
 ---
 
 # Close Session

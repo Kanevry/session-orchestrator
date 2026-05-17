@@ -1,5 +1,6 @@
 ---
 description: Systematic quality discovery and issue detection
+disable-model-invocation: true
 argument-hint: "[all|code|infra|ui|arch|session|audit|vault]"
 ---
 

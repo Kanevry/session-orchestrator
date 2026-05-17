@@ -529,6 +529,17 @@ Scripts use these environment variables (resolved by `platform.mjs` — see `det
 
 - **Keep skills self-contained.** If your PR adds a cross-skill dependency, document it clearly in both skills.
 
+## JSON Schema Validation
+
+The plugin manifests (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`) carry `$schema` keys pointing to canonical schemastore.org definitions. Local validation:
+
+```bash
+npx ajv-cli validate -c ajv-formats -s "https://json.schemastore.org/claude-code-plugin-manifest.json" -d .claude-plugin/plugin.json --strict=false
+npx ajv-cli validate -c ajv-formats -s "https://json.schemastore.org/claude-code-marketplace.json" -d .claude-plugin/marketplace.json --strict=false
+```
+
+The same checks run in CI via the `plugin-schema-validate` job. Editors that respect `$schema` (VS Code, JetBrains) provide live autocomplete and on-save validation.
+
 ## Code of Conduct
 
 This project follows a simple standard: be respectful, constructive, and welcoming.

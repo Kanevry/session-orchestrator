@@ -277,5 +277,29 @@ async function main() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// terminal notification
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a cross-platform desktop notification via the CC 2.1.141+ terminalSequence
+ * output field. Supports OSC 9 (iTerm2, Windows Terminal, WezTerm, ConEmu) and
+ * OSC 777 (Ghostty, urxvt, Warp). Both sequences are emitted together; unsupported
+ * terminals silently ignore. Returns the JSON string to write to stdout.
+ * @returns {string}
+ */
+function buildTerminalSequenceJson() {
+  const title = 'Claude Code';
+  const body  = 'Session stopped — your turn';
+  const osc9   = `\x1b]9;${title}: ${body}\x07`;
+  const osc777 = `\x1b]777;notify;${title};${body}\x07`;
+  return JSON.stringify({ terminalSequence: osc9 + osc777 });
+}
+
 // Exit 0 always — informational hook must never block Claude.
-main().catch(() => {}).finally(() => process.exit(0));
+main()
+  .catch(() => {})
+  .finally(() => {
+    process.stdout.write(buildTerminalSequenceJson());
+    process.exit(0);
+  });

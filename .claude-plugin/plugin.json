@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-orchestrator",
   "version": "3.6.0",
   "description": "Session-level orchestration — wave planning, VCS integration, quality gates, persistence, and safety checks",
@@ -10,5 +11,8 @@
   "homepage": "https://gotzendorfer.at/en/session-orchestrator",
   "repository": "https://github.com/Kanevry/session-orchestrator",
   "license": "MIT",
-  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"]
+  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"],
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  }
 }

@@ -2,11 +2,12 @@
 name: discovery
 user-invocable: false
 tags: [quality, discovery, probes, issues]
+model: sonnet
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
 description: >
-  Systematic quality discovery and issue detection. Runs modular probes
+  Use this skill when running systematic quality discovery and issue detection. Runs modular probes
   adapted to the project's tech stack, presents findings interactively
   for user triage, and creates VCS issues for confirmed problems.
   Invoked standalone via /discovery or embedded in session-end.

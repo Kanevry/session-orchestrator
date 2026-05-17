@@ -2,11 +2,12 @@
 name: test-runner
 user-invocable: false
 tags: [test, orchestrator, e2e, ux]
+model: sonnet
 model-preference: sonnet
 model-preference-codex: gpt-5.4
 model-preference-cursor: claude-sonnet-4-6
 description: >
-  Agentic end-to-end test orchestrator. Resolves target + profile, dispatches
+  Use this skill when orchestrating agentic end-to-end tests. Resolves target + profile, dispatches
   the right driver(s) (playwright for web today, peekaboo for macOS (issue #381)), invokes the ux-evaluator agent (opus, read-only) against
   driver artifacts, reconciles findings with the open issue tracker via
   scripts/lib/test-runner/issue-reconcile.mjs, and writes report.md +

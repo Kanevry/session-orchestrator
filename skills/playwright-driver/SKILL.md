@@ -2,11 +2,12 @@
 name: playwright-driver
 user-invocable: false
 tags: [test, driver, web, playwright]
+model: haiku
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
 description: >
-  Thin driver wrapper around the canonical `playwright` npm package
+  Use this skill when executing web tests via the canonical `playwright` npm package
   (Microsoft, Apache-2.0). Dispatched by `skills/test-runner/` to execute
   web tests against a target, captures token-frugal AX-tree snapshots +
   screenshots + console output under `.orchestrator/metrics/test-runs/<run-id>/`,

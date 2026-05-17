@@ -627,6 +627,25 @@ Set `express-path.enabled: false` when:
 - `skills/session-plan/SKILL.md` — Express Path Short-Circuit section (1-wave plan emission)
 - GitLab issue `#214` (foundation and codification)
 
+## Autopilot Multi-Story (#431)
+
+Opt-in configuration for `autopilot --multi-story` (`scripts/autopilot-multi.mjs`). Controls how parallel story pipelines are isolated when N stories run concurrently. Projects that do not use `--multi-story` leave this block unset and are unaffected.
+
+All fields live under a top-level `autopilot` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+autopilot:
+  bg-isolation: worktree   # worktree | none (default: worktree)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `autopilot.bg-isolation` | `worktree` \| `none` | `worktree` | Isolation mode for concurrent story pipelines. `worktree` (default): each story creates its own git worktree — safe for parallel writes, costs disk space and EnterWorktree latency. `none`: no worktrees; sub-sessions spawn directly in the main working tree — faster for monorepos with heavy build state but requires explicit file-scope deconfliction (see below). |
+
+**`bg-isolation: none` hard-error guard:** when `bg-isolation: none` AND `--max-stories > 1`, `autopilot-multi` requires `--deconflict-paths=<glob>` on the CLI to confirm that per-story file ownership is planned. Omitting the flag exits with code 1. This enforces the parallel-session discipline defined in `.claude/rules/parallel-sessions.md` PSA-001/002/003 — two agents editing the same file in the main tree simultaneously will corrupt each other's work.
+
+**Feature introduced by:** GitLab issue #431 (CC 2.1.143 `worktree.bgIsolation` changelog adoption). Implementation: `scripts/autopilot-multi.mjs` reads `config?.autopilot?.['bg-isolation']` via `scripts/parse-config.mjs`. Documentation: `skills/autopilot/SKILL.md` § Configuration.
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

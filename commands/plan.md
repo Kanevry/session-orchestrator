@@ -1,5 +1,6 @@
 ---
 description: Plan a new project, feature, or retrospective with structured requirement gathering
+disable-model-invocation: true
 argument-hint: [new|feature|retro]
 ---
 

@@ -107,6 +107,83 @@ async function atomicMutateJson(filePath, defaultValue, mutate) {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Derive a short cause-hint and suggestion based on the tool name and
+ * error text. All strings are kept short to stay within the ~500-char
+ * additionalContext budget.
+ *
+ * @param {string|null} toolName
+ * @param {string|null} errorSummary
+ * @returns {{ cause: string, suggestion: string }}
+ */
+function deriveHints(toolName, errorSummary) {
+  const err = (errorSummary ?? '').toLowerCase();
+
+  if (toolName === 'Bash') {
+    if (err.includes('permission denied') || err.includes('eacces')) {
+      return {
+        cause: 'insufficient file permissions',
+        suggestion: 'check file mode with `ls -la` and adjust with `chmod` if needed',
+      };
+    }
+    if (err.includes('command not found') || err.includes('enoent')) {
+      return {
+        cause: 'command or binary not on PATH',
+        suggestion: 'verify the binary is installed and `which <cmd>` resolves it',
+      };
+    }
+    if (err.includes('timeout') || err.includes('timed out')) {
+      return {
+        cause: 'command exceeded time limit',
+        suggestion: 'increase the timeout parameter or break the command into smaller steps',
+      };
+    }
+    return {
+      cause: 'shell command exited non-zero',
+      suggestion: 'inspect the error output above, fix the root cause, and retry',
+    };
+  }
+
+  if (toolName === 'Edit' || toolName === 'Write') {
+    if (err.includes('no such file') || err.includes('enoent')) {
+      return {
+        cause: 'target file or parent directory does not exist',
+        suggestion: 'create the missing directory with `mkdir -p` before writing',
+      };
+    }
+    if (err.includes('old_string not found') || err.includes('not unique')) {
+      return {
+        cause: 'old_string did not match any text in the file',
+        suggestion: 're-read the file to confirm the exact text, then retry with a wider context window',
+      };
+    }
+    return {
+      cause: 'file edit failed',
+      suggestion: 're-read the file to verify its current state, then retry',
+    };
+  }
+
+  if (toolName === 'Read') {
+    return {
+      cause: 'file could not be read (missing or unreadable)',
+      suggestion: 'verify the path exists and is accessible before retrying',
+    };
+  }
+
+  if (toolName === 'Glob' || toolName === 'Grep') {
+    return {
+      cause: 'search returned an error (bad pattern or missing directory)',
+      suggestion: 'check the pattern syntax and confirm the search root exists',
+    };
+  }
+
+  // Fallback for unknown tools.
+  return {
+    cause: 'tool invocation failed',
+    suggestion: 'check the error details above and retry with corrected parameters',
+  };
+}
+
 async function main() {
   const input = await readStdinJson();
 
@@ -141,6 +218,30 @@ async function main() {
     const updated = [...existing, note].slice(-MAX_ENTRIES);
     return { ...current, corrective_context: updated };
   });
+
+  // Surface corrective context to Claude via additionalContext on the next turn.
+  // PostToolUseFailure hookSpecificOutput shape per CC docs:
+  //   { hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: "<string>" } }
+  // Keep the message under ~500 chars so it stays readable.
+  const { cause, suggestion } = deriveHints(toolName, errorSummary);
+  const toolLabel = toolName ?? 'unknown tool';
+  const exitLabel = exitCode !== null ? ` (exit ${exitCode})` : '';
+  // Strip control chars (newlines, ANSI escapes) before forwarding to additionalContext —
+  // SEC-016 (Log Injection): tool errors may contain attacker-controlled bytes.
+  const safeSummary = errorSummary
+    ? errorSummary.replace(/[\r\n]/g, ' ').split('').join(' ').slice(0, 120)
+    : '';
+  const summaryLabel = safeSummary ? ` Error: ${safeSummary}` : '';
+  const additionalContext =
+    `Tool failure: ${toolLabel}${exitLabel}.${summaryLabel} ` +
+    `Common cause: ${cause}. Try: ${suggestion}.`;
+
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUseFailure',
+      additionalContext: additionalContext.slice(0, 500),
+    },
+  }));
 }
 
 // Exit 0 always — informational hook must never block Claude.

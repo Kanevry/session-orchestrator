@@ -1,5 +1,6 @@
 ---
 description: Scaffold the minimum repo structure required by session-orchestrator
+disable-model-invocation: true
 argument-hint: [--upgrade <tier>]
 ---
 

@@ -1,5 +1,6 @@
 ---
 description: Run the harness audit and report the rubric score for this repository
+disable-model-invocation: true
 argument-hint: ""
 ---
 

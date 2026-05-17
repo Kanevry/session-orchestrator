@@ -3,7 +3,7 @@ name: docs-writer
 description: Use this agent when documentation needs to be generated or updated as part of a session — user-facing READMEs, dev-focused CLAUDE.md sections, or vault narratives (context.md, decisions.md, people.md). <example>Context: a feature session added a new CLI flag. user: "Update the README with the new --no-vault flag." assistant: "I'll dispatch the docs-writer agent to scan the diff and update README plus the Dev CLAUDE.md section if warranted." <commentary>Scope touches user-facing docs — docs-writer decides audience split and cites the diff.</commentary></example>
 model: inherit
 color: cyan
-tools: Read, Edit, Write, Glob, Grep, Bash
+tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
 ---
 
 # Docs Writer Agent

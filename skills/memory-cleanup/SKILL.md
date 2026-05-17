@@ -2,11 +2,12 @@
 name: memory-cleanup
 user-invocable: true
 tags: [memory, maintenance, meta, dream]
+model: sonnet
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
 description: >
-  Manual memory consolidation (Dream-equivalent). Reviews, consolidates, and prunes memory files
+  Use this skill when performing manual memory consolidation (Dream-equivalent). Reviews, consolidates, and prunes memory files
   under ~/.claude/projects/*/memory/. Run after major refactors, every 5+ sessions, or when memory
   quality degrades (broken links, stale references, contradictions, MEMORY.md > 200 lines).
   Invoke with /memory-cleanup.
