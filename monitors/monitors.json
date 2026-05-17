@@ -3,7 +3,7 @@
     "name": "ecosystem-health",
     "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/scripts/lib/ecosystem-health.mjs --watch",
     "description": "Ecosystem repo health watcher (CI status, branch drift, stale baselines across vault-registered projects). Emits one NDJSON line per detected state change.",
-    "when": "always"
+    "when": "on-skill-invoke:ecosystem-health"
   },
   {
     "name": "convergence-monitor",
