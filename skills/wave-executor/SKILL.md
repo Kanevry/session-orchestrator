@@ -346,6 +346,20 @@ When an agent's task scope includes vault paths (`~/Projects/vault/` or vault su
 
 See `wave-loop.md` § Pre-Dispatch: Frontmatter-Guard Injection for the exact contract. The snippet generator is `scripts/lib/frontmatter-guard.mjs` (skill: `skills/frontmatter-guard/`).
 
+## Worker-Pool Dispatch (#415)
+
+An opt-in bounded-concurrency cursor-based pull loop that replaces the default Promise.all() fan-out for agent dispatch. Controlled by three Session Config fields under the `worker-pool` object:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `worker-pool.enabled` | boolean | `false` | When `false` (default), the existing single-message parallel Agent() dispatch is used (backward-compatible). When `true`, `runWavePool()` from `scripts/lib/wave-executor/pool.mjs` is used instead. |
+| `worker-pool.max-parallel` | integer | value of `agents-per-wave` | Maximum concurrent workers in the pool. Falls back to `agents-per-wave` when unset. Useful for capping concurrency below `agents-per-wave` on memory-constrained hosts. |
+| `worker-pool.drain-timeout-ms` | integer | `10000` (10 s) | When an abort signal fires mid-run (e.g., a MAX_HOURS kill-switch), workers are sent SIGTERM via their per-worker AbortController and the pool waits at most this many milliseconds before returning partial results. |
+
+**Backward compatibility:** `worker-pool.enabled` defaults to `false`. All existing sessions that omit the `worker-pool` block behave identically to before — full Promise.all() fan-out, all agents start simultaneously. No migration required.
+
+**When to enable:** use `worker-pool.enabled: true` when `agents-per-wave` is high (≥ 8) and the host is memory-constrained, or when you want to observe incremental agent completion rather than waiting for all agents to finish before inter-wave checks begin.
+
 ## Anti-Patterns
 
 - **NEVER** run `run_in_background: true` during waves — you lose coordination ability

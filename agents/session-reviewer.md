@@ -4,6 +4,7 @@ description: Use this agent between waves or at session end to verify work quali
 model: sonnet
 color: pink
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # Session Quality Reviewer

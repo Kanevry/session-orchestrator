@@ -1,7 +1,7 @@
 ---
 description: Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues
 disable-model-invocation: true
-argument-hint: "[scope|profile-name]"
+argument-hint: "[scope|profile-name] [--since <git-ref>] [--full]"
 ---
 
 # Test
@@ -19,12 +19,22 @@ Recognized flags and positional arguments:
 - `--target <name>` — explicit target name (e.g. `aiat-pmo-module`, `mail-assistant`). Sets `explicit_target = true`.
 - `--profile <name>` — explicit profile name (e.g. `smoke`, `full`, `a11y`, `onboarding`). Sets `explicit_profile = true`.
 - `--dry-run` — resolve target and profile, print the dispatch plan, but do NOT invoke any driver or create any issues. Sets `dry_run = true`.
+- `--since <git-ref>` — restrict test execution to files changed since the given git ref. Sets `since_ref = <git-ref>`.
+- `--full` — explicit full-repo scan. Sets `full_scan = true`.
 - `[scope]` — any unrecognized positional token is treated as a profile name (same as `--profile <scope>`).
+
+**Conflict check:** If BOTH `--since` and `--full` are present, stop immediately and report:
+
+```
+Error: Cannot use --since with --full. Provide one, not both.
+```
+
+Do NOT proceed with test execution when this conflict is present.
 
 If `$ARGUMENTS` contains an unrecognized flag (i.e. starts with `--` but is not one of the above), inform the user:
 
 ```
-Unknown flag '<flag>'. Recognized flags: --target <name>, --profile <name>, --dry-run.
+Unknown flag '<flag>'. Recognized flags: --target <name>, --profile <name>, --dry-run, --since <git-ref>, --full.
 ```
 
 Then continue with the remaining valid arguments.
@@ -83,5 +93,6 @@ The five named arguments below are the canonical contract between this command a
 | `dry_run` | `boolean` | `true` if `--dry-run` was passed; `false` otherwise |
 | `explicit_target` | `boolean` | `true` if `--target` was present in `$ARGUMENTS`; `false` otherwise |
 | `explicit_profile` | `boolean` | `true` if `--profile` was present in `$ARGUMENTS`; `false` otherwise |
+| `since_ref` | `string \| undefined` | Git ref from `--since <git-ref>`, or `undefined` if not provided |
 
 The skill is the single source of truth for all further resolution, driver dispatch, evaluation, and issue reconciliation. Do NOT re-implement profile logic, driver selection, or issue triage in this command file.

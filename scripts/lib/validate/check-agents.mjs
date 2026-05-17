@@ -5,7 +5,19 @@
 // Exit 0 = all checks passed; exit 1 = at least one failure.
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Lazy-loaded from tier-inference.mjs on first use in Check 8.
+let _tierModule = null;
+async function getTierModule() {
+  if (!_tierModule) {
+    _tierModule = await import(join(__dirname, 'tier-inference.mjs'));
+  }
+  return _tierModule;
+}
 
 const [, , pluginRoot] = process.argv;
 
@@ -23,6 +35,10 @@ let failed = 0;
 function pass(msg) {
   console.log(`  PASS: ${msg}`);
   passed++;
+}
+
+function warn(msg) {
+  console.log(`  WARN: ${msg}`);
 }
 
 function fail(msg) {
@@ -53,6 +69,26 @@ function getField(fm, name) {
  */
 function hasField(fm, name) {
   return new RegExp(`^${name}:`, 'm').test(fm);
+}
+
+/**
+ * Parse the tools field value into an array of tool name strings.
+ * Handles comma-separated strings ("Read, Edit, Write") and JSON arrays.
+ * Returns [] if toolsVal is null/empty or unparseable.
+ */
+function parseToolsValue(toolsVal) {
+  if (!toolsVal) return [];
+  const v = toolsVal.trim();
+  if (v.startsWith('[')) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? arr.filter((t) => typeof t === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+  // Comma-separated string: split on comma, strip whitespace.
+  return v.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
 // ============================================================================
@@ -188,6 +224,122 @@ if (mdFiles.length === 0) {
         }
       }
     }
+  }
+}
+
+// ============================================================================
+// Check 7: output-schema field (issue #417) — when present, the referenced
+// JSON schema file must exist, parse as JSON, and compile under AJV 2020.
+// Catches broken schemas at plugin-distribution time rather than runtime.
+// ============================================================================
+console.log('');
+console.log('--- Check 7: agent output-schema files ---');
+
+if (existsSync(agentsDir)) {
+  const schemaFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+  // Collect agents with output-schema declarations.
+  const declared = [];
+  for (const agentFile of schemaFiles) {
+    const filePath = join(agentsDir, agentFile);
+    const content = readFileSync(filePath, 'utf8');
+    const fm = extractFrontmatter(content);
+    if (!fm) continue;
+    if (!hasField(fm, 'output-schema')) continue;
+    const schemaRel = getField(fm, 'output-schema');
+    if (!schemaRel) continue;
+    declared.push({ agentFile, schemaRel });
+  }
+
+  if (declared.length === 0) {
+    // No agents declare output-schema yet — skip silently (backward-compat).
+  } else {
+    // Lazy-load shared AJV 2020 instance (W3-Q2 MED-004 fold-in).
+    let ajvInstance = null;
+    try {
+      const { getAjv2020 } = await import('../ajv-loader.mjs');
+      ajvInstance = await getAjv2020({ allErrors: true, strict: false });
+    } catch (err) {
+      fail(`output-schema check: could not load ajv-loader — ${err.message}`);
+    }
+
+    if (ajvInstance) {
+      for (const { agentFile, schemaRel } of declared) {
+        // Resolve schema path relative to agentsDir (e.g. "schemas/code-implementer.schema.json").
+        const schemaPath = resolve(agentsDir, schemaRel);
+        if (!existsSync(schemaPath)) {
+          fail(`${agentFile}: output-schema file not found: ${schemaRel}`);
+          continue;
+        }
+        let raw;
+        try {
+          raw = readFileSync(schemaPath, 'utf8');
+        } catch (err) {
+          fail(`${agentFile}: output-schema read error: ${err.message}`);
+          continue;
+        }
+        let schema;
+        try {
+          schema = JSON.parse(raw);
+        } catch (err) {
+          fail(`${agentFile}: output-schema parse error: ${err.message}`);
+          continue;
+        }
+        try {
+          ajvInstance.compile(schema);
+          pass(`${agentFile}: output-schema validates`);
+        } catch (err) {
+          fail(`${agentFile}: output-schema error: ${err.message}`);
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Check 8: sandbox-tier field (issue #418) — when present, value must be in
+// TIER_ENUM and must be consistent with the agent's tools list.
+// When absent, emit WARN with the inferred tier (not FAIL — backward-compat).
+// ============================================================================
+console.log('');
+console.log('--- Check 8: agent sandbox-tier ---');
+
+if (existsSync(agentsDir)) {
+  const { TIER_ENUM, inferTierFromTools, validateTierConsistency } = await getTierModule();
+
+  const allMdFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+  for (const agentFile of allMdFiles) {
+    const filePath = join(agentsDir, agentFile);
+    const content = readFileSync(filePath, 'utf8');
+    const fm = extractFrontmatter(content);
+    if (!fm) continue; // already caught by Check 6
+
+    const toolsVal = getField(fm, 'tools');
+    const toolsArray = parseToolsValue(toolsVal);
+    const inferred = inferTierFromTools(toolsArray);
+
+    if (!hasField(fm, 'sandbox-tier')) {
+      warn(`${agentFile}: sandbox-tier missing — inferred=${inferred}`);
+      continue;
+    }
+
+    const declared = getField(fm, 'sandbox-tier');
+    if (!declared) {
+      fail(`${agentFile}: sandbox-tier field is empty`);
+      continue;
+    }
+
+    if (!TIER_ENUM.includes(declared)) {
+      fail(`${agentFile}: sandbox-tier "${declared}" is not valid; must be one of: ${TIER_ENUM.join(', ')}`);
+      continue;
+    }
+
+    const consistency = validateTierConsistency({ declared, inferred, tools: toolsArray });
+    if (!consistency.ok) {
+      fail(`${agentFile}: sandbox-tier mismatch — ${consistency.error}`);
+      continue;
+    }
+
+    pass(`${agentFile}: sandbox-tier OK (${declared})`);
   }
 }
 

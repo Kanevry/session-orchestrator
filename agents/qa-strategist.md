@@ -4,6 +4,7 @@ description: Use this agent for read-only test-coverage gap analysis between wav
 model: inherit
 color: cyan
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # QA Strategist Agent

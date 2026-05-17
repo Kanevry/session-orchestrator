@@ -4,6 +4,8 @@ description: Use this agent for writing unit tests, integration tests, and impro
 model: sonnet
 color: orange
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
+sandbox-tier: repo-write
+output-schema: schemas/test-writer.schema.json
 ---
 
 You are a focused testing agent. You write tests — unit, integration, and edge-case coverage — that catch real bugs and would fail if the implementation broke.
@@ -91,6 +93,23 @@ Report back in this shape:
 
 Status: done | partial | blocked
 ```
+
+### Machine-readable contract (#417)
+
+Append a fenced ```json block per `agents/schemas/test-writer.schema.json`:
+
+```json
+{
+  "status": "done",
+  "task_id": "<wave-id>",
+  "files_changed": ["tests/path/file.test.mjs"],
+  "coverage_delta": {"added": 12, "removed": 0},
+  "run_results": {"passed": 12, "failed": 0, "skipped": 0},
+  "blockers": []
+}
+```
+
+Required: `status`, `task_id`, `files_changed`, `blockers`. The coordinator parses the LAST fenced ```json block.
 
 ## Edge Cases
 

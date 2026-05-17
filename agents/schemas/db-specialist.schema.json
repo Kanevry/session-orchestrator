@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/db-specialist.schema.json",
+  "title": "db-specialist agent output",
+  "description": "Structured summary returned by the db-specialist agent after a schema/migration task. Mirrors the Output Format section of agents/db-specialist.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "task_id", "files_changed", "blockers"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Migration files and schema files modified."
+    },
+    "schema_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "added": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tables/columns/indexes/constraints added."
+        },
+        "modified": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Modifications with reversibility plan."
+        }
+      }
+    },
+    "indexes_added": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target"],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "table.column or table(col1, col2) form"
+          },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dry_run": {
+          "type": "string",
+          "description": "Migrator dry-run result: 'pass' or DDL output."
+        },
+        "fk_indexes": {
+          "type": "string",
+          "description": "e.g. 'all 4 covered'"
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

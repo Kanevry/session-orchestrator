@@ -4,6 +4,7 @@ description: Use this agent when documentation needs to be generated or updated 
 model: inherit
 color: cyan
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
+sandbox-tier: repo-write
 ---
 
 # Docs Writer Agent

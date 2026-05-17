@@ -61,6 +61,17 @@ See [`commands/autopilot-multi.md`](commands/autopilot-multi.md) or `node script
 
 Audit umbrella: #426. Follow-ups: #447 (continueOnBlock migration spike), #448 (autopilot sentinel refactor).
 
+### Clawpatch Borrow Cluster (v3.6+, deep-2)
+
+Six infrastructure capabilities shipped as an opportunistic cluster. Full session narrative in CLAUDE.md (or AGENTS.md on Codex CLI) under "Recent sessions".
+
+- **Worker pool** (#415) — `scripts/lib/wave-executor/pool.mjs`; cursor-based parallel wave execution. Session Config: `worker-pool.{enabled,max-parallel,drain-timeout-ms}`. Disabled by default, fully backward-compatible.
+- **Language mappers Phase 1** (#416) — `scripts/lib/language-mappers/{index,typescript,markdown}.mjs`; AST-based symbol extraction via `@babel/parser` (TypeScript) and `remark` (Markdown). Phase 2 (Swift + Python) deferred.
+- **Schema-per-agent output** (#417) — `scripts/lib/agent-output-schema.mjs` + AJV 2020 + 4 `agents/schemas/*.schema.json`; machine-readable output contracts on `code-implementer`, `db-specialist`, `test-writer`, `ui-developer`.
+- **Sandbox tier** (#418) — `scripts/lib/validate/tier-inference.mjs`; 4-tier vocabulary (`read-only` / `repo-write` / `network-allowed` / `dangerous`) declared in `sandbox-tier:` frontmatter on all 11 agents; validated at distribution time.
+- **Discovery triage state** (#419) — `scripts/lib/discovery/triage-state.mjs`; sha256-16 fingerprint per finding, 5-state enum, last-writer-wins JSONL persistence; wired into `/discovery` Phase 5.0.
+- **`--since` flag for scoped discovery** (#420) — `changedFilesSince(ref)` in `scripts/lib/discovery-helpers.mjs`; limits `/discovery` and `/test` probes to files changed since a git ref. Vault-staleness and harness-audit probes remain whole-repo.
+
 ## Install
 
 > **Prerequisite:** Node.js 20 or later. Check with `node --version`. v3.x runs as ES modules and requires a real Node runtime, no Bash shim. [Install Node.js](https://nodejs.org/).

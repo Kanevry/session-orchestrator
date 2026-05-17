@@ -4,6 +4,7 @@ description: Use this agent for read-only PRD-quality review. Checks acceptance-
 model: inherit
 color: yellow
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # Analyst Agent

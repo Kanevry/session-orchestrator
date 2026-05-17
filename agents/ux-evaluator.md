@@ -4,6 +4,7 @@ description: Use this agent for read-only UX evaluation of test-runner driver ar
 model: opus
 color: blue
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # UX Evaluator Agent

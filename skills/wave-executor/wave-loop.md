@@ -52,6 +52,10 @@ Skip the deviation entry on `proceed`, even when `concurrentSessions` warns — 
 
 ### 1. Dispatch Agents
 
+When `worker-pool.enabled: true` in Session Config, dispatch via `runWavePool()` from `scripts/lib/wave-executor/pool.mjs` with `maxParallel = worker-pool.max-parallel || agents-per-wave`. Else fall back to single-message parallel Agent() dispatch.
+
+**Worker-pool timing note:** when `worker-pool.enabled: true`, per-agent start and end times are recorded individually in subagents.jsonl as workers pull from the cursor at different moments. Wave-level timings (for progress updates and metrics) are computed as first-worker-start to last-worker-finish, not as a uniform fan-out timestamp.
+
 Use the **Agent tool** to dispatch all agents for this wave IN PARALLEL in a SINGLE message.
 
 Read each wave's dispatch metadata from the session plan header (e.g., `(4 agents, parallel, isolation: worktree)`). When the plan specifies `isolation`, use it verbatim. When the plan does not specify, resolve the effective value via `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` from `scripts/lib/wave-sizing.mjs` — the graduated default (#194) replaces the previous session-type-only switch. Pass the resolved value to each Agent() tool call per `circuit-breaker.md` (omit the parameter when resolved to `none`).

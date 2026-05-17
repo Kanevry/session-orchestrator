@@ -4,6 +4,7 @@ description: Use this agent for read-only architectural audits between waves. Re
 model: inherit
 color: blue
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # Architect Reviewer Agent

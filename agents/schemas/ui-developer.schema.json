@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/ui-developer.schema.json",
+  "title": "ui-developer agent output",
+  "description": "Structured summary returned by the ui-developer agent after a frontend task. Mirrors the Output Format section of agents/ui-developer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "task_id", "files_changed", "blockers"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "design_system": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reused": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Existing primitives composed (e.g. ['Button', 'Card'])."
+        },
+        "new_primitives": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "New components created (should normally be empty)."
+        },
+        "theme_tokens": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "axe_scan": {
+          "type": "string",
+          "description": "e.g. 'pass' or 'N violations'"
+        },
+        "keyboard_nav": { "type": "string" },
+        "color_contrast": { "type": "string" },
+        "screen_reader": { "type": "string" }
+      }
+    },
+    "responsive": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verified_breakpoints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Breakpoints tested, e.g. ['375px', '768px', '1280px']"
+        },
+        "horizontal_overflow": {
+          "type": "string",
+          "description": "e.g. 'none' or breakpoint+description"
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

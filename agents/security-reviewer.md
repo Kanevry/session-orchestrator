@@ -4,6 +4,7 @@ description: Use this agent for security analysis — OWASP checks, authenticati
 model: sonnet
 color: red
 tools: Read, Grep, Glob, Bash
+sandbox-tier: read-only
 ---
 
 # Security Reviewer Agent

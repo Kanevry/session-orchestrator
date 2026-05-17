@@ -73,6 +73,19 @@ After resolution, emit: `Test Runner: target=[name] profile=[name] run_id=[runId
 
 Determine `${RUN_DIR}` from `artifact-paths.mjs:runDirPath(runId)` before dispatching any driver. All drivers write artifacts under `${RUN_DIR}/`.
 
+### --since Filtering (when `since_ref` is provided)
+
+When `since_ref` is set (passed from the `/test --since <git-ref>` handoff contract):
+
+1. Import and call `changedFilesSince(since_ref)` from `scripts/lib/discovery-helpers.mjs`.
+2. If the helper throws (ref unresolvable), surface the error to the user and halt.
+3. If the result is `[]` (no files changed since the ref), emit:
+   ```
+   No files changed since <since_ref>. Skipping test run.
+   ```
+   and exit with status 0. Do NOT fall back to a full-repo test run.
+4. If the result is a non-empty array, JSON-stringify it and set `TEST_CHANGED_FILES` in the driver subprocess environment (see driver invocations below). Driver-side filtering is deferred — drivers receive the env var but do not yet filter by it in this wave.
+
 For each resolved driver:
 
 ### Web (playwright-driver)
@@ -81,11 +94,13 @@ Dispatch via Bash per `skills/playwright-driver/SKILL.md`. Pass `${RUN_DIR}` so 
 
 ```bash
 # Example invocation shape (exact flags defined by playwright-driver SKILL.md)
-node scripts/lib/playwright-driver/runner.mjs \
+TEST_CHANGED_FILES="${CHANGED_FILES_JSON}" node scripts/lib/playwright-driver/runner.mjs \
   --run-dir "${RUN_DIR}" \
   --profile "${PROFILE}" \
   --target "${TARGET}"
 ```
+
+Where `${CHANGED_FILES_JSON}` is `JSON.stringify(changedFiles)` when `--since` was provided, or an empty string otherwise.
 
 Capture exit code. A non-zero exit from Playwright means test failures — these become findings for the UX evaluator. They are NOT a fatal error for the orchestrator. Continue to Phase 3 regardless of exit code.
 

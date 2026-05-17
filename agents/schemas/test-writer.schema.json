@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/test-writer.schema.json",
+  "title": "test-writer agent output",
+  "description": "Structured summary returned by the test-writer agent after writing tests. Mirrors the Output Format section of agents/test-writer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "task_id", "files_changed", "blockers"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "tests_added": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "coverage_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "happy_path": { "type": "integer", "minimum": 0 },
+        "error_path": { "type": "integer", "minimum": 0 },
+        "boundary": { "type": "integer", "minimum": 0 },
+        "falsification_check": {
+          "type": "string",
+          "description": "Summary of falsification check results."
+        }
+      }
+    },
+    "run_results": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "duration_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

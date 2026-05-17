@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/code-implementer.schema.json",
+  "title": "code-implementer agent output",
+  "description": "Structured summary returned by the code-implementer agent after a task. Mirrors the Output Format section of agents/code-implementer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "task_id", "files_changed", "blockers"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "approach": {
+      "type": "string",
+      "description": "1-3 sentence narrative on WHY, not diff narration."
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "typecheck": {
+          "type": "string",
+          "description": "e.g. 'pass' or 'N errors'"
+        },
+        "pattern_alignment": {
+          "type": "string",
+          "description": "Existing-file pattern matched (e.g. 'matched src/lib/errors.ts')"
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-text blocker descriptions; empty array when status=done."
+    }
+  }
+}

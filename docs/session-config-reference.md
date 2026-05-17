@@ -107,6 +107,25 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 | `auto-commit-per-wave` | boolean | `false` | Automatically commit each wave's work after the Quality-Lite gate passes. Checkpoint commits per wave reduce the risk of data loss from `git stash` collisions in parallel sessions (V3.3 RESCUE incident — see GitLab #214). When `false`, all work is committed at session-end via `/close`. Requires `persistence: true`; the flag is silently ignored when `persistence: false`. Trade-off: each wave produces an additional commit; git log shows N+1 commits instead of 1. Use `/simplify` or `git rebase -i --autosquash` before final close to squash if a clean history is desired. **Implementation note:** the procedural commit sequence (`scripts/lib/auto-commit.mjs`) is deferred to V3.6. Until then, setting this flag to `true` triggers a session-start warning that auto-commits are not yet active — the flag is a no-op but is validated so projects can opt in early. |
 
+## Worker-Pool Dispatch (#415)
+
+Opt-in bounded-concurrency cursor-based agent dispatch. When `enabled: true`, wave-executor uses `runWavePool()` (from `scripts/lib/wave-executor/pool.mjs`) instead of the default Promise.all() fan-out, so at most `max-parallel` agents are active at any moment. Projects that omit this block use the existing full fan-out model unchanged.
+
+All fields live under a top-level `worker-pool` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+worker-pool:
+  enabled: false           # opt-in; default false preserves existing behavior
+  max-parallel: 4          # cap concurrent workers; defaults to agents-per-wave
+  drain-timeout-ms: 10000  # ms to wait for in-flight workers after abort signal
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `worker-pool.enabled` | boolean | `false` | When `false`, the existing single-message parallel Agent() dispatch is used. When `true`, dispatches via `runWavePool()` with a bounded cursor. |
+| `worker-pool.max-parallel` | integer | value of `agents-per-wave` | Maximum concurrent workers active simultaneously. Falls back to `agents-per-wave` when unset. |
+| `worker-pool.drain-timeout-ms` | integer | `10000` | Milliseconds the pool waits for in-flight workers to settle after an abort signal fires before returning partial results. |
+
 ## Environment Awareness (v3.1.0)
 
 Introduced by Epic #157 / issue #166. Lets session-start sense the host (RAM, CPU, SSH, peer sessions) and adapt wave planning accordingly. All fields are opt-in defaults — a project without this block behaves identically to v3.0.0.

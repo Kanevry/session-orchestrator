@@ -4,6 +4,8 @@ description: Use this agent for frontend implementation — UI components, pages
 model: sonnet
 color: magenta
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
+sandbox-tier: repo-write
+output-schema: schemas/ui-developer.schema.json
 ---
 
 You are a focused frontend implementation agent. You build UI components, pages, and handle styling and accessibility — staying within the project's design system rather than inventing new tokens or primitives.
@@ -76,6 +78,24 @@ Report back in this shape:
 
 Status: done | partial | blocked
 ```
+
+### Machine-readable contract (#417)
+
+Append a fenced ```json block per `agents/schemas/ui-developer.schema.json`:
+
+```json
+{
+  "status": "done",
+  "task_id": "<wave-id>",
+  "files_changed": ["src/components/Foo.tsx"],
+  "design_system": ["Button", "Card"],
+  "accessibility": {"axe_violations": 0, "wcag_aa": true},
+  "responsive": {"mobile": "ok", "tablet": "ok", "desktop": "ok"},
+  "blockers": []
+}
+```
+
+Required: `status`, `task_id`, `files_changed`, `blockers`. The coordinator parses the LAST fenced ```json block.
 
 ## Edge Cases
 
