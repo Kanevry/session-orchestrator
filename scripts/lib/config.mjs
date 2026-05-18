@@ -45,6 +45,7 @@ import { _parseVaultIntegration, _parseResourceThresholds } from './config/vault
 import { _parseTest } from './config/test.mjs';
 import { _parseGitlabPortfolio } from './config/gitlab-portfolio.mjs';
 import { _parseWaveReviewers } from './config/wave-reviewers.mjs';
+import { _parseCrossRepo } from './config/cross-repo.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -229,34 +230,17 @@ export function parseSessionConfig(mdContent) {
   // gitlab-portfolio: parsed from full content (standalone top-level block, GH #41)
   const gitlabPortfolio = _parseGitlabPortfolio(mdContent);
 
-  // cross-repo.projects: parsed from the `cross-repo:` sub-block in Session Config (#469)
-  // Uses block-scanner (not _parseKV) because the dot in "cross-repo.projects" is not
-  // supported by the KV regex. Scans for a `cross-repo:` block and then reads `projects:`.
-  const crossRepoProjects = (() => {
-    const lines = mdContent.split(/\r?\n/);
-    let inBlock = false;
-    for (const rawLine of lines) {
-      const line = rawLine.replace(/\r$/, '');
-      if (!inBlock) {
-        if (/^cross-repo:\s*$/.test(line)) { inBlock = true; }
-        continue;
-      }
-      // Stop at next top-level (non-indented, non-empty) key
-      if (line.length > 0 && !/^\s/.test(line)) break;
-      const m = line.match(/^\s+projects:\s*(.*)/);
-      if (m) {
-        const raw = m[1].replace(/\s*#.*$/, '').trim();
-        if (!raw || raw === 'none' || raw === 'null') return [];
-        const stripped = raw.replace(/^\s*\[/, '').replace(/\]\s*$/, '').trim();
-        if (stripped === '') return [];
-        return stripped.split(',').map(s => s.trim()).filter(s => s.length > 0);
-      }
-    }
-    return [];
-  })();
+  // cross-repo.projects: delegated per-section parser (#478, MED-1)
+  const crossRepoProjects = _parseCrossRepo(mdContent);
 
   // wave-reviewers: parsed from full content; dual-key shim (persona-reviewers → wave-reviewers, #461)
   const waveReviewers = _parseWaveReviewers(mdContent);
+  if (waveReviewers.deprecated) {
+    process.stderr.write(
+      "Session Config: 'persona-reviewers' is deprecated — rename to 'wave-reviewers'. " +
+        'Will be removed in v4.0.\n'
+    );
+  }
 
   return {
     'agents-per-wave': agentsPerWave,

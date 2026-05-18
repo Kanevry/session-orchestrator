@@ -2,16 +2,18 @@
  * wave-reviewers.mjs — Parser for the `wave-reviewers` / `persona-reviewers` sub-block.
  *
  * Supports the backward-compat shim: if only `persona-reviewers` is present, its values
- * are used and a deprecation warning is emitted to stderr. See issue #461.
+ * are used and the `deprecated` flag is set; the caller (config.mjs) emits the WARN.
+ * See issue #461, #478.
  *
- * Fields: enabled (boolean), reviewers (string[]), mode (string enum).
- * Defaults: { enabled: false, reviewers: [], mode: 'warn' }.
+ * Fields: enabled (boolean), reviewers (string[]), mode (string enum), deprecated (boolean).
+ * Defaults: { enabled: false, reviewers: [], mode: 'warn', deprecated: false }.
  */
 
 const DEFAULTS = {
   enabled: false,
   reviewers: [],
   mode: 'warn',
+  deprecated: false,
 };
 
 /**
@@ -19,11 +21,12 @@ const DEFAULTS = {
  *
  * Dual-key shim:
  *   - `wave-reviewers` wins when present (even if both present).
- *   - `persona-reviewers` is accepted as a deprecated alias; one stderr WARN is emitted.
- *   - If both are present, `wave-reviewers` wins and the WARN is still emitted once.
+ *   - `persona-reviewers` is accepted as a deprecated alias; the `deprecated` flag is set;
+ *     the caller (config.mjs) emits the WARN to stderr.
+ *   - If both are present, `wave-reviewers` wins and `deprecated` is still true.
  *
  * @param {string} content — full CLAUDE.md / AGENTS.md file content
- * @returns {{ enabled: boolean, reviewers: string[], mode: string }}
+ * @returns {{ enabled: boolean, reviewers: string[], mode: string, deprecated: boolean }}
  */
 export function _parseWaveReviewers(content) {
   const newBlockLines = _extractBlock(content, 'wave-reviewers');
@@ -32,20 +35,12 @@ export function _parseWaveReviewers(content) {
   const hasNew = newBlockLines.length > 0;
   const hasOld = oldBlockLines.length > 0;
 
-  // Emit deprecation WARN if old key is present (regardless of whether new also present)
-  if (hasOld) {
-    process.stderr.write(
-      "Session Config: 'persona-reviewers' is deprecated — rename to 'wave-reviewers'. " +
-        'Will be removed in v4.0.\n'
-    );
-  }
-
   // New key wins; fall back to old key only when new is absent
   const blockLines = hasNew ? newBlockLines : hasOld ? oldBlockLines : [];
 
-  if (blockLines.length === 0) return { ...DEFAULTS };
+  if (blockLines.length === 0) return { ...DEFAULTS, deprecated: false };
 
-  return _parseBlockLines(blockLines);
+  return { ..._parseBlockLines(blockLines), deprecated: hasOld };
 }
 
 // ---------------------------------------------------------------------------

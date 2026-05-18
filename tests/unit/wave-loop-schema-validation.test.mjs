@@ -315,4 +315,37 @@ describe('wave-loop schema validation integration', () => {
     expect(records[2]).not.toHaveProperty('schema_violation');
     expect(blockingViolations).toHaveLength(0); // enforce=warn → no blocking
   });
+
+  // -------------------------------------------------------------------------
+  // 8. enforce:off + validation failure → violation recorded for observability,
+  //    wave is NOT blocked, and no schema_warning is set (#473 pin-test)
+  // -------------------------------------------------------------------------
+  it('records schema_violation for observability but does not block under enforce:off', async () => {
+    const schemaErrors = [{ instancePath: '/status', message: 'must be equal to one of the allowed values' }];
+    validateFn.mockResolvedValue({
+      ok: false,
+      parsed: { status: 'finished' },
+      mode: 'validated',
+      errors: schemaErrors,
+    });
+
+    const sessionConfig = { 'output-schema-validation': { enabled: true, enforce: 'off' } };
+    const agentResults = [{ agentName: 'code-implementer', raw: '```json\n{"status":"finished"}\n```' }];
+
+    const { records, blockingViolations } = await runWaveSchemaValidation({
+      sessionConfig,
+      agentResults,
+      validateFn,
+    });
+
+    // Violation must be recorded for forensic observability
+    expect(records[0].schema_violation).toBe(true);
+    expect(records[0].schema_errors).toEqual(schemaErrors);
+    // schema_status is only set on ok:true — must not appear on a violation
+    expect(records[0]).not.toHaveProperty('schema_status');
+    // No parse-error warning path triggered
+    expect(records[0]).not.toHaveProperty('schema_warning');
+    // Wave must NOT be blocked under enforce:off
+    expect(blockingViolations).toHaveLength(0);
+  });
 });

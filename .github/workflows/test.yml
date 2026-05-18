@@ -95,6 +95,10 @@ jobs:
         shell: bash
         run: node scripts/lib/validate/check-owner-leakage.mjs "$GITHUB_WORKSPACE"
 
+      - name: Plugin manifest schema validation (#475)
+        shell: bash
+        run: node scripts/validate-plugin-manifests.mjs "$GITHUB_WORKSPACE"
+
       - name: Lint
         run: npm run lint
 

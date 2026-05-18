@@ -22,9 +22,10 @@ import { parseFrontmatter as _parseFrontmatter } from '../vault-mirror/utils.mjs
  * Priority:
  *   1. Explicit `frontmatter.gitlab` field present → 'gitlab'
  *   2. Explicit `frontmatter.github` field present → 'github'
- *   3. `repo` string contains 'gitlab.' hostname prefix, 'gitlab.com', or starts with 'gitlab/' → 'gitlab'
- *   4. `repo` string contains 'github.com' or looks like an <org>/<repo> shorthand → 'github'
- *   5. Otherwise → null (caller decides)
+ *   3. `repo` matches /(?:^|[@/])gitlab\./ or starts with 'gitlab/' → 'gitlab'
+ *   4. `repo` contains 'github.com' or starts with 'github/' → 'github'
+ *   5. `repo` matches host-less <org>/<repo> shorthand /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/ → 'github' (last resort)
+ *   6. Otherwise → null (caller decides)
  *
  * @param {{ frontmatter?: Record<string, string>, repo?: string }} input
  * @returns {'gitlab'|'github'|null}

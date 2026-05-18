@@ -28,7 +28,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -259,7 +262,9 @@ function buildTickBody(issueMap, depIds, verdict, streak, date) {
  * @returns {string}
  */
 function buildFlipBody(repos) {
-  const repoList = repos.join(' ');
+  // Defense-in-depth: regex+confinement upstream already filter, but shell-quote here
+  // makes the embedded bash safe under any future bypass.
+  const repoList = repos.map(r => `'${r.replace(/'/g, "'\\''")}'`).join(' ');
   // The sed/add/commit one-liner targets the project-instruction file. Most
   // ecosystem repos use CLAUDE.md, but Codex-CLI repos use AGENTS.md as a
   // transparent alias — see skills/_shared/instruction-file-resolution.md.
@@ -291,21 +296,7 @@ function buildStagnationBody() {
 }
 
 // ── Repos that need the flip (loaded from Session Config cross-repo.projects) ──
-
-/**
- * Load the cross-repo.projects list from Session Config.
- * Returns [] when the field is absent or the config file is not found — never throws.
- */
-async function loadFlipRepos() {
-  try {
-    const mdContent = await readConfigFile(process.cwd());
-    const cfg = parseSessionConfig(mdContent);
-    const list = cfg['cross-repo.projects'];
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
+// Config-driven — resolved from the shared cross-repo accessor (#478).
 
 // ── Today's date ──────────────────────────────────────────────────────────────
 
@@ -317,8 +308,20 @@ function todayISO() {
 
 async function main() {
   // Load the config-driven repo list before doing any glab work
-  const FLIP_REPOS = await loadFlipRepos();
-  if (FLIP_REPOS.length === 0) {
+  const watcherRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+  // Home-expand each entry before confinement, matching sibling scripts (W4-Q2 LOW).
+  const expandHome = (p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
+  const flipRepos = (await getCrossRepoProjects()).filter((r) => {
+    const guard = validatePathInsideProject(expandHome(r), watcherRoot);
+    if (!guard.ok) {
+      process.stderr.write(
+        `vault-integration-watcher: WARN rejecting confined-path violation for ${JSON.stringify(r)} (reason: ${guard.reason})\n`
+      );
+      return false;
+    }
+    return true;
+  });
+  if (flipRepos.length === 0) {
     process.stderr.write(
       'cross-repo: no projects configured (set cross-repo.projects in Session Config) — nothing to do.\n'
     );
@@ -378,7 +381,7 @@ async function main() {
   // 7. If streak == 3 (or more), post flip-ready trigger
   if (newStreak >= 3) {
     log(`streak=${newStreak} >= 3 — posting flip-ready trigger`);
-    postComment(TRACKING_ISSUE, buildFlipBody(FLIP_REPOS));
+    postComment(TRACKING_ISSUE, buildFlipBody(flipRepos));
     emit({ action: 'flip-ready-posted', issue: TRACKING_ISSUE });
   }
 

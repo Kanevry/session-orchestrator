@@ -21,27 +21,8 @@ import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
-
-// ---------------------------------------------------------------------------
-// Config-driven repo list
-// ---------------------------------------------------------------------------
-
-/**
- * Load cross-repo.projects from Session Config (CLAUDE.md / AGENTS.md) in the
- * current working directory. Returns an empty array when the field is absent or
- * the config file is not found — never throws.
- */
-async function loadEligibleRepos() {
-  try {
-    const mdContent = await readConfigFile(process.cwd());
-    const cfg = parseSessionConfig(mdContent);
-    const list = cfg['cross-repo.projects'];
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
+import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 const COMMIT_MSG = 'chore(orchestrator): Promote vault-integration to strict mode — refs #305';
 
@@ -444,11 +425,20 @@ async function main() {
   if (singleRepo) {
     // Single-repo mode
     const absRepo = expandHome(singleRepo);
+    const singleRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+    const singleGuard = validatePathInsideProject(absRepo, singleRoot);
+    if (!singleGuard.ok) {
+      process.stderr.write(
+        `promote-vault-strict: ERROR rejecting --repo path outside confinement root ${JSON.stringify(singleRoot)} ` +
+        `for ${JSON.stringify(singleRepo)} (reason: ${singleGuard.reason})\n`
+      );
+      process.exit(1);
+    }
     process.stdout.write(`Processing: ${absRepo}\n`);
     results.push(processRepo(absRepo, { apply: applyFlag }));
   } else {
     // Batch mode — load eligible repos from Session Config
-    const eligibleRepos = await loadEligibleRepos();
+    const eligibleRepos = await getCrossRepoProjects();
 
     if (eligibleRepos.length === 0) {
       process.stderr.write(
@@ -457,8 +447,16 @@ async function main() {
       process.exit(0);
     }
 
+    const batchRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
     for (const rawPath of eligibleRepos) {
       const absRepo = expandHome(rawPath);
+      const guard = validatePathInsideProject(absRepo, batchRoot);
+      if (!guard.ok) {
+        process.stderr.write(
+          `promote-vault-strict: WARN rejecting confined-path violation for ${JSON.stringify(rawPath)} (reason: ${guard.reason})\n`
+        );
+        continue;
+      }
       process.stdout.write(`Processing: ${absRepo}\n`);
       results.push(processRepo(absRepo, { apply: applyFlag }));
     }

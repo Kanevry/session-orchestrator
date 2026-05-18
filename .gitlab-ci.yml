@@ -113,8 +113,9 @@ npm-audit:
 #
 # plugin-schema-validate — verify .claude-plugin manifests conform to the
 # canonical schemastore.org JSON Schema definitions (issue #433).
-# Uses ajv-cli to validate both plugin.json and marketplace.json against
-# the fetched schemas. Runs on changes to .claude-plugin/*.json or CI config.
+# Uses scripts/validate-plugin-manifests.mjs (project-pinned AJV via
+# ajv-loader.mjs, host-pinned schemastore fetch; replaces unpinned global
+# ajv-cli — #475). Runs on changes to .claude-plugin/*.json or CI config.
 # ---------------------------------------------------------------------------
 
 owner-leakage:
@@ -131,18 +132,11 @@ owner-leakage:
 
 plugin-schema-validate:
   stage: validate
-  image: node:22-alpine
+  <<: *node-setup
   interruptible: true
   timeout: 5m
   script:
-    # ajv-cli >=5.x dropped remote-URL `-s` support (treats https:// as a local
-    # path). Fetch the schemas to local files first so this job is robust against
-    # unpinned-global-install drift. BusyBox wget in node:*-alpine handles HTTPS.
-    - npm install -g ajv-cli ajv-formats
-    - wget -q -O /tmp/plugin-manifest.schema.json https://json.schemastore.org/claude-code-plugin-manifest.json
-    - wget -q -O /tmp/marketplace.schema.json https://json.schemastore.org/claude-code-marketplace.json
-    - ajv validate -c ajv-formats -s /tmp/plugin-manifest.schema.json -d .claude-plugin/plugin.json --strict=false
-    - ajv validate -c ajv-formats -s /tmp/marketplace.schema.json -d .claude-plugin/marketplace.json --strict=false
+    - node scripts/validate-plugin-manifests.mjs "$CI_PROJECT_DIR"
   rules:
     - changes:
         - .claude-plugin/*.json

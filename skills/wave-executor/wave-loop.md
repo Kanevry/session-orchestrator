@@ -361,7 +361,7 @@ After ALL agents in the wave complete:
    - **`mode: 'validated', ok: false`** — schema violation. Annotate the agent record with `schema_violation: true` and `schema_errors: [...]`. Then:
      - Under `enforce: warn` (default): log the violation in the wave progress update and continue. The wave is NOT blocked.
      - Under `enforce: strict`: surface the violation as a wave-blocking finding. Halt further agent processing and report to the coordinator before proceeding to the conflict check.
-     - Under `enforce: off`: skip violation recording entirely (schema_status is still set when ok=true).
+     - Under `enforce: off`: record the violation in `subagents.jsonl` for diagnostics (`schema_violation: true`, `schema_errors: [...]` are set on the agent record) but do NOT emit a log line in the wave progress update and do NOT block the wave. This is identical to `warn` minus the in-wave noise — forensic data is preserved; operator output is silenced.
    - **`mode: 'parse-error'`** — the agent's output had no fenced ```json block or malformed JSON. Log a warning (backward-compat — agents that predate the schema contract routinely omit a JSON block). Do NOT block the wave.
    - **`mode: 'unvalidated'`** — the agent has no declared `output-schema:` frontmatter. Silent skip (backward-compat path; as of #449 all 11 plugin agents are enrolled, but third-party agents installed via marketplace plugins may not be).
 

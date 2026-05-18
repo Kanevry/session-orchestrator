@@ -14,9 +14,14 @@ import {
   mkdtempSync,
   writeFileSync,
   readFileSync,
+  realpathSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+
+// macOS: /var/folders → /private/var/folders symlink. validatePathInsideProject's
+// phase-2 (symlink) check requires the confinement root to be the resolved realpath.
+const TMP_REAL = realpathSync(tmpdir());
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,7 +105,7 @@ const tmpdirs = [];
  * Returns the tmpdir path.
  */
 function makeTmpRepo({ filename = 'CLAUDE.md', content }) {
-  const tmp = mkdtempSync(join(tmpdir(), 'promote-test-'));
+  const tmp = mkdtempSync(join(TMP_REAL, 'promote-test-'));
   tmpdirs.push(tmp);
 
   // Git init with deterministic author so commits don't fail on CI
@@ -125,6 +130,9 @@ function run(extraArgs = []) {
   return spawnSync(process.execPath, [SCRIPT, ...extraArgs], {
     encoding: 'utf8',
     timeout: 20_000,
+    // #477 confinement is rooted at ~/Projects by default; tests use os.tmpdir()
+    // fixtures, so point the confinement root at the OS tmp base for spawned runs.
+    env: { ...process.env, CROSS_REPO_CONFINEMENT_ROOT: TMP_REAL },
   });
 }
 
@@ -319,7 +327,7 @@ describe('promote-vault-strict', () => {
   it('9. no --repo and no cross-repo.projects in config → no-op exit 0 with notice', () => {
     // Create a tmpdir with a CLAUDE.md that has NO cross-repo: block.
     // The script must detect the empty list and exit cleanly.
-    const tmp = mkdtempSync(join(tmpdir(), 'promote-noop-test-'));
+    const tmp = mkdtempSync(join(TMP_REAL, 'promote-noop-test-'));
     tmpdirs.push(tmp);
 
     writeFileSync(

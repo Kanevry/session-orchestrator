@@ -86,6 +86,7 @@ Append a fenced ```json block per `agents/schemas/ui-developer.schema.json`:
 ```json
 {
   "status": "done",
+  "verdict": "PROCEED",
   "task_id": "<wave-id>",
   "files_changed": ["src/components/Foo.tsx"],
   "design_system": ["Button", "Card"],
@@ -95,7 +96,7 @@ Append a fenced ```json block per `agents/schemas/ui-developer.schema.json`:
 }
 ```
 
-Required: `status`, `task_id`, `files_changed`, `blockers`. The coordinator parses the LAST fenced ```json block.
+Required: `status`, `task_id`, `files_changed`, `blockers`. Optional: `verdict`. **Emit `verdict` alongside `status` (status→verdict mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED). `status` is deprecated and will be removed in v4.0 (#472).** The coordinator parses the LAST fenced ```json block.
 
 ## Edge Cases
 

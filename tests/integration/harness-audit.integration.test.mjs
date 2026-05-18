@@ -148,7 +148,7 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
   // 2. Schema validation: top-level keys and categories array
   // -------------------------------------------------------------------------
 
-  it('stdout JSON has correct top-level schema with 7 categories', () => {
+  it('stdout JSON has correct top-level schema with 8 categories', () => {
     const root = makeTmpCopy();
     const result = runAudit(root);
 
@@ -170,9 +170,11 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
     expect(output.repository).toHaveProperty('branch');
     expect(output.repository).toHaveProperty('head_sha');
 
-    // categories: exactly 7 entries
+    // categories: dynamic-artifact count — floor/ceiling per
+    // .claude/rules/test-quality.md "Dynamic Artifact Counts" carve-out.
     expect(Array.isArray(output.categories)).toBe(true);
-    expect(output.categories).toHaveLength(7);
+    expect(output.categories.length).toBeGreaterThanOrEqual(8);
+    expect(output.categories.length).toBeLessThanOrEqual(20);
 
     // Each category has the required fields
     for (const cat of output.categories) {
@@ -221,7 +223,7 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
     const output = JSON.parse(result.stdout);
 
     expect(output.rubric_version).toBe(EXPECTED_RUBRIC_VERSION);
-    expect(output.rubric_version).toBe('2026-05');
+    expect(output.rubric_version).toBe('2026-06');
   });
 
   // -------------------------------------------------------------------------
@@ -279,7 +281,7 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
 
     // All 3 records must be valid JSON with rubric_version
     for (const record of lines3) {
-      expect(record.rubric_version).toBe('2026-05');
+      expect(record.rubric_version).toBe('2026-06');
       expect(typeof record.session_id).toBe('string');
     }
   });
@@ -305,7 +307,8 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
     // Output must still be valid JSON
     const output = JSON.parse(result.stdout);
     expect(Array.isArray(output.categories)).toBe(true);
-    expect(output.categories).toHaveLength(7);
+    expect(output.categories.length).toBeGreaterThanOrEqual(8);
+    expect(output.categories.length).toBeLessThanOrEqual(20);
 
     // Overall score will be lower since state-md checks fail
     expect(output.summary.overall_mean_0_10).toBeGreaterThanOrEqual(0);
@@ -352,10 +355,10 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
   });
 
   // -------------------------------------------------------------------------
-  // 10. Category names match the expected 7 categories
+  // 10. Category names match the expected 8 categories
   // -------------------------------------------------------------------------
 
-  it('categories array contains the 7 expected category names', () => {
+  it('categories array contains the 8 expected category names', () => {
     const root = makeTmpCopy();
     const result = runAudit(root);
 
@@ -370,6 +373,7 @@ describe.sequential('harness-audit integration tests', { timeout: 20000 }, () =>
     expect(names).toContain('Plugin-Root Resolution');
     expect(names).toContain('Config Hygiene');
     expect(names).toContain('Policy Freshness');
+    expect(names).toContain('Large-Codebase Readiness');
   });
 });
 

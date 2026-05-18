@@ -84,6 +84,7 @@ After the prose report above, append a fenced ```json block matching `agents/sch
 ```json
 {
   "status": "done",
+  "verdict": "PROCEED",
   "task_id": "<wave-id>",
   "files_changed": ["path/to/file.ts"],
   "approach": "<1-line summary>",
@@ -92,7 +93,7 @@ After the prose report above, append a fenced ```json block matching `agents/sch
 }
 ```
 
-Required: `status` (enum done|partial|blocked), `task_id`, `files_changed` (array), `blockers` (array, empty if none). Optional: `approach`, `verification`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+Required: `status` (enum done|partial|blocked), `task_id`, `files_changed` (array), `blockers` (array, empty if none). Optional: `verdict`, `approach`, `verification`. **Emit `verdict` alongside `status` (status→verdict mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED). `status` is deprecated and will be removed in v4.0 (#472).** The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
 
 ## Edge Cases
 

@@ -26,6 +26,7 @@ import {
   runCategory5,
   runCategory6,
   runCategory7,
+  runCategory8,
 } from '@lib/harness-audit/categories.mjs';
 
 // ---------------------------------------------------------------------------
@@ -1007,10 +1008,10 @@ describe('category 7: Policy Freshness', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fixture-based smoke tests (clean-repo scores high on all 7 categories)
+// Fixture-based smoke tests (clean-repo scores high on all 8 categories)
 // ---------------------------------------------------------------------------
 
-describe('fixture clean-repo: all categories score >= 8/10 or max', () => {
+describe('fixture clean-repo: all 8 categories score >= 8/10 or max', () => {
   it('category 1 scores at least 8/10 against fixture', () => {
     const checks = runCategory1(FIXTURE_ROOT);
     expect(totalPoints(checks)).toBeGreaterThanOrEqual(8);
@@ -1047,5 +1048,13 @@ describe('fixture clean-repo: all categories score >= 8/10 or max', () => {
   it('category 7 scores at least 8/10 against fixture', () => {
     const checks = runCategory7(FIXTURE_ROOT);
     expect(totalPoints(checks)).toBeGreaterThanOrEqual(8);
+  });
+
+  // Floor of 9 (not 7) per W4-Q4 HIGH-4: fixture scores 10/10, a 3-pt slack
+  // allows ~half the checks to silently regress. 9 = 1-pt safety margin, matching
+  // siblings cat1/cat2/cat3/cat7.
+  it('category 8 scores at least 9/10 against fixture', () => {
+    const checks = runCategory8(FIXTURE_ROOT);
+    expect(totalPoints(checks)).toBeGreaterThanOrEqual(9);
   });
 });

@@ -120,6 +120,30 @@ if (runnerMjs === null) {
 }
 
 // ---------------------------------------------------------------------------
+// Check 5: #477 cross-repo sink scripts import validatePathInsideProject
+// ---------------------------------------------------------------------------
+
+console.log('');
+console.log('--- Check 5: #477 cross-repo sink scripts import validatePathInsideProject ---');
+
+const sinkScripts = [
+  'scripts/promote-vault-strict.mjs',
+  'scripts/run-migrate-v2-cross-repo.mjs',
+  'scripts/vault-integration-watcher.mjs',
+];
+
+for (const relPath of sinkScripts) {
+  const src = readFile(relPath);
+  if (src === null) {
+    fail(`${relPath} does not exist`);
+  } else if (/import\s*\{[^}]*validatePathInsideProject[^}]*\}\s*from\s*['"][^'"]*path-utils/.test(src)) {
+    pass(`${relPath} imports validatePathInsideProject from path-utils (#477 confinement guard)`);
+  } else {
+    fail(`${relPath} does not import validatePathInsideProject from path-utils — #477 path-confinement guard is missing`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

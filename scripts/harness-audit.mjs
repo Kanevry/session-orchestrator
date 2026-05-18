@@ -2,7 +2,7 @@
 /**
  * harness-audit.mjs — Deterministic harness-audit scorecard script.
  *
- * Runs 27 checks across 7 categories against a target repo. Emits a single
+ * Runs 33 checks across 8 categories against a target repo. Emits a single
  * JSON record to stdout (schema defined in issue #210) and appends the same
  * record (with session_id) to .orchestrator/metrics/audit.jsonl.
  * Writes a human-readable summary to stderr.
@@ -11,7 +11,7 @@
  * Usage: node scripts/harness-audit.mjs
  *
  * Stdlib only: node:fs, node:path, node:child_process, node:url.
- * Rubric version: 2026-05
+ * Rubric version: 2026-06
  */
 
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
@@ -26,9 +26,10 @@ import {
   runCategory5,
   runCategory6,
   runCategory7,
+  runCategory8,
 } from './lib/harness-audit/categories.mjs';
 
-const RUBRIC_VERSION = '2026-05';
+const RUBRIC_VERSION = '2026-06';
 
 // ---------------------------------------------------------------------------
 // Audit root resolution
@@ -213,7 +214,7 @@ const gitMeta = getGitMeta(auditRoot);
 const harnessVersion = getHarnessVersion(auditRoot);
 const sessionId = getSessionId(auditRoot, gitMeta.branch);
 
-// Run all 7 categories
+// Run all 8 categories
 const categoryResults = [
   scoreCategory('Session Discipline',       10, runCategory1(auditRoot)),
   scoreCategory('Quality Gate Coverage',    10, runCategory2(auditRoot)),
@@ -222,6 +223,10 @@ const categoryResults = [
   scoreCategory('Plugin-Root Resolution',    9, runCategory5(auditRoot)),
   scoreCategory('Config Hygiene',            8, runCategory6(auditRoot)),
   scoreCategory('Policy Freshness',         10, runCategory7(auditRoot)),
+  // Weight 8 mirrors Config Hygiene (cat 6): cat 8 is structural-hygiene rubric,
+  // not runtime-correctness. Weight 10 is reserved for production-impacting cats
+  // (Session Discipline / Quality Gate Coverage / Persistence Health / Policy Freshness).
+  scoreCategory('Large-Codebase Readiness',  8, runCategory8(auditRoot)),
 ];
 
 const durationMs = Date.now() - startMs;

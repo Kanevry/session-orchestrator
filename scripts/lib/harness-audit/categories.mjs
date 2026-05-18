@@ -15,3 +15,4 @@ export { runCategory4 } from './categories/category4.mjs';
 export { runCategory5 } from './categories/category5.mjs';
 export { runCategory6 } from './categories/category6.mjs';
 export { runCategory7 } from './categories/category7.mjs';
+export { runCategory8 } from './categories/category8.mjs';

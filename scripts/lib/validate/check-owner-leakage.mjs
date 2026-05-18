@@ -247,10 +247,22 @@ if (!existsSync(pluginRoot)) {
 const allFiles = getTrackedFiles();
 const textFiles = allFiles.filter(isTextFile);
 
-// Exclusion: .orchestrator/audits/** never scanned (A.2/A.4-5)
+// Exclusions:
+//   - .orchestrator/audits/** never scanned (A.2/A.4-5)
+//   - This guard's own source file (pattern-doc-comments define the scanner — not leaks).
+//   - This guard's own test file (string-literal fixtures exercise the detector — not leaks).
+// Both self-exclusions are the design-time fix for the latent bug exposed when
+// these files transitioned from untracked → tracked in commit a68e94f (#471
+// follow-up; the deep-2 acceptance run was a false-pass because git ls-files
+// hadn't enrolled them yet).
+const SELF_EXCLUSIONS = new Set([
+  'scripts/lib/validate/check-owner-leakage.mjs',
+  'tests/lib/validate/check-owner-leakage.test.mjs',
+]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
   if (rel.startsWith('.orchestrator/audits/')) return false;
+  if (SELF_EXCLUSIONS.has(rel)) return false;
   return true;
 });
 

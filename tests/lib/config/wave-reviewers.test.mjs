@@ -1,54 +1,34 @@
 /**
  * wave-reviewers.test.mjs — Unit tests for scripts/lib/config/wave-reviewers.mjs
  *
- * Covers the 3-case backward-compat matrix (#461):
- *   Case A: old key only  → returns value + emits exactly 1 WARN to stderr
- *   Case B: new key only  → returns value + emits NO WARN to stderr
- *   Case C: both keys     → new key wins + emits exactly 1 WARN to stderr
+ * Covers the 3-case backward-compat matrix (#461, #478):
+ *   Case A: old key only  → returns value + deprecated: true (WARN emitted by caller)
+ *   Case B: new key only  → returns value + deprecated: false (no WARN)
+ *   Case C: both keys     → new key wins + deprecated: true (WARN emitted by caller)
  *
  * Also covers: defaults, enabled, reviewers parsing, mode parsing, CRLF, block boundary.
+ *
+ * NOTE: The actual stderr WARN emission is tested at the config.mjs level in
+ * tests/lib/config/cross-repo.test.mjs (B.6 requirement — purity fix #478).
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { _parseWaveReviewers } from '@lib/config/wave-reviewers.mjs';
-
-// ---------------------------------------------------------------------------
-// Helpers to capture stderr writes emitted by the parser
-// ---------------------------------------------------------------------------
-
-let stderrCapture = [];
-
-function captureStderr() {
-  stderrCapture = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((msg) => {
-    stderrCapture.push(String(msg));
-    return true;
-  });
-}
-
-function restoreStderr() {
-  vi.restoreAllMocks();
-}
 
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
 describe('_parseWaveReviewers — defaults', () => {
-  beforeEach(captureStderr);
-  afterEach(restoreStderr);
-
   it('returns all defaults on empty string', () => {
     const result = _parseWaveReviewers('');
-    expect(result).toEqual({ enabled: false, reviewers: [], mode: 'warn' });
-    expect(stderrCapture).toHaveLength(0);
+    expect(result).toEqual({ enabled: false, reviewers: [], mode: 'warn', deprecated: false });
   });
 
   it('returns all defaults when neither block is present', () => {
     const content = 'persistence: true\nvcs: gitlab\n';
     const result = _parseWaveReviewers(content);
-    expect(result).toEqual({ enabled: false, reviewers: [], mode: 'warn' });
-    expect(stderrCapture).toHaveLength(0);
+    expect(result).toEqual({ enabled: false, reviewers: [], mode: 'warn', deprecated: false });
   });
 });
 
@@ -57,11 +37,8 @@ describe('_parseWaveReviewers — defaults', () => {
 // ---------------------------------------------------------------------------
 
 describe('_parseWaveReviewers — backward-compat matrix', () => {
-  beforeEach(captureStderr);
-  afterEach(restoreStderr);
-
-  // Case A: old key only → value + 1 WARN
-  it('Case A: old key only → returns value and emits exactly 1 deprecation WARN', () => {
+  // Case A: old key only → value + deprecated: true
+  it('Case A: old key only → returns value and deprecated: true', () => {
     const content = [
       'persona-reviewers:',
       '  enabled: true',
@@ -77,15 +54,12 @@ describe('_parseWaveReviewers — backward-compat matrix', () => {
     expect(result.reviewers).toEqual(['architect-reviewer', 'qa-strategist']);
     expect(result.mode).toBe('strict');
 
-    // Exactly 1 WARN emitted
-    const warns = stderrCapture.filter((m) => m.includes("'persona-reviewers' is deprecated"));
-    expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain('wave-reviewers');
-    expect(warns[0]).toContain('v4.0');
+    // deprecated flag set — caller (config.mjs) emits the WARN
+    expect(result.deprecated).toBe(true);
   });
 
-  // Case B: new key only → value + NO WARN
-  it('Case B: new key only → returns value and emits NO deprecation WARN', () => {
+  // Case B: new key only → value + deprecated: false
+  it('Case B: new key only → returns value and deprecated: false', () => {
     const content = [
       'wave-reviewers:',
       '  enabled: true',
@@ -100,13 +74,12 @@ describe('_parseWaveReviewers — backward-compat matrix', () => {
     expect(result.reviewers).toEqual(['analyst']);
     expect(result.mode).toBe('warn');
 
-    // Zero WARN emitted
-    const warns = stderrCapture.filter((m) => m.includes("'persona-reviewers' is deprecated"));
-    expect(warns).toHaveLength(0);
+    // No deprecation — flag is false
+    expect(result.deprecated).toBe(false);
   });
 
-  // Case C: both keys present → new key wins + 1 WARN
-  it('Case C: both keys present → new key wins and emits exactly 1 WARN', () => {
+  // Case C: both keys present → new key wins + deprecated: true
+  it('Case C: both keys present → new key wins and deprecated: true', () => {
     const content = [
       'wave-reviewers:',
       '  enabled: true',
@@ -126,9 +99,8 @@ describe('_parseWaveReviewers — backward-compat matrix', () => {
     expect(result.reviewers).toEqual(['architect-reviewer']);
     expect(result.mode).toBe('strict');
 
-    // Exactly 1 WARN emitted (old key present triggers it)
-    const warns = stderrCapture.filter((m) => m.includes("'persona-reviewers' is deprecated"));
-    expect(warns).toHaveLength(1);
+    // Old key present → deprecated flag set
+    expect(result.deprecated).toBe(true);
   });
 });
 
@@ -137,9 +109,6 @@ describe('_parseWaveReviewers — backward-compat matrix', () => {
 // ---------------------------------------------------------------------------
 
 describe('_parseWaveReviewers — field parsing', () => {
-  beforeEach(captureStderr);
-  afterEach(restoreStderr);
-
   it('parses enabled: false explicitly', () => {
     const content = 'wave-reviewers:\n  enabled: false\n';
     expect(_parseWaveReviewers(content).enabled).toBe(false);
@@ -194,9 +163,6 @@ describe('_parseWaveReviewers — field parsing', () => {
 // ---------------------------------------------------------------------------
 
 describe('_parseWaveReviewers — block boundary', () => {
-  beforeEach(captureStderr);
-  afterEach(restoreStderr);
-
   it('stops parsing at next top-level key', () => {
     const content = [
       'wave-reviewers:',
@@ -220,6 +186,7 @@ describe('_parseWaveReviewers — block boundary', () => {
       enabled: true,
       reviewers: ['architect-reviewer', 'qa-strategist'],
       mode: 'strict',
+      deprecated: false,
     });
   });
 });

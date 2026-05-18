@@ -81,6 +81,7 @@ Append a fenced ```json block at the end of your response per `agents/schemas/db
 ```json
 {
   "status": "done",
+  "verdict": "PROCEED",
   "task_id": "<wave-id>",
   "files_changed": ["migrations/2026MMDD_name.sql"],
   "schema_delta": "<1-line>",
@@ -90,7 +91,7 @@ Append a fenced ```json block at the end of your response per `agents/schemas/db
 }
 ```
 
-Required: `status`, `task_id`, `files_changed`, `blockers`. The coordinator parses the LAST fenced ```json block.
+Required: `status`, `task_id`, `files_changed`, `blockers`. Optional: `verdict`. **Emit `verdict` alongside `status` (status→verdict mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED). `status` is deprecated and will be removed in v4.0 (#472).** The coordinator parses the LAST fenced ```json block.
 ```
 
 ## Edge Cases

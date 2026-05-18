@@ -9,7 +9,14 @@
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["done", "partial", "blocked"]
+      "enum": ["done", "partial", "blocked"],
+      "deprecated": true,
+      "description": "DEPRECATED (#472): emit `verdict` instead. Removed in v4.0. Mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "Overall disposition (implementer mapping): PROCEED = task completed (status=done); PROCEED_WITH_FOLLOWUPS = partial completion (status=partial) with explicit blockers; FIX_REQUIRED = reserved for reviewers, not emitted by implementers; BLOCKED = could not proceed (status=blocked)."
     },
     "task_id": {
       "type": "string",

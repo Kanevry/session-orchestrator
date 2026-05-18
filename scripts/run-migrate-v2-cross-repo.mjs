@@ -30,27 +30,8 @@ import {
   migrateLegacyLearning,
   validateLearning,
 } from './lib/learnings.mjs';
-import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
-
-// ---------------------------------------------------------------------------
-// Config-driven repo list
-// ---------------------------------------------------------------------------
-
-/**
- * Load cross-repo.projects from Session Config (CLAUDE.md / AGENTS.md) in the
- * current working directory. Returns an empty array when the field is absent or
- * the config file is not found — never throws.
- */
-async function loadConfigProjects() {
-  try {
-    const mdContent = await readConfigFile(process.cwd());
-    const cfg = parseSessionConfig(mdContent);
-    const list = cfg['cross-repo.projects'];
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
+import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 const LEARNINGS_REL = '.orchestrator/metrics/learnings.jsonl';
 
@@ -114,8 +95,8 @@ if (reposArg) {
     process.exit(1);
   }
 } else {
-  // Config-driven — async resolution wrapped in an IIFE so we can await.
-  const configProjects = await loadConfigProjects();
+  // Config-driven — resolved from the shared cross-repo accessor (#478).
+  const configProjects = await getCrossRepoProjects();
 
   if (configProjects.length === 0) {
     process.stderr.write(
@@ -124,10 +105,21 @@ if (reposArg) {
     process.exit(0);
   }
 
+  const migrateRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
   repos = configProjects
     .map((r) => r.trim())
     .filter((r) => r.length > 0)
-    .map(resolveHome);
+    .map(resolveHome)
+    .filter((absPath) => {
+      const guard = validatePathInsideProject(absPath, migrateRoot);
+      if (!guard.ok) {
+        process.stderr.write(
+          `run-migrate-v2: WARN rejecting confined-path violation for ${JSON.stringify(absPath)} (reason: ${guard.reason})\n`
+        );
+        return false;
+      }
+      return true;
+    });
 }
 
 // ---------------------------------------------------------------------------
