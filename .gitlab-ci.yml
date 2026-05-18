@@ -26,9 +26,9 @@ stages:
   - scheduled
 
 variables:
-  NODE_VERSION: "22"
+  NODE_VERSION: "24"
   # Bump to bust stale CI cache
-  CI_CACHE_VERSION: "v2"
+  CI_CACHE_VERSION: "v3"
 
 # ---------------------------------------------------------------------------
 # Shared setup anchor — npm install on alpine
