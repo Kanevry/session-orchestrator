@@ -195,16 +195,43 @@ describe('extractTypeScriptSlices — re-exports, generics, decorators', () => {
     exports.forEach((s) => expect(s.exported).toBe(true));
   });
 
-  it('star re-export (ExportAllDeclaration) → no slice emitted (not handled in Phase 1)', async () => {
-    // `export * from './x'` produces an ExportAllDeclaration AST node.
-    // The current walkStatement switch does not handle this node type — it
-    // falls to the default: break case and emits nothing.
-    // This test documents the contract: zero slices for export-all.
-    // Phase 2 may add ExportAllDeclaration support and should update this test.
+  it('star re-export (ExportAllDeclaration) → single export slice with name "*" and source (#454)', async () => {
     const src = `export * from './utils';`;
     const slices = await parse(src);
-    // ExportAllDeclaration falls through to default → no slice
-    expect(slices).toHaveLength(0);
+    expect(slices).toHaveLength(1);
+    expect(slices[0]).toMatchObject({
+      kind: 'export',
+      name: '*',
+      source: './utils',
+      exported: true,
+      isNested: false,
+    });
+  });
+
+  it('namespaced star re-export (export * as ns from "x") → slice with namespace name (#454)', async () => {
+    const src = `export * as utils from './utils';`;
+    const slices = await parse(src);
+    expect(slices).toHaveLength(1);
+    expect(slices[0]).toMatchObject({
+      kind: 'export',
+      name: 'utils',
+      source: './utils',
+      exported: true,
+    });
+  });
+
+  it('mixed star + named re-exports → distinct slices per re-export (#454)', async () => {
+    const src = [
+      `export * from './a';`,
+      `export * as ns from './b';`,
+      `export { foo } from './c';`,
+    ].join('\n');
+    const slices = await parse(src);
+    const exports = slices.filter((s) => s.kind === 'export');
+    expect(exports).toHaveLength(3);
+    expect(exports.find((s) => s.name === '*')?.source).toBe('./a');
+    expect(exports.find((s) => s.name === 'ns')?.source).toBe('./b');
+    expect(exports.find((s) => s.name === 'foo')).toBeDefined();
   });
 
   it('namespace import does not produce a slice (only top-level exports matter)', async () => {

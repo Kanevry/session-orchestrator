@@ -27,6 +27,7 @@
  *   isNested: boolean;
  *   params?: string[];
  *   doc?: string;
+ *   source?: string;
  * }} SemanticSlice
  */
 
@@ -126,8 +127,10 @@ function walkStatement(stmt, filePath, exported, out) {
         // Has a nested declaration — delegate but mark as exported
         walkStatement(inner, filePath, true, out);
       } else {
-        // Re-export or `export { foo }` without a declaration
+        // Re-export or `export { foo }` without a declaration.
+        // Note: `export * as ns from 'x'` lands here too (ExportNamespaceSpecifier).
         const { startLine, endLine } = nodeLoc(stmt);
+        const source = stmt.source?.value;
         // Collect specifier names
         const names = (stmt.specifiers ?? []).map((s) => s.exported?.name ?? s.local?.name ?? '?');
         if (names.length > 0) {
@@ -140,22 +143,40 @@ function walkStatement(stmt, filePath, exported, out) {
               endLine,
               exported: true,
               isNested: false,
+              ...(source !== undefined ? { source } : {}),
             });
           }
         } else {
-          // Source re-export: `export * from 'x'`
-          const sourceName = stmt.source?.value ?? '<re-export>';
+          // Empty specifiers with a source (rare: `export {} from 'x'`)
           out.push({
             kind: 'export',
-            name: sourceName,
+            name: source ?? '<re-export>',
             file: filePath,
             line: startLine,
             endLine,
             exported: true,
             isNested: false,
+            ...(source !== undefined ? { source } : {}),
           });
         }
       }
+      break;
+    }
+
+    case 'ExportAllDeclaration': {
+      // `export * from './x'`            → stmt.exported = null, name '*'
+      // `export * as ns from './x'`      → stmt.exported = { name: 'ns' }
+      const { startLine, endLine } = nodeLoc(stmt);
+      out.push({
+        kind: 'export',
+        name: stmt.exported?.name ?? '*',
+        file: filePath,
+        line: startLine,
+        endLine,
+        exported: true,
+        isNested: false,
+        source: stmt.source?.value ?? '<unknown>',
+      });
       break;
     }
 
