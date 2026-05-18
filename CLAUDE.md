@@ -6,7 +6,7 @@
 
 ## Structure
 
-See [`README.md`](./README.md#components) for the canonical inventory (37 skills, 16 commands, 11 agents, 11 hook event matchers / 11 hook handlers). Runtime layout: `skills/`, `commands/`, `agents/`, `hooks/`, `.orchestrator/policy/`, `.claude/rules/`. Stable product/tech/structure context lives at `.orchestrator/steering/{product,tech,structure}.md` and is injected at session-start Phase 2.6 (when present).
+See [`README.md`](./README.md#components) for the canonical inventory (36 user-facing skills, 16 commands, 11 agents, 11 hook event matchers / 11 hook handlers). The `skills/_shared/` directory contains internal shared docs and is not counted as a user-facing skill. Runtime layout: `skills/`, `commands/`, `agents/`, `hooks/`, `.orchestrator/policy/`, `.claude/rules/`. Stable product/tech/structure context lives at `.orchestrator/steering/{product,tech,structure}.md` and is injected at session-start Phase 2.6 (when present).
 
 - `hooks/operator-steer.mjs` — mid-wave operator steering via `STEER.md` handshake (#409); fires on every `PostToolBatch` event.
 - `agents/security-reviewer.md` — updated with Hard Exclusions list (non-security false-positive patterns to skip, #412).
@@ -88,7 +88,7 @@ Reference: https://github.com/anthropics/claude-code/blob/main/plugins/plugin-de
 - **Plugin version:** v3.6.0 (released 2026-05-14, GitHub + GitLab tag). Previous releases v3.5.0 (2026-05-09), v3.4.0 (2026-05-08), v3.3.0 (2026-04-30) at https://github.com/Kanevry/session-orchestrator/releases.
 - **Active epic:** none — v3.2 Autopilot epic (#271) closed 2026-04-30 (all phases shipped). Sub-issues #297 (calibration, needs ≥10 RUNS) + #298 (evolve type 8, needs runtime data) remain data-gated on autopilot RUN-Volumen, not on code.
 - **Stack:** Node 20+, vitest 4.1.5, ESLint 10. Run `npm ci` after cloning. Test: `npm test`. Lint: `npm run lint`. Coverage thresholds 70/65/70/60.
-- **Tests:** 5630 passed / 0 failed / 12 skipped (+209 net from 2026-05-17 deep-2). validate-plugin 87/87, typecheck 73/73, lint 0.
+- **Tests:** 5632 passed / 0 failed / 12 skipped (+2 net from 2026-05-18 housekeeping-1 #454 fix). validate-plugin 87/87, typecheck 73/73, lint 0.
 - **Backlog:** ~30 open. Closed this session: 6 issues (#415 worker-pool + #416 language-mappers Phase 1 + #417 schema-per-agent-output + #418 sandbox-tier + #419 triage-state + #420 --since flag). Filed: #447 (continueOnBlock prompt-hook migration spike) + #448 (autopilot STALE_SUBAGENT_MIN refactor) + 7 follow-up issues (coord-direct W5). Data-gated: #297 / #298.
 
 ### Recent sessions (one-line summaries; long-form in [[01-projects/session-orchestrator/decisions]])

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="Session Orchestrator">
+  <title>Session Orchestrator</title>
+  <desc>Wave-based Claude Code sessions with quality gates</desc>
+
+  <!-- Background: GitHub-dark -->
+  <rect width="1280" height="640" fill="#0d1117"/>
+
+  <!-- Subtle gradient accent in top-right -->
+  <defs>
+    <radialGradient id="accent" cx="80%" cy="20%" r="50%">
+      <stop offset="0%" stop-color="#1f6feb" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#0d1117" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="waveStroke" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1f6feb" stop-opacity="0.55"/>
+      <stop offset="50%" stop-color="#238636" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#d29922" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#accent)"/>
+
+  <!-- Five wave glyphs as watermark (echo of icon.svg motif) on right side -->
+  <g transform="translate(740, 140)" opacity="0.85">
+    <path d="M 0 40 Q 100 0 200 40 T 400 40" fill="none" stroke="url(#waveStroke)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 0 110 Q 100 70 200 110 T 400 110" fill="none" stroke="url(#waveStroke)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 0 180 Q 100 140 200 180 T 400 180" fill="none" stroke="url(#waveStroke)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 0 250 Q 100 210 200 250 T 400 250" fill="none" stroke="url(#waveStroke)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 0 320 Q 100 280 200 320 T 400 320" fill="none" stroke="url(#waveStroke)" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <!-- Title block (left-aligned) -->
+  <g font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+    <!-- Eyebrow -->
+    <text x="80" y="170" font-size="24" font-weight="500" fill="#7d8590" letter-spacing="4">CLAUDE CODE PLUGIN</text>
+
+    <!-- Title -->
+    <text x="80" y="265" font-size="80" font-weight="700" fill="#f0f6fc">Session</text>
+    <text x="80" y="355" font-size="80" font-weight="700" fill="#f0f6fc">Orchestrator</text>
+
+    <!-- Subtitle -->
+    <text x="80" y="430" font-size="32" font-weight="400" fill="#c9d1d9">Wave-based Claude Code sessions</text>
+    <text x="80" y="472" font-size="32" font-weight="400" fill="#c9d1d9">with quality gates</text>
+
+    <!-- Footer -->
+    <text x="80" y="570" font-size="24" font-weight="400" fill="#7d8590">Claude Code · Codex CLI · Cursor IDE · MIT</text>
+  </g>
+</svg>
