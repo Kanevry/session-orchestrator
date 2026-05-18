@@ -28,6 +28,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -289,26 +290,22 @@ function buildStagnationBody() {
 ⚠️ **Watcher-Stagnation**: 60 Tage ohne Bewegung — manuelle Triage empfohlen. Watcher pausiert.`;
 }
 
-// ── Repos that need the flip ──────────────────────────────────────────────────
+// ── Repos that need the flip (loaded from Session Config cross-repo.projects) ──
 
-const FLIP_REPOS = [
-  'launchpad-ai-factory',
-  'Codex-Hackathon',
-  'EventDrop.at',
-  'GotzendorferAT',
-  'GotzendorferV2',
-  'LeadPipeDACH',
-  'WalkAITalkie',
-  'aegis',
-  'ai-gateway',
-  'clank',
-  'eventdrop-render-service',
-  'feedfoundry',
-  'launchpad',
-  'mail-assistant',
-  'n8n',
-  'projects-baseline',
-];
+/**
+ * Load the cross-repo.projects list from Session Config.
+ * Returns [] when the field is absent or the config file is not found — never throws.
+ */
+async function loadFlipRepos() {
+  try {
+    const mdContent = await readConfigFile(process.cwd());
+    const cfg = parseSessionConfig(mdContent);
+    const list = cfg['cross-repo.projects'];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
 
 // ── Today's date ──────────────────────────────────────────────────────────────
 
@@ -319,6 +316,15 @@ function todayISO() {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // Load the config-driven repo list before doing any glab work
+  const FLIP_REPOS = await loadFlipRepos();
+  if (FLIP_REPOS.length === 0) {
+    process.stderr.write(
+      'cross-repo: no projects configured (set cross-repo.projects in Session Config) — nothing to do.\n'
+    );
+    process.exit(0);
+  }
+
   log(`starting (dry-run=${DRY_RUN}, tracking=#${TRACKING_ISSUE}, deps=${DEP_ISSUES.join(',')})`);
 
   // 1. Fetch comments on tracking issue to check for early-exit markers

@@ -27,12 +27,12 @@ globs:
 - Use `supertest` for HTTP endpoint testing in Express services.
 - Test the full middleware chain: auth → validation → handler → response.
 - Database tests: use a dedicated test database or Supabase local dev (`supabase start`).
-- Seed test data with factories (`@goetzendorfer/testing-utils` `createFactory`/`createUserFactory`).
+- Seed test data with factories (`@your-org/testing-utils` `createFactory`/`createUserFactory`).
 - Clean up test data after each test (`afterEach` or transaction rollback).
 - Test error responses: verify status codes, error shapes, and that internal details are not leaked.
 - API contract tests: validate response bodies against Zod schemas.
 - Mock external services (Stripe, Sentry, AI APIs) — never call real APIs in integration tests.
-- Use `@goetzendorfer/testing-utils` `createMockSupabase` for Supabase client mocking.
+- Use `@your-org/testing-utils` `createMockSupabase` for Supabase client mocking.
 
 ## Server Action Testing
 

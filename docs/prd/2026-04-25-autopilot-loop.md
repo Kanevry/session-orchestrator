@@ -1,8 +1,8 @@
 # PRD — /autopilot Loop Command (Phase C)
 
-**Epic:** [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/271)
+**Epic:** [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://github.com/Kanevry/session-orchestrator/issues/271)
 **Phase:** C (/autopilot Loop Command)
-**Issue:** [#277 [Phase C] v3.2 /autopilot Loop Command — eigene PRD required](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/277)
+**Issue:** [#277 [Phase C] v3.2 /autopilot Loop Command — eigene PRD required](https://github.com/Kanevry/session-orchestrator/issues/277)
 **Appetite:** 6w
 **Visibility:** internal
 **Status:** scaffold 2026-04-25

@@ -30,33 +30,27 @@ import {
   migrateLegacyLearning,
   validateLearning,
 } from './lib/learnings.mjs';
+import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Config-driven repo list
 // ---------------------------------------------------------------------------
 
 /**
- * Default rollout repos — 16 repos from issue #305 / D3 audit
- * (cross-repo-warn-strict-readiness.md).
+ * Load cross-repo.projects from Session Config (CLAUDE.md / AGENTS.md) in the
+ * current working directory. Returns an empty array when the field is absent or
+ * the config file is not found — never throws.
  */
-const ROLLOUT_REPOS = [
-  '~/Projects/launchpad-ai-factory',
-  '~/Projects/Codex-Hackathon',
-  '~/Projects/EventDrop.at',
-  '~/Projects/GotzendorferAT',
-  '~/Projects/GotzendorferV2',
-  '~/Projects/LeadPipeDACH',
-  '~/Projects/WalkAITalkie',
-  '~/Projects/aegis',
-  '~/Projects/ai-gateway',
-  '~/Projects/clank',
-  '~/Projects/eventdrop-render-service',
-  '~/Projects/feedfoundry',
-  '~/Projects/launchpad',
-  '~/Projects/mail-assistant',
-  '~/Projects/n8n',
-  '~/Projects/projects-baseline',
-];
+async function loadConfigProjects() {
+  try {
+    const mdContent = await readConfigFile(process.cwd());
+    const cfg = parseSessionConfig(mdContent);
+    const list = cfg['cross-repo.projects'];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
 
 const LEARNINGS_REL = '.orchestrator/metrics/learnings.jsonl';
 
@@ -104,14 +98,36 @@ function resolveHome(p) {
   return p;
 }
 
-const repos = (reposArg ? reposArg.split(',') : ROLLOUT_REPOS)
-  .map((r) => r.trim())
-  .filter((r) => r.length > 0)
-  .map(resolveHome);
+// Resolve the repo list: --repos flag wins; otherwise use Session Config.
+// If neither source provides repos, NO-OP cleanly (exit 0).
+let repos;
 
-if (repos.length === 0) {
-  process.stderr.write('run-migrate-v2: no repos to process\n');
-  process.exit(1);
+if (reposArg) {
+  repos = reposArg
+    .split(',')
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0)
+    .map(resolveHome);
+
+  if (repos.length === 0) {
+    process.stderr.write('run-migrate-v2: no repos to process\n');
+    process.exit(1);
+  }
+} else {
+  // Config-driven — async resolution wrapped in an IIFE so we can await.
+  const configProjects = await loadConfigProjects();
+
+  if (configProjects.length === 0) {
+    process.stderr.write(
+      'cross-repo: no projects configured (set cross-repo.projects in Session Config) — nothing to do.\n'
+    );
+    process.exit(0);
+  }
+
+  repos = configProjects
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0)
+    .map(resolveHome);
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ Parse `$ARGUMENTS` before doing anything else.
 
 Recognized flags and positional arguments:
 
-- `--target <name>` — explicit target name (e.g. `aiat-pmo-module`, `mail-assistant`). Sets `explicit_target = true`.
+- `--target <name>` — explicit target name (e.g. `your-target-app`, `your-mobile-app`). Sets `explicit_target = true`.
 - `--profile <name>` — explicit profile name (e.g. `smoke`, `full`, `a11y`, `onboarding`). Sets `explicit_profile = true`.
 - `--dry-run` — resolve target and profile, print the dispatch plan, but do NOT invoke any driver or create any issues. Sets `dry_run = true`.
 - `--since <git-ref>` — restrict test execution to files changed since the given git ref. Sets `since_ref = <git-ref>`.

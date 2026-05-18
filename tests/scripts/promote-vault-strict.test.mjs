@@ -310,4 +310,40 @@ describe('promote-vault-strict', () => {
 
     expect(result.status).toBe(0);
   });
+
+  // -------------------------------------------------------------------------
+  // Test 9 — batch no-op: no --repo and no cross-repo.projects in config
+  // exits 0 with the canonical notice on stderr (#469 contract)
+  // -------------------------------------------------------------------------
+
+  it('9. no --repo and no cross-repo.projects in config → no-op exit 0 with notice', () => {
+    // Create a tmpdir with a CLAUDE.md that has NO cross-repo: block.
+    // The script must detect the empty list and exit cleanly.
+    const tmp = mkdtempSync(join(tmpdir(), 'promote-noop-test-'));
+    tmpdirs.push(tmp);
+
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      '## Session Config\n\npersistence: true\nvcs: gitlab\n',
+      'utf8'
+    );
+
+    const result = spawnSync(process.execPath, [SCRIPT], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      cwd: tmp, // cwd = the dir with CLAUDE.md so loadEligibleRepos() reads it
+    });
+
+    // Must exit 0 — never 1 or crash
+    expect(result.status).toBe(0);
+
+    // Must emit the canonical no-op notice to stderr (same message as the
+    // other cross-repo scripts, verified by run-migrate-v2-cross-repo test 6)
+    expect(result.stderr).toContain('cross-repo: no projects configured');
+
+    // Must not produce a summary table on stdout (the mode header line is
+    // emitted before the no-op check, but no repo rows or summary table)
+    expect(result.stdout).not.toContain('## Summary');
+    expect(result.stdout).not.toContain('Processing:');
+  });
 });

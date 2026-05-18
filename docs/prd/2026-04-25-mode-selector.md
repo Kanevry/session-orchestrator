@@ -1,6 +1,6 @@
 # PRD — Mode-Selector Skill (Phase B)
 
-**Epic:** [#276 v3.2 Autopilot — Mode-Selector Skill](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/276)
+**Epic:** [#276 v3.2 Autopilot — Mode-Selector Skill](https://github.com/Kanevry/session-orchestrator/issues/276)
 **Phase:** B (Mode-Selector)
 **Appetite:** 2w
 **Visibility:** internal

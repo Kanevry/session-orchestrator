@@ -59,6 +59,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
 | `mirror` | string | `none` | Mirror target after push. Set to `github` to automatically push to a GitHub remote after every session commit. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
+| `cross-repo.projects` | list | `[]` | Repos to process when running cross-repo maintenance scripts (`run-migrate-v2-cross-repo.mjs`, `vault-integration-watcher.mjs`, `promote-vault-strict.mjs`). Each entry is a path (absolute, `~`-prefixed, or bare name resolved under `~/Projects/`). When this list is empty or absent, those scripts emit a one-line notice and exit 0 — they never error on an empty list. Example: `[~/Projects/my-app, ~/Projects/another-app]`. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. |
 | `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. |
@@ -243,7 +244,7 @@ See: session-orchestrator issue #110, projects-baseline `docs/REPO-STATUS.md`.
 ### baseline-project-id
 
 - **Type:** string | number
-- **Default:** `"52"` (infrastructure/projects-baseline on gitlab.gotzendorfer.at)
+- **Default:** `"52"` (infrastructure/projects-baseline on `<your-gitlab-host>`)
 - **Used by:** bootstrap (rules-fetch bridge)
 
 The numeric GitLab project ID of the baseline repository. Defaults to `"52"` which corresponds to `infrastructure/projects-baseline`. Override only when adopting this plugin against a different baseline source.

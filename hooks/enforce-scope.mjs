@@ -3,7 +3,7 @@
  * enforce-scope.mjs — PreToolUse hook: block Edit/Write outside allowed wave paths.
  *
  * Replaces enforce-scope.sh (87-line Bash). Part of v3.0.0 Windows-native migration.
- * Issue: gitlab.gotzendorfer.at/infrastructure/session-orchestrator#137
+ * Issue: github.com/Kanevry/session-orchestrator/issues/137
  *
  * Decision flow (8 gates, early-exit):
  *   G1  tool filter — only Edit/Write are gated

@@ -2,7 +2,7 @@
 
 v3.0.0 swaps the Bash/zx runtime for Node.js 20+ and adds native Windows support without WSL. This guide walks through the upgrade step-by-step for each supported platform (Claude Code, Codex, Cursor IDE) and each OS (macOS, Linux, Windows).
 
-Epic reference: [#124](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/124). Full change list: [CHANGELOG.md](../CHANGELOG.md).
+Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/124). Full change list: [CHANGELOG.md](../CHANGELOG.md).
 
 ## 1. What Changes
 
@@ -138,8 +138,7 @@ Please open an issue (link below) describing the blocker so we can address it in
 
 ## 7. Support
 
-- **GitLab (upstream):** [infrastructure/session-orchestrator/issues](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues) — preferred for bugs and feature requests.
-- **GitHub (mirror):** [Kanevry/session-orchestrator/issues](https://github.com/Kanevry/session-orchestrator/issues) — accepted, mirrored to GitLab by maintainers.
-- **Homepage:** [gotzendorfer.at/en/session-orchestrator](https://gotzendorfer.at/en/session-orchestrator)
+- **GitHub:** [Kanevry/session-orchestrator/issues](https://github.com/Kanevry/session-orchestrator/issues) — preferred for bugs and feature requests.
+- **Homepage:** [session-orchestrator.example.com](https://session-orchestrator.example.com)
 
 Please include `node --version`, your OS + arch, the editor (Claude Code / Codex / Cursor), and a minimal reproduction when filing a bug. For hook failures, attach the relevant entries from `.orchestrator/metrics/events.jsonl`.

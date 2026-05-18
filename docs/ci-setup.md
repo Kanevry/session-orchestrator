@@ -23,8 +23,7 @@ If `SCHEMA_DRIFT_TOKEN` is **not set**, the job prints a warning and exits 0
 
 ### Option A — Deploy Token (recommended, least-privilege)
 
-1. Open `infrastructure/projects-baseline` on GitLab
-   (`gitlab.gotzendorfer.at/infrastructure/projects-baseline`).
+1. Open `infrastructure/projects-baseline` on your GitLab instance.
 2. Go to **Settings → Repository → Deploy tokens**.
 3. Click **Add token**:
    - **Name:** `session-orchestrator-ci-schema-drift`

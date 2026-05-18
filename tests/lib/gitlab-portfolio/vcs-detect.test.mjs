@@ -35,9 +35,9 @@ describe('detectVcsForRepo — frontmatter fields', () => {
 });
 
 describe('detectVcsForRepo — repo string heuristics', () => {
-  it('returns gitlab for repo string containing gitlab.gotzendorfer.at', () => {
+  it('returns gitlab for repo string containing gitlab.example.com', () => {
     const result = detectVcsForRepo({
-      repo: 'gitlab.gotzendorfer.at/org/repo',
+      repo: 'gitlab.example.com/org/repo',
     });
 
     expect(result).toBe('gitlab');

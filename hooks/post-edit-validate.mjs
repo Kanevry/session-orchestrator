@@ -3,7 +3,7 @@
  * post-edit-validate.mjs — PostToolUse hook for incremental validation after Edit/Write.
  *
  * Node.js port of hooks/post-edit-validate.sh. Part of v3.0.0 Windows-native migration.
- * Issue: gitlab.gotzendorfer.at/infrastructure/session-orchestrator#139
+ * Issue: github.com/Kanevry/session-orchestrator/issues/139
  *
  * Runs incremental typecheck on the file that was just edited.
  * This is informational only — it NEVER blocks (always exits 0).

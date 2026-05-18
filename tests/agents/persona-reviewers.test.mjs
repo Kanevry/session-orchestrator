@@ -2,6 +2,7 @@
  * tests/agents/persona-reviewers.test.mjs
  *
  * Regression tests for #339 — persona-reviewer agents.
+ * Config key renamed to wave-reviewers in #461 — see docs/migrations/2026-05-18-461-persona-reviewers-rename.md
  *
  * Verifies that:
  *   - All three new agent files exist
@@ -10,7 +11,7 @@
  *   - Each `tools:` field (if present) is a comma-separated string, not a JSON array
  *   - Each `description:` is a single-line inline string (no block-scalar markers)
  *   - All 3 agents pass validate-plugin.mjs (exit 0, 0 failed)
- *   - skills/wave-executor/wave-loop.md documents the persona-reviewer dispatch step
+ *   - skills/wave-executor/wave-loop.md documents the wave-reviewer dispatch step
  */
 
 import { describe, it, expect } from 'vitest';

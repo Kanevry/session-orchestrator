@@ -21,25 +21,27 @@ import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { readConfigFile, parseSessionConfig } from './lib/config.mjs';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Config-driven repo list
 // ---------------------------------------------------------------------------
 
-// Source: .orchestrator/audits/cross-repo-warn-strict-readiness.md (2026-05-01 D3 audit)
-const ELIGIBLE_REPOS = [
-  '~/Projects/Codex-Hackathon',
-  '~/Projects/EventDrop.at',
-  '~/Projects/GotzendorferAT',
-  '~/Projects/WalkAITalkie',
-  '~/Projects/ai-gateway',
-  '~/Projects/eventdrop-render-service',
-  '~/Projects/feedfoundry',
-  '~/Projects/launchpad',
-];
-
-const BASELINE_TEMPLATE =
-  '~/Projects/projects-baseline/templates/shared/CLAUDE.md.template';
+/**
+ * Load cross-repo.projects from Session Config (CLAUDE.md / AGENTS.md) in the
+ * current working directory. Returns an empty array when the field is absent or
+ * the config file is not found — never throws.
+ */
+async function loadEligibleRepos() {
+  try {
+    const mdContent = await readConfigFile(process.cwd());
+    const cfg = parseSessionConfig(mdContent);
+    const list = cfg['cross-repo.projects'];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
 
 const COMMIT_MSG = 'chore(orchestrator): Promote vault-integration to strict mode — refs #305';
 
@@ -431,39 +433,66 @@ function renderTable(results) {
 // Main
 // ---------------------------------------------------------------------------
 
-process.stdout.write(
-  `promote-vault-strict: ${dryRun ? 'DRY-RUN' : 'APPLY'} mode\n\n`
-);
+async function main() {
+  process.stdout.write(
+    `promote-vault-strict: ${dryRun ? 'DRY-RUN' : 'APPLY'} mode\n\n`
+  );
 
-/** @type {RepoResult[]} */
-const results = [];
+  /** @type {RepoResult[]} */
+  const results = [];
 
-if (singleRepo) {
-  // Single-repo mode
-  const absRepo = expandHome(singleRepo);
-  process.stdout.write(`Processing: ${absRepo}\n`);
-  results.push(processRepo(absRepo, { apply: applyFlag }));
-} else {
-  // Batch mode — eligible repos
-  for (const rawPath of ELIGIBLE_REPOS) {
-    const absRepo = expandHome(rawPath);
+  if (singleRepo) {
+    // Single-repo mode
+    const absRepo = expandHome(singleRepo);
     process.stdout.write(`Processing: ${absRepo}\n`);
     results.push(processRepo(absRepo, { apply: applyFlag }));
+  } else {
+    // Batch mode — load eligible repos from Session Config
+    const eligibleRepos = await loadEligibleRepos();
+
+    if (eligibleRepos.length === 0) {
+      process.stderr.write(
+        'cross-repo: no projects configured (set cross-repo.projects in Session Config) — nothing to do.\n'
+      );
+      process.exit(0);
+    }
+
+    for (const rawPath of eligibleRepos) {
+      const absRepo = expandHome(rawPath);
+      process.stdout.write(`Processing: ${absRepo}\n`);
+      results.push(processRepo(absRepo, { apply: applyFlag }));
+    }
+
+    // Baseline template: derived from cross-repo.projects entry named 'projects-baseline'
+    // when --no-baseline is not set. Looks for an entry ending with '/projects-baseline'
+    // or named 'projects-baseline'. Falls back to no-op if not found in the list.
+    if (!noBaseline) {
+      const baselineEntry = eligibleRepos.find(
+        (p) => p === 'projects-baseline' || p.endsWith('/projects-baseline')
+      );
+      if (baselineEntry) {
+        const baselineRepoDir = expandHome(
+          baselineEntry.startsWith('~') || baselineEntry.startsWith('/')
+            ? baselineEntry
+            : `~/Projects/${baselineEntry}`
+        );
+        const templatePath = join(baselineRepoDir, 'templates', 'shared', 'CLAUDE.md.template');
+        process.stdout.write(`Processing baseline: ${templatePath}\n`);
+        results.push(processFile(templatePath, baselineRepoDir, { apply: applyFlag }));
+      }
+    }
   }
 
-  // Baseline template (unless --no-baseline)
-  if (!noBaseline) {
-    const templatePath = expandHome(BASELINE_TEMPLATE);
-    const templateGitRoot = expandHome('~/Projects/projects-baseline');
-    process.stdout.write(`Processing baseline: ${templatePath}\n`);
-    results.push(processFile(templatePath, templateGitRoot, { apply: applyFlag }));
-  }
+  process.stdout.write('\n## Summary\n\n');
+  process.stdout.write(renderTable(results));
+  process.stdout.write('\n');
+
+  // Exit code
+  const hasError = results.some((r) => r.status === 'error');
+  process.exit(hasError ? 1 : 0);
 }
 
-process.stdout.write('\n## Summary\n\n');
-process.stdout.write(renderTable(results));
-process.stdout.write('\n');
-
-// Exit code
-const hasError = results.some((r) => r.status === 'error');
-process.exit(hasError ? 1 : 0);
+main().catch((err) => {
+  process.stderr.write(`promote-vault-strict: unexpected error: ${err.message}\n`);
+  process.exit(1);
+});

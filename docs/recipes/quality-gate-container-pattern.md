@@ -1,7 +1,7 @@
 # Recipe: Quality Gate — Container Test Runner Pattern
 
 > **Applies to:** Session Orchestrator v3.6+  
-> **Source issue:** GH #42 (root cause: aiat-pmo-module #251 V0.15.7-close incident)  
+> **Source issue:** GH #42 (root cause: a consumer project close incident in V0.15.7)  
 > **Related:** `scripts/lib/gates/echo-stub-detect.mjs`, `skills/session-end/SKILL.md` Phase 2.0a
 
 ---
@@ -104,7 +104,7 @@ The distinction matters: `skip` is a deliberate declaration by the operator. An 
 ## 7. Cross-References
 
 - **GH #42** — bug report: session-end close-verdict false-positive from echo-stub test commands.
-- **aiat-pmo-module #251** — V0.15.7-close incident: the originating production case.
+- **Consumer project #251** — V0.15.7-close incident: the originating production case.
 - **`scripts/lib/gates/echo-stub-detect.mjs`** — stub classifier. Exports `detectStubCommand(cmd): { isStub, kind? }`.
 - **`scripts/lib/gates/gate-helpers.mjs`** — `runCheck()` integration point. Short-circuits stubs before shell execution.
 - **`scripts/lib/gates/gate-full.mjs`** — emits top-level `stubbed: {}` map in JSON result.

@@ -364,13 +364,9 @@ describe('run-migrate-v2-cross-repo', () => {
 
     const output = result.stdout;
 
-    // Only our repos should appear, not anything from ROLLOUT_REPOS
+    // Only our repos should appear
     expect(output).toContain('repo-override-a');
     expect(output).toContain('repo-override-b');
-
-    // The output should NOT mention any ROLLOUT_REPOS names
-    expect(output).not.toContain('launchpad-ai-factory');
-    expect(output).not.toContain('Codex-Hackathon');
 
     // Summary line should say 1 processed (override-b has migratable) + 1 processed
     expect(result.stderr).toContain('[dry-run]');
@@ -432,5 +428,27 @@ describe('run-migrate-v2-cross-repo', () => {
     expect(typeof parsed.aggregate.totalStillInvalidPost).toBe('number');
     expect(parsed.aggregate.totalFixedByV2).toBe(1);
     expect(parsed.aggregate.totalReposSkipped).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6 — no --repos and no Session Config → clean no-op, exit 0
+  // -------------------------------------------------------------------------
+
+  it('6. no --repos flag and no cross-repo.projects in config → no-op exit 0', () => {
+    // Run from a tmp dir that has no CLAUDE.md → config loader returns [] → no-op
+    const base = makeTmpBase();
+
+    const result = spawnSync(process.execPath, [SCRIPT], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      cwd: base, // no CLAUDE.md here → config returns empty list
+    });
+
+    // Must exit 0 (not 1)
+    expect(result.status).toBe(0);
+    // Must emit the no-op notice to stderr
+    expect(result.stderr).toContain('cross-repo: no projects configured');
+    // Must not produce any output table
+    expect(result.stdout).toBe('');
   });
 });

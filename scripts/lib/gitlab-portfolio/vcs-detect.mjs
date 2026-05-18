@@ -22,7 +22,7 @@ import { parseFrontmatter as _parseFrontmatter } from '../vault-mirror/utils.mjs
  * Priority:
  *   1. Explicit `frontmatter.gitlab` field present → 'gitlab'
  *   2. Explicit `frontmatter.github` field present → 'github'
- *   3. `repo` string contains 'gitlab.gotzendorfer.at' or matches known GitLab patterns → 'gitlab'
+ *   3. `repo` string contains 'gitlab.' hostname prefix, 'gitlab.com', or starts with 'gitlab/' → 'gitlab'
  *   4. `repo` string contains 'github.com' or looks like an <org>/<repo> shorthand → 'github'
  *   5. Otherwise → null (caller decides)
  *
@@ -43,10 +43,9 @@ export function detectVcsForRepo(input) {
   }
 
   if (repo && typeof repo === 'string') {
-    // 3. Host-pattern: known GitLab instance or group prefix
+    // 3. Host-pattern: any GitLab instance (hostname starts with 'gitlab.') or group prefix
     if (
-      repo.includes('gitlab.gotzendorfer.at') ||
-      repo.includes('gitlab.com') ||
+      /(?:^|[@/])gitlab\./.test(repo) ||
       repo.startsWith('gitlab/')
     ) {
       return 'gitlab';

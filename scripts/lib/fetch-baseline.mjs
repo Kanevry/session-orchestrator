@@ -13,7 +13,7 @@
  *   GITLAB_TOKEN  — personal access token with read_api or read_repository scope
  *
  * Optional env vars:
- *   GITLAB_HOST         — default: gitlab.gotzendorfer.at
+ *   GITLAB_HOST         — GitLab host (required; no private domain fallback)
  *   BASELINE_REF        — default: main
  *   FETCH_TIMEOUT_MS    — default: 10000 (ms; maps to FETCH_TIMEOUT seconds in .sh)
  *   BASELINE_CACHE_DIR  — override cache directory
@@ -34,7 +34,6 @@ import { execSync } from 'node:child_process';
 // Configuration defaults (mirrors the .sh defaults)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_GITLAB_HOST = 'gitlab.gotzendorfer.at';
 const DEFAULT_BASELINE_REF = 'main';
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 
@@ -101,7 +100,7 @@ function _cacheKey(projectId, ref, filePath) {
  * @param {string} [opts.baselineRef]  - git ref (default: BASELINE_REF env or "main")
  * @param {string} [opts.token]      - GitLab personal access token (default: GITLAB_TOKEN env)
  * @param {string|number} [opts.projectId] - GitLab project ID (default: 52)
- * @param {string} [opts.host]       - GitLab host (default: GITLAB_HOST env or "gitlab.gotzendorfer.at")
+ * @param {string} [opts.host]       - GitLab host (required; falls back to GITLAB_HOST env; no default private host)
  * @param {number} [opts.timeoutMs]  - fetch timeout in ms (default: FETCH_TIMEOUT_MS env or 10000)
  *
  * @returns {Promise<{
@@ -128,8 +127,18 @@ export async function fetchBaselineFile({
 } = {}) {
   const resolvedToken = token ?? process.env.GITLAB_TOKEN;
   const resolvedRef = baselineRef ?? process.env.BASELINE_REF ?? DEFAULT_BASELINE_REF;
-  const resolvedHost = host ?? process.env.GITLAB_HOST ?? DEFAULT_GITLAB_HOST;
+  const resolvedHost = host ?? process.env.GITLAB_HOST;
   const resolvedTimeout = timeoutMs ?? Number(process.env.FETCH_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS);
+
+  if (!resolvedHost) {
+    const errMsg = 'GITLAB_HOST not configured — set GITLAB_HOST env or pass opts.host';
+    process.stderr.write(`ERROR: ${errMsg}\n`);
+    return {
+      ok: false,
+      status: 0,
+      error: errMsg,
+    };
+  }
 
   if (!resolvedToken) {
     const errMsg = 'GITLAB_TOKEN not set — cannot fetch from baseline.';

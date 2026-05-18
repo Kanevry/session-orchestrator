@@ -33,7 +33,7 @@ Harte Evidenz aus Research-Wave vom 2026-04-21:
 
 ### Who
 
-- **Primary — Bernhard (Einzelnutzer-Workflow):** Betreibt 14 aktive Projekte, täglich mehrere `/go`-Sessions, Vault lokal unter `/Users/bernhardgoetzendorfer/Projects/vault`. Braucht „nichts vergessen"-Garantie ohne mentale Last pro Session.
+- **Primary — Operator (Einzelnutzer-Workflow):** Betreibt 14 aktive Projekte, täglich mehrere `/go`-Sessions, Vault lokal unter `~/Projects/vault`. Braucht „nichts vergessen"-Garantie ohne mentale Last pro Session.
 - **Secondary — zukünftige Team-Nutzung:** Plugin ist marketplace-published (kanevry). Team-Member, die das Plugin adoptieren, brauchen denselben Loop ohne Bernhard-spezifisches Setup.
 - **Tertiary — Audiences des produzierten Contents:**
   - *User-Docs* (README, `docs/user/`) → externe / interne Nutzer der jeweiligen Repos
@@ -78,7 +78,7 @@ Harte Evidenz aus Research-Wave vom 2026-04-21:
 
 ### Out-of-Scope
 
-- **Team-Vault-Sharing (shared vault für Teams)** — Heute Einzelnutzer-lokal unter `/Users/bernhardgoetzendorfer/Projects/vault`. Team-Sharing verlangt eigene Infra (Sync-Mechanismus, Permissions, Conflict-Resolution) und ist ein eigenständiges Epic. Als Follow-up-Issue registriert.
+- **Team-Vault-Sharing (shared vault für Teams)** — Heute Einzelnutzer-lokal unter `~/Projects/vault`. Team-Sharing verlangt eigene Infra (Sync-Mechanismus, Permissions, Conflict-Resolution) und ist ein eigenständiges Epic. Als Follow-up-Issue registriert.
 - **Zweiwege-Sync (Vault → Repo)** — Heute One-way (Repo → Vault via `.vault.yaml` + Clank). Umkehr würde Ownership-Modell (`_overview.md` = Clank-owned, `context.md` = manuell) brechen. Nicht auf der Roadmap.
 - **LLM-Autogenerierte User-Docs ohne Quelle** — `docs-writer` Agent schreibt nur aus existierenden Quellen (Code, Git-Log, Session-Memory, Wave-Outputs). Keine freie Halluzination. Quellenlose Abschnitte werden mit `<!-- REVIEW: source needed -->` markiert.
 - **Vollständige ADR-Autogenerierung** — ADRs entstehen weiterhin manuell durch Human-Decision. `docs-writer` kann bei Bedarf Skeletons vorschlagen, aber nicht autonom committen.

@@ -16,10 +16,10 @@ It is delivered as three composable skills (`test-runner` orchestrator, `playwri
 ### Why
 Two recent failure modes motivated this plan:
 
-1. **mail-assistant V3.3 (commit `b29ea71`, 2026-05-12) shipped a 4-stage onboarding wizard (LLM-Provider + Test-Run + Keychain + Mail-Surface, ~2 500 LOC SwiftUI) with zero end-to-end coverage.** The result was post-launch revision work for the operator. A `/test` run driving Peekaboo through the wizard would have flagged a step-count regression (>7) and dead-end paths before merge. The "10-page onboarding" pain is the canonical example of the regression class we want to catch.
+1. **a macOS/desktop app (commit b29ea71, 2026-05-12) shipped a 4-stage onboarding wizard (LLM-Provider + Test-Run + Keychain + Mail-Surface, ~2 500 LOC SwiftUI) with zero end-to-end coverage.** The result was post-launch revision work for the operator. A `/test` run driving Peekaboo through the wizard would have flagged a step-count regression (>7) and dead-end paths before merge. The "10-page onboarding" pain is the canonical example of the regression class we want to catch.
 2. **Apple Liquid Glass design tokens (iOS 26 / macOS Tahoe, WWDC25) are emerging as the canonical SwiftUI 2026 standard.** Without an automated check that `.glassEffect()` is applied where expected, Swift apps in the portfolio drift away from the platform baseline silently.
 
-A secondary motivation: `aiat-pmo-module` already has 16 Playwright tests + a live EspoCRM stack. We can prove `/test` value against that target in week one and only then move to the harder Mac/Peekaboo path. End-to-end verifiable: step 1 proves the chain, every subsequent step extends it.
+A secondary motivation: `<web-target>` already has 16 Playwright tests + a live EspoCRM stack. We can prove `/test` value against that target in week one and only then move to the harder Mac/Peekaboo path. End-to-end verifiable: step 1 proves the chain, every subsequent step extends it.
 
 Tech-stack research (2026-05-14) confirms the cost calculus: Playwright **MCP** burns ~114 K tokens per test (Microsoft's own benchmark) versus ~27 K for `playwright-cli`. Vercel's `agent-browser` is even leaner (~200–400 tokens/page) but does not run our existing Playwright test files — porting 16 specs is the wrong trade-off. `/test` therefore standardizes on the CLI tools, with `agent-browser` recorded as a v2 alternative if upstream friction emerges.
 
@@ -40,13 +40,13 @@ Tech-stack research (2026-05-14) confirms the cost calculus: Playwright **MCP** 
 - [ ] **Test-profile registry** — Convention-first: auto-detect target type (`playwright.config.*` → web, `Package.swift` → mac). Optional `.orchestrator/policy/test-profiles.json` for per-app overrides (smoke / full / a11y) and `--target <name>` resolution.
 - [ ] **Issue reconciliation** — HIGH/CRITICAL findings auto-create issues (`area:testing`, `priority:*`, `status:ready`, plus `from:test-runner` label), MEDIUM/LOW go through `AskUserQuestion` triage mirroring the `/discovery` pattern. Existing issues with matching fingerprint get **commented**, not re-filed.
 - [ ] **Artifact storage** — `.orchestrator/metrics/test-runs/<run-id>/` with `report.md`, `findings.json`, `screenshots/*`, `ax-snapshots/*.yaml`. JSONL roll-up at `.orchestrator/metrics/test-runs.jsonl`.
-- [ ] **First-target end-to-end proof:** `/test --target aiat-pmo-module` drives the 16 existing Playwright tests, produces report, files HIGH/CRITICAL issues, surfaces MEDIUM/LOW for triage.
-- [ ] **Second-target end-to-end proof:** `/test --target mail-assistant` walks the onboarding wizard via Peekaboo, flags `>7` step count, captures screenshots per step.
+- [ ] **First-target end-to-end proof:** `/test --target <web-target>` drives the 16 existing Playwright tests, produces report, files HIGH/CRITICAL issues, surfaces MEDIUM/LOW for triage.
+- [ ] **Second-target end-to-end proof:** `/test --target <mac-target>` walks the onboarding wizard via Peekaboo, flags `>7` step count, captures screenshots per step.
 - [ ] **projects-baseline integration** — minimal template snippets so a freshly scaffolded repo gets `/test` capability without manual wiring (`.orchestrator/policy/test-profiles.json.template`, optional `scripts/test.sh` stub, README pointer).
 
 ### Out-of-Scope (v1)
 - **Visual-diff / pixel regression** — operator preference: not for development workflows; reconsider for production-monitoring projects only. Defer to v2 candidate.
-- **Cross-repo `/test` orchestration** — running aiat-pmo + mail-assistant in one invocation. Single-target v1 only.
+- **Cross-repo `/test` orchestration** — running `<web-target>` + `<mac-target>` in one invocation. Single-target v1 only.
 - **Stagehand v3 / Browserbase cloud** — vendor lock, value-add unclear for our use case.
 - **Forking `playwright-cli` or `peekaboo`** — wrap, do not fork. Upstream PRs if we need extensions.
 - **Auto-trigger of `/test` at wave-executor inter-wave** — risk of session-time bloat; can be added in v2 once value is proven and run-time is bounded.
@@ -65,7 +65,7 @@ And it runs the default profile (`smoke` if defined, else `auto`)
 And it writes artifacts to `.orchestrator/metrics/test-runs/<run-id>/`
 And it produces `report.md` + `findings.json` + per-finding evidence
 
-Given an operator runs `/test --target aiat-pmo-module --profile full`
+Given an operator runs `/test --target <web-target> --profile full`
 When the test-profile registry resolves the target to a web profile
 Then `playwright-driver` invokes the 16 existing Playwright tests
 And artifacts include screenshots + AX-tree snapshots per test
@@ -120,15 +120,15 @@ And the operator chooses which to file, comment, or ignore
 
 ### AC-5 — End-to-end verification gates
 ```gherkin
-Given the `/test` command is implemented and `aiat-pmo-module` has 16 Playwright tests
-When `/test --target aiat-pmo-module --profile full` is executed in a fresh shell
+Given the `/test` command is implemented and `<web-target>` has 16 Playwright tests
+When `/test --target <web-target> --profile full` is executed in a fresh shell
 Then exit code is 0 if no HIGH/CRITICAL findings (MEDIUM/LOW pending operator triage do not affect exit code — deliberate, so CI can treat MEDIUM/LOW as advisory)
 And exit code is 2 if any HIGH/CRITICAL findings exist
 And the report markdown is human-readable and lists each finding with severity, evidence path, and issue link
 And the run JSONL entry is appended to `.orchestrator/metrics/test-runs.jsonl`
 
-Given the `aiat-pmo-module` proof has passed
-When `/test --target mail-assistant --profile onboarding` is executed
+Given the `<web-target>` proof has passed
+When `/test --target <mac-target> --profile onboarding` is executed
 Then `peekaboo-driver` drives the SwiftUI onboarding wizard end-to-end
 And the step-count check produces a finding for the historical 4-stage flow
 And screenshots of every stage are captured to the artifact directory
@@ -155,7 +155,7 @@ And no manual wiring is required to make `/test --target <repo>` work for a web 
 - `skills/playwright-driver/SKILL.md` — wraps `playwright-cli` (Microsoft, Apache-2.0). Documents install, session naming, snapshot/screenshot paths, headed vs headless modes.
 - `skills/peekaboo-driver/SKILL.md` — wraps `peekaboo` (Steipete, MIT). Documents install, permissions, AX-snapshot, agent-mode + scripted-mode.
 - `agents/ux-evaluator.md` — read-only agent, `model: opus`, color `blue`, tools `Read, Grep, Glob, Bash`.
-- `.orchestrator/policy/test-profiles.json.example` — example registry showing smoke / full / a11y / onboarding profiles for the two first-target repos.
+- `.orchestrator/policy/test-profiles.json.example` — example registry showing smoke / full / a11y / onboarding profiles for the two first-target app types (web and mac).
 - `scripts/lib/test-runner/` — small helper modules: `fingerprint.mjs` (stable finding hash), `artifact-paths.mjs` (run-id + directory layout), `issue-reconcile.mjs` (glab create vs comment dispatch).
 - `tests/lib/test-runner/*.test.mjs` — unit tests for the helpers above.
 
@@ -234,9 +234,9 @@ None — no public/HTTP API in this plugin. CLI surface: one new slash-command `
   - `#41 feat(gitlab-portfolio): cross-repo issue dashboard skill` — `/test`'s reconciliation feeds the dashboard story; **link**, do not close.
   - `#357 Backfill unit tests for 16 untested modules` — separate concern, no overlap; leave as-is.
   - `#363 agents inline worked examples for novel rules` — `ux-evaluator` becomes a candidate target for inline worked examples; **link**.
-  - mail-assistant project: a follow-up issue should be filed in its own repo to use `/test --target mail-assistant` as part of its V3.5+ pre-release gate.
+  - `<mac-target>` project: a follow-up issue should be filed in its own repo to use `/test --target <mac-target>` as part of its V3.5+ pre-release gate.
 - **Out-of-scope, surfaced as separate items** (from Wave-1 research, not part of this PRD):
-  - **Journeys data model** in `aiat-pmo-module` (operator-stated need: 1 customer → multiple journeys → multiple projects) — the `Initiative → ProjectTask` schema does not model journeys today. Belongs in a separate PRD against the aiat-pmo-module repo.
+  - **Journeys data model** in `<web-target>` (operator-stated need: 1 customer → multiple journeys → multiple projects) — the `Initiative → ProjectTask` schema does not model journeys today. Belongs in a separate PRD against the `<web-target>` repo.
   - **CI status / deployable-now check for EspoCRM module** — operator-stated need: "ist was wir aktuell haben deploybar". Belongs in `/session housekeeping` flow, not in this feature.
 
 ### Definition of Done
@@ -244,8 +244,8 @@ None — no public/HTTP API in this plugin. CLI surface: one new slash-command `
 - `npm test` green (existing 4 740 tests + new test-runner unit tests).
 - `npm run typecheck`, `npm run lint` green.
 - `scripts/validate-plugin.mjs` extended and green for the new skill/agent files.
-- `/test --target aiat-pmo-module` executed once successfully against the real EspoCRM stack — report committed to a `docs/test-runs/proof-aiat-pmo-module-<date>.md`.
-- `/test --target mail-assistant` executed once against the SwiftUI onboarding — proof report committed similarly.
+- `/test --target <web-target>` executed once successfully against the real EspoCRM stack — report committed to a `docs/test-runs/proof-web-target-<date>.md`.
+- `/test --target <mac-target>` executed once against the SwiftUI onboarding — proof report committed similarly.
 - projects-baseline templates added in a paired PR; new-repo scaffold smoke-tested.
 - CLAUDE.md + README updated, doc-consistency check green.
 - Pipeline green on first push from feature branch.

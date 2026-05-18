@@ -66,7 +66,7 @@ describe('DEFAULT_EVENT_URL removed (#228)', () => {
       path.join(repoRoot, 'scripts', 'lib', 'events.mjs'),
       'utf8',
     );
-    expect(raw).not.toContain('gotzendorfer.at');
+    expect(raw).not.toContain('example.com');
   });
 });
 
@@ -75,8 +75,8 @@ describe('DEFAULT_EVENT_URL removed (#228)', () => {
 // ---------------------------------------------------------------------------
 
 describe('personal domain absent from source files (#228)', () => {
-  it('no .mjs file in scripts/ or hooks/ contains "events.gotzendorfer.at"', () => {
-    const literal = 'events.gotzendorfer.at';
+  it('no .mjs file in scripts/ or hooks/ contains "events.example.com"', () => {
+    const literal = 'events.example.com';
     const dirs = [
       path.join(repoRoot, 'scripts'),
       path.join(repoRoot, 'hooks'),
@@ -110,7 +110,7 @@ describe('hooks/on-stop.mjs migration (#228)', () => {
       path.join(repoRoot, 'hooks', 'on-stop.mjs'),
       'utf8',
     );
-    expect(raw).not.toContain('gotzendorfer.at');
+    expect(raw).not.toContain('example.com');
   });
 });
 

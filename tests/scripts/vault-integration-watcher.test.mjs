@@ -167,7 +167,7 @@ function makeTick(verdict, date = '2026-04-27') {
 // string assertions and parseActions(.split('\n')). No-op on LF.
 const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
 
-function runWatcher(args, { fixtureDir, callLog } = {}) {
+function runWatcher(args, { fixtureDir, callLog, cwd } = {}) {
   const env = {
     ...process.env,
     PATH: `${FIXTURES_DIR}${delimiter}${process.env.PATH}`,
@@ -179,6 +179,7 @@ function runWatcher(args, { fixtureDir, callLog } = {}) {
     encoding: 'utf8',
     env,
     timeout: 30_000,
+    ...(cwd ? { cwd } : {}),
   });
   // Normalize stdout/stderr in-place so parseActions and `.toContain` are CRLF-safe.
   return { ...r, stdout: norm(r.stdout), stderr: norm(r.stderr) };
@@ -205,6 +206,13 @@ describe('scripts/vault-integration-watcher.mjs', () => {
   beforeEach(() => {
     ensureStubGlab();
     tmp = mkdtempSync(join(tmpdir(), 'vw-test-'));
+    // Provide a CLAUDE.md with cross-repo.projects so the script doesn't no-op.
+    // Tests that need a specific value override this in the test body.
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      '## Session Config\npersistence: true\ncross-repo:\n  projects: [example-app]\n',
+      'utf8'
+    );
   });
 
   afterEach(() => {
@@ -221,7 +229,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run', '--verbose'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -249,7 +257,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -277,9 +285,11 @@ describe('scripts/vault-integration-watcher.mjs', () => {
       makeTick('umstellungs-bereit', '2026-04-27'),
     ]);
 
+    // beforeEach already wrote CLAUDE.md with cross-repo.projects: [example-app]
+
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -288,13 +298,13 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     const flipAction = actions.find((a) => a.action === 'flip-ready-posted');
     expect(flipAction).toBeDefined();
 
-    // The flip-ready comment body contains the sed snippet
+    // The flip-ready comment body contains the sed snippet and the configured repo
     const dryRunActions = actions.filter((a) => a.action === 'comment-dry-run');
     expect(dryRunActions).toHaveLength(2); // tick + flip-ready
     const flipComment = dryRunActions.find((a) => a.body?.includes(MARKER_FLIP));
     expect(flipComment).toBeDefined();
     expect(flipComment.body).toContain('BEREIT ZUM FLIP');
-    expect(flipComment.body).toContain('launchpad-ai-factory');
+    expect(flipComment.body).toContain('example-app');
   });
 
   // ── Test 4: idempotence — flip-ready already present → early exit ──────────
@@ -310,7 +320,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -336,7 +346,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -359,7 +369,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -384,7 +394,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -405,7 +415,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     const result = spawnSync(
       process.execPath,
       [SCRIPT, '--glab-bin', '/nonexistent/glab', '--issue', '305', '--dep-issues', '303,304'],
-      { encoding: 'utf8', timeout: 10_000 }
+      { encoding: 'utf8', timeout: 10_000, cwd: tmp }
     );
 
     expect(result.status).toBe(2);
@@ -423,7 +433,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -447,7 +457,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -478,7 +488,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
@@ -500,11 +510,41 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run', '--verbose'],
-      { fixtureDir: tmp }
+      { fixtureDir: tmp, cwd: tmp }
     );
 
     expect(result.status).toBe(0);
     // Verbose mode emits diagnostic lines
     expect(result.stderr).toContain('[vault-watcher]');
+  });
+
+  // ── Test 13: no cross-repo.projects in config → no-op exit 0 ─────────────
+
+  it('no cross-repo.projects configured → no-op exit 0 with notice', () => {
+    // Override the CLAUDE.md set in beforeEach with one that has no cross-repo.projects
+    const emptyDir = mkdtempSync(join(tmpdir(), 'vw-noop-'));
+    writeFileSync(
+      join(emptyDir, 'CLAUDE.md'),
+      '## Session Config\npersistence: true\n# No cross-repo block\n',
+      'utf8'
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, '--glab-bin', STUB_GLAB, '--issue', '305', '--dep-issues', '303,304'],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+        cwd: emptyDir,
+        env: { ...process.env, GLAB_FIXTURE_DIR: tmp },
+      }
+    );
+
+    rmSync(emptyDir, { recursive: true, force: true });
+
+    // Must exit 0, not fail
+    expect(result.status).toBe(0);
+    // Must emit the no-op notice
+    expect(result.stderr).toContain('cross-repo: no projects configured');
   });
 });

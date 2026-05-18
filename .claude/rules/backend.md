@@ -19,12 +19,12 @@ globs:
 - Never return raw DB errors to client.
 
 ### Canonical API Response Envelope (SEC-009)
-All API responses and server action returns MUST use the canonical envelope from `@goetzendorfer/zod-schemas`:
+All API responses and server action returns MUST use the canonical envelope from `@your-org/zod-schemas`:
 - **Success:** `{ success: true, data: T }` | **Error:** `{ success: false, error: { code, message, details? } }`
 - **Standard codes:** `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500). Do not invent new codes without documenting.
 - Never return raw error objects or `error.message` to client (SEC-009). Map to standard code + user-friendly message.
 - `details` field: only for validation errors (Zod issues array). Never include stack traces.
-- Import: `import { ApiErrorSchema, apiSuccess } from '@goetzendorfer/zod-schemas'`
+- Import: `import { ApiErrorSchema, apiSuccess } from '@your-org/zod-schemas'`
 
 ### SaaS Response Envelope (internal vs SaaS)
 
@@ -32,11 +32,11 @@ Two envelopes, one per consumer class. Pick **one** per endpoint — do not mix 
 
 | Use for | Envelope shape | Error codes | Import |
 |---|---|---|---|
-| **Internal** — Next.js server actions, internal service-to-service | `{ success: true, data }` / `{ success: false, error }` | `ApiErrorCode` enum (above) | `@goetzendorfer/zod-schemas` (root) |
-| **SaaS** — service-token-gated public API consumed by external clients | `{ data, meta? }` / `{ error: { code, message, details? } }` | `SaasErrorCode` enum (`VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `PLAN_LIMIT_EXCEEDED`, `PAYMENT_REQUIRED`, `QUOTA_EXHAUSTED`, `UPSTREAM_ERROR`, `INTERNAL_ERROR`) | `@goetzendorfer/zod-schemas/saas-response` |
+| **Internal** — Next.js server actions, internal service-to-service | `{ success: true, data }` / `{ success: false, error }` | `ApiErrorCode` enum (above) | `@your-org/zod-schemas` (root) |
+| **SaaS** — service-token-gated public API consumed by external clients | `{ data, meta? }` / `{ error: { code, message, details? } }` | `SaasErrorCode` enum (`VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `PLAN_LIMIT_EXCEEDED`, `PAYMENT_REQUIRED`, `QUOTA_EXHAUSTED`, `UPSTREAM_ERROR`, `INTERNAL_ERROR`) | `@your-org/zod-schemas/saas-response` |
 
 ```ts
-import { saasResponseSchema, saasErrorSchema } from '@goetzendorfer/zod-schemas/saas-response';
+import { saasResponseSchema, saasErrorSchema } from '@your-org/zod-schemas/saas-response';
 ```
 
 When to choose SaaS over internal:
@@ -46,7 +46,7 @@ When to choose SaaS over internal:
 
 Anti-pattern: routing a SaaS client through the internal envelope. The internal `ApiErrorCode` set lacks `PLAN_LIMIT_EXCEEDED` / `QUOTA_EXHAUSTED`, which forces integrators to pattern-match on `message` strings — a breakage vector on every copy edit.
 
-Harvested from feedfoundry `src/utils/saas-response.ts` (baseline #196).
+Harvested from a SaaS service codebase (baseline #196).
 
 ### Wrapper Contract (BE-012)
 Server actions wrapped by auth/tenant/validation higher-order functions MUST throw on error and return **data-only** on success. The wrapper — not the inner action — converts the thrown error into the `{ success: false, ... }` envelope.
@@ -95,7 +95,7 @@ rg -n "return \{\s*success:\s*(true|false)" src/app/actions/ src/services/
 ```
 Any hit inside a function that is then passed through `withAuth(...)` / `withTenant(...)` / `withValidation(...)` is a likely BE-012 violation. Test-quality cross-reference: `test-quality.md` covers how unit tests must assert `data`/`error` fields shape, not just `success` boolean.
 
-**Evidence:** BuchhaltGenie migration (#1907–1909) converted 66+ server actions over commits `af1ba292f`, `d39ce6ebe`, `eba3d0e2a`, `65e5a2456`, `3a3854df9` after discovering the silent-pass pattern in production.
+**Evidence:** A production Next.js app migration converted 66+ server actions after discovering the silent-pass pattern in production.
 
 ## API Routes (Next.js)
 - Use for webhooks, external API endpoints, cron jobs only.
@@ -127,7 +127,7 @@ Split api and worker into separate processes when any of these apply: queue-base
 - **Redis:** prefer an external managed Redis instance for production. An in-compose Redis service is commented-optional in the scaled template.
 
 ### Logging & Error Tracking
-- Use `@goetzendorfer/logger` (Pino-based) for structured logging. Initialize with `new Logger()`, set level via `LOG_LEVEL` env var.
+- Use `@your-org/logger` (Pino-based) for structured logging. Initialize with `new Logger()`, set level via `LOG_LEVEL` env var.
 - Never log PII (emails, names, IBANs, Steuernummer). Use UUIDs and correlation IDs instead.
 - Use `req.id` or `x-request-id` header for request correlation. Inject into logger context.
 - Log levels: `error` (failures), `warn` (degraded), `info` (request lifecycle), `debug` (dev only).
@@ -177,7 +177,7 @@ Split api and worker into separate processes when any of these apply: queue-base
 
 ### Minimal server outline (Hono / Express / Next.js shape)
 ```ts
-// Hono example (mail-assistant pattern)
+// Hono example (SSE daemon pattern)
 app.get('/events', streamSSE(async (stream) => {
   const onDraft = (payload) => stream.writeSSE({ event: 'draft.ready', data: JSON.stringify(payload), id: String(++seq) });
   emitter.on('draft.ready', onDraft);
@@ -185,7 +185,7 @@ app.get('/events', streamSSE(async (stream) => {
   stream.onAbort(() => { clearInterval(hb); emitter.off('draft.ready', onDraft); });
 }));
 ```
-Evidence: mail-assistant `apps/daemon/src/api.ts` (`GET /events`) — event-driven Hono SSE with heartbeat + `EventEmitter` fan-out.
+Evidence: an event-driven daemon (`GET /events`) — Hono SSE with heartbeat + `EventEmitter` fan-out.
 
 ## Health Check Response Schema
 - **Liveness** (`GET /health`): `{ status: "ok", uptime, version }` — HTTP 200, no external calls.
@@ -199,7 +199,7 @@ Evidence: mail-assistant `apps/daemon/src/api.ts` (`GET /events`) — event-driv
 - Only retry transient errors (5xx, network timeouts, ECONNRESET). Never retry 4xx.
 - Circuit breaker: 5 consecutive failures in 60s → open for 30s → return 503.
 - Log every retry attempt with attempt number, delay, and error reason.
-- Implement as a generic `withRetry<T>(fn, opts)` wrapper. See `@goetzendorfer/http-client` for `fetchWithRetry()`.
+- Implement as a generic `withRetry<T>(fn, opts)` wrapper. See `@your-org/http-client` for `fetchWithRetry()`.
 
 ## API Response Shapes
 Uses the canonical envelope from the [Canonical API Response Envelope](#canonical-api-response-envelope-sec-009) section above.
@@ -227,14 +227,14 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
 - Next.js Server Actions: try/catch → return canonical error envelope. Never throw (triggers error boundary).
 
 ## External API Integration
-- User-supplied URLs: `safeFetch()`/`safeFetchJSON()` from `@goetzendorfer/http-client` (SEC-014). Trusted URLs: `fetchWithTimeout()`/`fetchWithRetry()`.
-- **Error classification:** Use `classifyError()` from `@goetzendorfer/http-client/errors` to convert raw fetch errors into typed classes (`NetworkError`, `TimeoutError`, `HttpError`, `ValidationError`, `SSRFBlockedError`). Check `error.isRetryable()` for retry decisions.
+- User-supplied URLs: `safeFetch()`/`safeFetchJSON()` from `@your-org/http-client` (SEC-014). Trusted URLs: `fetchWithTimeout()`/`fetchWithRetry()`.
+- **Error classification:** Use `classifyError()` from `@your-org/http-client/errors` to convert raw fetch errors into typed classes (`NetworkError`, `TimeoutError`, `HttpError`, `ValidationError`, `SSRFBlockedError`). Check `error.isRetryable()` for retry decisions.
 - Wrap in service classes. Apply retry + circuit breaker (see sections above). Timeout: 30s default.
 - Log request/response (minus sensitive data) for debugging.
 
 ## API Documentation
 - Generate OpenAPI 3.1 specs from Zod schemas using `@asteasolutions/zod-to-openapi`.
-- Use the helpers from `@goetzendorfer/zod-schemas/openapi`: `createOpenAPIRegistry()`, `registerSchema()`, `generateOpenAPIDocument()`.
+- Use the helpers from `@your-org/zod-schemas/openapi`: `createOpenAPIRegistry()`, `registerSchema()`, `generateOpenAPIDocument()`.
 - Register every request/response Zod schema in the OpenAPI registry. This ensures the spec stays in sync with validation logic.
 - Serve the spec at `GET /api/docs/openapi.json` (raw JSON) and `GET /api/docs` (Scalar UI via `@scalar/express-api-reference`).
 - Reuse canonical envelope schemas (`ApiErrorSchema`, `apiSuccessSchema`) in route registrations.
@@ -276,8 +276,8 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
     }
   }
   ```
-- **Evidence:** ai-gateway `src/backends/exit-log.ts` + `src/routes/admin.ts` (L144–231), commit `e249190`. Clank uses an equivalent `BoundedMap` FIFO pattern for its event bus (50–1000 entries).
-- **Reusable helper:** candidate for `@goetzendorfer/http-client` or a dedicated `@goetzendorfer/ringbuffer` package if demand grows past 2 consumer repos.
+- **Evidence:** an internal LLM proxy service (`src/backends/exit-log.ts` + `src/routes/admin.ts` L144–231). An equivalent `BoundedMap` FIFO pattern is used by other services for event buses (50–1000 entries).
+- **Reusable helper:** candidate for `@your-org/http-client` or a dedicated `@your-org/ringbuffer` package if demand grows past 2 consumer repos.
 
 ## Feature Flags
 - Use environment-variable-backed typed flags as default (see `docs/feature-flags.md`).
@@ -289,7 +289,7 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
 ### Rule: No Direct Provider SDK in Business Logic
 - NEVER import `@anthropic-ai/sdk`, `openai`, `@google/generative-ai`, or other provider SDKs directly in business logic (`src/app/`, `src/routes/`, `src/services/`).
 - Use the **Vercel AI SDK** (`ai` package) as the unified abstraction layer. It provides `generateText()`, `streamText()`, `generateObject()` with provider-agnostic APIs.
-- Route all LLM calls through `ai-gateway` (centralized proxy) for usage tracking, rate limiting, and credential management.
+- Route all LLM calls through the centralized LLM proxy for usage tracking, rate limiting, and credential management.
 
 ### Allowed Import Locations
 - `src/lib/ai/` — AI client setup, model configuration, provider initialization
@@ -298,10 +298,10 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
 
 ### Environment Configuration
 ```
-AI_GATEWAY_URL=https://ai.gotzendorfer.at   # Centralized proxy
-AI_GATEWAY_TOKEN=<from env>                  # Auth token
-AI_DEFAULT_MODEL=claude-sonnet-4-20250514    # Default model
-AI_FALLBACK_PROVIDER=openrouter              # Fallback when primary unavailable
+AI_GATEWAY_URL=https://<your-gateway-host>   # Centralized proxy
+AI_GATEWAY_TOKEN=<from env>                   # Auth token
+AI_DEFAULT_MODEL=claude-sonnet-4-20250514     # Default model
+AI_FALLBACK_PROVIDER=openrouter               # Fallback when primary unavailable
 ```
 
 ### Pattern: AI Client Factory
@@ -327,7 +327,7 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
 ### Anti-Patterns
 - Importing `@anthropic-ai/sdk` in a route handler or server action — use `askAI()` from `src/lib/ai/`.
 - Hardcoding model names in business logic — use environment variables or the client factory.
-- Calling LLM APIs without going through ai-gateway — breaks usage tracking and rate limiting.
+- Calling LLM APIs without going through the centralized LLM proxy — breaks usage tracking and rate limiting.
 - Creating multiple provider instances — use a single shared client from `src/lib/ai/client.ts`.
 
 ## AI Observability
@@ -338,7 +338,7 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
   - Anthropic SDK direct: read `response.usage.input_tokens`, `response.usage.output_tokens`
 - Log to `ai_usage_log` table (see Supabase migration template)
 - Include: `userId`, `feature` (which app feature triggered the call), `model`, `provider`, `tokensInput`, `tokensOutput`, `costUsd`, `durationMs`, `finishReason`
-- Validate log entries with `aiUsageLogSchema` from `@goetzendorfer/zod-schemas`
+- Validate log entries with `aiUsageLogSchema` from `@your-org/zod-schemas`
 
 **OTel Span Attributes**
 - Every LLM call MUST create an OTel span with these attributes (following OpenTelemetry Semantic Conventions for GenAI):
@@ -364,7 +364,7 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
 - Soft limit (alert at `alertThresholdPct`): log warning + Discord notification via Clank webhook
 - Hard limit (`hardLimit: true`): return 429 with `{ code: 'AI_BUDGET_EXCEEDED', message: 'AI-Budget ueberschritten' }` using canonical error envelope
 - Override: admin endpoint to temporarily increase limits
-- Validate config with `aiBudgetConfigSchema` from `@goetzendorfer/zod-schemas`
+- Validate config with `aiBudgetConfigSchema` from `@your-org/zod-schemas`
 
 **Error Codes for AI Failures**
 - `AI_RATE_LIMITED` (429): provider rate limit hit → retry with exponential backoff

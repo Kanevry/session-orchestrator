@@ -1,6 +1,6 @@
 # anthropics/knowledge-work-plugins Submission Draft
 
-> Tracking issue: [GL #414](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/414) (parent GH [Kanevry/session-orchestrator#34](https://github.com/Kanevry/session-orchestrator/issues/34))
+> Tracking issue: [GH #34](https://github.com/Kanevry/session-orchestrator/issues/34)
 > Target list: https://github.com/anthropics/knowledge-work-plugins (12K★, Cowork-Marketplace)
 > Status: DRAFT — awaiting external fork + PR
 

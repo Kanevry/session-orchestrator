@@ -21,14 +21,14 @@
     "timeout_ms": 180000,
     "description": "macOS app smoke test profile via peekaboo (driver landing in #381)"
   },
-  "mail-assistant-onboarding": {
-    "name": "mail-assistant-onboarding",
-    "target_name": "MailAssistant",
+  "mac-target-onboarding": {
+    "name": "mac-target-onboarding",
+    "target_name": "mac-target",
     "driver": "peekaboo",
     "mode": "headed",
     "rubric": "skills/test-runner/rubric-v1.md",
     "checks": ["onboarding-step-count", "liquid-glass-conformance"],
-    "tags": ["onboarding", "mac", "mail-assistant"],
+    "tags": ["onboarding", "mac", "mac-target"],
     "timeout_ms": 180000,
     "scenarios": [
       "LLM-Provider",
@@ -38,8 +38,8 @@
     ],
     "liquid_glass_skipped": true,
     "liquid_glass_skip_reason": "deployment target macOS .v14 < 26; liquid-glass-conformance check is a no-op at runtime until the target bumps to macOS 26+",
-    "app_source": "/Users/bernhardg./Projects/intern/mail-assistant/apps/menubar",
+    "app_source": "<app-source-path>",
     "swift_ref_note": "V3.3 = b29ea71; HEAD is v3.21 — operator must checkout V3.3 ref before running to reproduce the 10-step onboarding regression",
-    "description": "mail-assistant onboarding regression proof (issue #386). Covers the 4-stage onboarding sequence in V3.3 (b29ea71) that shipped a 10-step flow (rubric CRITICAL). axe-violations and console-errors are N/A for native SwiftUI — skipped."
+    "description": "mac-target onboarding regression proof (issue #386). Covers the 4-stage onboarding sequence in V3.3 (b29ea71) that shipped a 10-step flow (rubric CRITICAL). axe-violations and console-errors are N/A for native SwiftUI — skipped."
   }
 }

@@ -48,11 +48,11 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 - Never pass user-supplied file content directly to XML parsers without sanitization.
 
 ## SSRF Prevention (SEC-014)
-- Use `safeFetch()` / `safeFetchJSON()` from `@goetzendorfer/http-client` for all user-supplied URLs. These block private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, ::1, 169.254.x) and non-HTTP schemes before requesting.
+- Use `safeFetch()` / `safeFetchJSON()` from `@your-org/http-client` for all user-supplied URLs. These block private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, ::1, 169.254.x) and non-HTTP schemes before requesting.
 - For internal service-to-service calls (e.g., Clank → 10.0.0.x), use `fetchWithTimeout()` or pass `allowPrivateNetworks: true`.
-- **DNS rebinding defense:** Set `dnsValidation: true` in `safeFetch()`/`safeFetchJSON()` options to resolve DNS and validate the resolved IP before connecting. When enabled, DNS validation is also applied on each redirect hop. **Node.js-only** — uses `dns.promises.lookup()`. For standalone use, `resolveAndValidate()` is exported from `@goetzendorfer/http-client`.
+- **DNS rebinding defense:** Set `dnsValidation: true` in `safeFetch()`/`safeFetchJSON()` options to resolve DNS and validate the resolved IP before connecting. When enabled, DNS validation is also applied on each redirect hop. **Node.js-only** — uses `dns.promises.lookup()`. For standalone use, `resolveAndValidate()` is exported from `@your-org/http-client`.
 - Set explicit timeouts (5s default) and limit redirects (max 3 with re-validation) on server-side HTTP clients.
-- Redirect handling: use `redirect: 'manual'` and re-validate each Location URL via `validateUrl()` before following. This prevents redirect-based SSRF attacks. The `safeFetch()` function in `@goetzendorfer/http-client` implements this pattern with `RedirectLimitError` for exceeded limits.
+- Redirect handling: use `redirect: 'manual'` and re-validate each Location URL via `validateUrl()` before following. This prevents redirect-based SSRF attacks. The `safeFetch()` function in `@your-org/http-client` implements this pattern with `RedirectLimitError` for exceeded limits.
 
 ## Dependencies
 - `pnpm audit --prod --audit-level=high` in CI pipeline. Block deploys on high/critical vulnerabilities.
@@ -61,14 +61,14 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 
 ## Supply Chain Security (SEC-020)
 - Set `ignore-scripts=true` in `.npmrc` as the global default. No package may run install/postinstall/prepare scripts unless explicitly allowlisted via `only-built-dependencies-of[]`. This is the single most effective defense against Axios-style postinstall attacks.
-- Allowlisted packages (native binaries that genuinely need install scripts): `@goetzendorfer/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Only add new entries after verifying the package requires postinstall.
+- Allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Only add new entries after verifying the package requires postinstall.
 - Use `block-exotic-subdeps=true` in `.npmrc` to prevent transitive dependencies from using git or tarball sources. Mitigates PackageGate-class attacks (CVE-2026-xxxx).
 - Set `minimum-release-age=1440` (24 hours) to delay package updates, giving security vendors time to detect malicious releases.
 - Use `trust-policy=no-downgrade` to reject packages with lower trust signals than previously installed versions.
 - Never use `git+ssh://` or `git+https://` as dependency specifiers in `package.json`. Always use npm registry versions.
 - Audit all new dependencies before adding: check npm download trends, last publish date, maintainer count. Minimum 1000 weekly downloads unless justified.
 - In CI: always use `pnpm install --frozen-lockfile` to prevent lockfile tampering.
-- Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@goetzendorfer:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
+- Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
 
 ## OWASP Top 10 2021 Mapping
 
@@ -82,7 +82,7 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 | A06 | Vulnerable Components | Dependencies section (pnpm audit), CI Semgrep (65+ custom rules) + Gitleaks (37 rules) |
 | A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in security-web.md) |
 | A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
-| A09 | Logging Failures | backend.md (structured logging), @goetzendorfer/logger |
+| A09 | Logging Failures | backend.md (structured logging), @your-org/logger |
 | A10 | SSRF | SEC-014 (safeFetch/safeFetchJSON, redirect re-validation) |
 
 ## Cryptographic Failures (SEC-015)

@@ -50,7 +50,7 @@ describe('normalizeIssue — GitLab shape', () => {
       updated_at: '2026-01-10T12:00:00Z',
       milestone: { title: 'v2.0', due_date: '2026-02-01' },
       state: 'opened',
-      web_url: 'https://gitlab.gotzendorfer.at/org/repo/-/issues/42',
+      web_url: 'https://gitlab.example.com/org/repo/-/issues/42',
     };
 
     const result = normalizeIssue(raw, 'gitlab', 'org/repo');
@@ -61,7 +61,7 @@ describe('normalizeIssue — GitLab shape', () => {
     expect(result.labels).toEqual(['priority:high', 'area:core']);
     expect(result.updated_at).toBe('2026-01-10T12:00:00Z');
     expect(result.state).toBe('opened');
-    expect(result.url).toBe('https://gitlab.gotzendorfer.at/org/repo/-/issues/42');
+    expect(result.url).toBe('https://gitlab.example.com/org/repo/-/issues/42');
     expect(result.vcs).toBe('gitlab');
     expect(result.repo).toBe('org/repo');
   });

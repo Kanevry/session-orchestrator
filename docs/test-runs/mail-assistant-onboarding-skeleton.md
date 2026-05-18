@@ -1,4 +1,4 @@
-# Skeleton Report — /test --target MailAssistant --profile mail-assistant-onboarding
+# Skeleton Report — /test --target mac-target --profile mac-target-onboarding
 
 > **Status: SKELETON — operator-triggered live run pending.**
 > No peekaboo execution has occurred. This document describes the expected pipeline,
@@ -9,12 +9,12 @@
 
 ## Why
 
-**Issue:** #386 — Peekaboo skeleton proof for `/test --target mail-assistant --profile onboarding`
+**Issue:** #386 — Peekaboo skeleton proof for `/test --target mac-target --profile onboarding`
 
-The mail-assistant V3.3 release (git ref `b29ea71`) shipped a 10-step onboarding flow
+The mac-target V3.3 release (git ref `b29ea71`) shipped a 10-step onboarding flow
 with zero E2E coverage. According to `skills/test-runner/rubric-v1.md` Check 1:
 
-> The mail-assistant V3.3 release shipped a 10-step onboarding flow with no E2E
+> The mac-target V3.3 release shipped a 10-step onboarding flow with no E2E
 > coverage; user-completion rate dropped 34% vs V3.2 (cited in PRD §1.1 as the
 > canonical motivating example for this rubric).
 
@@ -35,23 +35,23 @@ sequence, and artifact shape before committing any live run time.
 
 ## Profile
 
-Profile key: `mail-assistant-onboarding`
+Profile key: `mac-target-onboarding`
 Declared in: `.orchestrator/policy/test-profiles.json`
 
 | Field | Value |
 |---|---|
 | `driver` | `peekaboo` |
-| `target_name` | `MailAssistant` (the .app product name from `apps/menubar/MailAssistant.xcodeproj`) |
+| `target_name` | `mac-target` (the .app product name from `apps/menubar/MacTarget.xcodeproj`) |
 | `checks` | `["onboarding-step-count", "liquid-glass-conformance"]` |
 | `timeout_ms` | `180000` (3 minutes) |
 | `liquid_glass_skipped` | `true` — deployment target macOS .v14 < 26 |
-| `app_source` | `/Users/bernhardg./Projects/intern/mail-assistant/apps/menubar` |
+| `app_source` | `<app-source-path>` |
 | `swift_ref_note` | V3.3 = `b29ea71`; HEAD is v3.21 — operator must checkout V3.3 ref before running |
 
 ### 4 Expected Onboarding Scenarios
 
 The following scenarios represent the distinct stages a new user passes through during
-mail-assistant onboarding. Each stage corresponds to a peekaboo capture point (one
+mac-target onboarding. Each stage corresponds to a peekaboo capture point (one
 AX-snapshot + one screenshot per stage).
 
 | Stage # | Scenario key | Description |
@@ -108,7 +108,7 @@ A CRITICAL finding from Check 1 (onboarding-step-count) is the primary expected 
 
 ```json
 {"_meta":true,"rubric_version":"v1","run_id":"<run-id>","evaluated_at":"<ISO-8601>","checks_applied":2,"findings_count":1,"collisions":0}
-{"run_id":"<run-id>","rubric_version":"v1","severity":"critical","check":"onboarding-step-count","fingerprint":"<16-hex>","evidence_path":"screenshots/Mail-Surface.png","suggested_priority":"critical","scope":"onboarding","checkId":"step-count-over-7","locator":"MailAssistant.OnboardingFlow","title":"Onboarding flow has ≥10 steps (limit: 7)","description":"The MailAssistant onboarding flow at V3.3 (b29ea71) requires the user to complete ≥10 distinct screens before reaching the mail surface. The 7-step limit is defined in rubric-v1 Check 1. This is the canonical motivating example for the /test rubric (PRD §1.1).","recommendation":"Audit the onboarding sequence and collapse or make optional the steps beyond the 4 critical-path stages (LLM-Provider → Test-Run → Keychain → Mail-Surface). Target ≤7 steps in the non-skippable critical path."}
+{"run_id":"<run-id>","rubric_version":"v1","severity":"critical","check":"onboarding-step-count","fingerprint":"<16-hex>","evidence_path":"screenshots/Mail-Surface.png","suggested_priority":"critical","scope":"onboarding","checkId":"step-count-over-7","locator":"MacTarget.OnboardingFlow","title":"Onboarding flow has ≥10 steps (limit: 7)","description":"The MacTarget onboarding flow at V3.3 (b29ea71) requires the user to complete ≥10 distinct screens before reaching the main surface. The 7-step limit is defined in rubric-v1 Check 1. This is the canonical motivating example for the /test rubric (PRD §1.1).","recommendation":"Audit the onboarding sequence and collapse or make optional the steps beyond the 4 critical-path stages (LLM-Provider → Test-Run → Keychain → Mail-Surface). Target ≤7 steps in the non-skippable critical path."}
 ```
 
 `liquid-glass-conformance` will emit no findings — it is declared in `checks` for
@@ -123,23 +123,23 @@ event and produce zero findings at macOS .v14.
 > - [ ] peekaboo installed: `brew install steipete/tap/peekaboo && peekaboo --version` (expect 3.1.x)
 > - [ ] Screen Recording permission granted to Terminal / Claude Code in System Settings > Privacy & Security
 > - [ ] Accessibility permission granted to Terminal / Claude Code in System Settings > Privacy & Security
-> - [ ] V3.3 of mail-assistant checked out (see Step 1 below)
-> - [ ] MailAssistant.app built successfully (see Step 2 below)
+> - [ ] V3.3 of mac-target checked out (see Step 1 below)
+> - [ ] MacTarget.app built successfully (see Step 2 below)
 > - [ ] App is NOT already running (peekaboo launches it fresh)
 
 ```bash
-# Step 1: Check out V3.3 of mail-assistant (the 10-step regression ref)
-git -C ~/Projects/intern/mail-assistant checkout b29ea71
+# Step 1: Check out V3.3 of mac-target (the 10-step regression ref)
+git -C <app-source-path> checkout b29ea71
 
 # Step 2a: Build via Xcode GUI
-# Open ~/Projects/intern/mail-assistant/apps/menubar/MailAssistant.xcodeproj
-# Select the MailAssistant scheme + My Mac destination
+# Open <app-source-path>/apps/menubar/MacTarget.xcodeproj
+# Select the mac-target scheme + My Mac destination
 # Press Cmd-B (Product > Build)
 
 # Step 2b: Build via xcodebuild (headless / CI-friendly)
 xcodebuild \
-  -project ~/Projects/intern/mail-assistant/apps/menubar/MailAssistant.xcodeproj \
-  -scheme MailAssistant \
+  -project <app-source-path>/apps/menubar/MacTarget.xcodeproj \
+  -scheme mac-target \
   -configuration Debug \
   -destination "platform=macOS" \
   build
@@ -149,9 +149,9 @@ xcodebuild \
 # For Xcode GUI: confirm "Build Succeeded" in the activity bar.
 
 # Step 4: Run /test via peekaboo-driver
-export RUN_DIR=".orchestrator/metrics/test-runs/$(date +%s)-mail-assistant-onboarding"
-export TARGET="MailAssistant"
-export PROFILE="mail-assistant-onboarding"
+export RUN_DIR=".orchestrator/metrics/test-runs/$(date +%s)-mac-target-onboarding"
+export TARGET="mac-target"
+export PROFILE="mac-target-onboarding"
 bash skills/peekaboo-driver/SKILL.md
 
 # Step 5: Inspect the structured findings
@@ -164,14 +164,14 @@ cat "$RUN_DIR/results.json" | jq .
 ls "$RUN_DIR/screenshots/"
 ls "$RUN_DIR/ax-snapshots/"
 
-# Step 8: Return mail-assistant to HEAD (v3.21) when done
-git -C ~/Projects/intern/mail-assistant checkout main
+# Step 8: Return mac-target to HEAD (v3.21) when done
+git -C <app-source-path> checkout main
 ```
 
 > **Note on the app path:** peekaboo discovers the running app by product name
-> (`MailAssistant`). You must have the app built and **launchable** — peekaboo
+> (`mac-target`). You must have the app built and **launchable** — peekaboo
 > will attempt to launch it if it is not already running. If it cannot locate the
-> .app bundle, set `PEEKABOO_APP_PATH` to the full path of `MailAssistant.app`
+> .app bundle, set `PEEKABOO_APP_PATH` to the full path of `MacTarget.app`
 > in your DerivedData before running.
 
 ---
@@ -193,7 +193,7 @@ Expected result for V3.3: **CRITICAL** (≥ 10 steps).
 Fingerprint inputs (rubric-v1 §Fingerprint formula):
 - `scope = 'onboarding'`
 - `checkId = 'step-count-over-7'`
-- `locator = 'MailAssistant.OnboardingFlow'`
+- `locator = 'MacTarget.OnboardingFlow'`
 
 ### Check 4: liquid-glass-conformance (lines 287–331 of rubric-v1.md)
 
@@ -202,7 +202,7 @@ Expected result: **SKIPPED** — applicability condition not met.
 > "This check is only executed when … `Package.swift` declares `.iOS("26")` or higher,
 > OR `.macOS("26")` or higher." (rubric-v1, Check 4, Applicability condition)
 
-The mail-assistant app targets macOS .v14. This check will produce zero findings and
+The mac-target app targets macOS .v14. This check will produce zero findings and
 log a skip event. It is listed in the profile so it activates automatically when the
 deployment target bumps to macOS 26.
 
@@ -221,7 +221,7 @@ The following were explicitly de-scoped by the user for this session:
 - **Live peekaboo execution** — no real screenshots or AX-snapshots captured
 - **Real AX-tree analysis** — no actual step-count measured against V3.3
 - **findings.jsonl generation** — the file shown above is the expected shape, not actual output
-- **Issue creation in mail-assistant repo** — deferred to the live run (operator-triggered)
+- **Issue creation in mac-target repo** — deferred to the live run (operator-triggered)
 - **V3.3 build verification** — operator must build before running
 
 This document constitutes the proof-of-skeleton: the profile is declared, the rubric
@@ -236,11 +236,11 @@ Tick these before and after the live run:
 
 **Pre-run:**
 - [ ] `peekaboo --version` reports 3.1.x
-- [ ] `git -C ~/Projects/intern/mail-assistant log --oneline -1` shows `b29ea71`
-- [ ] MailAssistant.app builds successfully (Xcode or xcodebuild, zero errors)
+- [ ] `git -C <app-source-path> log --oneline -1` shows `b29ea71`
+- [ ] MacTarget.app builds successfully (Xcode or xcodebuild, zero errors)
 - [ ] Screen Recording permission: granted to Terminal in System Settings
 - [ ] Accessibility permission: granted to Terminal in System Settings
-- [ ] MailAssistant.app is not already running
+- [ ] MacTarget.app is not already running
 
 **Post-run:**
 - [ ] `$RUN_DIR/results.json` exists and `scenarios_attempted == 4`
@@ -249,11 +249,11 @@ Tick these before and after the live run:
 - [ ] `$RUN_DIR/findings.jsonl` exists; first line is the metadata record
 - [ ] CRITICAL finding for `onboarding-step-count` present in `findings.jsonl`
 - [ ] `liquid-glass-conformance` shows as skipped (zero findings for that check)
-- [ ] Return to HEAD: `git -C ~/Projects/intern/mail-assistant checkout main`
+- [ ] Return to HEAD: `git -C <app-source-path> checkout main`
 
 ---
 
 **Generated by:** W2-I3 (test-writer) · session-orchestrator v3.6.0 · skeleton — no live execution
 **Issue reference:** #386
-**Profile:** `.orchestrator/policy/test-profiles.json` → `mail-assistant-onboarding`
+**Profile:** `.orchestrator/policy/test-profiles.json` → `mac-target-onboarding`
 **Commit reference:** to be filled by session-end commit

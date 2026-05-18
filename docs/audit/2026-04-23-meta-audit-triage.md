@@ -1,7 +1,7 @@
 # Meta-Audit 2026-04-23 — Closing Triage
 
 **Triage date:** 2026-04-28
-**Original audit:** [#265](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/265) (34 findings: 2 CRIT, 12 HIGH, 10 MED, 10 LOW)
+**Original audit:** [#265](https://github.com/Kanevry/session-orchestrator/issues/265) (34 findings: 2 CRIT, 12 HIGH, 10 MED, 10 LOW)
 **Verdict:** Umbrella ready to close. All 14 sub-issued findings (CRIT + HIGH) are shipped. MED/LOW checklist items are tracked here as either-shipped or low-value-to-keep.
 
 ## CRITICAL (2/2 closed)

@@ -428,8 +428,8 @@ describe('anonymizeString — GitHub/GitLab VCS URLs', () => {
   });
 
   it('redacts self-hosted GitLab URLs', () => {
-    const s = 'Push to https://gitlab.gotzendorfer.at/user/repo';
-    expect(anonymizeString(s)).not.toMatch(/gotzendorfer\.at\/user/);
+    const s = 'Push to https://gitlab.example.com/user/repo';
+    expect(anonymizeString(s)).not.toMatch(/example\.com\/user/);
     expect(anonymizeString(s)).toContain('<VCS-URL>');
   });
 });

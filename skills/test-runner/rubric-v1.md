@@ -97,9 +97,10 @@ entry point. Flag when the step count exceeds 7.
 
 **Why 7:** The "7 ± 2" rule (Miller, 1956) characterises the capacity of short-term
 working memory. Onboarding flows that require users to hold more than 7 steps in
-mind reliably correlate with drop-off. The mail-assistant V3.3 release shipped a
-10-step onboarding flow with no E2E coverage; user-completion rate dropped 34% vs
-V3.2 (cited in PRD §1.1 as the canonical motivating example for this rubric).
+mind reliably correlate with drop-off. A typical mobile app's V3.3 release shipped a
+10-step onboarding flow with no E2E coverage; user-completion rate dropped significantly.
+This rubric was inspired by that incident and is cited in project PRDs as the canonical
+example for onboarding quality gates.
 
 **Severity mapping:**
 

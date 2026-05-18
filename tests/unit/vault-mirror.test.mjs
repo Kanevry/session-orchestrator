@@ -944,7 +944,7 @@ describe('vault-mirror CLI', () => {
       { wave: 2, role: 'Impl-Core', agents: 5, dispatch: 'coordinator-inline', duration_s: 480, agents_done: 5, agents_partial: 0, agents_failed: 0 },
     ],
     issues_closed: [44],
-    issues_created: [179, 181, 'products/eventdrop-render-service#23'],
+    issues_created: [179, 181, 'products/example-service#23'],
     files_changed: 7,
     effectiveness: { completion_rate: 1.0, carryover: 0 },
     notes: 'Test note body.',

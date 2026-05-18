@@ -21,7 +21,7 @@
  *   opts.spawn   — override node:child_process spawn
  *   opts.fs      — override node:fs (sync subset: mkdirSync, createWriteStream, readFileSync, existsSync, writeFileSync)
  *
- * Issue: #385 — web-gate end-to-end proof against aiat-pmo-module
+ * Issue: #385 — web-gate end-to-end proof against an EspoCRM web target
  */
 
 import { spawn as realSpawn } from 'node:child_process';

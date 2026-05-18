@@ -52,7 +52,7 @@ The plugin is tested on Claude Code (primary), Codex CLI (via `AGENTS.md` alias)
 ### Issue tracking
 
 - Parent: https://github.com/Kanevry/session-orchestrator/issues/34
-- Submission tracking: https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/414
+- Submission tracking: https://github.com/Kanevry/session-orchestrator/issues/34
 
 ### Checklist
 

@@ -5,7 +5,7 @@
 #
 # Why GitLab CI rather than GitHub Actions:
 #   The canonical vault-frontmatter schema lives in a *private* GitLab repo
-#   (gitlab.gotzendorfer.at/infrastructure/projects-baseline, project ID 52).
+#   (<your-gitlab-host>/infrastructure/projects-baseline, project ID 52).
 #   Cross-project access during CI requires same-instance authentication via
 #   SCHEMA_DRIFT_TOKEN (deploy token/PAT) — a masked CI variable with
 #   read-only access to the private projects-baseline repo (project ID 52).
@@ -116,6 +116,18 @@ npm-audit:
 # Uses ajv-cli to validate both plugin.json and marketplace.json against
 # the fetched schemas. Runs on changes to .claude-plugin/*.json or CI config.
 # ---------------------------------------------------------------------------
+
+owner-leakage:
+  stage: validate
+  <<: *node-setup
+  interruptible: true
+  timeout: 5m
+  allow_failure: false
+  script:
+    - node scripts/lib/validate/check-owner-leakage.mjs "$CI_PROJECT_DIR"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 plugin-schema-validate:
   stage: validate

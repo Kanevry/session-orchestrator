@@ -52,7 +52,7 @@ const HEAD_SHA = 'abc1234def5678abc1234def5678abc1234def56';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const GITLAB_ORIGIN = 'https://gitlab.gotzendorfer.at/bg/session-orchestrator.git';
+const GITLAB_ORIGIN = 'https://gitlab.example.com/org/session-orchestrator.git';
 const GITHUB_ORIGIN = 'https://github.com/Kanevry/session-orchestrator.git';
 
 const GLAB_REPO_VIEW = JSON.stringify({ id: 42, name: 'session-orchestrator' });

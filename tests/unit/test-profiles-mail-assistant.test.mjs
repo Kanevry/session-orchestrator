@@ -1,13 +1,13 @@
 /**
- * tests/unit/test-profiles-mail-assistant.test.mjs
+ * mac-target-onboarding profile validation
  *
  * Asserts that .orchestrator/policy/test-profiles.json:
  *   1. Is valid JSON (parse-level check)
- *   2. Contains the new mail-assistant-onboarding entry with all required fields
+ *   2. Contains the new mac-target-onboarding entry with all required fields
  *   3. The new entry has correct driver, checks, scenarios, and flags
  *   4. Pre-existing web-gate and mac-gate entries are unmodified (regression guard)
  *
- * Issue: #386 — skeleton proof for /test --target MailAssistant --profile onboarding
+ * Issue: #386 — skeleton proof for /test --target mac-target --profile onboarding
  */
 
 import { describe, it, expect } from 'vitest';
@@ -21,7 +21,7 @@ const PROFILES_PATH = path.join(REPO_ROOT, '.orchestrator', 'policy', 'test-prof
 // Parse once; individual tests reference this object.
 // If JSON.parse throws, every test fails — which is correct: bad JSON = nothing passes.
 const profiles = JSON.parse(readFileSync(PROFILES_PATH, 'utf8'));
-const entry = profiles['mail-assistant-onboarding'];
+const entry = profiles['mac-target-onboarding'];
 
 // ---------------------------------------------------------------------------
 // File-level validation
@@ -64,9 +64,9 @@ describe('test-profiles.json — pre-existing entries (regression guard)', () =>
 // New entry — presence
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — presence', () => {
-  it('mail-assistant-onboarding key exists in the profiles map', () => {
-    expect(profiles).toHaveProperty('mail-assistant-onboarding');
+describe('mac-target-onboarding profile — presence', () => {
+  it('mac-target-onboarding key exists in the profiles map', () => {
+    expect(profiles).toHaveProperty('mac-target-onboarding');
   });
 
   it('entry is a non-null object', () => {
@@ -79,7 +79,7 @@ describe('mail-assistant-onboarding profile — presence', () => {
 // Required fields
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — required fields', () => {
+describe('mac-target-onboarding profile — required fields', () => {
   it('has driver field', () => {
     expect(entry).toHaveProperty('driver');
   });
@@ -105,13 +105,13 @@ describe('mail-assistant-onboarding profile — required fields', () => {
 // Field values — driver
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — driver', () => {
+describe('mac-target-onboarding profile — driver', () => {
   it('driver is peekaboo (macOS-native, not playwright)', () => {
     expect(entry.driver).toBe('peekaboo');
   });
 
-  it('target_name is MailAssistant (the .app product name)', () => {
-    expect(entry.target_name).toBe('MailAssistant');
+  it('target_name is mac-target (the .app product name)', () => {
+    expect(entry.target_name).toBe('mac-target');
   });
 });
 
@@ -119,7 +119,7 @@ describe('mail-assistant-onboarding profile — driver', () => {
 // Field values — checks
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — checks array', () => {
+describe('mac-target-onboarding profile — checks array', () => {
   it('checks is an array', () => {
     expect(Array.isArray(entry.checks)).toBe(true);
   });
@@ -141,7 +141,7 @@ describe('mail-assistant-onboarding profile — checks array', () => {
 // Field values — scenarios
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — scenarios array', () => {
+describe('mac-target-onboarding profile — scenarios array', () => {
   it('scenarios is an array', () => {
     expect(Array.isArray(entry.scenarios)).toBe(true);
   });
@@ -171,7 +171,7 @@ describe('mail-assistant-onboarding profile — scenarios array', () => {
 // Field values — liquid glass flag
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — liquid_glass_skipped', () => {
+describe('mac-target-onboarding profile — liquid_glass_skipped', () => {
   it('liquid_glass_skipped is exactly true (boolean)', () => {
     expect(entry.liquid_glass_skipped).toBe(true);
   });
@@ -186,7 +186,7 @@ describe('mail-assistant-onboarding profile — liquid_glass_skipped', () => {
 // Field values — timeout and metadata
 // ---------------------------------------------------------------------------
 
-describe('mail-assistant-onboarding profile — timeout and metadata', () => {
+describe('mac-target-onboarding profile — timeout and metadata', () => {
   it('timeout_ms is a number', () => {
     expect(typeof entry.timeout_ms).toBe('number');
   });
@@ -200,8 +200,8 @@ describe('mail-assistant-onboarding profile — timeout and metadata', () => {
     expect(entry.swift_ref_note).toContain('b29ea71');
   });
 
-  it('app_source path contains mail-assistant', () => {
+  it('app_source is the generic placeholder string <app-source-path>', () => {
     expect(typeof entry.app_source).toBe('string');
-    expect(entry.app_source).toContain('mail-assistant');
+    expect(entry.app_source).toBe('<app-source-path>');
   });
 });

@@ -1,6 +1,6 @@
 # ComposioHQ/awesome-claude-plugins Submission Draft
 
-> Tracking issue: [#213](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/213)  
+> Tracking issue: [#213](https://github.com/Kanevry/session-orchestrator/issues/213)  
 > Target list: https://github.com/ComposioHQ/awesome-claude-plugins  
 > Status: DRAFT — awaiting manual fork + PR  
 > PR body: [docs/submissions/composio-awesome-claude-plugins-pr-body.md](../submissions/composio-awesome-claude-plugins-pr-body.md)
@@ -86,14 +86,14 @@ See [`docs/submissions/composio-awesome-claude-plugins-pr-body.md`](../submissio
 |---|---|
 | Maintainer rejects new category | Update PR: move entry to `## Developer Productivity` (alphabetical after `backlog`). Comment on #213. |
 | PR stalls > 4 weeks | Mirror entry to `hesreallyhim/awesome-claude-code` under "Agent Skills" (submission draft already exists at `docs/submissions/awesome-claude-code.md`). |
-| Repository archived or unmaintained | Close #213 as won't-fix; note in GitLab #152 v3 release tracking. |
+| Repository archived or unmaintained | Close #213 as won't-fix; note in GitHub #152 v3 release tracking. |
 | Entry text needs update for v3.7+ | Amend the PR description or open a follow-up PR referencing the new release tag. |
 
 ---
 
 ## 7. Post-submission tracking
 
-1. Once PR is open, add the PR URL as a comment on GitLab issue #213.
+1. Once PR is open, add the PR URL as a comment on GitHub issue #213.
 2. Update `CLAUDE.md` backlog count when #213 closes.
 3. If the new "Session & Workflow Orchestration" category is accepted, note it in `docs/submissions/awesome-claude-code.md` as a cross-reference — the two lists are maintained independently.
-4. Track maintainer responsiveness in GitLab #213; escalate to fallback (§6) after 4 weeks of silence.
+4. Track maintainer responsiveness in GitHub #213; escalate to fallback (§6) after 4 weeks of silence.

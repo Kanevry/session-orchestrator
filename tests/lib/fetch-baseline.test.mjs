@@ -59,6 +59,7 @@ beforeEach(() => {
   cacheDir = join(tmpBase, 'cache');
   mkdirSync(cacheDir, { recursive: true });
   process.env.BASELINE_CACHE_DIR = cacheDir;
+  process.env.GITLAB_HOST = 'gitlab.example.com';
 
   fetchSpy = vi.spyOn(globalThis, 'fetch');
   stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -67,6 +68,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.BASELINE_CACHE_DIR;
+  delete process.env.GITLAB_HOST;
   try {
     rmSync(tmpBase, { recursive: true, force: true });
   } catch {
@@ -492,5 +494,29 @@ describe('fetchBaselineFile CLI — missing GITLAB_TOKEN', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/GITLAB_TOKEN/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Missing GITLAB_HOST guard — no private domain fallback
+// ---------------------------------------------------------------------------
+
+describe('fetchBaselineFile — missing GITLAB_HOST guard', () => {
+  it('returns ok:false with GITLAB_HOST error when neither opts.host nor env GITLAB_HOST is set', async () => {
+    delete process.env.GITLAB_HOST;
+
+    const result = await fetchBaselineFile({
+      filePath: '.claude/rules/security.md',
+      token: 'test-token',
+      projectId: '52',
+      baselineRef: 'main',
+      // opts.host intentionally omitted
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(0);
+    expect(result.error).toMatch(/GITLAB_HOST not configured/);
+    // Must not have attempted a network request (fetch spy not called)
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

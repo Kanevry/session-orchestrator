@@ -1,6 +1,6 @@
 # PRD — STATE.md Recommendations Contract (v1.1)
 
-**Epic:** [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues/271)
+**Epic:** [#271 v3.2 Autopilot — Autonomous Session Orchestration](https://github.com/Kanevry/session-orchestrator/issues/271)
 **Phase:** A (Foundation)
 **Appetite:** 1w (4 sub-issues)
 **Visibility:** internal

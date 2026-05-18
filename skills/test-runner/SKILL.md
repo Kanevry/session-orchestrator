@@ -60,7 +60,7 @@ Generate a run ID immediately after target resolution:
 
 ```js
 import { makeRunId } from 'scripts/lib/test-runner/artifact-paths.mjs';
-const runId = makeRunId(); // e.g. "aiat-pmo-module-1715688000123"
+const runId = makeRunId(); // e.g. "your-target-app-1715688000123"
 ```
 
 All artifact paths in subsequent phases derive from this run ID. Never use ad-hoc paths.
@@ -304,9 +304,9 @@ Schema v1:
 ```json
 {
   "schema_version": 1,
-  "run_id": "aiat-pmo-module-1715688000123",
+  "run_id": "your-target-app-1715688000123",
   "timestamp": "2026-05-14T07:30:00Z",
-  "target": "aiat-pmo-module",
+  "target": "your-target-app",
   "profile": "smoke",
   "drivers": ["playwright"],
   "finding_counts": {"critical": 0, "high": 2, "medium": 5, "low": 3},

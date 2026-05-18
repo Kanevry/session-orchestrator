@@ -146,6 +146,9 @@ if (runCheck('check-plugin-monitors.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-plugin-schema.mjs') !== 0) checkFailed = 1;
 
+process.stdout.write('\n');
+if (runCheck('check-owner-leakage.mjs') !== 0) checkFailed = 1;
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

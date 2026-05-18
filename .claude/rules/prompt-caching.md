@@ -104,7 +104,7 @@ Two TTLs are available, with different write-cost trade-offs.
 Decision rule: **if the 95th-percentile gap between calls that share the prefix exceeds 5 minutes, choose 1h.** Otherwise the default 5-min TTL pays back faster (1.25× vs 2.0×).
 
 ```typescript
-// 5-min — interactive chat (Sophie, AngebotsChecker tool-loop)
+// 5-min — interactive chat (interactive assistant tool-loop)
 { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }
 
 // 1h — batch re-rank that processes 100 items over 8 min
@@ -198,7 +198,7 @@ const result = await generateText({
 
 For multi-block control (e.g., caching tools + system separately), pass `system` as a structured message and set `providerOptions.anthropic.cacheControl` on each cacheable message via the `experimental_providerMetadata` field on each message. See the `@ai-sdk/anthropic` README for the current message-level shape.
 
-The canonical AI-SDK adoption point is **Candidate D (`intern/launchpad-ai-factory`)** at `src/lib/llm/adapter.ts`: add an optional `cacheableSystem?: string` parameter; when present, emit the `providerOptions` block above on the system message. Tagging and enrichment call-sites flip it on.
+The canonical AI-SDK adoption point is **Candidate D** at `src/lib/llm/adapter.ts`: add an optional `cacheableSystem?: string` parameter; when present, emit the `providerOptions` block above on the system message. Tagging and enrichment call-sites flip it on.
 
 **Pre-warming via AI-SDK:** `max_tokens: 0` is not natively exposed by `generateText`. Use `maxTokens: 1` and discard the single-token output, or drop down to the raw SDK for the pre-warm call only.
 
@@ -241,10 +241,10 @@ For Vercel AI SDK consumers, the `cache_creation_input_tokens` / `cache_read_inp
 
 The four PoCs filed against this rule. Each adopts in <30 LOC and is independently verifiable via PC-007.
 
-- **`extern/AngebotsChecker`** (STRONG, Issue #422) — `src/app/api/compare/_lib/handle-compare.ts:78-94` + `src/app/api/compare/_lib/stream-pass.ts`. opus-4-7 tool-loop. System prompt + tool-list = stable prefix across 2..N tool turns per request. Switch `streamTurnToClient({ baseSystemPrompt, ... })` from string to block array with `cache_control` on the last system block. TTL: 5min. Pre-warm: `register()` hook in Next.js `instrumentation.ts`.
-- **`Bernhard/buchhaltgenie`** (STRONG, Issue #423) — `src/lib/ai/sophie-system-prompts-v2.ts` (`buildAdvancedSophieSystemPrompt()`, 668 LOC) + `src/app/api/chat-v2/route.ts:42-44`. The 668-line system prompt is the textbook caching case; cache-read at 0.1× pays back after ~3 requests in a 5-min window even for Haiku-4.5 traffic. TTL: 5min for chat, 1h for the RAG-enhanced variant (breakpoint BEFORE the RAG block). Pre-warm: cron every 4 min during business hours.
-- **`intern/launchpad-ai-factory`** (MED, Issue #424) — `src/lib/llm/adapter.ts`. AI-SDK adapter — add optional `cacheableSystem?: string` parameter, emit `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` on the system message when present. Tagging + hypothesis-synth call-sites flip it on. TTL: 5min. Nightly batch cadence keeps it warm — no pre-warm needed.
-- **`extern/wien-forschungsfragen-klima`** (MED, Issue #425) — `scripts/lib/llm-rerank.ts:277` + `scripts/lib/llm-translate.ts:205`. Batch re-rank + translate with versioned prompt files (`prompts/*.v1.md`). Write-only: add `cache_control` to the system block; **skip `max_tokens: 0` entirely** — let the first real call write the cache; subsequent items in the same batch read it. TTL: 5min default; switch to 1h if a single batch run takes >5 min (instrument first).
+- **Candidate A** (STRONG) — an opus tool-loop Next.js API; system prompt + tool-list = stable prefix across tool turns. Block-array + `cache_control` on last system block. TTL: 5min. Pre-warm: `register()` hook in Next.js `instrumentation.ts`.
+- **Candidate B** (STRONG) — a Next.js app with a ~668-line system prompt (textbook caching case); cache-read at 0.1× pays back after ~3 requests in a 5-min window even for Haiku-4.5 traffic. TTL: 5min for chat, 1h for the RAG-enhanced variant (breakpoint BEFORE the RAG block). Pre-warm: cron every 4 min during business hours.
+- **Candidate C** (MED) — an AI-SDK adapter service; add optional `cacheableSystem?: string` parameter, emit `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` on the system message when present. TTL: 5min. Nightly batch cadence keeps it warm — no pre-warm needed.
+- **Candidate D** (MED) — a batch re-rank + translate service with versioned prompt files. Add `cache_control` to the system block; **skip `max_tokens: 0` entirely** — let the first real call write the cache; subsequent items in the same batch read it. TTL: 5min default; switch to 1h if a single batch run takes >5 min (instrument first).
 
 ## Anti-Patterns
 

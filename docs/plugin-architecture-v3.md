@@ -274,4 +274,4 @@ Reasons zx wins when it does:
 
 ---
 
-Questions or gaps? Open an issue at [infrastructure/session-orchestrator](https://gitlab.gotzendorfer.at/infrastructure/session-orchestrator/-/issues) with label `area:docs`.
+Questions or gaps? Open an issue at [session-orchestrator](https://github.com/Kanevry/session-orchestrator/issues) with label `area:docs`.
