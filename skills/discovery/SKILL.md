@@ -93,7 +93,7 @@ Report: "Discovery: [N] probes active across [categories]. Stack: [detected]. Th
 
 When `since_ref` is set (passed from the `/discovery --since <git-ref>` invocation):
 
-1. Call `changedFilesSince(since_ref)` from `scripts/lib/discovery-helpers.mjs`.
+1. Call `changedFilesSince(since_ref)` from `scripts/lib/discovery/helpers.mjs`.
 2. If the helper throws (ref unresolvable), surface the error to the user and halt.
 3. If the result is `[]` (no files changed since the ref), emit:
    ```

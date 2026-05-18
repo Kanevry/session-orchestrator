@@ -127,6 +127,7 @@ export async function loadTriageState(stateFilePath) {
   const lines = raw.split('\n').filter((l) => l.trim().length > 0);
 
   const map = new Map();
+  let malformedCount = 0;
   for (const line of lines) {
     try {
       const entry = JSON.parse(line);
@@ -139,8 +140,17 @@ export async function loadTriageState(stateFilePath) {
         user_decision: entry.user_decision,
       });
     } catch {
-      // Skip malformed lines without surfacing errors
+      // Skip malformed lines — the file is append-only and a partial write
+      // (e.g. from a crashed session) should not prevent loading valid state.
+      // Set DISCOVERY_DEBUG=1 to surface these at runtime for diagnosis.
+      malformedCount += 1;
     }
+  }
+
+  if (malformedCount > 0 && process.env.DISCOVERY_DEBUG) {
+    process.stderr.write(
+      `[triage-state] loadTriageState: skipped ${malformedCount} malformed JSONL line(s) in ${resolved}\n`,
+    );
   }
 
   return map;

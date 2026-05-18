@@ -5,6 +5,7 @@ model: inherit
 color: cyan
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
 sandbox-tier: repo-write
+output-schema: schemas/docs-writer.schema.json
 ---
 
 # Docs Writer Agent
@@ -92,3 +93,19 @@ STATUS: done | partial
 - **Conflicting sources**: git log says one thing, session memory says another. → Cite both, prefer the source closest to the change (git diff for what changed; commit message for why). If they genuinely contradict, mark with REVIEW and let a human decide.
 - **Large change, narrow audience**: Session changed 30 files but only one is user-facing. → Update only the user-facing doc. Internal refactors of the other 29 files do not deserve User-audience documentation; consider Dev-audience CLAUDE.md if architectural impact is significant.
 - **Missing project structure**: Vault dir not configured / project not bootstrapped for vault. → Skip Vault-audience output silently; report only User and Dev audiences in the audience-split.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the prose status report above, append a fenced ```json block matching `agents/schemas/docs-writer.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "status": "done|partial|blocked",
+  "files_updated": [{"path": "README.md", "audience": "user", "sections": ["Installation"]}],
+  "review_markers_added": 0,
+  "notes": ""
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `status` (enum done|partial|blocked), `files_updated` (array). Optional: `review_markers_added`, `notes`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.

@@ -5,6 +5,7 @@ model: sonnet
 color: red
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/security-reviewer.schema.json
 ---
 
 # Security Reviewer Agent
@@ -211,3 +212,19 @@ Findings should aim for this level of specificity. Vague reports waste reviewer 
 ## Final reminder
 
 Focus on HIGH and MEDIUM. A 3-finding report that a senior security engineer would confidently raise in PR review beats a 20-finding report full of "consider adding X" noise every time.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the human-readable findings and Analysis Summary, append a fenced ```json block matching `agents/schemas/security-reviewer.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "finding_counts": {"high": 0, "med": 0, "low": 0},
+  "files_reviewed": 0,
+  "phases": {"context": true, "comparative": true, "assessment": true},
+  "findings": []
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `finding_counts`, `files_reviewed`, `phases`. Optional: `findings` array (include each finding with `severity`, `category`, `file`, `confidence`, `title`). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.

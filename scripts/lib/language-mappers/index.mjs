@@ -41,6 +41,8 @@ const EXT_TO_LANG = {
   '.cjs': 'js',
   '.md': 'md',
   '.mdx': 'md',
+  '.swift': 'swift',
+  '.py': 'py',
 };
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ const EXT_TO_LANG = {
  * Derive the language key from a file path.
  *
  * @param {string} filePath
- * @returns {'ts'|'js'|'md'|null}
+ * @returns {'ts'|'js'|'md'|'swift'|'py'|null}
  */
 export function languageFromPath(filePath) {
   if (typeof filePath !== 'string') return null;
@@ -65,6 +67,8 @@ export function languageFromPath(filePath) {
 
 let tsMapperPromise = null;
 let mdMapperPromise = null;
+let swiftMapperPromise = null;
+let pyMapperPromise = null;
 
 function loadTsMapper() {
   if (tsMapperPromise === null) {
@@ -80,13 +84,27 @@ function loadMdMapper() {
   return mdMapperPromise;
 }
 
+function loadSwiftMapper() {
+  if (swiftMapperPromise === null) {
+    swiftMapperPromise = import('./swift.mjs').then((m) => m.extractSwiftSlices);
+  }
+  return swiftMapperPromise;
+}
+
+function loadPyMapper() {
+  if (pyMapperPromise === null) {
+    pyMapperPromise = import('./python.mjs').then((m) => m.extractPythonSlices);
+  }
+  return pyMapperPromise;
+}
+
 /**
  * Extract semantic slices from `content` for the file at `filePath`.
  *
  * @param {string} filePath   Relative or absolute path — used to derive language
  *                            when `options.language` is not supplied.
  * @param {string} content    Raw text content of the file.
- * @param {{ language?: 'ts'|'js'|'md' }} [options]
+ * @param {{ language?: 'ts'|'js'|'md'|'swift'|'py' }} [options]
  * @returns {Promise<import('./typescript.mjs').SemanticSlice[]>}
  * @throws {Error} When language is unsupported or the underlying parser fails.
  */
@@ -110,9 +128,18 @@ export async function extractSemanticSlices(filePath, content, options = {}) {
     return extract(filePath, content);
   }
 
+  if (lang === 'swift') {
+    const extract = await loadSwiftMapper();
+    return extract(filePath, content);
+  }
+
+  if (lang === 'py') {
+    const extract = await loadPyMapper();
+    return extract(filePath, content);
+  }
+
   throw new Error(
     `extractSemanticSlices: unsupported language '${lang ?? 'unknown'}' for file '${filePath}'. ` +
-      `Phase 1 supports: .ts, .tsx, .js, .jsx, .mjs, .cjs, .md, .mdx. ` +
-      `Swift and Python support is planned for Phase 2.`,
+      `Supports: .ts, .tsx, .js, .jsx, .mjs, .cjs, .md, .mdx, .swift, .py.`,
   );
 }

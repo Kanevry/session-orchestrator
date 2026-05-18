@@ -380,6 +380,19 @@ describe('runWavePool — input validation', () => {
   it('throws TypeError when drainTimeoutMs is negative', async () => {
     await expect(runWavePool({ tasks: [], maxParallel: 1, drainTimeoutMs: -1 })).rejects.toThrow(TypeError);
   });
+
+  it('throws TypeError when two tasks share the same taskId', async () => {
+    const tasks = [makeTask('dup'), makeTask('dup')];
+    await expect(runWavePool({ tasks, maxParallel: 2 })).rejects.toThrow(TypeError);
+    await expect(runWavePool({ tasks, maxParallel: 2 })).rejects.toThrow('duplicate taskId "dup"');
+  });
+
+  it('does not throw for tasks with distinct taskIds', async () => {
+    const tasks = [makeTask('a'), makeTask('b'), makeTask('c')];
+    const { results, errors } = await runWavePool({ tasks, maxParallel: 3 });
+    expect(errors).toHaveLength(0);
+    expect(results).toHaveLength(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

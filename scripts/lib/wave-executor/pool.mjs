@@ -89,6 +89,18 @@ export async function runWavePool({
     throw new TypeError('runWavePool: drainTimeoutMs must be a non-negative number');
   }
 
+  // ── Duplicate taskId guard ─────────────────────────────────────────────────
+  // Two tasks with the same taskId would produce duplicate records in `results`,
+  // silently dropping one when a caller builds a Map<taskId, result>.
+  const seenIds = new Set();
+  for (const t of tasks) {
+    if (!t || typeof t.taskId !== 'string') continue; // caught by runtime dispatch
+    if (seenIds.has(t.taskId)) {
+      throw new TypeError(`runWavePool: duplicate taskId "${t.taskId}"`);
+    }
+    seenIds.add(t.taskId);
+  }
+
   // ── Fast path: empty tasks ─────────────────────────────────────────────────
 
   if (tasks.length === 0) {
@@ -121,6 +133,12 @@ export async function runWavePool({
   /**
    * Abort all currently in-flight workers by forwarding to their per-worker
    * AbortControllers.  Called when the caller's abortSignal fires.
+   *
+   * Only workers that are already executing `task.dispatch()` at the moment
+   * this function is called will receive the abort signal.  Tasks that are
+   * still queued (not yet pulled by any worker) are simply never started —
+   * the `isAborted()` guard in the worker loop stops the cursor on the next
+   * pull attempt.
    */
   function abortInFlight() {
     for (const controller of inFlight.values()) {

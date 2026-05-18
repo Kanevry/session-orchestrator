@@ -5,6 +5,7 @@ model: inherit
 color: yellow
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/analyst.schema.json
 ---
 
 # Analyst Agent
@@ -73,3 +74,20 @@ The following words require specifics — flag them as vague if no concrete meas
 ## Refusal Rule
 
 Read-only. Never use Edit or Write to modify PRD, plan, or source files. Bash is permitted only for read-only search (`grep`, `find`). Write the review report to `.orchestrator/audits/` only.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the human-readable report, append a fenced ```json block matching `agents/schemas/analyst.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "report_path": ".orchestrator/audits/wave-reviewer-N-analyst.md",
+  "finding_counts": {"high": 0, "med": 0, "low": 0},
+  "scope_drift_count": 0,
+  "criteria_reviewed": 0,
+  "blockers": []
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `finding_counts`, `scope_drift_count`, `criteria_reviewed`. Optional: `blockers` (empty array when verdict is not BLOCKED). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.

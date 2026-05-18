@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/docs-writer.schema.json",
+  "title": "docs-writer agent output",
+  "description": "Machine-readable summary returned by the docs-writer agent after updating documentation. Derives from the Output Format section of agents/docs-writer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "status", "files_updated"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "PROCEED = all targeted docs written with verified sources; PROCEED_WITH_FOLLOWUPS = REVIEW markers added but content complete; FIX_REQUIRED = required docs could not be written; BLOCKED = task could not proceed (no git diff, no session memory)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"],
+      "description": "done = all targeted sections written; partial = REVIEW-marked sections present; blocked = could not source content."
+    },
+    "files_updated": {
+      "type": "array",
+      "description": "Documentation files written or modified.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative path to the documentation file."
+          },
+          "audience": {
+            "type": "string",
+            "enum": ["user", "dev", "vault"],
+            "description": "Target audience for this file."
+          },
+          "sections": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Section names or line ranges updated."
+          }
+        }
+      }
+    },
+    "review_markers_added": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of <!-- REVIEW: source needed --> markers added due to unsourced claims."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Scope boundaries hit, audiences not addressed, or anything the next wave should know."
+    }
+  }
+}

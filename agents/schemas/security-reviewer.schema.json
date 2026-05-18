@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/security-reviewer.schema.json",
+  "title": "security-reviewer agent output",
+  "description": "Machine-readable summary returned by the security-reviewer agent after a vulnerability assessment. Mirrors the Required Output Format section of agents/security-reviewer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "finding_counts", "files_reviewed", "phases"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "Overall disposition: PROCEED = no HIGH/MEDIUM findings; PROCEED_WITH_FOLLOWUPS = LOW findings only; FIX_REQUIRED = HIGH or MEDIUM findings that must be remediated; BLOCKED = cannot complete review."
+    },
+    "finding_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "med", "low"],
+      "properties": {
+        "high": { "type": "integer", "minimum": 0 },
+        "med": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "files_reviewed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files examined across all three phases."
+    },
+    "phases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "comparative", "assessment"],
+      "properties": {
+        "context": {
+          "type": "boolean",
+          "description": "Phase 1 (repository context research) completed."
+        },
+        "comparative": {
+          "type": "boolean",
+          "description": "Phase 2 (comparative analysis against existing patterns) completed."
+        },
+        "assessment": {
+          "type": "boolean",
+          "description": "Phase 3 (vulnerability assessment) completed."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Individual findings with confidence >= 0.7. Empty when no findings.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "category", "file", "confidence", "title"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["HIGH", "MEDIUM", "LOW"]
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1,
+            "description": "e.g. sql_injection, auth_bypass, hardcoded_secret, xss, ssrf, path_traversal"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "path/to/file.ts:line"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.7,
+            "maximum": 1.0,
+            "description": "Numeric confidence 0.7–1.0 (below 0.7 must not be reported)."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-sentence finding title."
+          }
+        }
+      }
+    }
+  }
+}

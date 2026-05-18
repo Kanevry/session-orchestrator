@@ -77,7 +77,7 @@ Determine `${RUN_DIR}` from `artifact-paths.mjs:runDirPath(runId)` before dispat
 
 When `since_ref` is set (passed from the `/test --since <git-ref>` handoff contract):
 
-1. Import and call `changedFilesSince(since_ref)` from `scripts/lib/discovery-helpers.mjs`.
+1. Import and call `changedFilesSince(since_ref)` from `scripts/lib/discovery/helpers.mjs`.
 2. If the helper throws (ref unresolvable), surface the error to the user and halt.
 3. If the result is `[]` (no files changed since the ref), emit:
    ```

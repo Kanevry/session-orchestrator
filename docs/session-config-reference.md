@@ -126,6 +126,23 @@ worker-pool:
 | `worker-pool.max-parallel` | integer | value of `agents-per-wave` | Maximum concurrent workers active simultaneously. Falls back to `agents-per-wave` when unset. |
 | `worker-pool.drain-timeout-ms` | integer | `10000` | Milliseconds the pool waits for in-flight workers to settle after an abort signal fires before returning partial results. |
 
+## Agent Output Schema Validation (#451)
+
+Opt-in validation of each agent's machine-readable output block against its declared JSON Schema (`output-schema:` frontmatter). When enabled, wave-executor calls `validateAgentOutput()` (from `scripts/lib/agent-output-schema.mjs`) on every agent result and annotates the record with a `schema_status` field. Agents without an `output-schema:` declaration are silently skipped (backward-compatible). Agents with a schema that emit invalid output are flagged according to `enforce`.
+
+All fields live under a top-level `output-schema-validation` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+output-schema-validation:
+  enabled: false           # opt-in; default off preserves existing behavior
+  enforce: warn            # warn | strict | off
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `output-schema-validation.enabled` | boolean | `false` | Master toggle. When `false`, no schema validation is performed and agent records carry no `schema_status` field. When `true`, validation runs after every agent completes. |
+| `output-schema-validation.enforce` | string | `warn` | Violation handling: `warn` logs the violation in `subagents.jsonl` and continues the wave; `strict` surfaces the violation as a wave-blocking finding; `off` disables violation recording entirely (useful when `enabled: true` is needed only for `schema_status` tagging on valid outputs). |
+
 ## Environment Awareness (v3.1.0)
 
 Introduced by Epic #157 / issue #166. Lets session-start sense the host (RAM, CPU, SSH, peer sessions) and adapt wave planning accordingly. All fields are opt-in defaults — a project without this block behaves identically to v3.0.0.

@@ -351,6 +351,22 @@ Run this step for every wave, regardless of isolation setting — it is a no-op 
 After ALL agents in the wave complete:
 
 1. **Read each agent's result** carefully
+1a. **Validate agent output schema** (if `output-schema-validation.enabled: true` in Session Config — default `false`):
+
+   For each completed agent record, call `validateAgentOutput({ agentName, raw })` from `scripts/lib/agent-output-schema.mjs` where `agentName` is the kebab-case agent name and `raw` is the agent's full return text.
+
+   Handle the four result modes:
+
+   - **`mode: 'validated', ok: true`** — silent. Set `schema_status: 'ok'` on the agent record in `subagents.jsonl`.
+   - **`mode: 'validated', ok: false`** — schema violation. Annotate the agent record with `schema_violation: true` and `schema_errors: [...]`. Then:
+     - Under `enforce: warn` (default): log the violation in the wave progress update and continue. The wave is NOT blocked.
+     - Under `enforce: strict`: surface the violation as a wave-blocking finding. Halt further agent processing and report to the coordinator before proceeding to the conflict check.
+     - Under `enforce: off`: skip violation recording entirely (schema_status is still set when ok=true).
+   - **`mode: 'parse-error'`** — the agent's output had no fenced ```json block or malformed JSON. Log a warning (backward-compat — agents that predate the schema contract routinely omit a JSON block). Do NOT block the wave.
+   - **`mode: 'unvalidated'`** — the agent has no declared `output-schema:` frontmatter. Silent skip (backward-compat path; as of #449 all 11 plugin agents are enrolled, but third-party agents installed via marketplace plugins may not be).
+
+   Reference: agent contract at `agents/code-implementer.md`; runtime module at `scripts/lib/agent-output-schema.mjs::validateAgentOutput`.
+
 2. **Check for conflicts**: did two agents modify the same file? → manual merge needed
 3. **Check for failures**: did any agent report errors or blockers?
 3a. **Apply stagnation patterns** (per agent): review each agent's tool-call sequence against the three patterns in `circuit-breaker.md` § Stagnation Patterns — Pagination Spiral, Turn-Key Repetition, Error Echo. Mark each agent STAGNANT/SPIRAL/FAILED accordingly; recovery feeds into step 3 (Adapt Plan). Two different agents reading the same file is coordination, not stagnation.

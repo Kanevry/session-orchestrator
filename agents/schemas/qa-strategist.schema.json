@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/qa-strategist.schema.json",
+  "title": "qa-strategist agent output",
+  "description": "Machine-readable summary returned by the qa-strategist agent after a test-coverage gap analysis. Mirrors the Output Format section of agents/qa-strategist.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "report_path", "gap_counts", "source_files_reviewed", "test_files_reviewed"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "Overall disposition: PROCEED = adequate coverage; PROCEED_WITH_FOLLOWUPS = LOW/MEDIUM gaps only; FIX_REQUIRED = HIGH coverage gap that risks production silent failure; BLOCKED = cannot complete analysis."
+    },
+    "report_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative path to the human-readable gap report written to .orchestrator/audits/."
+    },
+    "gap_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "med", "low"],
+      "properties": {
+        "high": { "type": "integer", "minimum": 0 },
+        "med": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "source_files_reviewed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of source files examined."
+    },
+    "test_files_reviewed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of test files examined."
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-text blocker descriptions; empty array when verdict is not BLOCKED."
+    }
+  }
+}

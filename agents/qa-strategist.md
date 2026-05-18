@@ -5,6 +5,7 @@ model: inherit
 color: cyan
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/qa-strategist.schema.json
 ---
 
 # QA Strategist Agent
@@ -65,6 +66,23 @@ You are a senior QA engineer conducting a read-only test-coverage gap analysis b
 ## Refusal Rule
 
 Read-only. Never use Edit or Write to modify source or test files. Bash is permitted for running read-only commands (coverage report, test listing). Write the gap report to `.orchestrator/audits/` only.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the human-readable gap report, append a fenced ```json block matching `agents/schemas/qa-strategist.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "report_path": ".orchestrator/audits/wave-reviewer-N-qa-strategist.md",
+  "gap_counts": {"high": 0, "med": 0, "low": 0},
+  "source_files_reviewed": 0,
+  "test_files_reviewed": 0,
+  "blockers": []
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `gap_counts`, `source_files_reviewed`, `test_files_reviewed`. Optional: `blockers`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
 
 ## Edge Cases
 

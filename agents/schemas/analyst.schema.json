@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/analyst.schema.json",
+  "title": "analyst agent output",
+  "description": "Machine-readable summary returned by the analyst agent after a PRD-quality review. Mirrors the Output Format section of agents/analyst.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "report_path", "finding_counts", "scope_drift_count", "criteria_reviewed"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "Overall disposition: PROCEED = no blockers; PROCEED_WITH_FOLLOWUPS = minor items noted; FIX_REQUIRED = HIGH findings that must be addressed before wave execution; BLOCKED = cannot complete review."
+    },
+    "report_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative path to the human-readable audit file written to .orchestrator/audits/."
+    },
+    "finding_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "med", "low"],
+      "properties": {
+        "high": { "type": "integer", "minimum": 0 },
+        "med": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "scope_drift_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of scope-drift items detected (brainstorm items missing from plan, or plan items with no brainstorm trace)."
+    },
+    "criteria_reviewed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total acceptance criteria examined."
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-text blocker descriptions; empty array when verdict is not BLOCKED."
+    }
+  }
+}

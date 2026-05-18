@@ -20,12 +20,20 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Characters that should never appear in a git ref passed to execFile args.
- * Even though execFile does not invoke a shell, we guard against confused-deputy
- * scenarios and clearly invalid refs.
+ *
+ * NOTE — layered defence: `execFile` is the primary injection guard (it passes
+ * args directly to the OS without invoking a shell, so none of these characters
+ * can trigger shell interpretation).  This regex is a secondary sanity-check
+ * that catches clearly-malformed refs early, before the process is spawned, and
+ * provides a human-readable error message.  Do NOT rely on this regex as the
+ * sole injection barrier.
+ *
+ * Includes `\n` and `\r` to reject pathological env-injected refs that contain
+ * embedded newlines (can occur in certain CI variable-expansion scenarios).
  *
  * @type {RegExp}
  */
-const UNSAFE_REF_CHARS = /[;|&`$<>\\]/;
+const UNSAFE_REF_CHARS = /[;|&`$<>\\\n\r]/;
 
 /**
  * Validate that `ref` does not contain shell-injection-relevant characters.
@@ -36,7 +44,7 @@ const UNSAFE_REF_CHARS = /[;|&`$<>\\]/;
 function validateRef(ref) {
   if (UNSAFE_REF_CHARS.test(ref)) {
     throw new TypeError(
-      `Invalid ref '${ref}': contains shell-unsafe characters (;|&\`$<>\\). ` +
+      `Invalid ref '${ref}': contains shell-unsafe characters (;|&\`$<>\\, newlines). ` +
         `Use a plain git ref like HEAD~3, a commit hash, or a branch name.`,
     );
   }

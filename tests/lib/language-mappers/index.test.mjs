@@ -57,14 +57,14 @@ describe('languageFromPath', () => {
     expect(languageFromPath('scripts/lib/common.mjs')).toBe('js');
   });
 
-  it('returns null for .py (Phase 2 — unsupported in Phase 1)', async () => {
+  it("returns 'py' for .py extension (Phase 2 — Python mapper added)", async () => {
     const { languageFromPath } = await importSut();
-    expect(languageFromPath('main.py')).toBeNull();
+    expect(languageFromPath('main.py')).toBe('py');
   });
 
-  it('returns null for .swift (Phase 2 — unsupported in Phase 1)', async () => {
+  it("returns 'swift' for .swift extension (Phase 2 — Swift mapper added)", async () => {
     const { languageFromPath } = await importSut();
-    expect(languageFromPath('App.swift')).toBeNull();
+    expect(languageFromPath('App.swift')).toBe('swift');
   });
 });
 
@@ -89,9 +89,25 @@ describe('extractSemanticSlices', () => {
 
   it('throws an Error with a helpful message for unsupported extension', async () => {
     const { extractSemanticSlices } = await importSut();
-    await expect(extractSemanticSlices('main.py', 'def foo(): pass')).rejects.toThrow(
+    await expect(extractSemanticSlices('main.rb', 'def foo; end')).rejects.toThrow(
       /unsupported language/,
     );
+  });
+
+  it('dispatches .py content to python mapper and returns slice array', async () => {
+    const { extractSemanticSlices } = await importSut();
+    const slices = await extractSemanticSlices('main.py', 'def hello():\n    pass\n');
+    expect(Array.isArray(slices)).toBe(true);
+    const fn = slices.find((s) => s.kind === 'function' && s.name === 'hello');
+    expect(fn).toBeDefined();
+  });
+
+  it('dispatches .swift content to swift mapper and returns slice array', async () => {
+    const { extractSemanticSlices } = await importSut();
+    const slices = await extractSemanticSlices('App.swift', 'public func greet() {}\n');
+    expect(Array.isArray(slices)).toBe(true);
+    const fn = slices.find((s) => s.kind === 'function' && s.name === 'greet');
+    expect(fn).toBeDefined();
   });
 
   it('accepts explicit options.language override for .ts', async () => {

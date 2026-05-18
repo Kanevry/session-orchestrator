@@ -5,6 +5,7 @@ model: opus
 color: blue
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/ux-evaluator.schema.json
 ---
 
 # UX Evaluator Agent
@@ -140,3 +141,21 @@ The first line of `findings.jsonl` is the metadata record:
 - **`Package.swift` absent (liquid-glass check).** Skip check 4 and note "liquid-glass-conformance: skipped — Package.swift not found (web-only project or non-Swift target)". This is the expected behavior for pure web projects.
 - **Duplicate fingerprints within a single run.** Log "WARNING: fingerprint collision detected for <fingerprint> between check <checkId-1> and <checkId-2>". Emit only the first occurrence. Increment a `collisions` counter in the metadata record.
 - **`findings.jsonl` already exists in run-dir.** Overwrite it — the full evaluation produces the authoritative output for this run. Issue reconciliation is idempotent on fingerprints; it does not depend on append-only behavior.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the human-readable stdout summary, append a fenced ```json block matching `agents/schemas/ux-evaluator.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "run_id": "12345-1715688000123",
+  "rubric_version": "v1",
+  "checks_applied": 4,
+  "findings_count": 0,
+  "findings_path": "/absolute/path/to/.orchestrator/metrics/test-runs/RUN_ID/findings.jsonl",
+  "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0}
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `run_id`, `rubric_version`, `checks_applied`, `findings_count`, `findings_path`. Optional: `severity_counts`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.

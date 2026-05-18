@@ -30,7 +30,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
-const MODULE_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'discovery-helpers.mjs');
+const MODULE_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'discovery', 'helpers.mjs');
 
 // ---------------------------------------------------------------------------
 // Dynamic import of SUT (always fresh, avoids stale vi.mock state)
@@ -320,5 +320,18 @@ describe('changedFilesSince', () => {
   it('throws TypeError when ref contains < (shell-unsafe)', async () => {
     const { changedFilesSince } = await importSut();
     await expect(changedFilesSince('HEAD<HEAD~1')).rejects.toThrow(TypeError);
+  });
+
+  // --------------------------------------------------------------------------
+  // LOW-003: newline/CR in ref → TypeError (added to UNSAFE_REF_CHARS)
+  // --------------------------------------------------------------------------
+  it('throws TypeError when ref contains a newline character', async () => {
+    const { changedFilesSince } = await importSut();
+    await expect(changedFilesSince('HEAD\nrm -rf /')).rejects.toThrow(TypeError);
+  });
+
+  it('throws TypeError when ref contains a carriage return character', async () => {
+    const { changedFilesSince } = await importSut();
+    await expect(changedFilesSince('HEAD\rextra')).rejects.toThrow(TypeError);
   });
 });

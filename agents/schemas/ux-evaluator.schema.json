@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/ux-evaluator.schema.json",
+  "title": "ux-evaluator agent output",
+  "description": "Machine-readable summary returned by the ux-evaluator agent after evaluating driver artifacts. Derives from the Output Format section of agents/ux-evaluator.md (findings.jsonl metadata record shape).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "run_id", "rubric_version", "checks_applied", "findings_count", "findings_path"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "PROCEED = 0 findings; PROCEED_WITH_FOLLOWUPS = only LOW/MEDIUM findings; FIX_REQUIRED = HIGH or CRITICAL findings present; BLOCKED = run-dir or rubric missing."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Test-runner run identifier (e.g. '12345-1715688000123')."
+    },
+    "rubric_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Rubric version applied (e.g. 'v1')."
+    },
+    "checks_applied": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of rubric checks that were executed (max 4 for rubric-v1)."
+    },
+    "findings_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of findings emitted to findings.jsonl."
+    },
+    "findings_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the findings.jsonl file produced."
+    },
+    "severity_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

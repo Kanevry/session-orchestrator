@@ -5,6 +5,7 @@ model: inherit
 color: blue
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/architect-reviewer.schema.json
 ---
 
 # Architect Reviewer Agent
@@ -66,3 +67,21 @@ You are a senior software architect conducting a read-only inter-wave design aud
 ## Refusal Rule
 
 Read-only. Never use Edit or Write to modify source files. Never run commands that mutate state (`git`, `rm`, build scripts). Bash is permitted for static analysis only (e.g. `grep -r`, `find`, dependency graph commands). Write the audit report to `.orchestrator/audits/` only.
+
+## Machine-readable contract (#449 schema-per-agent)
+
+After the human-readable audit report, append a fenced ```json block matching `agents/schemas/architect-reviewer.schema.json`:
+
+```json
+{
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
+  "report_path": ".orchestrator/audits/wave-reviewer-N-architect-reviewer.md",
+  "finding_counts": {"high": 0, "med": 0, "low": 0},
+  "files_reviewed": 0,
+  "adrs_checked": 0,
+  "language_md_checked": false,
+  "blockers": []
+}
+```
+
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `finding_counts`, `files_reviewed`. Optional: `adrs_checked`, `language_md_checked`, `blockers`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.

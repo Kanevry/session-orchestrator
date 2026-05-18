@@ -10,21 +10,29 @@ const ROOTS = ['scripts/lib', 'hooks'];
 let checked = 0;
 let failed = 0;
 
-for (const root of ROOTS) {
+function walkMjs(dir) {
   let entries;
   try {
-    entries = readdirSync(root);
+    entries = readdirSync(dir);
   } catch {
-    continue;
+    return;
   }
   for (const name of entries) {
-    if (!name.endsWith('.mjs')) continue;
-    const path = join(root, name);
-    if (!statSync(path).isFile()) continue;
+    const path = join(dir, name);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      walkMjs(path);
+      continue;
+    }
+    if (!name.endsWith('.mjs') || !stat.isFile()) continue;
     const result = spawnSync(process.execPath, ['--check', path], { stdio: 'inherit' });
     checked += 1;
     if (result.status !== 0) failed += 1;
   }
+}
+
+for (const root of ROOTS) {
+  walkMjs(root);
 }
 
 if (failed > 0) {

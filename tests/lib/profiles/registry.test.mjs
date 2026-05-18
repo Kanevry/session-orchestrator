@@ -59,10 +59,15 @@ describe('ProfileRegistryError', () => {
 // ---------------------------------------------------------------------------
 
 describe('loadProfiles — happy path', () => {
-  it('loads the seed registry and returns ok: true with 2 profiles', async () => {
+  it('loads the seed registry and returns ok: true with at least 2 profiles', async () => {
     const result = await loadProfiles({ profilesPath: SEED_PROFILES_PATH });
     expect(result.ok).toBe(true);
-    expect(Object.keys(result.profiles)).toHaveLength(2);
+    // Floor/ceiling: the seed registry grows as new profiles are added (test-quality.md
+    // §Dynamic Artifact Counts). Assert a floor (catches accidental deletion) and a
+    // ceiling (catches runaway additions), but do not pin the exact count.
+    const profileCount = Object.keys(result.profiles).length;
+    expect(profileCount).toBeGreaterThanOrEqual(2);
+    expect(profileCount).toBeLessThanOrEqual(20);
   });
 
   it('loaded profiles include web-gate and mac-gate', async () => {

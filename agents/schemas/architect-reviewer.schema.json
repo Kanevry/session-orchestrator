@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/architect-reviewer.schema.json",
+  "title": "architect-reviewer agent output",
+  "description": "Machine-readable summary returned by the architect-reviewer agent after an inter-wave design audit. Mirrors the Output Format section of agents/architect-reviewer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "report_path", "finding_counts", "files_reviewed"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "Overall disposition: PROCEED = no structural blockers; PROCEED_WITH_FOLLOWUPS = LOW/MEDIUM findings only; FIX_REQUIRED = HIGH finding that would compound across waves; BLOCKED = cannot complete review."
+    },
+    "report_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative path to the human-readable audit file written to .orchestrator/audits/."
+    },
+    "finding_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "med", "low"],
+      "properties": {
+        "high": { "type": "integer", "minimum": 0 },
+        "med": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "files_reviewed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of source files examined during the audit."
+    },
+    "adrs_checked": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of ADR files read during Phase 1 context research."
+    },
+    "language_md_checked": {
+      "type": "boolean",
+      "description": "Whether a LANGUAGE.md file was found and checked for vocabulary drift."
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-text blocker descriptions; empty array when verdict is not BLOCKED."
+    }
+  }
+}

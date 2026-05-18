@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://session-orchestrator.dev/agents/session-reviewer.schema.json",
+  "title": "session-reviewer agent output",
+  "description": "Machine-readable summary returned by the session-reviewer agent after an inter-wave or session-end quality review. Derives from and extends the Machine-Readable Summary block in agents/session-reviewer.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "total_findings", "high_confidence", "categories", "fix_required"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
+      "description": "PROCEED if no FAIL categories; FIX_REQUIRED if any category is FAIL; PROCEED_WITH_FOLLOWUPS for WARN-only; BLOCKED if review could not complete."
+    },
+    "total_findings": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total finding count across all sections (confidence >= 80 only)."
+    },
+    "high_confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Findings with confidence 90-100."
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "tests", "typescript", "security"],
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"]
+        },
+        "tests": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"]
+        },
+        "typescript": {
+          "type": "string",
+          "enum": ["PASS", "FAIL"]
+        },
+        "security": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"]
+        },
+        "silent_failures": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"],
+          "description": "Result of Section 6 (silent failure analysis)."
+        },
+        "test_depth": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"],
+          "description": "Result of Section 7 (test depth check)."
+        },
+        "type_design": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL"],
+          "description": "Result of Section 8 (type design spot-check)."
+        }
+      }
+    },
+    "fix_required": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Items that must be addressed before proceeding; empty array when verdict is PROCEED or PROCEED_WITH_FOLLOWUPS."
+    }
+  }
+}

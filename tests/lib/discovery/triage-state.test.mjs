@@ -461,6 +461,78 @@ describe('filterFindings — empty stateMap', () => {
 });
 
 // ---------------------------------------------------------------------------
+// loadTriageState — LOW-004: DISCOVERY_DEBUG stderr output for malformed lines
+// ---------------------------------------------------------------------------
+
+describe('loadTriageState — DISCOVERY_DEBUG malformed-line logging', () => {
+  it('writes to stderr when DISCOVERY_DEBUG=1 and malformed lines exist', async () => {
+    const file = stateFile();
+    const fp = computeFingerprint({ probe: 'debug', file: 'd.ts', severity: 'high', ruleId: 'r-debug' });
+
+    await appendTriageEntry(file, makeEntry(fp, 'open'));
+    // Inject a malformed line
+    const { appendFile } = await import('node:fs/promises');
+    await appendFile(file, 'bad json line\n', 'utf8');
+
+    // Capture stderr output
+    const stderrChunks = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk, ...args) => {
+      stderrChunks.push(String(chunk));
+      return originalWrite(chunk, ...args);
+    };
+
+    const prevDebug = process.env.DISCOVERY_DEBUG;
+    try {
+      process.env.DISCOVERY_DEBUG = '1';
+      const map = await loadTriageState(file);
+      // Valid entry still loads
+      expect(map.size).toBe(1);
+      expect(map.get(fp).state).toBe('open');
+    } finally {
+      process.stderr.write = originalWrite;
+      if (prevDebug === undefined) {
+        delete process.env.DISCOVERY_DEBUG;
+      } else {
+        process.env.DISCOVERY_DEBUG = prevDebug;
+      }
+    }
+
+    const stderrOutput = stderrChunks.join('');
+    expect(stderrOutput).toMatch(/\[triage-state\]/);
+    expect(stderrOutput).toMatch(/malformed/);
+    expect(stderrOutput).toMatch(/1/); // count = 1
+  });
+
+  it('does NOT write to stderr when DISCOVERY_DEBUG is unset and malformed lines exist', async () => {
+    const file = stateFile();
+    const { appendFile } = await import('node:fs/promises');
+    await appendFile(file, 'garbage line\n', 'utf8');
+
+    const stderrChunks = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk, ...args) => {
+      stderrChunks.push(String(chunk));
+      return originalWrite(chunk, ...args);
+    };
+
+    const prevDebug = process.env.DISCOVERY_DEBUG;
+    try {
+      delete process.env.DISCOVERY_DEBUG;
+      await loadTriageState(file);
+    } finally {
+      process.stderr.write = originalWrite;
+      if (prevDebug !== undefined) {
+        process.env.DISCOVERY_DEBUG = prevDebug;
+      }
+    }
+
+    const triage = stderrChunks.filter((c) => c.includes('[triage-state]'));
+    expect(triage).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // filterFindings — unfingerprintable finding (missing required field)
 // ---------------------------------------------------------------------------
 

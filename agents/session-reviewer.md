@@ -5,6 +5,7 @@ model: sonnet
 color: pink
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
+output-schema: schemas/session-reviewer.schema.json
 ---
 
 # Session Quality Reviewer
@@ -166,24 +167,29 @@ Only include findings with confidence >= 80 in the main section reports. Group f
 
 ## Machine-Readable Summary
 
-After the human-readable report, append a JSON summary block for consuming skills to parse:
+After the human-readable report, append a JSON summary block for consuming skills to parse. This block matches `agents/schemas/session-reviewer.schema.json`:
 
 ```json
 {
-  "verdict": "PROCEED|FIX_REQUIRED",
+  "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
   "total_findings": 0,
   "high_confidence": 0,
   "categories": {
     "implementation": "PASS|WARN|FAIL",
     "tests": "PASS|WARN|FAIL",
     "typescript": "PASS|FAIL",
-    "security": "PASS|WARN|FAIL"
+    "security": "PASS|WARN|FAIL",
+    "silent_failures": "PASS|WARN|FAIL",
+    "test_depth": "PASS|WARN|FAIL",
+    "type_design": "PASS|WARN|FAIL"
   },
   "fix_required": []
 }
 ```
 
 Rules:
-- `verdict`: `PROCEED` if no FAIL categories; `FIX_REQUIRED` if any category is FAIL
+- `verdict`: `PROCEED` if no FAIL categories; `PROCEED_WITH_FOLLOWUPS` if WARN-only; `FIX_REQUIRED` if any category is FAIL; `BLOCKED` if review could not complete
+- `categories.silent_failures`: result of Section 6; `categories.test_depth`: result of Section 7; `categories.type_design`: result of Section 8
 - `fix_required`: array of strings describing items that must be addressed before proceeding
 - Wrap in a fenced code block tagged `json` so consuming skills can extract via regex
+- The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response

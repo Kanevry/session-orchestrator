@@ -15,7 +15,7 @@ Turn ad-hoc Claude Code sessions into a repeatable loop with verification gates.
 - **16 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/autopilot`, `/test`, …)
 - **11 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …)
 - **11 hook event handlers** enforcing scope, blocking destructive commands, capturing telemetry
-- **5632 vitest tests** passing on every commit, validate-plugin 87/87, typecheck 73/73, lint 0
+- **5812 vitest tests** passing on every commit, validate-plugin 94/94, typecheck 187 files OK, lint 0
 
 ## Lifecycle at a glance
 
