@@ -137,7 +137,7 @@ agents-per-wave: 6
 
   // -------------------------------------------------------------------------
   // Regression: inline YAML comments on enum-validated nested values.
-  // BuchhaltGenie #1982 AC3 — a value like `mode: warn # warn | strict | off`
+  // Downstream-app #1982 AC3 — a value like `mode: warn # warn | strict | off`
   // previously parsed as `'warn # warn | strict | off'`, failing the
   // vault-integration.mode enum (warn | strict | off). _parseKV must strip
   // the trailing ` # ...` segment before enum coercion.

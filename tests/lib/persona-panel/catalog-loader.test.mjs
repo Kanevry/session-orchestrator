@@ -89,6 +89,10 @@ beforeAll(async () => {
   } catch (e) {
     importError = e;
   }
+  // Approach A (#483 Q1-LOW-4): loud failure if the lib failed to import — no silent skips.
+  if (importError) {
+    throw new Error(`catalog-loader failed to import — test file cannot run: ${importError.message}`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -153,16 +157,6 @@ function makePersonasDir(root, files = {}) {
   return dir;
 }
 
-/** Skip remaining assertions if the lib module failed to import. */
-function skipIfMissing(_test) {
-  if (importError) {
-    // Allow test to "pass" with a known-missing reason so CI doesn't block the PR
-    // while I3/I4 are still in flight. (The test contract is documented.)
-    return true;
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // State — fresh tmpdir per test
 // ---------------------------------------------------------------------------
@@ -185,9 +179,7 @@ afterEach(() => {
 
 describe('loadCatalog — happy path', () => {
   it('returns a Map of size 2 with persona names as keys when 2 valid persona files present', async () => {
-    if (skipIfMissing()) return;
-
-    makePersonasDir(tmp, {
+makePersonasDir(tmp, {
       'persona-alpha.md': minimalContent({ name: 'persona-alpha' }),
       'persona-beta.md': minimalContent({ name: 'persona-beta' }),
     });
@@ -206,9 +198,7 @@ describe('loadCatalog — happy path', () => {
 
 describe('loadCatalog — empty personas directory', () => {
   it('returns an empty Map when the personas directory exists but contains no .md files', async () => {
-    if (skipIfMissing()) return;
-
-    makePersonasDir(tmp, {});
+makePersonasDir(tmp, {});
 
     const catalog = await loadCatalog({ projectRoot: tmp });
     expect(catalog).toBeInstanceOf(Map);
@@ -222,9 +212,7 @@ describe('loadCatalog — empty personas directory', () => {
 
 describe('loadCatalog — missing personas directory', () => {
   it('throws an error with "not found" when .claude/personas does not exist', async () => {
-    if (skipIfMissing()) return;
-
-    // No .claude/personas created — tmp exists but sub-dirs do not
+// No .claude/personas created — tmp exists but sub-dirs do not
     await expect(loadCatalog({ projectRoot: tmp })).rejects.toThrow(
       /not found|ENOENT|personas.*directory/i,
     );
@@ -237,9 +225,7 @@ describe('loadCatalog — missing personas directory', () => {
 
 describe('loadCatalog — malformed YAML frontmatter', () => {
   it('throws an error that references the filename when YAML frontmatter is invalid', async () => {
-    if (skipIfMissing()) return;
-
-    makePersonasDir(tmp, {
+makePersonasDir(tmp, {
       'broken.md': '---\nkey: [unclosed bracket\n---\n',
     });
 
@@ -260,9 +246,7 @@ describe('loadCatalog — malformed YAML frontmatter', () => {
 
 describe('validatePersonaSpec — schema_version missing', () => {
   it('returns {ok: false} with an error mentioning schema_version when the field is absent', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'no-version-persona',
       version: '1.0',
       role: 'tester',
@@ -286,9 +270,7 @@ describe('validatePersonaSpec — schema_version missing', () => {
 
 describe('validatePersonaSpec — schema_version unknown', () => {
   it('returns {ok: false} with an error when schema_version is 999 (unrecognised)', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'bad-version-persona',
       schema_version: 999,
       version: '1.0',
@@ -312,9 +294,7 @@ describe('validatePersonaSpec — schema_version unknown', () => {
 
 describe('validatePersonaSpec — name missing', () => {
   it('returns {ok: false} with an error mentioning "name" when the name field is absent', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       schema_version: 1,
       version: '1.0',
       role: 'tester',
@@ -338,9 +318,7 @@ describe('validatePersonaSpec — name missing', () => {
 
 describe('validatePersonaSpec — model missing', () => {
   it('returns {ok: false} with an error mentioning "model" when the model field is absent', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'no-model-persona',
       schema_version: 1,
       version: '1.0',
@@ -364,9 +342,7 @@ describe('validatePersonaSpec — model missing', () => {
 
 describe('loadCatalog — duplicate persona name', () => {
   it('throws an error mentioning both file paths when two files declare the same persona name', async () => {
-    if (skipIfMissing()) return;
-
-    makePersonasDir(tmp, {
+makePersonasDir(tmp, {
       'first.md': minimalContent({ name: 'same-name' }),
       'second.md': minimalContent({ name: 'same-name' }),
     });
@@ -391,9 +367,7 @@ describe('loadCatalog — duplicate persona name', () => {
 
 describe('validatePersonaSpec — name fails SAFE_PERSONA_NAME_RE', () => {
   it('returns {ok: false} with a format error for a name containing path traversal characters', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: '../etc/shadow',
       schema_version: 1,
       version: '1.0',
@@ -417,9 +391,7 @@ describe('validatePersonaSpec — name fails SAFE_PERSONA_NAME_RE', () => {
 
 describe('validatePersonaSpec — unknown frontmatter key', () => {
   it('returns {ok: false} naming the unknown key when frontmatter contains an unrecognised field', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'bogus-key-persona',
       schema_version: 1,
       version: '1.0',
@@ -444,9 +416,7 @@ describe('validatePersonaSpec — unknown frontmatter key', () => {
 
 describe('validatePersonaSpec — model allowlist (H2)', () => {
   it('returns {ok: true} for a persona declaring an approved full model ID (claude-opus-4-7)', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'approved-model-persona',
       schema_version: 1,
       version: '1.0',
@@ -462,9 +432,7 @@ describe('validatePersonaSpec — model allowlist (H2)', () => {
   });
 
   it('returns {ok: false} with model-allowlist error for an unrecognised model ID', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'evil-model-persona',
       schema_version: 1,
       version: '1.0',
@@ -482,9 +450,7 @@ describe('validatePersonaSpec — model allowlist (H2)', () => {
   });
 
   it('returns {ok: true} for a persona declaring the approved alias "opus"', () => {
-    if (skipIfMissing()) return;
-
-    const spec = {
+const spec = {
       name: 'alias-model-persona',
       schema_version: 1,
       version: '1.0',
@@ -512,9 +478,7 @@ describe('preCheckOutputContract — structural pre-check (H3)', () => {
     ['anyOf forbidden', { anyOf: [{ type: 'string' }, { type: 'number' }] }],
     ['oneOf forbidden', { oneOf: [{ type: 'string' }] }],
   ])('%s returns {ok: false, errors containing forbidden keyword info}', (_label, schema) => {
-    if (skipIfMissing()) return;
-
-    const result = preCheckOutputContract(schema);
+const result = preCheckOutputContract(schema);
     expect(result.ok).toBe(false);
     expect(Array.isArray(result.errors)).toBe(true);
     expect(result.errors.length).toBeGreaterThan(0);
@@ -526,9 +490,7 @@ describe('preCheckOutputContract — structural pre-check (H3)', () => {
     ['additionalProperties:false alone allowed', { type: 'object', additionalProperties: false }],
     ['simple type-only object allowed', { type: 'string' }],
   ])('%s returns {ok: true}', (_label, schema) => {
-    if (skipIfMissing()) return;
-
-    const result = preCheckOutputContract(schema);
+const result = preCheckOutputContract(schema);
     expect(result.ok).toBe(true);
   });
 });
@@ -539,9 +501,7 @@ describe('preCheckOutputContract — structural pre-check (H3)', () => {
 
 describe('loadCatalog — symlink defense (L3)', () => {
   it('rejects a .md file that is a symlink (symlink must not appear in catalog)', async () => {
-    if (skipIfMissing()) return;
-
-    const personasDir = join(tmp, '.claude', 'personas');
+const personasDir = join(tmp, '.claude', 'personas');
     mkdirSync(personasDir, { recursive: true });
 
     // Write a real valid persona so we can distinguish symlink-rejection from empty-catalog
@@ -587,9 +547,7 @@ describe('loadCatalog — symlink defense (L3)', () => {
 
 describe('validatePersonaSpec — evaluation_criteria item length limit', () => {
   it('returns {ok: false} with a maxLength error when a criterion exceeds 512 characters', () => {
-    if (skipIfMissing()) return;
-
-    const longCriterion = 'x'.repeat(513);
+const longCriterion = 'x'.repeat(513);
 
     const spec = {
       name: 'long-criterion-persona',
@@ -615,8 +573,6 @@ describe('validatePersonaSpec — evaluation_criteria item length limit', () => 
 
 describe('validatePersonaSpec — tier enum validation', () => {
   it('returns {ok: false} with a tier error for tier value "rogue" (not in enum)', () => {
-    if (skipIfMissing()) return;
-
     const spec = {
       name: 'bad-tier-persona',
       schema_version: 1,
@@ -638,10 +594,10 @@ describe('validatePersonaSpec — tier enum validation', () => {
     ['domain-expert'],
     ['buyer-persona'],
     ['auditor'],
+    ['compliance'],   // Q1-LOW-5 — was missing from original 4-entry list
     ['reviewer'],
+    ['custom'],        // Q1-LOW-5 — was missing from original 4-entry list
   ])('returns {ok: true} for valid tier value "%s"', (tier) => {
-    if (skipIfMissing()) return;
-
     const spec = {
       name: `tier-${tier}-persona`,
       schema_version: 1,

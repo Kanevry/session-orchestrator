@@ -83,9 +83,9 @@ vault:
 
 | Repo | Framework | Signals | Vault Entry |
 |------|-----------|---------|-------------|
-| BuchhaltGenie | Next.js | supabase, stripe, personas/ | `product-domain: buchhaltung` |
-| LeadPipeDACH | Next.js | stripe, posthog | `product-domain: lead-gen` |
-| GotzendorferAT | Nuxt | postgres, sentry | `product-domain: portfolio` |
+| ExampleSaaS | Next.js | supabase, stripe, personas/ | `product-domain: accounting` |
+| ExampleLeadGen | Next.js | stripe, posthog | `product-domain: lead-gen` |
+| ExamplePortfolio | Nuxt | postgres, sentry | `product-domain: portfolio` |
 
 **Idempotent.** If CLAUDE.md already has a `vault:` key inside Session Config, the prompt is skipped.
 

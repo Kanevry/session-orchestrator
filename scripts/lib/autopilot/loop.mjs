@@ -19,6 +19,7 @@ import {
   readHostClass,
   finalizeState,
 } from './telemetry.mjs';
+import { durableCommit } from './durable-telemetry.mjs';
 
 // Internal clamp — mirrors flags.mjs internal; not re-exported there.
 function clampNumber(value, { min, max, fallback }) {
@@ -147,6 +148,14 @@ export async function runLoop(opts = {}) {
     state.kill_switch_detail = 'dry-run preview — no sessions executed';
     finalizeState(state, nowMs);
     writeAutopilotJsonl(state, jsonlPath);
+    // Durable-telemetry seam (ADR 0003 #485) — currently inert for local execution.
+    // Cloud-execution (Routines spike, #485 W3 P3) flips enabled:true.
+    await durableCommit({
+      sessionId: state.autopilot_run_id,
+      files: [jsonlPath.replace(process.cwd() + '/', '')],
+      enabled: false,
+    });
+    // _durable.ok === true with skipped:true in local path — no-op.
     return state;
   }
 
@@ -283,5 +292,13 @@ export async function runLoop(opts = {}) {
 
   finalizeState(state, nowMs);
   writeAutopilotJsonl(state, jsonlPath);
+  // Durable-telemetry seam (ADR 0003 #485) — currently inert for local execution.
+  // Cloud-execution (Routines spike, #485 W3 P3) flips enabled:true.
+  await durableCommit({
+    sessionId: state.autopilot_run_id,
+    files: [jsonlPath.replace(process.cwd() + '/', '')],
+    enabled: false,
+  });
+  // _durable.ok === true with skipped:true in local path — no-op.
   return state;
 }

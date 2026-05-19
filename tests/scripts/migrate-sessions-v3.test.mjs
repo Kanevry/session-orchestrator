@@ -18,7 +18,7 @@ import { validateSession } from '@lib/session-schema.mjs';
 
 /**
  * Minimal v3 record with full waves[] + valid session_type.
- * Based on real BuchhaltGenie develop-2026-04-23-0744 sample.
+ * Based on a real downstream-app develop-2026-04-23-0744 sample.
  */
 function v3Full() {
   return {

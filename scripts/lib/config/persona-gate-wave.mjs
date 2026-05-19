@@ -28,6 +28,7 @@ const DEFAULTS = Object.freeze({
   enabled: false,
   after: 'quality',
   threshold: 'all',
+  threshold_parsed: null,  // cached ParsedThreshold result; populated by _normalizePersonaGateWave
   personas: [],
   'dispatch-model': 'claude-opus-4-7',
   mode: 'off',
@@ -41,7 +42,7 @@ const DEFAULTS = Object.freeze({
  * caller can surface the precise error to the operator.
  *
  * @param {string} content — full CLAUDE.md / AGENTS.md file content
- * @returns {null | {enabled: boolean, after: string, threshold: string, personas: string[], 'dispatch-model': string, mode: string}}
+ * @returns {null | {enabled: boolean, after: string, threshold: string, threshold_parsed: {kind: string, m?: number, n?: number}, personas: string[], 'dispatch-model': string, mode: string}}
  */
 export function _parsePersonaGateWave(content) {
   const blockLines = _extractBlock(content, 'persona-gate-wave');
@@ -56,7 +57,7 @@ export function _parsePersonaGateWave(content) {
  * defaults and throws on any field that fails validation.
  *
  * @param {object} parsed — raw parsed object (possibly missing fields)
- * @returns {{enabled: boolean, after: string, threshold: string, personas: string[], 'dispatch-model': string, mode: string}}
+ * @returns {{enabled: boolean, after: string, threshold: string, threshold_parsed: {kind: string, m?: number, n?: number}, personas: string[], 'dispatch-model': string, mode: string}}
  */
 export function _normalizePersonaGateWave(parsed) {
   const out = { ...DEFAULTS };
@@ -95,8 +96,12 @@ export function _normalizePersonaGateWave(parsed) {
       );
     }
     // parseThreshold throws InvalidThresholdError on bad spec; let it propagate
-    parseThreshold(parsed.threshold);
+    // Store the result as threshold_parsed so callers avoid re-parsing at dispatch time.
+    out.threshold_parsed = parseThreshold(parsed.threshold);
     out.threshold = parsed.threshold;
+  } else {
+    // Populate threshold_parsed from the default threshold string so it is always non-null.
+    out.threshold_parsed = parseThreshold(DEFAULTS.threshold);
   }
 
   // personas — array of strings each matching SAFE_PERSONA_NAME_RE

@@ -52,3 +52,14 @@ Issues to file (all additive, none blocking; ordered by dependency):
 2. **EARS→vitest stub generator in `write-executable-plan` Step 1** — implement the per-template test-skeleton emitter (research mapping table) wired into `skills/write-executable-plan/SKILL.md` Step 1; falls back to the existing manual derivation when no EARS section is present. Acceptance: an EARS clause-set deterministically yields runnable `it`/`describe`/`it.skipIf` stubs matching `.claude/rules/test-quality.md` (one meaningful assertion, no branching).
 3. **Add an optional `## Acceptance Criteria (EARS)` section to the `/brainstorm` design spec** — net-new section in `skills/brainstorm/SKILL.md:144-181` between Trade-offs and Hand-off; optional, no migration.
 4. **Add EARS-awareness to the PRD reviewer prompt** — append an EARS-shape clause to `skills/plan/prd-reviewer-prompt.md` (well-formed `shall`, edge cases via Unwanted/Optional) *alongside* the existing `:31` Given/When/Then testability check; do not remove the Gherkin check.
+
+## Implementation Status — deep-3 (2026-05-19)
+
+ACCEPTED → **IMPLEMENTED**. All 4 follow-up tasks shipped (#487):
+
+1. **`/plan` EARS Add-Section** — `## 3.A Acceptance Criteria (EARS)` companion section added to `skills/plan/prd-feature-template.md`; `## 5.A` in `skills/plan/prd-full-template.md` (Section 3 of the full template is "Target Audience & Personas", so EARS lands semantically after Section 5 Success Criteria — accepted deviation). `skills/plan/mode-feature.md` Phase 2 fill-table row added.
+2. **`/write-executable-plan` EARS→vitest 1:1 mapping** — conditional seam + 5-pattern mapping table in `skills/write-executable-plan/SKILL.md` Step 1; seam note in `plan-template.md`. Exemplar: `tests/lib/wave-executor/persona-gate-hook.test.mjs`.
+3. **`/brainstorm` net-new EARS section** — `## Acceptance Criteria (EARS) [optional]` in `skills/brainstorm/SKILL.md` Phase 4 (zero replacement risk).
+4. **`prd-reviewer-prompt.md` additive clause** — EARS-awareness sibling bullet appended after the Gherkin testability check (existing check unchanged).
+
+Canonical pattern names verified verbatim against alistairmavin.com/ears/ (2026-05-19): Ubiquitous, State-driven, Event-driven, Optional feature, Unwanted behaviour (UK spelling), + Complex. Backwards-compat preserved (narrative Gherkin remains primary; EARS is optional/additive). Test coverage: 50 structural tests (W3 P1) + 19 edge-case tests (W4 Q1). Verdict from W4 architect-reviewer: PASS (matches ADR contract exactly).

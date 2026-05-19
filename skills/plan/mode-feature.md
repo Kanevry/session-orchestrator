@@ -84,6 +84,7 @@ Agent({ subagent_type: "Explore", description: "Research technical approach",
 | 1. Problem & Motivation | Wave 1 Q1 (what) + Q2 (why). Concise, 2-3 paragraphs. |
 | 2. Solution & Scope | Wave 1 Q4 (scope). Explicit In-Scope and Out-of-Scope lists. |
 | 3. Acceptance Criteria | Derive Given/When/Then scenarios from Wave 1 answers. Each sub-feature produces 1-3 Gherkin scenarios. |
+| 3.A Acceptance Criteria (EARS) | OPTIONAL — emit EARS clauses (Ubiquitous/State-driven/Event-driven/Optional feature/Unwanted behaviour) for the same Feature Areas. Used by `/write-executable-plan` for 1:1 vitest stub generation. Leave blank if Section 3 narrative suffices. |
 | 4. Technical Notes | Wave 2 findings if it ran (architecture, affected files, data model). If Wave 2 was skipped, populate from Wave 1 Explore agent findings. |
 | 5. Risks & Dependencies | Wave 1 Q5 (dependencies) + Wave 2 Q4-Q5 (edge cases, performance) if available. |
 

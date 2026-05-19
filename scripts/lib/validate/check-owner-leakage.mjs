@@ -81,8 +81,8 @@ const P4 = /@goetzendorfer\/[A-Za-z0-9*_-]+/;
 const P5_WITH_GOTZ = /DEFAULT_GITLAB_HOST/;
 const P5_EXPORT = /\bexport\b.*\bconst\b.*\bDEFAULT_GITLAB_HOST\b/;
 
-/** P6: private project slugs (word-boundary anchored) */
-const P6_PATTERNS = PRIVATE_SLUGS.map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`));
+/** P6: private project slugs (word-boundary anchored, case-insensitive — #483 W4-Q6 caught "Buchhaltgenie" capitalized) */
+const P6_PATTERNS = PRIVATE_SLUGS.map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`, 'i'));
 
 /** P7: catch-all gotzendorfer.at (must not match allowlist) */
 const P7 = /gotzendorfer\.at/;

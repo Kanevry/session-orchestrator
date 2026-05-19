@@ -44,6 +44,8 @@ File: `<TEST_FILE_PATH>`
 
 Why: <ONE_SENTENCE_EXPLAINING_WHAT_BEHAVIOR_THIS_TEST_VERIFIES>
 
+**EARS seam:** if the source PRD/spec carries an EARS Acceptance Criteria section (`## 3.A` or `## Acceptance Criteria (EARS)`), apply the 5-pattern mapping from `SKILL.md § EARS → vitest mapping` to emit the test skeleton. Do not manually re-derive from prose when EARS is present — the mapping is deterministic.
+
 ### Step 2: Run to confirm failure
 
 Command: `<EXACT_COMMAND>`

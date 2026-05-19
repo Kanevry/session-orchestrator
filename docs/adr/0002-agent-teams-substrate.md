@@ -47,3 +47,14 @@ Rationale: **Adopt is refuted on evidence** — migrating would forfeit eleven v
 - **#484 — H3: `TaskCompleted`/`TeammateIdle` exit-2 hook-seam feasibility test (hard precondition).** Enable the env var, create a team with a `TaskCompleted` exit-2 hook running `npm run typecheck`; verify it reliably blocks task completion and feeds back across 3 repeat runs (checking for the docs-noted lagging-task-status race). Gating result: pass → Adapter spike proceeds; fail → spike closed won't-do, ADR collapses to Stay.
 - **#484 — H4: `~/.claude/teams/.../config.json` overwrite-on-state-update verification.** Start a team, hand-edit `config.json`, observe whether the edit survives the next teammate state update (docs assert it is overwritten). Confirms the structural-incompatibility-with-STATE.md claim empirically.
 - **#484 — Telemetry-gated promotion criteria for the Agent Teams backend.** Define the metric set (token delta vs subagent baseline, messaging-benefit signal on review-wave quality, hook-gate reliability rate) and the N≥3-quiet-deep-session threshold that would promote the flag from spike to default-eligible — mirroring the ADR-364 precedent.
+
+## Implementation Status — deep-3 (2026-05-19)
+
+Adapter verdict stands. H3 hard-precondition test scaffolded but **PENDING-EMPIRICAL** (manual operator step — interactive Agent Teams spawn cannot be automated):
+
+- **H3 harness shipped**: `hooks/agent-teams-h3-test.sh` (DRY-RUN scaffold: precondition_check / scaffold_team_dir / generate_log_template / print_manual_procedure; exit 0/1/2 contract; shellcheck-clean).
+- **H3 + H4 procedure documented**: `docs/research/2026-05-19-deep-3-agent-teams-h3.md` (9 sections + appended H4 config-overwrite verification procedure).
+- **Preconditions verified (W1 D2/D6)**: claude-code 2.1.144 (≥ 2.1.32 min), `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` present in binary, no pre-existing `~/.claude/teams/`. TaskCompleted exit-2 hook contract + ~7× plan-mode token cost + isolation-premise-false all re-confirmed against live docs 2026-05-19.
+- **Session Config key NOT wired**: the default-off `agent-teams:` key (ADR 0002:69) is intentionally deferred — wiring is gated on `H3 PASS`, which requires the manual empirical run. If H3 fails across 3 runs, ADR collapses to Stay per the existing contract.
+
+W4 architect-reviewer verdict: PASS (no premature Session Config wiring; empirical status correctly preserved).

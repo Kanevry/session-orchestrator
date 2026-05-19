@@ -89,6 +89,22 @@ Each Task gets exactly 5 steps in this order. All 5 steps are mandatory.
 
 ### Step 1: Write the failing test
 
+**EARS seam:** If the source PRD/spec carries an `## Acceptance Criteria (EARS)` (or `## 3.A`) section, apply the EARS→vitest 1:1 mapping below to emit per-clause test stubs. If no EARS section is present, fall back to manual derivation from prose.
+
+#### EARS → vitest mapping (1:1)
+
+| EARS pattern | vitest construct | example skeleton |
+|---|---|---|
+| **Ubiquitous** ("The S shall R.") | invariant `it()` — no setup branching | `it('S shall R', () => { /* assert invariant */ })` |
+| **State-driven** ("While P, the S shall R.") | `describe()` for state context, nested `it()` for assertion | `describe('while P', () => { it('S shall R', () => { /* enter P; expect R */ }) })` |
+| **Event-driven** ("When T, the S shall R.") | arrange/trigger/expect inside `it()` | `it('when T, S shall R', () => { /* arrange; trigger T; expect R */ })` |
+| **Optional feature** ("Where F, the S shall R.") | `it.skipIf(!F)` (vitest conditional) | `it.skipIf(!F)('where F, S shall R', () => { /* expect R */ })` |
+| **Unwanted behaviour** ("If C, then the S shall R.") | error-path `it()` with negative assertion or `toThrow()` | `it('if C, then S shall R', () => { /* induce C; expect R */ })` |
+
+Reference test exemplifying this pattern: `tests/lib/wave-executor/persona-gate-hook.test.mjs` (shipped at #481).
+
+Follow `.claude/rules/test-quality.md`: one meaningful assertion per `it`, behaviour not implementation, no branching, hardcoded expected values.
+
 Provide:
 - Exact file path (absolute from project root)
 - Complete, runnable test code — no `// ...`, no placeholders, no `// implement later`

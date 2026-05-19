@@ -163,6 +163,25 @@ Write `docs/specs/YYYY-MM-DD-<slug>-design.md` with the following sections:
 | [Pro accepted] | [Why this matters] |
 | [Con accepted] | [Why it's tolerable] |
 
+## Acceptance Criteria (EARS) [optional]
+
+> Optional companion — translates the chosen-approach behaviour into EARS-shaped statements (IEC/IEEE 29148, canonical 5 patterns from Mavin et al.). Leave blank if narrative trade-offs suffice. Authors who include this section make their spec natively consumable by `/write-executable-plan` for 1:1 vitest stub generation.
+
+### Ubiquitous (always-true invariants)
+- The {{system}} shall {{response}}.
+
+### State-driven (While …)
+- While {{precondition}}, the {{system}} shall {{response}}.
+
+### Event-driven (When …)
+- When {{trigger}}, the {{system}} shall {{response}}.
+
+### Optional feature (Where …)
+- Where {{feature enabled}}, the {{system}} shall {{response}}.
+
+### Unwanted behaviour (If … then …)
+- If {{unwanted condition}}, then the {{system}} shall {{response}}.
+
 ## Open Questions
 
 - [Genuine unresolved question that needs more information or runtime data]

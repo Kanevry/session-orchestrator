@@ -76,8 +76,8 @@ const sampleTarget = { name: 'sample-target.md', kind: 'markdown' };
 // ---------------------------------------------------------------------------
 
 describe('_MAX_RATIONALE_CHARS', () => {
-  it('is exactly 4000 (defense-in-depth cap matches the prompt-template line)', () => {
-    expect(_MAX_RATIONALE_CHARS).toBe(4000);
+  it('is exactly 4096 (aligned with sidecar.schema.json rationale.maxLength per #483 LOW-1)', () => {
+    expect(_MAX_RATIONALE_CHARS).toBe(4096);
   });
 });
 

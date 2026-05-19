@@ -367,3 +367,18 @@ describe('persona-panel-sidecar schema — token_usage nested shape', () => {
     expect(validate.errors.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 10 (Q1-LOW-6 canary): SKILL.md documents validatePathInsideProject
+// usage alongside writeJsonAtomic in Phase 5
+// ---------------------------------------------------------------------------
+
+describe('writeJsonAtomic path-confinement docs canary (Q1-LOW-6)', () => {
+  it('persona-panel SKILL documents validatePathInsideProject usage before writeJsonAtomic', () => {
+    const skillContent = readFileSync(join(REPO_ROOT, 'skills/persona-panel/SKILL.md'), 'utf8');
+    // Both guards must be documented — absence of either means the contract is not
+    // expressed in the operator-facing specification.
+    expect(skillContent).toContain('writeJsonAtomic');
+    expect(skillContent).toContain('validatePathInsideProject');
+  });
+});

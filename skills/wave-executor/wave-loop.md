@@ -607,7 +607,6 @@ When any gate condition is false, skip this step entirely — proceed to `### 4.
 import { loadCatalog } from '$PLUGIN_ROOT/scripts/lib/persona-panel/catalog-loader.mjs';
 import { buildPersonaPrompt, validatePersonaOutput } from '$PLUGIN_ROOT/scripts/lib/persona-panel/persona-runner.mjs';
 import { consolidate } from '$PLUGIN_ROOT/scripts/lib/persona-panel/consolidator.mjs';
-import { parseThreshold } from '$PLUGIN_ROOT/scripts/lib/persona-panel/threshold.mjs';
 import { writeJsonAtomic } from '$PLUGIN_ROOT/scripts/lib/io.mjs';
 import { appendDeviation } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
 
@@ -621,7 +620,8 @@ const personas = rosterNames.map((n) => catalog.get(n)).filter(Boolean);
 
 Dispatch each persona in parallel via the Agent tool, using `cfg['dispatch-model']` as the model and `Read, Grep, Glob` tools only (panel personas are read-only by contract). Each dispatch wraps the wave's scope summary + changed-files list in `buildPersonaPrompt(persona.persona, target, targetContent)`.
 
-After all agents return, collect their outputs and validate each via `validatePersonaOutput(persona.persona, agentText)`. Compose the panel verdict via `consolidate(outputs, 'hard-gate-threshold', { threshold: parseThreshold(cfg.threshold) })`.
+After all agents return, collect their outputs and validate each via `validatePersonaOutput(persona.persona, agentText)`. Compose the panel verdict via `consolidate(outputs, 'hard-gate-threshold', { threshold: cfg.threshold_parsed })`.
+<!-- threshold_parsed is pre-computed by _normalizePersonaGateWave in persona-gate-wave.mjs; no re-parse needed here -->
 
 **Behaviour by mode:**
 
