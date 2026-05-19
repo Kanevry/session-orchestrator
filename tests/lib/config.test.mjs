@@ -589,8 +589,11 @@ describe('readConfigFile', () => {
   it('returned content is parseable by parseSessionConfig', async () => {
     const content = await readConfigFile(WORKTREE_ROOT);
     const config = parseSessionConfig(content);
-    // Must produce a valid object with key fields
-    expect(config['agents-per-wave']).toBe(6);
+    // Must produce a valid object with key fields. The live CLAUDE.md Session
+    // Config uses the deep-override syntax `agents-per-wave: 6 (deep: 18)`
+    // (lean-root session-config-parity fix, 2026-05-19), which parseSessionConfig
+    // correctly resolves to the {default, deep} object form — not the scalar 6.
+    expect(config['agents-per-wave']).toEqual({ default: 6, deep: 18 });
     expect(config.enforcement).toBe('warn');
   });
 
