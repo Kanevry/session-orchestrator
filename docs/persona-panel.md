@@ -175,17 +175,17 @@ The command exits with code 1. CI pipelines and wave-executor hooks can gate on 
 
 ---
 
-### Example 3 — AI Accountant Output Compliance Review (buchhaltgenie)
+### Example 3 — AI Accountant Output Compliance Review (accounting)
 
 **Scenario:** An AI accountant (Sophie) produces invoice analysis JSON. A tax-advisor persona
 and a DSGVO-compliance persona must both approve before the output is delivered to the client.
 
-**Catalog files:** `.claude/personas/buchhaltgenie-tax-advisor.md`,
-`.claude/personas/buchhaltgenie-compliance.md`
+**Catalog files:** `.claude/personas/accounting-tax-advisor.md`,
+`.claude/personas/accounting-compliance.md`
 
 ```bash
 /persona-panel sophie-outputs/2026-05-19/invoice-12345.json \
-  --personas buchhaltgenie-tax-advisor,buchhaltgenie-compliance \
+  --personas accounting-tax-advisor,accounting-compliance \
   --mode voting \
   --threshold 2-of-2
 ```
@@ -195,7 +195,7 @@ threshold is `2-of-2` (pass-only):
 
 ```
 Consolidation (voting-quorum): 1 pass / 0 fail / 1 warn — Final: FAIL
-Dissenting: buchhaltgenie-compliance (warn treated as non-pass under 2-of-2 threshold)
+Dissenting: accounting-compliance (warn treated as non-pass under 2-of-2 threshold)
 ```
 
 `warn` counts as a non-pass vote for quorum purposes. The sidecar records the full rationale
@@ -205,7 +205,7 @@ and recommendations from the compliance persona so the issue can be addressed sp
 
 ```bash
 /persona-panel sophie-outputs/2026-05-19/invoice-12345.json \
-  --personas buchhaltgenie-tax-advisor,buchhaltgenie-compliance \
+  --personas accounting-tax-advisor,accounting-compliance \
   --dry-run
 ```
 
@@ -219,8 +219,8 @@ and recommendations from the compliance persona so the issue can be addressed sp
 .claude/personas/
   klima-physicist.md
   klima-ai-expert.md
-  buchhaltgenie-tax-advisor.md
-  buchhaltgenie-compliance.md
+  accounting-tax-advisor.md
+  accounting-compliance.md
   gotzendorfer-buyer-p1-cto.md
   gotzendorfer-buyer-p2-kanzlei.md
 ```
@@ -426,7 +426,7 @@ or commit them if you want an auditable history.
 - `skills/persona-panel/persona-format.md` — persona file format specification: frontmatter
   fields, body sections, verdict contract, security rationale for criteria delimiters
 - `templates/personas/*.v1.md` — 6 catalog templates: `klima-physicist`, `klima-ai-expert`,
-  `buchhaltgenie-tax-advisor`, `buchhaltgenie-compliance`, `gotzendorfer-buyer-p1-cto`,
+  `accounting-tax-advisor`, `accounting-compliance`, `gotzendorfer-buyer-p1-cto`,
   `gotzendorfer-buyer-p2-kanzlei`
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema (Draft 2020-12)
 - Issue #457 (foundation), #458 (wave-hook integration), #459 (trend tracking), #460 (catalog

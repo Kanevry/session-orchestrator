@@ -1,5 +1,5 @@
 ---
-name: buchhaltgenie-compliance
+name: accounting-compliance
 schema_version: 1
 version: "1"
 role: "DSGVO/GDPR Compliance Officer — audits AI-accountant outputs for privacy and audit-trail conformance"

@@ -1,5 +1,5 @@
 ---
-name: buchhaltgenie-tax-advisor
+name: accounting-tax-advisor
 schema_version: 1
 version: "1"
 role: "Austrian Steuerberater (StBKO §47) — reviews AI-accountant outputs for AT tax-law compliance"
