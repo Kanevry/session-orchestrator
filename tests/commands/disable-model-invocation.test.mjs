@@ -34,9 +34,13 @@ describe('disable-model-invocation (#430)', () => {
     expect(commandFiles.length).toBeLessThanOrEqual(40);
   });
 
+  // USER-ONLY: commands with irreversible side-effects (commits, scaffolding,
+  // wave-state mutation) or ceremonial entry-points that must not be invoked
+  // by a model autonomously. Narrowed from 12 → 6 on 2026-05-19 after
+  // pushback that the original blanket policy was too aggressive (#430 partial
+  // reversal). Read-only/analytical commands moved to model-invocable.
   const userOnlyCommands = [
-    'bootstrap', 'brainstorm', 'close', 'discovery', 'evolve', 'go',
-    'harness-audit', 'memory-cleanup', 'plan', 'repo-audit', 'session', 'test',
+    'bootstrap', 'brainstorm', 'close', 'go', 'plan', 'session',
   ];
 
   userOnlyCommands.forEach((cmd) => {
@@ -46,7 +50,12 @@ describe('disable-model-invocation (#430)', () => {
     });
   });
 
-  const modelInvocableCommands = ['autopilot', 'autopilot-multi', 'debug', 'portfolio'];
+  // MODEL-INVOCABLE: read-only probes, analytical commands, and orchestrators
+  // that the model may legitimately invoke when context warrants it.
+  const modelInvocableCommands = [
+    'autopilot', 'autopilot-multi', 'debug', 'discovery', 'evolve',
+    'harness-audit', 'memory-cleanup', 'portfolio', 'repo-audit', 'test',
+  ];
 
   modelInvocableCommands.forEach((cmd) => {
     it(`MODEL-INVOCABLE command "${cmd}" does NOT have disable-model-invocation: true`, () => {

@@ -1,6 +1,5 @@
 ---
 description: Extract session patterns into reusable learnings
-disable-model-invocation: true
 argument-hint: "[analyze|review|list]"
 ---
 

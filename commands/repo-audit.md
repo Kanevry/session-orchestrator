@@ -1,6 +1,5 @@
 ---
 description: Run a 9-category baseline compliance audit on the current repository
-disable-model-invocation: true
 argument-hint: ""
 ---
 

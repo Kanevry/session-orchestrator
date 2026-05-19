@@ -1,6 +1,5 @@
 ---
 description: Manual memory consolidation — review, consolidate, and prune memory files (Dream-equivalent)
-disable-model-invocation: true
 argument-hint: ""
 ---
 
