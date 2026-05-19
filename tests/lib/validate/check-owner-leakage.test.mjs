@@ -351,6 +351,57 @@ describe('Exclusion-bypass: real leak inside a normally-excluded file', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Exclusion-5: persona content-lint test file (self-exclusion)
+// ---------------------------------------------------------------------------
+//
+// tests/templates/personas/content-lint.test.mjs asserts that persona template
+// files do NOT contain leakage strings. Its assertion literals must therefore
+// CONTAIN those strings (e.g. `expect(c).not.toContain('@gotzendorfer.at')`).
+// The scanner would flag those literals as leaks, so the file is in
+// SELF_EXCLUSIONS — same pattern as the scanner's own source + test files.
+// Regression guard for pipeline #4365 / housekeeping-2 2026-05-19.
+
+describe('Exclusion-5: persona content-lint detection-fixture file', () => {
+  it('exits 0 when leakage strings appear inside tests/templates/personas/content-lint.test.mjs', () => {
+    const root = makeTmpRepo((r) => {
+      // Mirror the real layout exactly — exclusion is matched by relative path
+      mkdirSync(join(r, 'tests', 'templates', 'personas'), { recursive: true });
+      writeFileSync(
+        join(r, 'tests', 'templates', 'personas', 'content-lint.test.mjs'),
+        [
+          "import { describe, it, expect } from 'vitest';",
+          "describe('owner-leakage guard', () => {",
+          "  it('does not contain personal email @gotzendorfer.at', () => {",
+          "    expect(content).not.toContain('@gotzendorfer.at');",
+          "  });",
+          "  it('does not contain private repo name buchhaltgenie', () => {",
+          "    expect(content).not.toContain('buchhaltgenie');",
+          "  });",
+          "});",
+          "",
+        ].join('\n'),
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+
+  it('still flags the same leak strings at a different path (exclusion is path-scoped)', () => {
+    const root = makeTmpRepo((r) => {
+      // Same content, different path — must NOT be excluded
+      writeFileSync(
+        join(r, 'somewhere-else.test.mjs'),
+        "expect(content).not.toContain('@gotzendorfer.at');\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge: empty dir / no-git repo
 // ---------------------------------------------------------------------------
 

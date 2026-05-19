@@ -251,13 +251,17 @@ const textFiles = allFiles.filter(isTextFile);
 //   - .orchestrator/audits/** never scanned (A.2/A.4-5)
 //   - This guard's own source file (pattern-doc-comments define the scanner — not leaks).
 //   - This guard's own test file (string-literal fixtures exercise the detector — not leaks).
-// Both self-exclusions are the design-time fix for the latent bug exposed when
-// these files transitioned from untracked → tracked in commit a68e94f (#471
-// follow-up; the deep-2 acceptance run was a false-pass because git ls-files
-// hadn't enrolled them yet).
+//   - Persona content-lint tests (assert template files don't contain leakage strings;
+//     the assertion literals themselves match the scanner regex — fixtures, not leaks).
+// Self-exclusions are the design-time fix for the latent bug exposed when scanner
+// fixture files transition from untracked → tracked in the same commit that tightens
+// detection (commit a68e94f for the original two; commit 95c8237 deep-3 W4 added the
+// case-insensitive P6 regex + introduced content-lint.test.mjs in the same commit,
+// producing a pre-commit false-pass — see pipeline #4365 / housekeeping-2 2026-05-19).
 const SELF_EXCLUSIONS = new Set([
   'scripts/lib/validate/check-owner-leakage.mjs',
   'tests/lib/validate/check-owner-leakage.test.mjs',
+  'tests/templates/personas/content-lint.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
