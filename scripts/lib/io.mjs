@@ -1,12 +1,20 @@
 /**
- * io.mjs — stdin/stdout helpers implementing the Claude Code hook I/O contract.
+ * io.mjs — stdin/stdout helpers implementing the Claude Code hook I/O contract,
+ * plus shared atomic file-write helpers used by skills that need crash-safe
+ * sidecar JSON output (e.g. persona-panel, issue #457).
  *
  * Provides promise-based stdin JSON reading and structured exit helpers used by
- * PreToolUse / PostToolUse hooks in the session-orchestrator v3 migration.
+ * PreToolUse / PostToolUse hooks in the session-orchestrator v3 migration, and
+ * `writeJsonAtomic` for tmp+rename JSON writes with optional pre-write validation.
+ *
  * No external dependencies — Node 20+ stdlib only.
  *
- * Part of v3.0.0 migration (Epic #124, issue #131).
+ * Part of v3.0.0 migration (Epic #124, issue #131); writeJsonAtomic added for #457.
  */
+
+import { writeFile, rename, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -138,4 +146,52 @@ export function emitWarn(message) {
  */
 export function emitSystemMessage(msg) {
   console.log(JSON.stringify({ systemMessage: msg }));
+}
+
+/**
+ * Atomically write a JSON value to filePath. Creates parent directories as needed.
+ *
+ * Crash-safe pattern: write to `<filePath>.<rand>.tmp`, then `rename()` over the
+ * target. Same-filesystem rename is atomic on POSIX, so partial-write states are
+ * impossible — observers see either the previous contents or the new ones, never
+ * a half-written file.
+ *
+ * When `validatorFn` is provided, the value is validated BEFORE any disk write.
+ * Validation failure throws an Error with `.validationErrors` attached and leaves
+ * the target file untouched.
+ *
+ * Caller is responsible for path-confinement (see scripts/lib/path-utils.mjs#validatePathInsideProject)
+ * — this helper does NOT validate that filePath lives inside the project.
+ *
+ * Added for persona-panel sidecar writes (issue #457).
+ *
+ * @param {string} filePath  Target path; parent dirs created with mkdir -p semantics.
+ * @param {*} value          JSON-serializable value.
+ * @param {object} [opts]
+ * @param {(value: *) => {ok: boolean, errors?: Array<object>}} [opts.validatorFn]
+ *        Pre-write validator. Throws (without writing) on `ok=false`.
+ * @param {number} [opts.indent=2]  JSON.stringify indent.
+ * @returns {Promise<{ path: string, bytes: number }>}
+ * @throws {Error} If validatorFn rejects the value (with `.validationErrors` array attached).
+ */
+export async function writeJsonAtomic(filePath, value, opts = {}) {
+  const { validatorFn, indent = 2 } = opts;
+
+  if (typeof validatorFn === 'function') {
+    const result = validatorFn(value);
+    if (!result || result.ok !== true) {
+      const err = new Error('writeJsonAtomic: validation failed before write');
+      err.validationErrors = (result && result.errors) || [];
+      throw err;
+    }
+  }
+
+  await mkdir(dirname(filePath), { recursive: true });
+
+  const tmp = `${filePath}.${randomUUID().slice(0, 8)}.tmp`;
+  const content = JSON.stringify(value, null, indent);
+  await writeFile(tmp, content, 'utf8');
+  await rename(tmp, filePath);
+
+  return { path: filePath, bytes: Buffer.byteLength(content, 'utf8') };
 }

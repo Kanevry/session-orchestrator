@@ -6,6 +6,24 @@
  * Markdown; Phase 2 will add Swift and Python (filed as follow-up issue).
  *
  * Part of the Clawpatch Borrow Cluster (issue #416).
+ *
+ * SemanticSlice shape (informational JSDoc — see typescript.mjs for the
+ * canonical typedef consumers should reference):
+ *
+ * @typedef {Object} SemanticSlice
+ * @property {'function'|'class'|'interface'|'type'|'export'|'section'} kind
+ * @property {string} name
+ * @property {string} file
+ * @property {number} line
+ * @property {number} endLine
+ * @property {boolean} exported
+ * @property {boolean} isNested
+ * @property {'regex'|'ast'} fidelity - parser fidelity discriminator (#474 MED-3).
+ *   'ast' for TypeScript/JS (@babel/parser) and Markdown (remark);
+ *   'regex' for Swift and Python (column-0 regex protos).
+ * @property {string[]} [params]
+ * @property {string} [doc]
+ * @property {string} [source]
  */
 
 import path from 'node:path';
@@ -138,8 +156,10 @@ export async function extractSemanticSlices(filePath, content, options = {}) {
     return extract(filePath, content);
   }
 
+  // #474 LOW-9: derive supported-extensions list from EXT_TO_LANG to avoid
+  // drift when new extensions are added to the map.
   throw new Error(
     `extractSemanticSlices: unsupported language '${lang ?? 'unknown'}' for file '${filePath}'. ` +
-      `Supports: .ts, .tsx, .js, .jsx, .mjs, .cjs, .md, .mdx, .swift, .py.`,
+      `Supports: ${Object.keys(EXT_TO_LANG).join(', ')}.`,
   );
 }

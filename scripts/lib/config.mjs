@@ -46,6 +46,7 @@ import { _parseTest } from './config/test.mjs';
 import { _parseGitlabPortfolio } from './config/gitlab-portfolio.mjs';
 import { _parseWaveReviewers } from './config/wave-reviewers.mjs';
 import { _parseCrossRepo } from './config/cross-repo.mjs';
+import { _parsePersonaGateWave } from './config/persona-gate-wave.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -242,6 +243,15 @@ export function parseSessionConfig(mdContent) {
     );
   }
 
+  // persona-gate-wave: opt-in mid-wave persona-panel hook (#458). Returns null when absent.
+  const personaGateWave = _parsePersonaGateWave(mdContent);
+  if (personaGateWave !== null && personaGateWave.enabled === true && personaGateWave.mode === 'off') {
+    process.stderr.write(
+      "Session Config: 'persona-gate-wave' has enabled=true but mode=off — the hook will not fire. " +
+        "Set mode to 'warn' or 'strict', or set enabled=false to silence this warning.\n"
+    );
+  }
+
   return {
     'agents-per-wave': agentsPerWave,
     'waves': waves,
@@ -303,6 +313,7 @@ export function parseSessionConfig(mdContent) {
     'test': testConfig,
     'gitlab-portfolio': gitlabPortfolio,
     'wave-reviewers': waveReviewers,
+    'persona-gate-wave': personaGateWave,
   };
 }
 

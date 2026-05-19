@@ -25,11 +25,16 @@
  *   endLine: number;
  *   exported: boolean;
  *   isNested: boolean;
+ *   fidelity: 'regex'|'ast';
  *   params?: string[];
  *   doc?: string;
  *   source?: string;
  * }} SemanticSlice
  */
+
+// All slices produced by this mapper carry fidelity:'ast' (#474 MED-3) —
+// they come from a real @babel/parser AST walk, not regex matching.
+const FIDELITY = /** @type {'ast'} */ ('ast');
 
 // ---------------------------------------------------------------------------
 // Babel parser options
@@ -143,6 +148,7 @@ function walkStatement(stmt, filePath, exported, out) {
               endLine,
               exported: true,
               isNested: false,
+              fidelity: FIDELITY,
               ...(source !== undefined ? { source } : {}),
             });
           }
@@ -156,6 +162,7 @@ function walkStatement(stmt, filePath, exported, out) {
             endLine,
             exported: true,
             isNested: false,
+            fidelity: FIDELITY,
             ...(source !== undefined ? { source } : {}),
           });
         }
@@ -175,6 +182,7 @@ function walkStatement(stmt, filePath, exported, out) {
         endLine,
         exported: true,
         isNested: false,
+        fidelity: FIDELITY,
         source: stmt.source?.value ?? '<unknown>',
       });
       break;
@@ -193,6 +201,7 @@ function walkStatement(stmt, filePath, exported, out) {
           endLine,
           exported: true,
           isNested: false,
+          fidelity: FIDELITY,
           params: extractParamNames(inner.params ?? []),
           doc: extractDoc(stmt),
         });
@@ -206,6 +215,7 @@ function walkStatement(stmt, filePath, exported, out) {
           endLine,
           exported: true,
           isNested: false,
+          fidelity: FIDELITY,
           params: extractClassMethods(inner),
           doc: extractDoc(stmt),
         });
@@ -222,6 +232,7 @@ function walkStatement(stmt, filePath, exported, out) {
           endLine,
           exported: true,
           isNested: false,
+          fidelity: FIDELITY,
           doc: extractDoc(stmt),
         });
       }
@@ -239,6 +250,7 @@ function walkStatement(stmt, filePath, exported, out) {
         endLine,
         exported,
         isNested: false,
+        fidelity: FIDELITY,
         params: extractParamNames(stmt.params ?? []),
         doc: extractDoc(stmt),
       });
@@ -256,6 +268,7 @@ function walkStatement(stmt, filePath, exported, out) {
         endLine,
         exported,
         isNested: false,
+        fidelity: FIDELITY,
         params: extractClassMethods(stmt),
         doc: extractDoc(stmt),
       });
@@ -274,6 +287,7 @@ function walkStatement(stmt, filePath, exported, out) {
         endLine,
         exported,
         isNested: false,
+        fidelity: FIDELITY,
         doc: extractDoc(stmt),
       });
       break;
@@ -290,6 +304,7 @@ function walkStatement(stmt, filePath, exported, out) {
         endLine,
         exported,
         isNested: false,
+        fidelity: FIDELITY,
         doc: extractDoc(stmt),
       });
       break;
@@ -314,6 +329,7 @@ function walkStatement(stmt, filePath, exported, out) {
             endLine,
             exported,
             isNested: false,
+            fidelity: FIDELITY,
             params: extractParamNames(init.params ?? []),
             doc: extractDoc(stmt),
           });
@@ -372,6 +388,7 @@ function walkClassMethods(classNode, filePath, out) {
       endLine,
       exported: false,
       isNested: true,
+      fidelity: FIDELITY,
       params: extractParamNames(member.params ?? []),
       doc: extractDoc(member),
     });

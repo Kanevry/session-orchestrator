@@ -683,6 +683,56 @@ autopilot:
 
 **Feature introduced by:** GitLab issue #431 (CC 2.1.143 `worktree.bgIsolation` changelog adoption). Implementation: `scripts/autopilot-multi.mjs` reads `config?.autopilot?.['bg-isolation']` via `scripts/parse-config.mjs`. Documentation: `skills/autopilot/SKILL.md` § Configuration.
 
+## Persona-Gate Wave (#458)
+
+Opt-in mid-wave hook that dispatches a `/persona-panel`-style review after a configured wave completes (Quality or Impl-Polish). Distinct from `wave-reviewers` (which targets code-oriented reviewer agents like `architect-reviewer` and `qa-strategist`): `persona-gate-wave` dispatches catalog personas from `.claude/personas/` — domain-experts, buyer-personas, and auditors. The two keys are independent; a project may configure both on the same wave without conflict.
+
+When enabled, wave-executor runs `### 3b. Persona-Gate Hook` after the wave's STATE.md update and before the progress summary. The consolidated panel verdict is written to a JSON sidecar under `.orchestrator/persona-panel/<iso>-<runId>.json` (validated against `agents/schemas/persona-panel-sidecar.schema.json`). On `mode: 'strict'` with a non-PROCEED verdict, the operator is prompted via `AskUserQuestion` to proceed, revise the remaining waves, or abort the session.
+
+All fields live under a top-level `persona-gate-wave` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+persona-gate-wave:
+  enabled: false               # opt-in; default false preserves existing behavior
+  after: quality               # quality | impl-polish — wave name after which to fire
+  threshold: "all"             # "M-of-N" | "all" | "N-of-N" — passed to parseThreshold
+  personas: []                 # list of persona names from .claude/personas/; empty = all catalog
+  dispatch-model: claude-opus-4-7   # alias or full model ID — default 'claude-opus-4-7'
+  mode: off                    # off | warn | strict
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `persona-gate-wave.enabled` | boolean | `false` | Master toggle. When `false` (or the block is absent), the hook is skipped entirely — wave-executor proceeds from `### 3a` to `### 4` without dispatching personas. |
+| `persona-gate-wave.after` | string (`quality` \| `impl-polish`) | `quality` | The wave role after which the hook fires. The hook runs once per session, immediately after the named wave's STATE.md update. |
+| `persona-gate-wave.threshold` | string | `"all"` | Voting threshold passed to `parseThreshold()` from `scripts/lib/persona-panel/threshold.mjs`. Accepts `"all"`, `"any"`, or `"M-of-N"` where `1 ≤ M ≤ N ≤ 20`. Example: `"6-of-6"` requires every persona to vote PASS; `"4-of-6"` allows two dissenters. |
+| `persona-gate-wave.personas` | string[] | `[]` | Roster of persona names to dispatch. Each entry must match `^[a-z0-9-]{1,64}$` and refer to a persona file under `.claude/personas/<name>.md`. When the list is empty (default), every persona in the catalog is dispatched. |
+| `persona-gate-wave.dispatch-model` | string | `claude-opus-4-7` | Model used for each persona agent dispatch. Accepts the same shape as agent frontmatter `model:` — one of `inherit` \| `sonnet` \| `opus` \| `haiku`, or a full model ID like `claude-opus-4-7`. |
+| `persona-gate-wave.mode` | string (`off` \| `warn` \| `strict`) | `off` | Behaviour on consolidator result. `off` skips dispatch entirely even when `enabled: true` (silent no-op). `warn` consolidates and logs findings under a `Persona-gate:` bullet in the wave progress update without blocking. `strict` consolidates and on any non-PROCEED verdict prompts the operator via `AskUserQuestion` to proceed-as-is, revise remaining waves, or abort. |
+
+**Validation:**
+- An `enabled: true` + `mode: off` combination is degenerate — `parseSessionConfig` emits a single stderr WARN at load time so the operator can spot the configuration drift, but the hook itself is a no-op.
+- `threshold` is parsed via `parseThreshold()` at config-load time; a malformed spec (e.g. `"21-of-21"`, `"5/5"`, empty string) raises a precise error before wave-executor even starts.
+
+### When to enable
+
+The canonical use case is the **Buyer-Panel pattern** from the `gotzendorfer-v2` flagship project's W5 hard-gate: six buyer personas evaluate UI/UX work at the end of every Quality wave, with `threshold: "6-of-6"`, `mode: 'strict'`, and `after: 'quality'`. Any dissent pauses the session and surfaces the dissenters' rationale via `AskUserQuestion` before commit — UI changes that would dilute a target persona's experience are caught before they ship.
+
+Enable when:
+- Domain or audience perspective is load-bearing for the work (UX, marketing pages, on-boarding flows, persona-specific feature releases).
+- Code-level review (`wave-reviewers`) is insufficient — the question is "does this work serve persona X?", not "is the implementation correct?".
+- A small, stable set of persona files (2–10) live under `.claude/personas/` and the catalog rarely changes mid-session.
+
+Leave disabled (default) when:
+- The project has no persona files or the work is purely infrastructural.
+- The wave's deliverable is server-side / backend-only and persona evaluation would be noise.
+
+**Related skills and files:**
+- `commands/persona-panel.md` — standalone `/persona-panel` command for ad-hoc panel runs (not gated on `persona-gate-wave.enabled`).
+- `skills/persona-panel/SKILL.md` — full skill spec (catalog format, consolidation modes, sidecar shape).
+- `skills/wave-executor/wave-loop.md` § 3b — the wave-executor hook contract.
+- `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema enforced before write.
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

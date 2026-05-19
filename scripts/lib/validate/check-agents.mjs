@@ -228,8 +228,12 @@ if (mdFiles.length === 0) {
 }
 
 // ============================================================================
-// Check 7: output-schema field (issue #417) — when present, the referenced
-// JSON schema file must exist, parse as JSON, and compile under AJV 2020.
+// Check 7: output-schema field (issue #417) + standalone sidecar schemas (#457).
+//   (a) When an agent's frontmatter declares `output-schema:`, the referenced
+//       JSON schema file must exist, parse as JSON, and compile under AJV 2020.
+//   (b) Any `agents/schemas/*.schema.json` file not referenced by an agent
+//       (e.g. persona-panel-sidecar.schema.json) is validated as a standalone
+//       schema: must parse + compile under AJV 2020.
 // Catches broken schemas at plugin-distribution time rather than runtime.
 // ============================================================================
 console.log('');
@@ -250,8 +254,28 @@ if (existsSync(agentsDir)) {
     declared.push({ agentFile, schemaRel });
   }
 
-  if (declared.length === 0) {
-    // No agents declare output-schema yet — skip silently (backward-compat).
+  // Track every schema file referenced via output-schema so the standalone walk
+  // below does not double-validate them.
+  const referencedSchemaPaths = new Set();
+  for (const { schemaRel } of declared) {
+    referencedSchemaPaths.add(resolve(agentsDir, schemaRel));
+  }
+
+  // Enumerate standalone schemas: any agents/schemas/*.schema.json file not
+  // referenced by an agent frontmatter (sidecar / panel / non-agent schemas).
+  const standaloneSchemas = [];
+  const schemasDir = join(agentsDir, 'schemas');
+  if (existsSync(schemasDir)) {
+    const allSchemaFiles = readdirSync(schemasDir).filter((f) => f.endsWith('.schema.json'));
+    for (const schemaFile of allSchemaFiles) {
+      const absPath = resolve(schemasDir, schemaFile);
+      if (referencedSchemaPaths.has(absPath)) continue;
+      standaloneSchemas.push({ schemaFile, absPath });
+    }
+  }
+
+  if (declared.length === 0 && standaloneSchemas.length === 0) {
+    // No agents declare output-schema yet and no standalone schemas exist — skip silently.
   } else {
     // Lazy-load shared AJV 2020 instance (W3-Q2 MED-004 fold-in).
     let ajvInstance = null;
@@ -263,6 +287,7 @@ if (existsSync(agentsDir)) {
     }
 
     if (ajvInstance) {
+      // (a) Agent-referenced schemas
       for (const { agentFile, schemaRel } of declared) {
         // Resolve schema path relative to agentsDir (e.g. "schemas/code-implementer.schema.json").
         const schemaPath = resolve(agentsDir, schemaRel);
@@ -289,6 +314,30 @@ if (existsSync(agentsDir)) {
           pass(`${agentFile}: output-schema validates`);
         } catch (err) {
           fail(`${agentFile}: output-schema error: ${err.message}`);
+        }
+      }
+
+      // (b) Standalone schemas (#457: sidecar / panel / non-agent-named).
+      for (const { schemaFile, absPath } of standaloneSchemas) {
+        let raw;
+        try {
+          raw = readFileSync(absPath, 'utf8');
+        } catch (err) {
+          fail(`${schemaFile}: standalone schema read error: ${err.message}`);
+          continue;
+        }
+        let schema;
+        try {
+          schema = JSON.parse(raw);
+        } catch (err) {
+          fail(`${schemaFile}: standalone schema parse error: ${err.message}`);
+          continue;
+        }
+        try {
+          ajvInstance.compile(schema);
+          pass(`agents/schemas/${schemaFile}: Draft 2020-12 compiles OK (standalone)`);
+        } catch (err) {
+          fail(`${schemaFile}: standalone schema compile error: ${err.message}`);
         }
       }
     }

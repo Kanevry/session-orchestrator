@@ -30,7 +30,7 @@ import {
   migrateLegacyLearning,
   validateLearning,
 } from './lib/learnings.mjs';
-import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 const LEARNINGS_REL = '.orchestrator/metrics/learnings.jsonl';
@@ -105,7 +105,7 @@ if (reposArg) {
     process.exit(0);
   }
 
-  const migrateRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+  const migrateRoot = getConfinementRoot();
   repos = configProjects
     .map((r) => r.trim())
     .filter((r) => r.length > 0)

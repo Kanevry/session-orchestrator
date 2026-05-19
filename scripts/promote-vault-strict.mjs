@@ -21,7 +21,7 @@ import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 const COMMIT_MSG = 'chore(orchestrator): Promote vault-integration to strict mode — refs #305';
@@ -425,7 +425,7 @@ async function main() {
   if (singleRepo) {
     // Single-repo mode
     const absRepo = expandHome(singleRepo);
-    const singleRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+    const singleRoot = getConfinementRoot();
     const singleGuard = validatePathInsideProject(absRepo, singleRoot);
     if (!singleGuard.ok) {
       process.stderr.write(
@@ -447,7 +447,7 @@ async function main() {
       process.exit(0);
     }
 
-    const batchRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+    const batchRoot = getConfinementRoot();
     for (const rawPath of eligibleRepos) {
       const absRepo = expandHome(rawPath);
       const guard = validatePathInsideProject(absRepo, batchRoot);

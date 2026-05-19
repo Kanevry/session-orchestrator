@@ -228,3 +228,9 @@ After the human-readable findings and Analysis Summary, append a fenced ```json 
 ```
 
 Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `finding_counts`, `files_reviewed`, `phases`. Optional: `findings` array (include each finding with `severity`, `category`, `file`, `confidence`, `title`). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+
+Verdict variants (concrete examples per scenario):
+- Clean audit, 0 findings → `{"verdict": "PROCEED", "finding_counts": {"high": 0, "med": 0, "low": 0}}`
+- LOW/MED-only findings, no exploitable HIGH → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "finding_counts": {"high": 0, "med": 2, "low": 4}}`
+- HIGH-confidence exploitable finding present → `{"verdict": "FIX_REQUIRED", "finding_counts": {"high": 1, "med": 3, "low": 2}}`
+- Cannot complete audit (missing access, malformed targets) → `{"verdict": "BLOCKED", "phases": {"context": false}}`

@@ -18,7 +18,19 @@
 // raw content we keep the cycle at a single readConfigFile edge (lazy, function-body)
 // and parse exactly once. `readConfigFile` is a pure FS utility with no module-load
 // side-effects on config.mjs's exports, so the cycle is degenerate.
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { readConfigFile } from '../config.mjs';
+
+/**
+ * Resolve the cross-repo confinement root. Defaults to ~/Projects.
+ * Override via CROSS_REPO_CONFINEMENT_ROOT env (test-only — never set in production).
+ *
+ * @returns {string} absolute path
+ */
+export function getConfinementRoot() {
+  return process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+}
 
 // Allowlist: only characters that are safe in shell contexts and file paths.
 // Rejects entries containing shell metacharacters (;, $, `, |, &, >, <, (, ), space, etc.).

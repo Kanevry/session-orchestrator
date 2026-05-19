@@ -26,9 +26,14 @@
  *   endLine: number;
  *   exported: boolean;
  *   isNested: boolean;
+ *   fidelity: 'ast';
  *   params: [number];   // [depth] — heading level 1-6
  * }} SectionSlice
  */
+
+// All slices produced by this mapper carry fidelity:'ast' (#474 MED-3) —
+// they come from a real remark mdast walk, not regex matching.
+const FIDELITY = /** @type {'ast'} */ ('ast');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -135,6 +140,7 @@ export async function extractMarkdownSlices(filePath, content) {
       endLine,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
       params: [depth],
     });
   }

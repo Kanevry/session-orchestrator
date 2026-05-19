@@ -84,6 +84,12 @@ After the human-readable gap report, append a fenced ```json block matching `age
 
 Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `gap_counts`, `source_files_reviewed`, `test_files_reviewed`. Optional: `blockers`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
 
+Verdict variants (concrete examples per scenario):
+- Coverage strong, no gaps → `{"verdict": "PROCEED", "gap_counts": {"high": 0, "med": 0, "low": 0}}`
+- Coverage adequate, advisory gaps only → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "gap_counts": {"high": 0, "med": 3, "low": 4}}`
+- HIGH-risk gap that would let real bug ship → `{"verdict": "FIX_REQUIRED", "gap_counts": {"high": 2, "med": 5, "low": 3}}`
+- Strategy review cannot complete → `{"verdict": "BLOCKED", "blockers": ["sources missing"]}`
+
 ## Edge Cases
 
 - **Coverage tool not configured**: Project has no `--coverage` flag wired up, or coverage results are missing/malformed. → Fall back to manual file:line scan via Read + Grep. Flag in Summary as "coverage data incomplete — manual analysis only" so the consuming agent (test-writer or human) knows the analysis depth.

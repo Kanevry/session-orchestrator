@@ -27,7 +27,10 @@ import { getAjv2020 } from './ajv-loader.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // scripts/lib → repo root → agents/schemas/
-const SCHEMAS_DIR = join(__dirname, '..', '..', 'agents', 'schemas');
+// Exported so consumers (validate-plugin, tests) can derive paths without re-encoding the
+// directory structure. check-agents.mjs derives its own schemasDir from pluginRoot — the
+// resolution differs (arg-based root vs __dirname-based) so it does NOT import this constant.
+export const SCHEMAS_DIR = join(__dirname, '..', '..', 'agents', 'schemas');
 
 // Per-process compile cache: agentName → AJV ValidateFunction
 const compileCache = new Map();

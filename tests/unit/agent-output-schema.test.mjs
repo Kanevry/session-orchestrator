@@ -10,11 +10,27 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  SCHEMAS_DIR,
   loadAgentSchema,
   extractLastJsonBlock,
   validateAgentOutput,
   _clearCompileCache,
 } from '@lib/agent-output-schema.mjs';
+
+// -----------------------------------------------------------------------------
+// SCHEMAS_DIR export (#480 LOW-7)
+// -----------------------------------------------------------------------------
+
+describe('SCHEMAS_DIR', () => {
+  it('is exported as a string', () => {
+    expect(SCHEMAS_DIR).toBeDefined();
+    expect(typeof SCHEMAS_DIR).toBe('string');
+  });
+
+  it('points to the agents/schemas directory', () => {
+    expect(SCHEMAS_DIR).toMatch(/agents\/schemas\b/);
+  });
+});
 
 // -----------------------------------------------------------------------------
 // loadAgentSchema

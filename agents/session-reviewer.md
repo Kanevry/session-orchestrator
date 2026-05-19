@@ -189,6 +189,12 @@ After the human-readable report, append a JSON summary block for consuming skill
 
 Rules:
 - `verdict`: `PROCEED` if no FAIL categories; `PROCEED_WITH_FOLLOWUPS` if WARN-only; `FIX_REQUIRED` if any category is FAIL; `BLOCKED` if review could not complete
+
+Verdict variants (concrete examples per scenario):
+- All categories PASS → `{"verdict": "PROCEED"}`
+- One or more WARN, no FAIL → `{"verdict": "PROCEED_WITH_FOLLOWUPS"}`
+- Any category FAIL (typecheck, lint, test) → `{"verdict": "FIX_REQUIRED"}`
+- Review unable to complete (missing artifacts, broken state.md) → `{"verdict": "BLOCKED"}`
 - `categories.silent_failures`: result of Section 6; `categories.test_depth`: result of Section 7; `categories.type_design`: result of Section 8
 - `fix_required`: array of strings describing items that must be addressed before proceeding
 - Wrap in a fenced code block tagged `json` so consuming skills can extract via regex

@@ -30,7 +30,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { getCrossRepoProjects } from './lib/config/cross-repo.mjs';
+import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ function todayISO() {
 
 async function main() {
   // Load the config-driven repo list before doing any glab work
-  const watcherRoot = process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+  const watcherRoot = getConfinementRoot();
   // Home-expand each entry before confinement, matching sibling scripts (W4-Q2 LOW).
   const expandHome = (p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
   const flipRepos = (await getCrossRepoProjects()).filter((r) => {

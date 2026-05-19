@@ -100,6 +100,10 @@ const RE_CONSTANT = /^([A-Z][A-Z0-9_]{2,})\s*=/gm;
 // Public API
 // ---------------------------------------------------------------------------
 
+// All slices produced by this mapper carry fidelity:'regex' (#474 MED-3) —
+// they come from column-0 regex matches, not a real Python parser AST.
+const FIDELITY = /** @type {'regex'} */ ('regex');
+
 /**
  * Extract semantic slices from Python source code.
  *
@@ -154,6 +158,7 @@ export async function extractPythonSlices(filePath, content) {
         endLine: line,
         exported: false,
         isNested: false,
+        fidelity: FIDELITY,
       });
     }
   }
@@ -177,6 +182,7 @@ export async function extractPythonSlices(filePath, content) {
         endLine: line,
         exported: false,
         isNested: false,
+        fidelity: FIDELITY,
         source: moduleName,
       });
     }
@@ -196,6 +202,7 @@ export async function extractPythonSlices(filePath, content) {
       endLine: line,
       exported: isExported(name),
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -213,6 +220,7 @@ export async function extractPythonSlices(filePath, content) {
       endLine: line,
       exported: isExported(name),
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -230,6 +238,7 @@ export async function extractPythonSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 

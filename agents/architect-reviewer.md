@@ -85,3 +85,9 @@ After the human-readable audit report, append a fenced ```json block matching `a
 ```
 
 Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `finding_counts`, `files_reviewed`. Optional: `adrs_checked`, `language_md_checked`, `blockers`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+
+Verdict variants (concrete examples per scenario):
+- Architecture clean, 0 findings → `{"verdict": "PROCEED", "finding_counts": {"high": 0, "med": 0, "low": 0}}`
+- Advisory findings only, no blockers → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "finding_counts": {"high": 0, "med": 3, "low": 5}}`
+- ADR violation or HIGH-severity coupling/seam issue → `{"verdict": "FIX_REQUIRED", "finding_counts": {"high": 2, "med": 4, "low": 3}}`
+- Review could not complete (missing files, malformed inputs) → `{"verdict": "BLOCKED", "blockers": ["missing target file"]}`

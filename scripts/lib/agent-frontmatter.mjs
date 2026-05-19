@@ -21,8 +21,10 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 // Aliases per https://code.claude.com/docs/en/sub-agents § model resolution.
 // Full model IDs (claude-{opus|sonnet|haiku}-N-N[-YYYYMMDD]) also accepted via MODEL_ID_RE.
-const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku']);
-const MODEL_ID_RE = /^claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?$/;
+// Exported so persona-panel modules (catalog-loader.mjs, persona-gate-wave.mjs) can
+// validate against the SSOT instead of re-declaring (W4 architect MED-1, 2026-05-19).
+export const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku']);
+export const MODEL_ID_RE = /^claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?$/;
 
 // Canonical Anthropic palette (red|blue|green|yellow|purple|orange|pink|cyan)
 // plus magenta from plugin-dev SKILL.md for backward-compat.

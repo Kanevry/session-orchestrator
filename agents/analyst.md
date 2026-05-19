@@ -91,3 +91,9 @@ After the human-readable report, append a fenced ```json block matching `agents/
 ```
 
 Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `finding_counts`, `scope_drift_count`, `criteria_reviewed`. Optional: `blockers` (empty array when verdict is not BLOCKED). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+
+Verdict variants (concrete examples per scenario):
+- PRD/criteria clean → `{"verdict": "PROCEED", "scope_drift_count": 0, "finding_counts": {"high": 0, "med": 0, "low": 0}}`
+- Vague verbs / minor specificity gaps → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "scope_drift_count": 0, "finding_counts": {"high": 0, "med": 4, "low": 2}}`
+- Scope-drift detected or vague critical AC → `{"verdict": "FIX_REQUIRED", "scope_drift_count": 2, "finding_counts": {"high": 2, "med": 3, "low": 1}}`
+- PRD/criteria unreviewable → `{"verdict": "BLOCKED", "blockers": ["PRD path missing"]}`

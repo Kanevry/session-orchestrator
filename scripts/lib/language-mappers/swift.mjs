@@ -78,6 +78,10 @@ const RE_PUBLIC_VAR = /^(?:public|open)\s+(?:(?:static|lazy|class|override)\s+)*
 // Public API
 // ---------------------------------------------------------------------------
 
+// All slices produced by this mapper carry fidelity:'regex' (#474 MED-3) —
+// they come from column-0 regex matches, not a real Swift parser AST.
+const FIDELITY = /** @type {'regex'} */ ('regex');
+
 /**
  * Extract semantic slices from Swift source code.
  *
@@ -111,6 +115,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: false,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -125,6 +130,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -139,6 +145,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -153,6 +160,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -167,6 +175,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
@@ -181,6 +190,7 @@ export async function extractSwiftSlices(filePath, content) {
       endLine: line,
       exported: true,
       isNested: false,
+      fidelity: FIDELITY,
     });
   }
 
