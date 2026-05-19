@@ -29,6 +29,13 @@ if (!pluginRoot) {
 const PLUGIN_JSON = join(pluginRoot, '.claude-plugin', 'plugin.json');
 const CONVENTIONAL_AGENTS = 'agents';
 
+// Nested instruction files (CLAUDE.md / AGENTS.md) may live in agents/ as
+// per-directory authoring conventions (Anthropic large-codebase layered-doc
+// pattern). They are NOT agent definitions and must be excluded from
+// frontmatter / output-schema / sandbox-tier validation.
+const INSTRUCTION_FILENAMES = new Set(['AGENTS.md', 'CLAUDE.md']);
+const isAgentDefFile = (f) => f.endsWith('.md') && !INSTRUCTION_FILENAMES.has(f);
+
 let passed = 0;
 let failed = 0;
 
@@ -133,7 +140,7 @@ if (!existsSync(agentsDir)) {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-const mdFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+const mdFiles = readdirSync(agentsDir).filter(isAgentDefFile);
 
 if (mdFiles.length === 0) {
   fail('agents directory is empty (no .md files)');
@@ -240,7 +247,7 @@ console.log('');
 console.log('--- Check 7: agent output-schema files ---');
 
 if (existsSync(agentsDir)) {
-  const schemaFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+  const schemaFiles = readdirSync(agentsDir).filter(isAgentDefFile);
   // Collect agents with output-schema declarations.
   const declared = [];
   for (const agentFile of schemaFiles) {
@@ -355,7 +362,7 @@ console.log('--- Check 8: agent sandbox-tier ---');
 if (existsSync(agentsDir)) {
   const { TIER_ENUM, inferTierFromTools, validateTierConsistency } = await getTierModule();
 
-  const allMdFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+  const allMdFiles = readdirSync(agentsDir).filter(isAgentDefFile);
   for (const agentFile of allMdFiles) {
     const filePath = join(agentsDir, agentFile);
     const content = readFileSync(filePath, 'utf8');
