@@ -39,8 +39,11 @@ describe('disable-model-invocation (#430)', () => {
   // by a model autonomously. Narrowed from 12 → 6 on 2026-05-19 after
   // pushback that the original blanket policy was too aggressive (#430 partial
   // reversal). Read-only/analytical commands moved to model-invocable.
+  // 2026-05-21: `session` moved to MODEL-INVOCABLE — it is read-only/analytical
+  // (project-state research, no writes). The flag was blocking model dispatch
+  // when users described session-start in prose rather than typing `/session`.
   const userOnlyCommands = [
-    'bootstrap', 'brainstorm', 'close', 'go', 'plan', 'session',
+    'bootstrap', 'brainstorm', 'close', 'go', 'plan',
   ];
 
   userOnlyCommands.forEach((cmd) => {
@@ -54,7 +57,7 @@ describe('disable-model-invocation (#430)', () => {
   // that the model may legitimately invoke when context warrants it.
   const modelInvocableCommands = [
     'autopilot', 'autopilot-multi', 'debug', 'discovery', 'evolve',
-    'harness-audit', 'memory-cleanup', 'portfolio', 'repo-audit', 'test',
+    'harness-audit', 'memory-cleanup', 'portfolio', 'repo-audit', 'session', 'test',
   ];
 
   modelInvocableCommands.forEach((cmd) => {

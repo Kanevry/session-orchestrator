@@ -1,6 +1,5 @@
 ---
 description: Start a development session (housekeeping, feature, deep)
-disable-model-invocation: true
 argument-hint: [housekeeping|feature|deep]
 ---
 
@@ -28,4 +27,4 @@ This read is informational — session-start uses it to populate the resume bann
 
 **Cold-start banner (PRD #500):** If `bootstrap.lock` exists with timestamp older than `cold-start.nudge-after-hours` (default 1h) and `sessions.jsonl` is empty, the SessionStart hook emits a one-time first-session nudge. Auto-silenced once `sessions.jsonl` has ≥ `cold-start.silence-after-sessions` entries (default 1).
 
-**Invoke the session-start skill.** Follow its instructions precisely. Do NOT skip any phase. Do NOT make assumptions — verify everything in code and on the VCS platform.
+**Invoke `session-orchestrator:session-start` via the `Skill` tool.** Follow its instructions precisely. Do NOT skip any phase. Do NOT make assumptions — verify everything in code and on the VCS platform.
