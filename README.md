@@ -156,6 +156,7 @@ Five deep sessions plus three intermediate fix-clusters. The v3.6.0 tag (2026-05
 - **Clawpatch Borrow Cluster** — six infrastructure capabilities shipped opportunistically: worker pool, language mappers (TypeScript + Markdown AST), schema-per-agent output contracts, sandbox-tier validation, discovery triage state, and `--since` flag for scoped discovery.
 - **Claude Code 2.1.x adoption** — `experimental.monitors`, `terminalSequence` (OSC 9 + OSC 777 cross-platform notifications), `disable-model-invocation` on USER-ONLY commands, `model:` frontmatter routing, `Skill(name:*)` permission wildcards.
 - **CI restoration** — fixed the 8-pipeline silent regression (lockfile conflict + `engine-strict=true` + `fetch-depth` for gitleaks).
+- **Learning & Memory System Modernization (Phase 1)** — vault consolidation, vault-mirror quality gate, cold-start abandonment fix, auto-dream dispatch ([epic #498](https://github.com/Kanevry/session-orchestrator/issues/498); [PRD](docs/prd/2026-05-21-learning-memory-modernization.md)).
 
 For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous releases: v3.5.0 (2026-05-09), v3.4.0 (2026-05-08), v3.3.0 (2026-04-30).
 
@@ -202,7 +203,7 @@ flowchart LR
 
 **Codex.** `.codex-plugin/plugin.json` (manifest), compatibility config, 3 agent role definitions, marketplace `composerIcon`.
 
-**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 5900+ tests.
+**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 5900+ tests.
 
 ### `/harness-audit` — Anthropic large-codebase rubric
 

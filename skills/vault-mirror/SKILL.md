@@ -48,6 +48,7 @@ One JSON line is written to stdout for each non-empty JSONL entry processed. Exi
 | `skipped-handwritten` | A file at the target path has no `_generator` marker (or an unknown generator); left untouched. |
 | `skipped-collision-resolved` | A file at the target path has the generator marker but a different `id`; a disambiguated slug was used instead. |
 | `skipped-invalid` | Entry is missing one or more required fields; entry skipped, processing continues. |
+| `skipped-quality-low` | Entry failed the quality gate (PRD F1.2): learning `confidence` below `vault-mirror.quality.min-confidence` (CLI: `--quality-min-confidence`, default `0.5`), or session rendered-narrative length below `vault-mirror.quality.min-narrative-chars` (CLI: `--quality-min-narrative-chars`, default `400`). The emitted JSON line includes a `reason` field describing the violated threshold and `path: null` (no file was created). The quality gate runs **before** `--force`; `--force` does not bypass it. |
 
 ### Output line shape
 

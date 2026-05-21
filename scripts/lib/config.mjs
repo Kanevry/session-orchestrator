@@ -47,6 +47,8 @@ import { _parseGitlabPortfolio } from './config/gitlab-portfolio.mjs';
 import { _parseWaveReviewers } from './config/wave-reviewers.mjs';
 import { _parseCrossRepo } from './config/cross-repo.mjs';
 import { _parsePersonaGateWave } from './config/persona-gate-wave.mjs';
+import { _parseVaultMirrorQuality } from './config/vault-mirror-quality.mjs';
+import { _parseColdStart } from './config/cold-start.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -132,6 +134,7 @@ export function parseSessionConfig(mdContent) {
   const ssotFreshnessDays = _coerceInteger(kv, 'ssot-freshness-days', 5);
   const pluginFreshnessDays = _coerceInteger(kv, 'plugin-freshness-days', 30);
   const memoryCleanupThreshold = _coerceInteger(kv, 'memory-cleanup-threshold', 5);
+  const memoryCleanupSoftLimit = _coerceInteger(kv, 'memory-cleanup-soft-limit', 180);
   const learningExpiryDays = _coerceInteger(kv, 'learning-expiry-days', 30);
   const learningsSurfaceTopN = _coerceInteger(kv, 'learnings-surface-top-n', 15);
   const groundingInjectionMaxFiles = _coerceInteger(kv, 'grounding-injection-max-files', 3);
@@ -225,6 +228,12 @@ export function parseSessionConfig(mdContent) {
   // events-rotation: parsed from full content (standalone top-level block)
   const eventsRotation = _parseEventsRotation(mdContent);
 
+  // vault-mirror.quality: parsed from full content (PRD F1.2 / issue #504)
+  const vaultMirror = _parseVaultMirrorQuality(mdContent);
+
+  // cold-start: parsed from full content (PRD F1.3 / issue #500)
+  const coldStart = _parseColdStart(mdContent);
+
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
@@ -282,6 +291,7 @@ export function parseSessionConfig(mdContent) {
     'discovery-parallelism': discoveryParallelism,
     'persistence': persistence,
     'memory-cleanup-threshold': memoryCleanupThreshold,
+    'memory-cleanup-soft-limit': memoryCleanupSoftLimit,
     'learning-expiry-days': learningExpiryDays,
     'learnings-surface-top-n': learningsSurfaceTopN,
     'learning-decay-rate': learningDecayRate,
@@ -305,6 +315,8 @@ export function parseSessionConfig(mdContent) {
     'resource-thresholds': resourceThresholds,
     'worktree-exclude': worktreeExclude,
     'vault-integration': vaultIntegration,
+    'vault-mirror': vaultMirror,
+    'cold-start': coldStart,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,

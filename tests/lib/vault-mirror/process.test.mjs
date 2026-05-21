@@ -420,3 +420,315 @@ describe('processSession', () => {
     expect(lines[0].action).toBe('updated');
   });
 });
+
+// ── quality gate (PRD F1.2) ───────────────────────────────────────────────────
+
+describe('quality gate', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+  let _mkdirSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    _mkdirSyncSpy = vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function getProcessLearning() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processLearning;
+  }
+
+  async function getProcessSession() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processSession;
+  }
+
+  // ── learning quality gate ──────────────────────────────────────────────────
+
+  const LEARNING_BASE = {
+    id: 'a1b2c3d4-0001-4000-8000-000000000099',
+    type: 'architectural',
+    subject: 'quality-gate-probe',
+    insight: 'gate behaviour',
+    evidence: 'unit test',
+    source_session: 'session-2026-05-21',
+    created_at: '2026-05-21T10:00:00Z',
+  };
+
+  it('learning: confidence 0.49 below threshold 0.5 emits skipped-quality-low with reason', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    writeFileSyncSpy.mockReturnValue(undefined);
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.49 };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinConfidence: 0.5,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    expect(lines[0].path).toBe(null);
+    expect(lines[0].id).toBe(LEARNING_BASE.id);
+    expect(lines[0].reason).toBe('confidence:0.49 < min:0.5');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('learning: confidence non-numeric (string) defaults to 1.0 in the gate and passes through to created', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    // String value → typeof !== 'number' → gate fallback to 1.0 → must NOT be
+    // caught by the gate. The renderer accepts any truthy value for confidence
+    // (only null/undefined is rejected at the schema layer), so the entry
+    // reaches the create-action path.
+    const entry = { ...LEARNING_BASE, confidence: 'high' };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinConfidence: 0.5,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+  });
+
+  it('learning: --force does NOT bypass quality gate (confidence 0.4 + force=true → skipped)', async () => {
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(
+      '---\nid: quality-gate-probe\nupdated: 2026-04-13\n_generator: session-orchestrator-vault-mirror@1\n---\n',
+    );
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.4 };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        force: true,
+        qualityMinConfidence: 0.5,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('learning: qualityMinConfidence=0.0 lets ALL entries pass the gate (gate disabled)', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.0 };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinConfidence: 0.0,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+  });
+
+  it('learning: qualityMinConfidence=1.0 skips entries with confidence=0.99', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.99 };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinConfidence: 1.0,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    expect(lines[0].reason).toBe('confidence:0.99 < min:1');
+  });
+
+  it('learning: quality gate runs BEFORE existsSync (collision path is not entered)', async () => {
+    // existsSync would return true (collision exists), but the quality gate
+    // must short-circuit before the existsSync call → no readFileSync, no
+    // collision-resolved action.
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(
+      '---\nid: different-id\nupdated: 2099-01-01\n_generator: session-orchestrator-vault-mirror@1\n---\n',
+    );
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.3 };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinConfidence: 0.5,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    // readFileSync must NOT have been called — collision detection never reached.
+    expect(readFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  // ── session quality gate ───────────────────────────────────────────────────
+
+  const VALID_V1_SESSION = {
+    session_id: 'session-2026-05-21',
+    session_type: 'feature',
+    started_at: '2026-05-21T08:00:00Z',
+    completed_at: '2026-05-21T10:00:00Z',
+    duration_seconds: 7200,
+    total_waves: 1,
+    total_agents: 2,
+    total_files_changed: 4,
+    agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
+    waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
+    effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+  };
+
+  it('session: narrative-length BOUNDARY — chars === qualityMinNarrativeChars passes the gate', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession();
+    // The rendered narrative for VALID_V1_SESSION is a known length; set the
+    // threshold equal to it so the gate condition `narrative < min` is false.
+    // The empirical narrative length on this fixture is 456 chars (verified
+    // independently); set threshold equal to that to exercise the boundary.
+    const { lines } = await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'session',
+        qualityMinNarrativeChars: 456,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+  });
+
+  it('session: narrative-length BOUNDARY — chars < threshold by 1 → skipped-quality-low', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession();
+    // Same fixture renders to 456 chars → threshold 457 must trip the gate.
+    const { lines } = await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'session',
+        qualityMinNarrativeChars: 457,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    expect(lines[0].path).toBe(null);
+    expect(lines[0].id).toBe('session-2026-05-21');
+    expect(lines[0].reason).toBe('narrative:456 < min:457');
+  });
+
+  it('session: --force does NOT bypass quality gate (force=true + short-narrative threshold → skipped)', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession();
+    // Threshold higher than fixture length forces the gate; --force must not bypass it.
+    const { lines } = await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'session',
+        force: true,
+        qualityMinNarrativeChars: 10000,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+  });
+
+  it('session: skipped-quality-low entry carries path: null AND reason field', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession();
+    const { lines } = await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'session',
+        qualityMinNarrativeChars: 10000,
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+    expect(lines[0].path).toBe(null);
+    expect(typeof lines[0].reason).toBe('string');
+    expect(lines[0].reason).toMatch(/^narrative:\d+ < min:\d+$/);
+  });
+
+  it('session: default qualityMinNarrativeChars=400 is applied when ctx omits the field', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession();
+    // No qualityMinNarrativeChars in ctx → defaults to 400 → fixture (456) passes.
+    const { lines } = await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'session',
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+  });
+
+  it('learning: default qualityMinConfidence=0.5 applied when ctx omits the field', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    const entry = { ...LEARNING_BASE, confidence: 0.3 };
+
+    // ctx without qualityMinConfidence → defaults to 0.5 → entry skipped
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-quality-low');
+  });
+});

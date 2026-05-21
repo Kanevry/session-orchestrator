@@ -394,6 +394,12 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
+| `memory-cleanup-soft-limit` | integer | `180` | Hard ceiling on accumulated memory files before the cleanup nudge escalates from soft suggestion to strong recommendation. PRD F2.2 / issue #502. |
+| `vault-mirror.quality.min-narrative-chars` | integer | `400` | Minimum body length (characters) before a learning or session note is mirrored to the vault. Notes shorter than this threshold are skipped. PRD F1.2 / issue #504. |
+| `vault-mirror.quality.min-confidence` | float | `0.5` | Minimum learning confidence (0.0..1.0) before a learning note is mirrored. Set to `0.0` to mirror every learning regardless of confidence. PRD F1.2 / issue #504. |
+| `cold-start.enabled` | boolean | `true` | Master toggle for the cold-start detector. When `false`, no idle-time nudges fire at session-start. PRD F1.3 / issue #500. |
+| `cold-start.nudge-after-hours` | integer | `1` | Hours of wall-clock idle (since the last session-end) before the cold-start detector fires a nudge. PRD F1.3 / issue #500. |
+| `cold-start.silence-after-sessions` | integer | `1` | Consecutive silent sessions (no commits, no learnings) before the cold-start detector fires a nudge. PRD F1.3 / issue #500. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. See Section 15 "Isolation Graduation" below. |
 | `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |

@@ -341,6 +341,50 @@ This cleanup is the counterpart to the session-start Phase 1.5 recovery prompt: 
 
 Read `skills/session-end/learning-patterns.md` for extraction heuristics, confidence updates, passive decay, and JSONL write procedure.
 
+### 3.6.5 Auto-Dream Dispatch (#502, F2.2)
+
+> Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
+
+After learnings are written (Phase 3.6), determine whether to dispatch a `/memory-cleanup --dry-run` subagent. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal; the subagent writes a unified-diff proposal to `.orchestrator/pending-dream.md` for the next session to apply via `/memory-cleanup --apply-pending`.
+
+1. Read `memory-cleanup-threshold` (default 5) and `memory-cleanup-soft-limit` (default 180) from `$CONFIG`.
+2. Invoke `shouldDispatchAutoDream` from `scripts/lib/auto-dream.mjs`:
+
+   ```javascript
+   import { shouldDispatchAutoDream, resolveMemoryDir } from '${PLUGIN_ROOT}/scripts/lib/auto-dream.mjs';
+   const memoryDir = resolveMemoryDir();
+   const decision = await shouldDispatchAutoDream({
+     repoRoot: process.cwd(),
+     memoryDir,
+     threshold: config['memory-cleanup-threshold'] ?? 5,
+     softLimit: config['memory-cleanup-soft-limit'] ?? 180,
+   });
+   ```
+3. If `decision.trigger === false`: log `auto-dream: not dispatched (${decision.reason})` and continue. Skip the subagent dispatch.
+4. If `decision.trigger === true`: dispatch a subagent that runs the dry-run path of /memory-cleanup:
+
+   ```javascript
+   Agent({
+     description: "Auto-dream dry-run (memory consolidation proposal)",
+     prompt: `Invoke /memory-cleanup --dry-run.
+       Read MEMORY.md and topic files at ${memoryDir}.
+       Produce a unified-diff proposal and write it to .orchestrator/pending-dream.md
+         via writePendingDream() from scripts/lib/auto-dream.mjs.
+       Do NOT modify any files in ~/.claude/.
+       Do NOT call any session-* skills (no recursion).
+       Return one-line status: 'pending-dream written: <N> lines proposed' OR
+       'no consolidation needed (MEMORY.md is healthy)'.`,
+     subagent_type: "session-orchestrator:memory-cleanup",
+     run_in_background: false,
+   })
+   ```
+5. After dispatch, confirm `.orchestrator/pending-dream.md` exists; if not, log `⚠ auto-dream: subagent returned without writing pending-dream sidecar — investigate next session`.
+6. Record the outcome (skipped / dispatched / failed) so Phase 6 Final Report can surface a line: `auto-dream: dry-run produced — apply with /memory-cleanup --apply-pending in the next session`.
+
+The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/.
+
+Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`).
+
 ### 3.7 Write Session Metrics
 
 Read `skills/session-end/session-metrics-write.md` for JSONL append, vault-mirror invocation, and behavior matrix.
@@ -511,6 +555,7 @@ Present to the user:
 | `drift-operations.md` | Phase 2.2 drift-checker bash contract and reporting matrix |
 | `phase-3-2-docs-verification.md` | Phase 3.2 full procedural body — docs-tasks load, SESSION_START_REF, per-task loop, mode-gated report, Documentation Coverage block |
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
+| (inline) Phase 3.6.5 | Auto-Dream dispatch — `shouldDispatchAutoDream` + dispatch /memory-cleanup --dry-run + writes `.orchestrator/pending-dream.md` |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |
 | (inline) Phase 3.8 | Session Lock Release — `release()` call, silent-OK on mismatch/absent, non-fatal on fs-error, ordering note (after STATE.md writes, before Phase 4 commit staging) |

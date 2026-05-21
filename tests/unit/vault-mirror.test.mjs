@@ -320,6 +320,37 @@ describe('vault-mirror CLI', () => {
     });
   });
 
+  // ── --quality-* flags (PRD F1.2) ─────────────────────────────────────────
+  describe('--quality-* flags', () => {
+    it('--quality-min-confidence "abc" exits 1 with "invalid number" stderr', () => {
+      const vaultDir = tmp();
+      const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+      const result = runMirror([
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'learning',
+        '--quality-min-confidence', 'abc',
+      ]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('invalid number');
+      expect(result.stderr).toContain('--quality-min-confidence');
+    });
+
+    it('--quality-min-narrative-chars "400px" exits 1 (NaN would silently disable the gate)', () => {
+      const vaultDir = tmp();
+      const sourceFile = writeJsonl(vaultDir, VALID_SESSION);
+      const result = runMirror([
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'session',
+        '--quality-min-narrative-chars', '400px',
+      ]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('invalid integer');
+      expect(result.stderr).toContain('--quality-min-narrative-chars');
+    });
+  });
+
   it('exits 2 when vault-dir does not exist', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);

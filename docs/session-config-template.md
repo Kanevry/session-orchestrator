@@ -106,6 +106,7 @@ Read by: `skills/discovery/SKILL.md` and the probe modules under `skills/discove
 ```yaml
 persistence: true                      # mandatory
 memory-cleanup-threshold: 5            # recommend /memory-cleanup after N memory files
+memory-cleanup-soft-limit: 180         # hard ceiling on memory file count before nudge (#502)
 learning-expiry-days: 30               # learnings auto-expire after N days untouched
 learnings-surface-top-n: 15            # how many learnings appear in Project Intelligence
 learning-decay-rate: 0.05              # 0.0..<1.0 untouched-learning confidence decay
@@ -188,6 +189,32 @@ vault-integration:
 ```
 
 Read by: `scripts/vault-mirror.mjs`, `scripts/vault-backfill.mjs`, `skills/session-end/session-metrics-write.md`, `skills/evolve/SKILL.md`, `skills/plan/mode-retro.md`.
+
+## Vault Mirror Quality
+
+Quality thresholds applied by `scripts/vault-mirror.mjs` before mirroring a learning or session note to the Meta-Vault. Notes below the thresholds are skipped (not an error). PRD F1.2 / issue #504.
+
+```yaml
+vault-mirror:
+  quality:
+    min-narrative-chars: 400           # integer ≥ 0 — minimum body length to mirror
+    min-confidence: 0.5                # float 0.0..1.0 — minimum learning confidence to mirror
+```
+
+Read by: `scripts/vault-mirror.mjs`.
+
+## Cold Start
+
+Cold-start detector that nudges the operator when sessions go silent (no commits, no learnings, long wall-clock idle). PRD F1.3 / issue #500.
+
+```yaml
+cold-start:
+  enabled: true                        # opt-out master toggle; default true
+  nudge-after-hours: 1                 # integer ≥ 0 — hours of wall-clock idle before nudge
+  silence-after-sessions: 1            # integer ≥ 0 — consecutive silent sessions before nudge
+```
+
+Read by: `scripts/lib/cold-start-detector.mjs`.
 
 ## Vault Staleness
 
@@ -374,6 +401,7 @@ discovery-parallelism: 5
 
 # Persistence & safety
 memory-cleanup-threshold: 5
+memory-cleanup-soft-limit: 180
 learning-expiry-days: 30
 learnings-surface-top-n: 15
 learning-decay-rate: 0.05
@@ -421,6 +449,18 @@ vault-integration:
   vault-dir: ~/Projects/vault
   mode: warn
   gitlab-groups: []
+
+# Vault mirror quality thresholds
+vault-mirror:
+  quality:
+    min-narrative-chars: 400
+    min-confidence: 0.5
+
+# Cold-start detector
+cold-start:
+  enabled: true
+  nudge-after-hours: 1
+  silence-after-sessions: 1
 
 # Vault staleness
 vault-staleness:

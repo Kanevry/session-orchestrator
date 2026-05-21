@@ -6,6 +6,11 @@ model: sonnet
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
+args-schema:
+  - flag: --dry-run
+    description: "Produce diff in .orchestrator/pending-dream.md, no mutations."
+  - flag: --apply-pending
+    description: "Consume .orchestrator/pending-dream.md (atomic apply)."
 description: >
   Use this skill when performing manual memory consolidation (Dream-equivalent). Reviews, consolidates, and prunes memory files
   under ~/.claude/projects/*/memory/. Run after major refactors, every 5+ sessions, or when memory
@@ -23,6 +28,35 @@ The memory system lives at `~/.claude/projects/<encoded-cwd>/memory/` and consis
 - Topic files — one Markdown file per memory entry with YAML frontmatter (`name`, `description`, `metadata.type`).
 
 The four memory types are `user`, `feedback`, `project`, `reference` (see global `auto memory` instructions for semantics). This skill never invents new types.
+
+## Argument Handling (Phase 0)
+
+This skill accepts two optional flags. Default (no flag) runs the interactive 4-phase consolidation defined below.
+
+| Flag | Behavior |
+|---|---|
+| `--dry-run` | Run Phases 1-3 read-only; instead of mutating MEMORY.md / topic files, write a unified-diff proposal to `.orchestrator/pending-dream.md` (atomic). Exit 0. |
+| `--apply-pending` | Read `.orchestrator/pending-dream.md`; refuse if older than 14 days; apply diff; delete pending file; print `auto-dream applied: -<X> lines, +<Y> entries`. Exit 0. |
+
+Flags are mutually exclusive — passing both is an error. Absence of both = legacy interactive mode (Phases 1-4 below).
+
+**`--dry-run` flow:**
+- Read MEMORY.md and topic files (read-only).
+- Produce the same internal plan the interactive mode would (merges, prunes, rewrites).
+- Serialise the plan as a unified diff body inside a fenced ` ```diff ` block (or as a complete replacement body when full rewrite is simpler).
+- Call `writePendingDream({ repoRoot, diff, sourceSession, memoryLinesBefore, proposedLinesAfter })` from `scripts/lib/auto-dream.mjs`.
+- Print one-line status: `pending-dream written: <N> lines proposed` (or `no consolidation needed (MEMORY.md is healthy)` when the plan is empty).
+- Exit 0 in both branches.
+
+**`--apply-pending` flow:**
+- Call `applyPendingDream({ repoRoot, memoryDir })` from `scripts/lib/auto-dream.mjs`.
+- Behavior matrix on the helper return:
+  - `applied: true` → print `auto-dream applied: -<linesBefore-linesAfter> lines, +<entries> consolidated entries` and exit 0.
+  - `applied: false, reason: 'missing'` → print `no pending dream to apply` and exit 1.
+  - `applied: false, reason: 'stale'` → print `pending dream is stale (>14d), re-run --dry-run` and exit 1.
+- The sidecar file is deleted on successful apply; staleness or missing sidecar never deletes anything.
+
+Both flag-driven flows delegate atomicity and staleness enforcement to `scripts/lib/auto-dream.mjs`. The interactive Phases 1-4 below remain unchanged.
 
 ## Phase 1: Orient
 

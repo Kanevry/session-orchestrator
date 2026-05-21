@@ -49,7 +49,7 @@ vcs: gitlab
 auto-skill-dispatch: false               # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/vault
+  vault-dir: ~/Projects/Bernhard/vault
   mode: warn               # strict | warn | off
 docs-orchestrator:
   enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
@@ -66,3 +66,12 @@ wave-reviewers:
   enabled: false           # opt-in inter-wave architecture/QA/PRD audits
   reviewers: []            # ["architect-reviewer", "qa-strategist", "analyst"]
   mode: warn               # warn | strict | off
+memory-cleanup-soft-limit: 180   # PRD F2.2 (#502) — hard ceiling on memory file count before nudge
+vault-mirror:
+  quality:
+    min-narrative-chars: 400     # PRD F1.2 (#504) — min vault note body length before mirror
+    min-confidence: 0.5          # PRD F1.2 (#504) — min learning confidence (0.0..1.0) before mirror
+cold-start:
+  enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
+  nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires
+  silence-after-sessions: 1      # PRD F1.3 (#500) — consecutive silent sessions before nudge fires

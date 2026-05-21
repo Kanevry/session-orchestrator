@@ -95,6 +95,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 |-------|------|---------|-------------|
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
+| `memory-cleanup-soft-limit` | integer | `180` | Hard ceiling on accumulated memory files before the cleanup nudge escalates from a soft suggestion to a strong recommendation. PRD F2.2 / issue #502. Used by `scripts/lib/auto-dream.mjs`. |
 | `learning-expiry-days` | integer | `30` | Days until a learning expires. Confirmed learnings get their expiry reset. Adjust based on project velocity. |
 | `learnings-surface-top-n` | integer | `15` | Cap on how many learnings the session-start Phase 5.6 and session-plan Step 0.5 sections surface, ranked by confidence descending. `0` = do not surface any learnings. Applies to Project Intelligence output. |
 | `learning-decay-rate` | float (0.0 ≤ x < 1.0) | `0.05` | Confidence decay applied to every untouched learning at session-end (after touched-set update, before prune). `0.0` = disable decay. A learning starting at `0.5` confidence survives ~10 untouched sessions with default decay. |
@@ -320,6 +321,47 @@ vault-integration:
 | `vault-integration.vault-dir` | string or null | `null` | Absolute path to the vault repository. Falls back to `$VAULT_DIR` env variable if not set. Required when `enabled` is true. |
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
 | `vault-integration.gitlab-groups` | string[] or null | `null` | List of GitLab group paths to scan for repos missing `.vault.yaml`. Consumed by `scripts/vault-backfill.mjs` (via `readVaultIntegrationConfig()`) and the `/plan retro` vault-backfill sub-mode (`skills/plan/mode-retro.md` Phase 1.6 Step 1). When null/unset, the backfill CLI exits with a "no groups configured" notice. |
+
+## Vault Mirror Quality (#504)
+
+Opt-in quality thresholds applied by `scripts/vault-mirror.mjs` before mirroring a learning or session note to the Meta-Vault. Notes that fail the thresholds are skipped silently (not an error). PRD F1.2.
+
+All fields live under a top-level `vault-mirror` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+vault-mirror:
+  quality:
+    min-narrative-chars: 400
+    min-confidence: 0.5
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vault-mirror.quality.min-narrative-chars` | integer | `400` | Minimum body length (characters) before a learning or session note is mirrored to the vault. Notes shorter than this threshold are skipped — useful to prevent low-information notes from cluttering the vault during onboarding or when a session yields only stubs. Bounds: integer ≥ 0. Out-of-range values silently fall back to the default. PRD F1.2 / issue #504. |
+| `vault-mirror.quality.min-confidence` | float | `0.5` | Minimum learning confidence (0.0..1.0) before a learning note is mirrored. Confidence is read from the source learning record. Notes below this threshold are skipped. Set to `0.0` to mirror every learning regardless of confidence. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. PRD F1.2 / issue #504. |
+
+**Used by:** `scripts/vault-mirror.mjs`.
+
+## Cold Start (#500)
+
+Opt-out configuration for the cold-start detector. The detector nudges the operator at session-start when sessions go silent — no commits, no learnings, long wall-clock idle. PRD F1.3.
+
+All fields live under a top-level `cold-start` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+cold-start:
+  enabled: true
+  nudge-after-hours: 1
+  silence-after-sessions: 1
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cold-start.enabled` | boolean | `true` | Master toggle for the cold-start detector. When `false`, the detector is skipped entirely — no nudges fire and no idle-time tracking is performed. Defaults to `true` so the feature is opt-out rather than opt-in. PRD F1.3 / issue #500. |
+| `cold-start.nudge-after-hours` | integer | `1` | Hours of wall-clock idle (since the last session-end) before the cold-start detector fires a nudge at session-start. Set to a higher value (e.g. `24`) to silence transient idle pings on a busy host. Set to `0` to disable the wall-clock check (only the silence-after-sessions check applies). Bounds: integer ≥ 0. PRD F1.3 / issue #500. |
+| `cold-start.silence-after-sessions` | integer | `1` | Number of consecutive silent sessions (no commits, no learnings, no vault mirror writes) before the cold-start detector fires a nudge. A session counts as silent when both commits and learnings are zero. Set to `0` to disable the silence-count check. Bounds: integer ≥ 0. PRD F1.3 / issue #500. |
+
+**Used by:** `scripts/lib/cold-start-detector.mjs`.
 
 ## Vault Staleness
 
