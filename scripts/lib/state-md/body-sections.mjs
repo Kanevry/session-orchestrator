@@ -2,10 +2,20 @@
  * Body-section helpers for STATE.md.
  *
  * Pure functions — no file I/O.
+ *
+ * Plus on-disk wrappers (`appendDeviationOnDisk`, `markExpressPathCompleteOnDisk`,
+ * `recordAutoCommitOnDisk`) added for PRD 2026-05-22 § 4 Pattern 1 (issue #518).
+ * The on-disk wrappers delegate to the pure helpers above and route the
+ * read+write cycle through `writeStateMd` from frontmatter-mutators.mjs, which
+ * acquires `.orchestrator/state.lock` for mechanical serialization (PSA-004).
  */
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
-import { updateFrontmatterFields, touchUpdatedField } from './frontmatter-mutators.mjs';
+import {
+  updateFrontmatterFields,
+  touchUpdatedField,
+  writeStateMd,
+} from './frontmatter-mutators.mjs';
 
 /**
  * Extracts the current-wave banner info from the `## Current Wave` body
@@ -154,4 +164,61 @@ export function markExpressPathComplete(contents, options) {
   next = appendDeviation(next, timestamp, message);
   next = touchUpdatedField(next, timestamp);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// On-disk wrappers (PRD 2026-05-22 § 4 — Pattern 1, issue #518)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lock-guarded append to the `## Deviations` section.
+ *
+ * Delegates to the pure `appendDeviation` helper; the read+write cycle is
+ * serialized via `withStateMdLock` (PSA-004 mechanical enforcement).
+ *
+ * @param {string|undefined} repoRoot
+ * @param {string} isoTimestamp
+ * @param {string} message
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ */
+export async function appendDeviationOnDisk(repoRoot, isoTimestamp, message, opts = {}) {
+  return writeStateMd(
+    repoRoot,
+    (contents) => appendDeviation(contents, isoTimestamp, message),
+    opts
+  );
+}
+
+/**
+ * Lock-guarded `recordAutoCommit` for express-path / wave-checkpoint flows.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {{ sha: string, waveN: number, waveResultSummary: string, timestamp?: string }} options
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ */
+export async function recordAutoCommitOnDisk(repoRoot, options, opts = {}) {
+  return writeStateMd(
+    repoRoot,
+    (contents) => recordAutoCommit(contents, options),
+    opts
+  );
+}
+
+/**
+ * Lock-guarded `markExpressPathComplete` — used by session-end and the
+ * express-path skill flow.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {object} options  See markExpressPathComplete signature above.
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ */
+export async function markExpressPathCompleteOnDisk(repoRoot, options, opts = {}) {
+  return writeStateMd(
+    repoRoot,
+    (contents) => markExpressPathComplete(contents, options),
+    opts
+  );
 }

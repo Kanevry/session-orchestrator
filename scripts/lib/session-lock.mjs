@@ -30,6 +30,16 @@ import crypto from 'node:crypto';
 export const DEFAULT_TTL_HOURS = 4;
 export const LOCK_PATH = '.orchestrator/session.lock';
 
+// STATE.md write-lock (PRD 2026-05-22 § 4 — Pattern 1, issue #518).
+// Orthogonal to the session-lock above:
+//   - session.lock = "this repo working-copy is held by an active session"
+//   - state.lock   = "STATE.md is being written right now"
+// Two distinct lock files so a session can hold its session-lock for hours
+// while still allowing fast acquire/release cycles around individual writes.
+export const STATE_LOCK_PATH = '.orchestrator/state.lock';
+export const DEFAULT_STATE_LOCK_TIMEOUT_MS = 10000;
+export const STATE_LOCK_POLL_MS = 100;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -330,4 +340,340 @@ export function checkStale({ repoRoot } = {}) {
     host: lock.host,
     sameHost,
   };
+}
+
+// ---------------------------------------------------------------------------
+// STATE.md write-lock (PRD 2026-05-22 § 4 — Pattern 1, issue #518)
+// ---------------------------------------------------------------------------
+//
+// Mechanical enforcement of PSA-004 for STATE.md writes. Whereas the
+// session-lock above guards "this working-copy is held by one session", the
+// state-lock guards "STATE.md is being written right now" — a short-lived
+// lock acquired around every read-modify-write cycle.
+//
+// Design:
+//  - Atomic create via tmp + rename, same pattern as writeLockAtomic above.
+//  - Body: { pid, host, acquiredAt, holder } — host is included so cross-host
+//    callers (rare but possible via shared filesystems) avoid spurious PID
+//    liveness checks against unrelated PIDs.
+//  - Stale detection: process.kill(pid, 0). When the holder is on the same
+//    host and the PID is dead (ESRCH), the lock is overridden atomically and
+//    a WARN is written to stderr. Cross-host stale locks are NOT auto-cleared
+//    — they fall through to the timeout path.
+//  - Poll cadence: 100 ms by default. Configurable via STATE_LOCK_POLL_MS but
+//    no public override — tests inject via the optional `pollMs` parameter.
+//
+// Returns structured results, never throws (acquireStateLock / releaseStateLock).
+// withStateMdLock re-throws caller errors after releasing.
+
+/**
+ * Resolve the absolute path to the state-lock file.
+ * @param {string|undefined} repoRoot
+ * @returns {string}
+ */
+function stateLockPathFor(repoRoot) {
+  return path.join(repoRoot ?? process.cwd(), STATE_LOCK_PATH);
+}
+
+/**
+ * Build a fresh state-lock body.
+ * @param {{ holder?: string }} args
+ * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }}
+ */
+function buildStateLockBody({ holder }) {
+  return {
+    pid: process.pid,
+    host: os.hostname(),
+    acquiredAt: nowIso(),
+    holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
+  };
+}
+
+/**
+ * Parse a state-lock file body. Returns null on any malformed input.
+ * @param {string} raw
+ * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }|null}
+ */
+function parseStateLock(raw) {
+  try {
+    const obj = JSON.parse(raw);
+    if (
+      typeof obj === 'object' &&
+      obj !== null &&
+      typeof obj.pid === 'number' &&
+      typeof obj.host === 'string' &&
+      typeof obj.acquiredAt === 'string' &&
+      typeof obj.holder === 'string'
+    ) {
+      return obj;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomically write a state-lock body to disk via tmp + rename.
+ * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
+ * @param {object} body      Lock body to serialize.
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
+ */
+function writeStateLockAtomic(lockFile, body) {
+  try {
+    const dir = path.dirname(lockFile);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpSuffix = crypto.randomBytes(6).toString('hex');
+    const tmpFile = path.join(dir, `.state.lock.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', { encoding: 'utf8' });
+    fs.renameSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * Attempt one acquisition pass. Returns:
+ *   { ok: true, lock }                          — lock written
+ *   { ok: false, reason: 'held', existingLock } — held by a live holder
+ *   { ok: false, reason: 'fs-error', error }    — filesystem failure
+ *
+ * Side-effect: when an existing state-lock points to a dead PID on the same
+ * host, this function overrides the lock atomically and writes a WARN to
+ * stderr. Cross-host locks are never auto-overridden.
+ */
+function tryAcquireStateLock(lockFile, body) {
+  try {
+    let existingRaw = null;
+    try {
+      existingRaw = fs.readFileSync(lockFile, 'utf8');
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        return { ok: false, reason: 'fs-error', error: err.message };
+      }
+      // ENOENT: no existing lock. Fall through to write.
+    }
+
+    if (existingRaw !== null) {
+      const existing = parseStateLock(existingRaw);
+
+      // Unparseable existing lock — treat as stale and override. We never
+      // know which holder wrote it, so this is the only safe move.
+      if (existing === null) {
+        console.warn('stale state.lock (unparseable contents) overridden');
+        return writeStateLockAtomic(lockFile, body).ok
+          ? { ok: true, lock: body }
+          : { ok: false, reason: 'fs-error', error: 'override-write-failed' };
+      }
+
+      const sameHost = existing.host === os.hostname();
+      // PID liveness is only meaningful on the same host.
+      const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
+
+      if (pidAlive) {
+        return { ok: false, reason: 'held', existingLock: existing };
+      }
+
+      // Same host, dead PID — stale lock. Override atomically + WARN.
+      console.warn(`stale state.lock from PID ${existing.pid} overridden`);
+      const writeResult = writeStateLockAtomic(lockFile, body);
+      if (!writeResult.ok) return writeResult;
+      return { ok: true, lock: body };
+    }
+
+    // No existing lock — write fresh.
+    const writeResult = writeStateLockAtomic(lockFile, body);
+    if (!writeResult.ok) return writeResult;
+    return { ok: true, lock: body };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * Sleep helper for the acquire poll-loop. Promise-returning, so the loop is
+ * async without blocking the event loop.
+ * @param {number} ms
+ */
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Acquire the STATE.md write-lock. Polls every STATE_LOCK_POLL_MS until the
+ * lock is acquired or the timeout expires.
+ *
+ * Returns:
+ *   { ok: true, lock }                                    — lock acquired (possibly after waiting)
+ *   { ok: false, reason: 'timeout', existingLock? }       — timed out waiting for live holder
+ *   { ok: false, reason: 'fs-error', error: string }      — filesystem failure
+ *
+ * Stale-lock side-effects: when the existing lock points to a dead PID on
+ * the same host, the helper overrides it atomically and writes a WARN to
+ * stderr. The next poll iteration will then succeed.
+ *
+ * Never throws.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=10000] — max wait in milliseconds.
+ * @param {string} [opts.repoRoot] — defaults to process.cwd().
+ * @param {string} [opts.holder] — human-readable holder string (default `pid-<pid>`).
+ * @param {number} [opts.pollMs] — test-only override of poll cadence.
+ */
+export async function acquireStateLock({
+  timeoutMs = DEFAULT_STATE_LOCK_TIMEOUT_MS,
+  repoRoot,
+  holder,
+  pollMs = STATE_LOCK_POLL_MS,
+} = {}) {
+  const lockFile = stateLockPathFor(repoRoot);
+  const body = buildStateLockBody({ holder });
+  const deadline = Date.now() + (typeof timeoutMs === 'number' && timeoutMs >= 0 ? timeoutMs : DEFAULT_STATE_LOCK_TIMEOUT_MS);
+  const effectivePollMs = typeof pollMs === 'number' && pollMs > 0 ? pollMs : STATE_LOCK_POLL_MS;
+
+  // Loop until acquired or deadline reached. The first iteration runs
+  // unconditionally so a timeoutMs of 0 still attempts one acquisition.
+  for (;;) {
+    const attempt = tryAcquireStateLock(lockFile, body);
+    if (attempt.ok) return attempt;
+    if (attempt.reason === 'fs-error') return attempt;
+
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        reason: 'timeout',
+        existingLock: attempt.existingLock ?? null,
+      };
+    }
+    await delay(effectivePollMs);
+  }
+}
+
+/**
+ * Release the STATE.md write-lock IFF the holder matches.
+ *
+ * Caller must pass the same identifier they used in acquireStateLock — either
+ * `holder` (free-form string) OR `sessionId` (matched against the holder
+ * field when holder follows the `<sessionId>` convention). If neither is
+ * provided, the helper falls back to PID equality.
+ *
+ * Returns:
+ *   { ok: true, released: true }                 — lock unlinked
+ *   { ok: true, released: false, reason }        — lock left intact (not owner / not present)
+ *   { ok: false, reason: 'fs-error', error }     — filesystem failure
+ *
+ * Never throws.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot]
+ * @param {string} [opts.sessionId]  — matched against the `holder` field.
+ * @param {string} [opts.holder]     — matched against the `holder` field (overrides sessionId).
+ */
+export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
+  const lockFile = stateLockPathFor(repoRoot);
+
+  let raw;
+  try {
+    raw = fs.readFileSync(lockFile, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { ok: true, released: false, reason: 'not-found' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  const lock = parseStateLock(raw);
+  if (lock === null) {
+    // Unparseable — refuse to delete; some other process may be writing now.
+    return { ok: true, released: false, reason: 'not-owner' };
+  }
+
+  const expectedHolder = holder ?? sessionId ?? null;
+  const ownerMatch = expectedHolder !== null
+    ? lock.holder === expectedHolder
+    : lock.pid === process.pid && lock.host === os.hostname();
+
+  if (!ownerMatch) {
+    return { ok: true, released: false, reason: 'not-owner' };
+  }
+
+  try {
+    fs.unlinkSync(lockFile);
+    return { ok: true, released: true };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { ok: true, released: false, reason: 'not-found' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * High-level wrapper: acquire the STATE.md write-lock, run `fn`, release on
+ * completion or throw. Always releases the lock — even if `fn` throws —
+ * before re-raising the original error.
+ *
+ * Throws when:
+ *   - acquireStateLock fails (timeout or fs-error) → throws a labelled Error
+ *     so callers see the failure as an exception rather than a silent
+ *     {ok:false} return. This is the contract that lets call sites use plain
+ *     `await withStateMdLock(repoRoot, async () => …)` without branching.
+ *   - `fn` throws → the original error is re-thrown after release.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {() => (T | Promise<T>)} fn
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs]
+ * @param {string} [opts.holder]
+ * @param {number} [opts.pollMs]
+ * @returns {Promise<T>}
+ * @template T
+ */
+export async function withStateMdLock(repoRoot, fn, opts = {}) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('withStateMdLock: fn must be a function');
+  }
+
+  const holder = typeof opts.holder === 'string' && opts.holder.length > 0
+    ? opts.holder
+    : `pid-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+
+  const acquireResult = await acquireStateLock({
+    repoRoot,
+    timeoutMs: opts.timeoutMs,
+    holder,
+    pollMs: opts.pollMs,
+  });
+
+  if (!acquireResult.ok) {
+    const reason = acquireResult.reason;
+    const extra = reason === 'timeout' && acquireResult.existingLock
+      ? ` (held by ${acquireResult.existingLock.holder}, pid=${acquireResult.existingLock.pid})`
+      : reason === 'fs-error' && acquireResult.error
+        ? `: ${acquireResult.error}`
+        : '';
+    const err = new Error(`withStateMdLock: acquire failed (${reason})${extra}`);
+    err.code = `STATE_LOCK_${reason.toUpperCase().replace(/-/g, '_')}`;
+    throw err;
+  }
+
+  let result;
+  let caughtError = null;
+  try {
+    result = await fn();
+  } catch (err) {
+    caughtError = err;
+  } finally {
+    // Always release — even on fn() throw — so the lock does not leak.
+    // The release may itself fail; we surface that via stderr so the caller
+    // sees the original fn() error, not a release-failure overshadow.
+    const releaseResult = releaseStateLock({ repoRoot, holder });
+    if (!releaseResult.ok || (releaseResult.released === false && releaseResult.reason === 'fs-error')) {
+      console.warn(`withStateMdLock: release failed (${releaseResult.reason ?? 'unknown'})`);
+    }
+  }
+
+  if (caughtError !== null) throw caughtError;
+  return result;
 }

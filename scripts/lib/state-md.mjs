@@ -13,13 +13,23 @@
 
 export { parseStateMd, serializeStateMd } from './state-md/yaml-parser.mjs';
 
-export { touchUpdatedField, updateFrontmatterFields } from './state-md/frontmatter-mutators.mjs';
+export {
+  touchUpdatedField,
+  updateFrontmatterFields,
+  resolveStateMdPath,
+  writeStateMd,
+  updateFrontmatterFieldsOnDisk,
+  touchUpdatedFieldOnDisk,
+} from './state-md/frontmatter-mutators.mjs';
 
 export {
   readCurrentTask,
   appendDeviation,
   markExpressPathComplete,
   recordAutoCommit,
+  appendDeviationOnDisk,
+  recordAutoCommitOnDisk,
+  markExpressPathCompleteOnDisk,
 } from './state-md/body-sections.mjs';
 
 export {
@@ -27,6 +37,8 @@ export {
   writeMissionStatus,
   setMissionStatus,
   readMissionStatus,
+  writeMissionStatusOnDisk,
+  setMissionStatusOnDisk,
 } from './state-md/mission-status.mjs';
 
 export { parseRecommendations } from './state-md/recommendations.mjs';

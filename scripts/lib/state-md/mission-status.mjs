@@ -5,10 +5,16 @@
  * `## Mission Status` body section (body-level per-task status lines).
  *
  * Pure functions — no file I/O.
+ *
+ * Plus on-disk wrappers (`writeMissionStatusOnDisk`, `setMissionStatusOnDisk`)
+ * added for PRD 2026-05-22 § 4 Pattern 1 (issue #518). The on-disk wrappers
+ * delegate to the pure helpers above and route the read+write cycle through
+ * `writeStateMd` from frontmatter-mutators.mjs, which acquires
+ * `.orchestrator/state.lock` for mechanical serialization (PSA-004).
  */
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
-import { updateFrontmatterFields } from './frontmatter-mutators.mjs';
+import { updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
 
 /**
  * Parses the optional `mission-status:` block from a STATE.md frontmatter object
@@ -199,4 +205,43 @@ export function readMissionStatus(contents, taskId) {
     if (m) return m[1];
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// On-disk wrappers (PRD 2026-05-22 § 4 — Pattern 1, issue #518)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lock-guarded `writeMissionStatus` — replaces the frontmatter `mission-status`
+ * block-seq under the state-lock.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {object[]|null|undefined} missionStatusArray
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ */
+export async function writeMissionStatusOnDisk(repoRoot, missionStatusArray, opts = {}) {
+  return writeStateMd(
+    repoRoot,
+    (contents) => writeMissionStatus(contents, missionStatusArray),
+    opts
+  );
+}
+
+/**
+ * Lock-guarded `setMissionStatus` — sets or replaces a single task entry in
+ * the `## Mission Status` body section under the state-lock.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {string} taskId
+ * @param {string} status   brainstormed | validated | in-dev | testing | completed
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ */
+export async function setMissionStatusOnDisk(repoRoot, taskId, status, opts = {}) {
+  return writeStateMd(
+    repoRoot,
+    (contents) => setMissionStatus(contents, taskId, status),
+    opts
+  );
 }
