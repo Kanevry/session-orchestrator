@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`/evolve` null-subject dedupe collapse (#284, mail-assistant)** — `consolidateDuplicates` in Phase 3.5 step 7 and Phase 4.4 step 4 previously keyed on `${type}::${subject}`, which coerced `null` to the string `"null"` and collapsed all null-subject entries of the same type to a single survivor. Fix: entries with null/empty/missing `subject` are now keyed by their always-unique `id`, so each is preserved individually. Named-subject entries continue to dedupe as before (highest confidence wins). Companion regression test: `tests/skills/evolve/dedupe-null-subject.test.mjs` (10 assertions: 7 positive contract + 3 negative proof of old breakage).
+- **`/evolve` null-subject dedupe collapse (#284, consumer repo)** — `consolidateDuplicates` in Phase 3.5 step 7 and Phase 4.4 step 4 previously keyed on `${type}::${subject}`, which coerced `null` to the string `"null"` and collapsed all null-subject entries of the same type to a single survivor. Fix: entries with null/empty/missing `subject` are now keyed by their always-unique `id`, so each is preserved individually. Named-subject entries continue to dedupe as before (highest confidence wins). Companion regression test: `tests/skills/evolve/dedupe-null-subject.test.mjs` (10 assertions: 7 positive contract + 3 negative proof of old breakage).
 
 ### Added
 
