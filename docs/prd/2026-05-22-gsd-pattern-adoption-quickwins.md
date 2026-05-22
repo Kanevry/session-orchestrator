@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-22
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Implemented (2026-05-22)
+**Status:** Hardened (follow-ups closed in #522-#525, 2026-05-22)
 **Appetite:** 2w (Medium Batch)
 **Parent Project:** session-orchestrator
 
@@ -173,7 +173,7 @@ Then verhält sich wave-executor identisch zu heute (sofortiger Abort)
 | `scripts/lib/state-md/body-sections.mjs` | wrap | 1 — route through `withStateMdLock()` |
 | `scripts/lib/state-md/mission-status.mjs` | wrap | 1 — route through `withStateMdLock()` |
 | `scripts/lib/slopcheck.mjs` | new | 2 — `classifyPackages()` + cache + registry-dispatch |
-| `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs` | new | 2 — discovery integration |
+| `skills/discovery/probes/supply-chain-slopcheck.mjs` | new | 2 — discovery integration (moved from `scripts/lib/discovery/probes/` to canonical skills path in #523 follow-up) |
 | `skills/plan/SKILL.md` | extend | 2 — Phase 3.5 Package-Audit |
 | `skills/plan/mode-feature.md` | extend | 2 — Package-Mention in PRD-Sections triggers classifyPackages |
 | `hooks/pre-bash-templates-first.mjs` | new | 3 — PreToolUse Bash matcher |
@@ -271,7 +271,7 @@ All four patterns implemented in a 5-wave deep session on 2026-05-22. Closes #51
 ### Wave 3 — Tooling (Pattern 2 Slopcheck)
 - `scripts/lib/slopcheck.mjs` `classifyPackages()` + cache + npm dispatch (commit `d14deea`)
 - `skills/plan/SKILL.md` Phase 3.5 + `skills/plan/mode-feature.md` integration (commit `65522c1`)
-- `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs` (commit `7970877`)
+- `skills/discovery/probes/supply-chain-slopcheck.mjs` (originally landed at `scripts/lib/discovery/probes/` in commit `7970877`; moved to canonical skills location in #523 follow-up)
 - `tests/unit/slopcheck.test.mjs` (36 tests, commit `beb5aee`)
 - Session Config: `slopcheck: { enabled: false, registry-threshold-downloads: 100, sources: [plan, discovery] }`
 - **Repo smoke**: 17 packages in own package.json — all LEGITIMATE
@@ -308,3 +308,62 @@ Bundled from W5 architect-reviewer (3 HIGH + 6 MED + 1 LOW), qa-strategist (12 H
 In-session security MEDs already fixed (commit `aebc1df`):
 - npm argv injection via package.json keys (slopcheck) — validate npm name grammar + prepend `--`
 - bypass-pattern prefix-inclusion bypass (templates-first hook) — boundary check on trailing edge
+
+## Follow-up Implementation (2026-05-22 deep session — issues #522-#525)
+
+The four follow-up issues filed at the end of the initial epic (W5 review findings) were closed in a subsequent deep session on 2026-05-22 (5 waves, 24 agents dispatched: 4 Discovery + 6 Impl-Core + 1 Impl-Polish + 6 Quality + 5 W5 reviewers/docs). Each Pattern moved from "Implemented (W5 review pending)" to "Hardened (W5 follow-ups closed)".
+
+### Pattern 1 (#522) — STATE.md-Lock skill body wire-up
+
+Wave W1-A1 audit revealed that the two skill bodies originally targeted for wire-up — `skills/wave-executor/wave-loop.md` and `skills/session-start/SKILL.md` — had no actual STATE.md write code: the prose deviation contracts were already correct. Actual rewires landed in:
+
+- `commands/go.md` — STATE.md writes now routed through `withStateMdLock()`
+- `skills/session-end/phase-3-7a-recommendations.md` — final-phase STATE.md writer wrapped
+
+Library-side hardening:
+
+- Added `state-md-lock.enabled: false` short-circuit in `withStateMdLock()` so the Session Config knob is actually respected (previously hard-coded to acquire)
+- 10 new tests covering cross-host scenarios, unparseable lock bodies, holder/sessionId mismatch, the structured-error return contract, and the new short-circuit path
+
+### Pattern 2 (#523) — Slopcheck probe relocation + dead-knob cleanup
+
+- Discovery probe moved from `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs` to the canonical `skills/discovery/probes/supply-chain-slopcheck.mjs` location
+- New companion doc `skills/discovery/probes-supply-chain.md` documents probe behaviour, classification matrix, and Session Config interactions
+- Dead `registry-threshold-downloads` knob removed from `CLAUDE.md`, `docs/session-config-template.md`, and `scripts/lib/config/slopcheck.mjs` (never read by `classifyPackages()` — MVP fixed the threshold inline)
+- `SUS` enum value retained for future use, with JSDoc clarification that the MVP classifier never emits it (reserved for npm audit integration in a later iteration)
+- 13 new tests for cache TTL boundary, persistence across runs, fail-soft on `npm view` timeout, and four distinct `npm view` response-shape variants (single string version, version array, missing `versions` field, registry-404)
+
+### Pattern 3 (#524) — templates-first hook hardening + `/templates-ack` command
+
+- New `commands/templates-ack.md` — operator-invoked `/templates-ack` writes `.orchestrator/runtime/templates-acknowledged.json` for the active session, allowing the hook to pass create/new calls through
+- `statSync` → `lstatSync` at lines 44, 334, 347 of `hooks/pre-bash-templates-first.mjs` — symlinks pointing at template paths are now rejected (closes a symlink-spoofing path)
+- `.yml` and `.yaml` GitHub form-template files are now recognized as valid template Reads (issue templates in GitHub form-style use YAML, not Markdown)
+- Symmetric bypass-pattern leading-whitespace strip — latent asymmetric bug where the trailing-whitespace check landed in `aebc1df` but the leading-whitespace counterpart was missing; both sides now boundary-checked
+- 15 new tests including the critical G7 transcript-history happy-path test gap (Read on `.gitlab/merge_request_templates/Default.md` correctly unblocks subsequent `glab mr create` in the same session)
+
+### Pattern 4 (#525) — Auto-Fix-Loop docs, banner, redaction
+
+- `.claude/rules/quality-gates-autofix.md` extended with RCE-equivalent Session Config warning (the `*-command` keys are remote-code-execution-equivalent because the fixer-agent dispatches them verbatim)
+- New `scripts/lib/qg-command-drift-banner.mjs` module — session-start Phase 4 banner surfaces drift between live `package.json` script commands and the Session Config `*-command` keys
+- `.orchestrator/metrics/verification-failures/` added to `.gitignore` (diagnostics bundles may contain redacted secrets, never to be committed)
+- STATE.md Deviation writer clarified as coordinator-only in `skills/wave-executor/wave-loop.md` and `skills/wave-executor/SKILL.md` (subagents must not write Deviation entries directly)
+- Redaction logic extracted from inline `quality-gate.mjs` into dedicated `scripts/lib/quality-gate/diagnostics.mjs` with 12 redaction patterns (API keys, bearer tokens, JWT, etc.) plus `SECRET_ENV_NAME_RE` for env-var-name matching
+- 60+ new tests covering `loadCommandsFromSessionConfig()`, `writeLastGreenSha()`, `listChangedFiles()`, `coerceMaxRetries()` variant inputs, `SO_WAVE_ID` env var propagation, `dispatchFixer` default branch, multi-gate cascade (lint → typecheck → test), L3 split-file refactor, and redaction-pattern unit coverage
+
+### Net delta
+
+- **Files**: 28 changed/created across the session
+  - 6 new files: `commands/templates-ack.md`, `scripts/lib/qg-command-drift-banner.mjs`, `scripts/lib/quality-gate/diagnostics.mjs`, `skills/discovery/probes-supply-chain.md`, plus 3 new test files (`tests/unit/quality-gate-diagnostics.test.mjs`, `tests/unit/quality-gate-session-config.test.mjs`, `tests/unit/qg-command-drift-banner.test.mjs`)
+  - 1 moved file: `supply-chain-slopcheck.mjs` from `scripts/lib/discovery/probes/` → `skills/discovery/probes/`
+  - ~20 modified files (code + docs + tests + Session Config)
+- **Tests**: 6620 → 6731 net (≈ +111 new tests in merge — intermediate counts during W4 were higher because some agents extended existing test files rather than landing new ones)
+- **Waves**: 5, with 24 agents dispatched (4 Discovery + 6 Impl-Core + 1 Impl-Polish + 6 Quality + 5 W5 reviewers/docs)
+- **Quality gates**: lint 0 errors, typecheck 212 files OK, full test suite green
+- **Coord-direct fixes**: 2 pre-existing meta-test failures resolved (session-lock AGENTS.md alias mention; sessions.jsonl historical record role field backfill)
+
+### Cross-references
+
+- Issues closed by this session: #522 #523 #524 #525
+- Original epic PRD: this file (initial commit `6692fdd`)
+- Session metrics: `.orchestrator/metrics/sessions.jsonl` (entry lands at session-end)
+- Session decisions: vault-mirror to `~/Projects/Bernhard/vault/01-projects/session-orchestrator/decisions.md` (lands at session-end)
