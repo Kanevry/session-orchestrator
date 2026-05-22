@@ -608,8 +608,296 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
     expect(result.attempts).toBe(2);
   });
 
-  it('does not write a diagnostics bundle when gate eventually passes', async () => {
-    const flagFile = join(repoRoot, 'fixed.flag');
+  // Original L3 if/else branching test removed (test-quality.md violation).
+  // Replacement tests are in 'W4-A6 Group H — L3 branch split' below (H1 + H2 — branch-free).
+});
+
+// ---------------------------------------------------------------------------
+// Group D: coerceMaxRetries variants — tested indirectly via loop count
+// W4-A6 owns: D, E, F, G, H, I (distinct describe blocks from W4-A4's A/B/C)
+// ---------------------------------------------------------------------------
+
+describe('W4-A6 Group D — coerceMaxRetries variants (indirect via loop count)', () => {
+  it('D1: NaN maxRetries coerces to default (2): dispatchFixer called exactly 2 times', async () => {
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: NaN,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // NaN → typeof NaN === 'number' but !Number.isFinite(NaN) → returns default 2
+    expect(dispatchFixer).toHaveBeenCalledTimes(2);
+  });
+
+  it('D2: Infinity maxRetries coerces to default (2): dispatchFixer called exactly 2 times', async () => {
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: Infinity,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // Infinity → !Number.isFinite(Infinity) → returns default 2
+    expect(dispatchFixer).toHaveBeenCalledTimes(2);
+  });
+
+  it('D3: maxRetries=-1 coerces to 0: dispatchFixer is never called', async () => {
+    const dispatchFixer = vi.fn();
+
+    await runQualityGateWithRetry({
+      maxRetries: -1,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // -1 → int < 0 → returns 0 → no retries, no fixer calls
+    expect(dispatchFixer).not.toHaveBeenCalled();
+  });
+
+  it('D4: maxRetries=2.7 coerces to 2 (truncated): dispatchFixer called exactly 2 times', async () => {
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: 2.7,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // Math.trunc(2.7) === 2
+    expect(dispatchFixer).toHaveBeenCalledTimes(2);
+  });
+
+  it('D5: maxRetries="5" (string) coerces to default (2): dispatchFixer called exactly 2 times', async () => {
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: '5',
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // typeof '5' !== 'number' → returns default 2
+    expect(dispatchFixer).toHaveBeenCalledTimes(2);
+  });
+
+  it('D6: maxRetries=null coerces to default (2): dispatchFixer called exactly 2 times', async () => {
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: null,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    // typeof null !== 'number' → returns default 2
+    expect(dispatchFixer).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group E: runGate timeout + maxBuffer (indirect via runQualityGateWithRetry)
+// ---------------------------------------------------------------------------
+
+describe('W4-A6 Group E — runGate timeout + maxBuffer behaviour', () => {
+  it('E1: always-failing command returns ok: false within test timeout (no hang)', async () => {
+    // runGate has a 15-min ceiling (GATE_TIMEOUT_MS) which is unreasonable in
+    // tests. We test the failure result shape via a fast-failing command instead
+    // of waiting for the timeout. The actual timeout path is marked below.
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.finalFailure.exitCode).toBe(1);
+  });
+
+  it('E2: command producing large output does not throw (maxBuffer=16MiB path)', async () => {
+    // Generate ~512KB of output — enough to exercise buffering without causing
+    // test slowness. The real ceiling is 16MiB; we verify the function completes
+    // without throwing and captures the gate result. The large-output command
+    // exits 0; the test gate (false) makes the overall run fail.
+    const bigOutputCmd = `node -e "process.stdout.write('x'.repeat(512*1024))"`;
+    // This command outputs ≥512KB then exits 0 — we test it doesn't crash the harness.
+    const failWithOutputCmd = `node -e "process.stdout.write('failure line\\n'); process.exit(1)"`;
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      // lint: large output but exits 0; typecheck: fails with a line
+      commands: { lint: bigOutputCmd, typecheck: failWithOutputCmd, test: 'true' },
+    });
+
+    // typecheck fails → ok: false, but the function returned (no crash/hang)
+    expect(result.ok).toBe(false);
+    expect(result.finalFailure.gate).toBe('typecheck');
+    // typecheck command emits 'failure line' → output is non-empty after truncation
+    expect(result.finalFailure.output).toContain('failure line');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group F: multi-gate cascade — gate order + fail-fast semantics
+// ---------------------------------------------------------------------------
+
+describe('W4-A6 Group F — multi-gate cascade', () => {
+  it('F1: all three gates pass → ok: true and dispatchFixer never called', async () => {
+    const dispatchFixer = vi.fn();
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer,
+      repoRoot,
+      commands: { lint: 'echo lint-ok', typecheck: 'echo tc-ok', test: 'echo test-ok' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(dispatchFixer).not.toHaveBeenCalled();
+  });
+
+  it('F2: lint fails → ok: false with finalFailure.gate === "lint" (typecheck/test not run)', async () => {
+    // We verify fail-fast by checking the gate reported; if typecheck/test ran
+    // their echo would appear but we can only observe the gate name in result.
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer,
+      repoRoot,
+      commands: { lint: 'false', typecheck: 'echo tc-never-runs', test: 'echo test-never-runs' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.finalFailure.gate).toBe('lint');
+  });
+
+  it('F3: fixer fixes lint → typecheck → test in multi-retry scenario → ok: true', async () => {
+    // Track calls to swap command results via flag files
+    const lintFlagFile = join(repoRoot, 'lint-fixed.flag');
+    const typecheckFlagFile = join(repoRoot, 'tc-fixed.flag');
+    const testFlagFile = join(repoRoot, 'test-fixed.flag');
+
+    // Commands check for flag files
+    const lintCmd = `test -f ${lintFlagFile}`;
+    const tcCmd = `test -f ${typecheckFlagFile}`;
+    const testCmd = `test -f ${testFlagFile}`;
+
+    // Fixer creates all flag files on first call
+    const dispatchFixer = vi.fn().mockImplementation(async () => {
+      writeFileSync(lintFlagFile, '1', 'utf8');
+      writeFileSync(typecheckFlagFile, '1', 'utf8');
+      writeFileSync(testFlagFile, '1', 'utf8');
+    });
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 2,
+      dispatchFixer,
+      repoRoot,
+      commands: { lint: lintCmd, typecheck: tcCmd, test: testCmd },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group G: SO_WAVE_ID env var + dispatchFixer defaults
+// ---------------------------------------------------------------------------
+
+describe('W4-A6 Group G — SO_WAVE_ID env + dispatchFixer defaults', () => {
+  afterEach(() => {
+    delete process.env.SO_WAVE_ID;
+  });
+
+  it('G1: diagnostics bundle.wave equals SO_WAVE_ID when set', async () => {
+    process.env.SO_WAVE_ID = 'wave-3-test';
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
+    expect(bundle.wave).toBe('wave-3-test');
+  });
+
+  it('G2: diagnostics bundle.wave is null when SO_WAVE_ID is unset', async () => {
+    delete process.env.SO_WAVE_ID;
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
+    expect(bundle.wave).toBeNull();
+  });
+
+  it('G3: runQualityGateWithRetry works when dispatchFixer is absent from options', async () => {
+    // No dispatchFixer key at all — should not throw, should return ok: false
+    const result = await runQualityGateWithRetry({
+      maxRetries: 2,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(3);
+  });
+
+  it('G4: runQualityGateWithRetry does not throw when dispatchFixer is a non-function string', async () => {
+    await expect(
+      runQualityGateWithRetry({
+        maxRetries: 1,
+        dispatchFixer: 'not a function',
+        repoRoot,
+        commands: FAIL_LINT_COMMANDS,
+      }),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
+  it('G5: runQualityGateWithRetry does not throw when dispatchFixer is undefined', async () => {
+    await expect(
+      runQualityGateWithRetry({
+        maxRetries: 1,
+        dispatchFixer: undefined,
+        repoRoot,
+        commands: FAIL_LINT_COMMANDS,
+      }),
+    ).resolves.toMatchObject({ ok: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group H: L3 branching split — refactor of the if/else in section 10
+//
+// The original test at line 627 has an if/else branch inside the test body,
+// violating test-quality.md (cyclomatic complexity = 1 rule).
+// Per the production implementation, when a gate passes (ok: true), no
+// diagnostics bundle is written and diagnosticsBundlePath is undefined.
+// We split into two explicit, branch-free tests.
+// ---------------------------------------------------------------------------
+
+describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)', () => {
+  it('H1: diagnosticsBundlePath is undefined when gate passes after fixer dispatch', async () => {
+    const flagFile = join(repoRoot, 'h1-fixed.flag');
     const conditionalLint = `test -f ${flagFile}`;
 
     const wrappedFixer = vi.fn().mockImplementation(async () => {
@@ -623,11 +911,27 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
       commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
     });
 
-    // No abort → no bundle (or bundle path undefined)
-    if (result.diagnosticsBundlePath !== undefined) {
-      expect(existsSync(result.diagnosticsBundlePath)).toBe(false);
-    } else {
-      expect(result.diagnosticsBundlePath).toBeUndefined();
-    }
+    // Gate passes → no abort → no bundle path written
+    expect(result.diagnosticsBundlePath).toBeUndefined();
+  });
+
+  it('H2: result.ok is true when gate passes after fixer dispatch (confirming no abort occurred)', async () => {
+    const flagFile = join(repoRoot, 'h2-fixed.flag');
+    const conditionalLint = `test -f ${flagFile}`;
+
+    const wrappedFixer = vi.fn().mockImplementation(async () => {
+      writeFileSync(flagFile, '1', 'utf8');
+    });
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 2,
+      dispatchFixer: wrappedFixer,
+      repoRoot,
+      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+    });
+
+    // If ok === true, the gate passed and no diagnostics bundle is warranted.
+    // This confirms the H1 assertion isn't trivially vacuous.
+    expect(result.ok).toBe(true);
   });
 });

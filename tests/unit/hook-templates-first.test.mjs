@@ -531,3 +531,331 @@ describe('profile gate', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Helper: write a transcript JSONL file with specific tool_use records
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a minimal transcript JSONL file and return its absolute path.
+ * Each entry in `toolUses` produces one assistant record.
+ *
+ * @param {string} dir   Directory to write the file in (already tracked for cleanup)
+ * @param {Array<{name: string, input: object}>} toolUses
+ * @returns {Promise<string>}  Absolute path to the JSONL file
+ */
+async function writeTranscript(dir, toolUses) {
+  const lines = toolUses.map((tu) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: tu.name, input: tu.input }],
+      },
+    }),
+  );
+  const transcriptPath = path.join(dir, 'transcript.jsonl');
+  await fs.writeFile(transcriptPath, lines.join('\n') + '\n');
+  return transcriptPath;
+}
+
+// ---------------------------------------------------------------------------
+// Group A — G7 transcript-history HAPPY PATH (the critical missing case)
+// ---------------------------------------------------------------------------
+
+describe('G7 transcript-history happy path', { timeout: 15000 }, () => {
+  it('exits 0 when transcript shows prior Read of GitLab MR template', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const transcriptPath = await writeTranscript(dir, [
+      { name: 'Bash', input: { command: 'ls -la' } },
+      { name: 'Read', input: { file_path: path.join(dir, '.gitlab', 'merge_request_templates', 'Default.md') } },
+    ]);
+    const stdin = {
+      session_id: 'g7-test',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab mr create --title foo' },
+      transcript_path: transcriptPath,
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.code).toBe(0);
+  });
+
+  it('stderr does not contain templates-ack when transcript shows prior Read', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const transcriptPath = await writeTranscript(dir, [
+      { name: 'Read', input: { file_path: path.join(dir, '.gitlab', 'merge_request_templates', 'Default.md') } },
+    ]);
+    const stdin = {
+      session_id: 'g7-test-2',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab mr create --title foo' },
+      transcript_path: transcriptPath,
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.stderr).not.toContain('templates-ack');
+  });
+
+  it('exits 2 (deny) when transcript_path file does not exist', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const stdin = {
+      session_id: 'g7-nonexistent',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab mr create --title foo' },
+      transcript_path: '/nonexistent/path/transcript.jsonl',
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 2 (deny) when transcript has no prior Read tool_use — only Bash entries', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const transcriptPath = await writeTranscript(dir, [
+      { name: 'Bash', input: { command: 'ls -la' } },
+      { name: 'Bash', input: { command: 'git status' } },
+    ]);
+    const stdin = {
+      session_id: 'g7-no-read',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab mr create --title foo' },
+      transcript_path: transcriptPath,
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 2 (deny) when transcript has Read of a DIFFERENT file (not a template path)', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const transcriptPath = await writeTranscript(dir, [
+      { name: 'Read', input: { file_path: '/some/other/file.md' } },
+    ]);
+    const stdin = {
+      session_id: 'g7-wrong-read',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab mr create --title foo' },
+      transcript_path: transcriptPath,
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.code).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group B — enforcement: 'off' branch
+// ---------------------------------------------------------------------------
+
+describe('enforcement: off', { timeout: 15000 }, () => {
+  it('exits 0 when policy enforcement is "off" regardless of template presence or transcript', async () => {
+    const offPolicy = { ...FIXTURE_POLICY, enforcement: 'off' };
+    const dir = await mkProjectTracked({
+      policy: offPolicy,
+      withGitlabMrTemplate: true,
+    });
+    // No transcript_path — would normally block under 'block' enforcement
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title foo'),
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group C — malformed / edge-case ack JSON
+// ---------------------------------------------------------------------------
+
+describe('malformed ack JSON variants', { timeout: 15000 }, () => {
+  it('exits 2 when ack file is malformed JSON (syntax error)', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    // Plant a corrupt ack file
+    const runtimeDir = path.join(dir, '.orchestrator', 'runtime');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runtimeDir, 'templates-acknowledged.json'),
+      'not valid json {',
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title foo', 'test-session-001'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 2 when ack entry exists but lacks acknowledgedAt field', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const runtimeDir = path.join(dir, '.orchestrator', 'runtime');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    // Entry exists but schema is incomplete — no acknowledgedAt
+    await fs.writeFile(
+      path.join(runtimeDir, 'templates-acknowledged.json'),
+      JSON.stringify({ 'test-session-001': { userId: 'alice' } }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title foo', 'test-session-001'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 2 when ack file has no entry for the current session_id', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const runtimeDir = path.join(dir, '.orchestrator', 'runtime');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    // Different session recorded — current session is not in the file
+    await fs.writeFile(
+      path.join(runtimeDir, 'templates-acknowledged.json'),
+      JSON.stringify({ 'other-session-002': { acknowledgedAt: '2026-05-22T10:00:00Z' } }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title foo', 'test-session-new'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 0 when ack JSON has a valid entry (with acknowledgedAt) for the current session', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const runtimeDir = path.join(dir, '.orchestrator', 'runtime');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runtimeDir, 'templates-acknowledged.json'),
+      JSON.stringify({ 'test-session-ok': { acknowledgedAt: '2026-05-22T10:00:00Z' } }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title foo', 'test-session-ok'),
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group D — .yml / .yaml template recognition (W2-A4 addition)
+// ---------------------------------------------------------------------------
+
+describe('.yml / .yaml template recognition', { timeout: 15000 }, () => {
+  it('exits 2 (denies create) when only .yml template exists (GitHub form template)', async () => {
+    const dir = await mkProjectTracked();
+    // Plant a .yml issue template (GitHub form templates use .yml not .md)
+    const tplDir = path.join(dir, '.github', 'ISSUE_TEMPLATE');
+    await fs.mkdir(tplDir, { recursive: true });
+    await fs.writeFile(path.join(tplDir, 'bug.yml'), 'name: Bug Report\n');
+    // No transcript_path — no prior Read
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('gh issue create --title foo'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('exits 0 when transcript shows prior Read of .yml template file', async () => {
+    const dir = await mkProjectTracked();
+    const tplDir = path.join(dir, '.github', 'ISSUE_TEMPLATE');
+    await fs.mkdir(tplDir, { recursive: true });
+    await fs.writeFile(path.join(tplDir, 'bug.yml'), 'name: Bug Report\n');
+    const ymlTemplatePath = path.join(tplDir, 'bug.yml');
+    const transcriptPath = await writeTranscript(dir, [
+      { name: 'Read', input: { file_path: ymlTemplatePath } },
+    ]);
+    const stdin = {
+      session_id: 'yml-read-test',
+      tool_name: 'Bash',
+      tool_input: { command: 'gh issue create --title foo' },
+      transcript_path: transcriptPath,
+    };
+    const result = await runHook({ projectDir: dir, stdin });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group E — bypass-pattern leading whitespace symmetric strip (W2-A4 addition)
+// ---------------------------------------------------------------------------
+
+describe('bypass-pattern leading whitespace symmetric strip', { timeout: 15000 }, () => {
+  it('exits 0 when bypass_pattern has leading whitespace in the policy', async () => {
+    // Policy bypass entry has leading spaces — matchesBypass() should strip and still match.
+    // Use a create-verb command so the regex gate fires and bypass is the only exit-0 path.
+    const policyWithPaddedPattern = {
+      ...FIXTURE_POLICY,
+      bypass_patterns: ['  glab mr create --title bypass-test'],
+    };
+    const dir = await mkProjectTracked({
+      policy: policyWithPaddedPattern,
+      withGitlabMrTemplate: true,
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab mr create --title bypass-test'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('exits 0 when command has leading whitespace and the bypass_pattern does not', async () => {
+    const policyWithPattern = {
+      ...FIXTURE_POLICY,
+      bypass_patterns: ['glab mr create --title bypass-test'],
+    };
+    const dir = await mkProjectTracked({
+      policy: policyWithPattern,
+      withGitlabMrTemplate: true,
+    });
+    // Command sent with leading whitespace — hook should strip and still match bypass
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('  glab mr create --title bypass-test'),
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group F — policy resolution priority (cwd > projectDir)
+// ---------------------------------------------------------------------------
+
+describe('policy resolution priority — cwd wins over projectDir', { timeout: 15000 }, () => {
+  it('exits 0 when cwd policy sets enforcement "off" even though CLAUDE_PROJECT_DIR policy has enforcement "block"', async () => {
+    // Strategy: cwd policy = 'off' → hook exits 0 (allow).
+    // CLAUDE_PROJECT_DIR policy = 'block' → would exit 2 if it were used.
+    // If the hook incorrectly picks the projectDir policy, the test would fail (exit 2).
+    // We use bypass_patterns:[] so there is no bypass shortcut that could mask the result.
+
+    // Outer projectDir has block enforcement
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tpl-pdir-'));
+    tmpDirs.push(projectDir);
+
+    const projectPolicyDir = path.join(projectDir, '.orchestrator', 'policy');
+    await fs.mkdir(projectPolicyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(projectPolicyDir, 'templates-policy.json'),
+      JSON.stringify({ ...FIXTURE_POLICY, enforcement: 'block', bypass_patterns: [] }, null, 2),
+    );
+
+    // cwd subdir has enforcement 'off' — should win in resolution order
+    const cwdDir = path.join(projectDir, 'subproject');
+    await fs.mkdir(cwdDir, { recursive: true });
+
+    const cwdPolicyDir = path.join(cwdDir, '.orchestrator', 'policy');
+    await fs.mkdir(cwdPolicyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdPolicyDir, 'templates-policy.json'),
+      JSON.stringify({ ...FIXTURE_POLICY, enforcement: 'off', bypass_patterns: [] }, null, 2),
+    );
+
+    // Plant a template in cwdDir so there IS something to enforce if policy were 'block'
+    const tplDir = path.join(cwdDir, '.gitlab', 'merge_request_templates');
+    await fs.mkdir(tplDir, { recursive: true });
+    await fs.writeFile(path.join(tplDir, 'Default.md'), '## Summary\n');
+
+    // Run hook with cwd = cwdDir, CLAUDE_PROJECT_DIR = outer projectDir
+    // cwd policy ('off') should be found first → exits 0
+    const result = await runHook({
+      projectDir: cwdDir,
+      stdin: bashPayload('glab mr create --title foo'),
+      extraEnv: {
+        CLAUDE_PROJECT_DIR: projectDir,
+      },
+    });
+
+    // cwd policy is 'off' → hook exits 0 regardless of templates present
+    expect(result.code).toBe(0);
+  });
+});
