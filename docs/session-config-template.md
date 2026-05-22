@@ -235,7 +235,6 @@ Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When en
 ```yaml
 slopcheck:
   enabled: false                       # opt-in; defaults to off so existing sessions are unaffected
-  registry-threshold-downloads: 100    # integer ≥ 0 — ASSUMED → LEGITIMATE threshold (npm weekly downloads)
   sources: [plan, discovery]           # array of "plan" | "discovery" — where classifyPackages is invoked
 ```
 
@@ -519,7 +518,6 @@ state-md-lock:
 # Slopcheck (PRD gsd Pattern 2 / #520)
 slopcheck:
   enabled: false
-  registry-threshold-downloads: 100
   sources: [plan, discovery]
 
 # Templates-first hook (PRD gsd Pattern 3 / #519)

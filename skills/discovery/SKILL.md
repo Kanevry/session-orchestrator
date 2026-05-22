@@ -60,6 +60,7 @@ Detect the project's tech stack via marker file checks. Use Glob and run checks 
 | Pencil in Session Config              | design-drift probe      |
 | `.orchestrator/bootstrap.lock`        | harness-audit probe     |
 | `.vault.yaml` OR Session Config `vault-integration.enabled: true` | vault probes      |
+| `package.json` / `requirements.txt` / `Cargo.toml` **AND** Session Config `slopcheck.enabled: true` AND `slopcheck.sources` includes `"discovery"` | supply-chain probe (`skills/discovery/probes-supply-chain.md`) |
 
 ### Build Activation Set
 
@@ -115,6 +116,7 @@ Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max `
 - **Session probes agent**: Runs all activated session probes
 - **Audit probes agent**: Runs harness-audit probe
 - **Vault probes** (`skills/discovery/probes-vault.md`): invokes `skills/discovery/probes/vault-staleness.mjs` and `skills/discovery/probes/vault-narrative-staleness.mjs` directly via `node`. Each probe returns `{findings, metrics, duration_ms}`. The runner reports `FINDING:` blocks per finding and appends summary records to `.orchestrator/metrics/vault-staleness.jsonl` and `vault-narrative-staleness.jsonl`.
+- **Supply-chain probe** (`skills/discovery/probes-supply-chain.md`): invokes `skills/discovery/probes/supply-chain-slopcheck.mjs` directly via `node`. **Gated:** only activates when `slopcheck.enabled: true` AND `"discovery"` is in `slopcheck.sources` (Session Config). The probe returns `{findings, summary}`. SLOP findings surface as `critical`, ASSUMED as `medium`, LEGITIMATE packages generate no finding. See `probes-supply-chain.md` for invocation details and classification reference.
 
 Each agent receives:
 - The probe definitions from `probes-intro.md` (confidence scoring reference) AND the category-specific `probes-<category>.md` file for this agent's category (include the actual grep commands/patterns in the prompt)

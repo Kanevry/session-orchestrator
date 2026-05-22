@@ -6,10 +6,12 @@
  * hallucinated npm/pip/cargo package names ("slopsquatting"). Plugged into
  * /plan PRD generation and /discovery supply-chain probes.
  *
- * Returns `{ enabled, "registry-threshold-downloads", sources }`.
+ * Returns `{ enabled, sources }`.
  * Tolerant parser: malformed values silently fall back to defaults.
  *
- * Consumer: `scripts/lib/slopcheck.mjs` (Wave 3 — classifyPackages()).
+ * Consumers:
+ *  - `scripts/lib/slopcheck.mjs` (classifyPackages())
+ *  - `skills/discovery/probes/supply-chain-slopcheck.mjs` (discovery probe)
  */
 
 const ALLOWED_SOURCES = new Set(['plan', 'discovery']);
@@ -20,17 +22,15 @@ const DEFAULT_SOURCES = ['plan', 'discovery'];
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
- *   enabled:                       false (opt-in)
- *   registry-threshold-downloads:  100 (integer ≥ 0)
- *   sources:                       ['plan', 'discovery']
+ *   enabled:  false (opt-in)
+ *   sources:  ['plan', 'discovery']
  *
  * @param {string} content — full file contents
- * @returns {{ enabled: boolean, "registry-threshold-downloads": number, sources: string[] }}
+ * @returns {{ enabled: boolean, sources: string[] }}
  */
 export function _parseSlopcheck(content) {
   const defaults = {
     enabled: false,
-    'registry-threshold-downloads': 100,
     sources: [...DEFAULT_SOURCES],
   };
 
@@ -51,7 +51,6 @@ export function _parseSlopcheck(content) {
   if (blockLines.length === 0) return defaults;
 
   let scEnabled = false;
-  let scThreshold = 100;
   let scSources = [...DEFAULT_SOURCES];
 
   for (const rawLine of blockLines) {
@@ -71,13 +70,6 @@ export function _parseSlopcheck(content) {
         // Default is false → only flip to true on explicit "true"
         scEnabled = v.toLowerCase() === 'true';
         break;
-      case 'registry-threshold-downloads': {
-        if (/^\d+$/.test(v)) {
-          const n = parseInt(v, 10);
-          if (n >= 0) scThreshold = n;
-        }
-        break;
-      }
       case 'sources': {
         // Accept inline array notation: [] or [a, b, c]
         const stripped = v.replace(/^\s*\[/, '').replace(/\]\s*$/, '').trim();
@@ -100,7 +92,6 @@ export function _parseSlopcheck(content) {
 
   return {
     enabled: scEnabled,
-    'registry-threshold-downloads': scThreshold,
     sources: scSources,
   };
 }

@@ -80,7 +80,6 @@ state-md-lock:
   timeout-ms: 10000              # acquire timeout
 slopcheck:
   enabled: false                 # PRD gsd Pattern 2 (#520) — opt-in package legitimacy gate
-  registry-threshold-downloads: 100   # ASSUMED → LEGITIMATE threshold
   sources: [plan, discovery]     # where classifyPackages is invoked
 templates-first:
   enabled: true                  # PRD gsd Pattern 3 (#519) — gh/glab template-read enforcement

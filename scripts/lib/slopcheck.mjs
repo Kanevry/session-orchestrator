@@ -8,9 +8,11 @@
  *   - ASSUMED    — registry probe could not classify definitively (timeout, malformed
  *                  input, unsupported registry, ENOENT, etc.). Fail-soft default.
  *   - SUS        — package exists but carries a known concern (deprecation,
- *                  audit advisory, typosquat heuristic). Reserved; the MVP marks
- *                  packages as SUS only when the npm metadata explicitly shows
- *                  a `deprecated` field on the registry record.
+ *                  audit advisory, typosquat heuristic). RESERVED FOR FUTURE WAVES —
+ *                  the MVP NEVER emits SUS. The npm-deprecated-flag and audit-warning
+ *                  detection paths are not wired up. Tests must not expect SUS emission
+ *                  until that detection logic ships. See PRD § 5
+ *                  (docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md) for intent.
  *   - SLOP       — package does NOT exist in the registry (404 / non-zero exit /
  *                  empty version list). Highest-confidence "hallucinated name" signal.
  *
@@ -55,7 +57,12 @@ export const DEFAULT_TIMEOUT_MS = 5_000;
 /** Cache entry TTL — 24 hours. */
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 
-/** Closed enum of classification labels. */
+/**
+ * Closed enum of classification labels.
+ * NOTE: 'SUS' is reserved for future waves — the MVP never emits it.
+ * The npm-deprecated-flag and audit-warning detection paths are not implemented.
+ * Tests should not expect SUS emission until that detection is wired up.
+ */
 export const CLASSIFICATIONS = Object.freeze(['LEGITIMATE', 'ASSUMED', 'SUS', 'SLOP']);
 
 // ---------------------------------------------------------------------------
