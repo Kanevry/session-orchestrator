@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "rationale": "Pre-bash templates-first guard policy (#519, PRD docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md § Pattern 3). Defines per-host template paths the operator must read before invoking gh/glab pr|mr|issue create. The hook checks the live session transcript for a prior Read tool call against any listed path; absent that, the create call is blocked. An explicit acknowledgement file at .orchestrator/runtime/templates-acknowledged.json bypasses the check for the session.",
+  "enforcement": "block",
+  "hosts": {
+    "github": {
+      "template_paths": [
+        ".github/PULL_REQUEST_TEMPLATE",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/pull_request_template.md",
+        ".github/ISSUE_TEMPLATE",
+        ".github/ISSUE_TEMPLATE/"
+      ]
+    },
+    "gitlab": {
+      "template_paths": [
+        ".gitlab/merge_request_templates/",
+        ".gitlab/issue_templates/"
+      ]
+    }
+  },
+  "bypass_patterns": [
+    "gh issue create --label bot",
+    "glab issue create --label ci"
+  ],
+  "acknowledgement_file": ".orchestrator/runtime/templates-acknowledged.json"
+}
