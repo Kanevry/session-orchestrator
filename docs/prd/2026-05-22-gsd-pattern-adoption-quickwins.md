@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-22
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Implemented (2026-05-22)
 **Appetite:** 2w (Medium Batch)
 **Parent Project:** session-orchestrator
 
@@ -249,3 +249,52 @@ Plus Session Config-Erweiterung in CLAUDE.md (vier neue Top-Level-Keys).
 3. **Wave 3 (Tooling):** Pattern 2 Slopcheck-MVP + Plan-Skill Phase 3.5 + Discovery-Probe. Unabhängig von Wave 1/2.
 4. **Wave 4 (Quality):** Pattern 4 Verification-Auto-Fix-Loop. Höchstes Risiko, muss zuletzt — bauen auf Wave 1 (Lock-Schutz für STATE.md-Schreibvorgänge durch den Fixer).
 5. **Wave 5 (Polish):** Dokumentation, Rule-Files, README-Anpassungen, Telemetrie-Roll-up.
+
+## 6. Implementation Summary (2026-05-22)
+
+All four patterns implemented in a 5-wave deep session on 2026-05-22. Closes #517 + sub-issues #518-#521.
+
+### Wave 1 — Foundation (Pattern 1 STATE.md-Lock)
+- `scripts/lib/session-lock.mjs` + `withStateMdLock(repoRoot, fn)` (commit `8bc4902`, fix `c0b66da` for cross-process race)
+- `scripts/lib/state-md/{frontmatter-mutators,body-sections,mission-status}.mjs` on-disk wrappers
+- `tests/unit/state-md-lock.test.mjs` + `tests/integration/state-md-lock-concurrent.test.mjs` + `tests/integration/state-md-lock-cross-process.test.mjs` (21 tests + 2 cross-process tests via child_process spawn)
+- `.claude/rules/parallel-sessions.md` PSA-005 (commit `2eb673d`)
+- Session Config: `state-md-lock: { enabled: true, timeout-ms: 10000 }` (commit `17569fe`)
+- **Cross-process mutex via tmp+linkSync** (POSIX atomic create-or-fail) — initial tmp+rename had TOCTOU race fixed in inter-wave review
+
+### Wave 2 — Hooks (Pattern 3 templates-first)
+- `hooks/pre-bash-templates-first.mjs` + `hooks/_lib/transcript-history.mjs` + `.orchestrator/policy/templates-policy.json` (commits `ce86c08`, fix `684c929`)
+- `tests/unit/hook-templates-first.test.mjs` + `tests/integration/templates-first-blocks-create.test.mjs` (45 tests)
+- `skills/gitlab-ops/SKILL.md` cross-ref (commit `f79de3b`)
+- Session Config: `templates-first: { enabled: true, hosts: [github, gitlab] }`
+
+### Wave 3 — Tooling (Pattern 2 Slopcheck)
+- `scripts/lib/slopcheck.mjs` `classifyPackages()` + cache + npm dispatch (commit `d14deea`)
+- `skills/plan/SKILL.md` Phase 3.5 + `skills/plan/mode-feature.md` integration (commit `65522c1`)
+- `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs` (commit `7970877`)
+- `tests/unit/slopcheck.test.mjs` (36 tests, commit `beb5aee`)
+- Session Config: `slopcheck: { enabled: false, registry-threshold-downloads: 100, sources: [plan, discovery] }`
+- **Repo smoke**: 17 packages in own package.json — all LEGITIMATE
+
+### Wave 4 — Quality (Pattern 4 Auto-Fix-Loop)
+- `scripts/lib/quality-gate.mjs` `runQualityGateWithRetry()` + diagnostics bundle (commit `7f879fc`)
+- `skills/wave-executor/SKILL.md` + `wave-loop.md` integration (commit `b067715`)
+- `tests/unit/quality-gate-autofix.test.mjs` (36 tests, commit `1f9efb6`)
+- Session Config: `verification-auto-fix: { enabled: false, max-retries: 2 }`
+- **Bootstrap-Risk LOW** per W4 architect-reviewer audit (5 failsafes verified: bounded budget, per-gate timeout, fixer-throw absorption, default-disabled, diagnostics-on-abort)
+
+### Wave 5 — Polish + Review (this commit)
+- `.claude/rules/quality-gates-autofix.md` (new rule)
+- `.claude/rules/security.md` SEC-020 slopcheck cross-ref
+- This PRD: status flip + summary
+
+### Test Suite Delta
+- Before session: 6502 tests passing (README badge at session-start)
+- After session: 6620 tests passing, 12 skipped (verified via `npm test` — 318 test files, exit 0)
+- Delta: +118 tests from W1 (state-lock) + W2 (templates-first) + W3 (slopcheck) + W4 (auto-fix-loop)
+- Commit delta: 18 commits from pre-wave baseline `6692fdd` to Wave 5 (git log count verified)
+- Lint, typecheck: green throughout all waves
+- GitLab CI: see post-session pipeline
+
+### Follow-up issues filed
+<!-- REVIEW: source needed — coordinator to file from architect-reviewer findings (M1-M3 + L1-L3 + qa-strategist + security-reviewer outputs); issue numbers not yet assigned at time of PRD update -->
