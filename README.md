@@ -156,7 +156,7 @@ Five deep sessions plus three intermediate fix-clusters. The v3.6.0 tag (2026-05
 - **Clawpatch Borrow Cluster** — six infrastructure capabilities shipped opportunistically: worker pool, language mappers (TypeScript + Markdown AST), schema-per-agent output contracts, sandbox-tier validation, discovery triage state, and `--since` flag for scoped discovery.
 - **Claude Code 2.1.x adoption** — `experimental.monitors`, `terminalSequence` (OSC 9 + OSC 777 cross-platform notifications), `disable-model-invocation` on USER-ONLY commands, `model:` frontmatter routing, `Skill(name:*)` permission wildcards.
 - **CI restoration** — fixed the 8-pipeline silent regression (lockfile conflict + `engine-strict=true` + `fetch-depth` for gitleaks).
-- **Learning & Memory System Modernization (Phase 1)** — vault consolidation, vault-mirror quality gate, cold-start abandonment fix, auto-dream dispatch ([epic #498](https://github.com/Kanevry/session-orchestrator/issues/498); [PRD](docs/prd/2026-05-21-learning-memory-modernization.md)).
+- **Learning & Memory System Modernization (Phase 1)** — vault consolidation, vault-mirror quality gate, cold-start abandonment fix, auto-dream dispatch ([epic #498](https://github.com/Kanevry/session-orchestrator/issues/498)).
 
 For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous releases: v3.5.0 (2026-05-09), v3.4.0 (2026-05-08), v3.3.0 (2026-04-30).
 
