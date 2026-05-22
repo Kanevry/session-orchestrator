@@ -49,6 +49,10 @@ import { _parseCrossRepo } from './config/cross-repo.mjs';
 import { _parsePersonaGateWave } from './config/persona-gate-wave.mjs';
 import { _parseVaultMirrorQuality } from './config/vault-mirror-quality.mjs';
 import { _parseColdStart } from './config/cold-start.mjs';
+import { _parseStateMdLock } from './config/state-md-lock.mjs';
+import { _parseSlopcheck } from './config/slopcheck.mjs';
+import { _parseTemplatesFirst } from './config/templates-first.mjs';
+import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -234,6 +238,18 @@ export function parseSessionConfig(mdContent) {
   // cold-start: parsed from full content (PRD F1.3 / issue #500)
   const coldStart = _parseColdStart(mdContent);
 
+  // state-md-lock: parsed from full content (PRD gsd Pattern 1 / issues #517, #518)
+  const stateMdLock = _parseStateMdLock(mdContent);
+
+  // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
+  const slopcheck = _parseSlopcheck(mdContent);
+
+  // templates-first: parsed from full content (PRD gsd Pattern 3 / issues #517, #519)
+  const templatesFirst = _parseTemplatesFirst(mdContent);
+
+  // verification-auto-fix: parsed from full content (PRD gsd Pattern 4 / issues #517, #521)
+  const verificationAutoFix = _parseVerificationAutoFix(mdContent);
+
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
@@ -317,6 +333,10 @@ export function parseSessionConfig(mdContent) {
     'vault-integration': vaultIntegration,
     'vault-mirror': vaultMirror,
     'cold-start': coldStart,
+    'state-md-lock': stateMdLock,
+    'slopcheck': slopcheck,
+    'templates-first': templatesFirst,
+    'verification-auto-fix': verificationAutoFix,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,

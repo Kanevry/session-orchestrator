@@ -216,6 +216,55 @@ cold-start:
 
 Read by: `scripts/lib/cold-start-detector.mjs`.
 
+## STATE.md Lock
+
+Mechanical write-lock around STATE.md to prevent race conditions between parallel worker sessions writing the same file (PRD gsd Pattern 1 / issue #518). When enabled, `withStateMdLock(fn)` acquires `.orchestrator/state.lock` before invoking `fn` and releases on completion or throw. Stale-lock override via PID-liveness mirrors the existing `session.lock` design.
+
+```yaml
+state-md-lock:
+  enabled: true                        # default true; mechanical guard against PSA-003/PSA-004 violations
+  timeout-ms: 10000                    # integer ≥ 0 — acquire timeout in milliseconds
+```
+
+Read by: `scripts/lib/session-lock.mjs` (new `acquireStateLock`/`releaseStateLock`/`withStateMdLock` helpers), every STATE.md writer under `scripts/lib/state-md/`.
+
+## Slopcheck (Package Legitimacy Gate)
+
+Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When enabled, `classifyPackages(pkgs)` consults the registry and returns `LEGITIMATE` / `ASSUMED` / `SUS` / `SLOP` per package. Hooked into `/plan` PRD generation and `/discovery` supply-chain probes. PRD gsd Pattern 2 / issue #520.
+
+```yaml
+slopcheck:
+  enabled: false                       # opt-in; defaults to off so existing sessions are unaffected
+  registry-threshold-downloads: 100    # integer ≥ 0 — ASSUMED → LEGITIMATE threshold (npm weekly downloads)
+  sources: [plan, discovery]           # array of "plan" | "discovery" — where classifyPackages is invoked
+```
+
+Read by: `scripts/lib/slopcheck.mjs` (Wave 3 module — `classifyPackages`), `skills/plan/SKILL.md` Phase 3.5, `skills/discovery/probes/supply-chain-slopcheck.mjs`.
+
+## Templates-First Hook
+
+PreToolUse `Bash` hook that blocks `gh|glab pr|mr|issue create` calls unless the matching repo template (`.github/PULL_REQUEST_TEMPLATE*`, `.github/ISSUE_TEMPLATE*`, `.gitlab/merge_request_templates/*`, `.gitlab/issue_templates/*`) was Read in the current session. Per-session acknowledgement via `.orchestrator/runtime/templates-acknowledged.json`. PRD gsd Pattern 3 / issue #519.
+
+```yaml
+templates-first:
+  enabled: true                        # default true; mechanical replacement for gitlab-ops template advice
+  hosts: [github, gitlab]              # array of "github" | "gitlab" — host allow-list
+```
+
+Read by: `hooks/pre-bash-templates-first.mjs`, `.orchestrator/policy/templates-policy.json`.
+
+## Verification Auto-Fix Loop
+
+Opt-in retry loop that dispatches a `code-implementer` fixer-agent after an inter-wave Quality-Gate failure, supplying failure output + `corrective_context` + changed file paths. Bounded by `max-retries` (default 2). When disabled (default), the wave-executor aborts on first gate failure — preserving today's behaviour. PRD gsd Pattern 4 / issue #521.
+
+```yaml
+verification-auto-fix:
+  enabled: false                       # opt-in; default false preserves current abort-on-fail behaviour
+  max-retries: 2                       # integer ≥ 0 — bounded fixer-agent retries before hard abort
+```
+
+Read by: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`), `skills/wave-executor/SKILL.md` inter-wave checkpoint.
+
 ## Vault Staleness
 
 Vault-drift discovery probes. Used by `/discovery vault` and (when `enabled`) session-end Phase 2.3.
@@ -461,6 +510,27 @@ cold-start:
   enabled: true
   nudge-after-hours: 1
   silence-after-sessions: 1
+
+# STATE.md lock (PRD gsd Pattern 1 / #518)
+state-md-lock:
+  enabled: true
+  timeout-ms: 10000
+
+# Slopcheck (PRD gsd Pattern 2 / #520)
+slopcheck:
+  enabled: false
+  registry-threshold-downloads: 100
+  sources: [plan, discovery]
+
+# Templates-first hook (PRD gsd Pattern 3 / #519)
+templates-first:
+  enabled: true
+  hosts: [github, gitlab]
+
+# Verification auto-fix loop (PRD gsd Pattern 4 / #521)
+verification-auto-fix:
+  enabled: false
+  max-retries: 2
 
 # Vault staleness
 vault-staleness:

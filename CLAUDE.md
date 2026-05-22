@@ -75,3 +75,16 @@ cold-start:
   enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
   nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires
   silence-after-sessions: 1      # PRD F1.3 (#500) — consecutive silent sessions before nudge fires
+state-md-lock:
+  enabled: true                  # PRD gsd Pattern 1 (#518) — mechanical STATE.md write lock
+  timeout-ms: 10000              # acquire timeout
+slopcheck:
+  enabled: false                 # PRD gsd Pattern 2 (#520) — opt-in package legitimacy gate
+  registry-threshold-downloads: 100   # ASSUMED → LEGITIMATE threshold
+  sources: [plan, discovery]     # where classifyPackages is invoked
+templates-first:
+  enabled: true                  # PRD gsd Pattern 3 (#519) — gh/glab template-read enforcement
+  hosts: [github, gitlab]        # host-regex allow-list
+verification-auto-fix:
+  enabled: false                 # PRD gsd Pattern 4 (#521) — opt-in auto-fix retry loop after Quality-Gate fail
+  max-retries: 2                 # bounded retries

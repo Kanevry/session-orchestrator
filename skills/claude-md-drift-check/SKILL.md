@@ -38,6 +38,15 @@ Check 5 counts `*.md` files directly inside `commands/` (non-recursive, non-hidd
 
 Check 6 (issue #30) extracts the YAML block under `## Session Config` from both the canonical template (`docs/session-config-template.md` by default, override with `--config-template`) and the resolved local instruction file. Top-level keys present in the template but missing locally surface as `session-config-parity` errors. Both fenced YAML (```` ```yaml ... ``` ````) and raw YAML body (up to next `## ` heading) are accepted. The check skips gracefully when the template file is absent, when no instruction file is detected, or when explicitly disabled via `--skip-session-config-parity`.
 
+The parity set is **template-driven**: every column-0 YAML key under `## Session Config` in the template is checked. As of the gsd Pattern Adoption Quick-Wins bundle (PRD 2026-05-22, issues #517–#521), the template-side keys include the four new top-level blocks:
+
+- `state-md-lock` (Pattern 1 / #518) — mechanical STATE.md write lock
+- `slopcheck` (Pattern 2 / #520) — opt-in package legitimacy gate
+- `templates-first` (Pattern 3 / #519) — gh/glab template-read enforcement hook
+- `verification-auto-fix` (Pattern 4 / #521) — opt-in auto-fix retry loop after Quality-Gate fail
+
+A local CLAUDE.md / AGENTS.md that omits any of these now fails `session-config-parity` in `mode: hard`. The bundle ships all four keys in CLAUDE.md and `docs/session-config-template.md` together (Wave 1 of the adoption plan) so the check stays green at adoption time.
+
 ## Files
 
 - `checker.mjs` — pure Node ESM, no runtime deps. Reads scope files, runs enabled checks, emits JSON on stdout.
