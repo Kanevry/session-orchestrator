@@ -647,7 +647,7 @@ import { loadCatalog } from '$PLUGIN_ROOT/scripts/lib/persona-panel/catalog-load
 import { buildPersonaPrompt, validatePersonaOutput } from '$PLUGIN_ROOT/scripts/lib/persona-panel/persona-runner.mjs';
 import { consolidate } from '$PLUGIN_ROOT/scripts/lib/persona-panel/consolidator.mjs';
 import { writeJsonAtomic } from '$PLUGIN_ROOT/scripts/lib/io.mjs';
-import { appendDeviation } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
+import { appendDeviationOnDisk } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
 
 const cfg = $CONFIG['persona-gate-wave'];                        // already normalised by parseSessionConfig
 const catalog = await loadCatalog();                              // throws if .claude/personas/ missing or invalid
