@@ -90,6 +90,7 @@ Agent({ subagent_type: "Explore", description: "Research technical approach",
 
 3. Save to `{plan-prd-location}/YYYY-MM-DD-{feature-slug}.md`. Read `plan-prd-location` from Session Config in CLAUDE.md (or AGENTS.md on Codex CLI) (default: `docs/prd/`).
 4. Dispatch PRD reviewer subagent per `prd-reviewer-prompt.md`. Max 3 iterations. Surface unresolved issues to user.
+5. **Package Legitimacy Audit (Slopcheck — #520):** if Session Config has `slopcheck.enabled: true` and `slopcheck.sources` includes `plan`, run the Phase 3.5 audit defined in `SKILL.md` against the generated PRD body (scan `## Affected Files`, `## Dependencies`, and code-fenced `pnpm add` / `npm install` / `pip install` / `cargo add` blocks for npm/pip/cargo package mentions, then call `classifyPackages()` from `scripts/lib/slopcheck.mjs`). Fail-soft on registry errors. See `SKILL.md` § "Phase 3.5: Package Legitimacy Audit" for the full handling matrix.
 
 ---
 
