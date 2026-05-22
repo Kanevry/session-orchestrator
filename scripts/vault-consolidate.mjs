@@ -75,6 +75,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -389,33 +390,40 @@ async function classifyFile(srcAbs, rel) {
   }
 
   // Content differs — check subset relationship to pre-suggest a winner.
-  // We also use the read-success itself as the signal that this is a "merge"
-  // (text file, AUQ-resolvable) vs "conflict-needs-review" (binary or
-  // unreadable, requires manual inspection outside the script).
+  // We use explicit `isUtf8()` binary detection (not throw-based) to classify
+  // as `merge` vs `conflict-needs-review`. Node 20+ silently substitutes the
+  // U+FFFD replacement char for invalid UTF-8 sequences instead of throwing
+  // from `readFile('utf8')`, which previously left the conflict-needs-review
+  // branch unreachable for binary files (issue #508).
   let subsetHint = null;
   let textReadable = false;
   try {
-    const [srcContent, dstContent] = await Promise.all([
-      fs.readFile(srcAbs, 'utf8'),
-      fs.readFile(dstAbs, 'utf8'),
-    ]);
-    textReadable = true;
-    if (isPrefix(srcContent, dstContent)) {
-      // canonical is a superset of source → prefer canonical (dst)
-      subsetHint = 'dst-is-superset';
-    } else if (isPrefix(dstContent, srcContent)) {
-      // source is a superset of canonical → prefer source (src)
-      subsetHint = 'src-is-superset';
+    const [srcBuf, dstBuf] = await Promise.all([fs.readFile(srcAbs), fs.readFile(dstAbs)]);
+    // Both sides must be valid UTF-8 to be classified as `merge`. If either
+    // is binary (or non-UTF-8 encoded), fall through to conflict-needs-review
+    // so the operator inspects the pair manually with the right tool.
+    if (isUtf8(srcBuf) && isUtf8(dstBuf)) {
+      textReadable = true;
+      const srcContent = srcBuf.toString('utf8');
+      const dstContent = dstBuf.toString('utf8');
+      if (isPrefix(srcContent, dstContent)) {
+        // canonical is a superset of source → prefer canonical (dst)
+        subsetHint = 'dst-is-superset';
+      } else if (isPrefix(dstContent, srcContent)) {
+        // source is a superset of canonical → prefer source (src)
+        subsetHint = 'src-is-superset';
+      }
     }
   } catch {
-    // non-utf8 file or read error — leave textReadable=false; treat as
-    // conflict-needs-review so the operator inspects manually.
+    // Read error (permissions, disappeared mid-walk, etc.) — leave
+    // textReadable=false; treat as conflict-needs-review so the operator
+    // inspects manually.
   }
 
   // Classification:
-  //   - readable text + colliding content    → merge  (AUQ-resolvable;
+  //   - both sides valid UTF-8                → merge  (AUQ-resolvable;
   //                                              subset_hint may suggest winner)
-  //   - unreadable / binary / non-utf8        → conflict-needs-review
+  //   - unreadable / binary / non-UTF-8       → conflict-needs-review
   //
   // Both classes still require an operator decision via the two-phase
   // coordinator flow, but the label tells the caller whether the diff can be

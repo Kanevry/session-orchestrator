@@ -197,14 +197,13 @@ describe('vault-consolidate CLI', () => {
   // P0 — Classification matrix
   // -------------------------------------------------------------------------
 
-  it('P0: classification matrix — copy / skip-already-present / merge (3 of 4 reachable categories)', () => {
-    // NOTE: `conflict-needs-review` (the 4th category) is only triggered when
-    // fs.readFile(path, 'utf8') throws. Node 20+ never throws on invalid utf-8
-    // — it silently substitutes U+FFFD. So this branch is only reachable via
-    // transient FS errors (permission flips, EIO mid-read) which cannot be
-    // engineered deterministically through the CLI contract. Covered by a
-    // separate (dedicated) test below using an invalid-utf-8 input AND an
-    // engineered permissions failure — but the deterministic three remain.
+  it('P0: classification matrix — copy / skip-already-present / merge (3 of 4 reachable; binary cases tested below)', () => {
+    // NOTE: this test exercises the three obvious classifications. The
+    // 4th — `conflict-needs-review` — was effectively dead code on Node 20+
+    // before #508 (Node silently substituted U+FFFD instead of throwing from
+    // readFile('utf8')). Post-#508 the script reads buffers + calls isUtf8()
+    // explicitly, so the branch is reachable for binary content. See the
+    // dedicated binary tests below.
     const tmpParent = mkTmp('classify-matrix');
     const source = join(tmpParent, 'source');
     const canonical = join(tmpParent, 'canonical');
@@ -241,12 +240,12 @@ describe('vault-consolidate CLI', () => {
     expect(Object.keys(byRel)).toHaveLength(3);
   });
 
-  it('P0: classification — invalid utf-8 on both sides still classifies as merge (Node 20+ substitutes U+FFFD)', () => {
-    // Documents the Node-version-dependent boundary: even bytes that are
-    // _semantically_ binary (0xff 0xfe BOM-like) are read successfully as
-    // utf-8 (with replacement chars), so the script labels them `merge`,
-    // not `conflict-needs-review`. This is a load-bearing assertion about
-    // the OBSERVED contract, not the documented intent — see test above.
+  it('P0: classification — binary content on both sides classifies as conflict-needs-review (#508 fix)', () => {
+    // Issue #508: before the isUtf8() switch, Node 20+ silently substituted
+    // U+FFFD for invalid UTF-8 byte sequences, so `readFile('utf8')` never
+    // threw and binary content was classified as `merge`. Post-fix, the
+    // script reads buffers and uses isUtf8() from node:buffer for explicit
+    // detection. Binary on both sides → conflict-needs-review.
     const tmpParent = mkTmp('classify-binary');
     const source = join(tmpParent, 'source');
     const canonical = join(tmpParent, 'canonical');
@@ -266,6 +265,59 @@ describe('vault-consolidate CLI', () => {
     expect(result.status).toBe(0);
     const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
     const action = lines.find((r) => r.kind === 'action' && r.rel === 'binary.bin');
+    expect(action.action).toBe('conflict-needs-review');
+  });
+
+  it('P0: classification — binary on one side, valid UTF-8 on the other → conflict-needs-review (#508)', () => {
+    // Mixed-case: source is binary, canonical is text (or vice-versa). The
+    // pair is by definition irreconcilable as text, so the script must
+    // surface it as conflict-needs-review for manual operator review rather
+    // than attempting an AUQ diff that would render garbled.
+    const tmpParent = mkTmp('classify-mixed');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+
+    writeFileSync(join(source, 'mixed.bin'), Buffer.from([0xff, 0xfe, 0x00, 0x01]));
+    writeFileSync(join(canonical, 'mixed.bin'), 'this is valid utf-8 text\n', 'utf8');
+
+    const result = runScript([
+      '--source', source,
+      '--canonical', canonical,
+      '--dry-run',
+      '--json',
+    ]);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const action = lines.find((r) => r.kind === 'action' && r.rel === 'mixed.bin');
+    expect(action.action).toBe('conflict-needs-review');
+  });
+
+  it('P0: classification — both sides valid UTF-8 with different content → merge (regression-guard for #508)', () => {
+    // Counterpart to the binary tests: the merge path must remain reachable.
+    // Two text files with different byte content classify as `merge`, NOT
+    // conflict-needs-review.
+    const tmpParent = mkTmp('classify-text-diff');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+
+    writeFileSync(join(source, 'doc.md'), '# version A\nbody\n', 'utf8');
+    writeFileSync(join(canonical, 'doc.md'), '# version B\nbody\n', 'utf8');
+
+    const result = runScript([
+      '--source', source,
+      '--canonical', canonical,
+      '--dry-run',
+      '--json',
+    ]);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const action = lines.find((r) => r.kind === 'action' && r.rel === 'doc.md');
     expect(action.action).toBe('merge');
   });
 
