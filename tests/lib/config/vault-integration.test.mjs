@@ -116,6 +116,70 @@ describe('_parseVaultIntegration', () => {
       });
     });
   });
+
+  // Issue #497: inline object literal form
+  // `- vault-integration: { enabled: true, vault-dir: ~/..., mode: warn }`
+  describe('issue #497: inline object literal form', () => {
+    it('parses inline object with all three fields', () => {
+      const kv = new Map([
+        ['vault-integration', '{ enabled: true, vault-dir: ~/Projects/vault, mode: warn }'],
+      ]);
+      expect(_parseVaultIntegration(kv)).toEqual({
+        enabled: true,
+        'vault-dir': '~/Projects/vault',
+        mode: 'warn',
+      });
+    });
+
+    it('inline form takes precedence over flat sub-keys when both present', () => {
+      const kv = new Map([
+        ['vault-integration', '{ enabled: true, vault-dir: ~/A, mode: strict }'],
+        ['enabled', 'false'],
+        ['vault-dir', '~/B'],
+        ['mode', 'off'],
+      ]);
+      expect(_parseVaultIntegration(kv)).toEqual({
+        enabled: true,
+        'vault-dir': '~/A',
+        mode: 'strict',
+      });
+    });
+
+    it('inline form: enabled: false', () => {
+      const kv = new Map([['vault-integration', '{ enabled: false, vault-dir: ~/v, mode: off }']]);
+      expect(_parseVaultIntegration(kv)).toEqual({
+        enabled: false,
+        'vault-dir': '~/v',
+        mode: 'off',
+      });
+    });
+
+    it('inline form: missing mode defaults to warn', () => {
+      const kv = new Map([['vault-integration', '{ enabled: true, vault-dir: ~/v }']]);
+      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+    });
+
+    it('inline form: invalid mode silently defaults to warn', () => {
+      const kv = new Map([
+        ['vault-integration', '{ enabled: true, vault-dir: ~/v, mode: bogus }'],
+      ]);
+      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+    });
+
+    it('inline form: missing vault-dir yields null', () => {
+      const kv = new Map([['vault-integration', '{ enabled: true, mode: warn }']]);
+      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
+    });
+
+    it('inline form: empty braces yields all-default object', () => {
+      const kv = new Map([['vault-integration', '{}']]);
+      expect(_parseVaultIntegration(kv)).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
