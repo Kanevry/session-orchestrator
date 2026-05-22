@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/evolve` null-subject dedupe collapse (#284, mail-assistant)** — `consolidateDuplicates` in Phase 3.5 step 7 and Phase 4.4 step 4 previously keyed on `${type}::${subject}`, which coerced `null` to the string `"null"` and collapsed all null-subject entries of the same type to a single survivor. Fix: entries with null/empty/missing `subject` are now keyed by their always-unique `id`, so each is preserved individually. Named-subject entries continue to dedupe as before (highest confidence wins). Companion regression test: `tests/skills/evolve/dedupe-null-subject.test.mjs` (10 assertions: 7 positive contract + 3 negative proof of old breakage).
+
 ### Added
 
 - **Marketplace + SEC cluster (GH #44 + #43 + #34 + GL #213)** — four-issue cluster shipped via 2026-05-16 deep-4. User-facing additions: SEC path-traversal guard on `--vault-dir`/`vault-integration.vault-dir` (CWE-22), Codex composer plugin icon, awesome-codex-plugins icon-enhancement submission docs, ComposioHQ/awesome-claude-plugins submission refresh (v3.2→v3.6 + new "Session & Workflow Orchestration" category proposal). Tests **5285 → 5303** (+18: 5 Q1 path-traversal + 12 Q2 R6 composerIcon + 1 foreign-session port-fix). validate-plugin **43 → 46** (+3 R6 codex `composerIcon` field-presence + file-exists + valid-XML/SVG-root checks).
