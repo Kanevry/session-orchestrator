@@ -41,7 +41,7 @@ import { readJson } from '../scripts/lib/common.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 
 // #519: opt-in via profile/env. Default profile "full" enables this hook;
@@ -172,10 +172,11 @@ function matchesBypass(command, bypassPatterns) {
   const stripped = command.replace(/^\s+/, '');
   for (const pat of bypassPatterns) {
     if (typeof pat !== 'string' || pat.length === 0) continue;
-    if (!stripped.startsWith(pat)) continue;
+    const patStripped = pat.replace(/^\s+/, '');
+    if (!stripped.startsWith(patStripped)) continue;
     // Boundary check: next character must be whitespace, EOL, or absent.
     // This prevents "gh foo --label bot" from matching policy "gh foo --label botanical".
-    const nextChar = stripped.charAt(pat.length);
+    const nextChar = stripped.charAt(patStripped.length);
     if (nextChar === '' || /\s/.test(nextChar)) return true;
   }
   return false;
@@ -331,7 +332,14 @@ async function main() {
     const abs = path.isAbsolute(p) ? p : path.join(projectBase, p);
     if (!existsSync(abs)) continue;
     let stat;
-    try { stat = statSync(abs); } catch { continue; }
+    try {
+      const lstat = lstatSync(abs);
+      if (lstat.isSymbolicLink()) {
+        process.stderr.write(`⚠ pre-bash-templates-first: template path is a symlink (${p}) — rejected for security\n`);
+        continue;
+      }
+      stat = lstat;
+    } catch { continue; }
     if (stat.isFile()) {
       templatePaths.push(p);
       continue;
@@ -344,8 +352,15 @@ async function main() {
         if (entry.startsWith('.')) continue;
         const entryAbs = path.join(abs, entry);
         let estat;
-        try { estat = statSync(entryAbs); } catch { continue; }
-        if (estat.isFile() && entry.endsWith('.md')) {
+        try {
+          const elstat = lstatSync(entryAbs);
+          if (elstat.isSymbolicLink()) {
+            // Silent skip: symlinks inside template directories are not enforced templates.
+            continue;
+          }
+          estat = elstat;
+        } catch { continue; }
+        if (estat.isFile() && (entry.endsWith('.md') || entry.endsWith('.yml') || entry.endsWith('.yaml'))) {
           templatePaths.push(`${trimmed}/${entry}`);
         }
       }
