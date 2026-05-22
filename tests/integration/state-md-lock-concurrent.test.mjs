@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { withStateMdLock } from '@lib/session-lock.mjs';
 
@@ -136,7 +136,7 @@ describe('concurrent withStateMdLock — timeout enforcement', () => {
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), holder: 'holder' }),
+      JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), holder: 'holder' }),
       'utf8',
     );
 

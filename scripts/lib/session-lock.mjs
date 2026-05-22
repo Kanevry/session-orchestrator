@@ -558,9 +558,10 @@ export async function acquireStateLock({
  * field when holder follows the `<sessionId>` convention). If neither is
  * provided, the helper falls back to PID equality.
  *
- * Returns:
- *   { ok: true, released: true }                 — lock unlinked
- *   { ok: true, released: false, reason }        — lock left intact (not owner / not present)
+ * Returns (per PRD § 4):
+ *   { ok: true }                                 — lock unlinked
+ *   { ok: false, reason: 'not-found' }           — no lock file exists
+ *   { ok: false, reason: 'not-owner' }           — lock held by different holder/PID
  *   { ok: false, reason: 'fs-error', error }     — filesystem failure
  *
  * Never throws.
@@ -578,7 +579,7 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
     raw = fs.readFileSync(lockFile, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
-      return { ok: true, released: false, reason: 'not-found' };
+      return { ok: false, reason: 'not-found' };
     }
     return { ok: false, reason: 'fs-error', error: err.message };
   }
@@ -586,7 +587,7 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
   const lock = parseStateLock(raw);
   if (lock === null) {
     // Unparseable — refuse to delete; some other process may be writing now.
-    return { ok: true, released: false, reason: 'not-owner' };
+    return { ok: false, reason: 'not-owner' };
   }
 
   const expectedHolder = holder ?? sessionId ?? null;
@@ -595,15 +596,15 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
     : lock.pid === process.pid && lock.host === os.hostname();
 
   if (!ownerMatch) {
-    return { ok: true, released: false, reason: 'not-owner' };
+    return { ok: false, reason: 'not-owner' };
   }
 
   try {
     fs.unlinkSync(lockFile);
-    return { ok: true, released: true };
+    return { ok: true };
   } catch (err) {
     if (err.code === 'ENOENT') {
-      return { ok: true, released: false, reason: 'not-found' };
+      return { ok: false, reason: 'not-found' };
     }
     return { ok: false, reason: 'fs-error', error: err.message };
   }

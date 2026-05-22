@@ -29,7 +29,7 @@ import {
   mkdirSync,
   readdirSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import {
   acquireStateLock,
@@ -100,7 +100,7 @@ describe('acquireStateLock', () => {
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), holder: 'blocker' }),
+      JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), holder: 'blocker' }),
       'utf8',
     );
 
@@ -115,7 +115,7 @@ describe('acquireStateLock', () => {
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: DEAD_PID, acquiredAt: new Date().toISOString(), holder: 'dead-session' }),
+      JSON.stringify({ pid: DEAD_PID, host: hostname(), acquiredAt: new Date().toISOString(), holder: 'dead-session' }),
       'utf8',
     );
 
@@ -134,16 +134,16 @@ describe('acquireStateLock', () => {
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: DEAD_PID, acquiredAt: new Date().toISOString(), holder: 'ghost' }),
+      JSON.stringify({ pid: DEAD_PID, host: hostname(), acquiredAt: new Date().toISOString(), holder: 'ghost' }),
       'utf8',
     );
 
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await acquireStateLock({ repoRoot, timeoutMs: 500 });
 
-    // At least one stderr write must mention the stale lock and the dead PID
-    const calls = stderrSpy.mock.calls.map((args) => String(args[0]));
+    // At least one warn call must mention the stale lock and the dead PID
+    const calls = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
     const warnCall = calls.find(
       (msg) => msg.includes('stale state.lock') && msg.includes(String(DEAD_PID)),
     );
@@ -181,7 +181,7 @@ describe('releaseStateLock', () => {
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: DEAD_PID, acquiredAt: new Date().toISOString(), holder: 'other' }),
+      JSON.stringify({ pid: DEAD_PID, host: hostname(), acquiredAt: new Date().toISOString(), holder: 'other' }),
       'utf8',
     );
 
