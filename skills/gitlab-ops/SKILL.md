@@ -248,3 +248,66 @@ Relates to #ORIGINAL_IID
 ```
 
 Labels: `type:discovery`, `priority:<level>`, `area:<inferred>`, `status:ready`
+
+## Template-First Enforcement (PSA-005 + #519)
+
+Pattern 3 of the gsd Pattern Adoption (Issue #519) registers a PreToolUse hook
+`hooks/pre-bash-templates-first.mjs` that **blocks** `gh|glab pr|mr|issue create|new`
+Bash calls when the current session contains no prior `Read` on a matching template file.
+
+**When this matters:** before you or a subagent opens an MR, PR, or issue via CLI, a
+matching template must have been read in the current session:
+
+- GitHub: `.github/PULL_REQUEST_TEMPLATE.md` / `.github/ISSUE_TEMPLATE*`
+- GitLab: `.gitlab/merge_request_templates/Default.md` / `.gitlab/issue_templates/*`
+
+Accepted template paths are configured in `.orchestrator/policy/templates-policy.json`
+(versioned, operator-editable). Default behaviour:
+
+- `enforcement: "block"` — hook exits 2 when no prior template Read is found
+- Allow-list of host-specific template globs (GitHub + GitLab by default)
+- `bypass_patterns` — list of command substrings that skip the hook (e.g. CI/bot calls)
+
+**Bypass options for the current session** (when the hook blocks unexpectedly):
+
+1. **Read the template first** — re-run the `create` call after a `Read` on the template
+   path; the hook re-evaluates and sees the Read.
+2. **Session acknowledgement** — write `.orchestrator/runtime/templates-acknowledged.json`
+   containing `{ sessionId, acknowledgedAt }`; the hook allows all subsequent `create`
+   calls in this session.
+
+**What the hook mechanically enforces** (what this skill previously documented as convention only):
+
+- "Template-first" for every new MR/PR/issue
+- Prevents convention drift across repos by turning the documentation requirement into
+  a hard gate — the same shift from rule to mechanism that PSA-003 made for destructive commands
+
+**If the hook blocks incorrectly**, follow this sequence:
+
+1. Read the template — retry the `create` call.
+2. If the hook still blocks, open a bug issue against `hooks/pre-bash-templates-first.mjs`
+   with reproduce steps (command, session ID, template path that should have matched).
+
+### Issue/MR Creation Checklist (with template-first gate active)
+
+```bash
+# 1. Read the relevant template first (satisfies the hook)
+# GitLab MR
+Read .gitlab/merge_request_templates/Default.md
+
+# GitHub PR
+Read .github/PULL_REQUEST_TEMPLATE.md
+
+# 2. Then create — hook now passes
+glab mr create --title "..." --description "..."
+gh pr create --title "..." --body "..."
+```
+
+### Cross-References
+
+- Hook implementation: `hooks/pre-bash-templates-first.mjs`
+- Read-history helper: `hooks/_lib/transcript-history.mjs` (checks session transcript for prior Reads)
+- Enforcement policy: `.orchestrator/policy/templates-policy.json`
+- Session acknowledgement: `.orchestrator/runtime/templates-acknowledged.json`
+- Sister hook (destructive-command model): `hooks/pre-bash-destructive-guard.mjs`
+- PRD: `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 3 + § 3 Gherkin Pattern 3
