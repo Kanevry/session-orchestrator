@@ -414,12 +414,58 @@ function parseStateLock(raw) {
 }
 
 /**
- * Atomically write a state-lock body to disk via tmp + rename.
+ * Atomically create the state-lock file via tmp + hardlink (cross-process mutex).
+ *
+ * Pattern: write full content to a tmp file, then linkSync(tmp, lockFile).
+ * linkSync is POSIX-atomic for create-or-fail: returns success when the link
+ * is created, EEXIST when the target already exists. This avoids the
+ * O_EXCL+writeSync race where an open-but-empty file is observable to
+ * concurrent readers (which then see the file as "unparseable stale" and
+ * override the legitimate lock).
+ *
+ * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
+ * @param {object} body      Lock body to serialize.
+ * @returns {{ ok: true } | { ok: false, reason: 'exists' | 'fs-error', error?: string }}
+ */
+function createStateLockExclusive(lockFile, body) {
+  const dir = path.dirname(lockFile);
+  let tmpFile;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpSuffix = crypto.randomBytes(8).toString('hex');
+    tmpFile = path.join(dir, `.state.lock.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', 'utf8');
+  } catch (err) {
+    if (tmpFile) {
+      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  try {
+    fs.linkSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      return { ok: false, reason: 'exists' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Atomically replace an existing state-lock file via tmp + rename.
+ *
+ * Used only on the stale-override path, where we KNOW the existing lock is
+ * dead (PID-liveness check failed) and we are deliberately overwriting it.
+ *
  * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
  * @param {object} body      Lock body to serialize.
  * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
  */
-function writeStateLockAtomic(lockFile, body) {
+function replaceStateLockAtomic(lockFile, body) {
   try {
     const dir = path.dirname(lockFile);
     fs.mkdirSync(dir, { recursive: true });
@@ -439,51 +485,61 @@ function writeStateLockAtomic(lockFile, body) {
  *   { ok: false, reason: 'held', existingLock } — held by a live holder
  *   { ok: false, reason: 'fs-error', error }    — filesystem failure
  *
- * Side-effect: when an existing state-lock points to a dead PID on the same
- * host, this function overrides the lock atomically and writes a WARN to
- * stderr. Cross-host locks are never auto-overridden.
+ * Strategy:
+ *   1. Try O_EXCL create (cross-process mutex). Success → return immediately.
+ *   2. On EEXIST → read the existing lock, check PID liveness on same host.
+ *      - Live PID → `held` (caller polls).
+ *      - Dead PID (or unparseable contents) → stale, atomic override + WARN.
+ *
+ * Side-effect: stale-lock override writes a WARN to stderr. Cross-host locks
+ * are never auto-overridden (can't signal a process on another machine).
  */
 function tryAcquireStateLock(lockFile, body) {
   try {
-    let existingRaw = null;
+    // Step 1: try exclusive create (mutex).
+    const createResult = createStateLockExclusive(lockFile, body);
+    if (createResult.ok) {
+      return { ok: true, lock: body };
+    }
+    if (createResult.reason === 'fs-error') {
+      return createResult;
+    }
+
+    // Step 2: EEXIST — inspect the existing lock.
+    let existingRaw;
     try {
       existingRaw = fs.readFileSync(lockFile, 'utf8');
     } catch (err) {
-      if (err.code !== 'ENOENT') {
-        return { ok: false, reason: 'fs-error', error: err.message };
+      if (err.code === 'ENOENT') {
+        // Lock vanished between create-fail and read — race-loser of a race.
+        // Caller's poll loop will retry; report as 'held' to defer.
+        return { ok: false, reason: 'held', existingLock: null };
       }
-      // ENOENT: no existing lock. Fall through to write.
+      return { ok: false, reason: 'fs-error', error: err.message };
     }
 
-    if (existingRaw !== null) {
-      const existing = parseStateLock(existingRaw);
+    const existing = parseStateLock(existingRaw);
 
-      // Unparseable existing lock — treat as stale and override. We never
-      // know which holder wrote it, so this is the only safe move.
-      if (existing === null) {
-        console.warn('stale state.lock (unparseable contents) overridden');
-        return writeStateLockAtomic(lockFile, body).ok
-          ? { ok: true, lock: body }
-          : { ok: false, reason: 'fs-error', error: 'override-write-failed' };
-      }
-
-      const sameHost = existing.host === os.hostname();
-      // PID liveness is only meaningful on the same host.
-      const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
-
-      if (pidAlive) {
-        return { ok: false, reason: 'held', existingLock: existing };
-      }
-
-      // Same host, dead PID — stale lock. Override atomically + WARN.
-      console.warn(`stale state.lock from PID ${existing.pid} overridden`);
-      const writeResult = writeStateLockAtomic(lockFile, body);
+    // Unparseable existing lock — treat as stale and override. We never
+    // know which holder wrote it, so this is the only safe move.
+    if (existing === null) {
+      console.warn('stale state.lock (unparseable contents) overridden');
+      const writeResult = replaceStateLockAtomic(lockFile, body);
       if (!writeResult.ok) return writeResult;
       return { ok: true, lock: body };
     }
 
-    // No existing lock — write fresh.
-    const writeResult = writeStateLockAtomic(lockFile, body);
+    const sameHost = existing.host === os.hostname();
+    // PID liveness is only meaningful on the same host.
+    const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
+
+    if (pidAlive) {
+      return { ok: false, reason: 'held', existingLock: existing };
+    }
+
+    // Same host, dead PID — stale lock. Override atomically + WARN.
+    console.warn(`stale state.lock from PID ${existing.pid} overridden`);
+    const writeResult = replaceStateLockAtomic(lockFile, body);
     if (!writeResult.ok) return writeResult;
     return { ok: true, lock: body };
   } catch (err) {
@@ -667,11 +723,11 @@ export async function withStateMdLock(repoRoot, fn, opts = {}) {
     caughtError = err;
   } finally {
     // Always release — even on fn() throw — so the lock does not leak.
-    // The release may itself fail; we surface that via stderr so the caller
-    // sees the original fn() error, not a release-failure overshadow.
+    // Only WARN on fs-error: 'not-found' and 'not-owner' are recoverable race
+    // conditions (someone else cleaned up our lock — already safe to proceed).
     const releaseResult = releaseStateLock({ repoRoot, holder });
-    if (!releaseResult.ok || (releaseResult.released === false && releaseResult.reason === 'fs-error')) {
-      console.warn(`withStateMdLock: release failed (${releaseResult.reason ?? 'unknown'})`);
+    if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
+      console.warn(`withStateMdLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`);
     }
   }
 
