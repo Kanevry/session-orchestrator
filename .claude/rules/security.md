@@ -70,6 +70,33 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 - In CI: always use `pnpm install --frozen-lockfile` to prevent lockfile tampering.
 - Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
 
+### SEC-020-1: Package Legitimacy Audit (Slopcheck — #520)
+
+Pattern 2 of the gsd Pattern Adoption (Issue #520) provides `classifyPackages()`
+from `scripts/lib/slopcheck.mjs` to defend against LLM-hallucinated package
+names ("Slopsquatting" — documented incidents 2024/2025). When
+`slopcheck.enabled: true` in Session Config (default: `false`), the plan-skill
+runs Phase 3.5 Package-Audit on PRD-mentioned packages and the discovery-probe
+`supply-chain-slopcheck.mjs` runs over the repo's `package.json` /
+`requirements.txt` / `Cargo.toml`.
+
+Classifications:
+- **LEGITIMATE**: package exists + download_count > threshold
+- **ASSUMED**: package exists but very new / low downloads (warning, not block)
+- **SUS**: audit warning hit (operator confirmation required)
+- **SLOP**: package not in registry — possible LLM hallucination (hard block in plan-flow)
+
+This is **complementary** to the SEC-020 baseline (`ignore-scripts=true`,
+`block-exotic-subdeps=true`, `minimum-release-age=1440`): SEC-020 prevents
+post-install execution of malicious packages; Slopcheck prevents adopting
+non-existent (typosquat-target) packages in the first place.
+
+Cross-references:
+- API: `scripts/lib/slopcheck.mjs`
+- Discovery probe: `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs`
+- Plan-skill Phase 3.5: `skills/plan/SKILL.md`
+- Issue: #520
+
 ## Owner-Privacy Pre-Commit Hook (#494)
 - Repositories with private slugs, personal home paths, or non-public hosts MUST run an owner-leakage scanner as a pre-commit hook stage — CI catching the same class of leak is too late (it lands on the public branch first).
 - Reuse the same scanner CI runs (`scripts/lib/validate/check-owner-leakage.mjs` or equivalent). Local/CI parity is essential; a separate local-only ruleset drifts and gives false confidence.
