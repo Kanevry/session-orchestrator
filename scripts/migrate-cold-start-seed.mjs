@@ -2,7 +2,7 @@
 /**
  * migrate-cold-start-seed.mjs — one-shot seeder for the welcome-banner-pending marker.
  *
- * Part of the Learning-Memory Modernization PRD (F1.3, issue #507).
+ * Part of the Learning-Memory Modernization initiative (epic #498, issue #507).
  *
  * Seeds a zero-byte `.orchestrator/welcome-banner-pending` marker file in dormant
  * repos so the cold-start detector can emit a welcome banner on the next
@@ -17,24 +17,28 @@
  *   - The `.orchestrator/` directory is missing entirely (defensive — the
  *     bootstrap-gate has not run yet, marker would land in the wrong place).
  *
- * Repos missing a `.git/` directory (e.g. `aiat-pmo`) are still seeded — the
- * marker lives outside git anyway.
+ * Repos missing a `.git/` directory are still seeded — the marker lives
+ * outside git anyway.
  *
  * Usage:
  *   node scripts/migrate-cold-start-seed.mjs [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
+ *
+ * Target repo resolution (in priority order):
+ *   1. --repos <comma,list>             (explicit CLI override)
+ *   2. dormant-repos: [...] in
+ *      ~/.config/session-orchestrator/vault-migration-rules.yaml
+ *   3. <none> → fail with non-zero exit and a hint to the config file.
  *
  * Flags:
  *   --dry-run        Classify each target repo, do not write anything (DEFAULT).
  *   --apply          Write the marker file to each eligible repo.
  *   --repos <list>   Comma-separated repo paths (absolute or ~-prefixed).
- *                    Defaults to the hardcoded DEFAULT_REPOS list of 6 dormant
- *                    paths (PRD F1.3, W1 discovery D5).
  *   --json           Emit one JSON record per repo plus a final summary record.
  *   --help, -h       Print this help text to stderr and exit 0.
  *
  * Exit codes:
  *   0  Success (even when 0 repos were seeded — idempotent NO-OP is fine).
- *   1  Input/argument error.
+ *   1  Input/argument error (incl. no targets given anywhere).
  *   2  I/O error (filesystem failure mid-apply).
  *
  * Output (stdout — unless --json):
@@ -47,19 +51,10 @@
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { promises as fs } from 'node:fs';
-
-// ---------------------------------------------------------------------------
-// Hardcoded defaults (W1 discovery D5 — 6 dormant repos)
-// ---------------------------------------------------------------------------
-
-const DEFAULT_REPOS = [
-  '~/Projects/Bernhard/claude-usage-tracker',
-  '~/Projects/Bernhard/Macchiato',
-  '~/Projects/Bernhard/onenote',
-  '~/Projects/intern/ai-factory-n8n',
-  '~/Projects/intern/aiat-pmo',
-  '~/Projects/intern/launchpad-ai-factory',
-];
+import {
+  loadVaultMigrationRules,
+  VAULT_MIGRATION_RULES_PATH,
+} from './lib/vault-migration-rules.mjs';
 
 const MARKER_REL = '.orchestrator/welcome-banner-pending';
 const ORCH_REL = '.orchestrator';
@@ -83,7 +78,8 @@ Options:
   --dry-run        Classify each target repo, do not write anything (DEFAULT).
   --apply          Write the marker file to each eligible repo.
   --repos <list>   Comma-separated repo paths (absolute or ~-prefixed).
-                   Defaults to the hardcoded 6-repo dormant list from W1 D5.
+                   When omitted, falls back to dormant-repos: [...] in
+                   ~/.config/session-orchestrator/vault-migration-rules.yaml.
   --json           Emit one JSON record per repo plus a final summary record.
   --help, -h       Print this help text to stderr and exit 0.
 
@@ -295,7 +291,19 @@ if (reposArg) {
     process.exit(1);
   }
 } else {
-  targetRepos = DEFAULT_REPOS.map(resolveHome);
+  const { config, errors } = loadVaultMigrationRules();
+  for (const e of errors) {
+    process.stderr.write(`migrate-cold-start-seed: config: ${e}\n`);
+  }
+  if (config.dormantRepos.length === 0) {
+    process.stderr.write(
+      'migrate-cold-start-seed: no target repos.\n' +
+        `  Either pass --repos <comma,list>, or list paths under 'dormant-repos:' in\n` +
+        `  ${VAULT_MIGRATION_RULES_PATH}\n`
+    );
+    process.exit(1);
+  }
+  targetRepos = config.dormantRepos.map(resolveHome);
 }
 
 // ---------------------------------------------------------------------------

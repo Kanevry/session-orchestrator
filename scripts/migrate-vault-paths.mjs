@@ -2,27 +2,35 @@
 /**
  * migrate-vault-paths.mjs — one-shot cross-repo migration for username-drift in vault/project paths.
  *
- * Fixes the username-drift bug described in PRD 2026-05-21-learning-memory-modernization F1.1:
- *   /Users/bernhardgoetzendorfer/...  →  /Users/bernhardg./...
+ * Rewrites a literal "from" username path-segment to a "to" segment across markdown
+ * files under ~/Projects/. Only the username path segment changes; the trailing
+ * path is preserved.
  *
- * Only the username path segment changes; the trailing path is preserved.
- *
- * Discovery seed (W1 D1 findings):
- *   - buchhaltgenie/CLAUDE.md:125 (vault-dir-drift — critical)
- *   - buchhaltgenie/AGENTS.md:123 (vault-dir-drift)
- *   - buchhaltgenie/{CLAUDE,AGENTS}.md plan-baseline-path + pencil drift
- *   - scrapling-service/CLAUDE.md:67 (runbook path)
- *   - sven/STATUS.md:126 (broken ls example)
- *   - mail-assistant/.claude/state/STATE.md:13 (plan-file)
+ * Typical use: a host username change (`/Users/oldname/` → `/Users/newname/`) leaves
+ * hardcoded paths in CLAUDE.md / AGENTS.md / STATE.md across every checked-out repo.
+ * This script sweeps them in one pass.
  *
  * Usage:
- *   node scripts/migrate-vault-paths.mjs [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
+ *   node scripts/migrate-vault-paths.mjs --from <old/> --to <new/> [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
+ *
+ * Rule resolution (in priority order):
+ *   1. --from / --to flags (explicit CLI override)
+ *   2. username-rewrites: [{from,to}] in
+ *      ~/.config/session-orchestrator/vault-migration-rules.yaml
+ *      (first entry is used; multiple rewrites in one run require multiple invocations)
+ *   3. <none> → fail with non-zero exit and a hint to the config file.
+ *
+ * Target repo resolution (in priority order):
+ *   1. --repos <comma,list>             (explicit CLI override)
+ *   2. audited-repos: [...] in the same vault-migration-rules.yaml
+ *   3. <none, no --repos> → scan only the auto-discover sweep under ~/Projects/**.
  *
  * Flags:
+ *   --from SEG       Literal source segment (e.g. '/Users/oldname/'). Required if no config entry.
+ *   --to SEG         Literal target segment (e.g. '/Users/newname/'). Required if no config entry.
  *   --dry-run        Preview changes without writing (DEFAULT)
  *   --apply          Write fixes in-place (atomic: tmp + rename)
- *   --repos LIST     Comma-separated repo paths to scan; defaults to known targets
- *                    + any other ~/Projects/**\/*.md hits discovered by initial scan
+ *   --repos LIST     Comma-separated repo names or absolute paths to scan
  *   --json           Emit machine-readable JSONL on stdout (one record per hit)
  *   --help, -h       Show this help
  *
@@ -44,25 +52,21 @@ import { promises as fs, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import {
+  loadVaultMigrationRules,
+  VAULT_MIGRATION_RULES_PATH,
+} from './lib/vault-migration-rules.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const OLD_USERNAME_SEGMENT = '/Users/bernhardgoetzendorfer/';
-const NEW_USERNAME_SEGMENT = '/Users/bernhardg./';
-
 const HOME = os.homedir();
 const PROJECTS_ROOT = path.join(HOME, 'Projects');
 
-const DEFAULT_TARGET_REPOS = [
-  // Known operational targets from W1 D1 findings; resolved at runtime.
-  // We list bare names; resolveRepoPath() walks ~/Projects/** to find them.
-  'buchhaltgenie',
-  'scrapling-service',
-  'sven',
-  'mail-assistant',
-];
+// Set at startup from CLI args or config. Helpers read these; main() resolves them.
+let OLD_SEGMENT = null;
+let NEW_SEGMENT = null;
 
 const EXCLUDE_GLOBS = [
   '/tests/',
@@ -110,7 +114,9 @@ function parseArgs(argv) {
     help: false,
     apply: false,
     json: false,
-    repos: null, // null = use defaults + auto-discover
+    repos: null, // null = use config defaults / auto-discover
+    from: null,  // null = read from config
+    to: null,    // null = read from config
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -127,6 +133,22 @@ function parseArgs(argv) {
       }
       out.repos = next.split(',').map((s) => s.trim()).filter(Boolean);
       i++;
+    } else if (a === '--from') {
+      const next = args[i + 1];
+      if (!next || next.startsWith('--')) {
+        process.stderr.write('migrate-vault-paths: --from requires a literal source segment\n');
+        process.exit(1);
+      }
+      out.from = next;
+      i++;
+    } else if (a === '--to') {
+      const next = args[i + 1];
+      if (!next || next.startsWith('--')) {
+        process.stderr.write('migrate-vault-paths: --to requires a literal target segment\n');
+        process.exit(1);
+      }
+      out.to = next;
+      i++;
     } else {
       process.stderr.write(`migrate-vault-paths: unknown argument: ${a}\n`);
       process.exit(1);
@@ -137,16 +159,23 @@ function parseArgs(argv) {
 
 function printHelp() {
   process.stdout.write(
-    `Usage: migrate-vault-paths.mjs [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
+    `Usage: migrate-vault-paths.mjs --from <old/> --to <new/> [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
 
-Rewrites '${OLD_USERNAME_SEGMENT}' → '${NEW_USERNAME_SEGMENT}' across markdown files
+Rewrites a literal "from" path segment to a "to" segment across markdown files
 under ~/Projects/, skipping tests/, fixtures/, .git/, vault-backups, and
 historical contexts (decisions.md, history/, archive*).
 
+Both --from and --to are required unless username-rewrites[0] is set in
+${VAULT_MIGRATION_RULES_PATH}.
+
 Options:
+  --from SEG           Literal source segment (e.g. '/Users/oldname/')
+  --to SEG             Literal target segment (e.g. '/Users/newname/')
   --dry-run            Preview changes without writing (DEFAULT)
   --apply              Write fixes in-place (atomic: tmp + rename)
-  --repos LIST         Comma-separated repo names or paths to scan (overrides defaults)
+  --repos LIST         Comma-separated repo names or paths to scan; falls back
+                       to audited-repos: [...] in vault-migration-rules.yaml,
+                       then to ~/Projects/** auto-discovery sweep
   --json               Emit JSONL records on stdout (one per hit)
   --help, -h           Show this help
 
@@ -195,7 +224,7 @@ function findCandidateFiles(roots) {
       '-l', // list-files-with-matches
       '-I', // skip binary
       '--include=*.md', // markdown only (CLI runbooks live in .md; STATE.md and STATUS.md included)
-      OLD_USERNAME_SEGMENT,
+      OLD_SEGMENT,
       ...roots,
     ],
     { encoding: 'utf8' },
@@ -234,7 +263,7 @@ function discoverAdditionalFiles() {
 function classifyHit(filePath, line) {
   if (isHistorical(filePath)) return 'historical';
   const lower = line.toLowerCase();
-  if (lower.includes('vault-dir:') && line.includes(OLD_USERNAME_SEGMENT + 'Projects/vault')) {
+  if (lower.includes('vault-dir:') && line.includes(OLD_SEGMENT + 'Projects/vault')) {
     return 'vault-dir-drift';
   }
   return 'path-drift';
@@ -245,13 +274,13 @@ function classifyHit(filePath, line) {
 // ---------------------------------------------------------------------------
 
 /**
- * Replace the old-username segment with the new one across the full text.
- * Only the username segment changes — `/Users/bernhardgoetzendorfer/Foo/bar`
- * becomes `/Users/bernhardg./Foo/bar`.
+ * Replace OLD_SEGMENT with NEW_SEGMENT across the full text. Only that literal
+ * segment changes; the trailing path is preserved verbatim (e.g. '/Users/x/Foo'
+ * → '/Users/y/Foo' when the rewrite rule is '/Users/x/' → '/Users/y/').
  */
 function rewriteContent(content) {
   // Use split+join (no regex) so we never accidentally match a substring outside the literal.
-  return content.split(OLD_USERNAME_SEGMENT).join(NEW_USERNAME_SEGMENT);
+  return content.split(OLD_SEGMENT).join(NEW_SEGMENT);
 }
 
 /**
@@ -261,7 +290,7 @@ function findHits(filePath, content) {
   const lines = content.split('\n');
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(OLD_USERNAME_SEGMENT)) {
+    if (lines[i].includes(OLD_SEGMENT)) {
       hits.push({
         line: i + 1, // 1-indexed
         text: lines[i],
@@ -301,10 +330,35 @@ async function main() {
     process.exit(0);
   }
 
-  // Resolve the scan set: explicit --repos, or defaults + auto-discovery
+  // ── Resolve --from / --to rewrite segments ────────────────────────────────
+  // Priority: CLI args > config username-rewrites[0] > fail.
+  const ruleset = loadVaultMigrationRules();
+  for (const e of ruleset.errors) {
+    process.stderr.write(`migrate-vault-paths: config: ${e}\n`);
+  }
+  if (opts.from && opts.to) {
+    OLD_SEGMENT = opts.from;
+    NEW_SEGMENT = opts.to;
+  } else if (opts.from || opts.to) {
+    process.stderr.write('migrate-vault-paths: --from and --to must be given together\n');
+    process.exit(1);
+  } else if (ruleset.config.usernameRewrites.length > 0) {
+    OLD_SEGMENT = ruleset.config.usernameRewrites[0].from;
+    NEW_SEGMENT = ruleset.config.usernameRewrites[0].to;
+  } else {
+    process.stderr.write(
+      'migrate-vault-paths: no rewrite rule found.\n' +
+        '  Either pass --from <old/> --to <new/>, or set username-rewrites: in\n' +
+        `  ${VAULT_MIGRATION_RULES_PATH}\n`
+    );
+    process.exit(1);
+  }
+
+  // Resolve the scan set: explicit --repos, or config audited-repos, or empty (auto-discover only)
   const repoRoots = [];
-  if (opts.repos) {
-    for (const r of opts.repos) {
+  const explicitRepos = opts.repos ?? (ruleset.config.auditedRepos.length > 0 ? ruleset.config.auditedRepos : null);
+  if (explicitRepos) {
+    for (const r of explicitRepos) {
       const resolved = resolveRepoPath(r);
       if (!resolved) {
         process.stderr.write(`migrate-vault-paths: WARN repo not found: ${r}\n`);
@@ -312,23 +366,18 @@ async function main() {
       }
       repoRoots.push(resolved);
     }
-    if (repoRoots.length === 0) {
+    if (repoRoots.length === 0 && opts.repos) {
       process.stderr.write('migrate-vault-paths: no valid repos to scan\n');
       process.exit(1);
-    }
-  } else {
-    // Defaults: resolve known targets
-    for (const name of DEFAULT_TARGET_REPOS) {
-      const resolved = resolveRepoPath(name);
-      if (resolved) repoRoots.push(resolved);
     }
   }
 
   // Initial file discovery within named repos
   let candidateFiles = findCandidateFiles(repoRoots);
 
-  // If --repos was NOT specified, expand scan to discover anything else under ~/Projects/**
-  if (!opts.repos) {
+  // If NO explicit repo list was given (neither --repos nor config.audited-repos),
+  // expand scan to discover anything else under ~/Projects/**.
+  if (!explicitRepos) {
     const additional = discoverAdditionalFiles();
     const set = new Set(candidateFiles);
     for (const f of additional) set.add(f);

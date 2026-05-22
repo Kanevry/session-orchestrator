@@ -258,11 +258,13 @@ describe('#21 — migrate-vault-paths preserves Session Config integrity', () =>
     const claudeMd = join(repo, 'CLAUDE.md');
 
     // Before migration: CLAUDE.md contains the old username segment AND
-    // a vault-mirror.quality block.
+    // a vault-mirror.quality block. Tests use synthetic placeholder usernames.
+    const OLD_SEG = '/Users/oldname/';
+    const NEW_SEG = '/Users/newname/';
     const before = [
       '# Project',
       '',
-      'See /Users/bernhardgoetzendorfer/Projects/vault for notes.',
+      `See ${OLD_SEG}Projects/vault for notes.`,
       '',
       '## Session Config',
       '',
@@ -285,15 +287,15 @@ describe('#21 — migrate-vault-paths preserves Session Config integrity', () =>
     // Run migrate-vault-paths --apply
     const migrate = spawnSync(
       process.execPath,
-      [MIGRATE_VAULT_PATHS_SCRIPT, '--repos', repo, '--apply'],
+      [MIGRATE_VAULT_PATHS_SCRIPT, '--from', OLD_SEG, '--to', NEW_SEG, '--repos', repo, '--apply'],
       { encoding: 'utf8', timeout: 10_000 }
     );
     expect(migrate.status).toBe(0);
 
     // Post-migration: the path was rewritten BUT the Session Config block is intact
     const after = readFileSync(claudeMd, 'utf8');
-    expect(after).toContain('/Users/bernhardg./Projects/vault');
-    expect(after).not.toContain('/Users/bernhardgoetzendorfer/');
+    expect(after).toContain(`${NEW_SEG}Projects/vault`);
+    expect(after).not.toContain(OLD_SEG);
 
     const postCfg = parseSessionConfig(after);
     expect(postCfg['vault-mirror']).toEqual({

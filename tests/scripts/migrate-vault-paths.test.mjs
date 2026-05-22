@@ -1,9 +1,9 @@
 /**
  * migrate-vault-paths.test.mjs — Tests for scripts/migrate-vault-paths.mjs
  *
- * Cross-repo username-drift fixer (PRD F1.1, issue #498). Rewrites
- * /Users/bernhardgoetzendorfer/...  →  /Users/bernhardg./... in markdown files
- * under selected repos.
+ * Cross-repo username-drift fixer (epic #498). Rewrites a literal --from
+ * segment to a literal --to segment in markdown files under selected repos.
+ * Tests use synthetic placeholder usernames (oldname/newname).
  *
  * Tested behaviours:
  *   - Default dry-run; --apply mutates files
@@ -48,8 +48,8 @@ const SCRIPT = join(REPO_ROOT, 'scripts', 'migrate-vault-paths.mjs');
 // when the system tmp is symlinked (e.g. /var → /private/var on macOS).
 const TMP_REAL = realpathSync(tmpdir());
 
-const OLD = '/Users/bernhardgoetzendorfer/';
-const NEW = '/Users/bernhardg./';
+const OLD = '/Users/oldname/';
+const NEW = '/Users/newname/';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -64,11 +64,12 @@ function mkTmp(prefix = 'mvp-test-') {
 }
 
 /**
- * Run the migrate-vault-paths.mjs script with extra args. Returns the
- * spawnSync result (status, stdout, stderr).
+ * Run the migrate-vault-paths.mjs script with extra args. Always passes
+ * --from / --to so tests are self-contained (no dependency on the operator's
+ * vault-migration-rules.yaml). Returns the spawnSync result.
  */
 function runScript(extraArgs = []) {
-  return spawnSync(process.execPath, [SCRIPT, ...extraArgs], {
+  return spawnSync(process.execPath, [SCRIPT, '--from', OLD, '--to', NEW, ...extraArgs], {
     encoding: 'utf8',
     timeout: 20_000,
   });
@@ -149,23 +150,23 @@ describe('migrate-vault-paths — default dry-run vs --apply', () => {
 // ---------------------------------------------------------------------------
 
 describe('migrate-vault-paths — literal match only', () => {
-  it('does NOT mutate a string containing "bernhardgoetzendorfer" without leading slash + trailing slash', () => {
+  it('does NOT mutate a string containing the username without leading slash + trailing slash', () => {
     // grep filter only finds files containing the literal OLD path segment.
-    // A line like "see bernhardgoetzendorfer-other-string" does NOT match,
-    // because the literal "/Users/bernhardgoetzendorfer/" is absent.
+    // A line like "see oldname-other-string" does NOT match because the
+    // literal "/Users/oldname/" is absent.
     const repo = mkTmp();
-    const filePath = writeFile(repo, 'README.md', 'see bernhardgoetzendorfer-other-string for ref\n');
+    const filePath = writeFile(repo, 'README.md', 'see oldname-other-string for ref\n');
 
     const result = runScript(['--repos', repo, '--apply']);
 
     // File is untouched — grep had no hit, no rewrite attempted
-    expect(readFileSync(filePath, 'utf8')).toBe('see bernhardgoetzendorfer-other-string for ref\n');
+    expect(readFileSync(filePath, 'utf8')).toBe('see oldname-other-string for ref\n');
     expect(result.status).toBe(0);
     // 0 lines fixed
     expect(result.stderr).toContain('0 lines fixed');
   });
 
-  it('only the literal /Users/bernhardgoetzendorfer/ segment is replaced; trailing path is preserved', () => {
+  it('only the literal /Users/oldname/ segment is replaced; trailing path is preserved', () => {
     const repo = mkTmp();
     const filePath = writeFile(
       repo,
