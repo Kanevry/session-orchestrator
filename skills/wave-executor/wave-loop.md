@@ -436,6 +436,25 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
      (Full Gate is NEVER skipped regardless of cache state — this is the close-safety invariant.)
    - After **Finalization**: final git status check
+
+#### Auto-Fix Protocol (#521)
+
+When `verification-auto-fix.enabled: true`, the inter-wave Quality-Gate uses
+`runQualityGateWithRetry()` to dispatch up to `max-retries` (default 2)
+fixer-agent attempts before aborting.
+
+Per attempt:
+1. Run quality-gate (lint, typecheck, test in order).
+2. On failure, collect: failure output, corrective_context from
+   `.orchestrator/current-session.json`, changed files since last green SHA.
+3. Dispatch code-implementer fixer-subagent with the bundle.
+4. Re-run quality-gate.
+5. After max-retries → write `.orchestrator/metrics/verification-failures/<ts>.json`
+   diagnostics bundle and abort the wave.
+
+See `SKILL.md` § "Inter-Wave Quality-Gate (with Auto-Fix Loop — #521)" for
+the full invocation pattern.
+
 #### Auto-Commit Checkpoint (Optional, Opt-In)
 
 > Gate conditions — ALL of the following must be true for this step to run:
