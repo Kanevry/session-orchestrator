@@ -123,4 +123,51 @@ describe('_parseKV', () => {
     expect(kv.get('waves')).toBe('5');
     expect(kv.get('enforcement')).toBe('warn');
   });
+
+  // Issue #497: support YAML list-item form `- key: value` used in
+  // baseline CLAUDE.md and other consumer repos.
+  describe('issue #497: YAML list-item form "- key: value"', () => {
+    it('parses simple "- key: value" line', () => {
+      const kv = _parseKV(['- vcs: gitlab']);
+      expect(kv.get('vcs')).toBe('gitlab');
+    });
+
+    it('preserves leading-tilde paths (~/...) in value', () => {
+      const kv = _parseKV(['- plan-baseline-path: ~/Projects/projects-baseline']);
+      expect(kv.get('plan-baseline-path')).toBe('~/Projects/projects-baseline');
+    });
+
+    it('parses inline object literal value verbatim', () => {
+      const kv = _parseKV([
+        '- vault-integration: { enabled: true, vault-dir: ~/Projects/vault, mode: warn }',
+      ]);
+      expect(kv.get('vault-integration')).toBe(
+        '{ enabled: true, vault-dir: ~/Projects/vault, mode: warn }'
+      );
+    });
+
+    it('parses list-value verbatim', () => {
+      const kv = _parseKV(['- cross-repos: [sven, session-orchestrator]']);
+      expect(kv.get('cross-repos')).toBe('[sven, session-orchestrator]');
+    });
+
+    it('does not misinterpret "- just a list item" (no colon-then-space) as key:value', () => {
+      const kv = _parseKV(['- just a list item']);
+      expect(kv.size).toBe(0);
+    });
+
+    it('parses mix of "- key: value", plain "key: value", and Format 1', () => {
+      const lines = [
+        '- vcs: gitlab',
+        'waves: 5',
+        '- **persistence:** true',
+        '- plan-baseline-path: ~/Projects/foo',
+      ];
+      const kv = _parseKV(lines);
+      expect(kv.get('vcs')).toBe('gitlab');
+      expect(kv.get('waves')).toBe('5');
+      expect(kv.get('persistence')).toBe('true');
+      expect(kv.get('plan-baseline-path')).toBe('~/Projects/foo');
+    });
+  });
 });

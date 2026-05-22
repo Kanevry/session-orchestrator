@@ -66,8 +66,10 @@ export function _parseKV(lines) {
       key = fmt1[1].trim();
       value = fmt1[2].trim();
     } else {
-      // Format 2: key: value (key starts with letter, rest alphanum/hyphen/underscore)
-      const fmt2 = line.match(/^\s*([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)/);
+      // Format 2: key: value — supports both plain "key: value" and
+      // YAML list-item form "- key: value" (issue #497). Key starts with
+      // letter; rest is alphanum/hyphen/underscore.
+      const fmt2 = line.match(/^\s*(?:-\s+)?([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)/);
       if (fmt2) {
         key = fmt2[1].trim();
         value = fmt2[2].trim();

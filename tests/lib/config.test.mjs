@@ -429,6 +429,57 @@ describe('parseSessionConfig', () => {
     });
   });
 
+  // Issue #497 — baseline CLAUDE.md uses YAML list-item form `- key: value`
+  // throughout the Session Config block, and `vault-integration` is written
+  // as an inline object literal on a single line. Both must round-trip.
+  describe('issue #497: YAML list-item form + inline vault-integration', () => {
+    const fixture = [
+      '## Session Config',
+      '',
+      '- vcs: gitlab',
+      '- gitlab-host: gitlab.example.com',
+      '- plan-baseline-path: ~/Projects/projects-baseline',
+      '- vault-integration: { enabled: true, vault-dir: ~/Projects/vault, mode: warn }',
+      '- cross-repos: [sven, session-orchestrator]',
+      '- waves: 7',
+      '- agents-per-wave: 6 (deep: 18)',
+    ].join('\n');
+
+    it('preserves "- plan-baseline-path: ~/..." as a string (was null pre-#497)', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config['plan-baseline-path']).toBe('~/Projects/projects-baseline');
+    });
+
+    it('parses inline "- vault-integration: { ... }" into the full nested object', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config['vault-integration']).toEqual({
+        enabled: true,
+        'vault-dir': '~/Projects/vault',
+        mode: 'warn',
+      });
+    });
+
+    it('parses "- vcs:" scalar (was null pre-#497)', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config.vcs).toBe('gitlab');
+    });
+
+    it('parses "- cross-repos:" list (was null pre-#497)', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config['cross-repos']).toEqual(['sven', 'session-orchestrator']);
+    });
+
+    it('parses "- waves:" integer (was default 5 pre-#497)', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config.waves).toBe(7);
+    });
+
+    it('parses "- agents-per-wave:" integer-with-overrides syntax', () => {
+      const config = parseSessionConfig(fixture);
+      expect(config['agents-per-wave']).toEqual({ default: 6, deep: 18 });
+    });
+  });
+
   describe('worktree-exclude (issue #192)', () => {
     it('defaults worktree-exclude to canonical 10-pattern list', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
