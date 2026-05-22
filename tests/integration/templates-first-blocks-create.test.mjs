@@ -39,15 +39,32 @@ const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-bash-templates-first.mjs');
  */
 const CANONICAL_POLICY = {
   version: 1,
-  hosts: ['github', 'gitlab'],
-  bypass_patterns: ['--dry-run', '--help'],
-  template_globs: [
-    '.github/PULL_REQUEST_TEMPLATE.md',
-    '.github/PULL_REQUEST_TEMPLATE/*.md',
-    '.github/ISSUE_TEMPLATE/*.md',
-    '.gitlab/merge_request_templates/*.md',
-    '.gitlab/issue_templates/*.md',
+  enforcement: 'block',
+  hosts: {
+    github: {
+      template_paths: [
+        '.github/PULL_REQUEST_TEMPLATE.md',
+        '.github/ISSUE_TEMPLATE/',
+      ],
+    },
+    gitlab: {
+      template_paths: [
+        '.gitlab/merge_request_templates/',
+        '.gitlab/issue_templates/',
+      ],
+    },
+  },
+  bypass_patterns: [
+    'gh pr create --dry-run',
+    'gh pr create --help',
+    'gh issue new --dry-run',
+    'gh issue create --help',
+    'glab mr create --dry-run',
+    'glab mr create --help',
+    'glab issue create --dry-run',
+    'glab issue create --help',
   ],
+  acknowledgement_file: '.orchestrator/runtime/templates-acknowledged.json',
 };
 
 // ---------------------------------------------------------------------------
@@ -164,15 +181,16 @@ async function mkRepo({
     );
   }
 
-  // Acknowledgement file
+  // Acknowledgement file — schema: { "<sessionId>": { acknowledgedAt: ISO } }
   if (ackSessionId !== null) {
     const runtimeDir = path.join(dir, '.orchestrator', 'runtime');
     await fs.mkdir(runtimeDir, { recursive: true });
     await fs.writeFile(
       path.join(runtimeDir, 'templates-acknowledged.json'),
       JSON.stringify({
-        sessionId: ackSessionId,
-        acknowledgedAt: '2026-05-22T10:00:00.000Z',
+        [ackSessionId]: {
+          acknowledgedAt: '2026-05-22T10:00:00.000Z',
+        },
       }),
     );
   }

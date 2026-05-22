@@ -41,7 +41,7 @@ import { readJson } from '../scripts/lib/common.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 // #519: opt-in via profile/env. Default profile "full" enables this hook;
@@ -95,8 +95,10 @@ function blockCreate(ctx) {
     `See: issue #519, PRD docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md (Pattern 3)`,
   ].join('\n');
 
-  // Structured deny for Claude Code hook protocol — same envelope as
-  // pre-bash-destructive-guard.mjs.
+  // PRD § 3 Gherkin Pattern 3 spec: stderr lists template paths + ack hint.
+  // We emit BOTH stderr (human-readable per spec) AND the structured stdout
+  // JSON envelope (machine-readable for Claude Code hook protocol).
+  process.stderr.write(reason + '\n');
   process.stdout.write(
     JSON.stringify({ permissionDecision: 'deny', reason }) + '\n',
   );
@@ -309,9 +311,48 @@ async function main() {
   // test) we treat it as "no evidence of prior Read" and fall through to
   // deny — that is the default-deny safety posture for this gate.
   const hostBlock = policy.hosts?.[host] ?? {};
-  const templatePaths = Array.isArray(hostBlock.template_paths)
+  const templatePathsConfigured = Array.isArray(hostBlock.template_paths)
     ? hostBlock.template_paths.filter((p) => typeof p === 'string' && p.length > 0)
     : [];
+
+  // Resolve configured paths to ACTUAL files on disk in the project.
+  // - File pattern (e.g. .github/PULL_REQUEST_TEMPLATE.md) → include if exists.
+  // - Directory pattern (e.g. .gitlab/merge_request_templates/) → expand to
+  //   all *.md files inside (and inside immediate subdirs for ISSUE_TEMPLATE/).
+  // If NO templates resolve, nothing to enforce → allow.
+  const projectBase = projectDir || process.cwd();
+  const templatePaths = [];
+  for (const p of templatePathsConfigured) {
+    const abs = path.isAbsolute(p) ? p : path.join(projectBase, p);
+    if (!existsSync(abs)) continue;
+    let stat;
+    try { stat = statSync(abs); } catch { continue; }
+    if (stat.isFile()) {
+      templatePaths.push(p);
+      continue;
+    }
+    if (stat.isDirectory()) {
+      let entries;
+      try { entries = readdirSync(abs); } catch { continue; }
+      const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
+      for (const entry of entries) {
+        if (entry.startsWith('.')) continue;
+        const entryAbs = path.join(abs, entry);
+        let estat;
+        try { estat = statSync(entryAbs); } catch { continue; }
+        if (estat.isFile() && entry.endsWith('.md')) {
+          templatePaths.push(`${trimmed}/${entry}`);
+        }
+      }
+    }
+  }
+
+  if (templatePaths.length === 0) {
+    process.stderr.write(
+      `ℹ pre-bash-templates-first: no ${host} template files found in repo — allowing '${command.slice(0, 80)}'\n`,
+    );
+    return emitAllow();
+  }
 
   const transcriptPath =
     typeof input.transcript_path === 'string' && input.transcript_path.length > 0
