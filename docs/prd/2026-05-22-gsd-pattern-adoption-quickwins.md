@@ -297,4 +297,14 @@ All four patterns implemented in a 5-wave deep session on 2026-05-22. Closes #51
 - GitLab CI: see post-session pipeline
 
 ### Follow-up issues filed
-<!-- REVIEW: source needed — coordinator to file from architect-reviewer findings (M1-M3 + L1-L3 + qa-strategist + security-reviewer outputs); issue numbers not yet assigned at time of PRD update -->
+
+Bundled from W5 architect-reviewer (3 HIGH + 6 MED + 1 LOW), qa-strategist (12 HIGH + 16 MED + 8 LOW), security-reviewer (0 HIGH + 3 MED + 6 LOW). 2 MED security findings landed inline (commit `aebc1df`). Remainder grouped into 4 thematic follow-ups, one per Pattern:
+
+- **#522 — Pattern 1 STATE.md-Lock**: wire skill bodies (still inline `readFileSync`/`writeFileSync` — lock library-only); cross-host + unparseable + holder/sessionId test branches.
+- **#523 — Pattern 2 Slopcheck**: integrate discovery probe (path orphan); cache TTL + persistence + npm response variants test gaps; cleanup dead `registry-threshold-downloads` knob + unused `SUS` enum.
+- **#524 — Pattern 3 templates-first**: G7 transcript-history happy-path test gap; implement `/templates-ack` command; symlink hardening; YAML form-template recognition.
+- **#525 — Pattern 4 Auto-Fix-Loop**: Session Config + last-green-sha + git-diff test gaps; document `*-command` keys as RCE-equivalent + session-start banner; diagnostics bundle redaction; edge-case tests.
+
+In-session security MEDs already fixed (commit `aebc1df`):
+- npm argv injection via package.json keys (slopcheck) — validate npm name grammar + prepend `--`
+- bypass-pattern prefix-inclusion bypass (templates-first hook) — boundary check on trailing edge
