@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { _parseStateMdLock } from './config/state-md-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -671,6 +672,21 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
  * completion or throw. Always releases the lock — even if `fn` throws —
  * before re-raising the original error.
  *
+ * Short-circuit: when `state-md-lock.enabled: false` is set in CLAUDE.md
+ * (or AGENTS.md on Codex CLI — the two are aliases per
+ * `skills/_shared/instruction-file-resolution.md`) Session Config, the lock
+ * is bypassed entirely and `fn` is called directly. A stderr WARN line is
+ * emitted so operators can detect the bypass. This honours the config knob
+ * documented in `.claude/rules/parallel-sessions.md` PSA-005 without
+ * removing the lock infrastructure.
+ *
+ * Per-call override via `opts.stateMdLockEnabled` (boolean): when provided,
+ * takes precedence over the config value. Useful for tests that need to
+ * exercise the short-circuit without touching CLAUDE.md on disk.
+ *
+ * Fail-safe: if CLAUDE.md cannot be read or the config block is malformed,
+ * `enabled` defaults to `true` — lock is always acquired on errors.
+ *
  * Throws when:
  *   - acquireStateLock fails (timeout or fs-error) → throws a labelled Error
  *     so callers see the failure as an exception rather than a silent
@@ -684,12 +700,34 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
  * @param {number} [opts.timeoutMs]
  * @param {string} [opts.holder]
  * @param {number} [opts.pollMs]
+ * @param {boolean} [opts.stateMdLockEnabled]  — per-call override; takes
+ *   precedence over the Session Config value when set.
  * @returns {Promise<T>}
  * @template T
  */
 export async function withStateMdLock(repoRoot, fn, opts = {}) {
   if (typeof fn !== 'function') {
     throw new TypeError('withStateMdLock: fn must be a function');
+  }
+
+  // Short-circuit: respect state-md-lock.enabled: false from Session Config.
+  // opts.stateMdLockEnabled (per-call override) takes precedence when set.
+  let enabled = opts.stateMdLockEnabled;
+  if (enabled === undefined) {
+    try {
+      const claudeMdPath = path.join(repoRoot ?? process.cwd(), 'CLAUDE.md');
+      const claudeMdContents = fs.readFileSync(claudeMdPath, 'utf8');
+      const cfg = _parseStateMdLock(claudeMdContents);
+      enabled = cfg.enabled;
+    } catch {
+      // Fail-safe: if CLAUDE.md is absent or unreadable, default to locked.
+      enabled = true;
+    }
+  }
+
+  if (enabled === false) {
+    process.stderr.write('⚠ withStateMdLock: short-circuit (state-md-lock.enabled: false) — running fn without lock\n');
+    return await fn();
   }
 
   const holder = typeof opts.holder === 'string' && opts.holder.length > 0

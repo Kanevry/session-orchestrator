@@ -10,11 +10,10 @@ Compute the v0 recommendation from in-memory session metrics and additively writ
 
 ```bash
 node --input-type=module -e "
-import {readFileSync, writeFileSync, appendFileSync, mkdirSync} from 'node:fs';
-import {updateFrontmatterFields} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {appendFileSync, mkdirSync} from 'node:fs';
+import {updateFrontmatterFieldsOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 import {computeV0Recommendation} from '${PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
 
-const STATE_PATH = '<state-dir>/STATE.md';
 const SWEEP_LOG = '.orchestrator/metrics/sweep.log';
 
 try {
@@ -34,8 +33,7 @@ try {
     'rationale': rec.rationale,
   };
 
-  const contents = readFileSync(STATE_PATH, 'utf8');
-  writeFileSync(STATE_PATH, updateFrontmatterFields(contents, fields));
+  await updateFrontmatterFieldsOnDisk(undefined, fields);
   console.log('Recommendations written: ' + rec.mode + ' (' + rec.rationale + ')');
 } catch (err) {
   // AC3: defensive — exception must NOT block Phase 3.4 status: completed.

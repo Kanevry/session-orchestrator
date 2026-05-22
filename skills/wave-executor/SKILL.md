@@ -369,8 +369,11 @@ const result = await runQualityGateWithRetry({
 ### Decision flow
 
 - `result.ok === true` → Wave green, proceed to next wave or session-end.
-- `result.ok === false` → Hard abort. Write `.orchestrator/metrics/verification-failures/<ts>.json` (handled by quality-gate.mjs itself).
-- `result.attempts > 1` → log a Deviation in STATE.md: `auto-fix used N retries to clear Wave <wave>`.
+- `result.ok === false` → Hard abort.
+  - quality-gate.mjs writes `.orchestrator/metrics/verification-failures/<ts>.json` (diagnostics bundle — automatic, redacted per `redactDiagnosticsBundle()`).
+  - **Coordinator** (not fixer-subagent) appends a deviation entry to STATE.md via `appendDeviationOnDisk()` — see `wave-loop.md` § STATE.md Deviation — Auto-Fix Result.
+  - Wave execution is blocked; operator must manually fix or disable auto-fix.
+- `result.attempts > 1` → **Coordinator** logs a Deviation in STATE.md via `appendDeviationOnDisk()`: `auto-fix used N retries to clear Wave <wave>`.
 
 ### Skip Conditions
 
