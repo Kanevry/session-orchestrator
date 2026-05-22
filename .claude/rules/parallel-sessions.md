@@ -89,6 +89,26 @@ Before running any of the above, ask: "Did I create this file/commit/change? If 
 - **If you see unfamiliar changes in the diff, unstage them** and ask the user.
 - **Never amend a commit you did not create.**
 
+## PSA-005 — Mechanical STATE.md Write Protection (#518)
+
+Pattern 1 of the gsd Adoption Quick-Win Bundle (Issue #518) complements the PSA-003/PSA-004 behavioural rules with mechanical enforcement. When `state-md-lock.enabled: true` (default since v3.6.0) is set in Session Config, `withStateMdLock(repoRoot, fn)` from `scripts/lib/session-lock.mjs` protects every STATE.md write via an `.orchestrator/state.lock` lockfile using atomic tmp-file + rename acquisition with PID-liveness stale-detection.
+
+**What this mechanically enforces:**
+- **PSA-003 — Destructive Action Safeguards:** a concurrent writer cannot overwrite STATE.md while another writer holds the lock. The race condition is structurally impossible — not merely discouraged.
+- **PSA-004 — Commit Discipline:** STATE.md updates are serialised; no frontmatter update from one `setMissionStatus()` call can be silently lost between two concurrent callers.
+
+**Bypass mechanics:** Lock timeout default 10s (`state-md-lock.timeout-ms`). On stale lock (PID no longer alive) → atomic override + WARN on stderr. On genuine contention timeout → caller receives `{ ok: false, reason: 'timeout' }` and must decide whether to retry or abort.
+
+**When to use:**
+- All STATE.md writers in skill bodies (session-start Phase 1.5/1b, wave-executor inter-wave checkpoints, session-end Phase 3.7)
+- Hooks that mutate STATE.md (rare — most hooks are read-only)
+
+**When NOT to use:**
+- STATE.md readers (`parseStateMd`, `readMissionStatus`) — locking readers serialises them unnecessarily with no safety benefit
+- Other lock domains: the session lock (`acquire()` in `session-lock.mjs`) is orthogonal — session lock means "this repo working copy is occupied by an active session"; state lock means "STATE.md is being written right now"
+
+See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Issue #518.
+
 ## Anti-Patterns
 - Seeing unfamiliar changes and assuming they are "leftover mess" to clean up — they are likely active work.
 - Running `git reset --hard` to "start fresh" — this destroys all uncommitted work across all sessions.
