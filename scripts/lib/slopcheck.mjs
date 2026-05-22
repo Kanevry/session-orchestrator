@@ -218,11 +218,22 @@ function execFileAsync(cmd, args, opts) {
  * @returns {Promise<{ classification: string, evidence?: string }>}
  */
 async function classifyNpmPackage(pkgName, timeoutMs) {
+  // SEC: validate package name against npm grammar before execFile.
+  // Prevents argv injection where a malicious package.json key like
+  // "--registry=http://attacker/" would be parsed by npm as a flag.
+  // npm package name grammar (RFC): optional @scope/ + lowercase alnum/dash/dot/underscore.
+  const NPM_NAME_RE = /^(?:@[a-z0-9~][a-z0-9-._~]*\/)?[a-z0-9~][a-z0-9-._~]*$/i;
+  if (!NPM_NAME_RE.test(pkgName)) {
+    return { classification: 'SLOP', evidence: 'invalid-npm-package-name' };
+  }
+
   let stdout;
   try {
     const result = await execFileAsync(
       'npm',
-      ['view', pkgName, 'versions', '--json'],
+      // `--` separator: even if NPM_NAME_RE somehow lets a flag-shaped name slip
+      // through, `--` halts npm's option parsing. Belt + braces.
+      ['view', '--', pkgName, 'versions', '--json'],
       { timeout: timeoutMs, env: process.env },
     );
     stdout = result.stdout;

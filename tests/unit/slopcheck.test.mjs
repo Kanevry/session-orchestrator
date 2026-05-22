@@ -160,7 +160,9 @@ describe('classifyPackages — npm registry classification', () => {
     // Configure mock to return different results based on the package name arg
     execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const callback = typeof _opts === 'function' ? _opts : cb;
-      const pkg = args[1]; // args = ['view', '<pkg>', 'versions', '--json']
+      // args = ['view', '--', '<pkg>', 'versions', '--json'] after SEC fix (-- separator).
+      // The pkg arg is the first non-flag, non-fixed entry.
+      const pkg = args.find((a) => a !== 'view' && a !== '--' && a !== 'versions' && a !== '--json');
       if (pkg === 'react' || pkg === 'next') {
         callback(null, JSON.stringify(['1.0.0']), '');
       } else {

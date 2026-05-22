@@ -157,8 +157,9 @@ function resolveHost(command) {
 
 /**
  * True when the command starts with any of the bypass patterns. Bypass match
- * is a prefix check (after leading whitespace trim) — patterns from the policy
- * are short, opinionated strings like "gh issue create --label bot".
+ * is a prefix check with a word/EOL boundary on the trailing edge — this
+ * prevents trivial bypass via prefix-inclusion (e.g. policy entry
+ * "gh issue create --label bot" must not match "gh issue create --label botanical").
  *
  * @param {string} command
  * @param {string[]} bypassPatterns
@@ -171,7 +172,11 @@ function matchesBypass(command, bypassPatterns) {
   const stripped = command.replace(/^\s+/, '');
   for (const pat of bypassPatterns) {
     if (typeof pat !== 'string' || pat.length === 0) continue;
-    if (stripped.startsWith(pat)) return true;
+    if (!stripped.startsWith(pat)) continue;
+    // Boundary check: next character must be whitespace, EOL, or absent.
+    // This prevents "gh foo --label bot" from matching policy "gh foo --label botanical".
+    const nextChar = stripped.charAt(pat.length);
+    if (nextChar === '' || /\s/.test(nextChar)) return true;
   }
   return false;
 }
