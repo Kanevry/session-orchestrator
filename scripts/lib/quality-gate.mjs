@@ -60,6 +60,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from '
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
+export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -112,7 +115,7 @@ function resolveRepoRoot(explicit) {
  * @param {string} repoRoot
  * @returns {{lint?: string, typecheck?: string, test?: string}}
  */
-function loadCommandsFromSessionConfig(repoRoot) {
+export function loadCommandsFromSessionConfig(repoRoot) {
   try {
     const scriptPath = join(
       dirname(fileURLToPath(import.meta.url)),
@@ -309,7 +312,7 @@ function writeDiagnosticsBundle(repoRoot, bundle) {
     const ts = new Date().toISOString().replace(/:/g, '-');
     const target = join(dir, `${ts}.json`);
     const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify(bundle, null, 2) + '\n', 'utf8');
+    writeFileSync(tmp, JSON.stringify(redactDiagnosticsBundle(bundle), null, 2) + '\n', 'utf8');
     renameSync(tmp, target);
     return target;
   } catch {

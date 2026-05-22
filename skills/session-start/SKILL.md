@@ -488,6 +488,12 @@ Group issues by:
 
    The banner is non-blocking — display in the Session Overview, do not halt the session. If `ci-status-banner.mjs` is absent (pre-#369 plugin install), skip silently.
 
+   Additionally, invoke the QG-command-drift probe (`scripts/lib/qg-command-drift-banner.mjs`) via `await checkQgCommandDrift({ repoRoot })`. The helper returns `null` (silent no-op) when no drift or when Session Config load fails. When a non-null banner string is returned, render it alongside the bootstrap-lock-freshness, vault-staleness, and CI-status banners:
+   - **Drift detected**: `"⚠ Session Config drift (*-command keys): <details>. Verify the overrides are intentional. See .claude/rules/quality-gates-autofix.md § Session Config Command Injection for the RCE-equivalent trust-model."`
+   - **No drift**: silent (no banner).
+
+   The banner is non-blocking — display in the Session Overview, do not halt the session. Cross-reference: `.claude/rules/quality-gates-autofix.md` § Session Config Command Injection — the banner exists because `*-command` keys are RCE-equivalent under the VCS trust-anchor model.
+
    All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)

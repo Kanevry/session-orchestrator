@@ -54,6 +54,9 @@ coverage/
 .orchestrator/scratch/
 .orchestrator/metrics/test-runs/
 
+# Auto-Fix diagnostics bundles may contain secrets — never commit
+.orchestrator/metrics/verification-failures/
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
