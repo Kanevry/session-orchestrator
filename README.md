@@ -327,7 +327,10 @@ npx husky                  # one-time setup, wires git hooks via .husky/_/
 
 After that, `git commit` will:
 
-- **pre-commit**: run `lint-staged` (ESLint `--fix` on staged `*.mjs` files) and a gitleaks scan on staged files.
+- **pre-commit**: three stages, fail-fast:
+  1. **gitleaks** — scan staged changes for secrets.
+  2. **check-owner-leakage** (#494) — scan tracked files for P1–P7 owner-privacy leakage (personal paths, private host, private slugs, etc.). Reuses the same scanner CI runs in its `owner-leakage` validate job, closing the gap where `git add <leak> && git commit` slipped through 3× before.
+  3. **lint-staged** — ESLint `--fix` on staged `*.mjs` files.
 - **commit-msg**: validate Conventional Commits format via commitlint.
 
 To bypass (rare, emergencies only): `git commit --no-verify`. CI re-runs everything pre-commit ran, plus more.

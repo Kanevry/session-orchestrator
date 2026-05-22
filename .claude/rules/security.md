@@ -70,6 +70,21 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 - In CI: always use `pnpm install --frozen-lockfile` to prevent lockfile tampering.
 - Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
 
+## Owner-Privacy Pre-Commit Hook (#494)
+- Repositories with private slugs, personal home paths, or non-public hosts MUST run an owner-leakage scanner as a pre-commit hook stage — CI catching the same class of leak is too late (it lands on the public branch first).
+- Reuse the same scanner CI runs (`scripts/lib/validate/check-owner-leakage.mjs` or equivalent). Local/CI parity is essential; a separate local-only ruleset drifts and gives false confidence.
+- Invocation pattern in `.husky/pre-commit`:
+  ```sh
+  node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || {
+    echo "✗ check-owner-leakage: privacy leak detected in tracked files. Commit blocked." >&2
+    echo "  Run \`node scripts/lib/validate/check-owner-leakage.mjs .\` for details." >&2
+    exit 1
+  }
+  ```
+- The scanner runs against the staged tree (`git ls-files` sees staged-but-not-committed files), closing the `git add <leak> && git commit` gap. This was the root cause of three pre-#494 CI red incidents (deep-1, deep-2, deep-3); the hook is the durable fix.
+- `git commit --no-verify` bypass remains available but logs a warning per `.claude/rules/development.md` Git Safety Protocol — use only after triage.
+- Regression test: every repo using this pattern should have a husky test asserting hook contains the scanner invocation, plus E2E tests that plant leaks in a tmp git repo and assert the commit is blocked. Reference: `tests/husky/pre-commit-owner-leakage.test.mjs`.
+
 ## OWASP Top 10 2021 Mapping
 
 | OWASP ID | Risk | Baseline Coverage |

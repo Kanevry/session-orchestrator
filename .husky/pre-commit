@@ -1,11 +1,17 @@
 #!/usr/bin/env sh
 # Husky v9+ — pre-commit hook
 #
-# Two stages, fail-fast:
+# Three stages, fail-fast:
 #   1. gitleaks (#350) — scan staged changes for secrets.
 #      Skipped silently if gitleaks is not installed locally
 #      (CI still runs it via gitleaks-scan job in .gitlab-ci.yml).
-#   2. lint-staged (#352) — eslint --fix on staged *.mjs.
+#   2. check-owner-leakage (#494) — scan tracked files for P1–P7 owner-privacy
+#      leakage (personal paths, private GitLab host, private slugs, etc.). The
+#      scanner reads via `git ls-files`, which sees staged-but-not-committed
+#      files — closing the gap where `git add <leak> && git commit` slipped
+#      through 3× before (deep-1, deep-2, deep-3). Reuses the same scanner CI
+#      runs in the owner-leakage validate job, so local/CI parity is exact.
+#   3. lint-staged (#352) — eslint --fix on staged *.mjs.
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks protect --staged --redact --no-banner --config .gitleaks.toml || {
     echo "✗ gitleaks: secret detected in staged changes. Commit blocked." >&2
@@ -13,5 +19,12 @@ if command -v gitleaks >/dev/null 2>&1; then
     exit 1
   }
 fi
+
+node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || {
+  echo "✗ check-owner-leakage: privacy leak detected in tracked files. Commit blocked." >&2
+  echo "  Run \`node scripts/lib/validate/check-owner-leakage.mjs .\` for details." >&2
+  echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
+  exit 1
+}
 
 npx lint-staged

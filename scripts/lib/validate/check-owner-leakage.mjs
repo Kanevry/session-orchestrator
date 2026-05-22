@@ -262,6 +262,7 @@ const SELF_EXCLUSIONS = new Set([
   'scripts/lib/validate/check-owner-leakage.mjs',
   'tests/lib/validate/check-owner-leakage.test.mjs',
   'tests/templates/personas/content-lint.test.mjs',
+  'tests/husky/pre-commit-owner-leakage.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
