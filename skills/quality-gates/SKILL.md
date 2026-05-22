@@ -45,7 +45,7 @@ This rule applies to **every consumer** of this skill: session-start Baseline, w
 
 **Exception — Incremental Per-File (Variant 4) test runs:** `{test-command}` MAY be invoked with explicit changed-file arguments (e.g., `pnpm test -- auth.test.ts`) per the per-file contract. Lint and typecheck have NO per-file exception — they always run the canonical command.
 
-**Why:** Domain-split scoping was empirically shown (AngebotsChecker Deep-10 retro, 2026-05-20) to hide 2 errors and 17 warnings in `tests/integration/` and `tests/e2e/` that the canonical `pnpm lint` (841-file glob) catches. Narrowing scope to `src/+scripts/` for "lint-triage" produced a green W1, but the W4 Full Gate then surfaced the hidden errors, forcing a W5 sweep. The narrow-scope variant is a foot-gun: it looks faster but leaks debt across waves.
+**Why:** Domain-split scoping was empirically shown (consumer-repo Deep-10 retro, 2026-05-20) to hide 2 errors and 17 warnings in `tests/integration/` and `tests/e2e/` that the canonical `pnpm lint` (841-file glob) catches. Narrowing scope to `src/+scripts/` for "lint-triage" produced a green W1, but the W4 Full Gate then surfaced the hidden errors, forcing a W5 sweep. The narrow-scope variant is a foot-gun: it looks faster but leaks debt across waves.
 
 ## Session Config Fields (legacy fallback)
 
