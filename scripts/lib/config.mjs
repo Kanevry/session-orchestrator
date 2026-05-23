@@ -54,6 +54,7 @@ import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
+import { _parseMemory } from './config/memory.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -254,6 +255,9 @@ export function parseSessionConfig(mdContent) {
   // dialectic: parsed from full content (issue #506)
   const dialectic = _parseDialectic(mdContent);
 
+  // memory: parsed from full content (issue #505 — banner opt-out)
+  const memory = _parseMemory(mdContent);
+
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
@@ -342,6 +346,7 @@ export function parseSessionConfig(mdContent) {
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,
+    'memory': memory,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,

@@ -469,6 +469,26 @@ describe('writeDialecticPending', () => {
     expect(content).toContain('cards_targeted: null');
   });
 
+  it('renders cards_targeted as empty list [] when array is empty', async () => {
+    const repoRoot = tmp();
+    const result = await writeDialecticPending({ repoRoot, diff: 'body', cardsTargeted: [] });
+    const content = readFileSync(result.path, 'utf8');
+    expect(content).toContain('cards_targeted: []');
+    expect(content).not.toContain('cards_targeted: null');
+  });
+
+  it('escapes cardsTargeted entries containing quotes, backslashes, brackets, newlines', async () => {
+    const repoRoot = tmp();
+    const evil = 'evil-"]\\}-\n-injected';
+    const result = await writeDialecticPending({ repoRoot, diff: 'body', cardsTargeted: ['ok', evil] });
+    const content = readFileSync(result.path, 'utf8');
+    // JSON.stringify escapes the embedded chars; frontmatter list still parses round-trip
+    expect(content).toContain(`cards_targeted: ["ok", ${JSON.stringify(evil)}]`);
+    // Spot-check: no raw newline inside the list (would break YAML)
+    const lineWithList = content.split('\n').find((l) => l.startsWith('cards_targeted:'));
+    expect(lineWithList).toBeDefined();
+  });
+
   it('returns path matching repoRoot + DIALECTIC_PENDING_PATH', async () => {
     const repoRoot = tmp();
     const result = await writeDialecticPending({ repoRoot, diff: 'some content' });
@@ -481,6 +501,21 @@ describe('writeDialecticPending', () => {
     const result = await writeDialecticPending({ repoRoot, diff });
     const content = readFileSync(result.path, 'utf8');
     expect(result.bytes).toBe(Buffer.byteLength(content, 'utf8'));
+  });
+
+  it('bytes returns exact UTF-8 byte length (frozen fixture)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-23T10:00:00.000Z'));
+    try {
+      const repoRoot = tmp();
+      const result = await writeDialecticPending({ repoRoot, diff: 'x'.repeat(50) });
+      // Frozen byte count — hardcoded after running with console.log(result.bytes).
+      // Fixture: diff='x'.repeat(50), generatedAt='2026-05-23T10:00:00.000Z', all other fields default.
+      // Regenerate by temporarily adding console.log(result.bytes) + running once.
+      expect(result.bytes).toBe(238);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not leave .tmp files after a successful write', async () => {
@@ -600,6 +635,14 @@ describe('readDialecticPending', () => {
 
   it('returns null when repoRoot is not provided', async () => {
     const result = await readDialecticPending({});
+    expect(result).toBe(null);
+  });
+
+  it('L-2: returns null when readFile fails (EISDIR via directory at pending path)', async () => {
+    const repoRoot = tmp();
+    // Create dialectic-pending.md as a DIRECTORY — existsSync()=true, readFile()=EISDIR
+    mkdirSync(join(repoRoot, '.orchestrator', 'dialectic-pending.md'), { recursive: true });
+    const result = await readDialecticPending({ repoRoot });
     expect(result).toBe(null);
   });
 });

@@ -216,6 +216,18 @@ cold-start:
 
 Read by: `scripts/lib/cold-start-detector.mjs`.
 
+## Memory Banner
+
+Controls the session-start "📚 Loaded from memory" banner that surfaces top learnings and peer-card excerpts at the start of every session. PRD F2.3 / issue #505.
+
+```yaml
+memory:
+  banner:
+    enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
+```
+
+Read by: `scripts/lib/config/memory.mjs`; consumed in Phase 6.7 of `skills/session-start/SKILL.md`.
+
 ## STATE.md Lock
 
 Mechanical write-lock around STATE.md to prevent race conditions between parallel worker sessions writing the same file (PRD gsd Pattern 1 / issue #518). When enabled, `withStateMdLock(fn)` acquires `.orchestrator/state.lock` before invoking `fn` and releases on completion or throw. Stale-lock override via PID-liveness mirrors the existing `session.lock` design.
@@ -522,6 +534,11 @@ cold-start:
   enabled: true
   nudge-after-hours: 1
   silence-after-sessions: 1
+
+# Memory banner (PRD F2.3 / #505)
+memory:
+  banner:
+    enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
 
 # STATE.md lock (PRD gsd Pattern 1 / #518)
 state-md-lock:

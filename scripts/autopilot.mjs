@@ -42,6 +42,7 @@ import {
   KILL_SWITCHES,
 } from './lib/autopilot.mjs';
 import { buildLiveSignals } from './lib/build-live-signals.mjs';
+import { surfaceTopN } from './lib/learnings/surface.mjs';
 import { selectMode } from './lib/mode-selector.mjs';
 import { probe, evaluate } from './lib/resource-probe.mjs';
 import { detectPeers } from './lib/session-registry.mjs';
@@ -118,57 +119,16 @@ const thresholds = loadResourceThresholds();
 // ---------------------------------------------------------------------------
 // Learnings loader — top-15 active learnings from learnings.jsonl
 // ---------------------------------------------------------------------------
+//
+// Delegates to scripts/lib/learnings/surface.mjs (`surfaceTopN`). Same filter
+// semantics as the original inline implementation: confidence > 0.3 AND
+// (no expires_at OR expires_at > now), sorted by confidence DESC, then
+// created_at DESC, then sliced to n=15. Errors are swallowed (returns []).
 
-/**
- * Load up to 15 active learnings from `.orchestrator/metrics/learnings.jsonl`.
- * Active = confidence > 0.3 AND (no expires_at OR expires_at > now).
- * Sorted by confidence DESC, then created_at DESC. Graceful no-op on any error.
- *
- * @returns {object[]}
- */
-function loadSurfacedLearnings() {
-  const learningsPath = resolve('.orchestrator/metrics/learnings.jsonl');
-  if (!existsSync(learningsPath)) return [];
-
-  try {
-    const raw = readFileSync(learningsPath, 'utf8');
-    const now = Date.now();
-    const lines = raw
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    const active = [];
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (typeof entry.confidence !== 'number' || entry.confidence <= 0.3) continue;
-        if (typeof entry.expires_at === 'string') {
-          const expiresMs = Date.parse(entry.expires_at);
-          if (Number.isFinite(expiresMs) && expiresMs <= now) continue;
-        }
-        active.push(entry);
-      } catch {
-        // skip malformed lines
-      }
-    }
-
-    // Sort by confidence DESC, then created_at DESC
-    active.sort((a, b) => {
-      const confDiff = (b.confidence ?? 0) - (a.confidence ?? 0);
-      if (confDiff !== 0) return confDiff;
-      const aTime = typeof a.created_at === 'string' ? Date.parse(a.created_at) : 0;
-      const bTime = typeof b.created_at === 'string' ? Date.parse(b.created_at) : 0;
-      return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
-    });
-
-    return active.slice(0, 15);
-  } catch {
-    return [];
-  }
-}
-
-const surfacedLearnings = loadSurfacedLearnings();
+const surfacedLearnings = await surfaceTopN(
+  resolve('.orchestrator/metrics/learnings.jsonl'),
+  15
+);
 
 // ---------------------------------------------------------------------------
 // Branch detection for autopilot_run_id construction

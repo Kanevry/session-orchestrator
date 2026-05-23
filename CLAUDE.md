@@ -71,6 +71,9 @@ vault-mirror:
   quality:
     min-narrative-chars: 400     # PRD F1.2 (#504) — min vault note body length before mirror
     min-confidence: 0.5          # PRD F1.2 (#504) — min learning confidence (0.0..1.0) before mirror
+memory:
+  banner:
+    enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
 cold-start:
   enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
   nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires

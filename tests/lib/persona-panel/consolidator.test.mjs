@@ -61,6 +61,9 @@ function nonValidated(name, mode) {
   return { persona_name: name, mode };
 }
 
+/** Build a validated WARN persona output. */
+const warn = (name) => ({ persona_name: name, mode: 'validated', verdict: 'warn' });
+
 const MOFN_5_OF_6 = { kind: 'm-of-n', m: 5, n: 6 };
 const MOFN_4_OF_6 = { kind: 'm-of-n', m: 4, n: 6 };
 const MOFN_6_OF_6 = { kind: 'm-of-n', m: 6, n: 6 };
@@ -152,6 +155,24 @@ describe('consolidate — voting-quorum', () => {
     expect(result.votes.pass).toBe(3);
     expect(result.votes.fail).toBe(3);
   });
+
+  // Falsification: deleting consolidator.mjs:119 flips warn→fail+error in votes shape (#491)
+  it('returns PROCEED_WITH_FOLLOWUPS with warn vote bookmarked in votes.warn (not votes.fail) — 5 pass + 1 warn, threshold 5-of-6', () => {
+    const outputs = [
+      pass('a'),
+      pass('b'),
+      pass('c'),
+      pass('d'),
+      pass('e'),
+      warn('f'),
+    ];
+    const result = consolidate(outputs, 'voting-quorum', { threshold: MOFN_5_OF_6 });
+    expect(result.final_verdict).toBe('PROCEED_WITH_FOLLOWUPS');
+    expect(result.threshold_met).toBe(true);
+    expect(result.tie_break_applied).toBe(true);
+    expect(result.votes).toEqual({ pass: 5, fail: 0, warn: 1, error: 0, total: 6 });
+    expect(result.dissenting_personas).toEqual(['f']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -202,6 +223,23 @@ describe('consolidate — hard-gate-threshold', () => {
     expect(result.final_verdict).toBe('BLOCKED');
     expect(result.threshold_met).toBe(false);
   });
+
+  // Falsification: deleting consolidator.mjs:119 flips warn→fail+error in votes shape (#491)
+  it('returns BLOCKED with warn vote in votes.warn (not votes.fail) when 5 pass + 1 warn, threshold "all"', () => {
+    const outputs = [
+      pass('a'),
+      pass('b'),
+      pass('c'),
+      pass('d'),
+      pass('e'),
+      warn('f'),
+    ];
+    const result = consolidate(outputs, 'hard-gate-threshold', { threshold: ALL });
+    expect(result.final_verdict).toBe('BLOCKED');
+    expect(result.threshold_met).toBe(false);
+    expect(result.votes).toEqual({ pass: 5, fail: 0, warn: 1, error: 0, total: 6 });
+    expect(result.dissenting_personas).toEqual(['f']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -215,6 +253,18 @@ describe('consolidate — coordinator-summary', () => {
     expect(result.final_verdict).toBe('REQUIRES_COORDINATOR');
     expect(result.threshold_met).toBe(false);
     expect(result.notes).toContain('coordinator-summary: defer panel verdict to caller');
+  });
+
+  // Falsification: deleting consolidator.mjs:119 flips warn→fail+error in votes shape (#491)
+  it('records warn vote in votes.warn (not votes.fail) when 1 pass + 1 fail + 1 warn in coordinator-summary mode', () => {
+    const outputs = [pass('a'), fail('b'), warn('c')];
+    const result = consolidate(outputs, 'coordinator-summary', { threshold: ALL });
+    expect(result.final_verdict).toBe('REQUIRES_COORDINATOR');
+    expect(result.threshold_met).toBe(false);
+    expect(result.votes).toEqual({ pass: 1, fail: 1, warn: 1, error: 0, total: 3 });
+    expect(result.notes).toEqual([
+      'coordinator-summary: defer panel verdict to caller',
+    ]);
   });
 });
 

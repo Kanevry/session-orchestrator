@@ -342,6 +342,24 @@ vault-mirror:
 
 **Used by:** `scripts/vault-mirror.mjs`.
 
+## Memory Banner (#505)
+
+Opt-out configuration for the session-start memory-load banner. When session memory files are found and loaded at Phase 2.6, the orchestrator emits a `📚 Loaded from memory: N files` banner. Setting `enabled: false` silences the banner without affecting memory loading. PRD F2.3.
+
+All fields live under a top-level `memory` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+memory:
+  banner:
+    enabled: true                # default true; set false to silence the session-start memory banner
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory.banner.enabled` | boolean | `true` | When `true`, session-start Phase 2.6 emits a one-line banner listing how many memory files were loaded. When `false`, the banner is suppressed — memory files are still loaded and applied normally. PRD F2.3 / issue #505. |
+
+**Used by:** `scripts/lib/memory-banner.mjs`, `scripts/lib/config/memory.mjs`.
+
 ## Cold Start (#500)
 
 Opt-out configuration for the cold-start detector. The detector nudges the operator at session-start when sessions go silent — no commits, no learnings, long wall-clock idle. PRD F1.3.
