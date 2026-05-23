@@ -153,20 +153,25 @@ describe('W4-A6 Group II — additional positive E2E redaction patterns', () => 
   });
 
   it('II4: redacts Slack bot token (xoxb-…) — replaces with ***SLACK_TOKEN***', () => {
-    const input = { stdout: 'SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-abcdefghijklmnop' };
+    // Fixture uses obviously-fake PLACEHOLDER segments — scanner-safe for public mirror.
+    // Redactor regex `/xox[bpae]-[A-Za-z0-9-]+/g` still matches this shape.
+    const input = { stdout: 'SLACK_BOT_TOKEN=xoxb-PLACEHOLDER-PLACEHOLDER-FIXTUREONLYAAAAAA' };
 
     const result = redactDiagnosticsBundle(input);
 
     expect(result.stdout).toContain('***SLACK_TOKEN***');
-    expect(result.stdout).not.toContain('xoxb-1234567890');
+    expect(result.stdout).not.toContain('xoxb-PLACEHOLDER');
   });
 
-  it('II5: redacts Stripe live secret key (sk_live_…) — replaces with ***STRIPE_KEY***', () => {
-    const input = { stdout: 'stripe_key=sk_live_4eC39HqLyjWDarjtT1zdp7dc reported in config' };
+  it('II5: redacts Stripe secret key (sk_test_…) — replaces with ***STRIPE_KEY***', () => {
+    // Fixture uses sk_test_ (Stripe's official docs prefix) + obviously-fake suffix —
+    // scanner-safe for public mirror. Redactor regex `/sk_(live|test)_[A-Za-z0-9]{24,}/g`
+    // matches both sk_live_ and sk_test_ identically.
+    const input = { stdout: 'stripe_key=sk_test_FIXTUREONLYFIXTUREONLY1234 reported in config' };
 
     const result = redactDiagnosticsBundle(input);
 
     expect(result.stdout).toContain('***STRIPE_KEY***');
-    expect(result.stdout).not.toContain('sk_live_4eC39HqLyjWDarjtT1zdp7dc');
+    expect(result.stdout).not.toContain('sk_test_FIXTUREONLYFIXTUREONLY1234');
   });
 });
