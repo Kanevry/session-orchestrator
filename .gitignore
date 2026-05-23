@@ -57,6 +57,9 @@ coverage/
 # Auto-Fix diagnostics bundles may contain secrets — never commit
 .orchestrator/metrics/verification-failures/
 
+# Pattern 3 (templates-first) + Pattern 2 (slopcheck) runtime caches — machine-local, never committable
+.orchestrator/runtime/
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
