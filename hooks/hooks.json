@@ -39,6 +39,11 @@
           },
           {
             "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-memory-propose-audit.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-templates-first.mjs\"",
             "timeout": 5
           },

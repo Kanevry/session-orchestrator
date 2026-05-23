@@ -74,6 +74,10 @@ vault-mirror:
 memory:
   banner:
     enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
+  proposals:
+    enabled: true                # PRD F2.1 (#501) — agent-writable memory tool (memory.propose CLI + session-end AUQ)
+    quota-per-wave: 5            # max proposals per wave-executor agent
+    confidence-floor: 0.5        # below this confidence, propose() returns rejected-low-confidence
 cold-start:
   enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
   nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires

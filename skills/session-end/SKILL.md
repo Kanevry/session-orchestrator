@@ -341,6 +341,62 @@ This cleanup is the counterpart to the session-start Phase 1.5 recovery prompt: 
 
 Read `skills/session-end/learning-patterns.md` for extraction heuristics, confidence updates, passive decay, and JSONL write procedure.
 
+### 3.6.3 Memory Proposals Collection (#501, F2.1)
+
+> Gate: Skip this phase entirely when ANY of:
+> - `persistence` is `false` in Session Config
+> - `memory.proposals.enabled` is `false` (default: `true`)
+> - `.orchestrator/metrics/proposals.jsonl` does not exist OR contains zero entries
+
+After learnings are written (Phase 3.6) and BEFORE auto-dream dispatch (Phase 3.6.5), collect agent-proposed memory entries written during this session and present them to the operator via `AskUserQuestion` multiSelect. Approved entries flow to `learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`. Rejected entries are archived to `.orchestrator/proposals.rejected.log`.
+
+The proposals queue is populated mid-session by wave-executor agents calling `node scripts/memory-propose.mjs --type ... --subject ... --insight ... --evidence ... --confidence ...`. The CLI enforces:
+- Quota per wave (default 5, configurable via `memory.proposals.quota-per-wave`)
+- Confidence floor (default 0.5, configurable via `memory.proposals.confidence-floor`)
+- Wrong-context guard (CLI exits non-zero when STATE.md `status` is not `active`)
+
+#### Coordinator-direct procedure
+
+1. Read Session Config: `memory.proposals.enabled` (default `true`), `memory.proposals.quota-per-wave` (default 5), `memory.proposals.confidence-floor` (default 0.5).
+
+2. Invoke `collectProposals` from `scripts/lib/memory-proposals/collector.mjs`:
+   ```javascript
+   import { collectProposals } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/collector.mjs';
+   const { queue, stats, perWaveSummaries } = await collectProposals({ repoRoot: process.cwd() });
+   ```
+
+3. If `queue.length === 0`: log `memory-proposals: queue empty (stats: ${JSON.stringify(stats)})` and continue.
+
+4. Render AUQ in batches of 4 (FIFO order). For 1-4 proposals → single question. For 5+ → sequential `AskUserQuestion` calls with `header: "Memory — Confirm Proposals (Batch N of M)"`. Option label format: `[<type-12>] | <subject-40> | conf=X.XX`. Option description: `evidence: <first 60 chars of insight>`. `multiSelect: true`.
+
+5. After all batches answered, partition the queue into `approved` (any option selected across all batches) and `rejected` (all unselected).
+
+6. Invoke `writeApproved` and `archiveRejected` from `scripts/lib/memory-proposals/sink.mjs`:
+   ```javascript
+   import { writeApproved, archiveRejected, clearProposalsJsonl } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/sink.mjs';
+   const writeResult = await writeApproved({ approved, repoRoot, sessionId });
+   const archiveResult = await archiveRejected({ rejected, repoRoot, reason: 'user-declined' });
+   await clearProposalsJsonl({ repoRoot });
+   ```
+
+7. Log outcome for Phase 6 Final Report: `memory.proposals: <queued> queued → <approved> approved, <rejected> rejected (dropped: <dropped> quota, <below_floor> below-floor)`.
+
+#### Failure modes
+
+- If `collectProposals` fails (fs error): log warning `⚠ memory-proposals: collect failed (${err}) — skipping`, do not block session close.
+- If `writeApproved` reports errors per-record: log each, but continue (per-record fault isolation per sink contract).
+- If `clearProposalsJsonl` fails: log warning; do not block. The file may be re-collected at the next session-end, idempotent.
+
+#### Cross-references
+
+- PRD: `docs/prd/2026-05-21-learning-memory-modernization.md` § F2.1
+- Modules: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`
+- CLI: `scripts/memory-propose.mjs` (agents call this)
+- Hook: `hooks/pre-bash-memory-propose-audit.mjs` (audit trail)
+- Coordinator AUQ spec: `agents/memory-proposal-collector.md` (reference doc)
+- Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.7 Auto-Dialectic (#506)
+- Issue: #501
+
 ### 3.6.5 Auto-Dream Dispatch (#502, F2.2)
 
 > Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
@@ -606,6 +662,7 @@ Present to the user:
 | `drift-operations.md` | Phase 2.2 drift-checker bash contract and reporting matrix |
 | `phase-3-2-docs-verification.md` | Phase 3.2 full procedural body — docs-tasks load, SESSION_START_REF, per-task loop, mode-gated report, Documentation Coverage block |
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
+| (inline) Phase 3.6.3 | Memory-Proposals Collection — `collectProposals` + AUQ multiSelect + `writeApproved` + `clearProposalsJsonl` |
 | (inline) Phase 3.6.5 | Auto-Dream dispatch — `shouldDispatchAutoDream` + dispatch /memory-cleanup --dry-run + writes `.orchestrator/pending-dream.md` |
 | (inline) Phase 3.6.7 | Auto-Dialectic dispatch — `shouldDispatchAutoDialectic` + dispatch /evolve --dialectic --dry-run + writes `.orchestrator/dialectic-pending.md` + updates `.orchestrator/dialectic-last-run` |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |

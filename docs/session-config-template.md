@@ -228,6 +228,20 @@ memory:
 
 Read by: `scripts/lib/config/memory.mjs`; consumed in Phase 6.7 of `skills/session-start/SKILL.md`.
 
+## Memory Proposals (#501)
+
+Agent-writable memory tool. During a wave, an agent may call `node scripts/memory-propose.mjs --type … --subject … --insight … --evidence … --confidence …` to queue a learning proposal. At session-end Phase 3.6.3, the coordinator surfaces queued proposals via `AskUserQuestion` for accept/reject/edit. PRD F2.1 / issue #501.
+
+```yaml
+memory:
+  proposals:
+    enabled: true                # PRD F2.1 (#501) — agent-writable memory tool; gates the propose() CLI + session-end AUQ
+    quota-per-wave: 5            # max proposals one agent can queue per wave (rejected with exit 1 when exceeded)
+    confidence-floor: 0.5        # proposals with confidence below this are rejected (exit 2)
+```
+
+Read by: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
+
 ## STATE.md Lock
 
 Mechanical write-lock around STATE.md to prevent race conditions between parallel worker sessions writing the same file (PRD gsd Pattern 1 / issue #518). When enabled, `withStateMdLock(fn)` acquires `.orchestrator/state.lock` before invoking `fn` and releases on completion or throw. Stale-lock override via PID-liveness mirrors the existing `session.lock` design.
@@ -535,10 +549,14 @@ cold-start:
   nudge-after-hours: 1
   silence-after-sessions: 1
 
-# Memory banner (PRD F2.3 / #505)
+# Memory banner (PRD F2.3 / #505) + Memory proposals (PRD F2.1 / #501)
 memory:
   banner:
     enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
+  proposals:
+    enabled: true                # PRD F2.1 (#501) — agent-writable memory tool (memory.propose CLI + session-end AUQ)
+    quota-per-wave: 5            # max proposals one agent can queue per wave
+    confidence-floor: 0.5        # below this confidence, propose() returns rejected-low-confidence
 
 # STATE.md lock (PRD gsd Pattern 1 / #518)
 state-md-lock:

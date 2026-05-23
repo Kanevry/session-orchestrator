@@ -360,6 +360,75 @@ memory:
 
 **Used by:** `scripts/lib/memory-banner.mjs`, `scripts/lib/config/memory.mjs`.
 
+## Memory Proposals (#501)
+
+Opt-out configuration for the agent-writable memory tool. During a wave, an agent may queue a learning proposal via the `memory.propose` CLI. At session-end Phase 3.6.3, the coordinator surfaces every queued proposal to the operator via `AskUserQuestion` for accept / reject / edit. Only accepted proposals are persisted to `.orchestrator/metrics/learnings.jsonl` with a `proposed-by: <agent-name>` provenance tag — a one-line audit trail showing which agent generated the learning. PRD F2.1 / issue #501.
+
+This is a Hermes-style memory-write API **without** Hermes' overwrites-manual-edits critique: the operator confirmation is mandatory and there is no silent overwrite path. Three safety layers keep the surface conservative:
+
+1. **Quota per wave** — `quota-per-wave` (default `5`) caps how many proposals any single agent may queue within one wave. Excess proposals exit `1` and the call-site logs the rejection.
+2. **Confidence floor** — `confidence-floor` (default `0.5`) rejects low-confidence proposals before they reach the operator (exit `2`). Tuned so a learning is only proposed when the agent is at least 50% sure of the insight.
+3. **AUQ confirm-or-discard** — the session-end phase never auto-persists. Every proposal is `AskUserQuestion`-gated; the operator can accept, reject, or edit before commit.
+
+All fields live under the top-level `memory` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), nested as a sibling of `memory.banner`:
+
+```yaml
+memory:
+  proposals:
+    enabled: true                # default true; opt-out master toggle for the memory.propose feature
+    quota-per-wave: 5            # max proposals an agent may queue per wave (exit 1 on overflow)
+    confidence-floor: 0.5        # proposals below this confidence are rejected (exit 2)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory.proposals.enabled` | boolean | `true` | Master toggle for the entire memory-proposals feature. When `false`, the `memory.propose` CLI exits `3` (rejected-wrong-context) for every call and session-end Phase 3.6.3 is skipped. When `true`, agents may queue proposals during waves and the coordinator surfaces them at session-end. PRD F2.1 / issue #501. |
+| `memory.proposals.quota-per-wave` | integer | `5` | Maximum number of proposals one wave-executor agent can queue per wave. The 6th proposal from the same agent in the same wave exits `1` (quota-exceeded). Bounds: integer ≥ 0. Set to `0` to disable proposals from agents without disabling the feature entirely (operator can still propose). |
+| `memory.proposals.confidence-floor` | float | `0.5` | Minimum confidence (0.0..1.0) required for a proposal to be queued. Proposals with `--confidence < confidence-floor` exit `2` (rejected-low-confidence) before reaching the operator. Bounds: `0.0 ≤ value ≤ 1.0`. Set to `0.0` to accept any confidence (operator filters at AUQ time). |
+
+### Agent CLI invocation
+
+Agents call the CLI with five required flags:
+
+```bash
+node scripts/memory-propose.mjs \
+  --type learning \
+  --subject "vault-mirror BATS test ordering" \
+  --insight "BATS test files must be sourced before harness fixtures load the fnmatch shim." \
+  --evidence "tests/vault-mirror/harness.bats:23 fails when shim loads after assertion bindings." \
+  --confidence 0.85
+```
+
+`--type` accepts one of the `PROPOSAL_TYPES` enum values (mirrored from the learnings schema): `mode-selector-accuracy`, `hardware-pattern`, `fragile-file`, `effective-sizing`, `recurring-issue`, `workflow-pattern`, `proven-pattern`, `anti-pattern`, `autopilot-effectiveness`. Strings with embedded quotes must be shell-escaped per usual conventions. The CLI appends one JSONL line to `.orchestrator/metrics/proposals.jsonl` (atomic via O_APPEND under the `.orchestrator/metrics/proposals-write.lock` mutex) and updates a per-wave summary at `.orchestrator/metrics/proposals-summary-<wave-id>.json` (counters: queued / dropped / below_floor / fs_error). The coordinator surfaces both files at session-end Phase 3.6.3 to render the AUQ multiSelect; approved entries promote into `.orchestrator/metrics/learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`; rejected entries archive to `.orchestrator/proposals.rejected.log`. Privacy: `proposed_by_agent` is captured in the audit hook (`events.jsonl`) only and is stripped before promotion to learnings.jsonl.
+
+### Exit codes
+
+| Exit code | Meaning | Triggered by |
+|-----------|---------|--------------|
+| `0` | Queued | Proposal accepted into the per-wave staging directory; awaits operator confirmation at session-end Phase 3.6.3. |
+| `1` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. |
+| `2` | Rejected — low confidence | `--confidence` argument is below `confidence-floor`. Tighten the insight or raise the confidence (operator can still tune the floor). |
+| `3` | Rejected — wrong context | Feature disabled (`enabled: false`) or call originated outside a recognised wave-executor context (e.g., from main coordinator thread, where `/evolve` is the right path instead). |
+| `4` | Arg error | Missing or malformed flag — invalid `--type`, empty `--subject`, non-numeric `--confidence`. The CLI prints a one-line usage message on stderr. |
+
+The call-site (agent prompt) is expected to handle exit codes `1`, `2`, `3` gracefully — they are anticipated outcomes, not errors. Only exit code `4` indicates a bug in the agent's invocation.
+
+### Where it fits in the lifecycle
+
+Memory proposals are one of five Epic #498 Phase 2 features that share the same memory-lifecycle picture. The full set:
+
+- **F2.1 / #501 — Memory Proposals** (this section): agents queue learnings during waves; operator confirms at session-end.
+- **F2.2 / #502 — Auto-Dream**: session-end auto-dispatches `/memory-cleanup` after every N sessions when memory-file count exceeds `memory-cleanup-soft-limit`.
+- **F2.3 / #505 — Memory Banner** (sibling block above): session-start surfaces top learnings at the start of every session.
+- **F2.4 / #503 — Peer Cards**: USER.md/AGENT.md curated profiles update from session evidence (operator-driven).
+- **F2.5 / #506 — Dialectic-Deriver**: session-end auto-proposes peer-card edits via the dialectic critique loop.
+
+Together: F2.1 captures fresh insight mid-flight, F2.2 consolidates old insight at scale, F2.3 surfaces it at the start, F2.4/F2.5 distill it into the durable peer-card profiles.
+
+**Used by:** `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
+
+**Cross-reference:** issue #501, PRD F2.1 in the Learning-Memory Modernization PRD. Sibling features: `memory.banner` (above, F2.3 / #505), `dialectic.cadence` (F2.5 / #506), Auto-Dream (F2.2 / #502, surfaced via `memory-cleanup-soft-limit`).
+
 ## Cold Start (#500)
 
 Opt-out configuration for the cold-start detector. The detector nudges the operator at session-start when sessions go silent — no commits, no learnings, long wall-clock idle. PRD F1.3.
