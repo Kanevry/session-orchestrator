@@ -271,7 +271,7 @@ describe('writePendingDream', () => {
     expect(existsSync(result.path)).toBe(true);
     const content = readFileSync(result.path, 'utf8');
     expect(content).toMatch(/^---\n/);
-    expect(content).toContain('source_session: sess-123');
+    expect(content).toContain('source_session: "sess-123"');
     expect(content).toContain('memory_lines_before: 200');
     expect(content).toContain('proposed_lines_after: 150');
     expect(content).toContain('```diff');
@@ -286,6 +286,31 @@ describe('writePendingDream', () => {
     const entries = readdirSync(dir);
     const tmpFiles = entries.filter((f) => f.endsWith('.tmp'));
     expect(tmpFiles).toEqual([]);
+  });
+
+  it('MED-1 cross-ref: writePendingDream rejects YAML frontmatter injection via newline-bearing sourceSession', async () => {
+    const repoRoot = tmp();
+    const result = await writePendingDream({
+      repoRoot,
+      diff: '```diff\n-old\n+new\n```\n',
+      sourceSession: 'sess-attacker\n---\nstatus: applied\ngenerated_at: 2099-01-01T00:00:00Z',
+      memoryLinesBefore: 100,
+      proposedLinesAfter: 50,
+    });
+    const content = readFileSync(result.path, 'utf8');
+    // Frontmatter must have exactly 2 '---' fences (open + close) — no injection
+    const fenceMatches = content.match(/^---$/gm) || [];
+    expect(fenceMatches.length).toBe(2);
+    // The injected status:applied must NOT appear as a top-level YAML key
+    expect(content).not.toMatch(/^status:\s*applied/m);
+    // The value must be JSON-escaped
+    expect(content).toContain('source_session: "sess-attacker\\n---\\nstatus: applied\\ngenerated_at: 2099-01-01T00:00:00Z"');
+  });
+
+  it('LOW-2 cross-ref: writePendingDream throws TypeError when diff is whitespace-only', async () => {
+    const repoRoot = tmp();
+    await expect(writePendingDream({ repoRoot, diff: ' ' })).rejects.toThrow(TypeError);
+    await expect(writePendingDream({ repoRoot, diff: '\n\t  \n' })).rejects.toThrow(TypeError);
   });
 });
 

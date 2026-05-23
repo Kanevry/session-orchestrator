@@ -227,7 +227,7 @@ export async function writePendingDream({
   memoryLinesBefore = null,
   proposedLinesAfter = null,
 }) {
-  if (typeof diff !== 'string' || diff.length === 0) {
+  if (typeof diff !== 'string' || diff.trim().length === 0) {
     throw new TypeError('writePendingDream: diff must be a non-empty string');
   }
 
@@ -238,9 +238,9 @@ export async function writePendingDream({
   const frontmatter = [
     '---',
     `generated_at: ${generatedAt}`,
-    `source_session: ${sourceSession ?? 'unknown'}`,
-    `memory_lines_before: ${memoryLinesBefore ?? 'null'}`,
-    `proposed_lines_after: ${proposedLinesAfter ?? 'null'}`,
+    `source_session: ${JSON.stringify(sourceSession ?? 'unknown')}`,
+    `memory_lines_before: ${JSON.stringify(memoryLinesBefore ?? null)}`,
+    `proposed_lines_after: ${JSON.stringify(proposedLinesAfter ?? null)}`,
     '---',
     '',
   ].join('\n');

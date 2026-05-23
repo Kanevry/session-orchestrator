@@ -279,20 +279,6 @@ describe('peer-card enum (#530 MED-1)', () => {
     return dir;
   }
 
-  it('accepts type: peer-card as a valid vault note type', () => {
-    const vaultDir = makeTempVault(
-      'id: test-peer-card\ntype: peer-card\ncreated: 2026-05-23\nupdated: 2026-05-23',
-    );
-    const result = runValidator(vaultDir);
-    try {
-      rmSync(vaultDir, { recursive: true, force: true });
-    } catch { /* ignore */ }
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.status).toBe('ok');
-    expect(parsed.errors.length).toBe(0);
-  });
-
   it.each([
     ['note'],
     ['daily'],
@@ -303,7 +289,7 @@ describe('peer-card enum (#530 MED-1)', () => {
     ['learning'],
     ['session'],
     ['peer-card'],
-  ])('accepts type: %s (all vaultNoteTypeSchema enum values)', (typeValue) => {
+  ])('accepts type: %s (all vaultNoteTypeSchema enum values, including peer-card from #530 MED-1)', (typeValue) => {
     const vaultDir = makeTempVault(
       `id: test-type-enum\ntype: ${typeValue}\ncreated: 2026-05-23\nupdated: 2026-05-23`,
     );

@@ -313,7 +313,7 @@ export async function writeDialecticPending({
   sessionsIn = null,
   cardsTargeted = null,
 } = {}) {
-  if (typeof diff !== 'string' || diff.length === 0) {
+  if (typeof diff !== 'string' || diff.trim().length === 0) {
     throw new TypeError('writeDialecticPending: diff must be a non-empty string');
   }
   if (!repoRoot) {
@@ -324,9 +324,9 @@ export async function writeDialecticPending({
   await mkdir(path.dirname(target), { recursive: true });
 
   const generatedAt = new Date().toISOString();
-  const inputTokens = usage && typeof usage.input_tokens === 'number' ? usage.input_tokens : 'null';
+  const inputTokens = usage && typeof usage.input_tokens === 'number' ? usage.input_tokens : null;
   const outputTokens =
-    usage && typeof usage.output_tokens === 'number' ? usage.output_tokens : 'null';
+    usage && typeof usage.output_tokens === 'number' ? usage.output_tokens : null;
 
   // Render cards_targeted as a JSON-style inline list (no js-yaml dep). Empty
   // array `[]` when callers pass an empty list; `null` when omitted.
@@ -338,12 +338,12 @@ export async function writeDialecticPending({
   const frontmatter = [
     '---',
     `generated_at: ${generatedAt}`,
-    `source_session: ${sourceSession ?? 'unknown'}`,
-    `model: ${model ?? 'unknown'}`,
-    `input_tokens: ${inputTokens}`,
-    `output_tokens: ${outputTokens}`,
-    `learnings_in: ${learningsIn ?? 'null'}`,
-    `sessions_in: ${sessionsIn ?? 'null'}`,
+    `source_session: ${JSON.stringify(sourceSession ?? 'unknown')}`,
+    `model: ${JSON.stringify(model ?? 'unknown')}`,
+    `input_tokens: ${JSON.stringify(inputTokens)}`,
+    `output_tokens: ${JSON.stringify(outputTokens)}`,
+    `learnings_in: ${JSON.stringify(learningsIn ?? null)}`,
+    `sessions_in: ${JSON.stringify(sessionsIn ?? null)}`,
     `cards_targeted: ${cardsRendered}`,
     '---',
     '',

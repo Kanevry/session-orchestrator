@@ -70,7 +70,7 @@ const SENTINEL_BEGIN_RE = new RegExp(`<!--\\s*BEGIN\\s+MANAGED:\\s*(${SECTION_NA
  * @param {string} body
  * @returns {{ sections: Section[] }}
  */
-export function parseSections(body) {
+function parseSections(body) {
   if (typeof body !== 'string') {
     throw new Error(`parseSections: body must be string (got ${typeof body}).`);
   }
@@ -151,7 +151,7 @@ export function parseSections(body) {
  * @param {Section[]} sections
  * @returns {string}
  */
-export function serializeSections(sections) {
+function serializeSections(sections) {
   if (!Array.isArray(sections)) {
     throw new Error(`serializeSections: sections must be array (got ${typeof sections}).`);
   }

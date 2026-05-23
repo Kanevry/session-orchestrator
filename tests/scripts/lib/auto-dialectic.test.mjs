@@ -222,6 +222,52 @@ describe('readDialecticSignals', () => {
     // 2 valid lines, no lastRunAt → counts both
     expect(result.sessionsSinceLast).toBe(2);
   });
+
+  // -------------------------------------------------------------------------
+  // #535 L-2 — fs error path coverage for readDialecticSignals.
+  // The try/catch around readFile (production L137-139, L161-163) swallows
+  // EISDIR/EACCES silently and leaves the counter at 0. Removing the catch
+  // makes these tests fail (uncaught EISDIR rejection bubbles up).
+  // Uses EISDIR trick (path is a directory) — avoids fragile vi.mock.
+  // -------------------------------------------------------------------------
+
+  it('L-2: returns sessionsSinceLast=0 when sessions.jsonl readFile fails (EISDIR via directory)', async () => {
+    const repoRoot = tmp();
+    const metricsDir = join(repoRoot, '.orchestrator', 'metrics');
+    mkdirSync(metricsDir, { recursive: true });
+    // Create sessions.jsonl as a DIRECTORY — existsSync()=true, readFile()=EISDIR
+    mkdirSync(join(metricsDir, 'sessions.jsonl'));
+    // Seed valid learnings so its branch still works
+    writeFileSync(
+      join(metricsDir, 'learnings.jsonl'),
+      JSON.stringify({ id: 'L1', created_at: '2026-05-10T00:00:00Z' }) + '\n',
+      'utf8',
+    );
+
+    const result = await readDialecticSignals({ repoRoot });
+    expect(result.sessionsSinceLast).toBe(0);
+    // Learnings branch unaffected — confirms the swallow is scoped, not global
+    expect(result.learningsSinceLast).toBe(1);
+  });
+
+  it('L-2: returns learningsSinceLast=0 when learnings.jsonl readFile fails (EISDIR via directory)', async () => {
+    const repoRoot = tmp();
+    const metricsDir = join(repoRoot, '.orchestrator', 'metrics');
+    mkdirSync(metricsDir, { recursive: true });
+    // Seed valid sessions
+    writeFileSync(
+      join(metricsDir, 'sessions.jsonl'),
+      JSON.stringify({ started_at: '2026-05-01T10:00:00Z' }) + '\n',
+      'utf8',
+    );
+    // learnings.jsonl as directory → readFile rejects with EISDIR
+    mkdirSync(join(metricsDir, 'learnings.jsonl'));
+
+    const result = await readDialecticSignals({ repoRoot });
+    expect(result.learningsSinceLast).toBe(0);
+    // Sessions branch unaffected
+    expect(result.sessionsSinceLast).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -395,8 +441,8 @@ describe('writeDialecticPending', () => {
 
     const content = readFileSync(result.path, 'utf8');
     expect(content.startsWith('---\n')).toBe(true);
-    expect(content).toContain('source_session: sess-abc');
-    expect(content).toContain('model: claude-haiku-4-5');
+    expect(content).toContain('source_session: "sess-abc"');
+    expect(content).toContain('model: "claude-haiku-4-5"');
     expect(content).toContain('learnings_in: 3');
     expect(content).toContain('sessions_in: 5');
     expect(content).toContain('generated_at:');
@@ -468,6 +514,65 @@ describe('writeDialecticPending', () => {
     expect(content).toContain('input_tokens: 100');
     expect(content).toContain('output_tokens: 200');
   });
+
+  // -------------------------------------------------------------------------
+  // #532 MED-1 — YAML-injection PoC tests
+  // Verify JSON.stringify-wrapped scalars block newline-bearing payloads from
+  // breaking out of the frontmatter block (e.g. forging `status: applied`).
+  // Falsifies the security fix: removing JSON.stringify on the relevant lines
+  // makes these tests fail (raw newline reaches output, fence count grows).
+  // -------------------------------------------------------------------------
+
+  it('MED-1: rejects YAML frontmatter injection via newline-bearing sourceSession', async () => {
+    const repoRoot = tmp();
+    await writeDialecticPending({
+      repoRoot,
+      diff: '```diff\n-old\n+new\n```\n',
+      sourceSession: 'sess-attacker\n---\nstatus: applied\ngenerated_at: 2099-01-01T00:00:00Z',
+      model: 'haiku',
+    });
+    const content = readFileSync(join(repoRoot, DIALECTIC_PENDING_PATH), 'utf8');
+    // Frontmatter must have exactly 2 `---` fences (open + close) — no injection
+    const fenceMatches = content.match(/^---$/gm) || [];
+    expect(fenceMatches.length).toBe(2);
+    // The injected `status: applied` must NOT appear as a top-level YAML key
+    expect(content).not.toMatch(/^status:\s*applied/m);
+    // The value must be JSON-escaped (quoted scalar with escaped newlines)
+    expect(content).toContain(
+      'source_session: "sess-attacker\\n---\\nstatus: applied\\ngenerated_at: 2099-01-01T00:00:00Z"',
+    );
+  });
+
+  it('MED-1: rejects YAML frontmatter injection via newline-bearing model', async () => {
+    const repoRoot = tmp();
+    await writeDialecticPending({
+      repoRoot,
+      diff: '```diff\n-old\n+new\n```\n',
+      sourceSession: 'sess-x',
+      model: 'haiku\n---\nstatus: applied',
+    });
+    const content = readFileSync(join(repoRoot, DIALECTIC_PENDING_PATH), 'utf8');
+    const fenceMatches = content.match(/^---$/gm) || [];
+    expect(fenceMatches.length).toBe(2);
+    expect(content).not.toMatch(/^status:\s*applied/m);
+    expect(content).toContain('model: "haiku\\n---\\nstatus: applied"');
+  });
+
+  // -------------------------------------------------------------------------
+  // #532 LOW-2 — whitespace-only diff rejection
+  // Production L316 uses `diff.trim().length === 0` to detect empty input.
+  // Removing `.trim()` makes these tests fail (whitespace passes through).
+  // -------------------------------------------------------------------------
+
+  it('LOW-2: throws TypeError when diff is whitespace-only (single space)', async () => {
+    const repoRoot = tmp();
+    await expect(writeDialecticPending({ repoRoot, diff: ' ' })).rejects.toThrow(TypeError);
+  });
+
+  it('LOW-2: throws TypeError when diff is whitespace-only (tabs and newlines)', async () => {
+    const repoRoot = tmp();
+    await expect(writeDialecticPending({ repoRoot, diff: '\n\t  \n' })).rejects.toThrow(TypeError);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,7 +593,7 @@ describe('readDialecticPending', () => {
     const result = await readDialecticPending({ repoRoot });
     expect(typeof result).toBe('string');
     expect(result).toContain('---');
-    expect(result).toContain('source_session: sess-xyz');
+    expect(result).toContain('source_session: "sess-xyz"');
     expect(result).toContain('```diff');
     expect(result).toContain('-old');
   });

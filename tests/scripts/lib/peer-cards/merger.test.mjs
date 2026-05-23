@@ -8,11 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import {
-  parseSections,
-  serializeSections,
-  mergePeerCard,
-} from '@lib/peer-cards/merger.mjs';
+import { mergePeerCard } from '@lib/peer-cards/merger.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -60,80 +56,26 @@ const WITH_ORPHAN_BEGIN = `Hand A.
 content with no end marker
 `;
 
-// ─── parseSections ───────────────────────────────────────────────────────────
+// ─── mergePeerCard — round-trip invariants (via empty-updates merge) ────────
+//
+// parseSections + serializeSections are module-private (#533 Y-2); their
+// round-trip invariants are exercised here through mergePeerCard(body, {}),
+// which internally parses + serialises and must therefore preserve byte-equality
+// for well-formed input.
 
-describe('parseSections', () => {
-  it('returns a single hand section for body with no sentinels', () => {
-    const { sections } = parseSections(HAND_ONLY);
-    expect(sections).toHaveLength(1);
-    expect(sections[0].type).toBe('hand');
-    expect(sections[0].content).toBe(HAND_ONLY);
+describe('mergePeerCard — round-trip invariants', () => {
+  it('round-trips hand-only body byte-equivalent (no sentinels)', () => {
+    expect(mergePeerCard(HAND_ONLY, {}).body).toBe(HAND_ONLY);
   });
 
-  it('splits hand + managed + hand for a single sentinel pair', () => {
-    const { sections } = parseSections(WITH_ONE_MANAGED);
-    expect(sections).toHaveLength(3);
-    expect(sections[0].type).toBe('hand');
-    expect(sections[0].content).toContain('## Hand notes');
-    expect(sections[1].type).toBe('managed');
-    expect(sections[1].name).toBe('preferences');
-    expect(sections[1].content).toContain('Tone: direct');
-    expect(sections[2].type).toBe('hand');
-    expect(sections[2].content).toContain('Trailing hand text.');
+  it('round-trips well-formed body with two managed sections byte-equivalent', () => {
+    expect(mergePeerCard(WITH_TWO_MANAGED, {}).body).toBe(WITH_TWO_MANAGED);
   });
 
-  it('returns 5 sections (hand, managed, hand, managed, hand) for two sentinels', () => {
-    const { sections } = parseSections(WITH_TWO_MANAGED);
-    const types = sections.map((s) => s.type);
-    expect(types).toEqual(['hand', 'managed', 'hand', 'managed', 'hand']);
-    const names = sections.filter((s) => s.type === 'managed').map((s) => s.name);
-    expect(names).toEqual(['preferences', 'tags']);
-  });
-
-  it('treats orphan BEGIN as hand text (defensive)', () => {
-    const { sections } = parseSections(WITH_ORPHAN_BEGIN);
-    // No managed section should be produced
-    expect(sections.every((s) => s.type === 'hand')).toBe(true);
-  });
-
-  it('throws when body is not a string', () => {
-    expect(() => parseSections(null)).toThrow(/body must be string/);
-    expect(() => parseSections(42)).toThrow(/body must be string/);
-  });
-
-  it('returns empty sections for empty string', () => {
-    const { sections } = parseSections('');
-    expect(sections).toEqual([]);
-  });
-});
-
-// ─── serializeSections ───────────────────────────────────────────────────────
-
-describe('serializeSections', () => {
-  it('round-trips: serialize(parse(body)) equals body for well-formed input', () => {
-    const { sections } = parseSections(WITH_ONE_MANAGED);
-    expect(serializeSections(sections)).toBe(WITH_ONE_MANAGED);
-  });
-
-  it('round-trips well-formed body with two managed sections', () => {
-    const { sections } = parseSections(WITH_TWO_MANAGED);
-    expect(serializeSections(sections)).toBe(WITH_TWO_MANAGED);
-  });
-
-  it('round-trips hand-only body byte-equivalent', () => {
-    const { sections } = parseSections(HAND_ONLY);
-    expect(serializeSections(sections)).toBe(HAND_ONLY);
-  });
-
-  it('throws on non-array input', () => {
-    expect(() => serializeSections(null)).toThrow(/sections must be array/);
-    expect(() => serializeSections('not an array')).toThrow(/sections must be array/);
-  });
-
-  it('throws on unknown section type', () => {
-    expect(() =>
-      serializeSections([{ type: 'unknown', content: 'x' }]),
-    ).toThrow(/unknown section type/);
+  it('accepts empty body without throwing (parse returns no sections)', () => {
+    const result = mergePeerCard('', {});
+    expect(result.body).toBe('');
+    expect(result.conflicts).toEqual([]);
   });
 });
 

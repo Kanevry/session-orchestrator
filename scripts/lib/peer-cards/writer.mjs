@@ -28,9 +28,6 @@ import { randomUUID } from 'node:crypto';
 
 import { validatePeerCardFrontmatter } from './schema.mjs';
 
-/** Generator sentinel — currently informational; merger/reader may use it for skip-on-manual-edit. */
-export const GENERATOR_MARKER = 'session-orchestrator-peer-card@1';
-
 // Frontmatter keys serialized in this order. Anything else is appended.
 const ORDERED_KEYS = ['id', 'type', 'target', 'created', 'updated', 'source_sessions', 'title', 'tags'];
 

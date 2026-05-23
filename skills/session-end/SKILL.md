@@ -431,6 +431,11 @@ The `.orchestrator/dialectic-pending.md` sidecar is intentionally outside the va
 
 Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialectic.mjs` API.
 
+> **Dispatch chain rationale (4 hops: session-end → subagent → /evolve → runDialecticDeriver → dispatchAgent → Agent):**
+> - **session-end → subagent (not direct invoke):** session-end runs in the main coordinator context; spawning a subagent isolates the dialectic pass into a fresh context window, prevents the deriver's input-heavy payload (top-50 learnings + last-10 sessions + 2 peer cards + steering) from polluting the main coordinator's context, and lets the subagent run as Haiku while the coordinator stays Opus.
+> - **/evolve → runDialecticDeriver (not direct dispatchAgent):** /evolve owns argument parsing, config resolution, dry-run/apply gating, error-handling, and sidecar writes; runDialecticDeriver owns the pure derivation pipeline (load → payload → budget-check → dispatch → parse → guard). Separating skill-level orchestration from deriver business logic lets unit tests exercise the deriver without standing up the full evolve skill.
+> - **runDialecticDeriver → dispatchAgent (DI boundary):** per `.claude/rules/prompt-caching.md:3`, session-orchestrator forbids direct `@anthropic-ai/sdk` imports in business logic (the harness manages caching at the platform layer). dispatchAgent is the injected boundary — the evolve skill wires the real `Agent({...})` harness call at runtime, tests pass a `vi.fn()` mock. Same DI shape as `scripts/lib/autopilot.mjs::runLoop({opts})` (cf. `scripts/dialectic-deriver.mjs:7-16,531`).
+
 ### 3.7 Write Session Metrics
 
 Read `skills/session-end/session-metrics-write.md` for JSONL append, vault-mirror invocation, and behavior matrix.

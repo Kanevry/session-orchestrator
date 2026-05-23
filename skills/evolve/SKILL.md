@@ -428,6 +428,8 @@ const dispatchAgent = async ({ model, prompt, maxTokens }) => {
   return { text: result.text, usage: result.usage ?? { input_tokens: 0, output_tokens: 0 } };
 };
 
+> **Why `maxTokens` is not passed to Agent():** the Claude Code harness `Agent()` tool does not currently accept a `max_tokens` parameter. Output-token budget is therefore enforced via prompt text (see line 414 in `skills/session-end/SKILL.md`: "with budget ${budget-tokens} input + 4000 output tokens"). The dispatchAgent contract declares `maxTokens` as the canonical interface; the evolve skill destructures it for forward-compat but routes enforcement through the prompt body. When the harness adds a max_tokens hint, this dispatchAgent becomes the single update point.
+
 const result = await runDialecticDeriver({
   dispatchAgent,
   repoRoot: process.cwd(),
