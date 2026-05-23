@@ -144,6 +144,29 @@ for (const relPath of sinkScripts) {
 }
 
 // ---------------------------------------------------------------------------
+// Check 6: #544 M3 memory-proposals modules import validatePathInsideProject
+// ---------------------------------------------------------------------------
+
+console.log('');
+console.log('--- Check 6: #544 M3 memory-proposals modules import validatePathInsideProject ---');
+
+const memoryProposalsModules = [
+  'scripts/lib/memory-proposals/store.mjs',
+  'scripts/lib/memory-proposals/sink.mjs',
+];
+
+for (const relPath of memoryProposalsModules) {
+  const src = readFile(relPath);
+  if (src === null) {
+    fail(`${relPath} does not exist`);
+  } else if (/import\s*\{[^}]*validatePathInsideProject[^}]*\}\s*from\s*['"][^'"]*path-utils/.test(src)) {
+    pass(`${relPath} imports validatePathInsideProject from path-utils (#544 M3 canonicalization)`);
+  } else {
+    fail(`${relPath} does not import validatePathInsideProject from path-utils — #544 M3 path-canonicalization guard is missing`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

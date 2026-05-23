@@ -29,7 +29,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  statSync,
+  realpathSync,
+  symlinkSync,
+  mkdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -163,9 +173,6 @@ describe('collector-sink integration (#501 F2.1)', () => {
 
       // FALSIFICATION: if the per-wave summary were not written by store.mjs,
       // accumulateSummaryStats would see no files and return queued=0.
-      // NOTE: collectProposals().queue is always [] due to a collector bug
-      // (collector.mjs L117 calls deserializeProposal(object) not
-      // deserializeProposal(string)), so we test via stats (unaffected).
       expect(stats.queued).toBe(2);
     });
 
@@ -309,20 +316,17 @@ describe('collector-sink integration (#501 F2.1)', () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   describe('Gherkin AC3 — AUQ approve subset → writeApproved + archiveRejected + clear', () => {
-    // Proposals seeded here are read back via raw JSONL parse because
-    // collector.mjs readProposalsJsonl has a deserialization bug (see file header).
     let proposals;
 
     beforeEach(async () => {
       for (let i = 1; i <= 5; i++) {
-         
+
         await appendProposal({
           record: makeRecord({ subject: `proposal-${i}`, waveId: 'W1' }),
           repoRoot: tmpRepo,
           waveId: 'W1',
         });
       }
-      // Read directly from the JSONL file (bypasses the broken collector deserializer)
       proposals = readJsonlLines(proposalsJsonlPath);
     });
 
@@ -651,6 +655,165 @@ describe('collector-sink integration (#501 F2.1)', () => {
       // FALSIFICATION: if _proposalToLearning omitted source_session, or
       // hardcoded a different value, this assertion would fail.
       expect(lines[0].source_session).toBe('test-session-2026-05-23');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #545 C2 — path-safety negative tests
+  //
+  // The sink delegates path validation to validatePathInsideProject (path-utils.mjs)
+  // with canonicalizeRoot:true. Phase-2 realpath catches symlink escapes when
+  // the target file exists via the symlink chain (ENOENT swallows the check
+  // for non-existent targets — a documented limitation). These tests pre-create
+  // the escape-target files so realpath resolves and the guard fires.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#545 C2 — path-safety: symlink escape detection', () => {
+    let escapeBase;
+
+    afterEach(() => {
+      // Clean up symlink-escape target dirs created outside tmpRepo.
+      if (escapeBase) {
+        rmSync(escapeBase, { recursive: true, force: true });
+        escapeBase = undefined;
+      }
+    });
+
+    it('writeApproved rejects symlink escape via .orchestrator directory', async () => {
+      // Setup: .orchestrator inside tmpRepo is a symlink to elsewhereDir,
+      // and elsewhereDir/metrics/learnings.jsonl exists as a real file so
+      // realpath resolves to the escape target (not ENOENT).
+      escapeBase = realpathSync(mkdtempSync(join(tmpdir(), 'mp-escape-')));
+      mkdirSync(join(escapeBase, 'metrics'), { recursive: true });
+      writeFileSync(join(escapeBase, 'metrics', 'learnings.jsonl'), '', 'utf8');
+      symlinkSync(escapeBase, join(tmpRepo, '.orchestrator'));
+
+      const result = await writeApproved({
+        approved: [makeRecord()],
+        repoRoot: tmpRepo,
+        sessionId: SESSION_ID,
+      });
+
+      // FALSIFICATION: if validatePathInsideProject lost its Phase-2 realpath
+      // check (or canonicalizeRoot:true regressed), the write would succeed,
+      // result.written would be 1, and result.errors would be empty.
+      expect(result.written).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatch(/path-safety|symlink|escape/i);
+
+      // And the escape target must remain empty — proves the write was blocked,
+      // not just that the result shape was misreported.
+      const escapeContents = readFileSync(
+        join(escapeBase, 'metrics', 'learnings.jsonl'),
+        'utf8'
+      );
+      expect(escapeContents).toBe('');
+    });
+
+    it('archiveRejected rejects symlink escape on the rejected.log file', async () => {
+      // Setup: proposals.rejected.log inside tmpRepo is a symlink whose target
+      // is an existing file in a directory OUTSIDE tmpRepo. realpath resolves
+      // to the escape target and the path-safety guard fires.
+      escapeBase = realpathSync(mkdtempSync(join(tmpdir(), 'mp-escape-')));
+      const escapeFile = join(escapeBase, 'rejected.log');
+      writeFileSync(escapeFile, '', 'utf8');
+      mkdirSync(join(tmpRepo, '.orchestrator'), { recursive: true });
+      symlinkSync(escapeFile, join(tmpRepo, '.orchestrator', 'proposals.rejected.log'));
+
+      const result = await archiveRejected({
+        rejected: [makeRecord()],
+        repoRoot: tmpRepo,
+        reason: 'user-declined',
+      });
+
+      // FALSIFICATION: if the path-safety guard were removed, archiveRejected
+      // would write through the symlink and archived would be 1.
+      expect(result.archived).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatch(/path-safety|symlink|escape/i);
+
+      // The escape target must remain empty — proves no archive line leaked
+      // through the symlink.
+      const escapeContents = readFileSync(escapeFile, 'utf8');
+      expect(escapeContents).toBe('');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #545 C3 — collectProposals().queue content positive test
+  //
+  // W2 P1 fixed a deserialize bug in collector.mjs (line 117 comment): the
+  // collector used to pass the pre-parsed object to deserializeProposal,
+  // which trips its `typeof line !== 'string'` guard and returns null for
+  // every record — silently dropping all queue content while stats stayed
+  // correct. This test exercises queue length AND content to lock the fix.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#545 C3 — collectProposals returns full queue content (W2 P1 deserialize fix)', () => {
+    it('queue contains all 3 appended proposals in FIFO order with full field content', async () => {
+      await appendProposal({
+        record: makeRecord({ subject: 'alpha' }),
+        repoRoot: tmpRepo,
+        waveId: 'W1',
+      });
+      await appendProposal({
+        record: makeRecord({ subject: 'beta' }),
+        repoRoot: tmpRepo,
+        waveId: 'W1',
+      });
+      await appendProposal({
+        record: makeRecord({ subject: 'gamma' }),
+        repoRoot: tmpRepo,
+        waveId: 'W1',
+      });
+
+      const { queue } = await collectProposals({ repoRoot: tmpRepo });
+
+      // FALSIFICATION: if collector.mjs:117 regressed to deserialize(parsed)
+      // instead of deserialize(line), queue.length would be 0 (all lines
+      // dropped as null) and the .toBe(3) check would fail.
+      expect(queue).toHaveLength(3);
+      expect(queue[0].subject).toBe('alpha');
+      expect(queue[1].subject).toBe('beta');
+      expect(queue[2].subject).toBe('gamma');
+      expect(queue[0].wave_id).toBe('W1');
+      expect(queue[0].schema_version).toBe(1);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #545 C4 — sink scope === 'local' explicit assertion
+  //
+  // sink.mjs:69 hardcodes scope: 'local' for promoted learnings (the only
+  // VALID_SCOPES value compatible with learnings/schema.mjs for
+  // project-scoped entries). Lock the literal so a refactor toward
+  // 'project' (which would throw a ValidationError) is caught at test time.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#545 C4 — sink writes scope="local" on promoted learnings', () => {
+    it('learnings.jsonl entry has scope="local", occurrences=1, schema_version=1', async () => {
+      await appendProposal({
+        record: makeRecord({ waveId: 'W1' }),
+        repoRoot: tmpRepo,
+        waveId: 'W1',
+      });
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      await writeApproved({
+        approved: [proposals[0]],
+        repoRoot: tmpRepo,
+        sessionId: SESSION_ID,
+      });
+
+      const lines = readJsonlLines(learningsJsonlPath);
+
+      // FALSIFICATION: if sink.mjs:69 were edited to scope: 'project'
+      // (an invalid VALID_SCOPES value), appendLearning would throw a
+      // ValidationError before the line was written, so lines.length
+      // would be 0 and the .toBe('local') assertion would fail.
+      expect(lines).toHaveLength(1);
+      expect(lines[0].scope).toBe('local');
+      expect(lines[0].occurrences).toBe(1);
+      expect(lines[0].schema_version).toBe(1);
     });
   });
 });

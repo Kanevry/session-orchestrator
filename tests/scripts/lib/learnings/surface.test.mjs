@@ -225,4 +225,17 @@ describe('surfaceTopN', () => {
     expect(result[0].id).toBe('with-date');
     expect(result[1].id).toBe('no-date');
   });
+
+  // 17. Stable sort when BOTH confidence AND created_at are tied — input order preserved (#541 G3)
+  it('preserves input order for entries with identical confidence AND identical created_at (stable sort)', async () => {
+    const first = entry({ id: 'first-in', confidence: 0.8, created_at: '2026-01-01T00:00:00Z' });
+    const second = entry({ id: 'second-in', confidence: 0.8, created_at: '2026-01-01T00:00:00Z' });
+    const third = entry({ id: 'third-in', confidence: 0.8, created_at: '2026-01-01T00:00:00Z' });
+    writeLines(first, second, third);
+    const result = await surfaceTopN(filePath, 10);
+    expect(result).toHaveLength(3);
+    expect(result[0].id).toBe('first-in');
+    expect(result[1].id).toBe('second-in');
+    expect(result[2].id).toBe('third-in');
+  });
 });

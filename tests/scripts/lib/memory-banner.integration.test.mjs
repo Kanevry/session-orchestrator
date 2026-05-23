@@ -481,4 +481,51 @@ describe('memory-banner integration (#505)', () => {
       expect(inputs.stats.daysSinceCleanup).toBe(1);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Group VIII (#541) — countJsonlLines genuine behavior
+  //
+  // The internal `countJsonlLines` helper (memory-banner.mjs:268-277) counts
+  // NON-EMPTY LINES by splitting on '\n' and filtering. It does NOT JSON.parse.
+  // These tests exercise that contract indirectly via readBannerInputs.stats.
+  //
+  // Falsification: swapping the split-and-filter for a per-line `JSON.parse`
+  // (or for `JSON.parse(raw)`) would throw on `{not valid` and the catch
+  // block would resolve to 0 — breaking the "count = 4" assertion.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('Group VIII: countJsonlLines counts non-empty lines (no JSON-parse)', () => {
+    it('counts every non-empty line including malformed JSON (mixed valid/malformed/blank)', async () => {
+      // 5 lines total — 4 non-empty (3 valid + 1 malformed), 1 blank.
+      // Production splits on '\n' and filters length > 0 → count = 4.
+      // If a future refactor inserts JSON.parse, the catch block fires → 0.
+      const sessionsPath = join(tmpRepo, '.orchestrator', 'metrics', 'sessions.jsonl');
+      mkdirSync(join(tmpRepo, '.orchestrator', 'metrics'), { recursive: true });
+      writeFileSync(
+        sessionsPath,
+        '{"a":1}\n{not valid\n{"b":2}\n\n{"c":3}\n',
+        'utf8',
+      );
+
+      const inputs = await readBannerInputs({
+        repoRoot: tmpRepo,
+        memoryDir: tmpMemoryDir,
+        now: new Date('2026-05-23T12:00:00Z'),
+      });
+
+      expect(inputs.stats.sessionsEver).toBe(4);
+    });
+
+    it('returns 0 sessionsEver when sessions.jsonl is missing entirely', async () => {
+      // No sessions.jsonl is written → existsSync returns false → result is 0.
+      // This is the I/O-error / missing-file degradation contract.
+      const inputs = await readBannerInputs({
+        repoRoot: tmpRepo,
+        memoryDir: tmpMemoryDir,
+        now: new Date('2026-05-23T12:00:00Z'),
+      });
+
+      expect(inputs.stats.sessionsEver).toBe(0);
+    });
+  });
 });

@@ -306,6 +306,25 @@ describe('buildPrompt', () => {
     // Probabilistic — collision risk is 2^-32, negligible.
     expect(n1).not.toBe(n2);
   });
+
+  // #541 G4 — falsifiable nonce length: unbounded regex captures ACTUAL length,
+  // then an explicit integer-literal length assertion pins the production
+  // contract `randomBytes(4).toString('hex')` → 8 hex chars. Earlier tests
+  // using bounded regex `[0-9a-f]{8}` are self-fulfilling — they would still
+  // pass if production switched to `randomBytes(8).toString('hex')` (16 chars)
+  // because the regex would match the first 8 chars.
+  it('open and close fence nonces are exactly 8 hex chars (#541 G4)', () => {
+    const payload = buildPayload({ learnings: [{ id: 'L1', text: 'hello' }] });
+    const prompt = buildPrompt(payload, 'haiku');
+    // Unbounded `+` quantifier captures the FULL hex run, regardless of length.
+    const openMatch = prompt.match(/<untrusted-data-([0-9a-f]+)>/);
+    const closeMatch = prompt.match(/<\/untrusted-data-([0-9a-f]+)>/);
+    expect(openMatch).not.toBeNull();
+    expect(closeMatch).not.toBeNull();
+    expect(openMatch[1].length).toBe(8);
+    expect(closeMatch[1].length).toBe(8);
+    expect(openMatch[1]).toBe(closeMatch[1]);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

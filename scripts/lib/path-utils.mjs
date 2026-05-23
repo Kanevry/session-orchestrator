@@ -12,7 +12,7 @@
  */
 
 import path from 'node:path';
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -143,9 +143,18 @@ export function sameDrive(a, b) {
  *
  * @param {string} input - User-supplied path (relative or absolute)
  * @param {string} root - Trusted parent directory (absolute)
+ * @param {object} [opts] - Optional behaviour modifiers.
+ * @param {boolean} [opts.canonicalizeRoot=false] - When true and `root` exists on
+ *   disk, canonicalize it via `realpathSync` BEFORE the Phase 1 lexical check.
+ *   This is the documented workaround for macOS tmpdirs where `/var/...` is a
+ *   symlink to `/private/var/...` — without canonicalization the Phase 2
+ *   realpath check would reject legitimate descendants because the realpath
+ *   namespace differs from the lexical namespace.
+ *   DEFAULT IS `false` — the legacy two-phase behaviour is byte-identical when
+ *   the option is omitted or set to anything other than `true`.
  * @returns {{ok: true, realPath: string|undefined, lexicalPath: string} | {ok: false, reason: 'lexical'|'symlink'|'input', error?: string}}
  */
-export function validatePathInsideProject(input, root) {
+export function validatePathInsideProject(input, root, opts = {}) {
   // 1. Input validation
   if (typeof input !== 'string' || input.length === 0) {
     return { ok: false, reason: 'input', error: 'input must be a non-empty string' };
@@ -153,15 +162,27 @@ export function validatePathInsideProject(input, root) {
   if (input.includes('\0')) {
     return { ok: false, reason: 'input', error: 'input contains null byte' };
   }
+  // 1b. Optional root canonicalization (#544 M3 — opt-in for callers that
+  // operate against mkdtempSync paths on macOS). Strictly gated on
+  // opts.canonicalizeRoot === true so unconditional callers see byte-identical
+  // legacy behaviour.
+  let effectiveRoot = root;
+  if (opts && opts.canonicalizeRoot === true && existsSync(root)) {
+    try {
+      effectiveRoot = realpathSync(root);
+    } catch {
+      // Best-effort: fall back to lexical root if realpath fails.
+    }
+  }
   // 2. Phase 1: lexical
-  const lexicalPath = path.resolve(root, input);
-  if (!isPathInside(lexicalPath, root)) {
+  const lexicalPath = path.resolve(effectiveRoot, input);
+  if (!isPathInside(lexicalPath, effectiveRoot)) {
     return { ok: false, reason: 'lexical' };
   }
   // 3. Phase 2: realpath (ENOENT swallowed; other errors propagate — SEC-Q2-LOW-1)
   try {
     const realPath = realpathSync(lexicalPath);
-    if (!isPathInside(realPath, root)) {
+    if (!isPathInside(realPath, effectiveRoot)) {
       return { ok: false, reason: 'symlink' };
     }
     return { ok: true, realPath, lexicalPath };

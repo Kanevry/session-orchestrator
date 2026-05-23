@@ -236,9 +236,11 @@ Agent-writable memory tool. During a wave, an agent may call `node scripts/memor
 memory:
   proposals:
     enabled: true                # PRD F2.1 (#501) — agent-writable memory tool; gates the propose() CLI + session-end AUQ
-    quota-per-wave: 5            # max proposals one agent can queue per wave (rejected with exit 1 when exceeded)
-    confidence-floor: 0.5        # proposals with confidence below this are rejected (exit 2)
+    quota-per-wave: 5            # max proposals one agent can queue per wave (exit 1 / quota-exceeded when exceeded)
+    confidence-floor: 0.5        # proposals below this are rejected (exit 2 / rejected-low-confidence)
 ```
+
+Agents invoke via `SO_WAVE_AGENT=1 node scripts/memory-propose.mjs …`. The `SO_WAVE_AGENT=1` env-var is set automatically by the wave-executor boilerplate; direct CLI calls without it exit `3` (`rejected-wrong-context`).
 
 Read by: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
 
@@ -555,8 +557,8 @@ memory:
     enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
   proposals:
     enabled: true                # PRD F2.1 (#501) — agent-writable memory tool (memory.propose CLI + session-end AUQ)
-    quota-per-wave: 5            # max proposals one agent can queue per wave
-    confidence-floor: 0.5        # below this confidence, propose() returns rejected-low-confidence
+    quota-per-wave: 5            # max proposals one agent can queue per wave (exit 1 / quota-exceeded when exceeded)
+    confidence-floor: 0.5        # proposals below this are rejected (exit 2 / rejected-low-confidence)
 
 # STATE.md lock (PRD gsd Pattern 1 / #518)
 state-md-lock:

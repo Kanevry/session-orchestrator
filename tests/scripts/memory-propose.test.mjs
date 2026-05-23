@@ -16,6 +16,21 @@
  *   Section B — wrong-context (exit 3):   4 tests
  *   Section C — below-confidence-floor (exit 2):  2 tests
  *   Section D — happy path (exit 0 + exit 1 quota): 3 tests
+ *   Section E — wrong-context env-var guard (#543 H3, exit 3): 3 tests
+ *
+ * Env-var convention (#543 H3 / #544 M2):
+ *   The `runCli` helper deletes SO_WAVE_AGENT from the child env by default,
+ *   then merges in `extraEnv`. Tests opt-in explicitly per call-site.
+ *   - Section A: most tests omit SO_WAVE_AGENT because argv-required validation
+ *     (Step 1) fires before the env-var guard (Step 2b). The two `--type`
+ *     enum-validation tests DO set SO_WAVE_AGENT=1 because the enum check
+ *     runs in Step 7 (schema validation), after the guard.
+ *   - Section B: STATE.md-context rejection (Step 2) fires before the env-var
+ *     guard, so no env-var injection is needed.
+ *   - Sections C and D: opt-in via `extraEnv: { SO_WAVE_AGENT: '1' }` to pass
+ *     the env-var guard and reach the success/floor paths.
+ *   - Section E: intentionally omits / mis-sets SO_WAVE_AGENT to exercise
+ *     the guard itself.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -129,19 +144,29 @@ function setupTmpRepo({ stateMd } = {}) {
 /**
  * Spawn the CLI in `cwd` with the given args and resolve when the process exits.
  *
+ * The CLI requires `SO_WAVE_AGENT=1` to pass the wrong-context env-var guard
+ * (#543 H3). The helper does NOT inject it by default — opt-in per test via
+ * `extraEnv: { SO_WAVE_AGENT: '1' }`. This keeps the guard explicit at every
+ * call-site and makes Section E (guard-under-test) trivially expressible.
+ *
  * @param {string} cwd
  * @param {string[]} args
- * @param {{ timeout?: number }} [opts]
+ * @param {{ timeout?: number, extraEnv?: Record<string, string> }} [opts]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
-function runCli(cwd, args, { timeout = 15_000 } = {}) {
+function runCli(cwd, args, { timeout = 15_000, extraEnv = {} } = {}) {
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
 
+    // Strip any pre-existing SO_WAVE_AGENT from process.env so the test's
+    // env-var semantics are deterministic. Tests opt-in explicitly via extraEnv.
+    const baseEnv = { ...process.env };
+    delete baseEnv.SO_WAVE_AGENT;
+
     const proc = spawn('node', [CLI_PATH, ...args], {
       cwd,
-      env: process.env,
+      env: { ...baseEnv, ...extraEnv },
       // Spawn with pipe stdio so we collect everything.
     });
 
@@ -220,6 +245,11 @@ describe('Section A — argv validation (exit 4)', () => {
     expect(result.status).toBe('error');
   });
 
+  // --type enum validation runs in schema validation (Step 7), which fires
+  // AFTER both the STATE.md status check (Step 2) and the SO_WAVE_AGENT
+  // env-var guard (Step 2b, #543 H3). The test must set the env-var so we
+  // actually reach Step 7 — without it the env-var guard would intercept
+  // with exit 3 first.
   it('exits 4 when --type is not a valid enum value', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const args = [
@@ -229,7 +259,7 @@ describe('Section A — argv validation (exit 4)', () => {
       '--evidence', 'Evidence text here',
       '--confidence', '0.7',
     ];
-    const { code } = await runCli(dir, args);
+    const { code } = await runCli(dir, args, { extraEnv: { SO_WAVE_AGENT: '1' } });
     expect(code).toBe(4);
   });
 
@@ -242,7 +272,7 @@ describe('Section A — argv validation (exit 4)', () => {
       '--evidence', 'Evidence text here',
       '--confidence', '0.7',
     ];
-    const { stdout } = await runCli(dir, args);
+    const { stdout } = await runCli(dir, args, { extraEnv: { SO_WAVE_AGENT: '1' } });
     const result = parseJSON(stdout);
     expect(result.validation.length).toBeGreaterThanOrEqual(1);
   });
@@ -359,6 +389,8 @@ describe('Section B — wrong-context (exit 3)', () => {
 // ===========================================================================
 
 describe('Section C — below-floor (exit 2)', () => {
+  const WAVE_AGENT_ENV = { extraEnv: { SO_WAVE_AGENT: '1' } };
+
   it('exits 2 when confidence is 0.3 (below default floor of 0.5)', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const args = [
@@ -368,7 +400,7 @@ describe('Section C — below-floor (exit 2)', () => {
       '--evidence', 'Test evidence content',
       '--confidence', '0.3',
     ];
-    const { code } = await runCli(dir, args);
+    const { code } = await runCli(dir, args, WAVE_AGENT_ENV);
     expect(code).toBe(2);
   });
 
@@ -381,7 +413,7 @@ describe('Section C — below-floor (exit 2)', () => {
       '--evidence', 'Test evidence content',
       '--confidence', '0.3',
     ];
-    const { stdout } = await runCli(dir, args);
+    const { stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.status).toBe('rejected-low-confidence');
   });
@@ -395,7 +427,7 @@ describe('Section C — below-floor (exit 2)', () => {
       '--evidence', 'Test evidence content',
       '--confidence', '0.3',
     ];
-    const { stdout } = await runCli(dir, args);
+    const { stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.floor).toBe(0.5);
     expect(result.provided).toBe(0.3);
@@ -412,7 +444,7 @@ describe('Section C — below-floor (exit 2)', () => {
       '--evidence', 'Evidence at exactly the confidence floor value',
       '--confidence', '0.5',
     ];
-    const { code } = await runCli(dir, args);
+    const { code } = await runCli(dir, args, WAVE_AGENT_ENV);
     expect(code).toBe(0);
   });
 });
@@ -422,43 +454,45 @@ describe('Section C — below-floor (exit 2)', () => {
 // ===========================================================================
 
 describe('Section D — happy path and quota', () => {
+  const WAVE_AGENT_ENV = { extraEnv: { SO_WAVE_AGENT: '1' } };
+
   it('exits 0 when all args are valid and STATE.md status is active', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    const { code } = await runCli(dir, VALID_ARGS);
+    const { code } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     expect(code).toBe(0);
   });
 
   it('stdout.status equals "queued" on success', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    const { stdout } = await runCli(dir, VALID_ARGS);
+    const { stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.status).toBe('queued');
   });
 
   it('stdout.wave equals "W2" matching STATE.md current-wave=2', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    const { stdout } = await runCli(dir, VALID_ARGS);
+    const { stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.wave).toBe('W2');
   });
 
   it('stdout.position equals "1/5" on first proposal', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    const { stdout } = await runCli(dir, VALID_ARGS);
+    const { stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.position).toBe('1/5');
   });
 
   it('proposals.jsonl line is written after successful proposal', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    await runCli(dir, VALID_ARGS);
+    await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
     expect(existsSync(jsonlPath)).toBe(true);
   });
 
   it('proposals.jsonl line contains the submitted subject', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    await runCli(dir, VALID_ARGS);
+    await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
     const contents = readFileSync(jsonlPath, 'utf8');
     const line = JSON.parse(contents.trim().split('\n')[0]);
@@ -467,7 +501,7 @@ describe('Section D — happy path and quota', () => {
 
   it('proposals.jsonl line contains wave_id matching the STATE.md wave', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    await runCli(dir, VALID_ARGS);
+    await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
     const contents = readFileSync(jsonlPath, 'utf8');
     const line = JSON.parse(contents.trim().split('\n')[0]);
@@ -477,7 +511,7 @@ describe('Section D — happy path and quota', () => {
   it('stdout.position advances on the second proposal in the same repo', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     // First call
-    await runCli(dir, VALID_ARGS);
+    await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     // Second call with a different subject to avoid confusion
     const args2 = [
       '--type', 'anti-pattern',
@@ -486,7 +520,7 @@ describe('Section D — happy path and quota', () => {
       '--evidence', 'Second evidence text',
       '--confidence', '0.8',
     ];
-    const { code, stdout } = await runCli(dir, args2);
+    const { code, stdout } = await runCli(dir, args2, WAVE_AGENT_ENV);
     expect(code).toBe(0);
     const result = parseJSON(stdout);
     expect(result.position).toBe('2/5');
@@ -504,7 +538,7 @@ describe('Section D — happy path and quota', () => {
         '--evidence', `Evidence for proposal ${i}`,
         '--confidence', '0.7',
       ];
-      const { code } = await runCli(dir, args);
+      const { code } = await runCli(dir, args, WAVE_AGENT_ENV);
       expect(code).toBe(0);
     }
 
@@ -516,7 +550,7 @@ describe('Section D — happy path and quota', () => {
       '--evidence', 'This should be dropped',
       '--confidence', '0.7',
     ];
-    const { code } = await runCli(dir, args6);
+    const { code } = await runCli(dir, args6, WAVE_AGENT_ENV);
     expect(code).toBe(1);
   });
 
@@ -532,7 +566,7 @@ describe('Section D — happy path and quota', () => {
         '--evidence', `Evidence ${i}`,
         '--confidence', '0.7',
       ];
-      await runCli(dir, args);
+      await runCli(dir, args, WAVE_AGENT_ENV);
     }
 
     // 6th
@@ -543,7 +577,7 @@ describe('Section D — happy path and quota', () => {
       '--evidence', 'Over the limit',
       '--confidence', '0.7',
     ];
-    const { stdout } = await runCli(dir, args6);
+    const { stdout } = await runCli(dir, args6, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.status).toBe('quota-exceeded');
   });
@@ -559,7 +593,7 @@ describe('Section D — happy path and quota', () => {
         '--evidence', `Evidence ${i}`,
         '--confidence', '0.7',
       ];
-      await runCli(dir, args);
+      await runCli(dir, args, WAVE_AGENT_ENV);
     }
 
     const args6 = [
@@ -569,8 +603,51 @@ describe('Section D — happy path and quota', () => {
       '--evidence', 'Overflow evidence',
       '--confidence', '0.7',
     ];
-    const { stdout } = await runCli(dir, args6);
+    const { stdout } = await runCli(dir, args6, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
     expect(result.quota).toBe(5);
+  });
+});
+
+// ===========================================================================
+// Section E — Wrong-context env-var guard (#543 H3, exit 3)
+// ===========================================================================
+//
+// These tests exercise the per-process `SO_WAVE_AGENT=1` env-var guard added
+// in #543 H3. STATE.md is set to `status: active` so the existing context
+// checks pass; only the env-var assertion can produce the rejection.
+// Strict equality with '1' is verified — '0' and 'true' must both fail.
+
+describe('Section E — wrong-context env-var guard (#543 H3, exit 3)', () => {
+  it('exits 3 when SO_WAVE_AGENT is unset even with active STATE.md', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    // No extraEnv → helper strips SO_WAVE_AGENT from process.env
+    const { code, stdout } = await runCli(dir, VALID_ARGS);
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('wave-executor');
+  });
+
+  it('exits 3 when SO_WAVE_AGENT is "0" (strict equality with "1")', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: '0' },
+    });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('SO_WAVE_AGENT=1');
+  });
+
+  it('exits 3 when SO_WAVE_AGENT is "true" (strict equality with "1")', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: 'true' },
+    });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('SO_WAVE_AGENT=1');
   });
 });

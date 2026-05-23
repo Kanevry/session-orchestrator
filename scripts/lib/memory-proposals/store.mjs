@@ -19,7 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
-import { isPathInside } from '../path-utils.mjs';
+import { validatePathInsideProject } from '../path-utils.mjs';
+import { isPidAlive } from '../session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,18 +44,23 @@ const LOCK_POLL_MS = 50;
  * Throws a TypeError on traversal attempts — callers have already validated
  * repoRoot is a trusted absolute path.
  *
+ * Delegates to validatePathInsideProject (#544 M3 — canonical two-phase guard)
+ * with canonicalizeRoot:true so macOS tmpdir paths (where /var resolves to
+ * /private/var) are handled consistently in tests and production.
+ *
  * @param {string} repoRoot — absolute path to the repo working directory
  * @param {string} relPath  — path relative to repoRoot (must not escape it)
- * @returns {string} resolved absolute path
+ * @returns {string} resolved absolute path (realPath when the target exists, else lexicalPath)
  */
 function safePath(repoRoot, relPath) {
-  const resolved = path.resolve(repoRoot, relPath);
-  if (!isPathInside(resolved, repoRoot)) {
+  const result = validatePathInsideProject(relPath, repoRoot, { canonicalizeRoot: true });
+  if (!result.ok) {
+    const resolved = path.resolve(repoRoot, relPath);
     throw new TypeError(
       `store.mjs: path traversal blocked: ${resolved} is outside ${repoRoot}`
     );
   }
-  return resolved;
+  return result.realPath ?? result.lexicalPath;
 }
 
 /**
@@ -107,9 +113,19 @@ function summaryPathFor(repoRoot, waveId) {
  *  2. linkSync(tmp, lockFile) — atomic create-or-EEXIST.
  *  3. Best-effort unlink(tmp) in finally.
  *
+ * On EEXIST, reads the existing lock body and returns it for stale-PID
+ * inspection by the caller (#543 H2). If the lock file disappears between
+ * the EEXIST and the read (race with concurrent release), this returns a
+ * 'vanished' signal so the caller defers rather than overriding.
+ * Unparseable contents (parse failure on a present file) ARE treated as
+ * stale via `existingLock: null` — they cannot be safely owned.
+ *
  * @param {string} lockFile
  * @param {object} body — lock body to serialize
- * @returns {{ ok: true } | { ok: false, reason: 'exists' | 'fs-error', error?: string }}
+ * @returns {{ ok: true }
+ *   | { ok: false, reason: 'exists', existingLock: object|null }
+ *   | { ok: false, reason: 'vanished' }
+ *   | { ok: false, reason: 'fs-error', error?: string }}
  */
 function tryCreateLock(lockFile, body) {
   ensureDir(lockFile);
@@ -128,7 +144,30 @@ function tryCreateLock(lockFile, body) {
     return { ok: true };
   } catch (err) {
     if (err.code === 'EEXIST') {
-      return { ok: false, reason: 'exists' };
+      // Read existing lock body so the caller can apply PID-liveness logic.
+      let raw;
+      try {
+        raw = fs.readFileSync(lockFile, 'utf8');
+      } catch (readErr) {
+        // ENOENT here means the file was unlinked between linkSync EEXIST
+        // and our read — i.e., a concurrent release-then-acquire race. We
+        // are the loser; defer to the next poll iteration. Do NOT override.
+        if (readErr.code === 'ENOENT') {
+          return { ok: false, reason: 'vanished' };
+        }
+        return { ok: false, reason: 'fs-error', error: readErr.message };
+      }
+
+      let existingLock = null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          existingLock = parsed;
+        }
+      } catch {
+        // Parseable read but unparseable contents — treat as stale (existingLock=null).
+      }
+      return { ok: false, reason: 'exists', existingLock };
     }
     return { ok: false, reason: 'fs-error', error: err.message };
   } finally {
@@ -137,12 +176,41 @@ function tryCreateLock(lockFile, body) {
 }
 
 /**
+ * Atomically replace an existing lock file via tmp + renameSync.
+ * Used only on the stale-override path where the existing lock is known dead.
+ *
+ * Mirrors session-lock.mjs § replaceStateLockAtomic.
+ *
+ * @param {string} lockFile
+ * @param {object} body — lock body to serialize
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error?: string }}
+ */
+function replaceLockAtomic(lockFile, body) {
+  try {
+    ensureDir(lockFile);
+    const tmpSuffix = crypto.randomBytes(6).toString('hex');
+    const tmpFile = path.join(path.dirname(lockFile), `.proposals-write.lock.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(body), 'utf8');
+    fs.renameSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
  * Acquire the proposals write-lock via spin-poll.
  * Returns when the lock is acquired, or after timeoutMs.
  *
+ * Stale-lock detection (#543 H2 — mirrors session-lock.mjs § tryAcquireStateLock):
+ *  - On EEXIST with an unparseable body → treat as stale, atomic override + WARN.
+ *  - On EEXIST with a parseable body whose host matches AND pid is dead →
+ *    treat as stale, atomic override + WARN to stderr.
+ *  - On EEXIST with a live PID, OR a cross-host body → continue polling.
+ *
  * @param {string} lockFile
  * @param {number} timeoutMs
- * @returns {{ ok: true } | { ok: false, reason: 'timeout' | 'fs-error', error?: string }}
+ * @returns {Promise<{ ok: true } | { ok: false, reason: 'timeout' | 'fs-error', error?: string }>}
  */
 async function acquireProposalsLock(lockFile, timeoutMs) {
   const body = {
@@ -156,6 +224,47 @@ async function acquireProposalsLock(lockFile, timeoutMs) {
     const result = tryCreateLock(lockFile, body);
     if (result.ok) return { ok: true };
     if (result.reason === 'fs-error') return result;
+
+    // result.reason === 'vanished' — lock file was unlinked between our EEXIST
+    // and our read. Concurrent release race; defer to the next poll iteration.
+    // CRITICAL: do NOT call replaceLockAtomic here — a concurrent acquirer may
+    // have already taken the freshly-vacant lock, and overriding would create
+    // a double-holder race (regression of the C9 8-worker test).
+    if (result.reason === 'vanished') {
+      if (Date.now() >= deadline) {
+        return { ok: false, reason: 'timeout', error: 'lock-timeout' };
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+      continue;
+    }
+
+    // result.reason === 'exists' — inspect for staleness.
+    const existing = result.existingLock;
+
+    // Unparseable existing lock — treat as stale and override.
+    if (existing === null) {
+      process.stderr.write(
+        '⚠ memory-proposals lock: stale lock detected (unparseable body) — reclaiming\n'
+      );
+      const writeResult = replaceLockAtomic(lockFile, body);
+      if (writeResult.ok) return { ok: true };
+      if (writeResult.reason === 'fs-error') return writeResult;
+    } else {
+      // Parseable existing lock — same-host AND dead PID → stale override.
+      const sameHost =
+        typeof existing.host === 'string' && existing.host === os.hostname();
+      const pidIsNumber = typeof existing.pid === 'number';
+      const pidDead = sameHost && pidIsNumber && isPidAlive(existing.pid) === false;
+
+      if (pidDead) {
+        process.stderr.write(
+          `⚠ memory-proposals lock: stale lock detected (pid=${existing.pid}, host=${existing.host}) — reclaiming\n`
+        );
+        const writeResult = replaceLockAtomic(lockFile, body);
+        if (writeResult.ok) return { ok: true };
+        if (writeResult.reason === 'fs-error') return writeResult;
+      }
+    }
 
     if (Date.now() >= deadline) {
       return { ok: false, reason: 'timeout', error: 'lock-timeout' };

@@ -52,7 +52,7 @@ export const STATE_LOCK_POLL_MS = 100;
  * @param {number} pid
  * @returns {boolean}
  */
-function isPidAlive(pid) {
+export function isPidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;

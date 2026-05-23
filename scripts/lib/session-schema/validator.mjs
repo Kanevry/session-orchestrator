@@ -20,11 +20,23 @@ import {
 } from './constants.mjs';
 
 // ---------------------------------------------------------------------------
-// Module-private enums
+// Module-private enums + regex
 // ---------------------------------------------------------------------------
 
 /** Valid values for the optional `expected_cost_tier` field (ADR-364). */
 const EXPECTED_COST_TIERS = Object.freeze(['quick', 'standard', 'deep']);
+
+/**
+ * Canonical ISO-8601 UTC timestamp regex — accepts `YYYY-MM-DDTHH:MM:SSZ`
+ * and `YYYY-MM-DDTHH:MM:SS.SSSZ` (exactly 3 fractional digits).
+ *
+ * Issue #540 defense-in-depth layer (b): block malformed timestamp strings
+ * that `Date.parse` accepts as NaN OR (worse) accepts as valid but
+ * non-canonical (e.g. `.3NZ`, `.3Z`, `.300000Z`). The strict regex closes
+ * the gap left by `Date.parse` alone, which returned NaN for `.3NZ` in some
+ * inputs and silently coerced others.
+ */
+const ISO_8601_UTC_MS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
 // ---------------------------------------------------------------------------
 // Error class
@@ -94,12 +106,26 @@ function _validateTimestamps(entry) {
   if (Number.isNaN(startedMs)) {
     throw new ValidationError(`started_at is not a parsable timestamp: ${entry.started_at}`);
   }
+  // Issue #540 defense-in-depth layer (b): strict canonical ISO-8601 UTC
+  // format guard. `Date.parse` alone accepted malformed inputs like `.3NZ`
+  // as NaN, but the failure mode is the same as a non-canonical accepted
+  // shape. Require explicit `YYYY-MM-DDTHH:MM:SS[.SSS]Z`.
+  if (!ISO_8601_UTC_MS_RE.test(entry.started_at)) {
+    throw new ValidationError(
+      `started_at must match ISO-8601 UTC ms format (YYYY-MM-DDTHH:MM:SS[.SSS]Z), got: ${entry.started_at}`
+    );
+  }
   if (typeof entry.completed_at !== 'string') {
     throw new ValidationError('completed_at must be an ISO timestamp string');
   }
   const completedMs = Date.parse(entry.completed_at);
   if (Number.isNaN(completedMs)) {
     throw new ValidationError(`completed_at is not a parsable timestamp: ${entry.completed_at}`);
+  }
+  if (!ISO_8601_UTC_MS_RE.test(entry.completed_at)) {
+    throw new ValidationError(
+      `completed_at must match ISO-8601 UTC ms format (YYYY-MM-DDTHH:MM:SS[.SSS]Z), got: ${entry.completed_at}`
+    );
   }
   if (completedMs < startedMs) {
     throw new ValidationError(
@@ -247,6 +273,14 @@ function _validateOptionalFields(entry) {
     if (Number.isNaN(Date.parse(entry.lease_acquired_at))) {
       throw new ValidationError(
         `lease_acquired_at is not a parsable timestamp: ${entry.lease_acquired_at}`
+      );
+    }
+    // Issue #540 defense-in-depth layer (b): strict canonical guard for the
+    // ADR-364 optional lease timestamp. Matches the `started_at` / `completed_at`
+    // policy enforced above.
+    if (!ISO_8601_UTC_MS_RE.test(entry.lease_acquired_at)) {
+      throw new ValidationError(
+        `lease_acquired_at must match ISO-8601 UTC ms format (YYYY-MM-DDTHH:MM:SS[.SSS]Z), got: ${entry.lease_acquired_at}`
       );
     }
   }

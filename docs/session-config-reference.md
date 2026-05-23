@@ -388,10 +388,10 @@ memory:
 
 ### Agent CLI invocation
 
-Agents call the CLI with five required flags:
+Agents call the CLI with five required flags **and must set `SO_WAVE_AGENT=1`** in the environment:
 
 ```bash
-node scripts/memory-propose.mjs \
+SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
   --type learning \
   --subject "vault-mirror BATS test ordering" \
   --insight "BATS test files must be sourced before harness fixtures load the fnmatch shim." \
@@ -399,17 +399,19 @@ node scripts/memory-propose.mjs \
   --confidence 0.85
 ```
 
+**Wave-executor dispatch**: the boilerplate prompt in `skills/wave-executor/SKILL.md` sets `SO_WAVE_AGENT=1` automatically for every dispatched agent. Direct CLI invocation from the coordinator thread or outside a wave-executor agent context will exit `3` (`rejected-wrong-context`) because the env-var is absent. This is intentional — the guard prevents accidental coordinator-context invocations. Use `/evolve` instead when proposing learnings from the coordinator level (#543 H3).
+
 `--type` accepts one of the `PROPOSAL_TYPES` enum values (mirrored from the learnings schema): `mode-selector-accuracy`, `hardware-pattern`, `fragile-file`, `effective-sizing`, `recurring-issue`, `workflow-pattern`, `proven-pattern`, `anti-pattern`, `autopilot-effectiveness`. Strings with embedded quotes must be shell-escaped per usual conventions. The CLI appends one JSONL line to `.orchestrator/metrics/proposals.jsonl` (atomic via O_APPEND under the `.orchestrator/metrics/proposals-write.lock` mutex) and updates a per-wave summary at `.orchestrator/metrics/proposals-summary-<wave-id>.json` (counters: queued / dropped / below_floor / fs_error). The coordinator surfaces both files at session-end Phase 3.6.3 to render the AUQ multiSelect; approved entries promote into `.orchestrator/metrics/learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`; rejected entries archive to `.orchestrator/proposals.rejected.log`. Privacy: `proposed_by_agent` is captured in the audit hook (`events.jsonl`) only and is stripped before promotion to learnings.jsonl.
 
 ### Exit codes
 
-| Exit code | Meaning | Triggered by |
-|-----------|---------|--------------|
-| `0` | Queued | Proposal accepted into the per-wave staging directory; awaits operator confirmation at session-end Phase 3.6.3. |
-| `1` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. |
-| `2` | Rejected — low confidence | `--confidence` argument is below `confidence-floor`. Tighten the insight or raise the confidence (operator can still tune the floor). |
-| `3` | Rejected — wrong context | Feature disabled (`enabled: false`) or call originated outside a recognised wave-executor context (e.g., from main coordinator thread, where `/evolve` is the right path instead). |
-| `4` | Arg error | Missing or malformed flag — invalid `--type`, empty `--subject`, non-numeric `--confidence`. The CLI prints a one-line usage message on stderr. |
+| Exit code | stdout `status` | Meaning | Triggered by |
+|-----------|-----------------|---------|--------------|
+| `0` | `queued` | Queued | Proposal accepted into the per-wave staging directory; awaits operator confirmation at session-end Phase 3.6.3. |
+| `1` | `quota-exceeded` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. |
+| `2` | `rejected-low-confidence` | Rejected — low confidence | `--confidence` argument is below `confidence-floor`. Tighten the insight or raise the confidence (operator can still tune the floor). |
+| `3` | `rejected-wrong-context` | Rejected — wrong context | Feature disabled (`enabled: false`), STATE.md not active, or `SO_WAVE_AGENT != "1"` (call originated outside a wave-executor agent context). |
+| `4` | `error` | Arg error | Missing or malformed flag — invalid `--type`, empty `--subject`, non-numeric `--confidence`. The CLI prints a one-line usage message on stderr. |
 
 The call-site (agent prompt) is expected to handle exit codes `1`, `2`, `3` gracefully — they are anticipated outcomes, not errors. Only exit code `4` indicates a bug in the agent's invocation.
 

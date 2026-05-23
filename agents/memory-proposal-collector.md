@@ -48,8 +48,11 @@ If any condition fails, the coordinator emits a single info-line
 
 ```js
 import { collectProposals } from '../scripts/lib/memory-proposals/collector.mjs';
-const { queue, sessionId } = await collectProposals({ repoRoot });
+const { queue, stats, perWaveSummaries } = await collectProposals({ repoRoot });
 ```
+
+> **Note:** `sessionId` is supplied by the coordinator at the call site (e.g., read from
+> STATE.md frontmatter); it is NOT returned by `collectProposals`.
 
 `collectProposals()` reads `.orchestrator/metrics/proposals.jsonl`, parses each line as a
 `ProposalRecord`, and returns them in **FIFO order** (insertion order, not sorted by
@@ -90,6 +93,10 @@ After all batches are resolved:
 ```js
 import { writeApproved, archiveRejected, clearProposalsJsonl }
   from '../scripts/lib/memory-proposals/sink.mjs';
+
+// sessionId is read by the coordinator from STATE.md frontmatter (e.g. session_id field),
+// NOT returned by collectProposals — see Step 1 note above.
+const sessionId = parseStateMd(repoRoot).session_id;
 
 await sink.writeApproved({ approved, repoRoot, sessionId });
 await sink.archiveRejected({ rejected, repoRoot, reason: 'user-declined' });
@@ -178,7 +185,7 @@ Proposals whose label appears in the selection are passed to `sink.writeApproved
 1. Converts each `ProposalRecord` to a `LearningRecord` (strips proposal-specific fields,
    keeps `type`, `subject`, `insight`, `evidence`, `confidence`, `tags`).
 2. Appends `_provenance: "agent-proposed@<wave-id>"` to each record (the `wave-id` comes from
-   the `sessionId` resolved by `collectProposals()`).
+   the `sessionId` supplied by the coordinator from STATE.md frontmatter — see Step 1 note).
 3. Appends to `.orchestrator/metrics/learnings.jsonl` using the same atomic-append pattern
    used by the `evolve` skill.
 

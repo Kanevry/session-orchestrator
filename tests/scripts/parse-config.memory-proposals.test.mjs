@@ -1,13 +1,21 @@
 /**
  * tests/scripts/parse-config.memory-proposals.test.mjs
  *
- * Vitest suite: parse-config.mjs correctly parses the `memory.proposals.*`
- * sub-block (issue #501, F2.1).
+ * E2E smoke tests for memory.proposals after the M1 refactor that moved
+ * the parser from parse-config.mjs into scripts/lib/config/memory.mjs
+ * (issue #544).
  *
- * Test surface: run `node scripts/parse-config.mjs` against fixture CLAUDE.md
- * files written to a tmp directory, parse stdout JSON, assert on
- * `result.memory.proposals.*`.  Uses `SO_SKIP_CONFIG_VALIDATION=1` so the
- * validator gate does not interact with minimal fixture files.
+ * The unit-test surface for `_parseMemory` lives in
+ * tests/lib/config/memory.test.mjs.  This file keeps only two checks that
+ * are valuable at the script-pipeline level:
+ *
+ *   1. Contract test — the parse-config.mjs JSON output exposes the
+ *      memory.proposals shape via parseSessionConfig (refactor parity).
+ *
+ *   2. Outer-validator interaction — the flat-KV validator at the
+ *      coercers layer rejects quoted boolean `'false'` for any `enabled`
+ *      key with exit code 1.  This exercise lives at the script level
+ *      because the validator runs as a subprocess gate after parsing.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -62,85 +70,49 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 1: absent memory.proposals block → all three defaults returned
+// Contract test: parseSessionConfig output exposes memory.proposals shape
+// after the M1 refactor moved the parser into config/memory.mjs.
 // ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals defaults', () => {
-  it('returns enabled=true when memory.proposals block is absent', () => {
+describe('parse-config.mjs — memory.proposals contract shape (post-#544 refactor)', () => {
+  it('memory.proposals has exactly enabled, quota-per-wave, confidence-floor keys', () => {
     const result = runParseConfig(sandbox, BASE_CONFIG);
-    expect(result.memory.proposals.enabled).toBe(true);
+    const keys = Object.keys(result.memory.proposals).sort();
+    expect(keys).toEqual(['confidence-floor', 'enabled', 'quota-per-wave']);
   });
 
-  it('returns quota-per-wave=5 when memory.proposals block is absent', () => {
+  it('returns the canonical default {enabled:true, quota-per-wave:5, confidence-floor:0.5}', () => {
     const result = runParseConfig(sandbox, BASE_CONFIG);
-    expect(result.memory.proposals['quota-per-wave']).toBe(5);
+    expect(result.memory.proposals).toEqual({
+      enabled: true,
+      'quota-per-wave': 5,
+      'confidence-floor': 0.5,
+    });
   });
 
-  it('returns confidence-floor=0.5 when memory.proposals block is absent', () => {
-    const result = runParseConfig(sandbox, BASE_CONFIG);
-    expect(result.memory.proposals['confidence-floor']).toBe(0.5);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Case 2: enabled: false → enabled=false, quota/floor still default
-// ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals enabled: false', () => {
-  const CONTENT = `${BASE_CONFIG}
+  it('memory.banner and memory.proposals coexist after parseSessionConfig', () => {
+    const content = `${BASE_CONFIG}
 memory:
-  proposals:
+  banner:
     enabled: false
-`;
-
-  it('returns enabled=false when explicitly set to false', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals.enabled).toBe(false);
-  });
-
-  it('still returns quota-per-wave=5 when enabled is false', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['quota-per-wave']).toBe(5);
-  });
-
-  it('still returns confidence-floor=0.5 when enabled is false', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['confidence-floor']).toBe(0.5);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Case 3: explicit quota-per-wave and confidence-floor values returned
-// ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals explicit values', () => {
-  const CONTENT = `${BASE_CONFIG}
-memory:
   proposals:
     enabled: true
-    quota-per-wave: 10
-    confidence-floor: 0.7
+    quota-per-wave: 8
+    confidence-floor: 0.6
 `;
-
-  it('returns quota-per-wave=10 when explicitly configured', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['quota-per-wave']).toBe(10);
-  });
-
-  it('returns confidence-floor=0.7 when explicitly configured', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['confidence-floor']).toBe(0.7);
-  });
-
-  it('returns enabled=true when explicitly set to true', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals.enabled).toBe(true);
+    const result = runParseConfig(sandbox, content);
+    expect(result.memory).toEqual({
+      banner: { enabled: false },
+      proposals: { enabled: true, 'quota-per-wave': 8, 'confidence-floor': 0.6 },
+    });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Case 4: quoted boolean 'false' → config.mjs rejects with exit 1 (graceful fail)
-//
-// The outer config.mjs parser sees 'false' (with quotes) in the flat KV map
-// and throws "invalid boolean for 'enabled'" before _parseMemoryProposals
-// ever runs.  The correct behavior is a non-zero exit, not silent coercion.
+// Outer-validator interaction: quoted boolean 'false' on `enabled` key is
+// rejected by the flat-KV coercer (config.mjs `_coerceBoolean`) BEFORE the
+// nested memory parser ever runs.  The correct behaviour is a non-zero
+// exit, not silent coercion.  This exercises the parse-config.mjs script
+// pipeline end-to-end.
 // ---------------------------------------------------------------------------
 describe("parse-config.mjs — memory.proposals quoted boolean 'false' is rejected gracefully", () => {
   const CONTENT = `${BASE_CONFIG}
@@ -165,74 +137,6 @@ memory:
       stderrText = err.stderr ?? '';
     }
     expect(threw).toBe(true);
-    expect(stderrText).toContain("invalid boolean");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Case 5: negative quota-per-wave falls back to default 5
-// ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals invalid quota-per-wave', () => {
-  // Negative integer — the parser only accepts /^\d+$/ so "-3" fails and falls back
-  const CONTENT = `${BASE_CONFIG}
-memory:
-  proposals:
-    quota-per-wave: -3
-`;
-
-  it('falls back to quota-per-wave=5 for a negative value', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['quota-per-wave']).toBe(5);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Case 6: coexistence with memory.banner.enabled — both parsed, neither broken
-// ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals coexists with memory.banner', () => {
-  const CONTENT = `${BASE_CONFIG}
-memory:
-  banner:
-    enabled: false
-  proposals:
-    enabled: true
-    quota-per-wave: 8
-    confidence-floor: 0.6
-`;
-
-  it('parses memory.banner.enabled=false without overwriting proposals', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.banner.enabled).toBe(false);
-  });
-
-  it('parses memory.proposals.enabled=true when banner block also present', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals.enabled).toBe(true);
-  });
-
-  it('parses memory.proposals.quota-per-wave=8 when banner block also present', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['quota-per-wave']).toBe(8);
-  });
-
-  it('parses memory.proposals.confidence-floor=0.6 when banner block also present', () => {
-    const result = runParseConfig(sandbox, CONTENT);
-    expect(result.memory.proposals['confidence-floor']).toBe(0.6);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Shape check: memory.proposals is always an object with exactly the 3 keys
-// ---------------------------------------------------------------------------
-describe('parse-config.mjs — memory.proposals object shape', () => {
-  it('memory.proposals has exactly enabled, quota-per-wave, confidence-floor keys', () => {
-    const result = runParseConfig(sandbox, BASE_CONFIG);
-    const keys = Object.keys(result.memory.proposals).sort();
-    expect(keys).toEqual(['confidence-floor', 'enabled', 'quota-per-wave']);
-  });
-
-  it('memory.proposals is present even when memory block is entirely absent', () => {
-    const result = runParseConfig(sandbox, BASE_CONFIG);
-    expect(result.memory).toHaveProperty('proposals');
+    expect(stderrText).toContain('invalid boolean');
   });
 });

@@ -12,17 +12,18 @@
  *
  * All three exported functions:
  *  - Never throw on individual record errors — collect into errors[] and continue.
- *  - Use path-safety guards (isPathInside + realpathSync) on all write targets.
+ *  - Use the canonical two-phase path-safety guard validatePathInsideProject
+ *    (from ../path-utils.mjs) with canonicalizeRoot:true on every write target.
  *  - Use the appendLearning() atomic-append pattern from learnings/io.mjs.
  *
- * Issue: #501 (F2.1 Memory-Proposals)
+ * Issue: #501 (F2.1 Memory-Proposals); #544 M3 (path-utils canonicalization).
  */
 
 import { appendFile, mkdir } from 'node:fs/promises';
-import { realpathSync, existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { appendLearning } from '../learnings/io.mjs';
-import { isPathInside } from '../path-utils.mjs';
+import { validatePathInsideProject } from '../path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -35,61 +36,6 @@ const REJECTED_LOG_REL = path.join('.orchestrator', 'proposals.rejected.log');
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve a repo-relative path and validate it is inside repoRoot.
- * Returns the resolved absolute path on success.
- * Throws if the resolved path escapes repoRoot (path-traversal guard).
- *
- * Uses realpathSync when the path already exists (symlink-escape check),
- * falls back to path.resolve when the path does not yet exist (ENOENT case).
- *
- * @param {string} repoRoot - absolute project root
- * @param {string} relPath  - path relative to repoRoot
- * @returns {string} resolved absolute path (safe)
- */
-function _resolveAndValidate(repoRoot, relPath) {
-  // Canonicalize repoRoot first so symlink-aware comparisons work on macOS
-  // (where /var/... realpath-resolves to /private/var/...). Without this,
-  // isPathInside rejects valid tmpdir paths whose canonical form differs
-  // from the lexical form passed in.
-  let canonicalRoot = repoRoot;
-  if (existsSync(repoRoot)) {
-    try {
-      canonicalRoot = realpathSync(repoRoot);
-    } catch {
-      // Best-effort — fall back to lexical repoRoot if realpath fails.
-    }
-  }
-
-  const resolved = path.resolve(canonicalRoot, relPath);
-
-  // Lexical path-traversal guard (covers ../ and absolute-escape attacks)
-  if (!isPathInside(resolved, canonicalRoot)) {
-    throw new Error(
-      `[sink] path-safety violation: resolved path escapes repoRoot (${relPath})`
-    );
-  }
-
-  // Symlink-escape guard: only when path already exists
-  if (existsSync(resolved)) {
-    let real;
-    try {
-      real = realpathSync(resolved);
-    } catch {
-      // realpathSync should not throw on an existing path, but be defensive
-      return resolved;
-    }
-    if (!isPathInside(real, canonicalRoot)) {
-      throw new Error(
-        `[sink] path-safety violation: realpath escapes repoRoot (${relPath})`
-      );
-    }
-    return real;
-  }
-
-  return resolved;
-}
 
 /**
  * Build a learning record from an approved proposal.
@@ -156,12 +102,11 @@ export async function writeApproved({ approved, repoRoot, sessionId }) {
     return { written: 0, errors: [] };
   }
 
-  let learningsPath;
-  try {
-    learningsPath = _resolveAndValidate(repoRoot, LEARNINGS_REL);
-  } catch (err) {
-    return { written: 0, errors: [`path-safety: ${err.message}`] };
+  const learningsResult = validatePathInsideProject(LEARNINGS_REL, repoRoot, { canonicalizeRoot: true });
+  if (!learningsResult.ok) {
+    return { written: 0, errors: [`path-safety: ${learningsResult.reason} (${LEARNINGS_REL})`] };
   }
+  const learningsPath = learningsResult.realPath ?? learningsResult.lexicalPath;
 
   for (const proposal of approved) {
     try {
@@ -200,12 +145,11 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
     return { archived: 0, errors: [] };
   }
 
-  let rejectedLogPath;
-  try {
-    rejectedLogPath = _resolveAndValidate(repoRoot, REJECTED_LOG_REL);
-  } catch (err) {
-    return { archived: 0, errors: [`path-safety: ${err.message}`] };
+  const rejectedResult = validatePathInsideProject(REJECTED_LOG_REL, repoRoot, { canonicalizeRoot: true });
+  if (!rejectedResult.ok) {
+    return { archived: 0, errors: [`path-safety: ${rejectedResult.reason} (${REJECTED_LOG_REL})`] };
   }
+  const rejectedLogPath = rejectedResult.realPath ?? rejectedResult.lexicalPath;
 
   // Ensure parent directory exists
   try {
@@ -249,12 +193,11 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  * @returns {Promise<{ cleared: boolean }>}
  */
 export async function clearProposalsJsonl({ repoRoot }) {
-  let proposalsPath;
-  try {
-    proposalsPath = _resolveAndValidate(repoRoot, PROPOSALS_REL);
-  } catch {
+  const proposalsResult = validatePathInsideProject(PROPOSALS_REL, repoRoot, { canonicalizeRoot: true });
+  if (!proposalsResult.ok) {
     return { cleared: false };
   }
+  const proposalsPath = proposalsResult.realPath ?? proposalsResult.lexicalPath;
 
   try {
     // Ensure parent directory exists before truncate/create

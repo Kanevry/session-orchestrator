@@ -754,4 +754,31 @@ describe('readBannerInputs contract', () => {
     expect(result.peerExcerpts.user).toEqual(['Background', 'I am here']);
     expect(result.peerExcerpts.agent).toBe(null);
   });
+
+  // ---------------------------------------------------------------------------
+  // G1 (#541) — daysSinceCleanup clock-skew clamp (memory-banner.mjs:375)
+  //
+  // Production code: `daysSinceCleanup = Math.max(0, Math.floor(deltaMs / 86_400_000))`
+  // Falsification: removing `Math.max(0, ...)` lets a future lastCleanupAt
+  // produce a NEGATIVE day count (e.g. -9). This test asserts === 0 with
+  // hardcoded literals to catch that exact regression.
+  // ---------------------------------------------------------------------------
+
+  it('clamps daysSinceCleanup to 0 when lastCleanupAt is in the future (clock-skew defense)', async () => {
+    vi.mocked(surfaceTopN).mockResolvedValue([]);
+    vi.mocked(readPeerCards).mockResolvedValue({ user: null, agent: null });
+    // lastCleanupAt is 9 days AFTER the injected clock — without the
+    // Math.max clamp, daysSinceCleanup would be -9.
+    vi.mocked(readDreamSignals).mockResolvedValue({
+      lastCleanupAt: '2026-06-01T00:00:00Z',
+    });
+
+    const result = await readBannerInputs({
+      repoRoot: '/some/repo',
+      memoryDir: '/nonexistent/mem',
+      now: new Date('2026-05-23T00:00:00Z'),
+    });
+
+    expect(result.stats.daysSinceCleanup).toBe(0);
+  });
 });

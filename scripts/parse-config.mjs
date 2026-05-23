@@ -20,119 +20,6 @@ import { join, dirname, resolve, parse as parsePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from './lib/config.mjs';
 
-// ---------------------------------------------------------------------------
-// memory.proposals parser (issue #501)
-// Extends the memory object returned by _parseMemory() in config/memory.mjs.
-// Scoped here because scripts/lib/config/memory.mjs is outside this wave's
-// allowed paths — this is the minimal-diff alternative location.
-// ---------------------------------------------------------------------------
-
-/**
- * Parse the `proposals:` sub-block nested inside the top-level `memory:` block.
- *
- * YAML shape expected in CLAUDE.md:
- *   memory:
- *     banner:
- *       enabled: true
- *     proposals:
- *       enabled: true
- *       quota-per-wave: 5
- *       confidence-floor: 0.5
- *
- * Defaults:
- *   proposals.enabled:          true
- *   proposals.quota-per-wave:   5   (integer ≥ 0)
- *   proposals.confidence-floor: 0.5 (float 0.0..1.0)
- *
- * Tolerant: malformed values silently fall back to defaults.
- *
- * @param {string} content — full CLAUDE.md / AGENTS.md content
- * @returns {{ enabled: boolean, 'quota-per-wave': number, 'confidence-floor': number }}
- */
-function _parseMemoryProposals(content) {
-  const defaults = {
-    enabled: true,
-    'quota-per-wave': 5,
-    'confidence-floor': 0.5,
-  };
-
-  const lines = content.split(/\r?\n/);
-  let inMemoryBlock = false;
-  let inProposalsBlock = false;
-  const proposalsLines = [];
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/, '');
-
-    if (!inMemoryBlock) {
-      if (/^memory:\s*$/.test(line)) inMemoryBlock = true;
-      continue;
-    }
-
-    // Exit memory block when we hit a non-indented, non-empty line
-    if (line.length > 0 && !/^\s/.test(line)) break;
-
-    if (!inProposalsBlock) {
-      // Detect `  proposals:` sub-block header (exactly 2-space indent, matches memory.mjs convention)
-      if (/^\s{2}proposals:\s*$/.test(line)) {
-        inProposalsBlock = true;
-      }
-      continue;
-    }
-
-    // Exit proposals sub-block when we hit a 2-space sibling key (not 4-space child)
-    if (/^\s{2}[a-zA-Z_-]+:/.test(line) && !/^\s{4}/.test(line)) break;
-
-    proposalsLines.push(line);
-  }
-
-  if (proposalsLines.length === 0) return defaults;
-
-  let enabled = true;
-  let quotaPerWave = 5;
-  let confidenceFloor = 0.5;
-
-  for (const rawLine of proposalsLines) {
-    // Strip inline comments and trailing whitespace
-    const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
-    if (!clean.trim()) continue;
-
-    const kvMatch = clean.match(/^\s+([a-zA-Z_-]+):\s*(.*)/);
-    if (!kvMatch) continue;
-
-    const k = kvMatch[1];
-    let v = kvMatch[2].trim();
-    // Strip surrounding quotes (matches memory.mjs and cold-start.mjs quote-stripping behaviour)
-    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
-    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
-
-    switch (k) {
-      case 'enabled':
-        // Default is true → only flip to false on explicit "false"
-        enabled = v.toLowerCase() !== 'false';
-        break;
-      case 'quota-per-wave': {
-        if (/^\d+$/.test(v)) {
-          const n = parseInt(v, 10);
-          if (n >= 0) quotaPerWave = n;
-        }
-        break;
-      }
-      case 'confidence-floor': {
-        const f = parseFloat(v);
-        if (!isNaN(f) && f >= 0.0 && f <= 1.0) confidenceFloor = f;
-        break;
-      }
-    }
-  }
-
-  return {
-    enabled,
-    'quota-per-wave': quotaPerWave,
-    'confidence-floor': confidenceFloor,
-  };
-}
-
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
@@ -220,14 +107,6 @@ try {
   process.stderr.write(`parse-config.mjs: Parse error: ${err.message}\n`);
   process.exit(1);
 }
-
-// Extend memory with proposals sub-block (issue #501).
-// _parseMemory (in config/memory.mjs) only returns { banner: { enabled } };
-// proposals are appended here to avoid touching the out-of-scope memory.mjs.
-config.memory = {
-  ...config.memory,
-  proposals: _parseMemoryProposals(content),
-};
 
 // jq -n produces pretty-printed JSON without a trailing newline — match that format
 const assembledJson = JSON.stringify(config, null, 2);
