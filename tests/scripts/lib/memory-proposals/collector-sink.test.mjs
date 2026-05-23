@@ -659,6 +659,62 @@ describe('collector-sink integration (#501 F2.1)', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // #549 G2 — privacy contract: proposed_by_agent strip on writeApproved
+  //
+  // sink.mjs:62-63 destructures `proposed_by_agent` out of the proposal before
+  // building the learning record:
+  //     const { proposed_by_agent: _strip, ...base } = proposal;
+  // This is a privacy-by-design invariant — agent IDs identify which agent
+  // proposed which insight, and that detail must not propagate downstream to
+  // learnings consumers. If the destructure or the strip is reverted, this
+  // test MUST fail.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#549 G2 — writeApproved privacy contract: strips proposed_by_agent', () => {
+    it('strips proposed_by_agent from the learnings.jsonl row (privacy contract)', async () => {
+      // Seed a proposal carrying an explicit agent identifier. The factory
+      // attaches `proposed_by_agent` (snake_case) onto the record only when
+      // `proposedByAgent` (camelCase) is supplied — schema.mjs:112-114.
+      const record = makeRecord({
+        waveId: 'W1',
+        proposedByAgent: 'code-implementer-agent-XYZ-abc123',
+      });
+      await appendProposal({ record, repoRoot: tmpRepo, waveId: 'W1' });
+
+      // Sanity: the proposed_by_agent field actually exists on the queued
+      // proposal — otherwise the strip below is testing nothing.
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      expect(proposals[0].proposed_by_agent).toBe('code-implementer-agent-XYZ-abc123');
+
+      // Promote the proposal — sink.mjs:62-63 must strip proposed_by_agent.
+      const { written, errors } = await writeApproved({
+        approved: [proposals[0]],
+        repoRoot: tmpRepo,
+        sessionId: SESSION_ID,
+      });
+      expect(errors).toHaveLength(0);
+      expect(written).toBe(1);
+
+      const learnings = readJsonlLines(learningsJsonlPath);
+      expect(learnings).toHaveLength(1);
+      const row = learnings[0];
+
+      // FALSIFICATION: if sink.mjs:62-63 were reverted (destructure or rest
+      // spread removed), `proposed_by_agent` would propagate untouched into
+      // the learning row and `'proposed_by_agent' in row` would be `true`.
+      // Using the `in` operator (not toBeUndefined) catches both "property
+      // present with value undefined" and "property present with any value".
+      expect('proposed_by_agent' in row).toBe(false);
+
+      // Sanity: other fields from the proposal ARE preserved through the
+      // rest spread (...base) — proves the strip is targeted, not a wipe.
+      expect(row.subject).toBe('use parallel agents for independent subtasks');
+      expect(row.wave_id).toBe('W1');
+      expect(row.confidence).toBe(0.85);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // #545 C2 — path-safety negative tests
   //
   // The sink delegates path validation to validatePathInsideProject (path-utils.mjs)

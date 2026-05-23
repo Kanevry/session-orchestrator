@@ -28,3 +28,7 @@ node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplev
 }
 
 npx lint-staged
+
+# PSA-004 sub-mode B: commit-time wave-scope guard (runs AFTER lint-staged
+# re-stages files). See .claude/rules/parallel-sessions.md and #495.
+node hooks/wave-scope-commit-guard.mjs || exit 1

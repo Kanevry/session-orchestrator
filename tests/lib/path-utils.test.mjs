@@ -7,10 +7,25 @@
  * Issue #130 — Wave 4 (Quality) of v3.0.0 migration.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
-import fs from 'node:fs';
+// Namespace import (not default) so vi.spyOn(fs, 'realpathSync') in the
+// canonicalizeRoot describe block can modify the same module namespace
+// object the SUT's named import is live-bound to (#549 G1).
+import * as fs from 'node:fs';
+
+// vi.mock('node:fs', ...) is hoisted by vitest BEFORE the SUT import below.
+// Returning { ...actual } is a passthrough (no behaviour change for the
+// existing tests), but it enables vi.spyOn(fs, 'realpathSync') in the
+// canonicalizeRoot describe block to override the SUT's named import via
+// the ES module live binding. See tests/lib/vault-mirror/process.test.mjs
+// for the same pattern (#549 G1, post-W3-P2 contract).
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual('node:fs');
+  return { ...actual };
+});
+
 import {
   isPathInside,
   relativeFromRoot,
@@ -465,4 +480,186 @@ describe('validatePathInsideProject — Phase 1 lexical + Phase 2 realpath guard
       expect(result.realPath).toBe(targetFile);
     },
   );
+});
+
+// ── validatePathInsideProject — opts.canonicalizeRoot (#549 G1) ─────────────
+//
+// Verifies the POST-W3-P2 contract of the opt-in `canonicalizeRoot: true`
+// branch (scripts/lib/path-utils.mjs:191-200). W3-P2 removed the existsSync
+// precheck (TOCTOU race) and narrowed the catch to ENOENT/EACCES only —
+// other errors propagate.
+//
+// Each test asserts behaviour against the current implementation; if any of
+// these assertions fail after a refactor, the canonicalizeRoot contract has
+// silently changed and must be re-reviewed.
+
+describe('validatePathInsideProject — opts.canonicalizeRoot (#549 G1)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // G1.1 — root does not exist, descendant input → fall through to lexical
+  // After W3-P2: realpathSync(root) throws ENOENT → caught (narrowed to
+  // ENOENT/EACCES) → effectiveRoot = root (original) → Phase 1 lexical check
+  // passes for descendant input → Phase 2 realpathSync(lexicalPath) also
+  // throws ENOENT (path doesn't exist) → swallowed → ok=true, realPath=undefined.
+  //
+  // Falsification: if the W3-P2 catch were removed or narrowed to exclude
+  // ENOENT, the function would throw and this test would crash before the
+  // assertion. The spy further asserts the SUT actually invoked the
+  // canonicalize branch (vs silently skipping it), preventing a "result
+  // matches by accident" pass.
+  it('root not existing + canonicalizeRoot:true: descendant input returns ok=true with lexical fallback', () => {
+    // Deliberately non-existent root path — guarantees ENOENT on realpathSync.
+    const nonExistentRoot = path.join(os.tmpdir(), `g1-nonexistent-root-${Date.now()}-${process.pid}-xyz`);
+    // Belt-and-suspenders: confirm the path truly doesn't exist before the call.
+    expect(fs.existsSync(nonExistentRoot)).toBe(false);
+
+    // Spy without overriding behaviour: realpathSync(nonExistentRoot) will
+    // naturally throw ENOENT. We only need to OBSERVE that it was called
+    // with the root path (proving the canonicalize branch ran).
+    const realpathSpy = vi.spyOn(fs, 'realpathSync');
+
+    const result = validatePathInsideProject('subdir/file.txt', nonExistentRoot, {
+      canonicalizeRoot: true,
+    });
+
+    // Exact shape — no over-generous toBeTruthy.
+    expect(result).toEqual({
+      ok: true,
+      realPath: undefined,
+      lexicalPath: path.resolve(nonExistentRoot, 'subdir/file.txt'),
+    });
+    // Falsification: the canonicalize branch must have called realpathSync
+    // with the root path. If the branch were skipped (e.g., gate broken to
+    // `false`), realpathSync would be called only ONCE (Phase 2 against
+    // lexicalPath), not twice.
+    expect(realpathSpy).toHaveBeenCalledTimes(2);
+    expect(realpathSpy.mock.calls[0][0]).toBe(nonExistentRoot);
+    expect(realpathSpy.mock.calls[1][0]).toBe(path.resolve(nonExistentRoot, 'subdir/file.txt'));
+  });
+
+  // G1.2 — EACCES on realpathSync(root) → fall back to lexical root
+  // Mock realpathSync so the FIRST call (for root) throws EACCES. W3-P2's
+  // narrowed catch covers ENOENT and EACCES — the function must NOT throw;
+  // it must fall back to using the original root for Phase 1.
+  // The SECOND call (for lexicalPath in Phase 2) throws ENOENT, which the
+  // Phase 2 catch swallows → ok=true, realPath=undefined.
+  it('EACCES on realpathSync(root): falls back to lexical, returns ok=true (no throw)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'g1-eacces-'));
+    const realTmp = fs.realpathSync(tmpDir);
+    const expectedLexicalPath = path.resolve(realTmp, 'subdir/file.txt');
+
+    const calls = [];
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation((p) => {
+      calls.push(p);
+      // First call is for root (canonicalize branch) — throw EACCES.
+      if (calls.length === 1) {
+        const err = new Error('mock EACCES on root');
+        err.code = 'EACCES';
+        throw err;
+      }
+      // Subsequent call (Phase 2 against lexicalPath) — throw ENOENT so
+      // Phase 2's catch swallows it.
+      const err = new Error('mock ENOENT on lexicalPath');
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = validatePathInsideProject('subdir/file.txt', realTmp, {
+      canonicalizeRoot: true,
+    });
+
+    // Result-shape assertions: function did NOT throw, returned the
+    // lexical-fallback success envelope.
+    expect(result).toEqual({
+      ok: true,
+      realPath: undefined,
+      lexicalPath: expectedLexicalPath,
+    });
+    // Falsification: the SUT must have CALLED realpathSync exactly twice —
+    // once for root (with EACCES) and once for lexicalPath (with ENOENT).
+    // If the canonicalize branch were skipped or the EACCES catch removed,
+    // call count and call args would differ.
+    expect(realpathSpy).toHaveBeenCalledTimes(2);
+    expect(calls[0]).toBe(realTmp);
+    expect(calls[1]).toBe(expectedLexicalPath);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // G1.3 — default (canonicalizeRoot omitted) is byte-identical to
+  // canonicalizeRoot:false. Strict `=== true` gate means anything else is
+  // legacy behaviour.
+  // Use a non-existent root so the SUT's path through Phase 1/Phase 2 is
+  // deterministic and the comparison covers all returned fields.
+  it('default (canonicalizeRoot omitted) deep-equals canonicalizeRoot:false', () => {
+    const nonExistentRoot = path.join(os.tmpdir(), `g1-default-vs-false-${Date.now()}-${process.pid}-xyz`);
+    expect(fs.existsSync(nonExistentRoot)).toBe(false);
+
+    const omitted = validatePathInsideProject('subdir/file.txt', nonExistentRoot);
+    const explicitFalse = validatePathInsideProject('subdir/file.txt', nonExistentRoot, {
+      canonicalizeRoot: false,
+    });
+
+    // Deep-equal across the full returned shape (ok + realPath + lexicalPath).
+    expect(omitted).toEqual(explicitFalse);
+    // Pin the exact shape so a future refactor that drops realPath or
+    // lexicalPath cannot silently slip past the deep-equal check above.
+    expect(omitted).toEqual({
+      ok: true,
+      realPath: undefined,
+      lexicalPath: path.resolve(nonExistentRoot, 'subdir/file.txt'),
+    });
+  });
+
+  // G1.4 — non-boolean truthy values do NOT trigger the canonicalize branch.
+  // The SUT uses strict `opts.canonicalizeRoot === true` (path-utils.mjs:191).
+  // Passing `'yes'` or `1` must behave identically to omitting the option.
+  //
+  // The falsifying scenario: if the SUT were changed to `opts.canonicalizeRoot`
+  // (loose truthy check), the spy below would be called with the root path
+  // and would throw — but with the strict check it must NOT be called for
+  // these inputs (only Phase 2's call against lexicalPath should occur).
+  it('non-boolean truthy canonicalizeRoot does NOT trigger canonicalize branch', () => {
+    // Non-existent root: Phase 2 realpathSync(lexicalPath) will throw ENOENT
+    // naturally without any mock, so we only need to spy to OBSERVE whether
+    // the canonicalize branch runs (no behaviour replacement needed).
+    const nonExistentRoot = path.join(os.tmpdir(), `g1-truthy-${Date.now()}-${process.pid}-xyz`);
+    expect(fs.existsSync(nonExistentRoot)).toBe(false);
+
+    const realpathSpy = vi.spyOn(fs, 'realpathSync');
+
+    const baseline = validatePathInsideProject('subdir/file.txt', nonExistentRoot); // default
+    const callsAfterBaseline = realpathSpy.mock.calls.length;
+
+    const withStringYes = validatePathInsideProject('subdir/file.txt', nonExistentRoot, {
+      canonicalizeRoot: 'yes',
+    });
+    const callsAfterStringYes = realpathSpy.mock.calls.length;
+
+    const withNumberOne = validatePathInsideProject('subdir/file.txt', nonExistentRoot, {
+      canonicalizeRoot: 1,
+    });
+    const callsAfterNumberOne = realpathSpy.mock.calls.length;
+
+    // All three must be deep-equal — non-boolean truthy must not change the
+    // result shape vs default.
+    expect(withStringYes).toEqual(baseline);
+    expect(withNumberOne).toEqual(baseline);
+    expect(baseline).toEqual({
+      ok: true,
+      realPath: undefined,
+      lexicalPath: path.resolve(nonExistentRoot, 'subdir/file.txt'),
+    });
+
+    // Falsification: each call (default, 'yes', 1) makes exactly ONE
+    // realpathSync invocation — the Phase 2 call against lexicalPath.
+    // If the SUT were `if (opts.canonicalizeRoot)` (loose truthy), the
+    // 'yes' and 1 cases would each invoke realpathSync TWICE (Phase 1b for
+    // root + Phase 2 for lexicalPath), making the deltas 2 each.
+    expect(callsAfterBaseline).toBe(1);
+    expect(callsAfterStringYes - callsAfterBaseline).toBe(1);
+    expect(callsAfterNumberOne - callsAfterStringYes).toBe(1);
+  });
 });

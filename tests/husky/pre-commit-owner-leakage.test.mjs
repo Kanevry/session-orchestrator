@@ -70,9 +70,12 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // Install our pre-commit hook into .git/hooks so `git commit` triggers it
       // (we don't need husky's _ runtime — just the hook body running).
       const hookSrc = readFileSync(HOOK_PATH, 'utf8')
-        // Strip the gitleaks block + lint-staged tail; we test only the owner-leakage stage.
+        // Strip the gitleaks block + lint-staged AND ANY POST-LINT-STAGED BLOCKS;
+        // we test only the owner-leakage stage. Future appended stages
+        // (e.g. PSA-004 sub-mode B commit-guard hook from #495) are also
+        // stripped — they have their own dedicated test files.
         .replace(/if command -v gitleaks[\s\S]*?fi\n\n/, '')
-        .replace(/\nnpx lint-staged\n?$/, '\n');
+        .replace(/\nnpx lint-staged[\s\S]*$/, '\n');
       const hookDst = join(tmpDir, '.git', 'hooks', 'pre-commit');
       writeFileSync(hookDst, hookSrc);
       chmodSync(hookDst, 0o755);

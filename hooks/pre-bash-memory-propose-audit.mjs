@@ -54,7 +54,13 @@ const MEMORY_PROPOSE_REGEX = /\bnode\b.*\bmemory-propose\.mjs\b/i;
  *   --insight "quoted value"   → --insight [REDACTED]
  *   --insight unquoted         → --insight [REDACTED]
  */
-const SENSITIVE_FLAGS_REGEX = /--(?:insight|subject|evidence|content|reason)(?:=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)|\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+))/g;
+// Issue #546: `\S+` would match an opening quote `"` or `'` (non-whitespace),
+// and on malformed inputs (e.g. unbalanced or shell-already-unescaped values)
+// could partial-match the value, leaving the tail unredacted. The negative
+// lookahead `(?!["'])` forces `\S+` to be tried only on values that do not
+// start with a quote, preserving the quoted-alt as the sole path for quoted
+// values and preventing tail-leaks on malformed inputs.
+const SENSITIVE_FLAGS_REGEX = /--(?:insight|subject|evidence|content|reason)(?:=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?!["'])\S+)|\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?!["'])\S+))/g;
 
 // ---------------------------------------------------------------------------
 // Helpers

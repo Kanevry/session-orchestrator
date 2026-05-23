@@ -131,17 +131,52 @@ describe('migrate-vault-paths — default dry-run vs --apply', () => {
     expect(result.stderr).toContain('[applied]');
   });
 
-  it('last-flag-wins: --dry-run after --apply → still writes if --apply is last', () => {
-    // Note: migrate-vault-paths.mjs does NOT have a mutex check on these flags.
-    // The parseArgs loop processes flags in order; the last --apply/--dry-run wins.
-    // We verify this actual behaviour: --dry-run then --apply → applies.
+  // GitLab #509 — Mutex check: --dry-run and --apply share the same `apply`
+  // field. Previously this silently last-wins. The mutex check (mirrors
+  // scripts/migrate-cold-start-seed.mjs:113-116) makes the conflict explicit.
+
+  it('exits 1 with "mutually exclusive" stderr when --dry-run then --apply are passed', () => {
     const repo = mkTmp();
-    const filePath = writeFile(repo, 'CLAUDE.md', `${OLD}Projects/x\n`);
+    writeFile(repo, 'CLAUDE.md', `${OLD}Projects/x\n`);
 
     const result = runScript(['--repos', repo, '--dry-run', '--apply']);
 
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/mutually exclusive/);
+  });
+
+  it('exits 1 with "mutually exclusive" stderr when --apply then --dry-run are passed (order-independent)', () => {
+    const repo = mkTmp();
+    writeFile(repo, 'CLAUDE.md', `${OLD}Projects/x\n`);
+
+    const result = runScript(['--repos', repo, '--apply', '--dry-run']);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/mutually exclusive/);
+  });
+
+  it('--dry-run alone still exits 0 (no regression of single-flag behavior)', () => {
+    const repo = mkTmp();
+    const filePath = writeFile(repo, 'CLAUDE.md', `${OLD}Projects/x\n`);
+
+    const result = runScript(['--repos', repo, '--dry-run']);
+
     expect(result.status).toBe(0);
+    // File untouched in dry-run
+    expect(readFileSync(filePath, 'utf8')).toBe(`${OLD}Projects/x\n`);
+    expect(result.stderr).toContain('[dry-run]');
+  });
+
+  it('--apply alone still exits 0 (no regression of single-flag behavior)', () => {
+    const repo = mkTmp();
+    const filePath = writeFile(repo, 'CLAUDE.md', `${OLD}Projects/x\n`);
+
+    const result = runScript(['--repos', repo, '--apply']);
+
+    expect(result.status).toBe(0);
+    // File rewritten in apply
     expect(readFileSync(filePath, 'utf8')).toBe(`${NEW}Projects/x\n`);
+    expect(result.stderr).toContain('[applied]');
   });
 });
 

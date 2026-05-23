@@ -119,11 +119,18 @@ function parseArgs(argv) {
     to: null,    // null = read from config
   };
 
+  // Mutex tracking: --dry-run and --apply share the same `apply` field;
+  // detect when both are passed and fail loudly (silent last-wins is a
+  // dangerous footgun — see GitLab #509). Mirrors the canonical pattern in
+  // scripts/migrate-cold-start-seed.mjs:113-116.
+  let applyFlag = false;
+  let dryRunFlag = false;
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--help' || a === '-h') out.help = true;
-    else if (a === '--apply') out.apply = true;
-    else if (a === '--dry-run') out.apply = false;
+    else if (a === '--apply') { out.apply = true; applyFlag = true; }
+    else if (a === '--dry-run') { out.apply = false; dryRunFlag = true; }
     else if (a === '--json') out.json = true;
     else if (a === '--repos') {
       const next = args[i + 1];
@@ -154,6 +161,12 @@ function parseArgs(argv) {
       process.exit(1);
     }
   }
+
+  if (applyFlag && dryRunFlag) {
+    process.stderr.write('migrate-vault-paths: --dry-run and --apply are mutually exclusive\n');
+    process.exit(1);
+  }
+
   return out;
 }
 

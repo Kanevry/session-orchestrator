@@ -382,6 +382,29 @@ describe('Section B — wrong-context (exit 3)', () => {
     const result = parseJSON(stdout);
     expect(result.status).toBe('rejected-wrong-context');
   });
+
+  // Regression test for #547 — STATE.md status:active but missing current-wave.
+  // Pre-fix: line 245-248 built waveId='W?', then store.mjs:102 summaryPathFor
+  // regex (/^[A-Za-z0-9_-]+$/) threw TypeError on '?', which the inner try/catch
+  // at Step 8 surfaced as STATUS.ERROR (exit 4) — violating the documented
+  // contract that wrong-context conditions return STATUS.REJECTED_WRONG_CONTEXT
+  // (exit 3). Fix: Step 2c upstream guard in memory-propose.mjs.
+  it('exits 3 with rejected-wrong-context when STATE.md status:active but current-wave is missing', async () => {
+    const stateWithoutWave = `---
+schema-version: 1
+status: active
+session: test-session-no-wave
+---
+## Current Wave
+(none)
+`;
+    const dir = setupTmpRepo({ stateMd: stateWithoutWave });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, { extraEnv: { SO_WAVE_AGENT: '1' } });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('current-wave');
+  });
 });
 
 // ===========================================================================
@@ -644,6 +667,48 @@ describe('Section E — wrong-context env-var guard (#543 H3, exit 3)', () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const { code, stdout } = await runCli(dir, VALID_ARGS, {
       extraEnv: { SO_WAVE_AGENT: 'true' },
+    });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('SO_WAVE_AGENT=1');
+  });
+
+  // ----- G8 edge-case tests (#549 G8) -----
+  //
+  // The isWaveAgentContext() helper in scripts/lib/wave-context.mjs uses
+  // strict `=== '1'` equality. These three tests lock in the documented
+  // contract that whitespace-/coercion-adjacent values must NOT pass the
+  // guard. Replacing the check with `.trim() === '1'` or `parseInt(env, 10)
+  // === 1` would flip any of these to green — which is exactly the silent
+  // regression these tests defend against.
+
+  it('exits 3 when SO_WAVE_AGENT is " 1" (leading whitespace)', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: ' 1' },
+    });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('SO_WAVE_AGENT=1');
+  });
+
+  it('exits 3 when SO_WAVE_AGENT is "1\\n" (trailing newline)', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: '1\n' },
+    });
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('SO_WAVE_AGENT=1');
+  });
+
+  it('exits 3 when SO_WAVE_AGENT is "01" (zero-padded, strict string equality)', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: '01' },
     });
     expect(code).toBe(3);
     const result = parseJSON(stdout);

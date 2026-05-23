@@ -37,6 +37,8 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants & defaults
 // ---------------------------------------------------------------------------
@@ -228,24 +230,44 @@ if (stateStatus !== 'active') {
 // (skills/wave-executor/SKILL.md). Coordinator-context invocations omit the
 // env-var by construction. Strict-equality check ('1' only — never '0',
 // 'true', or undefined) ensures accidental flag-style values do not pass.
-if (process.env.SO_WAVE_AGENT !== '1') {
+// Single source of truth: scripts/lib/wave-context.mjs (#548 A4).
+if (!isWaveAgentContext()) {
   exit(
     {
       status: STATUS.REJECTED_WRONG_CONTEXT,
-      detail: 'Not invoked from wave-executor agent context (set SO_WAVE_AGENT=1)',
+      detail: `Not invoked from wave-executor agent context (set ${WAVE_AGENT_ENV_VAR}=${WAVE_AGENT_ENV_VALUE})`,
     },
     3,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Extract wave ID from STATE.md
+// Step 2c — Guard against STATE.md active but missing current-wave field (#547)
+// ---------------------------------------------------------------------------
+//
+// Without this guard, Step 3 would build waveId='W?' when current-wave is
+// undefined/null/empty. The '?' character then crashes store.mjs:102
+// summaryPathFor regex (/^[A-Za-z0-9_-]+$/), surfacing as STATUS.ERROR
+// (exit 4) via the inner try/catch in Step 8 — violating the documented
+// contract that wrong-context conditions return STATUS.REJECTED_WRONG_CONTEXT
+// (exit 3). Fixing upstream here keeps store.mjs's regex defense intact
+// while delivering the contracted exit code.
+const currentWaveRaw = frontmatter['current-wave'];
+if (currentWaveRaw === undefined || currentWaveRaw === null || currentWaveRaw === '') {
+  exit(
+    {
+      status: STATUS.REJECTED_WRONG_CONTEXT,
+      detail: "STATE.md active but missing 'current-wave' frontmatter field",
+    },
+    3,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — Build wave ID from STATE.md current-wave (guaranteed present by 2c)
 // ---------------------------------------------------------------------------
 
-const currentWaveRaw = frontmatter['current-wave'];
-const waveId = currentWaveRaw !== undefined && currentWaveRaw !== null
-  ? `W${currentWaveRaw}`
-  : 'W?';
+const waveId = `W${currentWaveRaw}`;
 
 // ---------------------------------------------------------------------------
 // Step 4 — Read Session Config (quota + floor)

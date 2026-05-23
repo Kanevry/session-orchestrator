@@ -245,4 +245,80 @@ describe('_parseMemory', () => {
       });
     });
   });
+
+  // Issue #549 G5 — `confidence-floor` range guard (memory.mjs:131-135)
+  // Range check is `f >= 0.0 && f <= 1.0`. Out-of-range values fall through to default 0.5.
+  // Boundary values 0.0 and 1.0 must be RETAINED, not rejected.
+  describe('confidence-floor range guard (#549 G5)', () => {
+    it('falls back to default 0.5 when confidence-floor is negative (-0.1)', () => {
+      const content = [
+        'memory:',
+        '  proposals:',
+        '    confidence-floor: -0.1',
+        '',
+      ].join('\n');
+      expect(_parseMemory(content).proposals['confidence-floor']).toBe(0.5);
+    });
+
+    it('falls back to default 0.5 when confidence-floor is >1.0 (1.5)', () => {
+      const content = [
+        'memory:',
+        '  proposals:',
+        '    confidence-floor: 1.5',
+        '',
+      ].join('\n');
+      expect(_parseMemory(content).proposals['confidence-floor']).toBe(0.5);
+    });
+
+    it('retains confidence-floor at boundary 0.0 (accept-everything)', () => {
+      const content = [
+        'memory:',
+        '  proposals:',
+        '    confidence-floor: 0.0',
+        '',
+      ].join('\n');
+      expect(_parseMemory(content).proposals['confidence-floor']).toBe(0.0);
+    });
+
+    it('retains confidence-floor at boundary 1.0 (only-perfect-confidence)', () => {
+      const content = [
+        'memory:',
+        '  proposals:',
+        '    confidence-floor: 1.0',
+        '',
+      ].join('\n');
+      expect(_parseMemory(content).proposals['confidence-floor']).toBe(1.0);
+    });
+  });
+
+  // Issue #549 G6 — sub-block order independence (memory.mjs:80-138)
+  // `inBannerBlock` / `inProposalsBlock` flags are mutually-exclusive (lines 87, 94).
+  // Reverse order MUST produce identical parsed output.
+  describe('sub-block order independence (#549 G6)', () => {
+    it('produces identical output when proposals comes before banner vs reverse', () => {
+      const proposalsFirst = [
+        'memory:',
+        '  proposals:',
+        '    enabled: true',
+        '    quota-per-wave: 5',
+        '    confidence-floor: 0.5',
+        '  banner:',
+        '    enabled: true',
+        '',
+      ].join('\n');
+      const bannerFirst = [
+        'memory:',
+        '  banner:',
+        '    enabled: true',
+        '  proposals:',
+        '    enabled: true',
+        '    quota-per-wave: 5',
+        '    confidence-floor: 0.5',
+        '',
+      ].join('\n');
+      const parsedA = _parseMemory(proposalsFirst);
+      const parsedB = _parseMemory(bannerFirst);
+      expect(parsedA).toEqual(parsedB);
+    });
+  });
 });

@@ -136,4 +136,48 @@ describe('_partitionForAuq', () => {
     _partitionForAuq(input);
     expect(input).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
+
+  // -------------------------------------------------------------------------
+  // 11. Mixed null/undefined entries pass through unchanged (G7-a, #549)
+  //
+  // Contract: _partitionForAuq is a pure FIFO partitioner. It does NOT filter
+  // falsy entries — `queue.slice(...)` preserves all entries verbatim,
+  // including null/undefined. This locks in the pass-through behavior so any
+  // future "filter falsy" optimization would fail this test loudly.
+  //
+  // Falsification: if the SUT were modified to filter null/undefined (e.g.,
+  // `queue.filter(Boolean)`), batches[0] would shift to [a, c, e] and
+  // batches[1] would be empty — test fails.
+  // -------------------------------------------------------------------------
+  it('passes null/undefined entries through unchanged (pure-function FIFO contract)', () => {
+    expect(
+      _partitionForAuq([{ id: 'a' }, null, { id: 'c' }, undefined, { id: 'e' }]),
+    ).toEqual({
+      batches: [
+        [{ id: 'a' }, null, { id: 'c' }, undefined],
+        [{ id: 'e' }],
+      ],
+      totalBatches: 2,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. Pure-null queue passes through Array.isArray guard (G7-b, #549)
+  //
+  // Contract: Array.isArray([null, null, null]) === true, so the guard at
+  // line 26 of auq-partition.mjs does NOT short-circuit. The function then
+  // slice()s the array, preserving the null entries verbatim into a single
+  // batch (since 3 items < BATCH_SIZE of 4).
+  //
+  // Falsification: if the SUT were modified to throw on null entries (e.g.,
+  // dereferencing `entry.id`), this test would surface a TypeError. If the
+  // SUT were modified to filter null entries, batches would be [] not
+  // [[null, null, null]].
+  // -------------------------------------------------------------------------
+  it('handles queue of pure null entries per Array.isArray guard (pass through)', () => {
+    expect(_partitionForAuq([null, null, null])).toEqual({
+      batches: [[null, null, null]],
+      totalBatches: 1,
+    });
+  });
 });

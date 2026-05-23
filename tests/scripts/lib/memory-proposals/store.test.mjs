@@ -17,10 +17,10 @@
  *     cleaned up in afterEach
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +69,9 @@ function makeRecord(overrides = {}) {
 const tmpDirsToCleanup = [];
 
 afterEach(() => {
+  // Restore any spies installed in this test (e.g., process.stderr.write).
+  // No-op for tests that didn't spy.
+  vi.restoreAllMocks();
   for (const dir of tmpDirsToCleanup) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
@@ -454,5 +457,162 @@ process.exit(0);
     const positions = queued.map((r) => r.position).sort();
     expect(positions).toEqual(['1/5', '2/5', '3/5', '4/5', '5/5']);
   }, 30_000); // 30s timeout for parallel child_process spawn
+
+});
+
+// ---------------------------------------------------------------------------
+// Section D — Stale-lock override branches (G3) + lock-timeout exhaustion (G4)
+// ---------------------------------------------------------------------------
+//
+// G3 — 3-branch stale-PID override in acquireProposalsLock (store.mjs lines ~243-326):
+//   (a) live PID  → poll-retry (no override)   ← already exercised by C9 race
+//   (b) dead PID same host → override + WARN  ← D1
+//   (c) unparseable body   → override + WARN  ← D2
+//   (d) cross-host stale-PID NOT auto-overridden (poll until timeout) ← D3
+//
+// G4 — lock-timeout exhausted by long-lived holder (store.mjs lines ~261-263, ~321-323):
+//   appendProposal returns { status: 'fs-error', error: 'lock-timeout' } ← D4
+//
+// PID literal: 999999 — a hardcoded value that is overwhelmingly unlikely to be
+// alive on any test host (Linux pid_max default = 32768 or 4194304, macOS = 99998).
+//
+// FALSIFICATION (one per test, no in-test computation):
+//   D1: if dead-PID branch was changed to silent override (no stderr WARN), the
+//       toContain('stale lock detected') assertion would not fire.
+//   D2: if unparseable-body branch was changed to return without override, the
+//       proposal would never be queued and the position assertion would fail.
+//   D3: if cross-host bodies were treated as stale (auto-overridden), the call
+//       would return { status: 'queued', ... } instead of the timeout shape, and
+//       the toEqual on the error envelope would fail.
+//   D4: if the deadline check at line ~321 were removed, the spin-poll would
+//       loop forever — vitest would hit its testTimeout instead of returning
+//       'lock-timeout', and the toEqual({error:'lock-timeout'}) assertion would
+//       fail (or the test would time out, which is also a failure).
+// ---------------------------------------------------------------------------
+
+const DEAD_PID = 999999;
+
+describe('appendProposal — stale-lock override (G3) + lock-timeout (G4)', () => {
+
+  it('D1 (G3-b): dead PID same host triggers atomic override + stderr WARN, append succeeds', async () => {
+    const repoRoot = tmpRepo();
+    const lockPath = join(repoRoot, '.orchestrator/metrics/proposals-write.lock');
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: DEAD_PID,
+        host: hostname(),
+        acquiredAt: '2026-01-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = await appendProposal({
+      record: makeRecord(),
+      repoRoot,
+      waveId: 'W1',
+    });
+
+    // Override succeeded → the proposal was queued at position 1/5.
+    expect(result).toEqual({ status: 'queued', position: '1/5' });
+
+    // The stale-lock WARN must mention the dead PID and the override action.
+    const allOutput = stderrSpy.mock.calls.map((args) => String(args[0])).join('');
+    expect(allOutput).toContain('stale lock detected (pid=999999');
+    expect(allOutput).toContain('reclaiming');
+
+    // The JSONL file must contain exactly 1 line (the appended proposal).
+    const raw = readFileSync(join(repoRoot, '.orchestrator/metrics/proposals.jsonl'), 'utf8');
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('D2 (G3-c): unparseable lock body triggers atomic override + stderr WARN, append succeeds', async () => {
+    const repoRoot = tmpRepo();
+    const lockPath = join(repoRoot, '.orchestrator/metrics/proposals-write.lock');
+    // Garbage bytes — neither JSON nor a plausible lock body.
+    writeFileSync(lockPath, 'garbage text not yaml not json {{{', 'utf8');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = await appendProposal({
+      record: makeRecord(),
+      repoRoot,
+      waveId: 'W1',
+    });
+
+    // Override succeeded → the proposal was queued at position 1/5.
+    expect(result).toEqual({ status: 'queued', position: '1/5' });
+
+    // The unparseable-body WARN must mention the unparseable body and reclaim action.
+    const allOutput = stderrSpy.mock.calls.map((args) => String(args[0])).join('');
+    expect(allOutput).toContain('unparseable body');
+    expect(allOutput).toContain('reclaiming');
+
+    // The JSONL file must contain exactly 1 line.
+    const raw = readFileSync(join(repoRoot, '.orchestrator/metrics/proposals.jsonl'), 'utf8');
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('D3 (G3-d): cross-host stale-PID body is NOT auto-overridden — polls until timeout', async () => {
+    const repoRoot = tmpRepo();
+    const lockPath = join(repoRoot, '.orchestrator/metrics/proposals-write.lock');
+    // Foreign host AND a would-be-dead PID. Per cross-host policy, PID liveness
+    // cannot be verified across hosts, so the lock must NOT be auto-overridden.
+    const foreignBody = JSON.stringify({
+      pid: DEAD_PID,
+      host: 'definitely-not-this-host-12345',
+      acquiredAt: '2026-01-01T00:00:00.000Z',
+    });
+    writeFileSync(lockPath, foreignBody, 'utf8');
+
+    const result = await appendProposal({
+      record: makeRecord(),
+      repoRoot,
+      waveId: 'W1',
+      lockTimeoutMs: 100,
+    });
+
+    // No override → lock-timeout, surfaced as fs-error envelope.
+    expect(result).toEqual({ status: 'fs-error', error: 'lock-timeout' });
+
+    // The lock file on disk must still contain the foreign-host body, byte-for-byte.
+    const onDisk = readFileSync(lockPath, 'utf8');
+    expect(onDisk).toBe(foreignBody);
+
+    // No proposal must have been appended (file should not exist).
+    const jsonlPath = join(repoRoot, '.orchestrator/metrics/proposals.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
+  });
+
+  it('D4 (G4): live-PID same-host holder exhausts lockTimeoutMs=100 with exact fs-error shape', async () => {
+    const repoRoot = tmpRepo();
+    const lockPath = join(repoRoot, '.orchestrator/metrics/proposals-write.lock');
+    // process.pid is GUARANTEED to be alive throughout the test — same-host live-PID
+    // means the override branch is never taken; spin-poll continues until deadline.
+    const holderBody = JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: '2026-01-01T00:00:00.000Z',
+    });
+    writeFileSync(lockPath, holderBody, 'utf8');
+
+    const result = await appendProposal({
+      record: makeRecord(),
+      repoRoot,
+      waveId: 'W1',
+      lockTimeoutMs: 100,
+    });
+
+    // Exact fs-error envelope shape — no toBeTruthy, no partial match.
+    expect(result).toEqual({ status: 'fs-error', error: 'lock-timeout' });
+
+    // The holder's lock body must still be on disk unchanged (no override attempted).
+    const onDisk = readFileSync(lockPath, 'utf8');
+    expect(onDisk).toBe(holderBody);
+  });
 
 });

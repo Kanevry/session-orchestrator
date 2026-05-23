@@ -12,7 +12,7 @@
  */
 
 import path from 'node:path';
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -152,6 +152,20 @@ export function sameDrive(a, b) {
  *   namespace differs from the lexical namespace.
  *   DEFAULT IS `false` — the legacy two-phase behaviour is byte-identical when
  *   the option is omitted or set to anything other than `true`.
+ *
+ *   ASYMMETRIC OPT-IN (#548 A3) — current callers split as follows:
+ *     - opt-in (`canonicalizeRoot: true`):
+ *         memory-proposals/sink.mjs × 3, memory-proposals/store.mjs × 1
+ *       These run against `mkdtempSync` paths in tests on macOS and require
+ *       the workaround to function on `/var → /private/var`.
+ *     - default (`canonicalizeRoot` omitted): run-migrate-v2-cross-repo.mjs,
+ *         promote-vault-strict.mjs × 2, vault-integration-watcher.mjs,
+ *         config/test.mjs, playwright-driver/runner.mjs, profiles/schema.mjs,
+ *         persona-panel/catalog-loader.mjs × 2, gitlab-portfolio/cli.mjs.
+ *   Flipping the default to `true` is a behaviour change for the 10 default
+ *   callers (root would be realpath-resolved before the lexical compare); it
+ *   is tracked separately and intentionally NOT done here. New callers should
+ *   pass `{ canonicalizeRoot: true }` when they operate against tmpdir roots.
  * @returns {{ok: true, realPath: string|undefined, lexicalPath: string} | {ok: false, reason: 'lexical'|'symlink'|'input', error?: string}}
  */
 export function validatePathInsideProject(input, root, opts = {}) {
@@ -166,12 +180,22 @@ export function validatePathInsideProject(input, root, opts = {}) {
   // operate against mkdtempSync paths on macOS). Strictly gated on
   // opts.canonicalizeRoot === true so unconditional callers see byte-identical
   // legacy behaviour.
+  //
+  // #548 A5-ENOENT: the previous `existsSync(root) && realpathSync(root)`
+  // pattern was a TOCTOU race — root could be deleted between the existsSync
+  // check and the realpathSync call. Drop the precheck and rely on the
+  // try/catch alone, narrowed to the two expected error codes (ENOENT for
+  // racy tmp-dir teardown, EACCES for unreadable paths). Other errors
+  // surface so genuine filesystem faults are not silently swallowed.
   let effectiveRoot = root;
-  if (opts && opts.canonicalizeRoot === true && existsSync(root)) {
+  if (opts && opts.canonicalizeRoot === true) {
     try {
       effectiveRoot = realpathSync(root);
-    } catch {
-      // Best-effort: fall back to lexical root if realpath fails.
+    } catch (err) {
+      if (err && err.code !== 'ENOENT' && err.code !== 'EACCES') throw err;
+      // Best-effort: fall back to lexical root if realpath fails with the
+      // expected codes. ENOENT/EACCES are normal during tmp-dir tests and
+      // racy filesystem operations.
     }
   }
   // 2. Phase 1: lexical

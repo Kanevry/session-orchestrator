@@ -56,8 +56,13 @@ function safePath(repoRoot, relPath) {
   const result = validatePathInsideProject(relPath, repoRoot, { canonicalizeRoot: true });
   if (!result.ok) {
     const resolved = path.resolve(repoRoot, relPath);
+    // #548 A5 — surface result.reason ('lexical' | 'symlink' | 'input') in the
+    // error so operators can distinguish path-traversal classes at a glance:
+    //  - 'lexical' → relPath escaped repoRoot via ../../ before symlink resolution
+    //  - 'symlink' → relPath resolved through a symlink that points outside repoRoot
+    //  - 'input'   → relPath was malformed (empty, non-string, null byte)
     throw new TypeError(
-      `store.mjs: path traversal blocked: ${resolved} is outside ${repoRoot}`
+      `store.mjs: path traversal blocked: ${resolved} is outside ${repoRoot} (reason: ${result.reason})`
     );
   }
   return result.realPath ?? result.lexicalPath;
@@ -119,6 +124,29 @@ function summaryPathFor(repoRoot, waveId) {
  * 'vanished' signal so the caller defers rather than overriding.
  * Unparseable contents (parse failure on a present file) ARE treated as
  * stale via `existingLock: null` — they cannot be safely owned.
+ *
+ * --- #548 A1 — Acknowledged divergence from session-lock.mjs:tryAcquireStateLock ---
+ *
+ * This helper returns a **3-state** result shape (`exists` / `vanished` /
+ * `fs-error`), whereas `scripts/lib/session-lock.mjs:tryAcquireStateLock`
+ * (lines ~498-549) returns a **2-state** result that maps ENOENT-on-read
+ * to `{ ok: false, reason: 'held', existingLock: null }` — i.e. the
+ * session-lock variant collapses the "lock vanished mid-read" race into
+ * the generic `held` bucket so the caller's poll loop simply retries.
+ *
+ * The memory-proposals path surfaces `vanished` as a **distinct third
+ * reason** because the 8-worker parallel-write scenario (C9 regression
+ * test) needs the caller — `acquireProposalsLock` — to *defer* without
+ * any stale-override side-effect. If we collapsed `vanished` into
+ * `exists` with `existingLock: null`, the stale-lock branch in
+ * `acquireProposalsLock` would call `replaceLockAtomic()` against a
+ * possibly-already-reacquired file, producing a double-holder race
+ * (regression of C9). Keeping the third reason explicit preserves the
+ * "lose race → just retry, never override" invariant.
+ *
+ * See `acquireProposalsLock` below (specifically the `result.reason ===
+ * 'vanished'` branch with its CRITICAL comment) for the consumer side of
+ * this contract, and #543 / #548 for context.
  *
  * @param {string} lockFile
  * @param {object} body — lock body to serialize
@@ -251,6 +279,30 @@ async function acquireProposalsLock(lockFile, timeoutMs) {
       if (writeResult.reason === 'fs-error') return writeResult;
     } else {
       // Parseable existing lock — same-host AND dead PID → stale override.
+      //
+      // #548 A5 — TOCTOU acknowledgment:
+      // There is a small, theoretically-existing race window between the
+      // `isPidAlive(existing.pid)` check on the next line and the subsequent
+      // `replaceLockAtomic(lockFile, body)` call. Concretely:
+      //
+      //   T0: isPidAlive(pid) === false  // PID was dead at check time
+      //   T1: kernel recycles the same numeric PID for an UNRELATED process
+      //   T2: replaceLockAtomic() overrides the lock
+      //
+      // At T2 we will have stolen the lock from a process that, by PID, looks
+      // alive but is in fact a different program that never held our lock.
+      // The window between T0 and T2 is sub-millisecond in practice (two sync
+      // syscalls back-to-back), and the consequence is bounded — we override
+      // a stale lock that nobody was using anyway. This is the same residual
+      // risk profile as the ftruncate-then-write race in POSIX append-mode
+      // writes: documented, accepted, not eliminated by simple userspace
+      // means. Mirrors session-lock.mjs:tryAcquireStateLock (lines ~533-545)
+      // which has the same structural race without explicit acknowledgment.
+      //
+      // Hardening options (future work, not in scope for #548 A5):
+      //  - Persist a monotonic "lock generation" counter alongside `pid` so
+      //    we detect PID reuse from a different generation.
+      //  - Use Linux `pidfd_open` (not portable; no macOS equivalent).
       const sameHost =
         typeof existing.host === 'string' && existing.host === os.hostname();
       const pidIsNumber = typeof existing.pid === 'number';
