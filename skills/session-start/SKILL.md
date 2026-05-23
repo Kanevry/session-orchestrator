@@ -488,13 +488,19 @@ Group issues by:
 
    The banner is non-blocking — display in the Session Overview, do not halt the session. If `ci-status-banner.mjs` is absent (pre-#369 plugin install), skip silently.
 
-   Additionally, invoke the QG-command-drift probe (`scripts/lib/qg-command-drift-banner.mjs`) via `await checkQgCommandDrift({ repoRoot })`. The helper returns `null` (silent no-op) when no drift or when Session Config load fails. When a non-null banner string is returned, render it alongside the bootstrap-lock-freshness, vault-staleness, and CI-status banners:
-   - **Drift detected**: `"⚠ Session Config drift (*-command keys): <details>. Verify the overrides are intentional. See .claude/rules/quality-gates-autofix.md § Session Config Command Injection for the RCE-equivalent trust-model."`
+   Additionally, invoke the QG-command-drift probe (`scripts/lib/qg-command-drift-banner.mjs`) via `await checkQgCommandDrift({ repoRoot })`. The helper returns `null` (silent no-op) when no drift or when Session Config load fails. When a non-null result is returned, render `result.message` alongside the bootstrap-lock-freshness, vault-staleness, and CI-status banners:
+   - **Drift detected** (`{ severity: 'warn', message: ... }`): render `result.message`. The message has the shape `"⚠ Session Config drift (*-command keys): <details>. Verify the overrides are intentional. See .claude/rules/quality-gates-autofix.md § Session Config Command Injection for the RCE-equivalent trust-model."`
    - **No drift**: silent (no banner).
 
    The banner is non-blocking — display in the Session Overview, do not halt the session. Cross-reference: `.claude/rules/quality-gates-autofix.md` § Session Config Command Injection — the banner exists because `*-command` keys are RCE-equivalent under the VCS trust-anchor model.
 
-   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install), skip silently.
+   Additionally, invoke the peer-cards-staleness probe (`scripts/lib/peer-cards/staleness-banner.mjs`) via `await checkPeerCardsStaleness({ repoRoot })`. The helper returns `null` (silent no-op) when `.orchestrator/peers/` is absent, neither USER.md nor AGENT.md is present, no card is stale, or the reader fails. When a non-null result is returned (`{ severity: 'warn', message, stale }`), render `result.message` alongside the bootstrap-lock-freshness, vault-staleness, CI-status, and QG-command-drift banners:
+   - **Stale (>30d)**: `"⚠ peer-cards: USER.md (Nd), AGENT.md (Nd) stale (>30 days) — consider running /evolve --dialectic to refresh."` (one or both targets, whichever are stale).
+   - **Fresh / absent / malformed frontmatter**: silent (no banner).
+
+   Cross-reference: `.claude/rules/owner-persona.md` (host-wide `owner.yaml` operator identity) and `skills/vault-sync/SKILL.md` (`type: peer-card` value in the vault-frontmatter enum). Peer cards complement `owner.yaml` with per-repo behavioural identity for the operator (USER.md) and agent (AGENT.md).
+
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 

@@ -367,3 +367,29 @@ Library-side hardening:
 - Original epic PRD: this file (initial commit `6692fdd`)
 - Session metrics: `.orchestrator/metrics/sessions.jsonl` (entry lands at session-end)
 - Session decisions: vault-mirror to `~/Projects/Bernhard/vault/01-projects/session-orchestrator/decisions.md` (lands at session-end)
+
+## Follow-Up Closeout (deep-session 2026-05-23)
+
+Three W5-review follow-ups from deep-session 2026-05-22 closed:
+
+### #526 (HIGH) — Pattern 4 banner ecosystem coherence — CLOSED
+- `qg-command-drift-banner.mjs` refactored to consume `loadCommandsFromSessionConfig(repoRoot)` from `quality-gate.mjs` (single SoT).
+- Return shape changed from plain string to `null | { severity: 'warn', message: string }` (mirrors `vault-staleness-banner`).
+- session-start Phase 4 rendering snippet updated to consume `.message`.
+- 24 test cases migrated to new shape; spurious-drift footgun eliminated (missing `*-command` keys no longer trigger drift).
+
+### #527 (MED) — Pattern 1+4 seam hygiene — CLOSED
+- **A**: `opts.stateMdLockEnabled` → `opts._stateMdLockEnabled` (leading-underscore test-only convention; 5 sites, zero behavior change).
+- **B**: Removed `REDACTION_PATTERNS` + `SECRET_ENV_NAME_RE` exports from `quality-gate/diagnostics.mjs` (LANGUAGE.md one-adapter rule).
+- **B**: Deleted 3 structural-shape tests; added 5 positive E2E tests (AWS, OpenAI, JWT, Slack, Stripe redaction). Net E2E coverage 9 → 14.
+
+### #528 (LOW) — Auto-Fix-Loop polish — CLOSED
+- **A**: `appendDeviationOnDisk`, `updateFrontmatterFieldsOnDisk`, `touchUpdatedFieldOnDisk`, `markExpressPathCompleteOnDisk`, `recordAutoCommitOnDisk` now require explicit `repoRoot` (throw on undefined). `commands/go.md` Express-path snippet derives repoRoot via `git rev-parse --show-toplevel`.
+- **B**: 7 new tests in `quality-gate-autofix.test.mjs` Group I exercise the 21 MiB stdout overflow path — `runGate` confirmed to handle ENOBUFS gracefully (no node-level crash).
+- **C** (broadened): 2 stale `scripts/lib/discovery/probes/` refs fixed outside the PRD scope (`security.md:96`, `slopcheck.mjs:40`). The 4 PRD references at lines 176/274/330/357 are intentional historical context (canonical-with-history).
+
+### Quality outcomes
+- Pipeline: deep-session-final commit (pre-push verify pending)
+- Tests: +24 W2/W3 modifications + 106 NEW peer-cards tests + 7 NEW maxBuffer-overflow + 24 NEW Q6 gap-fill = +161 net new/updated tests; full suite 6845 passed / 11 skipped / 0 failed.
+- Quality gates: lint PASS, typecheck PASS (217 files), Full Gate GREEN.
+- Reviewer panel: Q3 security 0 findings, Q4 architect 0 RED / 4 YELLOW (filed as F4 follow-ups), Q5 cross-cutting PROCEED.

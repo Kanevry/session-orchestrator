@@ -18,8 +18,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   redactDiagnosticsBundle,
-  REDACTION_PATTERNS,
-  SECRET_ENV_NAME_RE,
 } from '@lib/quality-gate/diagnostics.mjs';
 
 // ---------------------------------------------------------------------------
@@ -118,31 +116,57 @@ describe('W4-A6 Group I — redactDiagnosticsBundle redaction patterns', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Supporting export surface tests
+// Additional positive E2E redaction tests (patterns previously only
+// structurally-asserted via exported constant shape — now verified end-to-end
+// through redactDiagnosticsBundle behavior).
 // ---------------------------------------------------------------------------
 
-describe('W4-A6 Group I — exported constants', () => {
-  it('REDACTION_PATTERNS is an array of [RegExp, string] tuples', () => {
-    expect(Array.isArray(REDACTION_PATTERNS)).toBe(true);
-    // Each entry must be [RegExp, string]
-    for (const entry of REDACTION_PATTERNS) {
-      expect(entry[0]).toBeInstanceOf(RegExp);
-      expect(typeof entry[1]).toBe('string');
-    }
+describe('W4-A6 Group II — additional positive E2E redaction patterns', () => {
+  it('II1: redacts AWS Access Key (AKIA…) — replaces with ***AWS_ACCESS_KEY***', () => {
+    const input = { stdout: 'key=AKIAIOSFODNN7EXAMPLE23 detected in output' };
+
+    const result = redactDiagnosticsBundle(input);
+
+    expect(result.stdout).toContain('***AWS_ACCESS_KEY***');
+    expect(result.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE23');
   });
 
-  it('REDACTION_PATTERNS has at least 8 entries (covers the documented token types)', () => {
-    // Floor assertion: at least 8 patterns cover the documented types.
-    // Ceiling: no accidental explosion. Floor/ceiling per test-quality.md.
-    expect(REDACTION_PATTERNS.length).toBeGreaterThanOrEqual(8);
-    expect(REDACTION_PATTERNS.length).toBeLessThanOrEqual(100);
+  it('II2: redacts OpenAI API key (sk-…) — replaces with ***OPENAI_KEY***', () => {
+    // 40 purely alphanumeric chars after "sk-" — matches sk-[A-Za-z0-9]{40,}
+    const input = { stdout: 'key=sk-abcdef1234567890abcdef1234567890abcdef12 used' };
+
+    const result = redactDiagnosticsBundle(input);
+
+    expect(result.stdout).toContain('***OPENAI_KEY***');
+    expect(result.stdout).not.toContain('sk-abcdef1234567890abcdef1234567890abcdef12');
   });
 
-  it('SECRET_ENV_NAME_RE matches expected secret-bearing env var name patterns', () => {
-    expect(SECRET_ENV_NAME_RE.test('API_TOKEN')).toBe(true);
-    expect(SECRET_ENV_NAME_RE.test('DB_PASSWORD')).toBe(true);
-    expect(SECRET_ENV_NAME_RE.test('STRIPE_SECRET')).toBe(true);
-    expect(SECRET_ENV_NAME_RE.test('PATH')).toBe(false);
-    expect(SECRET_ENV_NAME_RE.test('NODE_ENV')).toBe(false);
+  it('II3: redacts JWT (eyJ…) — replaces with ***JWT***', () => {
+    const input = {
+      stdout: 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c present',
+    };
+
+    const result = redactDiagnosticsBundle(input);
+
+    expect(result.stdout).toContain('***JWT***');
+    expect(result.stdout).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+  });
+
+  it('II4: redacts Slack bot token (xoxb-…) — replaces with ***SLACK_TOKEN***', () => {
+    const input = { stdout: 'SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-abcdefghijklmnop' };
+
+    const result = redactDiagnosticsBundle(input);
+
+    expect(result.stdout).toContain('***SLACK_TOKEN***');
+    expect(result.stdout).not.toContain('xoxb-1234567890');
+  });
+
+  it('II5: redacts Stripe live secret key (sk_live_…) — replaces with ***STRIPE_KEY***', () => {
+    const input = { stdout: 'stripe_key=sk_live_4eC39HqLyjWDarjtT1zdp7dc reported in config' };
+
+    const result = redactDiagnosticsBundle(input);
+
+    expect(result.stdout).toContain('***STRIPE_KEY***');
+    expect(result.stdout).not.toContain('sk_live_4eC39HqLyjWDarjtT1zdp7dc');
   });
 });

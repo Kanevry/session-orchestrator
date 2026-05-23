@@ -93,7 +93,7 @@ non-existent (typosquat-target) packages in the first place.
 
 Cross-references:
 - API: `scripts/lib/slopcheck.mjs`
-- Discovery probe: `scripts/lib/discovery/probes/supply-chain-slopcheck.mjs`
+- Discovery probe: `skills/discovery/probes/supply-chain-slopcheck.mjs`
 - Plan-skill Phase 3.5: `skills/plan/SKILL.md`
 - Issue: #520
 

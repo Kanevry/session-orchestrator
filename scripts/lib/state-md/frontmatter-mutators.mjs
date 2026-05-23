@@ -166,29 +166,49 @@ export async function writeStateMd(repoRoot, transformer, opts = {}) {
 }
 
 /**
+ * Guard: throws a clear Error when repoRoot is undefined, null, or empty.
+ * Parallel-session CWD drift (PSA rules) makes `process.cwd()` fallbacks a
+ * footgun — callers MUST be explicit about which repo root they target.
+ *
+ * @param {unknown} repoRoot
+ * @param {string} fnName  — name of the calling function, for error messages
+ */
+function requireRepoRoot(repoRoot, fnName) {
+  if (!repoRoot) {
+    throw new Error(
+      `${fnName}: repoRoot is required (got ${typeof repoRoot}). Pass an explicit repo root, e.g. via execSync('git rev-parse --show-toplevel').`
+    );
+  }
+}
+
+/**
  * Convenience wrapper: apply `updateFrontmatterFields` under the state-lock.
  * Pure callers (in-memory transforms) should keep using
  * `updateFrontmatterFields` directly — this wrapper exists for call sites
  * that previously did the read + transform + write inline.
  *
- * @param {string|undefined} repoRoot
+ * @param {string} repoRoot  — absolute path to the repository root (required)
  * @param {object} fields
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
  */
 export async function updateFrontmatterFieldsOnDisk(repoRoot, fields, opts = {}) {
+  requireRepoRoot(repoRoot, 'updateFrontmatterFieldsOnDisk');
   return writeStateMd(repoRoot, (contents) => updateFrontmatterFields(contents, fields), opts);
 }
 
 /**
  * Convenience wrapper: apply `touchUpdatedField` under the state-lock.
  *
- * @param {string|undefined} repoRoot
+ * @param {string} repoRoot  — absolute path to the repository root (required)
  * @param {string} [isoTimestamp]  — defaults to current time when omitted.
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
  */
 export async function touchUpdatedFieldOnDisk(repoRoot, isoTimestamp, opts = {}) {
+  requireRepoRoot(repoRoot, 'touchUpdatedFieldOnDisk');
   const ts = typeof isoTimestamp === 'string' && isoTimestamp.length > 0
     ? isoTimestamp
     : new Date().toISOString();

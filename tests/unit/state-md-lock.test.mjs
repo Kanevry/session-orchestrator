@@ -450,10 +450,10 @@ describe('withStateMdLock — Group D: structured error codes', () => {
 // ---------------------------------------------------------------------------
 
 describe('withStateMdLock — Group E: state-md-lock.enabled short-circuit', () => {
-  it('bypasses lock and returns fn result when opts.stateMdLockEnabled = false', async () => {
+  it('bypasses lock and returns fn result when opts._stateMdLockEnabled = false', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const result = await withStateMdLock(undefined, async () => 'ok', { stateMdLockEnabled: false });
+    const result = await withStateMdLock(undefined, async () => 'ok', { _stateMdLockEnabled: false });
 
     expect(result).toBe('ok');
 

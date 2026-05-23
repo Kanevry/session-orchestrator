@@ -20,10 +20,8 @@
  *
  * Ordering: more-specific patterns first (long prefixes before short ones) to
  * prevent partial overlap.
- *
- * Exported for tests (W4-A6).
  */
-export const REDACTION_PATTERNS = [
+const REDACTION_PATTERNS = [
   [/ghp_[A-Za-z0-9]{36}/g, '***GITHUB_PAT***'],
   [/glpat-[A-Za-z0-9_-]{20,}/g, '***GITLAB_PAT***'],
   [/npm_[A-Za-z0-9]{36,}/g, '***NPM_TOKEN***'],
@@ -47,10 +45,8 @@ export const REDACTION_PATTERNS = [
  * Matches env-var names that are semantically secret-bearing.
  * Keys matching this pattern have their VALUES redacted (the key name is kept
  * so operators can still audit which secret categories were present).
- *
- * Exported for tests (W4-A6).
  */
-export const SECRET_ENV_NAME_RE = /^([A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET|_PASSWORD|_CREDENTIAL[A-Z_]*))$/;
+const SECRET_ENV_NAME_RE = /^([A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET|_PASSWORD|_CREDENTIAL[A-Z_]*))$/;
 
 /**
  * Redact secrets, env-var values, and user-specific paths from a diagnostics

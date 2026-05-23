@@ -171,18 +171,36 @@ export function markExpressPathComplete(contents, options) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Guard: throws a clear Error when repoRoot is undefined, null, or empty.
+ * Parallel-session CWD drift (PSA rules) makes `process.cwd()` fallbacks a
+ * footgun — callers MUST be explicit about which repo root they target.
+ *
+ * @param {unknown} repoRoot
+ * @param {string} fnName  — name of the calling function, for error messages
+ */
+function requireRepoRoot(repoRoot, fnName) {
+  if (!repoRoot) {
+    throw new Error(
+      `${fnName}: repoRoot is required (got ${typeof repoRoot}). Pass an explicit repo root, e.g. via execSync('git rev-parse --show-toplevel').`
+    );
+  }
+}
+
+/**
  * Lock-guarded append to the `## Deviations` section.
  *
  * Delegates to the pure `appendDeviation` helper; the read+write cycle is
  * serialized via `withStateMdLock` (PSA-004 mechanical enforcement).
  *
- * @param {string|undefined} repoRoot
+ * @param {string} repoRoot  — absolute path to the repository root (required)
  * @param {string} isoTimestamp
  * @param {string} message
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
  */
 export async function appendDeviationOnDisk(repoRoot, isoTimestamp, message, opts = {}) {
+  requireRepoRoot(repoRoot, 'appendDeviationOnDisk');
   return writeStateMd(
     repoRoot,
     (contents) => appendDeviation(contents, isoTimestamp, message),
@@ -193,12 +211,14 @@ export async function appendDeviationOnDisk(repoRoot, isoTimestamp, message, opt
 /**
  * Lock-guarded `recordAutoCommit` for express-path / wave-checkpoint flows.
  *
- * @param {string|undefined} repoRoot
+ * @param {string} repoRoot  — absolute path to the repository root (required)
  * @param {{ sha: string, waveN: number, waveResultSummary: string, timestamp?: string }} options
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
  */
 export async function recordAutoCommitOnDisk(repoRoot, options, opts = {}) {
+  requireRepoRoot(repoRoot, 'recordAutoCommitOnDisk');
   return writeStateMd(
     repoRoot,
     (contents) => recordAutoCommit(contents, options),
@@ -210,12 +230,14 @@ export async function recordAutoCommitOnDisk(repoRoot, options, opts = {}) {
  * Lock-guarded `markExpressPathComplete` — used by session-end and the
  * express-path skill flow.
  *
- * @param {string|undefined} repoRoot
+ * @param {string} repoRoot  — absolute path to the repository root (required)
  * @param {object} options  See markExpressPathComplete signature above.
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
  */
 export async function markExpressPathCompleteOnDisk(repoRoot, options, opts = {}) {
+  requireRepoRoot(repoRoot, 'markExpressPathCompleteOnDisk');
   return writeStateMd(
     repoRoot,
     (contents) => markExpressPathComplete(contents, options),

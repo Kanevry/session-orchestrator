@@ -22,8 +22,10 @@ If the banner is present (and the session-plan output emitted a 1-wave Express P
 2. **Append the Express Path deviation to STATE.md** before invoking session-end. Use `appendDeviationOnDisk()` from `scripts/lib/state-md.mjs` — the on-disk wrapper takes the STATE.md lock automatically, serialising any concurrent writers. This step ensures the audit trail exists BEFORE session-end finalizes the file. Equivalent one-liner via Bash:
    ```bash
    node --input-type=module -e "
+   import {execSync} from 'node:child_process';
    import {appendDeviationOnDisk} from './scripts/lib/state-md.mjs';
-   await appendDeviationOnDisk(undefined, new Date().toISOString(), 'Express path: <N> tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: <N> issues)');
+   const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
+   await appendDeviationOnDisk(repoRoot, new Date().toISOString(), 'Express path: <N> tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: <N> issues)');
    "
    ```
 3. **Invoke `session-orchestrator:session-end`** directly via the `Skill` tool. Session-end finalizes STATE.md (sets `status: completed`, writes `.orchestrator/metrics/sessions.jsonl`, runs vault-mirror if enabled). Without this auto-invocation, every Express Path run leaves no audit trail (issue #320).

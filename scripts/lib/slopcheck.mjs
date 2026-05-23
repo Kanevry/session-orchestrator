@@ -37,7 +37,7 @@
  *
  * Consumed by:
  *  - skills/plan/SKILL.md Phase 3.5 (Package-Audit) — Agent B (parallel).
- *  - scripts/lib/discovery/probes/supply-chain-slopcheck.mjs — Agent C (parallel).
+ *  - skills/discovery/probes/supply-chain-slopcheck.mjs — Agent C (parallel).
  */
 
 import { execFile } from 'node:child_process';

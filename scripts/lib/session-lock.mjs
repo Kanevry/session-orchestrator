@@ -680,9 +680,11 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
  * documented in `.claude/rules/parallel-sessions.md` PSA-005 without
  * removing the lock infrastructure.
  *
- * Per-call override via `opts.stateMdLockEnabled` (boolean): when provided,
+ * Per-call override via `opts._stateMdLockEnabled` (boolean): when provided,
  * takes precedence over the config value. Useful for tests that need to
  * exercise the short-circuit without touching CLAUDE.md on disk.
+ * The leading underscore marks this as a test-only seam — production callers
+ * MUST omit this option.
  *
  * Fail-safe: if CLAUDE.md cannot be read or the config block is malformed,
  * `enabled` defaults to `true` — lock is always acquired on errors.
@@ -700,8 +702,9 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
  * @param {number} [opts.timeoutMs]
  * @param {string} [opts.holder]
  * @param {number} [opts.pollMs]
- * @param {boolean} [opts.stateMdLockEnabled]  — per-call override; takes
- *   precedence over the Session Config value when set.
+ * @param {boolean} [opts._stateMdLockEnabled]  — test-only per-call override;
+ *   takes precedence over the Session Config value when set. Production
+ *   callers MUST omit this option.
  * @returns {Promise<T>}
  * @template T
  */
@@ -711,8 +714,8 @@ export async function withStateMdLock(repoRoot, fn, opts = {}) {
   }
 
   // Short-circuit: respect state-md-lock.enabled: false from Session Config.
-  // opts.stateMdLockEnabled (per-call override) takes precedence when set.
-  let enabled = opts.stateMdLockEnabled;
+  // opts._stateMdLockEnabled (test-only per-call override) takes precedence when set.
+  let enabled = opts._stateMdLockEnabled;
   if (enabled === undefined) {
     try {
       const claudeMdPath = path.join(repoRoot ?? process.cwd(), 'CLAUDE.md');
