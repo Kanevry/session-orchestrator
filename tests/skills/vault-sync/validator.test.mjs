@@ -266,6 +266,74 @@ describe('nested-tag vault', () => {
   });
 });
 
+// ── peer-card enum (#530 MED-1) ───────────────────────────────────────────────
+//
+// These three tests guard the vaultNoteTypeSchema enum against regressions that
+// would silently break vault-sync for peer cards (#503 / #506).
+
+describe('peer-card enum (#530 MED-1)', () => {
+  function makeTempVault(frontmatterLines) {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-pc-test-'));
+    const note = `---\n${frontmatterLines}\n---\n\n# Test note\n`;
+    writeFileSync(join(dir, 'test-note.md'), note, 'utf8');
+    return dir;
+  }
+
+  it('accepts type: peer-card as a valid vault note type', () => {
+    const vaultDir = makeTempVault(
+      'id: test-peer-card\ntype: peer-card\ncreated: 2026-05-23\nupdated: 2026-05-23',
+    );
+    const result = runValidator(vaultDir);
+    try {
+      rmSync(vaultDir, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.errors.length).toBe(0);
+  });
+
+  it.each([
+    ['note'],
+    ['daily'],
+    ['project'],
+    ['person'],
+    ['reference'],
+    ['idea'],
+    ['learning'],
+    ['session'],
+    ['peer-card'],
+  ])('accepts type: %s (all vaultNoteTypeSchema enum values)', (typeValue) => {
+    const vaultDir = makeTempVault(
+      `id: test-type-enum\ntype: ${typeValue}\ncreated: 2026-05-23\nupdated: 2026-05-23`,
+    );
+    const result = runValidator(vaultDir);
+    try {
+      rmSync(vaultDir, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.errors.length).toBe(0);
+  });
+
+  it('rejects unknown type values with a type-path error', () => {
+    const vaultDir = makeTempVault(
+      'id: test-unknown-type\ntype: totally-fake-type\ncreated: 2026-05-23\nupdated: 2026-05-23',
+    );
+    const result = runValidator(vaultDir);
+    try {
+      rmSync(vaultDir, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('invalid');
+    const typeError = parsed.errors.find((e) => e.path === 'type');
+    expect(typeError).toBeDefined();
+    expect(typeError.path).toBe('type');
+  });
+});
+
 // ── vault-dir guard (isVaultDir) ──────────────────────────────────────────────
 
 describe('vault-dir guard', () => {

@@ -44,6 +44,11 @@ coverage/
 # Issue #330: distributed session-lock
 .orchestrator/session.lock
 
+# Auto-dream + auto-dialectic sidecars — never commit LLM-derived consolidation proposals (#502, #506)
+.orchestrator/pending-dream.md
+.orchestrator/dialectic-pending.md
+.orchestrator/dialectic-last-run
+
 # Per-session audit drafts and historical audit dumps (local artefacts of
 # /repo-audit and /discovery; never committed to plugin source)
 .orchestrator/audits/

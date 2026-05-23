@@ -33,6 +33,18 @@
  *   bypass the filter. Quality-skipped entries emit `path: null` and an
  *   additional `reason` field describing the violated threshold.
  *
+ * Excluded sidecars (#502 + #506):
+ *   vault-mirror operates EXCLUSIVELY on JSONL sources passed via --source.
+ *   The following cross-session sidecars MUST NEVER be mirrored into the
+ *   vault, even if a future refactor adds directory-walking. They live under
+ *   `.orchestrator/` deliberately so they survive a session close without
+ *   being copied into `50-sessions/`:
+ *     - `.orchestrator/pending-dream.md` (auto-dream sidecar, PRD F2.2 / #502)
+ *     - `.orchestrator/dialectic-pending.md` (auto-dialectic sidecar, PRD F2.5 / #506)
+ *   The next session consumes these via `/memory-cleanup --apply-pending`
+ *   and `/evolve --dialectic --apply`, respectively — vault-mirror has no
+ *   role in their lifecycle.
+ *
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 

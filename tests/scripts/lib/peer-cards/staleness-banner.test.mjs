@@ -11,7 +11,7 @@ vi.mock('@lib/peer-cards/reader.mjs', () => ({
   readPeerCards: vi.fn(),
 }));
 
-import { checkPeerCardsStaleness, renderBanner } from '@lib/peer-cards/staleness-banner.mjs';
+import { checkPeerCardsStaleness } from '@lib/peer-cards/staleness-banner.mjs';
 import { readPeerCards } from '@lib/peer-cards/reader.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -124,33 +124,5 @@ describe('checkPeerCardsStaleness()', () => {
     });
     const result = await checkPeerCardsStaleness({ repoRoot: '/repo' });
     expect(result).toBeNull();
-  });
-});
-
-describe('renderBanner()', () => {
-  beforeEach(() => {
-    vi.mocked(readPeerCards).mockReset();
-  });
-
-  it('returns empty string when no banner (both cards fresh)', async () => {
-    vi.mocked(readPeerCards).mockResolvedValue({
-      exists: true,
-      user: FRESH_CARD,
-      agent: FRESH_CARD,
-    });
-    const result = await renderBanner({ repoRoot: '/repo' });
-    expect(result).toBe('');
-  });
-
-  it('returns non-empty message string when banner is present', async () => {
-    vi.mocked(readPeerCards).mockResolvedValue({
-      exists: true,
-      user: STALE_USER,
-      agent: FRESH_CARD,
-    });
-    const result = await renderBanner({ repoRoot: '/repo' });
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
-    expect(result).toContain('USER.md');
   });
 });

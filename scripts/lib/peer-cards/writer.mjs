@@ -139,22 +139,3 @@ export async function writePeerCard(repoRoot, target, card) {
   }
 }
 
-/**
- * Write both user and agent peer cards. Per-file atomic; NOT cross-file atomic
- * (a crash between the two writes can leave one updated and the other on disk
- * as the previous version — callers that need cross-file atomicity must wrap
- * with their own staging logic).
- *
- * @param {string} repoRoot
- * @param {{ user?: {frontmatter: object, body: string}, agent?: {frontmatter: object, body: string} }} cards
- * @returns {Promise<{ user?: { ok: true, path: string } | { ok: false, errors: string[] }, agent?: { ok: true, path: string } | { ok: false, errors: string[] } }>}
- */
-export async function writePeerCards(repoRoot, cards) {
-  if (!cards || typeof cards !== 'object') {
-    throw new Error('writePeerCards: cards must be an object.');
-  }
-  const results = {};
-  if (cards.user) results.user = await writePeerCard(repoRoot, 'user', cards.user);
-  if (cards.agent) results.agent = await writePeerCard(repoRoot, 'agent', cards.agent);
-  return results;
-}

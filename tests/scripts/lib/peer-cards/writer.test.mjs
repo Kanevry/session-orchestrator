@@ -12,7 +12,7 @@ import { mkdtemp, rm, readFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-import { writePeerCard, writePeerCards } from '@lib/peer-cards/writer.mjs';
+import { writePeerCard } from '@lib/peer-cards/writer.mjs';
 import { validatePeerCardFrontmatter } from '@lib/peer-cards/schema.mjs';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 
@@ -247,54 +247,3 @@ describe('writePeerCard', () => {
   });
 });
 
-// ─── writePeerCards (multi-file) ─────────────────────────────────────────────
-
-describe('writePeerCards', () => {
-  let tmpRoot;
-
-  beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'peer-cards-writers-'));
-  });
-
-  afterEach(async () => {
-    try {
-      await rm(tmpRoot, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  });
-
-  it('AC1: writes both USER.md and AGENT.md with non-empty bodies', async () => {
-    const results = await writePeerCards(tmpRoot, {
-      user: USER_CARD,
-      agent: AGENT_CARD,
-    });
-
-    expect(results.user.ok).toBe(true);
-    expect(results.agent.ok).toBe(true);
-
-    const userContent = await readFile(results.user.path, 'utf8');
-    const agentContent = await readFile(results.agent.path, 'utf8');
-    expect(userContent).toContain('## Preferences');
-    expect(agentContent).toContain('## Self-Notes');
-
-    // Both validate
-    const userParsed = parseStateMd(userContent);
-    const agentParsed = parseStateMd(agentContent);
-    expect(validatePeerCardFrontmatter(userParsed.frontmatter).ok).toBe(true);
-    expect(validatePeerCardFrontmatter(agentParsed.frontmatter).ok).toBe(true);
-  });
-
-  it('writes only user when only user is provided', async () => {
-    const results = await writePeerCards(tmpRoot, { user: USER_CARD });
-    expect(results.user.ok).toBe(true);
-    expect(results.agent).toBeUndefined();
-
-    const agentPath = path.join(tmpRoot, '.orchestrator', 'peers', 'AGENT.md');
-    expect(await fileExists(agentPath)).toBe(false);
-  });
-
-  it('throws when cards is not an object', async () => {
-    await expect(writePeerCards(tmpRoot, null)).rejects.toThrow(/cards must be an object/);
-  });
-});

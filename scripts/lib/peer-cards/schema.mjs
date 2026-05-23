@@ -80,7 +80,7 @@ function _isStringArray(v) {
  * @param {unknown} value
  * @returns {boolean}
  */
-export function isValidPeerCardTarget(value) {
+function isValidPeerCardTarget(value) {
   return typeof value === 'string' && PEER_CARD_TARGETS.includes(value);
 }
 
@@ -91,7 +91,7 @@ export function isValidPeerCardTarget(value) {
  * @param {unknown} value
  * @returns {boolean}
  */
-export function isValidPeerCardId(value) {
+function isValidPeerCardId(value) {
   if (typeof value !== 'string') return false;
   if (value.length < ID_MIN_LEN || value.length > ID_MAX_LEN) return false;
   return SLUG_REGEX.test(value);
@@ -103,7 +103,7 @@ export function isValidPeerCardId(value) {
  * @param {unknown} value
  * @returns {boolean}
  */
-export function isValidIsoTimestamp(value) {
+function isValidIsoTimestamp(value) {
   return typeof value === 'string' && ISO_DATETIME_REGEX.test(value);
 }
 
@@ -227,16 +227,4 @@ export function computeStalenessDays(updatedIso, now = new Date()) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   if (!Number.isFinite(nowMs)) return Infinity;
   return Math.floor((nowMs - t) / 86_400_000);
-}
-
-/**
- * Returns true when the peer card was last updated more than
- * `STALENESS_THRESHOLD_DAYS` days ago.
- *
- * @param {string} updatedIso
- * @param {Date} [now]
- * @returns {boolean}
- */
-export function isStalePeerCard(updatedIso, now = new Date()) {
-  return computeStalenessDays(updatedIso, now) > STALENESS_THRESHOLD_DAYS;
 }

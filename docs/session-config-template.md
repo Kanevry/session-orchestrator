@@ -264,6 +264,19 @@ verification-auto-fix:
 
 Read by: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`), `skills/wave-executor/SKILL.md` inter-wave checkpoint.
 
+## Dialectic-Deriver
+
+Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to peer cards (#503). Set `cadence: 0` as a kill-switch to permanently disable auto-dispatch (manual `/evolve --dialectic` always works regardless). PRD F2.5 / issue #506.
+
+```yaml
+dialectic:
+  cadence: 5              # integer ≥ 0; 0 = kill-switch (no critique dispatches)
+  model: haiku            # haiku | sonnet | opus — fail-fast on unknown value
+  budget-tokens: 8000     # integer ≥ 0 — input token budget per critique call
+```
+
+Read by: `scripts/lib/config/dialectic.mjs`, `scripts/lib/auto-dialectic.mjs`, `skills/session-end/SKILL.md` Phase 3.6.7, `skills/evolve/SKILL.md` Phase 6.
+
 ## Vault Staleness
 
 Vault-drift discovery probes. Used by `/discovery vault` and (when `enabled`) session-end Phase 2.3.
@@ -529,6 +542,12 @@ templates-first:
 verification-auto-fix:
   enabled: false
   max-retries: 2
+
+# Dialectic-Deriver (#506)
+dialectic:
+  cadence: 5              # integer ≥ 0; 0 = kill-switch (no critique dispatches)
+  model: haiku            # haiku | sonnet | opus — fail-fast on unknown value
+  budget-tokens: 8000     # integer ≥ 0 — input token budget per critique call
 
 # Vault staleness
 vault-staleness:

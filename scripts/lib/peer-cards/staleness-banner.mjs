@@ -84,16 +84,3 @@ export async function checkPeerCardsStaleness({ repoRoot, now } = {}) {
 
   return { severity: 'warn', message, stale };
 }
-
-/**
- * Convenience renderer: returns the banner message string, or empty string
- * when no banner should be shown. Intended for inline use from SKILL.md
- * snippets, matching the shape of `vault-staleness-banner.mjs::renderBanner`.
- *
- * @param {{repoRoot: string, now?: Date}} opts
- * @returns {Promise<string>}
- */
-export async function renderBanner({ repoRoot, now } = {}) {
-  const result = await checkPeerCardsStaleness({ repoRoot, now });
-  return result ? result.message : '';
-}

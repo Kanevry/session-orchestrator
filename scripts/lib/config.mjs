@@ -53,6 +53,7 @@ import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
+import { _parseDialectic } from './config/dialectic.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -250,6 +251,9 @@ export function parseSessionConfig(mdContent) {
   // verification-auto-fix: parsed from full content (PRD gsd Pattern 4 / issues #517, #521)
   const verificationAutoFix = _parseVerificationAutoFix(mdContent);
 
+  // dialectic: parsed from full content (issue #506)
+  const dialectic = _parseDialectic(mdContent);
+
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
@@ -337,6 +341,7 @@ export function parseSessionConfig(mdContent) {
     'slopcheck': slopcheck,
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
+    'dialectic': dialectic,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,

@@ -278,7 +278,7 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 > **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` plus the optional `updated` timestamp (#184), and — as of Phase A of Epic #271 — the 5 Recommendation fields written by Phase 3.7a. No other fields.
 
-> **Runtime Ordering Note (Epic #271 Phase A):** Phase 3.4's `status: completed` write executes LAST in Phase 3, AFTER Phase 3.7 (sessions.jsonl) and Phase 3.7a (Compute and Write Recommendations). The ordinal position here (3.4) is kept for historical compatibility; the canonical runtime order is `3.1 → 3.2 → 3.3 → 3.4a → 3.5 → 3.5a → 3.7 → 3.7a → 3.4`. Rationale: Phase 3.7a reads in-memory session metrics and writes the 5 Recommendation fields via `updateFrontmatterFields`; that write must complete BEFORE the STATE.md frontmatter is finalized with `status: completed` so the Recommendation fields are visible to the next session-start while STATE.md is still `status: active`. Crash-resilience: if `/close` aborts between 3.7a and 3.4, STATE.md carries `status: active` + Recommendations; session-start Phase 1.5 offers resume (and the banner renders). If the reverse ordering were used (status: completed first), a crash would leave `status: completed` without Recommendations — the Reader would silently no-op the banner, losing the handoff.
+> **Runtime Ordering Note (Epic #271 Phase A):** Phase 3.4's `status: completed` write executes LAST in Phase 3, AFTER Phase 3.7 (sessions.jsonl) and Phase 3.7a (Compute and Write Recommendations). The ordinal position here (3.4) is kept for historical compatibility; the canonical runtime order is `3.1 → 3.2 → 3.3 → 3.4a → 3.5 → 3.5a → 3.6 → 3.6.5 → 3.6.7 → 3.7 → 3.7a → 3.4`. Rationale: Phase 3.7a reads in-memory session metrics and writes the 5 Recommendation fields via `updateFrontmatterFields`; that write must complete BEFORE the STATE.md frontmatter is finalized with `status: completed` so the Recommendation fields are visible to the next session-start while STATE.md is still `status: active`. Crash-resilience: if `/close` aborts between 3.7a and 3.4, STATE.md carries `status: active` + Recommendations; session-start Phase 1.5 offers resume (and the banner renders). If the reverse ordering were used (status: completed first), a crash would leave `status: completed` without Recommendations — the Reader would silently no-op the banner, losing the handoff.
 
 > Gate: Only run if `persistence` is enabled in Session Config and `<state-dir>/STATE.md` exists.
 1. Set frontmatter `status: completed`
@@ -384,6 +384,52 @@ After learnings are written (Phase 3.6), determine whether to dispatch a `/memor
 The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/.
 
 Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`).
+
+### 3.6.7 Auto-Dialectic Dispatch (#506, F2.5)
+
+> Skip this phase if `dialectic.cadence: 0` (kill-switch per PRD F2.5 AC3). Also skip if `persistence` is `false` in Session Config.
+
+After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), determine whether to dispatch `/evolve --dialectic --dry-run`. The decision uses sessions-since-last-dialectic counted against `.orchestrator/dialectic-last-run`. On trigger, the subagent runs the full dialectic deriver and writes the proposed diff to `.orchestrator/dialectic-pending.md`; the timestamp is updated only on successful dispatch (not on skip).
+
+1. Read `dialectic.cadence` (default 5), `dialectic.model` (default haiku), `dialectic.budget-tokens` (default 8000) from `$CONFIG`.
+
+2. Invoke `shouldDispatchAutoDialectic` from `scripts/lib/auto-dialectic.mjs`:
+   ```javascript
+   import { shouldDispatchAutoDialectic } from '${PLUGIN_ROOT}/scripts/lib/auto-dialectic.mjs';
+   const decision = await shouldDispatchAutoDialectic({
+     repoRoot: process.cwd(),
+     cadence: config.dialectic?.cadence ?? 5,
+   });
+   ```
+
+3. If `decision.trigger === false`: log `auto-dialectic: not dispatched (${decision.reason})` and continue. Skip subagent. Do NOT update `.orchestrator/dialectic-last-run`.
+
+4. **AC4 precondition guard:** Even if cadence met, if `signals.sessionsSinceLast === 0 && signals.learningsSinceLast === 0`, skip with reason `no-new-input-since-last-run`. The Final Report (Phase 6) MUST include the literal string `dialectic: skipped (no new input since last run)`.
+
+5. If `decision.trigger === true`: dispatch a subagent:
+   ```javascript
+   Agent({
+     description: "Auto-dialectic dry-run (peer-card consolidation proposal)",
+     prompt: `Invoke /evolve --dialectic --dry-run.
+       Use dialectic.model=${config.dialectic?.model ?? 'haiku'} with budget ${config.dialectic?.['budget-tokens'] ?? 8000} input + 4000 output tokens.
+       Produce diff via runDialecticDeriver from scripts/dialectic-deriver.mjs;
+       writeDialecticPending writes to .orchestrator/dialectic-pending.md.
+       Do NOT modify .orchestrator/peers/USER.md or AGENT.md (dry-run only).
+       Return one-line status.`,
+     subagent_type: "session-orchestrator:evolve",
+     run_in_background: false,
+   })
+   ```
+
+6. After dispatch, confirm `.orchestrator/dialectic-pending.md` exists; if not, log `⚠ auto-dialectic: subagent returned without writing dialectic-pending sidecar — investigate next session` and do NOT update `dialectic-last-run`.
+
+7. On successful dispatch (sidecar present), update `.orchestrator/dialectic-last-run` via `writeDialecticLastRun(repoRoot, new Date().toISOString())`. Atomic; failures non-fatal.
+
+8. Record outcome (skipped/dispatched/failed) for Phase 6 Final Report: `auto-dialectic: dry-run produced — review at .orchestrator/dialectic-pending.md and apply with /evolve --dialectic --apply in the next session`.
+
+The `.orchestrator/dialectic-pending.md` sidecar is intentionally outside the vault tree — vault-mirror (Phase 3.7) MUST exclude it from its scope.
+
+Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialectic.mjs` API.
 
 ### 3.7 Write Session Metrics
 
@@ -556,6 +602,7 @@ Present to the user:
 | `phase-3-2-docs-verification.md` | Phase 3.2 full procedural body — docs-tasks load, SESSION_START_REF, per-task loop, mode-gated report, Documentation Coverage block |
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
 | (inline) Phase 3.6.5 | Auto-Dream dispatch — `shouldDispatchAutoDream` + dispatch /memory-cleanup --dry-run + writes `.orchestrator/pending-dream.md` |
+| (inline) Phase 3.6.7 | Auto-Dialectic dispatch — `shouldDispatchAutoDialectic` + dispatch /evolve --dialectic --dry-run + writes `.orchestrator/dialectic-pending.md` + updates `.orchestrator/dialectic-last-run` |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |
 | (inline) Phase 3.8 | Session Lock Release — `release()` call, silent-OK on mismatch/absent, non-fatal on fs-error, ordering note (after STATE.md writes, before Phase 4 commit staging) |

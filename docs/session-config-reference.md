@@ -363,6 +363,33 @@ cold-start:
 
 **Used by:** `scripts/lib/cold-start-detector.mjs`.
 
+## Dialectic-Deriver (#506)
+
+Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to USER.md/AGENT.md peer cards (#503). The dry-run writes a sidecar at `.orchestrator/dialectic-pending.md`; the operator applies via `/evolve --dialectic --apply` in a subsequent session. Set `cadence: 0` as a kill-switch.
+
+All fields live under a top-level `dialectic` object in your Session Config (CLAUDE.md or AGENTS.md):
+
+```yaml
+dialectic:
+  cadence: 5              # integer ≥ 0; 0 = kill-switch
+  model: haiku            # haiku | sonnet | opus
+  budget-tokens: 8000     # input token budget per call
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dialectic.cadence` | integer | `5` | Number of sessions between auto-dialectic dispatches. Set to `0` to disable all dispatches (kill-switch). Non-integer and negative values silently fall back to default. |
+| `dialectic.model` | string | `haiku` | Model tier for the critique call. Must be one of `haiku`, `sonnet`, `opus`. **Fail-fast**: unknown values cause parse-config.mjs to exit 1 at startup — NOT silently ignored. |
+| `dialectic.budget-tokens` | integer | `8000` | Input token budget per call. Output budget is fixed at 4000 (per #506). Non-integer and negative values fall back to default. |
+
+**Used by:** `skills/evolve/SKILL.md` Phase 6, `skills/session-end/SKILL.md` Phase 3.6.7, `scripts/dialectic-deriver.mjs`, `scripts/lib/auto-dialectic.mjs`.
+
+**Cross-reference:** PRD F2.5 (#506) — Honcho's "reasoning at consolidation time" insight, adopted without SaaS/AGPL/per-message-LLM-cost.
+
+**Auto-trigger behavior:** When `cadence > 0` AND sessions-since-last-dialectic ≥ cadence AND (≥1 new session OR ≥1 new learning since last run), session-end Phase 3.6.7 dispatches the deriver in dry-run mode. The diff sidecar lands at `.orchestrator/dialectic-pending.md` (gitignored, vault-mirror-excluded). When `cadence: 0`, the auto-trigger is permanently skipped; manual `/evolve --dialectic` always works.
+
+**Token cost:** With defaults (cadence: 5, budget-tokens: 8000, output 4000, model haiku), ~12k tokens every 5 sessions. At haiku pricing this is ~$0.02/run. Surfaced in Final Report.
+
 ## Vault Staleness
 
 Opt-in configuration for vault-drift discovery probes. Detects stale vault projects and narratives. Used by `/discovery vault` (on-demand probe execution) and session-end Phase 2.3 (automatic gate at close time). Projects without a vault leave these fields unset and are unaffected.

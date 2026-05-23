@@ -189,6 +189,39 @@ describe('mergePeerCard — AC2 hand-edit preservation', () => {
     expect(result.body).toContain('## Hand notes');
     expect(result.body).toContain('Written by the user.');
   });
+
+  it('appends managed sections when body is empty (append-only mode)', () => {
+    const result = mergePeerCard('', { preferences: '- a preference' });
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.stats.appended).toBe(1);
+    expect(result.stats.replaced).toBe(0);
+    expect(result.body).toContain('<!-- BEGIN MANAGED: preferences -->');
+    expect(result.body).toContain('- a preference');
+    expect(result.body).toContain('<!-- END MANAGED: preferences -->');
+  });
+
+  it('preserves managed sections when body has zero hand text between them', () => {
+    const existingBody =
+      '<!-- BEGIN MANAGED: section1 -->\n- a\n<!-- END MANAGED: section1 -->' +
+      '<!-- BEGIN MANAGED: section2 -->\n- b\n<!-- END MANAGED: section2 -->';
+
+    const result = mergePeerCard(existingBody, { section1: '- a-updated', section3: '- new section c' });
+
+    // section1 is replaced with the update
+    expect(result.body).toContain('- a-updated');
+    expect(result.body).not.toContain('\n- a\n');
+    // section2 is kept verbatim (not in updates)
+    expect(result.body).toContain('- b');
+    // section3 is appended as a new managed section
+    expect(result.body).toContain('- new section c');
+    expect(result.body).toContain('<!-- BEGIN MANAGED: section3 -->');
+    expect(result.body).toContain('<!-- END MANAGED: section3 -->');
+    // Stats reflect what happened
+    expect(result.stats.replaced).toBe(1);
+    expect(result.stats.appended).toBe(1);
+    expect(result.conflicts).toEqual([]);
+  });
 });
 
 // ─── mergePeerCard — conflict surfacing ──────────────────────────────────────

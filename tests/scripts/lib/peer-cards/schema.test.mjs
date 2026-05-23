@@ -11,12 +11,8 @@ import { describe, it, expect } from 'vitest';
 import {
   validatePeerCardFrontmatter,
   computeStalenessDays,
-  isStalePeerCard,
   STALENESS_THRESHOLD_DAYS,
   PEER_CARD_TARGETS,
-  isValidPeerCardId,
-  isValidPeerCardTarget,
-  isValidIsoTimestamp,
 } from '@lib/peer-cards/schema.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -248,27 +244,6 @@ describe('computeStalenessDays', () => {
   });
 });
 
-// ─── isStalePeerCard ─────────────────────────────────────────────────────────
-
-describe('isStalePeerCard', () => {
-  it('returns true for a card updated 31 days ago', () => {
-    const updated = '2026-04-22T12:00:00Z';
-    const now = new Date('2026-05-23T12:00:00Z'); // 31 days later
-    expect(isStalePeerCard(updated, now)).toBe(true);
-  });
-
-  it('returns false for a card updated exactly 30 days ago (boundary)', () => {
-    // STALENESS_THRESHOLD_DAYS=30 → stale only when > 30
-    const updated = '2026-04-23T12:00:00Z';
-    const now = new Date('2026-05-23T12:00:00Z');
-    expect(isStalePeerCard(updated, now)).toBe(false);
-  });
-
-  it('returns true for an unparseable timestamp (Infinity > 30)', () => {
-    expect(isStalePeerCard('not-a-date', new Date('2026-05-23T12:00:00Z'))).toBe(true);
-  });
-});
-
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 describe('STALENESS_THRESHOLD_DAYS', () => {
@@ -288,71 +263,3 @@ describe('PEER_CARD_TARGETS', () => {
   });
 });
 
-// ─── Standalone predicates ───────────────────────────────────────────────────
-
-describe('isValidPeerCardId', () => {
-  it('accepts a valid kebab-case slug', () => {
-    expect(isValidPeerCardId('op-cardguy')).toBe(true);
-  });
-
-  it('rejects uppercase', () => {
-    expect(isValidPeerCardId('Op-Cardguy')).toBe(false);
-  });
-
-  it('rejects empty string', () => {
-    expect(isValidPeerCardId('')).toBe(false);
-  });
-
-  it('rejects non-string', () => {
-    expect(isValidPeerCardId(42)).toBe(false);
-    expect(isValidPeerCardId(null)).toBe(false);
-  });
-
-  it('rejects ids longer than 128 chars', () => {
-    const tooLong = 'a-' + 'b'.repeat(128);
-    expect(isValidPeerCardId(tooLong)).toBe(false);
-  });
-});
-
-describe('isValidPeerCardTarget', () => {
-  it('accepts "user"', () => {
-    expect(isValidPeerCardTarget('user')).toBe(true);
-  });
-
-  it('accepts "agent"', () => {
-    expect(isValidPeerCardTarget('agent')).toBe(true);
-  });
-
-  it('rejects "User" (case-sensitive)', () => {
-    expect(isValidPeerCardTarget('User')).toBe(false);
-  });
-
-  it('rejects unknown values', () => {
-    expect(isValidPeerCardTarget('admin')).toBe(false);
-    expect(isValidPeerCardTarget('')).toBe(false);
-    expect(isValidPeerCardTarget(null)).toBe(false);
-  });
-});
-
-describe('isValidIsoTimestamp', () => {
-  it('accepts canonical ISO 8601 Z timestamps', () => {
-    expect(isValidIsoTimestamp('2026-05-23T12:00:00Z')).toBe(true);
-  });
-
-  it('accepts millisecond precision', () => {
-    expect(isValidIsoTimestamp('2026-05-23T12:00:00.123Z')).toBe(true);
-  });
-
-  it('rejects date-only', () => {
-    expect(isValidIsoTimestamp('2026-05-23')).toBe(false);
-  });
-
-  it('rejects offset timezone', () => {
-    expect(isValidIsoTimestamp('2026-05-23T12:00:00+02:00')).toBe(false);
-  });
-
-  it('rejects non-string', () => {
-    expect(isValidIsoTimestamp(null)).toBe(false);
-    expect(isValidIsoTimestamp(undefined)).toBe(false);
-  });
-});

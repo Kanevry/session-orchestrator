@@ -232,17 +232,18 @@ describe('validateTierConsistency', () => {
 // ---------------------------------------------------------------------------
 
 describe('check-agents Check 8 — production agents', () => {
-  it('exits 0 for the real plugin repo (all 11 agents have valid sandbox-tier)', () => {
+  it('exits 0 for the real plugin repo (all production agents have valid sandbox-tier)', () => {
     const r = runCheckAgents(PLUGIN_REPO);
     expect(r.status).toBe(0);
   });
 
-  it('emits 11 PASS lines for Check 8 (one per agent)', () => {
+  it('emits ≥8 PASS lines for Check 8 (one per agent — floor/ceiling per test-quality.md dynamic-artifact-count carve-out)', () => {
     const r = runCheckAgents(PLUGIN_REPO);
     const check8Pass = r.stdout
       .split('\n')
       .filter((l) => l.startsWith('  PASS:') && l.includes('sandbox-tier OK'));
-    expect(check8Pass.length).toBe(11);
+    expect(check8Pass.length).toBeGreaterThanOrEqual(8);
+    expect(check8Pass.length).toBeLessThanOrEqual(50);
   });
 
   it('emits no FAIL lines for Check 8 in the real repo', () => {
