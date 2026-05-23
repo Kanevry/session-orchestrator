@@ -10,12 +10,13 @@
  *                      1 byte-identical stderr WARN.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { _parseCrossRepo, getCrossRepoProjects } from '@lib/config/cross-repo.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
+import { validatePathInsideProject } from '../../../scripts/lib/path-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // _parseCrossRepo — PURE parser tests
@@ -243,28 +244,43 @@ describe('_parseCrossRepo — shell-meta validation (#477)', () => {
 
 // W4-Q4 HIGH-1 end-to-end: a `../`-bearing entry must be REJECTED at the sink
 // by validatePathInsideProject. The regex permits it; confinement catches it.
+//
+// W2-I1 (#496) — these tests previously used `realpathSync(join(homedir(), 'Projects'))`
+// as the projectsRoot, which broke on CI runners where `/Users/runner/Projects`
+// does not exist (ENOENT). The refactor below replaces the homedir dependency
+// with a mkdtempSync-isolated fixture that is canonicalized via realpathSync
+// (required on macOS because `os.tmpdir()` returns `/var/folders/...` but the
+// canonical path is `/private/var/folders/...` — without canonicalization the
+// Phase-2 realpath check would reject legitimate descendants).
 describe('end-to-end: validatePathInsideProject rejects ../-bearing cross-repo entries (#477)', () => {
-  // Inline dynamic import to keep the test file's top-level imports minimal.
-  it('confinement rejects "../etc/passwd" against a ~/Projects root (real path-utils)', async () => {
-    const { validatePathInsideProject } = await import('../../../scripts/lib/path-utils.mjs');
-    const { realpathSync } = await import('node:fs');
-    const { join } = await import('node:path');
-    const { homedir } = await import('node:os');
-    // Resolve the would-be path the way the sink scripts do (after expandHome).
-    const projectsRoot = realpathSync(join(homedir(), 'Projects'));
+  let projectsRoot;
+
+  beforeAll(() => {
+    // mkdtempSync gives us a real, isolated directory we own; realpathSync
+    // canonicalizes the macOS `/var → /private/var` symlink hop so the sink's
+    // two-phase lexical+realpath check sees a stable namespace.
+    projectsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'cross-repo-projects-root-')));
+  });
+
+  afterAll(() => {
+    rmSync(projectsRoot, { recursive: true, force: true });
+  });
+
+  it('confinement rejects "../etc/passwd" against a ~/Projects root (real path-utils)', () => {
+    // Construction shape preserved: an escape attempt built relative to
+    // projectsRoot so the lexical confinement check still triggers.
     const escapeAttempt = join(projectsRoot, '..', 'etc', 'passwd');
     const guard = validatePathInsideProject(escapeAttempt, projectsRoot);
     expect(guard.ok).toBe(false);
     expect(['lexical', 'symlink']).toContain(guard.reason);
   });
 
-  it('confinement accepts a path inside the project root', async () => {
-    const { validatePathInsideProject } = await import('../../../scripts/lib/path-utils.mjs');
-    const { realpathSync } = await import('node:fs');
-    const { join } = await import('node:path');
-    const { homedir } = await import('node:os');
-    const projectsRoot = realpathSync(join(homedir(), 'Projects'));
+  it('confinement accepts a path inside the project root', () => {
+    // Create the descendant on disk so the Phase-2 realpath call resolves
+    // (otherwise the ENOENT branch returns ok:true with realPath: undefined,
+    // which is correct but defeats the purpose of asserting a full success).
     const inside = join(projectsRoot, 'Bernhard', 'session-orchestrator');
+    mkdirSync(inside, { recursive: true });
     const guard = validatePathInsideProject(inside, projectsRoot);
     expect(guard.ok).toBe(true);
   });

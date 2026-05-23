@@ -1,0 +1,311 @@
+/**
+ * tests/lib/validate/check-test-fixture-shapes.test.mjs
+ *
+ * Tests for scripts/lib/validate/check-test-fixture-shapes.mjs (#556).
+ *
+ * The check is a CLI script (not an importable module), so tests exercise it
+ * via spawnSync(process.execPath, [SCRIPT, fixtureRoot]) against tmpdir
+ * fixtures with minimal git-init for git ls-files enumeration.
+ *
+ * Every positive case asserts BOTH result.status AND presence of `  FAIL:`
+ * lines (status-only is the silent-pass class per test-quality.md).
+ *
+ * Coverage:
+ *   - 4 positive cases for the 4 patterns (F1–F4)
+ *   - 4 allowlist cases (AWS canonical, sk_test_, xoxb-PLACEHOLDER,
+ *     AIzaSy-PLACEHOLDER)
+ *   - 1 magic-comment case
+ *   - 1 scope case (production source not scanned)
+ *   - 1 empty/control case
+ */
+
+import { describe, it, expect, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..', '..');
+const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-test-fixture-shapes.mjs');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Track tmpdirs for cleanup */
+const tmpDirs = [];
+
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    const dir = tmpDirs.pop();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+});
+
+/**
+ * Run the check CLI synchronously against a given root.
+ * @param {string} root
+ */
+function runCheck(root) {
+  return spawnSync(process.execPath, [SCRIPT, root], {
+    encoding: 'utf8',
+    timeout: 20_000,
+  });
+}
+
+/**
+ * Create a tmpdir with a git-init'd repo (so `git ls-files` works).
+ * @param {(root: string) => void} setupFn - write files into root
+ */
+function makeTmpRepo(setupFn) {
+  const root = mkdtempSync(join(os.tmpdir(), 'fixture-shape-test-'));
+  tmpDirs.push(root);
+  spawnSync('git', ['init', '-b', 'main'], { cwd: root, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root, encoding: 'utf8' });
+  setupFn(root);
+  // Stage all files so git ls-files can enumerate them
+  spawnSync('git', ['add', '-A'], { cwd: root, encoding: 'utf8' });
+  return root;
+}
+
+/** Write a file under tests/ — caller passes the basename or relative path */
+function writeTestFile(root, relPath, content) {
+  const full = join(root, 'tests', relPath);
+  const dir = full.substring(0, full.lastIndexOf('/'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(full, content);
+}
+
+// ---------------------------------------------------------------------------
+// Control: empty tests/ tree
+// ---------------------------------------------------------------------------
+
+describe('Control: empty tests/ tree', () => {
+  it('exits 0 with empty tests/ tree', () => {
+    const root = makeTmpRepo((r) => {
+      // Write only a non-tests/ file so git has something to track
+      writeFileSync(join(r, 'README.md'), '# test\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('  PASS:');
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1: Stripe sk_live_
+// ---------------------------------------------------------------------------
+
+describe('F1: Stripe sk_live_ pattern', () => {
+  it('exits 1 when sk_live_<24+chars> is found', () => {
+    const root = makeTmpRepo((r) => {
+      // 26 chars after sk_live_ — well over the 24 minimum
+      writeTestFile(r, 'leak.test.mjs', "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F1 (Stripe sk_live_)');
+    expect(result.stdout).toContain('leak.test.mjs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F2: Slack xoxb-<digits>
+// ---------------------------------------------------------------------------
+
+describe('F2: Slack xoxb-<digits> pattern', () => {
+  it('exits 1 when xoxb-<6+digits> is found', () => {
+    const root = makeTmpRepo((r) => {
+      // 8 digits — over the 6 minimum
+      writeTestFile(r, 'slack.test.mjs', "const TOKEN = 'xoxb-12345678-987654321-AbCdEfGhIj';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F2 (Slack xoxb-<digits>)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F3: AWS AKIA pattern (NOT the canonical AKIAIOSFODNN7EXAMPLE)
+// ---------------------------------------------------------------------------
+
+describe('F3: AWS AKIA pattern (live shape, not canonical)', () => {
+  it('exits 1 when AKIA<16-uppercase-alphanum-chars> is found (and is not the canonical example)', () => {
+    const root = makeTmpRepo((r) => {
+      // 16 uppercase-alphanum chars after AKIA — NOT the canonical example
+      // "REALLIVEKEY9ABCDE" = 17 chars; want exactly 16: REALLIVEKEY9ABCD = 16
+      writeTestFile(r, 'aws.test.mjs', "const ACCESS_KEY = 'AKIAREALLIVEKEY9ABCD';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F3 (AWS AKIA…)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4: Google AIzaSy pattern
+// ---------------------------------------------------------------------------
+
+describe('F4: Google AIzaSy pattern', () => {
+  it('exits 1 when AIzaSy<33-chars> is found', () => {
+    const root = makeTmpRepo((r) => {
+      // 33 chars after AIzaSy
+      writeTestFile(r, 'google.test.mjs', "const API_KEY = 'AIzaSyA1B2C3D4E5F6G7H8I9J0kLmNoPqRsTuVw';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F4 (Google AIzaSy…)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist-1: AWS canonical example AKIAIOSFODNN7EXAMPLE
+// ---------------------------------------------------------------------------
+
+describe('Allowlist-1: AWS canonical AKIAIOSFODNN7EXAMPLE', () => {
+  it('exits 0 when AKIAIOSFODNN7EXAMPLE appears in tests/ (AWS docs canonical allowlist)', () => {
+    const root = makeTmpRepo((r) => {
+      // Match the real-world usage in tests/unit/quality-gate-diagnostics.test.mjs:
+      // "AKIAIOSFODNN7EXAMPLE23" — canonical + 2-char suffix
+      writeTestFile(r, 'redaction.test.mjs', "const input = 'key=AKIAIOSFODNN7EXAMPLE23 found';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+
+  it('exits 0 for the bare canonical form AKIAIOSFODNN7EXAMPLE without suffix', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(r, 'redaction.test.mjs', "const KEY = 'AKIAIOSFODNN7EXAMPLE';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist-2: sk_test_ prefix
+// ---------------------------------------------------------------------------
+
+describe('Allowlist-2: Stripe sk_test_ prefix', () => {
+  it('exits 0 when sk_test_<24+chars> is in tests/ (the suggested replacement)', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(r, 'stripe.test.mjs', "const KEY = 'sk_test_PLACEHOLDER_AAAAAAAAAAAAAAAAAAAAAA';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist-3: xoxb-PLACEHOLDER
+// ---------------------------------------------------------------------------
+
+describe('Allowlist-3: xoxb-PLACEHOLDER canonical', () => {
+  it('exits 0 when xoxb-PLACEHOLDER segments are in tests/', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(r, 'slack.test.mjs', "const TOKEN = 'xoxb-PLACEHOLDER-PLACEHOLDER-PLACEHOLDER';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist-4: AIzaSy-PLACEHOLDER
+// ---------------------------------------------------------------------------
+
+describe('Allowlist-4: AIzaSy-PLACEHOLDER canonical', () => {
+  it('exits 0 when AIzaSy-PLACEHOLDER appears in tests/', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(r, 'google.test.mjs', "const API_KEY = 'AIzaSy-PLACEHOLDER-AAAAAAAAAAAAAAAAAAAAAAA';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Magic-comment: // @secret-shape-allowed
+// ---------------------------------------------------------------------------
+
+describe('Magic-comment: // @secret-shape-allowed', () => {
+  it('exits 0 when a file with a live-shape pattern has // @secret-shape-allowed in first 5 lines', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'scanner-fixture.test.mjs',
+        [
+          '// @secret-shape-allowed',
+          '// Fixture file: intentionally contains live-shape patterns',
+          '// to exercise the secret scanner.',
+          "const STRIPE = 'sk_live_abcdefghijklmnopqrstuvwxyz12';",
+          "const AWS = 'AKIAREALLIVEKEYABCD';",
+        ].join('\n') + '\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+
+  it('exits 1 when the magic comment is BELOW the first 5 lines (out of scan window)', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'too-late.test.mjs',
+        [
+          '// line 1',
+          '// line 2',
+          '// line 3',
+          '// line 4',
+          '// line 5',
+          '// line 6 — magic comment too late',
+          '// @secret-shape-allowed',
+          "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';",
+        ].join('\n') + '\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope: production source not scanned
+// ---------------------------------------------------------------------------
+
+describe('Scope: only tests/**/*.{mjs,ts,js} scanned', () => {
+  it('exits 0 when a live-shape pattern appears in production source (scripts/, not tests/)', () => {
+    const root = makeTmpRepo((r) => {
+      // Production source outside tests/ — must NOT be scanned
+      mkdirSync(join(r, 'scripts'), { recursive: true });
+      writeFileSync(
+        join(r, 'scripts', 'config.mjs'),
+        "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';\n",
+      );
+      // Plus a clean tests/ file so the tree isn't completely empty
+      writeTestFile(r, 'clean.test.mjs', "import { it } from 'vitest';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});

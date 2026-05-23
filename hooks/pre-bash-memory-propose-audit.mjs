@@ -54,6 +54,16 @@ const MEMORY_PROPOSE_REGEX = /\bnode\b.*\bmemory-propose\.mjs\b/i;
  *   --insight "quoted value"   → --insight [REDACTED]
  *   --insight unquoted         → --insight [REDACTED]
  */
+// CAVEAT (#554 A3, low severity): The regex operates on the unparsed Bash
+// tool_input.command string. Exotic shell forms bypass redaction by hiding
+// the value behind shell expansion the regex cannot see:
+//   --insight=$VAR           (env-var indirection)
+//   --insight=$(cat secret)  (command substitution)
+//   --insight <<<heredoc     (here-string)
+// The literal token (e.g. `$VAR`) is logged, NOT the resolved value — so an
+// audit-trail leak requires the resolved value to also appear literally
+// elsewhere in the command. Acceptable per the project's local-trust model.
+//
 // Issue #546: `\S+` would match an opening quote `"` or `'` (non-whitespace),
 // and on malformed inputs (e.g. unbalanced or shell-already-unescaped values)
 // could partial-match the value, leaving the tail unredacted. The negative

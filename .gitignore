@@ -65,6 +65,9 @@ coverage/
 # Pattern 3 (templates-first) + Pattern 2 (slopcheck) runtime caches — machine-local, never committable
 .orchestrator/runtime/
 
+# PSA-004 sub-mode C (#552) — staging-fence per-agent intent log; runtime only
+.orchestrator/staging-fence/
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/

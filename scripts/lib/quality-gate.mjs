@@ -321,6 +321,47 @@ function writeDiagnosticsBundle(repoRoot, bundle) {
 }
 
 /**
+ * Detect whether the current wave touched shared-lib / hooks / husky code surface.
+ * Returns `{ touched: boolean, paths: string[] }`.
+ *
+ * Used by the inter-wave Quality-Lite step to auto-promote Lite → Full Gate
+ * when shared code is touched (#555 FL-3). The rationale: deep-1647 inter-wave
+ * 3→4 caught 2 cross-cutting regressions only because Quality-Lite happened to
+ * run the full test suite. When an Impl wave touches files under
+ * `scripts/lib/*`, `hooks/*`, or `.husky/*`, the blast radius is wider than the
+ * agent could predict — auto-promote to Full Gate.
+ *
+ * Safe-default: any git failure (missing sinceRef, detached HEAD, no commits)
+ * returns `{ touched: false, paths: [] }` so the gate never blocks a session.
+ *
+ * @param {object} opts
+ * @param {string} opts.repoRoot                    — repo to diff against.
+ * @param {string} [opts.sinceRef]                  — ref to diff from. Defaults to
+ *                                                    last-green-sha.txt, then HEAD~1.
+ * @param {string[]} [opts.promoteWhenTouched]      — path prefixes that trigger
+ *                                                    promotion. Default:
+ *                                                    `['scripts/lib/', 'hooks/', '.husky/']`.
+ * @returns {{ touched: boolean, paths: string[] }} `paths` only contains files
+ *   matching at least one of `promoteWhenTouched` prefixes; never the full diff.
+ */
+export function detectSharedLibTouch(opts) {
+  const safeOpts = (typeof opts === 'object' && opts !== null) ? opts : {};
+  const repoRoot = resolveRepoRoot(safeOpts.repoRoot);
+  const prefixes = Array.isArray(safeOpts.promoteWhenTouched) && safeOpts.promoteWhenTouched.length > 0
+    ? safeOpts.promoteWhenTouched
+    : ['scripts/lib/', 'hooks/', '.husky/'];
+  const sinceRef = (typeof safeOpts.sinceRef === 'string' && safeOpts.sinceRef.trim())
+    ? safeOpts.sinceRef
+    : (readLastGreenSha(repoRoot) ?? 'HEAD~1');
+
+  const changed = listChangedFiles(repoRoot, sinceRef);
+  if (changed.length === 0) return { touched: false, paths: [] };
+
+  const matched = changed.filter((file) => prefixes.some((p) => file.startsWith(p)));
+  return { touched: matched.length > 0, paths: matched };
+}
+
+/**
  * Coerce `maxRetries` to [0, MAX_RETRIES_HARD_CAP] integer.
  *
  * @param {unknown} n

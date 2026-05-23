@@ -27,6 +27,19 @@ node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplev
   exit 1
 }
 
+# check-test-fixture-shapes (#556) — scan tracked tests/**/*.{mjs,ts,js} for
+# live-credential shapes (sk_live_, xoxb-<digits>, AKIA…, AIzaSy…) that would
+# block a public GitHub-mirror push. Uses the same git ls-files enumeration
+# pattern as check-owner-leakage, so staged-but-not-committed test fixtures
+# are caught before they land on a public branch.
+node scripts/lib/validate/check-test-fixture-shapes.mjs "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || {
+  echo "✗ check-test-fixture-shapes: live-credential pattern detected in tests/. Commit blocked." >&2
+  echo "  Run \`node scripts/lib/validate/check-test-fixture-shapes.mjs .\` for details." >&2
+  echo "  Use \`// @secret-shape-allowed\` magic comment on the fixture file to allowlist intentional cases." >&2
+  echo "  Or 'git commit --no-verify' to bypass (only after triaging)." >&2
+  exit 1
+}
+
 npx lint-staged
 
 # PSA-004 sub-mode B: commit-time wave-scope guard (runs AFTER lint-staged

@@ -48,6 +48,13 @@ const LOCK_POLL_MS = 50;
  * with canonicalizeRoot:true so macOS tmpdir paths (where /var resolves to
  * /private/var) are handled consistently in tests and production.
  *
+ * Trust boundary (#554 A4, low severity): On block, the TypeError surfaces
+ * the resolved absolute path (`${resolved}`). This path-info disclosure is
+ * acceptable per the project's local-trust model — only reachable via an
+ * attacker-controlled `relPath`, surfaced only to local stderr and the
+ * memory-propose audit log (operator-readable). NOT for environments where
+ * filesystem layout is sensitive.
+ *
  * @param {string} repoRoot — absolute path to the repo working directory
  * @param {string} relPath  — path relative to repoRoot (must not escape it)
  * @returns {string} resolved absolute path (realPath when the target exists, else lexicalPath)

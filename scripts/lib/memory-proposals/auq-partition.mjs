@@ -19,6 +19,20 @@
  * Tests-to-impl ratio is 5.7× (~9 tests / ~7 LOC fn) — a canary for
  * over-tested speculative seams.
  *
+ * DEADLINE (#554 A1): PRD F2.2 close — review-gated, not wall-clock. If no
+ * production ESM-static call-site lands by PRD F2.2 close, the cleanup
+ * action below MUST be executed by the session-end coordinator. (We chose
+ * a feature-wave deadline over a wall-clock failing test to avoid
+ * cross-timezone CI flakiness — see #554 W1-D4.)
+ *
+ * Cleanup action (if probation expires at PRD F2.2 close with 0 static callers):
+ *   1. Inline the 8-line for-loop (lines 26-34 of this file) back into
+ *      `skills/session-end/SKILL.md` (currently lines 370-377: replace the
+ *      `_partitionForAuq` import + call with the inlined loop body).
+ *   2. Delete `scripts/lib/memory-proposals/auq-partition.mjs` (this file).
+ *   3. Delete `tests/scripts/lib/memory-proposals/auq-partition.test.mjs`.
+ *   4. Update any remaining prose mentions of `_partitionForAuq` in skills/.
+ *
  * @param {Array<object>} queue — items to partition (each item is a memory-proposal record).
  * @returns {{batches: object[][], totalBatches: number}}
  */

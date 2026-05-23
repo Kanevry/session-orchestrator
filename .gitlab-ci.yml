@@ -130,6 +130,21 @@ owner-leakage:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
+# fixture-shape — scan tracked tests/**/*.{mjs,ts,js} for live-credential
+# shape patterns (sk_live_, xoxb-<digits>, AKIA…, AIzaSy…) that would block
+# a public GitHub-mirror push. Parity with the pre-commit hook (#556).
+fixture-shape:
+  stage: validate
+  <<: *node-setup
+  interruptible: true
+  timeout: 5m
+  allow_failure: false
+  script:
+    - node scripts/lib/validate/check-test-fixture-shapes.mjs "$CI_PROJECT_DIR"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 plugin-schema-validate:
   stage: validate
   <<: *node-setup

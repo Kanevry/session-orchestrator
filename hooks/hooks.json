@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v3.6.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
+            "command": "echo '🎯 Session Orchestrator v3.7.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
             "async": false
           },
           {
@@ -35,6 +35,11 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-staging-fence.mjs\"",
             "timeout": 5
           },
           {

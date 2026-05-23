@@ -41,6 +41,15 @@ export const STATE_LOCK_PATH = '.orchestrator/state.lock';
 export const DEFAULT_STATE_LOCK_TIMEOUT_MS = 10000;
 export const STATE_LOCK_POLL_MS = 100;
 
+// Staging-fence commit-mutex (PSA-004 sub-mode C, issue #552). Held only for
+// the duration of the wave-scope-commit-guard's cross-agent fence check.
+//   - state.lock          = "STATE.md is being written right now"
+//   - staging-fence.lock  = "the cross-fence commit check is running right now"
+// Distinct lockfile so the two locks never contend with each other.
+export const STAGING_FENCE_LOCK_PATH = '.orchestrator/staging-fence/.commit.lock';
+export const DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS = 10000;
+export const STAGING_FENCE_LOCK_POLL_MS = 100;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -769,6 +778,317 @@ export async function withStateMdLock(repoRoot, fn, opts = {}) {
     const releaseResult = releaseStateLock({ repoRoot, holder });
     if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
       console.warn(`withStateMdLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`);
+    }
+  }
+
+  if (caughtError !== null) throw caughtError;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Staging-fence commit-mutex (PSA-004 sub-mode C, issue #552)
+// ---------------------------------------------------------------------------
+//
+// Held only around the wave-scope-commit-guard cross-fence check. Two sibling
+// wave-agents that both pass through the per-agent guard race to acquire this
+// lock; the winner inspects ALL fence files, the loser polls until the winner
+// releases. Without the mutex the check is TOCTOU-vulnerable: agent A reads
+// agent B's fence file BEFORE B writes agent B's last `git add` intent, and
+// both proceed to `git commit` with overlapping staged paths.
+//
+// Implementation reuses the same tmp+linkSync cross-process pattern as the
+// STATE.md lock above (createStateLockExclusive). The two lockfiles are
+// distinct so STATE.md writes never contend with commit-guard checks.
+
+/**
+ * Resolve the absolute path to the staging-fence commit lock file.
+ * @param {string|undefined} repoRoot
+ * @returns {string}
+ */
+function stagingFenceLockPathFor(repoRoot) {
+  return path.join(repoRoot ?? process.cwd(), STAGING_FENCE_LOCK_PATH);
+}
+
+/**
+ * Build a fresh staging-fence lock body. Same shape as buildStateLockBody so
+ * the parseStateLock parser works identically — there is no need for a
+ * second parser.
+ *
+ * @param {{ holder?: string }} args
+ * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }}
+ */
+function buildStagingFenceLockBody({ holder }) {
+  return {
+    pid: process.pid,
+    host: os.hostname(),
+    acquiredAt: nowIso(),
+    holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
+  };
+}
+
+/**
+ * Atomically create the staging-fence commit-lock via tmp + linkSync.
+ * Same pattern as createStateLockExclusive; only the tmp prefix differs.
+ *
+ * @param {string} lockFile  Absolute path to the staging-fence lockfile.
+ * @param {object} body      Lock body to serialize.
+ * @returns {{ ok: true } | { ok: false, reason: 'exists' | 'fs-error', error?: string }}
+ */
+function createStagingFenceLockExclusive(lockFile, body) {
+  const dir = path.dirname(lockFile);
+  let tmpFile;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpSuffix = crypto.randomBytes(8).toString('hex');
+    tmpFile = path.join(dir, `.staging-fence.lock.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', 'utf8');
+  } catch (err) {
+    if (tmpFile) {
+      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  try {
+    fs.linkSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      return { ok: false, reason: 'exists' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Atomically replace an existing staging-fence lock via tmp + rename. Used
+ * only on the stale-override path where we KNOW the existing lock is dead.
+ *
+ * @param {string} lockFile  Absolute path to the staging-fence lockfile.
+ * @param {object} body      Lock body to serialize.
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
+ */
+function replaceStagingFenceLockAtomic(lockFile, body) {
+  try {
+    const dir = path.dirname(lockFile);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpSuffix = crypto.randomBytes(6).toString('hex');
+    const tmpFile = path.join(dir, `.staging-fence.lock.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', { encoding: 'utf8' });
+    fs.renameSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * Single-pass acquire attempt for the staging-fence lock. Mirrors
+ * tryAcquireStateLock — only the lockfile path + tmp prefix differ.
+ *
+ * Returns:
+ *   { ok: true, lock }                          — acquired
+ *   { ok: false, reason: 'held', existingLock } — live holder; caller polls
+ *   { ok: false, reason: 'fs-error', error }    — filesystem failure
+ */
+function tryAcquireStagingFenceLock(lockFile, body) {
+  try {
+    const createResult = createStagingFenceLockExclusive(lockFile, body);
+    if (createResult.ok) {
+      return { ok: true, lock: body };
+    }
+    if (createResult.reason === 'fs-error') {
+      return createResult;
+    }
+
+    let existingRaw;
+    try {
+      existingRaw = fs.readFileSync(lockFile, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return { ok: false, reason: 'held', existingLock: null };
+      }
+      return { ok: false, reason: 'fs-error', error: err.message };
+    }
+
+    const existing = parseStateLock(existingRaw); // body shape is identical
+
+    if (existing === null) {
+      console.warn('stale staging-fence.lock (unparseable contents) overridden');
+      const writeResult = replaceStagingFenceLockAtomic(lockFile, body);
+      if (!writeResult.ok) return writeResult;
+      return { ok: true, lock: body };
+    }
+
+    const sameHost = existing.host === os.hostname();
+    const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
+
+    if (pidAlive) {
+      return { ok: false, reason: 'held', existingLock: existing };
+    }
+
+    console.warn(`stale staging-fence.lock from PID ${existing.pid} overridden`);
+    const writeResult = replaceStagingFenceLockAtomic(lockFile, body);
+    if (!writeResult.ok) return writeResult;
+    return { ok: true, lock: body };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * Acquire the staging-fence commit-lock. Polls every STAGING_FENCE_LOCK_POLL_MS
+ * until the lock is acquired or the timeout expires. Same semantics as
+ * acquireStateLock above.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=10000]
+ * @param {string} [opts.repoRoot]
+ * @param {string} [opts.holder]
+ * @param {number} [opts.pollMs]
+ */
+export async function acquireStagingFenceLock({
+  timeoutMs = DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS,
+  repoRoot,
+  holder,
+  pollMs = STAGING_FENCE_LOCK_POLL_MS,
+} = {}) {
+  const lockFile = stagingFenceLockPathFor(repoRoot);
+  const body = buildStagingFenceLockBody({ holder });
+  const deadline = Date.now() + (typeof timeoutMs === 'number' && timeoutMs >= 0
+    ? timeoutMs
+    : DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS);
+  const effectivePollMs = typeof pollMs === 'number' && pollMs > 0
+    ? pollMs
+    : STAGING_FENCE_LOCK_POLL_MS;
+
+  for (;;) {
+    const attempt = tryAcquireStagingFenceLock(lockFile, body);
+    if (attempt.ok) return attempt;
+    if (attempt.reason === 'fs-error') return attempt;
+
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        reason: 'timeout',
+        existingLock: attempt.existingLock ?? null,
+      };
+    }
+    await delay(effectivePollMs);
+  }
+}
+
+/**
+ * Release the staging-fence commit-lock IFF the holder matches.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot]
+ * @param {string} [opts.holder]
+ * @returns {{ ok: true } | { ok: false, reason: 'not-found'|'not-owner'|'fs-error', error?: string }}
+ */
+export function releaseStagingFenceLock({ repoRoot, holder } = {}) {
+  const lockFile = stagingFenceLockPathFor(repoRoot);
+
+  let raw;
+  try {
+    raw = fs.readFileSync(lockFile, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { ok: false, reason: 'not-found' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  const lock = parseStateLock(raw);
+  if (lock === null) {
+    return { ok: false, reason: 'not-owner' };
+  }
+
+  const ownerMatch = typeof holder === 'string' && holder.length > 0
+    ? lock.holder === holder
+    : lock.pid === process.pid && lock.host === os.hostname();
+
+  if (!ownerMatch) {
+    return { ok: false, reason: 'not-owner' };
+  }
+
+  try {
+    fs.unlinkSync(lockFile);
+    return { ok: true };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { ok: false, reason: 'not-found' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * High-level wrapper: acquire the staging-fence commit-lock, run `fn`,
+ * release on completion or throw. Always releases — even if `fn` throws —
+ * before re-raising.
+ *
+ * No Session Config short-circuit is provided. Unlike the STATE.md lock
+ * (which is bypassed when `state-md-lock.enabled: false`), this lock guards
+ * a single small read-modify-write on a hidden runtime directory and has
+ * no performance cost worth opting out of. If the lock genuinely needs to
+ * be disabled, callers can skip the wrapper entirely.
+ *
+ * Throws when:
+ *   - acquireStagingFenceLock fails (timeout or fs-error) → labelled Error.
+ *   - `fn` throws → the original error is re-thrown after release.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {() => (T | Promise<T>)} fn
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs]
+ * @param {string} [opts.holder]
+ * @param {number} [opts.pollMs]
+ * @returns {Promise<T>}
+ * @template T
+ */
+export async function withStagingFenceLock(repoRoot, fn, opts = {}) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('withStagingFenceLock: fn must be a function');
+  }
+
+  const holder = typeof opts.holder === 'string' && opts.holder.length > 0
+    ? opts.holder
+    : `pid-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+
+  const acquireResult = await acquireStagingFenceLock({
+    repoRoot,
+    timeoutMs: opts.timeoutMs,
+    holder,
+    pollMs: opts.pollMs,
+  });
+
+  if (!acquireResult.ok) {
+    const reason = acquireResult.reason;
+    const extra = reason === 'timeout' && acquireResult.existingLock
+      ? ` (held by ${acquireResult.existingLock.holder}, pid=${acquireResult.existingLock.pid})`
+      : reason === 'fs-error' && acquireResult.error
+        ? `: ${acquireResult.error}`
+        : '';
+    const err = new Error(`withStagingFenceLock: acquire failed (${reason})${extra}`);
+    err.code = `STAGING_FENCE_LOCK_${reason.toUpperCase().replace(/-/g, '_')}`;
+    throw err;
+  }
+
+  let result;
+  let caughtError = null;
+  try {
+    result = await fn();
+  } catch (err) {
+    caughtError = err;
+  } finally {
+    const releaseResult = releaseStagingFenceLock({ repoRoot, holder });
+    if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
+      console.warn(
+        `withStagingFenceLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`,
+      );
     }
   }
 

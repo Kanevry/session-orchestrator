@@ -4,6 +4,11 @@
  * Node.js port of the relevant functions from scripts/lib/hardening.sh.
  * Pure ESM. No zx dependency — lightweight for hook hot-paths.
  *
+ * Layering: hook-safe — pure functions only; no I/O at import time;
+ * ESM-pure for fast hook hot-paths. Hooks (under `hooks/`) import from
+ * this lib; this lib MUST NOT reverse-import from `hooks/`. Cross-cutting
+ * invariant for all exports below — see #554 A2.
+ *
  * Part of v3.0.0 migration (Epic #124, issue #135).
  */
 
@@ -174,6 +179,10 @@ export function gateEnabled(scopeFilePath, gateName) {
  *   5. Anchor: `^...$`.
  *
  * Case-sensitive. Empty pattern returns false.
+ *
+ * Hook-safe: pure, deterministic, no I/O. Current importers (grep-verified
+ * #554 A2): hooks/wave-scope-commit-guard.mjs, hooks/enforce-scope.mjs,
+ * scripts/lib/worktree-freshness.mjs, scripts/lib/pre-dispatch-check.mjs.
  *
  * @param {string} relPath
  * @param {string} pattern

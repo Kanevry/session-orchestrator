@@ -109,6 +109,33 @@ Pattern 1 of the gsd Adoption Quick-Win Bundle (Issue #518) complements the PSA-
 
 See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Issue #518.
 
+## PSA-006 — Discovery Grep-Verification (#555 FL-2)
+
+Discovery agents and W1 explorers MUST verify any distributional claim — "100% of callers opt-in", "N of M sites use pattern X", "no remaining references to Y", "all instances replaced", etc. — with an EXECUTED `grep` or `rg` invocation. The Discovery output MUST quote:
+
+1. The exact pattern executed (e.g., `grep -rn "pathMatchesPattern" hooks/ scripts/ tests/`)
+2. The file scope passed to the tool
+3. The resulting count or zero-match assertion
+
+Untestable adoption claims based on inference, partial sampling, or LLM recall are **forbidden** — they previously triggered a mid-session STATE.md correction (deep-1647 W1-D3 → W3-P2 mismatch: claimed "4 of 4 callers opt-in" to `canonicalizeRoot`, actual state was "10 default + 4 opt-in", surfaced only when a W3 polish agent grep-verified `pathMatchesPattern` callers).
+
+Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted grep transcript and ask the Discovery agent to re-verify. Per `receiving-review.md` § RCR-003 skeptical-posture rule, this applies even when the claim is plausible — verification cost is cheap, mid-session correction cost is expensive.
+
+**When PSA-006 applies:**
+- W1 Discovery scope-mapping claims ("all callers do X", "no test exercises Y", "every consumer imports Z").
+- W3 Impl-Polish "this caller is unaffected" claims (the W3-P2 deep-1647 incident class).
+- Any agent that asserts a count, percentage, or distribution of code locations.
+
+**When PSA-006 does NOT apply:**
+- Inline single-file reads — the `Read` tool result IS the verification.
+- Claims about behaviour of a SINGLE function — a focused test verifies, not a grep.
+- Hypotheticals stated as such ("if all callers opted in, ..." is a question, not a claim).
+
+**PSA-006 anti-patterns:**
+- "All 4 callers already use pattern X" — without a quoted grep transcript and the file scope grepped.
+- "There are no remaining references to the old API" — without `grep -rn` evidence pinned to the current SHA.
+- "100% adoption" — a percentage is a distributional claim. Quote the numerator AND denominator from grep output.
+
 ## Anti-Patterns
 - Seeing unfamiliar changes and assuming they are "leftover mess" to clean up — they are likely active work.
 - Running `git reset --hard` to "start fresh" — this destroys all uncommitted work across all sessions.
@@ -118,4 +145,4 @@ See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Iss
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · ai-agent.md
+development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · ai-agent.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency)

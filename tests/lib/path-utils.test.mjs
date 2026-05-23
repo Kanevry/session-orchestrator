@@ -662,4 +662,51 @@ describe('validatePathInsideProject — opts.canonicalizeRoot (#549 G1)', () => 
     expect(callsAfterStringYes - callsAfterBaseline).toBe(1);
     expect(callsAfterNumberOne - callsAfterStringYes).toBe(1);
   });
+
+  // G-M3 (#553) — narrowed-catch rethrow on non-ENOENT/non-EACCES error
+  //
+  // SUT: scripts/lib/path-utils.mjs:191-200
+  //   try { effectiveRoot = realpathSync(root); }
+  //   catch (err) {
+  //     if (err && err.code !== 'ENOENT' && err.code !== 'EACCES') throw err;
+  //   }
+  //
+  // W3-P2 narrowed the catch to swallow ENOENT/EACCES only — any other code
+  // (ELOOP for symlink loops, EIO for hardware faults, EPERM, ENOTDIR, …)
+  // must propagate so the caller learns about genuine filesystem faults
+  // rather than silently degrading to the lexical-fallback path.
+  //
+  // Mirrors the G1.2 EACCES test (vi.spyOn(fs, 'realpathSync') pattern at
+  // path-utils.test.mjs:~553) but flips the expected behaviour from "swallow"
+  // to "rethrow".
+  //
+  // Falsification: if the catch were widened to `catch (err) { /* swallow */ }`
+  // or the condition were inverted, the function would NOT throw and the
+  // assertion would fail. If the narrowing were dropped entirely (no catch),
+  // the test would still pass because realpathSync's natural throw would
+  // propagate — but the `expect.objectContaining({ code: 'ELOOP' })` assertion
+  // pins us to the SPECIFIC error object thrown by the mock, not any incidental
+  // throw, so a refactor that rethrows a wrapped/normalized error would fail.
+  it('G-M3: rethrows non-ENOENT/non-EACCES error from realpathSync(root)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'g-m3-eloop-'));
+    const realTmp = fs.realpathSync(tmpDir);
+
+    // Mock ONLY the first call (canonicalize branch against root) to throw ELOOP.
+    // The SUT must rethrow before reaching Phase 2.
+    vi.spyOn(fs, 'realpathSync').mockImplementationOnce(() => {
+      const err = new Error('mock ELOOP from realpathSync(root)');
+      err.code = 'ELOOP';
+      throw err;
+    });
+
+    // The exact same {input, root, opts} shape that the G1.2 EACCES test uses,
+    // except we expect a THROW here (not a result object).
+    expect(() =>
+      validatePathInsideProject('subdir/file.txt', realTmp, {
+        canonicalizeRoot: true,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'ELOOP' }));
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
