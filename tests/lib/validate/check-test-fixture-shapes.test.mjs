@@ -107,8 +107,10 @@ describe('Control: empty tests/ tree', () => {
 describe('F1: Stripe sk_live_ pattern', () => {
   it('exits 1 when sk_live_<24+chars> is found', () => {
     const root = makeTmpRepo((r) => {
-      // 26 chars after sk_live_ — well over the 24 minimum
-      writeTestFile(r, 'leak.test.mjs', "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';\n");
+      // 26 chars after sk_live_ — well over the 24 minimum.
+      // Literal split so the test file SOURCE never contains a contiguous Stripe-shape
+      // pattern (GitHub secret-scanner protection — see issue #556 commit history).
+      writeTestFile(r, 'leak.test.mjs', "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';\n");
     });
     const result = runCheck(root);
     expect(result.status).toBe(1);
@@ -255,7 +257,7 @@ describe('Magic-comment: // @secret-shape-allowed', () => {
           '// @secret-shape-allowed',
           '// Fixture file: intentionally contains live-shape patterns',
           '// to exercise the secret scanner.',
-          "const STRIPE = 'sk_live_abcdefghijklmnopqrstuvwxyz12';",
+          "const STRIPE = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';",
           "const AWS = 'AKIAREALLIVEKEYABCD';",
         ].join('\n') + '\n',
       );
@@ -278,7 +280,7 @@ describe('Magic-comment: // @secret-shape-allowed', () => {
           '// line 5',
           '// line 6 — magic comment too late',
           '// @secret-shape-allowed',
-          "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';",
+          "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';",
         ].join('\n') + '\n',
       );
     });
@@ -299,7 +301,8 @@ describe('Scope: only tests/**/*.{mjs,ts,js} scanned', () => {
       mkdirSync(join(r, 'scripts'), { recursive: true });
       writeFileSync(
         join(r, 'scripts', 'config.mjs'),
-        "const KEY = 'sk_live_abcdefghijklmnopqrstuvwxyz12';\n",
+        // Literal split — see F1 test above for rationale.
+        "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';\n",
       );
       // Plus a clean tests/ file so the tree isn't completely empty
       writeTestFile(r, 'clean.test.mjs', "import { it } from 'vitest';\n");
