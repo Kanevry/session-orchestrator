@@ -23,6 +23,9 @@ regexes = [
   "dummy",
   "changeme",
 
+  # AWS docs canonical example key (published by AWS as the standard sample)
+  "(?i)AKIAIOSFODNN7EXAMPLE",
+
   # Supabase local/test references
   "supabase\\.co",
 ]
