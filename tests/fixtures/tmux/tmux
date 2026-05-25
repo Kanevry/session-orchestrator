@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# tests/fixtures/tmux/tmux — bash stub for tests/skills/tmux-layout.test.mjs
+#
+# Honors env vars:
+#   TMUX_STUB_VERSION              — "tmux -V" output (default "tmux 3.4")
+#   TMUX_STUB_CALL_LOG             — path to append call records (JSON array per line)
+#   TMUX_STUB_EXIT_CODE            — force exit code for all invocations (default 0)
+#   TMUX_STUB_HAS_SESSION_RESULT   — exit code for "has-session" (0=exists, 1=no session; default 1)
+#   TMUX_STUB_LIST_SESSIONS_OUTPUT — output for "list-sessions" (default empty)
+#
+# Subcommands supported (all fake-success unless overridden by env):
+#   tmux -V                        — print version
+#   tmux has-session -t <name>     — exit per TMUX_STUB_HAS_SESSION_RESULT
+#   tmux new-session ...           — log + exit 0
+#   tmux kill-session ...          — log + exit 0
+#   tmux split-window ...          — log + exit 0
+#   tmux send-keys ...             — log + exit 0
+#   tmux select-pane ...           — log + exit 0
+#   tmux attach-session ...        — log + exit 0
+#   tmux list-sessions             — print TMUX_STUB_LIST_SESSIONS_OUTPUT + exit 0
+#   tmux new-window ...            — log + exit 0
+#   (unknown)                      — log + exit 1
+
+set -eu
+
+EXIT_CODE="${TMUX_STUB_EXIT_CODE:-0}"
+CALL_LOG="${TMUX_STUB_CALL_LOG:-}"
+VERSION="${TMUX_STUB_VERSION:-tmux 3.4}"
+
+log_call() {
+  [ -z "$CALL_LOG" ] && return 0
+  # Append JSON array of args (one per line)
+  {
+    printf '['
+    local first=1
+    for arg in "$@"; do
+      if [ $first -eq 1 ]; then first=0; else printf ','; fi
+      # Escape backslash, then double-quote
+      local esc="${arg//\\/\\\\}"
+      esc="${esc//\"/\\\"}"
+      printf '"%s"' "$esc"
+    done
+    printf ']\n'
+  } >> "$CALL_LOG"
+}
+
+case "${1:-}" in
+  -V|--version)
+    echo "$VERSION"
+    exit "$EXIT_CODE"
+    ;;
+  has-session)
+    log_call "$@"
+    exit "${TMUX_STUB_HAS_SESSION_RESULT:-1}"
+    ;;
+  new-session|kill-session|split-window|send-keys|select-pane|attach-session|new-window)
+    log_call "$@"
+    exit "$EXIT_CODE"
+    ;;
+  list-sessions)
+    log_call "$@"
+    [ -n "${TMUX_STUB_LIST_SESSIONS_OUTPUT:-}" ] && echo "$TMUX_STUB_LIST_SESSIONS_OUTPUT"
+    exit "$EXIT_CODE"
+    ;;
+  '')
+    echo "stub-tmux: missing subcommand" >&2
+    exit 1
+    ;;
+  *)
+    log_call "$@"
+    echo "stub-tmux: unrecognized command '$1'" >&2
+    exit 1
+    ;;
+esac

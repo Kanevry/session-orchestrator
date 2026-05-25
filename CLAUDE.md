@@ -30,6 +30,8 @@ This repo uses Anthropic's additive instruction-file layering pattern: this root
 | [`.orchestrator/steering/{product,tech,structure}.md`](./.orchestrator/steering/) | Stable project context | session-start Phase 2.6 |
 | [`.claude/rules/*.md`](./.claude/rules/) | Always-on + glob-scoped engineering rules | per-wave via `rule-loader.mjs` |
 
+> **Opt-in visualization:** **`/tmux-layout`** renders a 4-pane operator side-channel (STATE.md tail, CI-watch, events.jsonl) in a second terminal — see [ADR-0007](docs/adr/0007-tmux-visualization-substrate.md). Coordinator chat stays in your original terminal (AUQ-001). PSA-003-compliant (`--force` required to replace an existing layout).
+
 ## Session Config
 
 persistence: true

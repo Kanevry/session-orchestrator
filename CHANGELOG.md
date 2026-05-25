@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/tmux-layout` skill (opt-in)** — operator-side tmux visualization for session side-channels (STATE.md tail, vcs-aware CI-watch, events.jsonl tail). Renders a 4-pane default layout via a printable one-liner the operator pastes into a second terminal. Pane 1 is a scratch shell (AUQ-001 compliant — coordinator chat stays in original terminal). PSA-003-compliant session-collision policy (`--force` required to replace). Per **ADR-0007** (`docs/adr/0007-tmux-visualization-substrate.md`). Closes #561, #562 (debug variant), #563 (telemetry + promotion gate).
+- **#557 staging-fence test-depth bundle** — added 33 unit tests for `hooks/pre-bash-staging-fence.mjs` (G1-G6 gate ladder + 14 GIT_ADD_REGEX variants), `withStagingFenceLock` (timeout/stale-PID/holder-mismatch/fn-throws/TypeError paths — fs-error path flagged as production-code testability seam follow-up), and `wave-scope-commit-guard` lock-failure branch. Closes #557.
+- **tmux-layout best-practice hardening** — coordinator E2E verification (14 practical CLI tests) found and fixed `jq --line-buffered` (not supported in jq 1.7+) → `--unbuffered`. Added 9 gap-fill tests (Pane 4 jq filter content + Pane 2 STATE.md path resolution + shellQuote injection safety + vcs-detector contract per platform). WebSearch research confirmed alignment with claude-squad/workmux/Anthropic Agent Teams patterns (different use-case: side-channel observability vs. multi-agent visualization).
+
 ## [3.7.0] - 2026-05-23
 
 Eighteen sessions spanning **9 days** (2026-05-15 → 2026-05-23) since v3.6.0. The headline is the **F2 Memory & Personas cluster** — agent-writable `memory.propose`, the session-start memory banner, USER.md + AGENT.md peer cards, and the dialectic-deriver — alongside the **gsd Pattern Adoption Epic #517** (4 mechanical hardening patterns) and a **Persona-Panel Foundation** (`/persona-panel` skill + 4 templates). Tests grew from **5001 → 7360** (+2359, ~47%), validate-plugin **43 → 94/94**, typecheck **67 → 230 files**, zero breaking changes, zero CI regressions, zero open issues/MRs on either GitLab or GitHub at the cut point.

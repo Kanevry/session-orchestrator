@@ -259,6 +259,46 @@ describe('wave-scope-commit-guard — #553 G-M1 coverage gaps', { timeout: 20000
   });
 });
 
+// ---------------------------------------------------------------------------
+// #557 staging-fence lock timeout (sub-mode C) — +1 test
+// ---------------------------------------------------------------------------
+
+describe('wave-scope-commit-guard — #557 staging-fence lock timeout', { timeout: 20000 }, () => {
+  // When the staging-fence commit-lock is held by a live PID, the hook's
+  // withStagingFenceLock call times out (timeoutMs: 5000 in the hook). The
+  // guard must exit 0 (fail-safe) and emit a warning containing
+  // "staging-fence lock failed".
+  it('exits 0 and warns when staging-fence lock cannot be acquired (timeout)', async () => {
+    const dir = await mkRepoTracked();
+
+    // Create the fence dir so the hook enters sub-mode C (does not short-circuit).
+    await fs.mkdir(path.join(dir, '.orchestrator', 'staging-fence'), { recursive: true });
+
+    // Stage a file so stagedFiles.length > 0 (another sub-mode C early-exit guard).
+    await stageFile(dir, 'src/guarded.ts');
+
+    // Write the .commit.lock with our own PID (definitely alive) so the hook's
+    // tryAcquireStagingFenceLock always sees a live holder and never succeeds.
+    // The hook's timeoutMs is 5000ms — the test waits that out.
+    const lockBody = {
+      pid: process.pid,
+      host: os.hostname(),
+      acquiredAt: new Date().toISOString(),
+      holder: `stuck-pid-${process.pid}`,
+    };
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'staging-fence', '.commit.lock'),
+      JSON.stringify(lockBody, null, 2) + '\n',
+      'utf8',
+    );
+
+    const result = await runHook(dir);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('staging-fence lock failed');
+  });
+});
+
 describe('wave-scope-commit-guard — #553 G-L2 performance bound', { timeout: 30000 }, () => {
   // G-L2 — stage 500 files (mix in/out scope); assert exit + duration < 2s
   it('completes 500-file scan in under 2 seconds (perf bound)', async () => {
