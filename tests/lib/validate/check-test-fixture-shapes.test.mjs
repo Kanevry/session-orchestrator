@@ -1,3 +1,4 @@
+// @secret-shape-allowed — test file contains intentional fixture-shape literals (xoxb-, AKIA, AIzaSy) used as positive-case inputs for the validator under test. Marker placed in first 5 lines per hasAllowedMagicComment contract (#558 M3 — fold-out after SELF_EXCLUSIONS removal).
 /**
  * tests/lib/validate/check-test-fixture-shapes.test.mjs
  *
@@ -306,6 +307,284 @@ describe('Scope: only tests/**/*.{mjs,ts,js} scanned', () => {
       );
       // Plus a clean tests/ file so the tree isn't completely empty
       writeTestFile(r, 'clean.test.mjs', "import { it } from 'vitest';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group A — #558 Q2-M6: Line-5 inclusive magic-comment boundary
+// ---------------------------------------------------------------------------
+
+describe('Magic-comment line-5 inclusive boundary (#558 Q2-M6)', () => {
+  it('exits 0 when the magic comment is on line 5 (inclusive boundary)', () => {
+    // The validator scans the first MAGIC_COMMENT_SCAN_LINES (5) lines.
+    // Line 5 must be inside the window — this is the inclusive-boundary regression.
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'line5-allowed.test.mjs',
+        [
+          '// line 1',
+          '// line 2',
+          '// line 3',
+          '// line 4',
+          '// @secret-shape-allowed', // line 5 — must still be inside the scan window
+          "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';",
+        ].join('\n') + '\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+
+  it('exits 1 when the magic comment is on line 6 (one past the window — off-by-one regression)', () => {
+    // Line 6 is OUT of the scan window. The validator should treat the file
+    // as un-allowlisted and FAIL on the live-shape pattern below.
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'line6-not-allowed.test.mjs',
+        [
+          '// line 1',
+          '// line 2',
+          '// line 3',
+          '// line 4',
+          '// line 5',
+          '// @secret-shape-allowed', // line 6 — outside the 5-line window
+          "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvwxyz12';",
+        ].join('\n') + '\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F1 (Stripe sk_live_)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group B — F5–F10 positive + negative tests (12 tests total)
+// ---------------------------------------------------------------------------
+
+describe('F5: Anthropic sk-ant- pattern', () => {
+  it('exits 1 when sk-ant-<30+chars> is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      // sk-ant- + 'api03-' (6 chars) + 30 alphanumerics = 36 chars total — well over 30.
+      writeTestFile(
+        r,
+        'anthropic.test.mjs',
+        "const TOKEN = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F5 (Anthropic sk-ant-)');
+  });
+
+  it('exits 0 when sk-ant-<20chars> is too short (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // 20 chars after 'sk-ant-' — 10 short of the 30 minimum.
+      writeTestFile(
+        r,
+        'anthropic-short.test.mjs',
+        "const TOKEN = 'sk-ant-aaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+describe('F6: GitHub PAT classic ghp_ pattern', () => {
+  it('exits 1 when ghp_<36chars> is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      // Exactly 36 alphanumerics after ghp_ — at the boundary.
+      writeTestFile(
+        r,
+        'github-classic.test.mjs',
+        "const TOKEN = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F6 (GitHub PAT classic ghp_)');
+  });
+
+  it('exits 0 when ghp_<30chars> is too short (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // 30 alphanumerics — 6 short of the 36 minimum.
+      writeTestFile(
+        r,
+        'github-classic-short.test.mjs',
+        "const TOKEN = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+describe('F7: GitHub PAT fine-grained github_pat_ pattern', () => {
+  it('exits 1 when github_pat_<30chars> is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      // 30 alphanumerics after github_pat_ — at the boundary.
+      writeTestFile(
+        r,
+        'github-fg.test.mjs',
+        "const TOKEN = 'github_pat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F7 (GitHub PAT fine-grained github_pat_)');
+  });
+
+  it('exits 0 when github_pat_<20chars> is too short (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // 20 chars after github_pat_ — 10 short of the 30 minimum.
+      writeTestFile(
+        r,
+        'github-fg-short.test.mjs',
+        "const TOKEN = 'github_pat_aaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+describe('F8: GitLab PAT glpat- pattern', () => {
+  it('exits 1 when glpat-<20chars> is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      // 20 chars after glpat- — at the boundary.
+      writeTestFile(
+        r,
+        'gitlab.test.mjs',
+        "const TOKEN = 'glpat-aaaaaaaaaaaaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F8 (GitLab PAT glpat-)');
+  });
+
+  it('exits 0 when glpat-<10chars> is too short (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // 10 chars after glpat- — 10 short of the 20 minimum.
+      writeTestFile(
+        r,
+        'gitlab-short.test.mjs',
+        "const TOKEN = 'glpat-aaaaaaaaaa';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+describe('F9: Slack webhook URL pattern', () => {
+  it('exits 1 when a Slack webhook URL is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'slack-webhook.test.mjs',
+        "const URL = 'https://hooks.slack.com/services/T123ABC/B456DEF/abc123def456';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F9 (Slack webhook URL)');
+  });
+
+  it('exits 0 when the URL path is wrong-shape (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // Wrong path — does not match /services/T<...>/B<...>/<token>.
+      writeTestFile(
+        r,
+        'slack-webhook-bad.test.mjs',
+        "const URL = 'https://hooks.slack.com/T123/abc';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+describe('F10: Discord webhook URL pattern', () => {
+  it('exits 1 when a Discord webhook URL is found (positive)', () => {
+    const root = makeTmpRepo((r) => {
+      writeTestFile(
+        r,
+        'discord-webhook.test.mjs',
+        "const URL = 'https://discord.com/api/webhooks/123456/AbCdEf123-_';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('F10 (Discord webhook URL)');
+  });
+
+  it('exits 0 when the URL path is wrong-shape (negative)', () => {
+    const root = makeTmpRepo((r) => {
+      // Wrong path — not /api/webhooks/<digits>/<token>.
+      writeTestFile(
+        r,
+        'discord-webhook-bad.test.mjs',
+        "const URL = 'https://discord.com/some-other-path';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group C — #558 Unnumbered 2: 1-char-short lookalike boundary tests
+// (Confirms the validator does NOT false-positive on patterns that are one
+// character shy of the minimum length — the typical lookalike-shape risk.)
+// ---------------------------------------------------------------------------
+
+describe('Boundary lookalikes: 1-char-short variants must NOT match', () => {
+  it('F1 lookalike: sk_live_<23chars> (one short of the 24 minimum) does NOT match', () => {
+    const root = makeTmpRepo((r) => {
+      // 23 chars after sk_live_ — exactly one short of the 24-char minimum
+      // (alphabet 'a'..'w' = 23 letters; 'a'..'z' is 26).
+      // Literal split — see F1 test above for rationale.
+      writeTestFile(
+        r,
+        'stripe-lookalike.test.mjs',
+        "const KEY = '" + 'sk_live' + "_" + "abcdefghijklmnopqrstuvw';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('  FAIL:');
+  });
+
+  it('F3 lookalike: AKIA<15chars> (one short of the 16 minimum) does NOT match', () => {
+    const root = makeTmpRepo((r) => {
+      // 15 uppercase-alphanum chars after AKIA — exactly one short of 16.
+      writeTestFile(
+        r,
+        'aws-lookalike.test.mjs',
+        "const KEY = 'AKIAREALLIVEKEY9ABC';\n",
+      );
     });
     const result = runCheck(root);
     expect(result.status).toBe(0);

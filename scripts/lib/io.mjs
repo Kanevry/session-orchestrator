@@ -5,16 +5,21 @@
  *
  * Provides promise-based stdin JSON reading and structured exit helpers used by
  * PreToolUse / PostToolUse hooks in the session-orchestrator v3 migration, and
- * `writeJsonAtomic` for tmp+rename JSON writes with optional pre-write validation.
+ * `writeJsonAtomic` (async) + `writeJsonAtomicSync` (sync) for tmp+rename JSON
+ * writes. The async variant supports optional pre-write validation; the sync
+ * variant is hot-path-friendly for hooks and session-lock writers that cannot
+ * await.
  *
  * No external dependencies — Node 20+ stdlib only.
  *
- * Part of v3.0.0 migration (Epic #124, issue #131); writeJsonAtomic added for #457.
+ * Part of v3.0.0 migration (Epic #124, issue #131); writeJsonAtomic added for
+ * #457; writeJsonAtomicSync extracted for #558 M1.
  */
 
 import { writeFile, rename, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import path, { dirname } from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -194,4 +199,46 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
   await rename(tmp, filePath);
 
   return { path: filePath, bytes: Buffer.byteLength(content, 'utf8') };
+}
+
+/**
+ * Atomically replace a file via tmp + renameSync. Synchronous companion to
+ * {@link writeJsonAtomic} for hot-path code that cannot await — session-lock
+ * acquire/replace, staging-fence intent logs, and other crash-safe sidecar
+ * writes invoked from PreToolUse hooks where async would add a microtask hop.
+ *
+ * Crash-safe pattern: write to `<dir>/<tmpPrefix>.<rand>` then renameSync over
+ * the target. Same-filesystem rename is atomic on POSIX, so partial-write
+ * states are impossible — observers see either the previous contents or the
+ * new ones, never a half-written file.
+ *
+ * Caller is responsible for path-confinement — this helper does NOT validate
+ * that filePath lives inside the project (mirrors the async {@link writeJsonAtomic}
+ * contract).
+ *
+ * Hook-safety: io.mjs MUST NOT reverse-import from `hooks/` — this helper is a
+ * pure Node-stdlib utility (`node:fs`, `node:path`, `node:crypto`) so it can be
+ * used from any layer without violating the layering rule in
+ * `scripts/lib/hardening.mjs`.
+ *
+ * @param {string} filePath  Target path; parent dirs created with mkdir -p semantics.
+ * @param {*} data           JSON-serializable value.
+ * @param {object} [opts]
+ * @param {number} [opts.indent=2]      JSON.stringify indent.
+ * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
+ */
+export function writeJsonAtomicSync(filePath, data, opts = {}) {
+  const { indent = 2, tmpPrefix = '.tmp' } = opts;
+  try {
+    const dir = dirname(filePath);
+    mkdirSync(dir, { recursive: true });
+    const tmpSuffix = randomBytes(6).toString('hex');
+    const tmpFile = path.join(dir, `${tmpPrefix}.${tmpSuffix}`);
+    writeFileSync(tmpFile, JSON.stringify(data, null, indent) + '\n', { encoding: 'utf8' });
+    renameSync(tmpFile, filePath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+  }
 }

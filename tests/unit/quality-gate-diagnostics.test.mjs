@@ -1,3 +1,4 @@
+// @secret-shape-allowed — test file contains intentional ghp_/glpat- fixture literals as positive-case inputs for the redaction module under test. Marker placed in first 5 lines per hasAllowedMagicComment contract (#560 Q3 L1 follow-on after PATTERNS extension F6/F8).
 /**
  * tests/unit/quality-gate-diagnostics.test.mjs
  *

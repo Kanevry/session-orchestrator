@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// @secret-shape-allowed
+// (Self-application: this file is the validator itself — it defines the
+//  forbidden credential-shape regex literals and the canonical placeholder
+//  substrings. Eating own dog food per #558 M3 — magic-comment replaces
+//  the previous hardcoded SELF_EXCLUSIONS Set.)
 /**
  * check-test-fixture-shapes.mjs — Scan tests/ tracked files for live-credential
  * shape patterns that would block a public GitHub-mirror push.
@@ -82,6 +87,36 @@ const PATTERNS = [
     regex: /AIzaSy[A-Za-z0-9_-]{33}/,
     hint: 'use AIzaSy-PLACEHOLDER (canonical placeholder shape)',
   },
+  {
+    name: 'F5 (Anthropic sk-ant-)',
+    regex: /sk-ant-[A-Za-z0-9_-]{30,}/,
+    hint: 'use sk-ant-<PLACEHOLDER>-<padding to ≥30 chars after the prefix>',
+  },
+  {
+    name: 'F6 (GitHub PAT classic ghp_)',
+    regex: /ghp_[A-Za-z0-9]{36,}/,
+    hint: 'use ghp_PLACEHOLDER<padding> (must be ≥36 chars after the underscore)',
+  },
+  {
+    name: 'F7 (GitHub PAT fine-grained github_pat_)',
+    regex: /github_pat_[A-Za-z0-9_]{30,}/,
+    hint: 'use github_pat_PLACEHOLDER<padding> (must be ≥30 chars after the prefix)',
+  },
+  {
+    name: 'F8 (GitLab PAT glpat-)',
+    regex: /glpat-[A-Za-z0-9_-]{20,}/,
+    hint: 'use glpat-PLACEHOLDER<padding> (must be ≥20 chars after the prefix)',
+  },
+  {
+    name: 'F9 (Slack webhook URL)',
+    regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/,
+    hint: 'use slack.com/services/T<X>/B<X>/<X> with placeholder segments — not a real webhook URL shape',
+  },
+  {
+    name: 'F10 (Discord webhook URL)',
+    regex: /https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/,
+    hint: 'use discord.com/api/webhooks/<id>/<token> with placeholder ID + token — not a real URL shape',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -133,15 +168,11 @@ function getTrackedTestFiles() {
 }
 
 // ---------------------------------------------------------------------------
-// Self-exclusions — the validator's own source + its test file MUST NOT be
-// scanned. The validator source contains the pattern-doc regex literals and
-// the canonical placeholder substrings in code; the test file plants known-
-// bad fixtures inside test-case bodies to exercise the detector.
+// Self-exclusion via magic-comment (#558 M3) — the validator and its test
+// file opt out via // @secret-shape-allowed at top-of-file. This eats own
+// dog food: there is no hardcoded path list, only the documented escape
+// hatch every other consumer uses.
 // ---------------------------------------------------------------------------
-const SELF_EXCLUSIONS = new Set([
-  'scripts/lib/validate/check-test-fixture-shapes.mjs',
-  'tests/lib/validate/check-test-fixture-shapes.test.mjs',
-]);
 
 // ---------------------------------------------------------------------------
 // Per-file magic-comment check
@@ -188,11 +219,9 @@ function fail(msg) {
 
 console.log('--- Check: test fixture shape (live-credential patterns) ---');
 
-const allFiles = getTrackedTestFiles();
-const scanFiles = allFiles.filter((f) => {
-  const rel = relative(pluginRoot, f).replace(/\\/g, '/');
-  return !SELF_EXCLUSIONS.has(rel);
-});
+// All files in scope — opt-out is per-file via the // @secret-shape-allowed
+// magic-comment, checked below in hasAllowedMagicComment().
+const scanFiles = getTrackedTestFiles();
 
 /** @type {Array<{relPath: string, lineNum: number, pattern: string, hint: string, hitText: string}>} */
 const violations = [];

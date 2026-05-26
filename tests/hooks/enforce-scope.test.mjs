@@ -465,3 +465,144 @@ describe('Discovery-wave deny-all semantics — #256 NO-OP regression lock', { t
     expect(result.stdout).toContain('"permissionDecision":"deny"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// pathRegex edge cases — #558 Q2-L5
+// ---------------------------------------------------------------------------
+//
+// Covers three under-tested behaviours of pathMatchesPattern via the hook's
+// public surface (PreToolUse Edit gate):
+//   1. Paths containing spaces — spaces are literal and not regex-special.
+//   2. Substring-prefix guard — `src/` must NOT match `scripts/src_backup/foo.ts`.
+//      The trailing slash is load-bearing; pathMatchesPattern uses
+//      `relPath.startsWith(pattern)` for the directory-prefix shortcut, so
+//      `scripts/src_backup/...` correctly fails the prefix check.
+//   3. Multi-path coexistence — when allowedPaths mixes a prefix (`src/`) with
+//      a glob (`src/**/*.tsx`), both must remain matchable; the hook iterates
+//      via `Array.some()` so a later pattern does not shadow an earlier one.
+// ---------------------------------------------------------------------------
+
+describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
+  it('handles a path with spaces — allows the exact match, denies neighbouring filenames', async () => {
+    // The space in `src/my file.ts` is literal (not regex-special, not a glob char).
+    // Verify both directions: the spaced filename allowed; the unspaced sibling denied.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/my file.ts'],
+    });
+    const allowed = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'my file.ts')),
+    });
+    expect(allowed.code).toBe(0);
+
+    const denied = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'myfile.ts')),
+    });
+    expect(denied.code).toBe(2);
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('does NOT match a sibling directory whose name shares the allowed prefix without a slash boundary', async () => {
+    // `src/` (with trailing slash) is the directory-prefix shortcut. A path like
+    // `scripts/src_backup/foo.ts` shares the substring `src` but is under a
+    // different top-level directory — must be denied. Defends against accidental
+    // prefix-match without `/` boundary check (PSA-006 — verified via
+    // pathMatchesPattern's `relPath.startsWith(pattern)` rule in hardening.mjs).
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'scripts', 'src_backup', 'foo.ts')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('allows files matching either pattern when allowedPaths mixes a directory prefix and a recursive glob', async () => {
+    // Overlap test: `src/foo.ts` matches `src/` (prefix shortcut),
+    // `src/components/Button.tsx` matches BOTH `src/` AND `src/**/*.tsx`.
+    // The hook iterates with Array.some() — verify the matcher does not
+    // regress to AND-semantics or short-circuit on the first pattern.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', 'src/**/*.tsx'],
+    });
+    const prefixHit = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'foo.ts')),
+    });
+    expect(prefixHit.code).toBe(0);
+
+    const globHit = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'components', 'Button.tsx')),
+    });
+    expect(globHit.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed allowedPaths shape — fail-closed coercion — #558 Unnumbered 1
+// ---------------------------------------------------------------------------
+//
+// Defends the line-92 guard in hooks/enforce-scope.mjs:
+//   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
+//
+// Any non-array allowedPaths shape MUST be coerced to [] (fail-closed deny-all
+// in strict mode). The hook MUST NOT crash on malformed input — it MUST exit
+// with a structured deny decision (exit 2 + JSON `permissionDecision: deny`).
+// The structured-deny contract is more important than the exact exit code
+// because a crash would be exit 1 (unhandled rejection → SECURITY-REQ-01 catch),
+// not exit 2 — distinguishing "fail-closed via Gate 7" from "blew up".
+// ---------------------------------------------------------------------------
+
+describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeout: 15000 }, () => {
+  it('coerces allowedPaths: null to [] (deny all writes in strict mode)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: null,
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
+    });
+    // Fail-closed: Array.isArray(null) === false → allowedPaths = []
+    // → no pattern matches → strict mode → deny.
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('coerces allowedPaths: "src/" (string) to [] (deny all writes in strict mode)', async () => {
+    // A string is iterable, but Array.isArray("src/") === false — guard catches it.
+    // Without the guard, .some() on a string would error. With the guard, fail-closed.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: 'src/',
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('coerces allowedPaths: { "src/": true } (object) to [] (deny all writes in strict mode)', async () => {
+    // Object literal — Array.isArray({...}) === false → fail-closed empty array.
+    // Tests for the "user copy-pasted a keyed shape" failure mode.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: { 'src/': true },
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+});

@@ -709,4 +709,106 @@ describe('validatePathInsideProject — opts.canonicalizeRoot (#549 G1)', () => 
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // Q2-M4 (#558) — Phase-2 narrowed-catch SYMMETRIC coverage
+  //
+  // SUT: scripts/lib/path-utils.mjs:213-215 (Phase-2 catch block)
+  //   try {
+  //     const realPath = realpathSync(lexicalPath);
+  //     if (!isPathInside(realPath, effectiveRoot)) {
+  //       return { ok: false, reason: 'symlink' };
+  //     }
+  //     return { ok: true, realPath, lexicalPath };
+  //   } catch (err) {
+  //     if (err && err.code !== 'ENOENT') throw err;
+  //     return { ok: true, realPath: undefined, lexicalPath };
+  //   }
+  //
+  // Symmetric counterpart to G-M3 (which covers Phase-1b — the
+  // canonicalizeRoot branch at path-utils.mjs:191-200). Phase-2 has an
+  // ASYMMETRIC narrowing: it swallows ONLY ENOENT (not EACCES like Phase-1b
+  // does), so anything else — EACCES, ELOOP, EIO, EPERM — must propagate.
+  // These tests verify both halves of the Phase-2 contract.
+
+  // Q2-M4.1 — Phase-2 swallows ENOENT (lexical-fallback success envelope)
+  //
+  // The non-existent-path tests (a), (j), (l) above exercise this code path
+  // via natural ENOENT (path simply doesn't exist on disk). This test pins
+  // the catch behaviour explicitly with a MOCKED ENOENT so the swallow is
+  // observed against the catch block itself, not against pre-flight existence
+  // checks. Mirrors G1.2's pattern of using a mocked throw to verify the
+  // narrowed-catch contract, but for Phase-2 instead of Phase-1b.
+  //
+  // Falsification: if the Phase-2 catch were removed or its ENOENT guard
+  // inverted (`err.code === 'ENOENT' && throw err`), the function would
+  // throw and the assertion would fail. If the Phase-1b branch were used
+  // instead of Phase-2 (e.g., by passing `canonicalizeRoot: true`), the
+  // call count and result shape would differ — the canonicalize-omitted
+  // call site here guarantees Phase-2 is the only realpathSync invocation.
+  it('Q2-M4.1: Phase-2 swallows ENOENT from realpathSync(lexicalPath), returns lexical-fallback success', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'q2-m4-phase2-enoent-'));
+    const realTmp = fs.realpathSync(tmpDir);
+    const expectedLexicalPath = path.resolve(realTmp, 'subdir/file.txt');
+
+    // Mock realpathSync to throw ENOENT on the first (and only) call.
+    // canonicalizeRoot is omitted, so realpathSync is invoked ONCE for
+    // Phase 2 against lexicalPath (path-utils.mjs:208).
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementationOnce(() => {
+      const err = new Error('mock ENOENT from realpathSync(lexicalPath)');
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = validatePathInsideProject('subdir/file.txt', realTmp);
+
+    // Function did NOT throw — Phase-2 catch swallowed ENOENT and returned
+    // the documented lexical-fallback success envelope.
+    expect(result).toEqual({
+      ok: true,
+      realPath: undefined,
+      lexicalPath: expectedLexicalPath,
+    });
+    // Falsification: the SUT must have invoked realpathSync exactly ONCE
+    // (Phase 2 against lexicalPath). If the canonicalize branch had
+    // accidentally been triggered, the count would be 2.
+    expect(realpathSpy).toHaveBeenCalledTimes(1);
+    expect(realpathSpy.mock.calls[0][0]).toBe(expectedLexicalPath);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Q2-M4.2 — Phase-2 RETHROWS non-ENOENT error (EACCES is NOT swallowed)
+  //
+  // Critical asymmetry vs Phase-1b: Phase-2's catch is narrower — only ENOENT
+  // is swallowed. EACCES, ELOOP, EIO, EPERM, ENOTDIR all propagate. This test
+  // verifies EACCES specifically because it's the most likely real-world
+  // non-ENOENT code (unreadable directory in the resolved path), and because
+  // its asymmetric treatment vs Phase-1b is a subtle invariant that a future
+  // refactor could quietly break by "symmetrising" the two catches.
+  //
+  // Falsification: if the Phase-2 catch were widened to also swallow EACCES
+  // (matching Phase-1b's behaviour), the function would NOT throw and the
+  // assertion would fail. The `expect.objectContaining({ code: 'EACCES' })`
+  // matcher pins the specific error object — a refactor that wraps or
+  // normalizes the error would also fail this test.
+  it('Q2-M4.2: Phase-2 rethrows EACCES (non-ENOENT) from realpathSync(lexicalPath)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'q2-m4-phase2-eacces-'));
+    const realTmp = fs.realpathSync(tmpDir);
+
+    // Mock realpathSync to throw EACCES on the first (and only) call.
+    // canonicalizeRoot is omitted, so realpathSync is invoked only for
+    // Phase 2 against lexicalPath. Phase-2 must rethrow EACCES (unlike
+    // Phase-1b which swallows it per G1.2).
+    vi.spyOn(fs, 'realpathSync').mockImplementationOnce(() => {
+      const err = new Error('mock EACCES from realpathSync(lexicalPath)');
+      err.code = 'EACCES';
+      throw err;
+    });
+
+    expect(() => validatePathInsideProject('subdir/file.txt', realTmp)).toThrow(
+      expect.objectContaining({ code: 'EACCES' }),
+    );
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });

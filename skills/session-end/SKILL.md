@@ -367,14 +367,24 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 3. If `queue.length === 0`: log `memory-proposals: queue empty (stats: ${JSON.stringify(stats)})` and continue.
 
-4. **AUQ pagination logic**: rendered via `_partitionForAuq(queue)` from `scripts/lib/memory-proposals/auq-partition.mjs`:
+4. **AUQ pagination logic**: partition the queue into FIFO batches of 4 inline:
 
    - Empty queue → silent skip (no AUQ rendered).
    - 1-4 items → single multiSelect call with all items as options.
    - 5+ items → sequential multiSelect calls in batches of 4 (FIFO order; final batch may have < 4 items).
 
-   Import: `import { _partitionForAuq } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/auq-partition.mjs';`
-   Call: `const { batches } = _partitionForAuq(queue);` then iterate `batches` and emit one `AskUserQuestion` per batch with `header: "Memory — Confirm Proposals (Batch N of M)"`. Option label format: `[<type-12>] | <subject-40> | conf=X.XX`. Option description: `evidence: <first 60 chars of insight>`. `multiSelect: true`.
+   ```javascript
+   // Inlined from former scripts/lib/memory-proposals/auq-partition.mjs (PRD F2.2 #502 closed; see #558 M2).
+   const BATCH_SIZE = 4;
+   const batches = [];
+   if (Array.isArray(queue) && queue.length > 0) {
+     for (let i = 0; i < queue.length; i += BATCH_SIZE) {
+       batches.push(queue.slice(i, i + BATCH_SIZE));
+     }
+   }
+   ```
+
+   Then iterate `batches` and emit one `AskUserQuestion` per batch with `header: "Memory — Confirm Proposals (Batch N of M)"`. Option label format: `[<type-12>] | <subject-40> | conf=X.XX`. Option description: `evidence: <first 60 chars of insight>`. `multiSelect: true`.
 
 5. After all batches answered, partition the queue into `approved` (any option selected across all batches) and `rejected` (all unselected).
 

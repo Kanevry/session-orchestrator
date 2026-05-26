@@ -56,9 +56,9 @@
  * Worst case is a missed enforcement, not a wedged session.
  */
 
-import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import { readStdin, emitAllow, writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { isWaveAgentContext } from '../scripts/lib/wave-context.mjs';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -129,37 +129,14 @@ function resolveProjectDir() {
 }
 
 /**
- * Atomically write a JSON value to a file via tmp + rename. Mirrors the
- * writeLockAtomic pattern from scripts/lib/session-lock.mjs so concurrent
- * readers never see a half-written fence file.
- *
- * Best-effort: errors are returned, not thrown.
- *
- * @param {string} filePath
- * @param {object} value
- * @returns {{ ok: true } | { ok: false, error: string }}
- */
-function writeJsonAtomic(filePath, value) {
-  try {
-    const dir = path.dirname(filePath);
-    mkdirSync(dir, { recursive: true });
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(dir, `.fence.tmp.${tmpSuffix}`);
-    writeFileSync(tmpFile, JSON.stringify(value, null, 2) + '\n', 'utf8');
-    renameSync(tmpFile, filePath);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err?.message ?? String(err) };
-  }
-}
-
-/**
  * Append a staging-intent entry to the fence file. Reads the existing file
- * (if any), appends the entry, and rewrites atomically. The first call for
- * a given agent_id creates the file with a fresh body.
+ * (if any), appends the entry, and rewrites atomically via the shared
+ * {@link writeJsonAtomicSync} helper from scripts/lib/io.mjs (extracted in
+ * #558 M1). The first call for a given agent_id creates the file with a
+ * fresh body.
  *
  * @param {{ fenceFile: string, agentId: string, command: string }} args
- * @returns {{ ok: boolean, error?: string }}
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
  */
 function appendIntent({ fenceFile, agentId, command }) {
   const timestamp = new Date().toISOString();
@@ -190,7 +167,7 @@ function appendIntent({ fenceFile, agentId, command }) {
 
   body.staged_paths.push({ command: command.slice(0, 512), timestamp });
 
-  return writeJsonAtomic(fenceFile, body);
+  return writeJsonAtomicSync(fenceFile, body, { tmpPrefix: '.fence.tmp' });
 }
 
 // ---------------------------------------------------------------------------

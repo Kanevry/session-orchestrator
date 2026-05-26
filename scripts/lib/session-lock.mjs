@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
+import { writeJsonAtomicSync } from './io.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,8 +59,33 @@ export const STAGING_FENCE_LOCK_POLL_MS = 100;
  * Check whether a PID corresponds to a live process on this host.
  * Returns true when the process exists (even if we lack kill permission).
  * Returns false when the process does not exist (ESRCH).
- * @param {number} pid
- * @returns {boolean}
+ *
+ * @param {number} pid  Process ID to probe via the POSIX signal-0 trick.
+ * @returns {boolean}   true when a process with the given PID exists; false
+ *                      when no such process exists or the probe failed.
+ *
+ * @remarks
+ * PID-recycle trade-off (#560 Q3 L2 — deep-2115 session-reviewer):
+ *
+ *  - On Unix, `process.kill(pid, 0)` returns true if ANY process exists with
+ *    that PID, including a recycled one. The kernel does not distinguish the
+ *    original lock-holder from a fresh process that happens to have inherited
+ *    the same numeric PID after the lock-holder's death.
+ *  - On a long session where the lock-holder died abnormally AND the OS reused
+ *    its PID before TTL expiry, this function returns `true` even though the
+ *    original lock-holder is gone. The lock is then perceived as held by a
+ *    "live" process that is actually unrelated to the original writer.
+ *  - Impact: a stale lock waits the full TTL (default 10s for the state-lock,
+ *    DEFAULT_TTL_HOURS=4 for the session-lock) before being reclaimed by the
+ *    timeout path. Fail-open posture means correctness is preserved — only
+ *    operational latency is affected, and the missed race-detection is
+ *    bounded to one incident per stale-lock event.
+ *  - Trade-off accepted: the alternative would require recording a UUID or
+ *    boot-nonce alongside the PID and comparing both fields on stale-detection
+ *    (so a recycled PID with a mismatched nonce would be recognised as stale
+ *    immediately). That adds complexity to the lock body, parse path, and
+ *    every acquire/release branch for a single-missed-race-per-incident
+ *    impact. Current trade-off is operationally sound at our scale.
  */
 export function isPidAlive(pid) {
   try {
@@ -400,11 +426,18 @@ function buildStateLockBody({ holder }) {
 }
 
 /**
- * Parse a state-lock file body. Returns null on any malformed input.
+ * Parse a lock-file body shared by the state-lock and staging-fence-lock.
+ * Both locks use identical { pid, host, acquiredAt, holder } shape so a single
+ * parser serves both. Returns null on any malformed input.
+ *
+ * Renamed from parseStateLock in #558 M4 — the previous name encoded a single
+ * lock identity, but the function is used by both state-lock acquire/release
+ * and staging-fence-lock acquire/release.
+ *
  * @param {string} raw
  * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }|null}
  */
-function parseStateLock(raw) {
+function parseLockBody(raw) {
   try {
     const obj = JSON.parse(raw);
     if (
@@ -471,22 +504,18 @@ function createStateLockExclusive(lockFile, body) {
  * Used only on the stale-override path, where we KNOW the existing lock is
  * dead (PID-liveness check failed) and we are deliberately overwriting it.
  *
+ * Thin wrapper around {@link writeJsonAtomicSync} from scripts/lib/io.mjs
+ * (extracted in #558 M1) — preserves the public function name so callers do
+ * not change, while consolidating the three near-identical atomic-write
+ * implementations onto a single helper. Uses the `.state.lock.tmp` prefix to
+ * preserve the existing tmp-file naming convention.
+ *
  * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
  * @param {object} body      Lock body to serialize.
  * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
  */
 function replaceStateLockAtomic(lockFile, body) {
-  try {
-    const dir = path.dirname(lockFile);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(dir, `.state.lock.tmp.${tmpSuffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', { encoding: 'utf8' });
-    fs.renameSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  return writeJsonAtomicSync(lockFile, body, { tmpPrefix: '.state.lock.tmp' });
 }
 
 /**
@@ -528,7 +557,7 @@ function tryAcquireStateLock(lockFile, body) {
       return { ok: false, reason: 'fs-error', error: err.message };
     }
 
-    const existing = parseStateLock(existingRaw);
+    const existing = parseLockBody(existingRaw);
 
     // Unparseable existing lock — treat as stale and override. We never
     // know which holder wrote it, so this is the only safe move.
@@ -650,7 +679,7 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
 
-  const lock = parseStateLock(raw);
+  const lock = parseLockBody(raw);
   if (lock === null) {
     // Unparseable — refuse to delete; some other process may be writing now.
     return { ok: false, reason: 'not-owner' };
@@ -811,7 +840,7 @@ function stagingFenceLockPathFor(repoRoot) {
 
 /**
  * Build a fresh staging-fence lock body. Same shape as buildStateLockBody so
- * the parseStateLock parser works identically — there is no need for a
+ * the parseLockBody parser works identically — there is no need for a
  * second parser.
  *
  * @param {{ holder?: string }} args
@@ -866,22 +895,16 @@ function createStagingFenceLockExclusive(lockFile, body) {
  * Atomically replace an existing staging-fence lock via tmp + rename. Used
  * only on the stale-override path where we KNOW the existing lock is dead.
  *
+ * Thin wrapper around {@link writeJsonAtomicSync} from scripts/lib/io.mjs
+ * (extracted in #558 M1). Uses the `.staging-fence.lock.tmp` prefix to
+ * preserve the existing tmp-file naming convention.
+ *
  * @param {string} lockFile  Absolute path to the staging-fence lockfile.
  * @param {object} body      Lock body to serialize.
  * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
  */
 function replaceStagingFenceLockAtomic(lockFile, body) {
-  try {
-    const dir = path.dirname(lockFile);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(dir, `.staging-fence.lock.tmp.${tmpSuffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', { encoding: 'utf8' });
-    fs.renameSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  return writeJsonAtomicSync(lockFile, body, { tmpPrefix: '.staging-fence.lock.tmp' });
 }
 
 /**
@@ -913,7 +936,7 @@ function tryAcquireStagingFenceLock(lockFile, body) {
       return { ok: false, reason: 'fs-error', error: err.message };
     }
 
-    const existing = parseStateLock(existingRaw); // body shape is identical
+    const existing = parseLockBody(existingRaw); // body shape is identical
 
     if (existing === null) {
       console.warn('stale staging-fence.lock (unparseable contents) overridden');
@@ -1001,7 +1024,7 @@ export function releaseStagingFenceLock({ repoRoot, holder } = {}) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
 
-  const lock = parseStateLock(raw);
+  const lock = parseLockBody(raw);
   if (lock === null) {
     return { ok: false, reason: 'not-owner' };
   }

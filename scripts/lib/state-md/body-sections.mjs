@@ -44,15 +44,24 @@ export function readCurrentTask(contents) {
  * Appends a timestamped bullet to the `## Deviations` section in the STATE.md body.
  * Creates the section if missing. Replaces a `(none yet)` placeholder if present.
  *
+ * Defensive guard (issue #560): when `isoTimestamp` is omitted, `undefined`, `null`,
+ * or a non-string value, defaults to `new Date().toISOString()`. This prevents the
+ * literal text `undefined` from rendering in the deviations log when a caller
+ * forgets to compute the timestamp (the deep-2115 inter-wave 2→3 incident).
+ *
  * @param {string} contents
- * @param {string} isoTimestamp - ISO 8601 UTC, e.g. '2026-05-01T17:50:00Z'
+ * @param {string} [isoTimestamp] - ISO 8601 UTC, e.g. '2026-05-01T17:50:00Z'.
+ *   When omitted or not a non-empty string, defaults to `new Date().toISOString()`.
  * @param {string} message - free text; no leading dash, no surrounding brackets
  * @returns {string}
  */
 export function appendDeviation(contents, isoTimestamp, message) {
   const parsed = parseStateMd(contents);
   if (parsed === null) return contents;
-  const bullet = `- [${isoTimestamp}] ${message}`;
+  const ts = (typeof isoTimestamp === 'string' && isoTimestamp.length > 0)
+    ? isoTimestamp
+    : new Date().toISOString();
+  const bullet = `- [${ts}] ${message}`;
   const lines = parsed.body.split('\n');
   let headingIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -192,8 +201,11 @@ function requireRepoRoot(repoRoot, fnName) {
  * Delegates to the pure `appendDeviation` helper; the read+write cycle is
  * serialized via `withStateMdLock` (PSA-004 mechanical enforcement).
  *
+ * When `isoTimestamp` is omitted, `undefined`, `null`, or a non-string value,
+ * the underlying `appendDeviation` defaults to `new Date().toISOString()` (issue #560).
+ *
  * @param {string} repoRoot  — absolute path to the repository root (required)
- * @param {string} isoTimestamp
+ * @param {string} [isoTimestamp]  — defaults to current time if omitted
  * @param {string} message
  * @param {object} [opts]
  * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
