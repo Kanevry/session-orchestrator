@@ -150,6 +150,10 @@ export async function runLoop(opts = {}) {
     writeAutopilotJsonl(state, jsonlPath);
     // Durable-telemetry seam (ADR 0003 #485) — currently inert for local execution.
     // Cloud-execution (Routines spike, #485 W3 P3) flips enabled:true.
+    // Dry-run stays SINGLE-FILE (autopilot.jsonl only): no session executed, so
+    // sessions.jsonl + STATE.md have NOT been written. Adding them here would trip
+    // durableCommit's per-file existsSync guard → {ok:false, error:'file not found'}.
+    // The 3-file triple (#490) only applies at normal loop exit where a session ran.
     await durableCommit({
       sessionId: state.autopilot_run_id,
       files: [jsonlPath.replace(process.cwd() + '/', '')],
@@ -294,9 +298,19 @@ export async function runLoop(opts = {}) {
   writeAutopilotJsonl(state, jsonlPath);
   // Durable-telemetry seam (ADR 0003 #485) — currently inert for local execution.
   // Cloud-execution (Routines spike, #485 W3 P3) flips enabled:true.
+  // Normal loop exit: a nested session ran, so sessions.jsonl + STATE.md now exist
+  // alongside autopilot.jsonl. Commit all three per ADR 0003:32 mandate (#490) so the
+  // full telemetry triple survives ephemeral-clone reclamation in cloud execution.
+  // NOTE: '.claude/STATE.md' here is the clone-relative path — autopilot commits the
+  // worktree's own copy. session-end Phase 3.7b resolves the host <state-dir> instead;
+  // the two durableCommit owners' path forms intentionally differ (#490 / ADR-0009).
   await durableCommit({
     sessionId: state.autopilot_run_id,
-    files: [jsonlPath.replace(process.cwd() + '/', '')],
+    files: [
+      jsonlPath.replace(process.cwd() + '/', ''),
+      '.orchestrator/metrics/sessions.jsonl',
+      '.claude/STATE.md',
+    ],
     enabled: false,
   });
   // _durable.ok === true with skipped:true in local path — no-op.

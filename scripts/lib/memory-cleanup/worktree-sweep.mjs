@@ -11,9 +11,18 @@
  *
  * PRD: docs/prd/2026-05-26-parallel-aware-sessions.md §3 P3 Gherkin row 4 + §3.A P3
  * Closes #575 P3.2
+ *
+ * DI seam (#580-DI-001): this module uses a SYNCHRONOUS `opts.execFileFn`
+ * (default `execFileSync`) because the memory-cleanup Phase 4.5 sweep runs in a
+ * synchronous coordinator step. Its sibling helper
+ * `scripts/lib/session-end/worktree-cleanup.mjs` shares the same sync
+ * `execFileFn` seam; the autopilot worktree driver
+ * (`scripts/lib/autopilot/worktree-pipeline.mjs`) deliberately uses an ASYNC
+ * `opts.$` (zx) seam instead because `enterWorktree()` is async. The seams are
+ * kept divergent on purpose — unifying them would break the sync/async boundary.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import { parseSessionId } from '../session-id.mjs';
@@ -31,17 +40,19 @@ import { parseSessionId } from '../session-id.mjs';
  * @param {string} mainCheckoutRoot - Absolute path to the main checkout (the primary
  *   worktree). This is the anchor from which sibling worktrees are resolved.
  * @param {object} [opts] - Optional dependency injection for testing.
- * @param {Function} [opts.execSyncFn] - Override for execSync (default: node:child_process execSync).
+ * @param {Function} [opts.execFileFn] - Override for execFileSync (default: node:child_process execFileSync).
+ *   Signature: (file: string, args: string[], options) => string.
  * @returns {Array<{wtPath: string, sessionId: string, branch: string}>}
  *   Array of matching auto-promoted worktrees. Empty array on error or no candidates.
  */
 export function listAutoPromotedWorktrees(repoRoot, mainCheckoutRoot, opts = {}) {
-  const execSyncFn = opts.execSyncFn ?? execSync;
+  // #577 HARDEN-001: execFileSync + args ARRAY (no shell) — mainCheckoutRoot cannot inject.
+  const execFileFn = opts.execFileFn ?? execFileSync;
   const repoName = path.basename(mainCheckoutRoot);
   const candidates = [];
 
   try {
-    const out = execSyncFn(`git -C ${mainCheckoutRoot} worktree list --porcelain`, {
+    const out = execFileFn('git', ['-C', mainCheckoutRoot, 'worktree', 'list', '--porcelain'], {
       encoding: 'utf8',
     });
     const entries = out.split('\n\n').filter(Boolean);

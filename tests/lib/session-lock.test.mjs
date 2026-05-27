@@ -402,4 +402,75 @@ describe('acquire() with exclusivity-matrix integration (P1.2 #570)', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('active-incompatible-exclusive');
   });
+
+  // ---------------------------------------------------------------------------
+  // EARS ordering invariant group (Gap 3, #579) — "exclusive shall win ordering"
+  // ---------------------------------------------------------------------------
+  //
+  // PRD §3.A P1 "Unwanted behaviour": "If a parallel-ok and an exclusive session
+  // call acquire() simultaneously, then the exclusive shall win ordering."
+  //
+  // The impl serialises concurrent acquire() calls via withStateMdLock; whichever
+  // runs first records its entry in activeSessions, and the second caller observes
+  // that entry through the exclusivity-matrix loop. The post-serialisation states
+  // are deterministic, so we construct the activeSessions array directly to model
+  // each of the two possible orderings (no real timing / sleep races). The
+  // load-bearing invariant is the ASYMMETRY between the two orderings: an exclusive
+  // entry blocks a parallel-ok caller, but a parallel-ok entry never blocks an
+  // exclusive caller — in both orderings the exclusive session wins.
+
+  it('exclusive-wins ordering: parallel-ok caller is blocked when an exclusive session is already active', () => {
+    // Ordering A — the exclusive session won the mutex first, so the parallel-ok
+    // (deep) caller observes the exclusive (housekeeping) entry and must lose.
+    const activeSessions = [
+      { mode: 'housekeeping', pid: process.pid, host: hostname(), sessionId: 'won-exclusive-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'lost-deep-sess', mode: 'deep', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-incompatible-exclusive');
+    expect(result.exclusivityClass).toBe('parallel-ok');
+    expect(result.blockingSession.sessionId).toBe('won-exclusive-sess');
+    expect(result.blockingSession.mode).toBe('housekeeping');
+  });
+
+  it('exclusive-wins ordering: exclusive caller is NOT blocked by an already-active parallel-ok session', () => {
+    // Ordering B — the parallel-ok (deep) session won the mutex first, so the
+    // exclusive (housekeeping) caller observes the parallel-ok entry. The matrix
+    // must NOT block the exclusive caller on a parallel-ok entry; the exclusive
+    // caller falls through to the local-lock check, finds no file lock in this
+    // fresh repoRoot, and acquires the lock. This is the asymmetric counterpart
+    // to Ordering A — a parallel-ok entry never blocks an exclusive caller.
+    const activeSessions = [
+      { mode: 'deep', pid: process.pid, host: hostname(), sessionId: 'won-parallel-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'exclusive-caller-sess', mode: 'housekeeping', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.session_id).toBe('exclusive-caller-sess');
+    expect(result.lock.mode).toBe('housekeeping');
+    expect(result.exclusivityClass).toBe('exclusive');
+    // It must NOT have resolved as the parallel-compatible promotion path.
+    expect(result.reason).toBeUndefined();
+  });
+
+  it('exclusive-wins ordering: an exclusive caller is blocked by another active exclusive session (no two exclusives)', () => {
+    // Reinforces the ordering invariant from the exclusive caller's side: two
+    // exclusive sessions can never both win. The exclusive (memory-cleanup) caller
+    // observes an active exclusive (housekeeping) entry and must be blocked, with
+    // the housekeeping session named as the deterministic winner.
+    const activeSessions = [
+      { mode: 'housekeeping', pid: process.pid, host: hostname(), sessionId: 'first-exclusive-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'second-exclusive-sess', mode: 'memory-cleanup', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-incompatible-exclusive');
+    expect(result.exclusivityClass).toBe('exclusive');
+    expect(result.blockingSession.sessionId).toBe('first-exclusive-sess');
+    expect(result.blockingSession.mode).toBe('housekeeping');
+  });
 });

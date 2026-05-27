@@ -294,7 +294,7 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 > **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` plus the optional `updated` timestamp (#184), and — as of Phase A of Epic #271 — the 5 Recommendation fields written by Phase 3.7a. No other fields.
 
-> **Runtime Ordering Note (Epic #271 Phase A):** Phase 3.4's `status: completed` write executes LAST in Phase 3, AFTER Phase 3.7 (sessions.jsonl) and Phase 3.7a (Compute and Write Recommendations). The ordinal position here (3.4) is kept for historical compatibility; the canonical runtime order is `3.1 → 3.2 → 3.3 → 3.4a → 3.5 → 3.5a → 3.6 → 3.6.5 → 3.6.7 → 3.7 → 3.7a → 3.4`. Rationale: Phase 3.7a reads in-memory session metrics and writes the 5 Recommendation fields via `updateFrontmatterFields`; that write must complete BEFORE the STATE.md frontmatter is finalized with `status: completed` so the Recommendation fields are visible to the next session-start while STATE.md is still `status: active`. Crash-resilience: if `/close` aborts between 3.7a and 3.4, STATE.md carries `status: active` + Recommendations; session-start Phase 1.5 offers resume (and the banner renders). If the reverse ordering were used (status: completed first), a crash would leave `status: completed` without Recommendations — the Reader would silently no-op the banner, losing the handoff.
+> **Runtime Ordering Note (Epic #271 Phase A):** Phase 3.4's `status: completed` write executes LAST in Phase 3, AFTER Phase 3.7 (sessions.jsonl) and Phase 3.7a (Compute and Write Recommendations). The ordinal position here (3.4) is kept for historical compatibility; the canonical runtime order is `3.1 → 3.2 → 3.3 → 3.4a → 3.5 → 3.5a → 3.6 → 3.6.5 → 3.6.7 → 3.7 → 3.7a → 3.7b → 3.4`. Rationale: Phase 3.7a reads in-memory session metrics and writes the 5 Recommendation fields via `updateFrontmatterFields`; that write must complete BEFORE the STATE.md frontmatter is finalized with `status: completed` so the Recommendation fields are visible to the next session-start while STATE.md is still `status: active`. Crash-resilience: if `/close` aborts between 3.7a and 3.4, STATE.md carries `status: active` + Recommendations; session-start Phase 1.5 offers resume (and the banner renders). If the reverse ordering were used (status: completed first), a crash would leave `status: completed` without Recommendations — the Reader would silently no-op the banner, losing the handoff.
 
 > Gate: Only run if `persistence` is enabled in Session Config and `<state-dir>/STATE.md` exists.
 1. Set frontmatter `status: completed`
@@ -541,6 +541,16 @@ Calls `computeV0Recommendation({completionRate, carryoverRatio, carryoverIssues}
 
 **See `phase-3-7a-recommendations.md` for full details.**
 
+### 3.7b Durable-Commit Session Telemetry (#490 AC2)
+
+> Gate: Always runs when persistence is enabled. Local execution is a no-op (`enabled: false`).
+
+> **Ordering:** Runs AFTER Phase 3.7a (Recommendations written to STATE.md) and BEFORE Phase 3.4 (`status: completed`). See the Phase 3.4 Runtime Ordering Note canonical order.
+
+Wraps the already-completed Phase 3.7 + 3.7a writes with `withDurableCommit` (from `scripts/lib/autopilot/durable-telemetry.mjs`) for the two session-end-owned files: `.orchestrator/metrics/sessions.jsonl` and `<state-dir>/STATE.md`. `enabled: false` keeps local closes a no-op (`{ok: true, skipped: true}`); the flag flips `true` only in cloud Routines execution so telemetry survives ephemeral-clone reclamation. `autopilot.jsonl` is NOT in scope here — `scripts/lib/autopilot/loop.mjs` owns its commit (#490 Wave-2).
+
+**See `phase-3-7a-recommendations.md` § Phase 3.7b for the full `withDurableCommit` invocation.**
+
 ## Phase 3.8: Session Lock Release (#330)
 
 > Gate: Only run if `persistence` is `true` in Session Config. Skip silently otherwise.
@@ -609,87 +619,45 @@ After Phase 4 commit+push has durably persisted `sessions.jsonl` + `STATE.md` to
 
 Auto-promoted sibling worktrees are created by `enterWorktree()` during the Phase 0.5 PROMOTION_OFFER path. Their path layout is `<basePath>/<repo-name>-<sessionId>/`. Detection uses `parseSessionId()` from `scripts/lib/session-id.mjs` (#572) — never custom regex.
 
-```js
-import { parseSessionId } from '${PLUGIN_ROOT}/scripts/lib/session-id.mjs';
-import path from 'node:path';
-import { execSync } from 'node:child_process';
-
-function detectAutoPromotedWorktree(repoRoot, sessionId) {
-  const parsed = parseSessionId(sessionId);
-  if (!parsed || parsed.format !== 'semantic') return null; // UUID-format sessions are never auto-promoted
-
-  // Derive the MAIN checkout root from `git worktree list --porcelain` (first entry).
-  // The repo-name comes from the main checkout, NOT from path.basename(repoRoot) — the
-  // promoted worktree's basename IS the comparison target, so deriving repoName from it
-  // would create the impossible compare `basename === basename + '-' + sessionId`.
-  let mainCheckoutRoot;
-  try {
-    const out = execSync(`git -C ${repoRoot} worktree list --porcelain`, { encoding: 'utf8' });
-    const lines = out.split('\n');
-    const firstWorktreeLine = lines.find(l => l.startsWith('worktree '));
-    if (!firstWorktreeLine) return null;
-    mainCheckoutRoot = firstWorktreeLine.slice('worktree '.length);
-  } catch {
-    return null; // not a git repo, treat as not promoted
-  }
-
-  // If repoRoot IS the main checkout, this session is NOT in an auto-promoted worktree.
-  if (path.resolve(repoRoot) === path.resolve(mainCheckoutRoot)) return null;
-
-  // Auto-promoted layout: <basePath>/<main-repo-name>-<sessionId>/
-  const mainRepoName = path.basename(mainCheckoutRoot);
-  const expectedBasename = `${mainRepoName}-${sessionId}`;
-  const isPromotedPath = path.basename(repoRoot) === expectedBasename;
-
-  if (isPromotedPath) {
-    return { wtPath: repoRoot, sessionId, branch: parsed.branch };
-  }
-  return null;
-}
-```
+> **Authoritative impl:** `scripts/lib/session-end/worktree-cleanup.mjs` — `detectAutoPromotedWorktree(repoRoot, sessionId, opts)`. Import and call; do NOT re-implement from this doc.
+>
+> Algorithm: parse `sessionId` via `parseSessionId()`; return `null` immediately for UUID-format sessions (never auto-promoted). Derive the MAIN checkout root from the first `worktree ` entry of `git worktree list --porcelain` (NOT `path.basename(repoRoot)` — the promoted worktree's basename IS the comparison target). If `repoRoot` resolves to the main checkout, return `null`. Otherwise compare `path.basename(repoRoot)` against `<main-repo-name>-<sessionId>`; on match return `{ wtPath, sessionId, branch }`, else `null`. All git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
 
 ### Clean-check
 
 A worktree is clean iff ALL three conditions hold:
 
-1. **No uncommitted changes**: `git -C ${wtPath} status --porcelain` is empty
+1. **No uncommitted changes**: `git status --porcelain` is empty
 2. **No untracked files**: implicit in #1 (porcelain includes `??` entries)
-3. **No unpushed commits**: `git -C ${wtPath} status --short --branch` does NOT contain `ahead` indicator
+3. **No unpushed commits**: `git status --short --branch` does NOT contain `ahead` indicator
 
-```js
-function isWorktreeClean(wtPath) {
-  try {
-    const status = execSync(`git -C ${wtPath} status --porcelain`, { encoding: 'utf8' });
-    if (status.trim().length > 0) return false; // dirty (modified, untracked, or staged)
-
-    const branchStatus = execSync(`git -C ${wtPath} status --short --branch`, { encoding: 'utf8' });
-    if (branchStatus.match(/\bahead\b/)) return false; // unpushed
-
-    return true;
-  } catch {
-    return false; // any error → treat as dirty (safer per PSA-003)
-  }
-}
-```
+> **Authoritative impl:** `scripts/lib/session-end/worktree-cleanup.mjs` — `isWorktreeClean(wtPath, opts)`. Import and call; do NOT re-implement from this doc.
+>
+> Algorithm: run `git status --porcelain`; if non-empty → dirty (`false`). Else run `git status --short --branch`; if it matches `/\bahead\b/` → unpushed (`false`). Otherwise `true`. On ANY git error → `false` (conservative PSA-003 default: never auto-remove a worktree we could not verify). Git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
 
 ### Clean path: auto-remove + WARN (PRD §3 P3 Gherkin row 2)
 
 When detection returns a worktree object AND `isWorktreeClean()` returns `true`, auto-remove via `git worktree remove` (NO `--force`) and log a WARN line. The main checkout's git dir (`repoMainRoot`) is derived via the first entry of `git worktree list --porcelain`.
 
+> **Authoritative impl:** import `detectAutoPromotedWorktree` + `isWorktreeClean` from `scripts/lib/session-end/worktree-cleanup.mjs`. All git invocation MUST go through the injection-safe arg-array form (`execFileSync('git', ['-C', dir, …])`, #577 HARDEN-001) — never the legacy `execSync(\`git -C ${var} …\`)` template-literal shell form.
+
 ```js
+import { execFileSync } from 'node:child_process';
+import { detectAutoPromotedWorktree, isWorktreeClean } from '${PLUGIN_ROOT}/scripts/lib/session-end/worktree-cleanup.mjs';
+
 const promoted = detectAutoPromotedWorktree(process.cwd(), sessionId);
 if (!promoted) {
   // Not auto-promoted — skip Phase 4a entirely. Continue to Phase 5.
 } else {
-  // Derive main checkout root from first worktree-list entry
-  const wtList = execSync(`git -C ${promoted.wtPath} worktree list --porcelain`, { encoding: 'utf8' });
-  const mainLine = wtList.split('\n').find(l => l.startsWith('worktree '));
+  // Derive main checkout root from first worktree-list entry (arg-array, no shell)
+  const wtList = execFileSync('git', ['-C', promoted.wtPath, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+  const mainLine = wtList.split('\n').find((l) => l.startsWith('worktree '));
   const repoMainRoot = mainLine ? mainLine.slice('worktree '.length).trim() : null;
 
   if (isWorktreeClean(promoted.wtPath)) {
     // Clean path: PRD §3 P3 Gherkin row 2 — auto-remove
     console.warn(`session-end Phase 4a: auto-promoted worktree ${promoted.wtPath} is clean — removing via 'git worktree remove'`);
-    execSync(`git -C ${repoMainRoot} worktree remove ${promoted.wtPath}`, { encoding: 'utf8' });
+    execFileSync('git', ['-C', repoMainRoot, 'worktree', 'remove', promoted.wtPath], { encoding: 'utf8' });
   } else {
     // Dirty path: PRD §3 P3 Gherkin row 3 — AUQ before any destructive action
     // [AUQ block — see Dirty path subsection below]
@@ -729,7 +697,7 @@ Reply with the number of your choice.
 **On user choice:**
 
 - **Behalten** → log `session-end Phase 4a: auto-promoted worktree retained (dirty); operator chose Behalten`. Continue to Phase 5.
-- **Löschen** → `execSync('git -C ${repoMainRoot} worktree remove --force ${promoted.wtPath}')`. Log WARN: `session-end Phase 4a: auto-promoted worktree force-removed by user choice`. Continue to Phase 5.
+- **Löschen** → `execFileSync('git', ['-C', repoMainRoot, 'worktree', 'remove', '--force', promoted.wtPath])` (arg-array, no shell — #577 HARDEN-001). Log WARN: `session-end Phase 4a: auto-promoted worktree force-removed by user choice`. Continue to Phase 5.
 - **Manuell** → exit `/close` cleanly. Print: `session-end aborted at Phase 4a by user choice. Re-run /close after handling the worktree manually.`
 
 ### Cross-references
@@ -844,6 +812,7 @@ Present to the user:
 | (inline) Phase 3.6.7 | Auto-Dialectic dispatch — `shouldDispatchAutoDialectic` + dispatch /evolve --dialectic --dry-run + writes `.orchestrator/dialectic-pending.md` + updates `.orchestrator/dialectic-last-run` |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |
+| `phase-3-7a-recommendations.md` § 3.7b | Phase 3.7b full procedural body — `withDurableCommit` invocation for `sessions.jsonl` + `STATE.md` (#490 AC2), `enabled:false` local no-op, autopilot.jsonl exclusion note |
 | (inline) Phase 3.8 | Session Lock Release — `release()` call, silent-OK on mismatch/absent, non-fatal on fs-error, ordering note (after STATE.md writes, before Phase 4 commit staging) |
 
 ## Anti-Patterns

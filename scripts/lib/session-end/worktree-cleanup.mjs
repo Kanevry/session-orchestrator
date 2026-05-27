@@ -2,17 +2,26 @@
  * worktree-cleanup.mjs — Phase 4a Auto-Promoted Worktree Cleanup helpers (#575 P3.2).
  *
  * Public API:
- *   - detectAutoPromotedWorktree(repoRoot, sessionId): { wtPath, sessionId, branch } | null
- *   - isWorktreeClean(wtPath): boolean
+ *   - detectAutoPromotedWorktree(repoRoot, sessionId, opts): { wtPath, sessionId, branch } | null
+ *   - isWorktreeClean(wtPath, opts): boolean
+ *     (opts.execFileFn — injectable execFileSync seam for tests; #577 HARDEN-001)
  *
  * Closes #575 — Epic #568 Phase 3.2 (Parallel-Aware Sessions Auto-Promoted Worktree Cleanup)
  * PRD: docs/prd/2026-05-26-parallel-aware-sessions.md §3 P3 Gherkin rows 2-3
  *
  * Lifted verbatim from skills/session-end/SKILL.md Phase 4a so that the helpers
  * are unit-testable and reusable (instruction-text → executable extraction).
+ *
+ * DI seam (#580-DI-001): this module uses a SYNCHRONOUS `opts.execFileFn`
+ * (default `execFileSync`) because session-end Phase 4a runs in a synchronous
+ * coordinator step. Its sibling helper `scripts/lib/memory-cleanup/worktree-sweep.mjs`
+ * shares the same sync `execFileFn` seam; the autopilot worktree driver
+ * (`scripts/lib/autopilot/worktree-pipeline.mjs`) deliberately uses an ASYNC
+ * `opts.$` (zx) seam instead because `enterWorktree()` is async. The seams are
+ * kept divergent on purpose — unifying them would break the sync/async boundary.
  */
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { parseSessionId } from '../session-id.mjs';
 
 /**
@@ -30,7 +39,9 @@ import { parseSessionId } from '../session-id.mjs';
  * @returns {{wtPath: string, sessionId: string, branch: string} | null}
  */
 export function detectAutoPromotedWorktree(repoRoot, sessionId, opts = {}) {
-  const execSyncFn = opts.execSyncFn ?? execSync;
+  // #577 HARDEN-001: execFileSync + args ARRAY (no shell) is structurally
+  // injection-proof — repoRoot can never be interpreted as shell metacharacters.
+  const execFileFn = opts.execFileFn ?? execFileSync;
   const parsed = parseSessionId(sessionId);
   if (!parsed || parsed.format !== 'semantic') return null; // UUID-format sessions are never auto-promoted
 
@@ -40,7 +51,9 @@ export function detectAutoPromotedWorktree(repoRoot, sessionId, opts = {}) {
   // from the main checkout (worktree list entry 0), not from the promoted worktree we're checking.
   let mainCheckoutRoot;
   try {
-    const out = execSyncFn(`git -C ${repoRoot} worktree list --porcelain`, { encoding: 'utf8' });
+    const out = execFileFn('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+    });
     const lines = out.split('\n');
     const firstWorktreeLine = lines.find((l) => l.startsWith('worktree '));
     if (!firstWorktreeLine) return null;
@@ -79,12 +92,17 @@ export function detectAutoPromotedWorktree(repoRoot, sessionId, opts = {}) {
  * @returns {boolean}
  */
 export function isWorktreeClean(wtPath, opts = {}) {
-  const execSyncFn = opts.execSyncFn ?? execSync;
+  // #577 HARDEN-001: execFileSync + args ARRAY (no shell) — wtPath cannot inject.
+  const execFileFn = opts.execFileFn ?? execFileSync;
   try {
-    const status = execSyncFn(`git -C ${wtPath} status --porcelain`, { encoding: 'utf8' });
+    const status = execFileFn('git', ['-C', wtPath, 'status', '--porcelain'], {
+      encoding: 'utf8',
+    });
     if (status.trim().length > 0) return false; // dirty (modified, untracked, or staged)
 
-    const branchStatus = execSyncFn(`git -C ${wtPath} status --short --branch`, { encoding: 'utf8' });
+    const branchStatus = execFileFn('git', ['-C', wtPath, 'status', '--short', '--branch'], {
+      encoding: 'utf8',
+    });
     if (branchStatus.match(/\bahead\b/)) return false; // unpushed
 
     return true;

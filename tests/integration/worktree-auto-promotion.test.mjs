@@ -62,6 +62,41 @@ function makeMockDollar({ throwOnCalls = [] } = {}) {
   });
 }
 
+/**
+ * Reconstruct the full command string from one tagged-template `$` invocation.
+ *
+ * The production code calls `await exec\`git -C ${repoRoot} worktree add -b ${branch} ${wtPath}\``,
+ * so each `vi.fn().mock.calls[i]` is `[stringsArray, ...substitutions]`. We
+ * interleave the literal segments with their interpolated values to recover the
+ * exact command tokens the SUT would have run. Used to assert on the presence
+ * or absence of the `-b` flag (new-branch vs existing-branch), which a
+ * call-count-only assertion cannot distinguish.
+ *
+ * @param {[TemplateStringsArray, ...unknown[]]} call - One entry of mock.calls.
+ * @returns {string}
+ */
+function reconstructCommand(call) {
+  const [strings, ...subs] = call;
+  let out = '';
+  for (let i = 0; i < strings.length; i += 1) {
+    out += strings[i];
+    if (i < subs.length) out += String(subs[i]);
+  }
+  return out;
+}
+
+/**
+ * Whitespace-tokenise a reconstructed command. Token-level membership is the
+ * robust way to assert the `-b` flag is present/absent — a naive substring
+ * `.includes('-b')` could false-match inside a branch name like `feat-bar`.
+ *
+ * @param {string} cmd
+ * @returns {string[]}
+ */
+function commandTokens(cmd) {
+  return cmd.trim().split(/\s+/);
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures — fresh tmp dir per test, fully resolved to handle macOS symlinks.
 // ---------------------------------------------------------------------------
@@ -149,6 +184,22 @@ describe('enterWorktree — Gherkin row 1 (Auto-Promotion happy path)', () => {
 
     // 2 calls: rev-parse (rejects) + worktree add -b
     expect($mock.mock.calls.length).toBe(2);
+
+    // #579 Gap 2: command-token CAPTURE on the second call (the `worktree add`).
+    // A refactor swapping the new-branch/existing-branch arms would pass the
+    // call-count assertion above but ship a regression. Capturing the actual
+    // tokens proves the `-b` flag IS present on the create-new path.
+    const addTokens = commandTokens(reconstructCommand($mock.mock.calls[1]));
+    expect(addTokens).toContain('worktree');
+    expect(addTokens).toContain('add');
+    expect(addTokens).toContain('-b');
+    expect(addTokens).toContain('feat/new');
+    // The new-branch invocation form is `worktree add -b <branch> <wtPath>`:
+    // `-b` immediately precedes the branch name.
+    const wtPath = path.join(basePath, `myrepo-${VALID_SESSION_ID}`);
+    expect(reconstructCommand($mock.mock.calls[1])).toBe(
+      `git -C ${repoRoot} worktree add -b feat/new ${wtPath}`,
+    );
   });
 
   it('omits `-b` flag when branch already exists (rev-parse succeeds)', async () => {
@@ -162,6 +213,22 @@ describe('enterWorktree — Gherkin row 1 (Auto-Promotion happy path)', () => {
 
     // 2 calls: rev-parse (resolves) + worktree add (no -b)
     expect($mock.mock.calls.length).toBe(2);
+
+    // #579 Gap 2: command-token CAPTURE on the second call (the `worktree add`).
+    // Failure-mode guard: if a refactor re-created an EXISTING branch with `-b`,
+    // git would error at runtime. This asserts the existing-branch path does NOT
+    // pass `-b` (checkout-existing, not create-new).
+    const addTokens = commandTokens(reconstructCommand($mock.mock.calls[1]));
+    expect(addTokens).toContain('worktree');
+    expect(addTokens).toContain('add');
+    expect(addTokens).not.toContain('-b');
+    expect(addTokens).toContain('existing-branch');
+    // The existing-branch invocation form is `worktree add <wtPath> <branch>`:
+    // no `-b`. The bare branch name (a ref to checkout) follows the path.
+    const wtPath = path.join(basePath, `myrepo-${VALID_SESSION_ID}`);
+    expect(reconstructCommand($mock.mock.calls[1])).toBe(
+      `git -C ${repoRoot} worktree add ${wtPath} existing-branch`,
+    );
   });
 });
 

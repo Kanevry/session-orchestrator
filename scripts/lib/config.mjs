@@ -51,6 +51,7 @@ import { _parseVaultMirrorQuality } from './config/vault-mirror-quality.mjs';
 import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
+import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
@@ -246,6 +247,9 @@ export function parseSessionConfig(mdContent) {
   // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
   const slopcheck = _parseSlopcheck(mdContent);
 
+  // discovery-validator: parsed from full content (PSA-006 enforcement / issue #567)
+  const discoveryValidator = _parseDiscoveryValidator(mdContent);
+
   // templates-first: parsed from full content (PRD gsd Pattern 3 / issues #517, #519)
   const templatesFirst = _parseTemplatesFirst(mdContent);
 
@@ -343,6 +347,7 @@ export function parseSessionConfig(mdContent) {
     'cold-start': coldStart,
     'state-md-lock': stateMdLock,
     'slopcheck': slopcheck,
+    'discovery-validator': discoveryValidator,
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,

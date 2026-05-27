@@ -4,6 +4,16 @@
 // Wraps single-story runLoop from ./loop.mjs with worktree setup/teardown,
 // per-worktree session-lock, and gc-on-exit. DI seams for testability.
 //
+// DI seam (#580-DI-001): this module uses an ASYNC `opts.$` (zx) executor seam
+// because its worktree primitives — `setupWorktree`, `enterWorktree`,
+// `teardownWorktree` — are async (they await `git worktree add` and lazy zx
+// imports). This is DELIBERATELY divergent from the SYNCHRONOUS `opts.execFileFn`
+// (execFileSync) seam used by the session-end / memory-cleanup helpers
+// (`scripts/lib/session-end/worktree-cleanup.mjs`,
+//  `scripts/lib/memory-cleanup/worktree-sweep.mjs`), which run in synchronous
+// coordinator steps. The seams are kept divergent on purpose — forcing a single
+// seam would break the sync/async boundary. Do NOT unify.
+//
 // References:
 //   - docs/prd/2026-05-07-autopilot-phase-d.md (PRD)
 //   - docs/adr/2026-05-10-364-remote-agent-substrate.md (ADR-364)

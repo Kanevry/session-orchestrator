@@ -98,3 +98,5 @@ templates-first:
 verification-auto-fix:
   enabled: false                 # PRD gsd Pattern 4 (#521) — opt-in auto-fix retry loop after Quality-Gate fail
   max-retries: 2                 # bounded retries
+discovery-validator:
+  enabled: false                 # PSA-006 (#567) — opt-in distributional-claim grep-verification enforcement (SubagentStop hook, non-blocking)

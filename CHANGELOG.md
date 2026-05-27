@@ -37,6 +37,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#557 staging-fence test-depth bundle** — added 33 unit tests for `hooks/pre-bash-staging-fence.mjs` (G1-G6 gate ladder + 14 GIT_ADD_REGEX variants), `withStagingFenceLock` (timeout/stale-PID/holder-mismatch/fn-throws/TypeError paths — fs-error path flagged as production-code testability seam follow-up), and `wave-scope-commit-guard` lock-failure branch. Closes #557.
 - **tmux-layout best-practice hardening** — coordinator E2E verification (14 practical CLI tests) found and fixed `jq --line-buffered` (not supported in jq 1.7+) → `--unbuffered`. Added 9 gap-fill tests (Pane 4 jq filter content + Pane 2 STATE.md path resolution + shellQuote injection safety + vcs-detector contract per platform). WebSearch research confirmed alignment with claude-squad/workmux/Anthropic Agent Teams patterns (different use-case: side-channel observability vs. multi-agent visualization).
 
+### Security / Hardening
+
+- **#577** `execSync` → `execFileSync` arg-array conversion in worktree-cleanup + worktree-sweep — shell-injection impossible when branch/path args are passed as array elements (never interpolated into a shell string). PSA-003-aligned.
+- **#567** New opt-in `hooks/post-subagent-discovery-validator.mjs` SubagentStop hook — mechanical PSA-006 grep-transcript enforcement; flags discovery output that asserts distributional claims without a quoted `grep`/`rg` transcript (logs a `discovery_validator_violation` event + stderr WARN; non-blocking in v1 — exits 0 always, never rejects the subagent). Default-off (`discovery-validator.enabled: false`); enable per-session or globally in Session Config.
+
+### Refactor
+
+- **#578** `SKILL.md` inline JS stubs replaced with authoritative-impl reference pointers — eliminates SSOT drift between `SKILL.md` documentation and `.mjs` implementation files. No behaviour change.
+- **#580-DI-001** Documented divergent sync/async DI seams (`execFileFn` vs `zx-$`) across worktree-cleanup and worktree-sweep — cross-references added in both SKILL.md and relevant `.mjs` files so future contributors understand the seam boundary intentionally.
+
+### Fixed
+
+- **#490** `durableCommit` now commits `autopilot.jsonl` + `sessions.jsonl` + `STATE.md` as a 3-file atomic commit before setting `autopilot.enabled: true` — HARD GATE closes the window where a crash between `enabled:true` write and commit could leave sessions without telemetry entries.
+- **#580-HARDEN-002** Phase 4.5 stale-sweep AUQ now warns when live peer sessions are detected (`discoverActiveSessions` count > 0) before offering batch worktree removal — prevents accidentally removing a worktree that another active session is using.
+
+### Tests
+
+- **#579** Closed 3 MED coverage gaps: multi-match worktree disambiguation, branch-flag command-capture in `execFileSync` arg-array path, exclusive-vs-parallel EARS ordering contract.
+
+### Docs
+
+- **ADR-0008** (`docs/adr/0008-worktree-cleanup-ordering.md`) — records the decision that Phase 4a cleanup runs AFTER Phase 4 commit+push (not before), rationale: preserves `#490` durableCommit ordering so `sessions.jsonl` + `STATE.md` are persisted to origin before worktree removal.
+- **ADR-0009** (`docs/adr/0009-worktree-path-layouts.md`) — records the two distinct worktree path layouts (`enterWorktree` sibling-flat `<basePath>/<repo-name>-<sessionId>/` vs `setupWorktree` 2-level `<base>/<basename>/<issueIid>/`), when to call which, and the deliberate sync/async DI-seam divergence (`execFileFn` vs zx `$`) — kept divergent, not unified.
+- **#580-AUQ-001** Phase 4a dirty-worktree AUQ option order is intentionally `[Behalten (Recommended) / Löschen / Manuell]`, not the PRD §3 P3 Row 3 literal `[Löschen / Behalten / Manuell ich mach's selbst]`. The inversion is PSA-003-aligned: placing the non-destructive "Behalten/Keep" option first + recommended means an accidental Enter keypress never destroys a worktree. Treat the implementation as the authoritative spec; the PRD row was updated retroactively.
+
 ## [3.7.0] - 2026-05-23
 
 Eighteen sessions spanning **9 days** (2026-05-15 → 2026-05-23) since v3.6.0. The headline is the **F2 Memory & Personas cluster** — agent-writable `memory.propose`, the session-start memory banner, USER.md + AGENT.md peer cards, and the dialectic-deriver — alongside the **gsd Pattern Adoption Epic #517** (4 mechanical hardening patterns) and a **Persona-Panel Foundation** (`/persona-panel` skill + 4 templates). Tests grew from **5001 → 7360** (+2359, ~47%), validate-plugin **43 → 94/94**, typecheck **67 → 230 files**, zero breaking changes, zero CI regressions, zero open issues/MRs on either GitLab or GitHub at the cut point.

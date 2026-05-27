@@ -136,6 +136,8 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 - "There are no remaining references to the old API" — without `grep -rn` evidence pinned to the current SHA.
 - "100% adoption" — a percentage is a distributional claim. Quote the numerator AND denominator from grep output.
 
+**Mechanical enforcement (#567).** When `discovery-validator.enabled: true` in Session Config (default `false`), the `SubagentStop` hook `hooks/post-subagent-discovery-validator.mjs` scans the subagent's transcript tail for the distributional-claim patterns above and records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` (plus a stderr WARN) whenever such a claim lacks an adjacent fenced grep/rg/find transcript. v1 is log + warn only and never blocks the agent — it complements the behavioural rule rather than replacing the coordinator's REJECT obligation above.
+
 ## Anti-Patterns
 - Seeing unfamiliar changes and assuming they are "leftover mess" to clean up — they are likely active work.
 - Running `git reset --hard` to "start fresh" — this destroys all uncommitted work across all sessions.

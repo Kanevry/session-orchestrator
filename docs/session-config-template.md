@@ -292,6 +292,17 @@ verification-auto-fix:
 
 Read by: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`), `skills/wave-executor/SKILL.md` inter-wave checkpoint.
 
+## Discovery-Validator (PSA-006 Enforcement)
+
+Opt-in, non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only (exit 0 always) — a blocking hard-gate is reserved for a future iteration. When disabled (default), the hook exits immediately with zero overhead. Issue #567.
+
+```yaml
+discovery-validator:
+  enabled: false                       # opt-in; default false — no overhead when disabled
+```
+
+Read by: `scripts/lib/config/discovery-validator.mjs`, `hooks/post-subagent-discovery-validator.mjs`.
+
 ## Dialectic-Deriver
 
 Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to peer cards (#503). Set `cadence: 0` as a kill-switch to permanently disable auto-dispatch (manual `/evolve --dialectic` always works regardless). PRD F2.5 / issue #506.
@@ -579,6 +590,10 @@ templates-first:
 verification-auto-fix:
   enabled: false
   max-retries: 2
+
+# Discovery-validator — PSA-006 enforcement (#567)
+discovery-validator:
+  enabled: false
 
 # Dialectic-Deriver (#506)
 dialectic:

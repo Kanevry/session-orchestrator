@@ -14,8 +14,11 @@
  *   - `node:child_process` is mocked at module level via vi.mock so no real git
  *     commands are ever issued.
  *   - Each test configures per-call behaviour via `setExecResponses()`.
- *   - The mock is applied BEFORE module import; all `execSync` calls in the SUT
- *     route through the configured mock.
+ *   - The mock is applied BEFORE module import; all `execFileSync` calls in the
+ *     SUT route through the configured mock.
+ *   - #577 HARDEN-001: the SUT now calls `execFileSync('git', [args…])` (arg
+ *     array, no shell). The stubs below match on the args array, not a command
+ *     string.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -27,15 +30,15 @@ import { fileURLToPath } from 'node:url';
 // ---------------------------------------------------------------------------
 
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(() => {
+  execFileSync: vi.fn(() => {
     throw new Error(
-      'session-end-cleanup test: execSync called without a per-test mock. ' +
+      'session-end-cleanup test: execFileSync called without a per-test mock. ' +
         'This would shell out to a real git CLI — failing fast.',
     );
   }),
 }));
 
-const { execSync } = await import('node:child_process');
+const { execFileSync } = await import('node:child_process');
 const { detectAutoPromotedWorktree, isWorktreeClean } = await import(
   '@lib/session-end/worktree-cleanup.mjs'
 );
@@ -44,23 +47,29 @@ const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SKILL_PATH = join(PROJECT_ROOT, 'skills', 'session-end', 'SKILL.md');
 
 // ---------------------------------------------------------------------------
-// Helper: program a deterministic sequence of execSync responses.
+// Helper: program a deterministic sequence of execFileSync responses.
 // Each call consumes the next response in the array.
+//
+// #577 HARDEN-001: the SUT invokes `execFileSync('git', ['-C', dir, 'worktree',
+// 'list', '--porcelain'], …)` (arg array, no shell). The mock receives
+// `(file, args, options)`. Object-spec responses are matched positionally
+// (sequential consumption). Function-spec responses receive `(file, args,
+// callIndex)` so a test can assert on the args array directly.
 // ---------------------------------------------------------------------------
 
 /**
- * @param {Array<{ok: boolean, stdout?: string} | ((cmd: string, callIndex: number) => string)>} responses
+ * @param {Array<{ok: boolean, stdout?: string} | ((file: string, args: string[], callIndex: number) => string)>} responses
  */
 function setExecResponses(responses) {
   let i = 0;
-  execSync.mockImplementation((cmd) => {
+  execFileSync.mockImplementation((file, args) => {
     const spec = responses[i++];
     if (!spec) {
       throw new Error(
-        `session-end-cleanup test: unexpected extra execSync call #${i} (${cmd})`,
+        `session-end-cleanup test: unexpected extra execFileSync call #${i} (${file} ${JSON.stringify(args)})`,
       );
     }
-    if (typeof spec === 'function') return spec(cmd, i - 1);
+    if (typeof spec === 'function') return spec(file, args, i - 1);
     if (spec.ok === false) {
       throw new Error(spec.stderr ?? 'git error');
     }
@@ -69,8 +78,8 @@ function setExecResponses(responses) {
 }
 
 beforeEach(() => {
-  execSync.mockReset();
-  execSync.mockImplementation(() => {
+  execFileSync.mockReset();
+  execFileSync.mockImplementation(() => {
     throw new Error('session-end-cleanup test: no per-test mock configured');
   });
 });
@@ -121,9 +130,9 @@ describe('detectAutoPromotedWorktree() — #575 P3.2 detection', () => {
   });
 
   it('returns null when sessionId is UUID-v4 (not semantic)', () => {
-    // No execSync expected — parseSessionId returns format:'uuid', function exits early.
-    execSync.mockImplementation(() => {
-      throw new Error('UUID path should not invoke execSync');
+    // No execFileSync expected — parseSessionId returns format:'uuid', function exits early.
+    execFileSync.mockImplementation(() => {
+      throw new Error('UUID path should not invoke execFileSync');
     });
     const result = detectAutoPromotedWorktree(
       '/tmp/parent/myrepo-550e8400-e29b-41d4-a716-446655440000',
@@ -134,8 +143,8 @@ describe('detectAutoPromotedWorktree() — #575 P3.2 detection', () => {
 
   it('returns null when sessionId does not match either known format', () => {
     // parseSessionId returns null for unrecognised strings → function exits early.
-    execSync.mockImplementation(() => {
-      throw new Error('null-parse path should not invoke execSync');
+    execFileSync.mockImplementation(() => {
+      throw new Error('null-parse path should not invoke execFileSync');
     });
     const result = detectAutoPromotedWorktree(
       '/tmp/parent/myrepo',
@@ -184,7 +193,7 @@ describe('isWorktreeClean() — #575 P3.2 clean-check', () => {
   it('returns false when porcelain shows modified files', () => {
     setExecResponses([
       { ok: true, stdout: ' M src/foo.js\n' }, // dirty
-      // second execSync call is NOT made (short-circuits on first non-empty porcelain)
+      // second execFileSync call is NOT made (short-circuits on first non-empty porcelain)
     ]);
     const result = isWorktreeClean('/tmp/dirty-wt');
     expect(result).toBe(false);

@@ -4,7 +4,7 @@
 // Covers: enabled:false no-op path, input validation, and the #483 W4-Q5
 // security guards (branch-name allowlist + cwd confinement).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { durableCommit, withDurableCommit } from '../../../scripts/lib/autopilot/durable-telemetry.mjs';
 
 describe('durableCommit — input validation', () => {
@@ -101,5 +101,90 @@ describe('withDurableCommit — wrapper', () => {
     );
     expect(wrote).toBe(true);
     expect(result).toEqual({ ok: true, skipped: true });
+  });
+});
+
+describe('durableCommit — multi-file array support (#490)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+  });
+
+  it('no-ops with {ok:true, skipped:true} for a 3-file array when enabled is false', async () => {
+    // #490 AC2: the session-end-owned set is multi-file. enabled:false must
+    // short-circuit regardless of files.length — it is not single-file gated.
+    const result = await durableCommit({
+      sessionId: 'test-session',
+      files: [
+        '.orchestrator/metrics/autopilot.jsonl',
+        '.orchestrator/metrics/sessions.jsonl',
+        '.claude/STATE.md',
+      ],
+      enabled: false,
+    });
+    expect(result).toEqual({ ok: true, skipped: true });
+  });
+
+  it('withDurableCommit runs the writer then no-ops for the exact 3-file telemetry tuple (enabled:false)', async () => {
+    // The full durable-telemetry tuple committed across loop.mjs (autopilot.jsonl)
+    // + session-end (sessions.jsonl + STATE.md). enabled:false → local no-op.
+    let wrote = false;
+    const result = await withDurableCommit(
+      () => {
+        wrote = true;
+      },
+      {
+        sessionId: 'main-2026-05-27-deep-3',
+        files: [
+          '.orchestrator/metrics/autopilot.jsonl',
+          '.orchestrator/metrics/sessions.jsonl',
+          '.claude/STATE.md',
+        ],
+        enabled: false,
+      }
+    );
+    expect(wrote).toBe(true);
+    expect(result).toEqual({ ok: true, skipped: true });
+  });
+
+  it('returns {ok:false, error:/file not found/} when one of multiple files is missing (enabled:true)', async () => {
+    // Verifies the per-file existsSync guard fires inside the array loop for
+    // files.length > 1. git is mocked so the test stays hermetic — the branch
+    // already "exists" so no `git branch` create runs, and the missing-file
+    // guard returns before any `git add`/`git commit`.
+    const sessionId = 'test-session';
+    const branch = `claude/${sessionId}`;
+    const execSyncMock = vi.fn((cmd) => {
+      if (typeof cmd === 'string' && cmd.startsWith('git branch --list')) {
+        return `* main\n  ${branch}\n`;
+      }
+      return '';
+    });
+    vi.doMock('node:child_process', () => ({ execSync: execSyncMock }));
+    vi.resetModules();
+    const { durableCommit: durableCommitMocked } = await import(
+      '../../../scripts/lib/autopilot/durable-telemetry.mjs'
+    );
+
+    // durableCommit joins each entry onto cwd (process.cwd() = repo root in this
+    // test), so pass repo-relative paths: file 1 exists, file 2 does not.
+    const existingFile = 'package.json'; // resolves to <repo>/package.json — exists
+    const missingFile = '.orchestrator/__does-not-exist-490__.jsonl'; // missing
+
+    const result = await durableCommitMocked({
+      sessionId,
+      files: [existingFile, missingFile],
+      enabled: true,
+      branch,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe(`file not found: ${missingFile}`);
+    // No commit should have been attempted once a file failed the guard.
+    expect(execSyncMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('git commit'),
+      expect.anything()
+    );
   });
 });

@@ -10,8 +10,11 @@
  *      + §3.A P3 EARS state-driven clause
  *
  * Testing strategy:
- *   - listAutoPromotedWorktrees: DI seam via opts.execSyncFn — no vi.mock needed.
- *     Each test passes vi.fn() returning the porcelain fixture string it needs.
+ *   - listAutoPromotedWorktrees: DI seam via opts.execFileFn — no vi.mock needed.
+ *     #577 HARDEN-001: the SUT now invokes `execFileFn('git', ['-C', dir,
+ *     'worktree', 'list', '--porcelain'])` (arg array, no shell). Each test
+ *     passes a vi.fn() that returns the porcelain fixture only when the args
+ *     array contains '--porcelain' — asserting the injection-safe call shape.
  *   - isWorktreeStale: real fs operations on tmp dirs created with mkdirSync +
  *     utimesSync. No mocking — the function is pure fs.
  *   - SKILL.md structure: file-content assertions via readFileSync.
@@ -71,18 +74,66 @@ describe('listAutoPromotedWorktrees() — #575 P3.2 detection', () => {
       { worktree: '/tmp/base/myrepo-main-2026-05-27-deep-2', branch: 'main' },
       { worktree: '/tmp/base/myrepo-issue-42-fix', branch: 'issue-42-fix' },
     ]);
-    const execSyncFn = vi.fn().mockReturnValue(porcelain);
+    // #577 HARDEN-001: assert the SUT calls execFileFn('git', [..,'--porcelain']).
+    const execFileFn = vi.fn((file, args) =>
+      file === 'git' && args.includes('--porcelain') ? porcelain : '',
+    );
 
     const result = listAutoPromotedWorktrees('/tmp/some-cwd', '/tmp/base/myrepo', {
-      execSyncFn,
+      execFileFn,
     });
 
+    expect(execFileFn).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/tmp/base/myrepo', 'worktree', 'list', '--porcelain'],
+      expect.objectContaining({ encoding: 'utf8' }),
+    );
     expect(result).toEqual([
       {
         wtPath: '/tmp/base/myrepo-main-2026-05-27-deep-2',
         sessionId: 'main-2026-05-27-deep-2',
         branch: 'main',
       },
+    ]);
+  });
+
+  it('returns ALL matching auto-promoted siblings when multiple exist (#579 Gap 1)', () => {
+    // Two auto-promoted siblings + the main checkout + one non-semantic worktree.
+    // A regression returning only the FIRST match would silently leave the
+    // second stale worktree uncleaned in a batch sweep — this asserts both are
+    // surfaced, in porcelain order (deep-1 before deep-2).
+    const porcelain = fakePorcelain([
+      { worktree: '/tmp/base/myrepo' }, // main checkout — filtered out
+      { worktree: '/tmp/base/myrepo-main-2026-05-27-deep-1', branch: 'main' }, // sibling ✓
+      { worktree: '/tmp/base/myrepo-main-2026-05-27-deep-2', branch: 'main' }, // sibling ✓
+      { worktree: '/tmp/base/myrepo-issue-42-fix', branch: 'issue-42-fix' }, // non-semantic — excluded
+    ]);
+    const execFileFn = vi.fn((file, args) =>
+      file === 'git' && args.includes('--porcelain') ? porcelain : '',
+    );
+
+    const result = listAutoPromotedWorktrees('/tmp/cwd', '/tmp/base/myrepo', {
+      execFileFn,
+    });
+
+    // Hardcoded literal: exactly the two semantic siblings, in encounter order.
+    expect(result).toEqual([
+      {
+        wtPath: '/tmp/base/myrepo-main-2026-05-27-deep-1',
+        sessionId: 'main-2026-05-27-deep-1',
+        branch: 'main',
+      },
+      {
+        wtPath: '/tmp/base/myrepo-main-2026-05-27-deep-2',
+        sessionId: 'main-2026-05-27-deep-2',
+        branch: 'main',
+      },
+    ]);
+    expect(result).toHaveLength(2);
+    // Both expected sibling paths are present (guards against silent first-only return).
+    expect(result.map((r) => r.wtPath)).toEqual([
+      '/tmp/base/myrepo-main-2026-05-27-deep-1',
+      '/tmp/base/myrepo-main-2026-05-27-deep-2',
     ]);
   });
 
@@ -97,10 +148,12 @@ describe('listAutoPromotedWorktrees() — #575 P3.2 detection', () => {
       },
       { worktree: '/tmp/base/myrepo-randomstuff', branch: 'randomstuff' },
     ]);
-    const execSyncFn = vi.fn().mockReturnValue(porcelain);
+    const execFileFn = vi.fn((file, args) =>
+      file === 'git' && args.includes('--porcelain') ? porcelain : '',
+    );
 
     const result = listAutoPromotedWorktrees('/tmp/cwd', '/tmp/base/myrepo', {
-      execSyncFn,
+      execFileFn,
     });
 
     expect(result).toEqual([]);
@@ -109,23 +162,25 @@ describe('listAutoPromotedWorktrees() — #575 P3.2 detection', () => {
   it('returns empty list when only main checkout exists', () => {
     // Mock git worktree list returns only the main checkout
     const porcelain = fakePorcelain([{ worktree: '/tmp/base/myrepo' }]);
-    const execSyncFn = vi.fn().mockReturnValue(porcelain);
+    const execFileFn = vi.fn((file, args) =>
+      file === 'git' && args.includes('--porcelain') ? porcelain : '',
+    );
 
     const result = listAutoPromotedWorktrees('/tmp/cwd', '/tmp/base/myrepo', {
-      execSyncFn,
+      execFileFn,
     });
 
     expect(result).toEqual([]);
   });
 
   it('returns empty list on git error', () => {
-    // Mock execSyncFn to throw — simulates git not available or not a repo
-    const execSyncFn = vi.fn().mockImplementation(() => {
+    // Mock execFileFn to throw — simulates git not available or not a repo
+    const execFileFn = vi.fn().mockImplementation(() => {
       throw new Error('fatal: not a git repository');
     });
 
     const result = listAutoPromotedWorktrees('/not-a-repo', '/not-a-repo', {
-      execSyncFn,
+      execFileFn,
     });
 
     expect(result).toEqual([]);
