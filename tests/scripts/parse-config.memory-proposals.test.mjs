@@ -108,35 +108,24 @@ memory:
 });
 
 // ---------------------------------------------------------------------------
-// Outer-validator interaction: quoted boolean 'false' on `enabled` key is
-// rejected by the flat-KV coercer (config.mjs `_coerceBoolean`) BEFORE the
-// nested memory parser ever runs.  The correct behaviour is a non-zero
-// exit, not silent coercion.  This exercises the parse-config.mjs script
-// pipeline end-to-end.
+// Quoted-boolean tolerance: _parseMemory strips single + double quotes from
+// the value (memory.mjs:108-110), so `enabled: 'false'` is treated as
+// `enabled: false`. Pre-#593 this case silently exited non-zero — but only
+// as a side-effect of the vault-integration KV-name collision (`enabled`
+// was shared across blocks and `_coerceBoolean` rejected quoted booleans).
+// Post-#593, the collision is gone and _parseMemory's own quote-stripping
+// path handles the value gracefully.  This is the correct behaviour: a
+// quoted YAML scalar is still a YAML scalar.
 // ---------------------------------------------------------------------------
-describe("parse-config.mjs — memory.proposals quoted boolean 'false' is rejected gracefully", () => {
+describe("parse-config.mjs — memory.proposals quoted boolean 'false' is accepted gracefully", () => {
   const CONTENT = `${BASE_CONFIG}
 memory:
   proposals:
     enabled: 'false'
 `;
 
-  it("exits non-zero when proposals.enabled value is quoted 'false'", () => {
-    writeFileSync(join(sandbox, 'CLAUDE.md'), CONTENT, 'utf8');
-    let threw = false;
-    let stderrText = '';
-    try {
-      execFileSync('node', [SCRIPT], {
-        cwd: sandbox,
-        encoding: 'utf8',
-        env: { ...process.env, SO_SKIP_CONFIG_VALIDATION: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      threw = true;
-      stderrText = err.stderr ?? '';
-    }
-    expect(threw).toBe(true);
-    expect(stderrText).toContain('invalid boolean');
+  it("strips quotes and treats 'false' as the boolean false", () => {
+    const result = runParseConfig(sandbox, CONTENT);
+    expect(result.memory.proposals.enabled).toBe(false);
   });
 });

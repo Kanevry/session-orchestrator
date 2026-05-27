@@ -215,8 +215,10 @@ export function parseSessionConfig(mdContent) {
   // Special field
   const maxTurns = _coerceMaxTurns(kv);
 
-  // vault-integration sub-keys
-  const vaultIntegration = _parseVaultIntegration(kv);
+  // vault-integration: parsed from full content (block-scoped, avoids the
+  // pre-#593 KV-name collision where `enabled:` was shared with 15+ other
+  // blocks like docs-orchestrator/vault-staleness/slopcheck).
+  const vaultIntegration = _parseVaultIntegration(mdContent);
 
   // resource-thresholds sub-keys (v3.1.0 env-aware — issue #166)
   const resourceThresholds = _parseResourceThresholds(kv);

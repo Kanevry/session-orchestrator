@@ -408,18 +408,46 @@ describe('parseSessionConfig', () => {
       expect(config['vault-integration'].mode).toBe('warn');
     });
 
-    it('parses explicit vault-integration sub-keys from Session Config', () => {
+    it('parses explicit vault-integration sub-keys from Session Config block form', () => {
+      // Post-#593: vault-integration is a content-scoped block parser. Top-level
+      // `enabled:` / `vault-dir:` / `mode:` lines outside a `vault-integration:`
+      // block no longer bind here (they did pre-#593 due to KV-map collision —
+      // which silently let any peer block's `enabled: false` overwrite this).
       const content = [
         '## Session Config',
         '',
-        'enabled: true',
-        'vault-dir: /secrets/vault',
-        'mode: strict',
+        'vault-integration:',
+        '  enabled: true',
+        '  vault-dir: /secrets/vault',
+        '  mode: strict',
       ].join('\n');
       const config = parseSessionConfig(content);
       expect(config['vault-integration'].enabled).toBe(true);
       expect(config['vault-integration']['vault-dir']).toBe('/secrets/vault');
       expect(config['vault-integration'].mode).toBe('strict');
+    });
+
+    it('issue #593 — peer block enabled:false does not shadow vault-integration.enabled:true', () => {
+      // The pre-#593 regression: `enabled` was read from a flat KV map shared
+      // with 15+ peer config blocks (docs-orchestrator, slopcheck, etc.).
+      // Whichever block defined `enabled:` last in the file silently
+      // overwrote vault-integration.enabled — disabling vault-sync + vault-mirror.
+      const content = [
+        '## Session Config',
+        '',
+        'vault-integration:',
+        '  enabled: true',
+        '  vault-dir: ~/Projects/vault',
+        '  mode: warn',
+        'docs-orchestrator:',
+        '  enabled: false',
+        'slopcheck:',
+        '  enabled: false',
+        'discovery-validator:',
+        '  enabled: false',
+      ].join('\n');
+      const config = parseSessionConfig(content);
+      expect(config['vault-integration'].enabled).toBe(true);
     });
 
     it('defaults vault-sync to disabled with empty exclude list', () => {

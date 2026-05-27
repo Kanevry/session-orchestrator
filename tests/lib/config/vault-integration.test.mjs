@@ -1,11 +1,14 @@
 /**
  * vault-integration.test.mjs — Unit tests for scripts/lib/config/vault-integration.mjs
  *
- * Covers _parseVaultIntegration (enabled, vault-dir, mode — invalid mode silently
- * defaults to warn) and _parseResourceThresholds (all 5 sub-keys with defaults).
+ * Covers _parseVaultIntegration (content-based — block form + inline #497 form,
+ * invalid mode silently defaults to warn) and _parseResourceThresholds (kv-based —
+ * all 5 sub-keys with defaults).
  *
- * These parsers accept a flat KV Map (like the Session Config parser produces),
- * NOT raw YAML content.
+ * Post-#593: _parseVaultIntegration takes raw markdown content (not a shared KV
+ * map) so its `enabled:` sub-key cannot collide with the 15+ other config blocks
+ * that also have an `enabled:` line. _parseResourceThresholds remains kv-based
+ * because its sub-keys are uniquely named.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -15,130 +18,262 @@ import {
 } from '@lib/config/vault-integration.mjs';
 
 // ---------------------------------------------------------------------------
-// _parseVaultIntegration
+// _parseVaultIntegration — content-based
 // ---------------------------------------------------------------------------
 
 describe('_parseVaultIntegration', () => {
   describe('defaults', () => {
-    it('returns enabled: false when key is absent', () => {
-      const kv = new Map();
-      expect(_parseVaultIntegration(kv).enabled).toBe(false);
+    it('returns all defaults when block is absent', () => {
+      expect(_parseVaultIntegration('# nothing here\n')).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+      });
     });
 
-    it('returns vault-dir: null when key is absent', () => {
-      const kv = new Map();
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
+    it('returns defaults for empty string', () => {
+      expect(_parseVaultIntegration('')).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+      });
     });
 
-    it('returns mode: "warn" when key is absent', () => {
-      const kv = new Map();
-      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+    it('returns defaults for non-string input', () => {
+      expect(_parseVaultIntegration(undefined)).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+      });
+    });
+
+    it('returns defaults when block header exists but body is empty', () => {
+      const content = `vault-integration:\nother-key: 1\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+      });
     });
   });
 
-  describe('enabled', () => {
+  describe('block form — enabled', () => {
     it('parses enabled: true', () => {
-      const kv = new Map([['enabled', 'true']]);
-      expect(_parseVaultIntegration(kv).enabled).toBe(true);
+      const content = `vault-integration:\n  enabled: true\n`;
+      expect(_parseVaultIntegration(content).enabled).toBe(true);
     });
 
     it('parses enabled: false', () => {
-      const kv = new Map([['enabled', 'false']]);
-      expect(_parseVaultIntegration(kv).enabled).toBe(false);
+      const content = `vault-integration:\n  enabled: false\n`;
+      expect(_parseVaultIntegration(content).enabled).toBe(false);
     });
 
-    it('throws on non-boolean enabled value (delegates to _coerceBoolean)', () => {
-      const kv = new Map([['enabled', 'yes']]);
-      expect(() => _parseVaultIntegration(kv)).toThrow(/invalid boolean/);
+    it('non-boolean enabled value silently falls back to default false', () => {
+      // Tolerant parser — unlike the pre-#593 kv-based path which threw via _coerceBoolean.
+      const content = `vault-integration:\n  enabled: yes\n`;
+      expect(_parseVaultIntegration(content).enabled).toBe(false);
+    });
+
+    it('normalises uppercase TRUE to true', () => {
+      const content = `vault-integration:\n  enabled: TRUE\n`;
+      expect(_parseVaultIntegration(content).enabled).toBe(true);
     });
   });
 
-  describe('vault-dir', () => {
+  describe('block form — vault-dir', () => {
     it('parses vault-dir path', () => {
-      const kv = new Map([['vault-dir', '~/Projects/vault']]);
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBe('~/Projects/vault');
+      const content = `vault-integration:\n  vault-dir: ~/Projects/vault\n`;
+      expect(_parseVaultIntegration(content)['vault-dir']).toBe('~/Projects/vault');
     });
 
     it('returns null for vault-dir: none', () => {
-      const kv = new Map([['vault-dir', 'none']]);
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
+      const content = `vault-integration:\n  vault-dir: none\n`;
+      expect(_parseVaultIntegration(content)['vault-dir']).toBeNull();
     });
 
     it('returns null for vault-dir: null', () => {
-      const kv = new Map([['vault-dir', 'null']]);
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
-    });
-
-    it('returns null for empty vault-dir value', () => {
-      const kv = new Map([['vault-dir', '']]);
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
+      const content = `vault-integration:\n  vault-dir: null\n`;
+      expect(_parseVaultIntegration(content)['vault-dir']).toBeNull();
     });
   });
 
-  describe('mode', () => {
+  describe('block form — mode', () => {
     it('parses mode: strict', () => {
-      const kv = new Map([['mode', 'strict']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('strict');
+      const content = `vault-integration:\n  mode: strict\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('strict');
     });
 
     it('parses mode: off', () => {
-      const kv = new Map([['mode', 'off']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('off');
+      const content = `vault-integration:\n  mode: off\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('off');
     });
 
     it('parses mode: warn', () => {
-      const kv = new Map([['mode', 'warn']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+      const content = `vault-integration:\n  mode: warn\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('warn');
     });
 
     it('normalises uppercase mode "STRICT" to "strict"', () => {
-      const kv = new Map([['mode', 'STRICT']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('strict');
+      const content = `vault-integration:\n  mode: STRICT\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('strict');
     });
 
     it('silently defaults to "warn" for invalid mode', () => {
-      const kv = new Map([['mode', 'hard']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+      const content = `vault-integration:\n  mode: hard\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('warn');
     });
   });
 
-  describe('full set', () => {
+  describe('block form — full set', () => {
     it('parses all three fields together', () => {
-      const kv = new Map([
-        ['enabled', 'true'],
-        ['vault-dir', '~/Projects/vault'],
-        ['mode', 'strict'],
-      ]);
-      expect(_parseVaultIntegration(kv)).toEqual({
+      const content =
+        `vault-integration:\n  enabled: true\n  vault-dir: ~/Projects/vault\n  mode: strict\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'strict',
       });
     });
+
+    it('handles inline comments on sub-keys', () => {
+      const content =
+        `vault-integration:\n  enabled: true   # primary toggle\n  vault-dir: ~/v   # comment\n  mode: warn      # warn|strict|off\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/v',
+        mode: 'warn',
+      });
+    });
+
+    it('ignores nested keys like `gitlab-groups:` list items', () => {
+      const content =
+        `vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: warn\n  gitlab-groups:\n    - infrastructure\n    - clients\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/v',
+        mode: 'warn',
+      });
+    });
+
+    it('block ends at first non-indented line', () => {
+      const content =
+        `vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: strict\ndocs-orchestrator:\n  enabled: false\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/v',
+        mode: 'strict',
+      });
+    });
+  });
+
+  // Regression: pre-#593, _parseVaultIntegration(kv) read `enabled` from a
+  // shared KV map. Every config block has an `enabled:` line and they all
+  // collapsed into a single KV entry — the LAST `enabled:` in the file won.
+  // Whoever ended with `enabled: false` silently overwrote
+  // `vault-integration.enabled: true`, disabling vault-sync + vault-mirror.
+  describe('issue #593 regression — block-form must not collide with peer blocks', () => {
+    it('vault-integration.enabled wins over later peer-block enabled values', () => {
+      const content = [
+        'vault-integration:',
+        '  enabled: true',
+        '  vault-dir: ~/Projects/vault',
+        '  mode: warn',
+        'docs-orchestrator:',
+        '  enabled: false', // peer block — must NOT shadow vault-integration
+        'slopcheck:',
+        '  enabled: false', // another peer
+        'discovery-validator:',
+        '  enabled: false', // final peer (was the silent overwriter pre-#593)
+        '',
+      ].join('\n');
+
+      expect(_parseVaultIntegration(content).enabled).toBe(true);
+    });
+
+    it('vault-integration.enabled: false stays false even if a later peer has enabled: true', () => {
+      const content = [
+        'vault-integration:',
+        '  enabled: false',
+        'memory:',
+        '  banner:',
+        '    enabled: true', // deeper-nested peer key, must not leak in
+        'cold-start:',
+        '  enabled: true',
+        '',
+      ].join('\n');
+
+      expect(_parseVaultIntegration(content).enabled).toBe(false);
+    });
+
+    it('matches a realistic CLAUDE.md Session Config layout (vault-integration block-form embedded among peers)', () => {
+      const content = [
+        '## Session Config',
+        '',
+        'persistence: true',
+        'enforcement: warn',
+        'vault-integration:',
+        '  enabled: true',
+        '  vault-dir: ~/Projects/Bernhard/vault',
+        '  mode: warn',
+        'docs-orchestrator:',
+        '  enabled: false',
+        'vault-staleness:',
+        '  enabled: false',
+        'memory:',
+        '  banner:',
+        '    enabled: true',
+        '  proposals:',
+        '    enabled: true',
+        'cold-start:',
+        '  enabled: true',
+        'state-md-lock:',
+        '  enabled: true',
+        'slopcheck:',
+        '  enabled: false',
+        'discovery-validator:',
+        '  enabled: false',
+        '',
+      ].join('\n');
+
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/Projects/Bernhard/vault',
+        mode: 'warn',
+      });
+    });
   });
 
   // Issue #497: inline object literal form
-  // `- vault-integration: { enabled: true, vault-dir: ~/..., mode: warn }`
-  describe('issue #497: inline object literal form', () => {
+  describe('issue #497 — inline object literal form', () => {
     it('parses inline object with all three fields', () => {
-      const kv = new Map([
-        ['vault-integration', '{ enabled: true, vault-dir: ~/Projects/vault, mode: warn }'],
-      ]);
-      expect(_parseVaultIntegration(kv)).toEqual({
+      const content = `vault-integration: { enabled: true, vault-dir: ~/Projects/vault, mode: warn }\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'warn',
       });
     });
 
-    it('inline form takes precedence over flat sub-keys when both present', () => {
-      const kv = new Map([
-        ['vault-integration', '{ enabled: true, vault-dir: ~/A, mode: strict }'],
-        ['enabled', 'false'],
-        ['vault-dir', '~/B'],
-        ['mode', 'off'],
-      ]);
-      expect(_parseVaultIntegration(kv)).toEqual({
+    it('inline list-item form (`- vault-integration: { ... }`)', () => {
+      const content = `- vault-integration: { enabled: true, vault-dir: ~/A, mode: strict }\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/A',
+        mode: 'strict',
+      });
+    });
+
+    it('inline form takes precedence over block form when both present', () => {
+      const content = [
+        'vault-integration: { enabled: true, vault-dir: ~/A, mode: strict }',
+        'vault-integration:',
+        '  enabled: false',
+        '  vault-dir: ~/B',
+        '  mode: off',
+        '',
+      ].join('\n');
+
+      expect(_parseVaultIntegration(content)).toEqual({
         enabled: true,
         'vault-dir': '~/A',
         mode: 'strict',
@@ -146,8 +281,8 @@ describe('_parseVaultIntegration', () => {
     });
 
     it('inline form: enabled: false', () => {
-      const kv = new Map([['vault-integration', '{ enabled: false, vault-dir: ~/v, mode: off }']]);
-      expect(_parseVaultIntegration(kv)).toEqual({
+      const content = `vault-integration: { enabled: false, vault-dir: ~/v, mode: off }\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
         enabled: false,
         'vault-dir': '~/v',
         mode: 'off',
@@ -155,25 +290,23 @@ describe('_parseVaultIntegration', () => {
     });
 
     it('inline form: missing mode defaults to warn', () => {
-      const kv = new Map([['vault-integration', '{ enabled: true, vault-dir: ~/v }']]);
-      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+      const content = `vault-integration: { enabled: true, vault-dir: ~/v }\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('warn');
     });
 
     it('inline form: invalid mode silently defaults to warn', () => {
-      const kv = new Map([
-        ['vault-integration', '{ enabled: true, vault-dir: ~/v, mode: bogus }'],
-      ]);
-      expect(_parseVaultIntegration(kv).mode).toBe('warn');
+      const content = `vault-integration: { enabled: true, vault-dir: ~/v, mode: bogus }\n`;
+      expect(_parseVaultIntegration(content).mode).toBe('warn');
     });
 
     it('inline form: missing vault-dir yields null', () => {
-      const kv = new Map([['vault-integration', '{ enabled: true, mode: warn }']]);
-      expect(_parseVaultIntegration(kv)['vault-dir']).toBeNull();
+      const content = `vault-integration: { enabled: true, mode: warn }\n`;
+      expect(_parseVaultIntegration(content)['vault-dir']).toBeNull();
     });
 
     it('inline form: empty braces yields all-default object', () => {
-      const kv = new Map([['vault-integration', '{}']]);
-      expect(_parseVaultIntegration(kv)).toEqual({
+      const content = `vault-integration: {}\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
@@ -183,7 +316,7 @@ describe('_parseVaultIntegration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// _parseResourceThresholds
+// _parseResourceThresholds — kv-based (unchanged from pre-#593)
 // ---------------------------------------------------------------------------
 
 describe('_parseResourceThresholds', () => {
