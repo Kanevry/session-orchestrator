@@ -15,8 +15,15 @@
  *   {
  *     session_id, pid, platform, repo_path_hash, repo_name, branch,
  *     started_at, last_heartbeat, status ('active'|'wave'|'idle'),
- *     current_wave, host_class
+ *     current_wave, host_class, mode (Epic #583 W2-I3)
  *   }
+ *
+ * Schema v2 (Epic #583, W2-I3): `mode` field added so the exclusivity-matrix
+ * can classify cross-repo registry entries correctly. Without it, every
+ * registry-sourced peer was bucketed as `mode='session'` → classifyMode threw
+ * → fell back to `parallel-ok`, silently bypassing the exclusivity matrix
+ * for cross-repo entries (D5 from Epic #583 audit). The field is optional
+ * on read for back-compat with v1 entries (defaults to null).
  */
 
 import os from 'node:os';
@@ -98,11 +105,20 @@ async function _readJsonSafe(filePath) {
 }
 
 function _validEntry(obj) {
-  return obj
-    && typeof obj === 'object'
-    && typeof obj.session_id === 'string'
-    && typeof obj.last_heartbeat === 'string'
-    && typeof obj.started_at === 'string';
+  if (!obj
+    || typeof obj !== 'object'
+    || typeof obj.session_id !== 'string'
+    || typeof obj.last_heartbeat !== 'string'
+    || typeof obj.started_at !== 'string') {
+    return false;
+  }
+  // Schema v2 (Epic #583): `mode` is optional. When present it MUST be a string
+  // (no number / object / array smuggling). When absent (v1 entry), it is
+  // accepted — back-compat with pre-#583 registry files.
+  if ('mode' in obj && obj.mode !== null && typeof obj.mode !== 'string') {
+    return false;
+  }
+  return true;
 }
 
 function _ageMinutes(isoTimestamp, now = Date.now()) {
@@ -153,6 +169,10 @@ export function logSweepEvent({ event, session_id, error }) {
  * @param {number} [opts.pid] — defaults to process.pid
  * @param {string} [opts.status] — 'active' | 'wave' | 'idle' (default 'active')
  * @param {number} [opts.currentWave] — default 0
+ * @param {string} [opts.mode] — session mode (e.g., 'deep', 'feature', 'housekeeping').
+ *   Schema v2 (Epic #583, W2-I3): when present, propagated into the entry so
+ *   discovery + exclusivity-matrix classification work for cross-repo peers.
+ *   Default: `null` (back-compat with v1 entries).
  * @returns {Promise<object>} the written entry
  */
 export async function registerSelf(opts) {
@@ -164,9 +184,18 @@ export async function registerSelf(opts) {
   if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
     throw new TypeError('registerSelf: projectRoot must be a non-empty string');
   }
+  // Schema v2 (Epic #583): validate mode shape if provided.
+  if (opts.mode !== undefined && opts.mode !== null && typeof opts.mode !== 'string') {
+    throw new TypeError('registerSelf: mode must be a string when provided');
+  }
+  // Schema v2.1 (Epic #583 W5-F1c — Q5 H1): semanticSessionId field for #587 completion.
+  if (opts.semanticSessionId !== undefined && opts.semanticSessionId !== null && typeof opts.semanticSessionId !== 'string') {
+    throw new TypeError('registerSelf: semanticSessionId must be a string when provided');
+  }
   const now = utcTimestamp();
   const entry = {
     session_id: sessionId,
+    semantic_session_id: opts.semanticSessionId ?? null,
     pid: opts.pid ?? process.pid,
     platform: opts.platform ?? null,
     repo_path_hash: repoPathHash(projectRoot),
@@ -177,6 +206,7 @@ export async function registerSelf(opts) {
     status: opts.status ?? 'active',
     current_wave: opts.currentWave ?? 0,
     host_class: opts.hostClass ?? null,
+    mode: opts.mode ?? null,
   };
   await _writeJsonAtomic(entryPath(sessionId), entry);
   return entry;
@@ -216,6 +246,26 @@ export async function readRegistry() {
     if (_validEntry(parsed)) entries.push(parsed);
   }
   return entries;
+}
+
+/**
+ * Determine whether a registry entry is "fresh" — last_heartbeat within
+ * `freshnessMin` minutes of `now`. Mirrors detectPeers()'s age filter but
+ * exposes the rule as a pure function so callers (session-discovery,
+ * exclusivity-matrix consumers) can apply it without re-deriving the formula.
+ *
+ * Schema v2 (Epic #583, W2-I3): used by discoverActiveSessions() to filter
+ * registry-sourced sessions when locks are absent / stale.
+ *
+ * @param {object} entry  Registry entry object
+ * @param {object} [opts]
+ * @param {number} [opts.freshnessMin=15]
+ * @param {number} [opts.now]  ms-since-epoch (test seam)
+ * @returns {boolean}
+ */
+export function isRegistryEntryFresh(entry, { freshnessMin = 15, now = Date.now() } = {}) {
+  if (!_validEntry(entry)) return false;
+  return _ageMinutes(entry.last_heartbeat, now) <= freshnessMin;
 }
 
 /**

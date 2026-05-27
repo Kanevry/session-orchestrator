@@ -15,6 +15,7 @@ import {
   sweepZombies,
   deregisterSelf,
   logSweepEvent,
+  isRegistryEntryFresh,
 } from '@lib/session-registry.mjs';
 
 describe('session-registry', () => {
@@ -303,6 +304,106 @@ describe('session-registry', () => {
       const last2 = lines.slice(-2).map((l) => JSON.parse(l));
       expect(last2[0].session_id).toBe('a');
       expect(last2[1].session_id).toBe('b');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Schema v2 — mode field (Epic #583, W2-I3)
+  // -------------------------------------------------------------------------
+
+  describe('Schema v2 — mode field (Epic #583, W2-I3)', () => {
+    // R1: registerSelf({mode: 'deep'}) writes entry with mode field.
+    it('R1: registerSelf({mode: "deep"}) writes entry with mode propagated', async () => {
+      const entry = await registerSelf({
+        sessionId: 'R1-mode',
+        projectRoot: '/tmp/proj-r1',
+        mode: 'deep',
+      });
+      expect(entry.mode).toBe('deep');
+
+      const onDisk = JSON.parse(await readFile(path.join(tmpBase, 'active', 'R1-mode.json'), 'utf8'));
+      expect(onDisk.mode).toBe('deep');
+    });
+
+    // R2: _validEntry accepts entries with mode + back-compat with missing mode.
+    it('R2a: registerSelf without mode writes entry with mode: null (back-compat)', async () => {
+      const entry = await registerSelf({
+        sessionId: 'R2-nomode',
+        projectRoot: '/tmp/proj-r2',
+      });
+      expect(entry.mode).toBeNull();
+
+      // The entry is still valid + readable via readRegistry.
+      const all = await readRegistry();
+      const found = all.find((e) => e.session_id === 'R2-nomode');
+      expect(found).toBeDefined();
+      expect(found.mode).toBeNull();
+    });
+
+    it('R2b: v1 entry on disk (no mode field) is read back as a valid entry', async () => {
+      // Write a v1-shaped entry directly to disk (no mode field).
+      await mkdir(path.join(tmpBase, 'active'), { recursive: true });
+      const v1Entry = {
+        session_id: 'R2-v1',
+        pid: 12345,
+        platform: 'claude',
+        repo_path_hash: 'a'.repeat(64),
+        repo_name: 'proj-r2-v1',
+        branch: 'main',
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        status: 'active',
+        current_wave: 0,
+        host_class: null,
+        // No mode field — pre-#583 schema v1.
+      };
+      await writeFile(
+        path.join(tmpBase, 'active', 'R2-v1.json'),
+        JSON.stringify(v1Entry, null, 2) + '\n',
+      );
+
+      const all = await readRegistry();
+      const found = all.find((e) => e.session_id === 'R2-v1');
+      expect(found).toBeDefined();
+      expect(found.mode).toBeUndefined(); // not normalised — stays absent
+    });
+
+    it('R2c: registerSelf rejects non-string mode', async () => {
+      await expect(registerSelf({
+        sessionId: 'R2-badmode',
+        projectRoot: '/tmp/proj',
+        mode: 42, // number not allowed
+      })).rejects.toThrow(TypeError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // isRegistryEntryFresh helper (Epic #583, W2-I3)
+  // -------------------------------------------------------------------------
+
+  describe('isRegistryEntryFresh helper (Epic #583, W2-I3)', () => {
+    it('returns true when last_heartbeat is within freshnessMin', () => {
+      const entry = {
+        session_id: 'fresh',
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+      };
+      expect(isRegistryEntryFresh(entry, { freshnessMin: 15 })).toBe(true);
+    });
+
+    it('returns false when last_heartbeat is older than freshnessMin', () => {
+      const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+      const entry = {
+        session_id: 'stale',
+        started_at: oneHourAgo,
+        last_heartbeat: oneHourAgo,
+      };
+      expect(isRegistryEntryFresh(entry, { freshnessMin: 15 })).toBe(false);
+    });
+
+    it('returns false on a malformed entry', () => {
+      expect(isRegistryEntryFresh(null)).toBe(false);
+      expect(isRegistryEntryFresh({ no: 'fields' })).toBe(false);
     });
   });
 });

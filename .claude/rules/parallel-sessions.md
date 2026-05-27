@@ -109,6 +109,8 @@ Pattern 1 of the gsd Adoption Quick-Win Bundle (Issue #518) complements the PSA-
 
 See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Issue #518.
 
+**Epic #583 mechanical extension.** Since Epic #583, `session.lock` acquisition is also wired mechanically via `hooks/_lib/lock-bootstrap.mjs` (`bootstrapLock()`) invoked from `on-session-start.mjs` on every `SessionStart`. This closes the complementary gap in session-lock wiring: previously, `session.lock` was only written when the coordinator-LLM executed Phase 1.2 prose — a Disziplin-statt-Mechanik risk identical to the STATE.md write-race. Lock schema v2 also replaces PID-liveness with heartbeat-based liveness (`last_heartbeat` field), and surfaces `semantic_session_id` alongside the UUID `session_id` on Claude Code. See `skills/_shared/state-ownership.md § Session Lock Schema` for the full v2 field contract.
+
 ## PSA-006 — Discovery Grep-Verification (#555 FL-2)
 
 Discovery agents and W1 explorers MUST verify any distributional claim — "100% of callers opt-in", "N of M sites use pattern X", "no remaining references to Y", "all instances replaced", etc. — with an EXECUTED `grep` or `rg` invocation. The Discovery output MUST quote:

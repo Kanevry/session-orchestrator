@@ -692,3 +692,131 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
     expect(remaining).not.toContain('stdin-wins.json');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 14. Session lock heartbeat-refresh on Stop (Epic #583 W5-F1c — replaces W3-P3 release)
+// ---------------------------------------------------------------------------
+//
+// Earlier W3-P3 added release-on-Stop which proved wrong: Stop fires per-turn-end,
+// so release-on-Stop would delete the lock after the first turn. W5-F1c replaces
+// release with updateHeartbeat — the lock stays live + heartbeat is refreshed.
+// Closes W4-Q3 H2 cadence finding (PostToolBatch-only heartbeat was too narrow).
+
+describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout: 15000 }, () => {
+  /**
+   * Write a minimal valid session.lock body for the given sessionId under
+   * projectDir's .orchestrator/ folder. Returns the lock-file path.
+   */
+  async function writeLock(projectDir, sessionId) {
+    const orchDir = path.join(projectDir, '.orchestrator');
+    await fs.mkdir(orchDir, { recursive: true });
+    const lockPath = path.join(orchDir, 'session.lock');
+    const nowIso = new Date().toISOString();
+    const lock = {
+      session_id: sessionId,
+      started_at: nowIso,
+      last_heartbeat: nowIso,
+      mode: 'deep',
+      pid: 999999,
+      host: 'test-host',
+      ttl_hours: 4,
+    };
+    await fs.writeFile(lockPath, JSON.stringify(lock, null, 2) + '\n', 'utf8');
+    return lockPath;
+  }
+
+  async function lockExists(projectDir) {
+    const lockPath = path.join(projectDir, '.orchestrator', 'session.lock');
+    return fs.access(lockPath).then(() => true).catch(() => false);
+  }
+
+  it('refreshes last_heartbeat when stdin session_id matches the lock owner', async () => {
+    const dir = await track(await mkGitDir());
+    const sessionId = 'stop-refreshes-heartbeat';
+    await writeLock(dir, sessionId);
+    expect(await lockExists(dir)).toBe(true);
+
+    // Snapshot the heartbeat BEFORE Stop.
+    const beforePath = path.join(dir, '.orchestrator', 'session.lock');
+    const beforeRaw = await fs.readFile(beforePath, 'utf8');
+    const beforeHb = JSON.parse(beforeRaw).last_heartbeat;
+
+    // Sleep 10ms so the new heartbeat ISO is strictly later.
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: sessionId }),
+    });
+    expect(result.code).toBe(0);
+
+    // Lock STAYS — and heartbeat is now strictly after the pre-Stop snapshot.
+    expect(await lockExists(dir)).toBe(true);
+    const afterRaw = await fs.readFile(beforePath, 'utf8');
+    const afterHb = JSON.parse(afterRaw).last_heartbeat;
+    expect(new Date(afterHb).getTime()).toBeGreaterThan(new Date(beforeHb).getTime());
+  });
+
+  it('does NOT refresh a lock owned by a DIFFERENT session (same-session guard)', async () => {
+    const dir = await track(await mkGitDir());
+    const lockOwner = 'real-lock-owner';
+    await writeLock(dir, lockOwner);
+    expect(await lockExists(dir)).toBe(true);
+    const beforeRaw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
+    const beforeHb = JSON.parse(beforeRaw).last_heartbeat;
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Run on-stop with a DIFFERENT session_id — updateHeartbeat must no-op.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'impostor-session' }),
+    });
+    expect(result.code).toBe(0);
+
+    // Lock survives AND heartbeat unchanged.
+    expect(await lockExists(dir)).toBe(true);
+    const raw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
+    const surviving = JSON.parse(raw);
+    expect(surviving.session_id).toBe(lockOwner);
+    expect(surviving.last_heartbeat).toBe(beforeHb);
+  });
+
+  it('exits 0 when no session.lock exists (best-effort contract)', async () => {
+    const dir = await track(await mkGitDir());
+    // No lock pre-written.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'no-lock-to-release' }),
+    });
+    expect(result.code).toBe(0);
+    // Hook still writes the stop event.
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('stop');
+  });
+
+  it('uses current-session.json fallback when stdin lacks session_id', async () => {
+    const dir = await track(await mkGitDir());
+    const sessionId = 'fallback-heartbeat-via-current-session';
+    await writeLock(dir, sessionId);
+
+    // Write current-session.json so the resolver picks it up.
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: sessionId }),
+    );
+
+    const beforeRaw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
+    const beforeHb = JSON.parse(beforeRaw).last_heartbeat;
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await runHook({ projectDir: dir, stdin: '' });
+    expect(result.code).toBe(0);
+
+    // Heartbeat MUST have been refreshed via the current-session.json fallback path.
+    const afterRaw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
+    const afterHb = JSON.parse(afterRaw).last_heartbeat;
+    expect(new Date(afterHb).getTime()).toBeGreaterThan(new Date(beforeHb).getTime());
+  });
+});

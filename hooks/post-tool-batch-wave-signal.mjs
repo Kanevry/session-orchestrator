@@ -8,6 +8,13 @@
  * `.orchestrator/current-session.json` so skills and the coordinator can
  * observe batch-resolution boundaries without parsing the full event log.
  *
+ * Also refreshes the session-lock heartbeat (Epic #583, W3-P3 wiring of
+ * W2-I3 OQ2). The PostToolBatch event fires on a much more frequent cadence
+ * than session-start / inter-wave / session-end, which keeps the heartbeat
+ * within the TTL window even during long-running waves. The call is
+ * try/catch-wrapped — a heartbeat-refresh failure must never block the
+ * coordinator at a tool-batch boundary.
+ *
  * Decision flow:
  *   1. shouldRunHook gate — exit 0 immediately when the hook is disabled.
  *   2. Read JSON payload from stdin:
@@ -16,7 +23,9 @@
  *        set `last_batch` to
  *        { batch_id, batch_size, completed_at, agent_id?, parent_session_id? }
  *        (always overwrites — last batch wins, one record per session file).
- *   4. Output: nothing on stdout. Diagnostic errors to stderr only.
+ *   4. Best-effort: refresh session.lock `last_heartbeat` via updateHeartbeat()
+ *      using the session_id read back from current-session.json (or stdin).
+ *   5. Output: nothing on stdout. Diagnostic errors to stderr only.
  *
  * Exit codes: 0 always (informational, never blocking).
  *
@@ -89,6 +98,41 @@ async function atomicMutateJson(filePath, defaultValue, mutate) {
   await rename(tmp, filePath);
 }
 
+/**
+ * Resolve the session-id for the heartbeat refresh.
+ * Precedence:
+ *   1. stdin payload `session_id` / `sessionId` field (Claude Code contract).
+ *   2. parent_session_id from stdin (sub-agent batches).
+ *   3. `.orchestrator/current-session.json` (`session_id` written by
+ *      on-session-start.mjs).
+ * Returns null when no id can be resolved.
+ *
+ * @param {object|null} input  Parsed stdin payload (may be null).
+ * @param {string} sessionFile Absolute path to current-session.json.
+ * @returns {Promise<string|null>}
+ */
+async function resolveSessionIdForHeartbeat(input, sessionFile) {
+  if (input) {
+    if (typeof input.session_id === 'string' && input.session_id.length > 0) {
+      return input.session_id;
+    }
+    if (typeof input.sessionId === 'string' && input.sessionId.length > 0) {
+      return input.sessionId;
+    }
+    if (typeof input.parent_session_id === 'string' && input.parent_session_id.length > 0) {
+      return input.parent_session_id;
+    }
+  }
+  try {
+    const raw = await readFile(sessionFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
+      return parsed.session_id;
+    }
+  } catch { /* missing or unparseable is fine */ }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -135,6 +179,26 @@ async function main() {
     ...current,
     last_batch: lastBatch,
   }));
+
+  // ----------------------------------------------------------------------
+  // Heartbeat refresh (Epic #583 W3-P3, wires W2-I3 OQ2).
+  // ----------------------------------------------------------------------
+  // The session.lock liveness rule is heartbeat-based (Epic #583, W2-I3):
+  //   (now - last_heartbeat) < ttl_hours
+  // The default TTL is 4h; PostToolBatch fires far more often than that,
+  // so refreshing here keeps every active session perpetually live to
+  // discoverActiveSessions() while a coordinator is making tool calls.
+  // Resolve the session-id from stdin first, falling back to the just-
+  // written current-session.json so the refresh stays decoupled from the
+  // hook payload shape. Wrapped in try/catch — same defence-in-depth
+  // posture as the rest of this hook (must NEVER block).
+  try {
+    const sessionId = await resolveSessionIdForHeartbeat(input, sessionFile);
+    if (typeof sessionId === 'string' && sessionId.length > 0) {
+      const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
+      updateHeartbeat({ repoRoot: SO_PROJECT_DIR, sessionId });
+    }
+  } catch { /* best effort — hook must remain non-blocking */ }
 
   // If a wave-complete signal is present, surface it as additionalContext so
   // Claude sees the state change at the next turn boundary.

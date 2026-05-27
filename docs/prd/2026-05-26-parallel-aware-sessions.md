@@ -331,3 +331,64 @@ All locks via existing `withStateMdLock` infrastructure. No new lockfile types. 
 3. ✅ Bootstrap-Gate vs always-ok-Klasse → bootstrap stays HARD-GATE (Q5 answer)
 4. ✅ Worktree-Cleanup-Trigger → Hybrid Anthropic-Pattern (Q4 answer)
 5. ✅ Wave-Scope-Interaktion → implicit resolved by P3 Worktree-Auto-Promotion (each session → own worktree → own wave-scope.json)
+
+---
+
+## Post-Implementation Hardening (2026-05-27, Epic #583)
+
+A live-verification session (`main-2026-05-27-deep-5`) ran the parallel-aware preamble against a real active peer (deep-4) and discovered the detection did not fire. W1 Discovery (agents W1-D1 through W1-D4) reproduced five compounding wiring defects. W2 fixed all five. Epic #583 closes sub-issues #584–#588.
+
+### D1 — No mechanical trigger for `acquire()`
+
+**Root cause:** The lock was only created if the coordinator faithfully executed Phase 1.2 prose. The `on-session-start.mjs` hook — the only mechanical entry-point — never called `acquire()`. Grep evidence (W1-D1):
+
+```
+$ grep -rn "from .*session-lock\|require.*session-lock" --include="*.mjs" scripts/ hooks/ | grep -v "\.test\."
+scripts/lib/autopilot/worktree-pipeline.mjs:35:import { acquire, release } from '../session-lock.mjs';   ← ONLY acquire/release importer
+```
+
+The sole `acquire` importer in non-test code was `worktree-pipeline.mjs`, wired only to the `/autopilot-multi` flow, NOT to `/session` or `/deep`.
+
+**Fix (#584):** `hooks/_lib/lock-bootstrap.mjs` (`bootstrapLock()`) is invoked mechanically from `on-session-start.mjs`. Every session now writes `session.lock` on `SessionStart`, regardless of whether the coordinator reaches Phase 1.2.
+
+### D2 — PID-source bug (`pid` = hook subprocess, not session)
+
+**Root cause:** `acquire()` records `process.pid` (the hook subprocess PID, ~500ms lifetime). Once the hook exits, `isPidAlive(pid) === false` → `discoverActiveSessions()` filters the lock out as stale → preamble sees NO active sessions → no AUQ fires.
+
+Confirmed empirically: the host registry contained 5 entries with PIDs confirmed dead by `ps -p`, yet all marked `status: active`.
+
+**Fix (#585):** Lock schema v2 introduces `last_heartbeat` (ISO-8601). Liveness is now:
+
+```
+isAlive = (Date.now() - Date.parse(last_heartbeat)) < ttl_hours * 3600 * 1000
+```
+
+The `pid` field is retained for forensic audit only; it is no longer used for liveness. This is the PostgreSQL pattern (W1-D4 §1.5: `postmaster.pid` uses `start_time` not `kill -0` alone; proper-lockfile npm uses `mkdir` + periodic mtime touch).
+
+### D3 — `resolveSemanticSessionId` ignored history
+
+**Root cause:** `scripts/lib/session-id.mjs:168-204` computed `n = max(activeSessions.n) + 1` where `activeSessions` was the output of `discoverActiveSessions()`. Because D2 caused all locks to appear stale, `discoverActiveSessions()` always returned `[]`, and `n` was always `1` — producing duplicate `deep-1` session IDs.
+
+**Fix (#586):** `resolveSemanticSessionId` now consults `.orchestrator/metrics/sessions.jsonl` + sibling worktree STATE.md frontmatter to derive a historically-correct `n`, independent of whether live locks exist.
+
+### D4 — `semantic_session_id` was dead code on Claude Code
+
+**Root cause:** Claude Code always passes a UUID-v4 via stdin. The `resolveSemanticSessionId` branch in `on-session-start.mjs:236-313` (~78 LOC) executed only on Codex/Cursor — never on Claude Code. The resulting `session.lock` recorded the UUID as `session_id` with no semantic form, conflicting with the documented contract in `state-ownership.md` and PRD §3 P2.
+
+**Fix (#587):** Lock schema v2 adds `semantic_session_id` — always the `<branch>-<YYYY-MM-DD>-<mode>-<n>` form, even when `session_id` is a UUID. `bootstrapLock()` derives this independently of the stdin path.
+
+### D5 — Host-registry missing `mode` field
+
+**Root cause:** `session-registry.mjs:registerSelf()` entry schema omitted `mode`. The hook caller (`on-session-start.mjs:449`) never passed a mode parameter. `discoverActiveSessions()` fallback `r.mode ?? 'session'` masked the absence. As a result, every cross-repo registry entry fed `classifyMode('session')` → `parallel-ok` default, bypassing the exclusivity-matrix entirely for host-registry peers.
+
+**Fix (#588):** Registry entry schema-v2 adds `mode` field. Writer and caller updated to pass mode through.
+
+### Confirmation of PRD §1 warning
+
+PRD line 20 stated:
+
+> *"ohne Detection-Surface bleibt es **Disziplin-statt-Mechanik**"*
+
+The live-verification confirmed this one architectural layer up: the *Detection-Surface* (preamble, acquire, AUQ) shipped in Epic #568, but its *Trigger* (mechanical `session.lock` write on `SessionStart`) remained prose-only. Epic #583 closes that gap by making `bootstrapLock()` the unconditional mechanical trigger.
+
+**See Epic #583 + sub-issues #584–#588 for the full implementation, tests, and W1-D1..D4 audit artifacts.**

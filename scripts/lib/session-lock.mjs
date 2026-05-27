@@ -140,6 +140,19 @@ function lockAgeHours(lock) {
 
 /**
  * Parse lock file contents into an object. Returns null on any parse error.
+ *
+ * Schema v2 (Epic #583, W2-I3): adds `last_heartbeat` (optional, populated by
+ * `updateHeartbeat()`) + `semantic_session_id` (optional, populated when the
+ * `session_id` field carries a UUID and the caller wants to preserve the
+ * always-semantic id alongside it).
+ *
+ * Back-compat: v1 locks (no `last_heartbeat`) are normalised on read with
+ * `last_heartbeat = started_at`. The optional `semantic_session_id` field is
+ * left undefined when absent. This lets pre-#583 lockfiles flow through the
+ * new liveness rule transparently — the v1 lock's `started_at` becomes its
+ * effective heartbeat, so TTL freshness still rescues recent locks even when
+ * the writer process is dead (the D2/D5 production case).
+ *
  * @param {string} raw
  * @returns {object|null}
  */
@@ -156,7 +169,15 @@ function parseLock(raw) {
       typeof obj.host === 'string' &&
       typeof obj.ttl_hours === 'number'
     ) {
-      return obj;
+      // Schema v1 → v2 normalisation: when `last_heartbeat` is absent or
+      // non-string, treat the lock as if it heartbeat-ed once at started_at.
+      const normalised = { ...obj };
+      if (typeof normalised.last_heartbeat !== 'string' || normalised.last_heartbeat.length === 0) {
+        normalised.last_heartbeat = normalised.started_at;
+      }
+      // semantic_session_id stays undefined when absent — callers that need it
+      // should fall back to session_id.
+      return normalised;
     }
     return null;
   } catch {
@@ -166,18 +187,56 @@ function parseLock(raw) {
 
 /**
  * Build a fresh lock object from caller-supplied fields.
- * @param {{ sessionId: string, mode: string, ttlHours: number }} args
+ *
+ * Schema v2 (Epic #583, W2-I3): `last_heartbeat` is seeded equal to
+ * `started_at`. Callers MUST call `updateHeartbeat()` on a known cadence
+ * (session-start, inter-wave, session-end) to keep the lock alive past TTL.
+ *
+ * @param {{ sessionId: string, mode: string, ttlHours: number, semanticSessionId?: string }} args
  * @returns {object}
  */
-function buildLock({ sessionId, mode, ttlHours }) {
-  return {
+function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
+  const startedAt = nowIso();
+  const lock = {
     session_id: sessionId,
-    started_at: nowIso(),
+    started_at: startedAt,
+    last_heartbeat: startedAt,
     mode,
     pid: process.pid,
     host: os.hostname(),
     ttl_hours: ttlHours,
   };
+  if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
+    lock.semantic_session_id = semanticSessionId;
+  }
+  return lock;
+}
+
+/**
+ * Determine whether a lock is "live" based on its last_heartbeat freshness
+ * relative to TTL. Replaces PID-liveness as the primary discovery-time
+ * liveness check (Epic #583, W1-D1 + W1-D4 consensus): the writer-process
+ * PID is the *hook* PID, not the session PID, so PID-liveness incorrectly
+ * filtered out locks whose semantic owner (the Claude harness process) was
+ * still alive.
+ *
+ * Liveness rule: a lock is live when (now - last_heartbeat) < ttl_hours.
+ *
+ * @param {{ last_heartbeat: string, started_at: string, ttl_hours?: number }} lock
+ * @param {number} [nowMs]
+ * @returns {boolean}
+ */
+export function isLockLive(lock, nowMs = Date.now()) {
+  if (!lock || typeof lock !== 'object') return false;
+  // Back-compat: prefer last_heartbeat; fall back to started_at when absent.
+  const hbStr = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
+    ? lock.last_heartbeat
+    : lock.started_at;
+  const heartbeatMs = Date.parse(hbStr);
+  if (Number.isNaN(heartbeatMs)) return false;
+  const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_TTL_HOURS;
+  const ttlMs = ttlHours * 3600 * 1000;
+  return (nowMs - heartbeatMs) < ttlMs;
 }
 
 /**
@@ -240,6 +299,10 @@ export function readLock(opts = {}) {
  * @param {string} args.mode
  * @param {number} [args.ttlHours]
  * @param {string} [args.repoRoot]
+ * @param {string} [args.semanticSessionId]
+ *   Optional always-semantic session id (e.g., `<branch>-<date>-<mode>-<n>`).
+ *   When `sessionId` is a UUID (Claude Code path) and a semantic id is also
+ *   known, pass it here to be persisted alongside the UUID. Schema v2.
  * @param {Array<{mode:string,pid:number,host:string,sessionId:string}>} [args.activeSessions]
  *   Optional pre-computed array from discoverActiveSessions(repoRoot). When omitted,
  *   matrix consultation is skipped (legacy behavior). Callers (worktree-pipeline.mjs,
@@ -271,7 +334,7 @@ export function readLock(opts = {}) {
  * The caller (session-start) decides whether to invoke forceAcquire() after
  * obtaining user consent.
  */
-export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions } = {}) {
+export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId } = {}) {
   const lockFile = lockPathFor(repoRoot);
 
   // -------------------------------------------------------------------------
@@ -373,7 +436,7 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     }
 
     // No existing lock — write a new one.
-    const lock = buildLock({ sessionId, mode, ttlHours });
+    const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
     const writeResult = writeLockAtomic(lockFile, lock);
     if (!writeResult.ok) return writeResult;
 
@@ -391,12 +454,12 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  *   { ok: true, lock, replacedLock? }       — lock written (replacedLock present if one was overwritten)
  *   { ok: false, reason: 'fs-error', ... }  — filesystem failure
  *
- * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string }} args
+ * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string }} args
  */
-export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot } = {}) {
+export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId } = {}) {
   try {
     const replacedLock = readLock({ repoRoot });
-    const lock = buildLock({ sessionId, mode, ttlHours });
+    const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
     const lockFile = lockPathFor(repoRoot);
 
     const writeResult = writeLockAtomic(lockFile, lock);
@@ -436,6 +499,35 @@ export function release({ sessionId, repoRoot } = {}) {
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
+}
+
+/**
+ * Refresh the `last_heartbeat` field on an existing lock, atomically.
+ *
+ * Schema v2 (Epic #583, W2-I3): the lock's liveness is determined by
+ * `(now - last_heartbeat) < ttl_hours`. Callers MUST invoke this on a known
+ * cadence (session-start, inter-wave, session-end) to keep the lock alive
+ * across long sessions.
+ *
+ * Same-session guard: refuses to update someone else's lock. Returns `false`
+ * when the lock is absent, malformed, or held by a different session_id.
+ * Returns `true` on a successful atomic update.
+ *
+ * Atomicity: same tmp + rename pattern as writeLockAtomic — single syscall
+ * visibility on POSIX. Never throws.
+ *
+ * @param {{ repoRoot?: string, sessionId: string }} opts
+ * @returns {boolean}
+ */
+export function updateHeartbeat({ repoRoot, sessionId } = {}) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
+  const existing = readLock({ repoRoot });
+  if (existing === null) return false;
+  if (existing.session_id !== sessionId) return false;
+  const updated = { ...existing, last_heartbeat: nowIso() };
+  const lockFile = lockPathFor(repoRoot);
+  const writeResult = writeLockAtomic(lockFile, updated);
+  return writeResult.ok === true;
 }
 
 /**

@@ -85,3 +85,47 @@ Cross-references:
 - `skills/session-end/SKILL.md § Phase 4a` (cleanup)
 - `scripts/lib/autopilot/worktree-pipeline.mjs § enterWorktree` (creation)
 - `skills/_shared/parallel-aware-auq.md` (PROMOTION_OFFER AUQ)
+
+## Session Lock Schema (v2, since Epic #583)
+
+The `.orchestrator/session.lock` file is written mechanically by `hooks/_lib/lock-bootstrap.mjs` on every `SessionStart` hook invocation (Epic #583 D1 fix). Prior to Epic #583, the lock was only created when the coordinator-LLM executed Phase 1.2 prose — a silent-skip risk.
+
+### Lock body (schema v2)
+
+```json
+{
+  "session_id":          "<UUID-v4 OR semantic-id>",
+  "semantic_session_id": "<branch>-<YYYY-MM-DD>-<mode>-<n>",
+  "started_at":          "<ISO-8601 UTC>",
+  "last_heartbeat":      "<ISO-8601 UTC>",
+  "mode":                "deep|feature|housekeeping|session|...",
+  "pid":                 12345,
+  "host":                "hostname",
+  "ttl_hours":           4
+}
+```
+
+### Field notes
+
+| Field | Required since | Description |
+|---|---|---|
+| `session_id` | v1 | The session identifier (UUID-v4 on Claude Code, semantic on Codex/Cursor). |
+| `semantic_session_id` | v2 (Epic #583) | The semantic form (`<branch>-<YYYY-MM-DD>-<mode>-<n>`) **always present**, even when `session_id` is a UUID. Closes D4 gap: semantic-id branch was previously dead code on Claude Code (stdin always provides UUID). |
+| `started_at` | v1 | ISO-8601 timestamp when the lock was written. |
+| `last_heartbeat` | v2 (Epic #583) | ISO-8601 timestamp updated by the `SessionStart` hook and by `PostToolBatch`/`Stop` hooks. **Basis for liveness determination** — replaces PID-liveness (see below). |
+| `mode` | v1 | Session mode consulted by exclusivity-matrix. May be `"unknown"` in the provisional lock written by the hook before Session Config + AUQ have settled. |
+| `pid` | v1 | **Forensic only — do NOT use for liveness.** Records the writer's process PID (the hook subprocess, ~500ms lifetime). Dead PIDs are expected and normal. See D2 / D3 notes below. |
+| `host` | v1 | `os.hostname()` of the machine that wrote the lock. Cross-host locks skip PID checks. |
+| `ttl_hours` | v1 | Maximum age before the lock is considered stale regardless of other signals. Default 4h. |
+
+### Liveness rule (v2)
+
+```
+isAlive = (Date.now() - Date.parse(last_heartbeat)) < ttl_hours * 3600 * 1000
+```
+
+This replaces the v1 PID-liveness check (`process.kill(pid, 0)`) which was fundamentally broken because the recorded `pid` belongs to the ephemeral hook subprocess (dies in <1s), not the long-lived Claude coordinator process. The PostgreSQL pattern — use a heartbeat timestamp rather than PID to establish liveness — is the authoritative reference (see W1-D4 best-practices §1.5).
+
+### Schema v1 → v2 backward-compat
+
+Readers (e.g., `readLock()` in `session-lock.mjs`, `discoverActiveSessions()`) MUST tolerate absent `last_heartbeat` and `semantic_session_id` fields (v1 locks written before Epic #583). When `last_heartbeat` is absent, fall back to TTL-based expiry from `started_at`. When `semantic_session_id` is absent, treat as unknown.

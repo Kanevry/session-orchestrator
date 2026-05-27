@@ -59,6 +59,8 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 
 Acquire a distributed session-lock to detect parallel sessions in the same repo before initializing STATE.md. This prevents two concurrent Claude/Codex sessions from stomping each other's wave state and metrics writes.
 
+**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's `session_id` does not match the current session's id (a rare divergence — surface via AUQ before overwriting). The decision flow below still applies to all three outcomes (active / stale / fs-error) when the prose path needs to acquire.
+
 ```javascript
 import { acquire, forceAcquire } from 'scripts/lib/session-lock.mjs';
 const result = acquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() });
@@ -136,6 +138,37 @@ When `existingLock.host !== os.hostname()`, PID liveness cannot be checked (`pid
 - For stale reasons: the recommendation is still **Reclaim** only if TTL is clearly expired (>2× ttl_hours). Otherwise default to **Abort**.
 - **Never auto-reclaim cross-host locks** under any circumstance — always present the AUQ and let the user decide.
 - The AUQ question text for cross-host cases should note: `"(cross-host — PID liveness cannot be verified)"`.
+
+## Phase 1.2.1: Peer-Guard (Epic #583 defense-in-depth)
+
+> Skip this phase if `persistence` config is `false`.
+
+After Phase 1.2 acquires (or confirms) the lock, call `checkPeerStateMd(repoRoot, sessionId)` from `scripts/lib/state-md-peer-guard.mjs`. This catches the rare case where lock-based detection missed an active peer (e.g., the peer's `session.lock` was force-deleted by an out-of-band sweep but STATE.md is still `status: active`, OR the peer's registry write succeeded but the lock-bootstrap hook crashed before the lock landed).
+
+```javascript
+import { checkPeerStateMd } from '$PLUGIN_ROOT/scripts/lib/state-md-peer-guard.mjs';
+const { peer, reason } = checkPeerStateMd(process.cwd(), sessionId);
+if (peer) {
+  // STATE.md is owned by an active peer — do NOT overwrite.
+  // Fire the Worktree-Promotion AUQ from parallel-aware-auq.md.
+}
+```
+
+### Decision flow
+
+1. **`peer === null`** → no active peer owns STATE.md. Continue to Phase 1.5.
+2. **`peer !== null`** → STATE.md is owned by a live peer session. **Do NOT proceed with the default Phase 1.5/1b STATE.md overwrite.** Fire the Worktree-Promotion AUQ from `skills/_shared/parallel-aware-auq.md` (same options the Phase 0.5 preamble would emit on `PROMOTION_OFFER`).
+   - User picks "Worktree anlegen + starten" → call `enterWorktree(...)` and exit Phase 1 immediately (the new worktree's own session-start runs from scratch).
+   - User picks "Manuell — in-place daneben" → append a Deviation describing the missed peer detection, continue to Phase 1.5. STATE.md WILL be overwritten — the user has explicitly accepted that risk.
+   - User picks "Abbrechen" → exit cleanly.
+
+### Soft-gate semantics
+
+This is a SOFT-GATE — the operator can override via the AUQ — but the warning is mandatory and must not be silenced. Treat any `checkPeerStateMd` failure (read error, malformed STATE.md, etc.) as `peer === null` (fail-open: do not block the session for a corrupted STATE.md file; the rest of the parallel-aware machinery still applies).
+
+### Why this complements Phase 1.2
+
+Phase 1.2 owns the `.orchestrator/session.lock` file; Phase 1.2.1 owns the STATE.md frontmatter. The two surfaces can disagree (briefly, during a crash; durably, if a sweep deleted one but not the other). The Peer-Guard treats STATE.md as a second, independent source of truth — if EITHER source says a peer is active, the coordinator must pause before stomping shared state.
 
 ## Phase 1.5: Session Continuity
 

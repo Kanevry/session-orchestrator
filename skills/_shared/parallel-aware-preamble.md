@@ -124,6 +124,39 @@ The skill consuming the preamble translates the outcome:
 | `EXCLUSIVE_BLOCKED` | Fire Exclusive-Conflict AUQ from `parallel-aware-auq.md`. Block until user response. On "Abbrechen": exit cleanly. On "Andere Session beenden": surface to user (preamble does NOT kill other session). On "Warten": pause Phase 0; re-run preamble on user retry. |
 | `PROMOTION_OFFER` | Fire Promotion AUQ from `parallel-aware-auq.md`. On "Worktree anlegen": call enterWorktree() from worktree-pipeline.mjs (see parallel-aware-auq.md outcome-handling). On "Manuell": append Deviation (`Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>`) and continue. On "Abbrechen": exit. |
 
+## Phase 1b Peer-Guard (defense-in-depth)
+
+After Phase 0.5 (parallel-aware preamble) and Phase 1.2 (session-lock acquire), session-start Phase 1b initializes STATE.md. Before overwriting, the guard from `scripts/lib/state-md-peer-guard.mjs:checkPeerStateMd()` MUST run.
+
+If `checkPeerStateMd(repoRoot, sessionId)` returns `{peer: non-null}`, fire the Worktree-Promotion AUQ from `parallel-aware-auq.md`. This catches races where the preamble's lock-based detection missed an active peer (e.g., a session whose lock was force-deleted but STATE.md is still status:active).
+
+The guard is a SOFT-GATE — operator can override, but the warning is mandatory.
+
+### Guard decision tree (for Phase 1b callers)
+
+```
+checkPeerStateMd(repoRoot, mySessionId) →
+  peer === null  →  safe to write STATE.md; continue Phase 1b normally.
+  peer !== null  →  fire Promotion AUQ (parallel-aware-auq.md "Promotion" block).
+                    On "Worktree anlegen": enterWorktree() → continue in sibling.
+                    On "Manuell": appendDeviationOnDisk() + continue in-place.
+                    On "Abbrechen": exit cleanly.
+```
+
+### Integration reference
+
+```js
+import { checkPeerStateMd } from '../../scripts/lib/state-md-peer-guard.mjs';
+
+// Inside Phase 1b, before writing STATE.md:
+const guard = checkPeerStateMd(repoRoot, sessionId);
+if (guard.peer !== null) {
+  // peer.sessionId, peer.mode, peer.currentWave, peer.ageHours are populated.
+  // Fire the Promotion AUQ — do NOT silently overwrite.
+  // ... AUQ logic per parallel-aware-auq.md ...
+}
+```
+
 ## Cross-References
 
 - **Discovery layer:** `scripts/lib/session-discovery.mjs` (`discoverActiveSessions`, `findWorktrees`) — shipped in P1.1 #569
@@ -131,6 +164,7 @@ The skill consuming the preamble translates the outcome:
 - **Lock integration:** `scripts/lib/session-lock.mjs:acquire()` extended in P1.2 #570 — accepts pre-computed `activeSessions[]` and returns matrix-aware reasons (`active-incompatible-exclusive`, `active-compatible-parallel`, `active-readonly-bypass`)
 - **AUQ patterns:** `parallel-aware-auq.md` (three reusable AUQ blocks) — sibling file
 - **Deviation logging:** `scripts/lib/state-md.mjs:appendDeviationOnDisk()`
+- **Phase 1b peer-guard:** `scripts/lib/state-md-peer-guard.mjs:checkPeerStateMd()` — shipped in #588
 
 ## Idempotency
 
