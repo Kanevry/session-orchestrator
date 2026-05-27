@@ -22,7 +22,7 @@ Before any Phase 1 work, run the parallel-aware preamble per `skills/_shared/par
 
 - Returns `PASS_THROUGH` (no other session / `always-ok` mode) → continue to Phase 1
 - Returns `EXCLUSIVE_BLOCKED` → fires Exclusive-Conflict AUQ from `skills/_shared/parallel-aware-auq.md`
-- Returns `PROMOTION_OFFER` → fires Worktree-Promotion AUQ (P3.1 #574 fills the worktree-creation action)
+- Returns `PROMOTION_OFFER` → fires Worktree-Promotion AUQ (via `enterWorktree()` from `scripts/lib/autopilot/worktree-pipeline.mjs` — see `parallel-aware-auq.md` outcome-handling)
 
 On any non-PASS_THROUGH outcome that does not result in immediate exit, append a Deviation to STATE.md via `appendDeviationOnDisk(repoRoot, isoTimestamp, message)` from `scripts/lib/state-md.mjs`.
 

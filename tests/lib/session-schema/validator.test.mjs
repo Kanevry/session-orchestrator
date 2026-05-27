@@ -136,9 +136,9 @@ describe('validateSession — non-object input', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — schema_version', () => {
-  it('throws on schema_version: 2 (out of range)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 2 })).toThrow(
-      /schema_version must be 0 \(legacy\) or 1/
+  it('throws on schema_version: 99 (out of accepted set per #576)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 99 })).toThrow(
+      /schema_version must be one of \[0 \(legacy\), 1, 2, 3\]/
     );
   });
 
@@ -148,6 +148,44 @@ describe('validateSession — schema_version', () => {
 
   it('accepts schema_version: 0 (legacy)', () => {
     expect(() => validateSession({ ...VALID(), schema_version: 0 })).not.toThrow();
+  });
+
+  it('accepts schema_version: 2 (ADR-364 substrate)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 2 })).not.toThrow();
+  });
+
+  it('accepts schema_version: 3 (ADR-364 follow-ups)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 3 })).not.toThrow();
+  });
+
+  it('throws on schema_version: -1 (negative)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: -1 })).toThrow(
+      /schema_version must be one of \[0 \(legacy\), 1, 2, 3\]/
+    );
+  });
+
+  it('throws on schema_version: 4 (next-version not yet accepted)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 4 })).toThrow(
+      /schema_version must be one of/
+    );
+  });
+
+  it('throws on schema_version: "1" (string, not number)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: '1' })).toThrow();
+  });
+
+  it('throws on schema_version: 1.5 (non-integer)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 1.5 })).toThrow();
+  });
+
+  it('error message lists all accepted versions [0, 1, 2, 3] and echoes the bad value', () => {
+    try {
+      validateSession({ ...VALID(), schema_version: 999 });
+      throw new Error('expected validateSession to throw but it did not');
+    } catch (err) {
+      expect(err.message).toContain('[0 (legacy), 1, 2, 3]');
+      expect(err.message).toContain('999');
+    }
   });
 });
 

@@ -71,7 +71,7 @@ AskUserQuestion({
     header: "Worktree-Promo",
     multiSelect: false,
     options: [
-      { label: "Worktree anlegen + starten (Recommended)", description: "Create a sibling git worktree at ../<repo-name>-<semantic-session-id>/ and start the new session there. Isolates file edits; recommended for parallel deep/feature sessions. (P3.1 #574 fills this action.)" },
+      { label: "Worktree anlegen + starten (Recommended)", description: "Create a sibling git worktree at ../<repo-name>-<semantic-session-id>/ and start the new session there. Isolates file edits; recommended for parallel deep/feature sessions. Calls enterWorktree() from scripts/lib/autopilot/worktree-pipeline.mjs." },
       { label: "Manuell — in-place daneben", description: "Run in the current worktree alongside the existing session. File conflicts possible; PSA-001/002/004 discipline required. A Deviation is logged." },
       { label: "Abbrechen", description: "Exit cleanly. No STATE.md initialization." },
     ],
@@ -95,7 +95,7 @@ Reply with the number of your choice.
 
 ### Outcome handling
 
-- **Worktree anlegen + starten** → invoke the P3.1 worktree-promotion helper (see `scripts/lib/autopilot/worktree-pipeline.mjs` for the underlying pattern; P3.1 #574 exposes the named export `enterWorktree`). Until P3.1 ships, this option emits a stderr warning `parallel-aware: worktree-promotion not yet implemented; falling back to Manuell` and proceeds via the Manuell path.
+- **Worktree anlegen + starten** → invoke `enterWorktree({ basePath, sessionId, branch, repoRoot })` from `scripts/lib/autopilot/worktree-pipeline.mjs`. The helper creates a sibling worktree at `<basePath>/<repo-name>-<sessionId>/`, runs idempotency + boundary checks, and logs a WARN line to stderr on fresh creation. Once the worktree exists, exit the current preamble flow — the new worktree's own session-start runs from scratch (Phase 1 onwards). On failure (`WorktreeBoundaryError` or `git worktree add` non-zero exit), emit a stderr warning `parallel-aware: enterWorktree failed: <error>; falling back to Manuell` and proceed via the Manuell path.
 - **Manuell** → append a Deviation via `appendDeviationOnDisk()`:
   `Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>, mode=<peer.mode>, pid=<peer.pid>. PSA-001/PSA-002/PSA-004 discipline applies.`
   Continue Phase-0.

@@ -40,7 +40,7 @@ This runs BEFORE the local session-lock acquire in Phase 1.2 — the preamble's 
 **Outcome handling:**
 - `PASS_THROUGH` → continue to Phase 1
 - `EXCLUSIVE_BLOCKED` → exit Phase 0 cleanly per the AUQ outcome (`Warten` / `Andere Session beenden` / `Abbrechen` — all three return without initializing STATE.md)
-- `PROMOTION_OFFER` with user picking "Worktree anlegen + starten" → invoke P3.1 worktree-promotion helper (when P3.1 #574 ships; until then, falls through to "Manuell" with stderr warning)
+- `PROMOTION_OFFER` with user picking "Worktree anlegen + starten" → call `enterWorktree({ basePath, sessionId, branch, repoRoot })` from `scripts/lib/autopilot/worktree-pipeline.mjs`. Compute params: `basePath = path.dirname(repoRoot)`, `sessionId` from resolveSemanticSessionId(), `branch` from current HEAD, `repoRoot = process.cwd()`. On success, exit Phase 0 immediately — the new worktree's own session-start runs from scratch (Phase 1 onwards), Phase 1.2 session-lock-acquire is the new worktree's responsibility. On enterWorktree failure (`WorktreeBoundaryError` or `git worktree add` non-zero exit), emit stderr WARN `parallel-aware: enterWorktree failed: <err>; falling back to Manuell` and proceed via the Manuell path.
 - `PROMOTION_OFFER` with user picking "Manuell — in-place daneben" → append Deviation, continue to Phase 1
 - `PROMOTION_OFFER` with user picking "Abbrechen" → exit cleanly
 

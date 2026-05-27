@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Epic #568 Phase 3 — Worktree-Auto-Promotion + Hybrid Cleanup** (closes #574, #575):
+  - `enterWorktree({basePath, sessionId, branch, repoRoot})` named export in `scripts/lib/autopilot/worktree-pipeline.mjs` — creates sibling worktree at `<basePath>/<repo-name>-<sessionId>/`, idempotency check, security boundary via `realpathSync` + `validateWorkspacePath`.
+  - `skills/_shared/parallel-aware-auq.md` + `parallel-aware-preamble.md` — PROMOTION_OFFER outcome wired to `enterWorktree()` (no more "P3.1 #574 stub").
+  - `skills/session-end/SKILL.md § Phase 4a` — Auto-Promoted Worktree Cleanup. Clean → auto-remove + WARN. Dirty → 3-option AUQ (Behalten/Löschen/Manuell). PSA-003 compliance. Runs AFTER Phase 4 commit+push (respects #490 durableCommit ordering).
+  - `skills/memory-cleanup/SKILL.md § Phase 4.5` — Worktree-Stale-Sweep. Stale auto-promoted worktrees (age > `stale-branch-days`, default 7d) offered for batch-removal in housekeeping prune flow.
+
+### Fixed
+
+- **#576** `validateSession` accepts `schema_version ∈ {0, 1, 2, 3}` (additive contract). Previous validator rejected ADR-364 schema_version=3 entries written 2026-05-24; read-path tolerance only — `CURRENT_SESSION_SCHEMA_VERSION` unchanged at 1.
+
+### Tests
+
+- New `tests/integration/worktree-auto-promotion.test.mjs` (Gherkin rows 1-2 coverage)
+- New `tests/skills/session-end-cleanup.test.mjs` (Gherkin rows 2-3 + PSA-003)
+- New `tests/skills/housekeeping-stale-sweep.test.mjs` (Gherkin row 4)
+- Extended `tests/lib/session-schema/validator.test.mjs` with additive contract assertions (schema_version 0/1/2/3 accept, -1/4/99/"1"/1.5 reject)
+
 - **Epic #568 Parallel-Aware Sessions Phase 1+2 (#570 #571 #572 #573)** — extends Phase 1.1 foundational helpers (#569, shipped in d012db9) with:
   - **P1.2 (#570)** `acquire()` exclusivity-matrix integration in `scripts/lib/session-lock.mjs`. New return reasons (`active-incompatible-exclusive`, `active-compatible-parallel`, `active-readonly-bypass`) + `exclusivityClass` field on all returns. Backward-compatible: 4 existing reasons unchanged when `activeSessions` arg omitted. Sync function (caller pre-computes `discoverActiveSessions(repoRoot)`).
   - **P1.3 (#571)** new `skills/_shared/parallel-aware-preamble.md` (mirrors `bootstrap-gate.md` 7-section pattern; `HARD-GATE` for exclusive, `SOFT-GATE` for parallel-ok, pass-through for always-ok) + new `skills/_shared/parallel-aware-auq.md` (3 AUQ variants per PRD §3 P1 with Codex CLI/Cursor numbered-Markdown fallback per AUQ-004). Adopted at Phase 0.5 in all 5 orchestrator SKILL.md (autopilot, session-start, session-plan, wave-executor, session-end); session-start Phase 1.2 stale-lock AUQ delegates to the preamble (not replaced — local-lock semantics preserved).

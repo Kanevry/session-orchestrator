@@ -122,7 +122,7 @@ The skill consuming the preamble translates the outcome:
 |---------|--------|
 | `PASS_THROUGH` | Continue immediately. No AUQ. Pre-P1.3 behavior. |
 | `EXCLUSIVE_BLOCKED` | Fire Exclusive-Conflict AUQ from `parallel-aware-auq.md`. Block until user response. On "Abbrechen": exit cleanly. On "Andere Session beenden": surface to user (preamble does NOT kill other session). On "Warten": pause Phase 0; re-run preamble on user retry. |
-| `PROMOTION_OFFER` | Fire Promotion AUQ from `parallel-aware-auq.md`. On "Worktree anlegen": P3 action (deferred to P3.1 #574). On "Manuell": append Deviation (`Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>`) and continue. On "Abbrechen": exit. |
+| `PROMOTION_OFFER` | Fire Promotion AUQ from `parallel-aware-auq.md`. On "Worktree anlegen": call enterWorktree() from worktree-pipeline.mjs (see parallel-aware-auq.md outcome-handling). On "Manuell": append Deviation (`Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>`) and continue. On "Abbrechen": exit. |
 
 ## Cross-References
 

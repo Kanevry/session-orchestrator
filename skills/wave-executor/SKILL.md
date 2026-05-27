@@ -69,7 +69,7 @@ Before Phase 1, run the parallel-aware preamble per `skills/_shared/parallel-awa
 **Outcome handling:**
 - `PASS_THROUGH` → continue to Phase 1
 - `EXCLUSIVE_BLOCKED` → exit Phase 0 cleanly per the AUQ outcome
-- `PROMOTION_OFFER` → user picks Worktree-Promotion (P3.1 #574), in-place + Deviation, or Abbrechen
+- `PROMOTION_OFFER` → user picks Worktree-Promotion (see `parallel-aware-auq.md` outcome-handling — calls `enterWorktree()`), in-place + Deviation, or Abbrechen
 
 For session-end specifically: the preamble is DETECTION-ONLY. The lock-release path in later phases keeps its current behavior — releasing the OWN session's lock requires no matrix consultation.
 

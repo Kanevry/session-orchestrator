@@ -24,6 +24,7 @@ import { maybeCreateDraftMR } from './mr-draft.mjs';
 import { validateWorkspacePath } from '../worktree/lifecycle.mjs';
 import { acquire, release } from '../session-lock.mjs';
 import { main as gcMain } from '../../gc-stale-worktrees.mjs';
+import { SEMANTIC_ID_RE } from '../session-id.mjs';
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -419,4 +420,176 @@ export async function runStoryPipeline(context, opts = {}) {
   void _removed;
 
   return publicResult;
+}
+
+// ---------------------------------------------------------------------------
+// enterWorktree — Worktree-Auto-Promotion (#574, Epic #568 Phase 3.1)
+// ---------------------------------------------------------------------------
+
+/** Valid git branch character set — mirrors isValidBranch from session-id.mjs. */
+const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
+
+/**
+ * Create a sibling git worktree for Worktree-Auto-Promotion (#574, Epic #568 P3.1).
+ *
+ * Path layout: `<basePath>/<basename(repoRoot)>-<sessionId>/`
+ *
+ * Example:
+ *   enterWorktree({
+ *     basePath: '/Users/foo/Projects',
+ *     sessionId: 'main-2026-05-27-deep-2',
+ *     branch: 'main',
+ *     repoRoot: '/Users/foo/Projects/myrepo',
+ *   })
+ *   → /Users/foo/Projects/myrepo-main-2026-05-27-deep-2/
+ *
+ * This is structurally distinct from `setupWorktree`: setupWorktree creates
+ * `<worktreeRoot>/<repoBasename>/<issueIid>` (2-level nested); enterWorktree
+ * creates `<basePath>/<repoBasename>-<sessionId>` (sibling, 1-level flat) to
+ * satisfy the PRD §3 P3 Gherkin row-1 layout requirement.
+ *
+ * Idempotency: if the target worktree path already exists and contains `.git`,
+ * returns `{ wtPath, reused: true }` without re-running `git worktree add`.
+ *
+ * Security: applies the same `realpathSync` + `validateWorkspacePath` boundary
+ * check as `setupWorktree` (CWE-23 / SEC-013 defence-in-depth). Throws
+ * `WorktreeBoundaryError` if the computed path escapes `basePath`.
+ *
+ * Branch handling: if the branch already exists (verified via
+ * `git rev-parse --verify <branch>`), use `git worktree add <wtPath> <branch>`
+ * (reuse). Otherwise use `git worktree add -b <branch> <wtPath>` (create new).
+ * This differs from `setupWorktree`, which always passes `-b`.
+ *
+ * @param {object} params
+ * @param {string} params.basePath  - Parent directory where the new worktree goes (absolute).
+ * @param {string} params.sessionId - Semantic session-ID matching SEMANTIC_ID_RE.
+ * @param {string} params.branch    - Branch name (existing or new) matching ENTER_WORKTREE_BRANCH_RE.
+ * @param {string} params.repoRoot  - Path to the source git repository (passed explicitly to avoid CWD drift per #219).
+ * @param {object} [opts]
+ * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('zx')`.
+ * @returns {Promise<{ wtPath: string, reused: boolean }>}
+ * @throws {TypeError} when any required param is missing or fails validation.
+ * @throws {WorktreeBoundaryError} when the computed worktree path escapes `basePath`.
+ */
+export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = {}, opts = {}) {
+  // -------------------------------------------------------------------------
+  // Step 1: Input validation (TypeError on any malformed param).
+  // -------------------------------------------------------------------------
+  if (typeof basePath !== 'string' || basePath.length === 0) {
+    throw new TypeError('enterWorktree: basePath must be a non-empty string');
+  }
+  if (!path.isAbsolute(basePath)) {
+    throw new TypeError(`enterWorktree: basePath must be an absolute path (got '${basePath}')`);
+  }
+
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw new TypeError('enterWorktree: sessionId must be a non-empty string');
+  }
+  if (!SEMANTIC_ID_RE.test(sessionId)) {
+    throw new TypeError(
+      `enterWorktree: sessionId '${sessionId}' does not match SEMANTIC_ID_RE`,
+    );
+  }
+
+  if (typeof branch !== 'string' || branch.length === 0) {
+    throw new TypeError('enterWorktree: branch must be a non-empty string');
+  }
+  if (!ENTER_WORKTREE_BRANCH_RE.test(branch)) {
+    throw new TypeError(
+      `enterWorktree: branch '${branch}' contains invalid characters (allowed: [a-zA-Z0-9._/-])`,
+    );
+  }
+
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+    throw new TypeError('enterWorktree: repoRoot must be a non-empty string');
+  }
+  if (!path.isAbsolute(repoRoot)) {
+    throw new TypeError(`enterWorktree: repoRoot must be an absolute path (got '${repoRoot}')`);
+  }
+  if (!fs.existsSync(repoRoot)) {
+    throw new TypeError(`enterWorktree: repoRoot '${repoRoot}' does not exist`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 2: Lazy zx DI (Pipeline 3848 commit 1347c7a — mandatory for vi.mock).
+  // -------------------------------------------------------------------------
+  const exec = opts.$ ?? (await import('zx')).$;
+
+  // -------------------------------------------------------------------------
+  // Step 3: Path resolution + boundary check (mirrors setupWorktree lines 154-187).
+  // -------------------------------------------------------------------------
+  let resolvedBasePath;
+  try {
+    resolvedBasePath = realpathSync(basePath);
+  } catch {
+    // basePath missing — fall back to unresolved; validateWorkspacePath
+    // will still catch string-level traversal attempts.
+    resolvedBasePath = basePath;
+  }
+
+  // Resolve repoRoot to obtain a stable basename (defends against symlinked repos).
+  let resolvedRepoRoot;
+  try {
+    resolvedRepoRoot = realpathSync(repoRoot);
+  } catch {
+    resolvedRepoRoot = repoRoot;
+  }
+  const repoName = path.basename(resolvedRepoRoot);
+
+  const wtPath = path.join(resolvedBasePath, `${repoName}-${sessionId}`);
+
+  // Resolve symlinks in wtPath to prevent symlink-escape between path
+  // computation and the eventual git worktree add call.
+  let resolvedWtPath;
+  try {
+    resolvedWtPath = realpathSync(wtPath);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    resolvedWtPath = wtPath; // path doesn't exist yet — no symlink to resolve
+  }
+
+  // SEC-013 / ADR-364: validate resolved path BEFORE any filesystem write.
+  const valid = validateWorkspacePath(resolvedWtPath, resolvedBasePath);
+  if (!valid) {
+    process.stderr.write(
+      `enterWorktree: refusing to create symlink-escape: ${wtPath} → ${resolvedWtPath}\n`,
+    );
+    throw new WorktreeBoundaryError(
+      `enterWorktree: computed path '${resolvedWtPath}' escapes basePath '${resolvedBasePath}'`,
+      { computed: resolvedWtPath, root: resolvedBasePath },
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 4: Idempotency — reuse if worktree already exists with .git.
+  // -------------------------------------------------------------------------
+  if (fs.existsSync(wtPath) && fs.existsSync(path.join(wtPath, '.git'))) {
+    return { wtPath, reused: true };
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 5: Detect whether branch already exists, then `git worktree add`.
+  // -------------------------------------------------------------------------
+  let branchExists = false;
+  try {
+    await exec`git -C ${repoRoot} rev-parse --verify ${branch}`;
+    branchExists = true;
+  } catch {
+    // Branch does not exist — fall through to create-new path with `-b`.
+  }
+
+  if (branchExists) {
+    await exec`git -C ${repoRoot} worktree add ${wtPath} ${branch}`;
+  } else {
+    await exec`git -C ${repoRoot} worktree add -b ${branch} ${wtPath}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 6: WARN to stderr (PRD §3 P3 Gherkin row-1 + #574 DoD).
+  // -------------------------------------------------------------------------
+  console.warn(
+    `enterWorktree: created sibling worktree at ${wtPath} (branch=${branch}, sessionId=${sessionId})`,
+  );
+
+  return { wtPath, reused: false };
 }

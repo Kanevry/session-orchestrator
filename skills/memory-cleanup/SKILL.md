@@ -172,6 +172,125 @@ Keep `MEMORY.md` clean and under the 200-line limit.
    done
    ```
 
+## Phase 4.5: Worktree-Stale-Sweep (#575 P3.2)
+
+> Skip if `persistence: false` in Session Config. Silent no-op if no Auto-promoted sibling worktrees exist or none are stale.
+
+Detect stale Auto-promoted worktrees (older than `stale-branch-days` from Session Config, default 7 days) and offer them for batch-removal alongside the other housekeeping prune actions from Phase 4. This sub-phase is **additive** — it appends candidates to the existing prune flow rather than introducing a separate independent confirmation cycle.
+
+### Detection: list candidate auto-promoted worktrees
+
+Auto-promoted worktrees follow the layout `<parentDir>/<repoName>-<sessionId>/`, where `<sessionId>` is a semantic session-id (per `parseSessionId()` from `scripts/lib/session-id.mjs`). Random-suffix worktrees (UUID-format) are NOT auto-promoted and MUST be ignored.
+
+```js
+import { execSync } from 'node:child_process';
+import { parseSessionId } from '$PLUGIN_ROOT/scripts/lib/session-id.mjs';
+import path from 'node:path';
+
+function listAutoPromotedWorktrees(repoRoot, mainCheckoutRoot) {
+  const parentDir = path.dirname(mainCheckoutRoot);
+  const repoName = path.basename(mainCheckoutRoot);
+  const candidates = [];
+
+  try {
+    const out = execSync(`git -C ${mainCheckoutRoot} worktree list --porcelain`, { encoding: 'utf8' });
+    const entries = out.split('\n\n').filter(Boolean);
+
+    for (const entry of entries) {
+      const wtMatch = entry.match(/^worktree (.+)$/m);
+      if (!wtMatch) continue;
+      const wtPath = wtMatch[1];
+
+      // Match auto-promoted layout: <parentDir>/<repoName>-<sessionId>/
+      const basename = path.basename(wtPath);
+      if (!basename.startsWith(`${repoName}-`)) continue;
+      const sessionId = basename.slice(repoName.length + 1);
+
+      // Verify it's a semantic session-id (not a random suffix)
+      const parsed = parseSessionId(sessionId);
+      if (!parsed || parsed.format !== 'semantic') continue;
+
+      candidates.push({ wtPath, sessionId, branch: parsed.branch });
+    }
+  } catch {
+    return []; // git failure → no candidates
+  }
+  return candidates;
+}
+```
+
+### Staleness check
+
+A worktree is stale iff `mtime(worktree-dir) < now - stale-branch-days × 86400 × 1000`. Read `stale-branch-days` from Session Config (default 7):
+
+```js
+import { statSync } from 'node:fs';
+
+function isWorktreeStale(wtPath, staleBranchDays) {
+  try {
+    const stat = statSync(wtPath);
+    const ageMs = Date.now() - stat.mtimeMs;
+    return ageMs > staleBranchDays * 24 * 60 * 60 * 1000;
+  } catch {
+    return false; // missing or unreadable → conservative no-op
+  }
+}
+```
+
+### Integration with the existing housekeeping prune AUQ
+
+After Phase 4 (Prune & Index) compiles its list of items to offer for removal, ALSO include any stale auto-promoted worktrees. The user sees them in the same AUQ ("batch-decide" per PRD §3 P3 Gherkin row 4):
+
+```js
+const staleBranchDays = $CONFIG['stale-branch-days'] ?? 7;
+const candidates = listAutoPromotedWorktrees(process.cwd(), mainCheckoutRoot);
+const stale = candidates.filter(c => isWorktreeStale(c.wtPath, staleBranchDays));
+
+if (stale.length === 0) {
+  // Silent no-op — no stale worktrees to offer.
+} else {
+  // Add to the existing housekeeping prune AUQ. Each stale worktree becomes one option line:
+  // Format: `[ ] Stale auto-promoted worktree: <basename> (age <N>d) — remove via 'git worktree remove --force'`
+  //
+  // If memory-cleanup currently presents per-item AUQs (one question per prune candidate),
+  // append one question per stale worktree.
+  //
+  // If memory-cleanup uses a single multiSelect AUQ for the whole batch,
+  // add stale worktrees as additional options.
+  //
+  // Operator selects which to remove; coordinator runs:
+  //   execSync(`git -C ${mainCheckoutRoot} worktree remove --force ${wtPath}`)
+  // for each selected. WARN line per removal.
+}
+```
+
+### AUQ example (per-item)
+
+```js
+AskUserQuestion({
+  questions: [{
+    question: `Stale auto-promoted worktree found: ${path.basename(wt.wtPath)} (age ${ageDays}d, branch=${wt.branch}). Remove?`,
+    header: "Stale-Worktree",
+    multiSelect: false,
+    options: [
+      { label: "Behalten (Recommended)", description: "Keep this worktree. Re-evaluate at next /memory-cleanup run." },
+      { label: "Entfernen", description: `Run 'git worktree remove --force ${wt.wtPath}'.` },
+    ],
+  }],
+});
+```
+
+### PSA-003 compliance
+
+Per `.claude/rules/parallel-sessions.md` PSA-003: every `git worktree remove` is destructive — operator must explicitly authorize. The AUQ above satisfies this. Never auto-remove without user confirmation, even for stale worktrees. The `--force` flag is acceptable here only because the AUQ already secured explicit per-worktree consent; never apply `--force` to worktrees the operator did not select.
+
+### Cross-references
+
+- PRD: `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 Gherkin row 4 + §3.A P3 EARS state-driven clause
+- `stale-branch-days` config: `scripts/lib/config.mjs:138` (default: 7)
+- Detection helper: `parseSessionId()` from `scripts/lib/session-id.mjs`
+- PSA-003: `.claude/rules/parallel-sessions.md`
+
 ## Output
 
 After completing all four phases, report:

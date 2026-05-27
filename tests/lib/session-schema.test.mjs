@@ -211,8 +211,13 @@ describe('validateSession — type / range checks', () => {
     expect(() => validateSession([])).toThrow(/session must be an object/);
   });
 
-  it('throws on invalid schema_version literal', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 2 })).toThrow(/schema_version/);
+  it('accepts schema_version 2 and 3 (additive contract per #576)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 2 })).not.toThrow();
+    expect(() => validateSession({ ...VALID(), schema_version: 3 })).not.toThrow();
+  });
+
+  it('throws on invalid schema_version literal (out of accepted set)', () => {
+    expect(() => validateSession({ ...VALID(), schema_version: 99 })).toThrow(/schema_version/);
   });
 });
 

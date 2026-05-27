@@ -72,3 +72,16 @@ The `schema-version` field enables future migration. Current version: `1`. If a 
 STATE.md is NOT safe for concurrent access. Only one session should be active per branch at a time. If session-start detects `status: active`, it prompts the user to resume or start fresh (which overwrites the stale STATE.md).
 
 - **Discovery grep-verification** — distributional claims in W1 outputs (e.g., "N of M callers", "100% adopt pattern X") MUST quote the executed grep + file scope + count. See [`../../.claude/rules/parallel-sessions.md`](../../.claude/rules/parallel-sessions.md) § PSA-006.
+
+## Worktree-Auto-Promotion (#574, Epic #568 P3.1)
+
+When a session is promoted to a sibling worktree via `enterWorktree({basePath, sessionId, branch, repoRoot})` from `scripts/lib/autopilot/worktree-pipeline.mjs`, the new worktree gets its OWN STATE.md scoped to that worktree. The original repo's STATE.md is unaffected.
+
+- Original worktree (where PROMOTION_OFFER was issued): retains its STATE.md, no changes from the promotion event.
+- New sibling worktree: runs `session-start` from scratch in the new tree; Phase 1.2 acquires its own session-lock; Phase 1b writes its own STATE.md.
+- Cleanup ownership: `session-end` Phase 4a in the promoted worktree handles `git worktree remove` after Phase 4 commit+push completes. The cleanup writes a deviation entry to its own STATE.md before removing the worktree.
+
+Cross-references:
+- `skills/session-end/SKILL.md § Phase 4a` (cleanup)
+- `scripts/lib/autopilot/worktree-pipeline.mjs § enterWorktree` (creation)
+- `skills/_shared/parallel-aware-auq.md` (PROMOTION_OFFER AUQ)

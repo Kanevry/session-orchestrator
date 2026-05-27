@@ -66,11 +66,29 @@ function isPlainObject(v) {
 // validateSession() body. Helpers are intentionally not exported; the
 // public contract is validateSession() alone.
 
+/**
+ * Validate session entry's schema_version field.
+ *
+ * Accepted versions: 0 (legacy / pre-versioning), 1 (current writes per CURRENT_SESSION_SCHEMA_VERSION),
+ * 2 (ADR-364 substrate scaffolding, commit 12c0df4), 3 (ADR-364 follow-ups, commit eb820ca).
+ *
+ * Additive contract: as the schema evolves, older historical entries must remain readable.
+ * #576 expanded this from `0 | 1` to `0 | 1 | 2 | 3` after discovering schema_version=3 entries
+ * in production data (.orchestrator/metrics/sessions.jsonl line 11, session main-2026-05-24-0510-housekeeping).
+ *
+ * Cross-references:
+ * - Issue: #576
+ * - Constant: CURRENT_SESSION_SCHEMA_VERSION in ./constants.mjs (current=1; bump when adding fields)
+ * - PRD: docs/prd/<future-schema-evolution> when v4 is introduced
+ *
+ * @throws {ValidationError} when schema_version is set but not in [0, 1, 2, 3]
+ */
 function _validateSchemaVersion(entry) {
   if ('schema_version' in entry && entry.schema_version !== undefined) {
-    if (entry.schema_version !== 0 && entry.schema_version !== 1) {
+    const ACCEPTED_VERSIONS = [0, 1, 2, 3];
+    if (!ACCEPTED_VERSIONS.includes(entry.schema_version)) {
       throw new ValidationError(
-        `schema_version must be 0 (legacy) or 1, got: ${entry.schema_version}`
+        `schema_version must be one of [0 (legacy), 1, 2, 3], got: ${entry.schema_version}`
       );
     }
   }

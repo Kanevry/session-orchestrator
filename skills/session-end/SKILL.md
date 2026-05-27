@@ -35,7 +35,7 @@ Before Phase 1, run the parallel-aware preamble per `skills/_shared/parallel-awa
 **Outcome handling:**
 - `PASS_THROUGH` → continue to Phase 1
 - `EXCLUSIVE_BLOCKED` → exit Phase 0 cleanly per the AUQ outcome
-- `PROMOTION_OFFER` → user picks Worktree-Promotion (P3.1 #574), in-place + Deviation, or Abbrechen
+- `PROMOTION_OFFER` → user picks Worktree-Promotion (see `parallel-aware-auq.md` outcome-handling — calls `enterWorktree()`), in-place + Deviation, or Abbrechen
 
 For session-end specifically: the preamble is DETECTION-ONLY. The lock-release path in later phases keeps its current behavior — releasing the OWN session's lock requires no matrix consultation.
 
@@ -596,6 +596,150 @@ git push origin HEAD
 # Only attempt if 'mirror: github' is in Session Config AND remote exists
 git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || echo "GitHub mirror: not configured"
 ```
+
+## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)
+
+> Skip if `persistence: false` in Session Config. Skip silently if the current worktree is NOT an Auto-promoted sibling (the common case).
+
+After Phase 4 commit+push has durably persisted `sessions.jsonl` + `STATE.md` to origin, check whether the current session ran in an Auto-promoted sibling worktree (created via the P3.1 PROMOTION_OFFER path). If yes, apply Hybrid Cleanup-Pattern: clean → auto-remove, dirty → AUQ.
+
+> **Ordering rationale (#490 durableCommit dependency):** Phase 4a runs AFTER Phase 4 commit+push, NOT before. Removing the promoted worktree before commit+push would lose the worktree's `STATE.md` before Phase 3.4 metrics writes (`sessions.jsonl`) are committed, violating the #490 durableCommit ordering invariant. Once Phase 4 has pushed all metrics + STATE.md to origin, the promoted worktree can be safely removed without data loss.
+
+### Detection: is the current worktree an Auto-promoted sibling?
+
+Auto-promoted sibling worktrees are created by `enterWorktree()` during the Phase 0.5 PROMOTION_OFFER path. Their path layout is `<basePath>/<repo-name>-<sessionId>/`. Detection uses `parseSessionId()` from `scripts/lib/session-id.mjs` (#572) — never custom regex.
+
+```js
+import { parseSessionId } from '${PLUGIN_ROOT}/scripts/lib/session-id.mjs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
+
+function detectAutoPromotedWorktree(repoRoot, sessionId) {
+  const parsed = parseSessionId(sessionId);
+  if (!parsed || parsed.format !== 'semantic') return null; // UUID-format sessions are never auto-promoted
+
+  // Derive the MAIN checkout root from `git worktree list --porcelain` (first entry).
+  // The repo-name comes from the main checkout, NOT from path.basename(repoRoot) — the
+  // promoted worktree's basename IS the comparison target, so deriving repoName from it
+  // would create the impossible compare `basename === basename + '-' + sessionId`.
+  let mainCheckoutRoot;
+  try {
+    const out = execSync(`git -C ${repoRoot} worktree list --porcelain`, { encoding: 'utf8' });
+    const lines = out.split('\n');
+    const firstWorktreeLine = lines.find(l => l.startsWith('worktree '));
+    if (!firstWorktreeLine) return null;
+    mainCheckoutRoot = firstWorktreeLine.slice('worktree '.length);
+  } catch {
+    return null; // not a git repo, treat as not promoted
+  }
+
+  // If repoRoot IS the main checkout, this session is NOT in an auto-promoted worktree.
+  if (path.resolve(repoRoot) === path.resolve(mainCheckoutRoot)) return null;
+
+  // Auto-promoted layout: <basePath>/<main-repo-name>-<sessionId>/
+  const mainRepoName = path.basename(mainCheckoutRoot);
+  const expectedBasename = `${mainRepoName}-${sessionId}`;
+  const isPromotedPath = path.basename(repoRoot) === expectedBasename;
+
+  if (isPromotedPath) {
+    return { wtPath: repoRoot, sessionId, branch: parsed.branch };
+  }
+  return null;
+}
+```
+
+### Clean-check
+
+A worktree is clean iff ALL three conditions hold:
+
+1. **No uncommitted changes**: `git -C ${wtPath} status --porcelain` is empty
+2. **No untracked files**: implicit in #1 (porcelain includes `??` entries)
+3. **No unpushed commits**: `git -C ${wtPath} status --short --branch` does NOT contain `ahead` indicator
+
+```js
+function isWorktreeClean(wtPath) {
+  try {
+    const status = execSync(`git -C ${wtPath} status --porcelain`, { encoding: 'utf8' });
+    if (status.trim().length > 0) return false; // dirty (modified, untracked, or staged)
+
+    const branchStatus = execSync(`git -C ${wtPath} status --short --branch`, { encoding: 'utf8' });
+    if (branchStatus.match(/\bahead\b/)) return false; // unpushed
+
+    return true;
+  } catch {
+    return false; // any error → treat as dirty (safer per PSA-003)
+  }
+}
+```
+
+### Clean path: auto-remove + WARN (PRD §3 P3 Gherkin row 2)
+
+When detection returns a worktree object AND `isWorktreeClean()` returns `true`, auto-remove via `git worktree remove` (NO `--force`) and log a WARN line. The main checkout's git dir (`repoMainRoot`) is derived via the first entry of `git worktree list --porcelain`.
+
+```js
+const promoted = detectAutoPromotedWorktree(process.cwd(), sessionId);
+if (!promoted) {
+  // Not auto-promoted — skip Phase 4a entirely. Continue to Phase 5.
+} else {
+  // Derive main checkout root from first worktree-list entry
+  const wtList = execSync(`git -C ${promoted.wtPath} worktree list --porcelain`, { encoding: 'utf8' });
+  const mainLine = wtList.split('\n').find(l => l.startsWith('worktree '));
+  const repoMainRoot = mainLine ? mainLine.slice('worktree '.length).trim() : null;
+
+  if (isWorktreeClean(promoted.wtPath)) {
+    // Clean path: PRD §3 P3 Gherkin row 2 — auto-remove
+    console.warn(`session-end Phase 4a: auto-promoted worktree ${promoted.wtPath} is clean — removing via 'git worktree remove'`);
+    execSync(`git -C ${repoMainRoot} worktree remove ${promoted.wtPath}`, { encoding: 'utf8' });
+  } else {
+    // Dirty path: PRD §3 P3 Gherkin row 3 — AUQ before any destructive action
+    // [AUQ block — see Dirty path subsection below]
+  }
+}
+```
+
+### Dirty path: AUQ before destructive action (PRD §3 P3 Gherkin row 3)
+
+When the worktree is dirty (uncommitted, untracked, OR unpushed), render this AUQ via the coordinator's `AskUserQuestion` tool. The AUQ is coordinator-only — per `.claude/rules/ask-via-tool.md` AUQ-004, dispatched agents cannot call AUQ. Calling `git worktree remove --force` without explicit operator confirmation would violate PSA-003 (destructive action safeguards) — the dirty state may contain another session's work-in-progress or unmerged commits.
+
+```js
+AskUserQuestion({
+  questions: [{
+    question: `Auto-promoted worktree at ${promoted.wtPath} has uncommitted/untracked/unpushed changes. How should I proceed?`,
+    header: "Worktree-Cleanup",
+    multiSelect: false,
+    options: [
+      { label: "Behalten (Recommended)", description: "Keep the worktree as-is. No cleanup. Review and remove manually later." },
+      { label: "Löschen", description: "I confirm the changes are handled or expendable. Run 'git worktree remove --force' on the worktree." },
+      { label: "Manuell", description: "Exit /close. I will inspect the worktree before re-running /close." },
+    ],
+  }],
+});
+```
+
+**Codex CLI / Cursor IDE fallback** (numbered Markdown list):
+
+```
+Worktree cleanup options:
+1. **Behalten (Recommended)** — Keep the worktree as-is. No cleanup. Review and remove manually later.
+2. **Löschen** — I confirm the changes are handled or expendable. Run 'git worktree remove --force'.
+3. **Manuell** — Exit /close. I will inspect the worktree before re-running /close.
+Reply with the number of your choice.
+```
+
+**On user choice:**
+
+- **Behalten** → log `session-end Phase 4a: auto-promoted worktree retained (dirty); operator chose Behalten`. Continue to Phase 5.
+- **Löschen** → `execSync('git -C ${repoMainRoot} worktree remove --force ${promoted.wtPath}')`. Log WARN: `session-end Phase 4a: auto-promoted worktree force-removed by user choice`. Continue to Phase 5.
+- **Manuell** → exit `/close` cleanly. Print: `session-end aborted at Phase 4a by user choice. Re-run /close after handling the worktree manually.`
+
+### Cross-references
+
+- **PRD:** `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 Gherkin rows 2-3 + §3.A P3 EARS event-driven clauses
+- **PSA-003:** `.claude/rules/parallel-sessions.md` — destructive action safeguards (`git worktree remove --force` requires explicit user authorization)
+- **#490 durableCommit dependency:** Phase 4a runs AFTER Phase 4 commit+push to guarantee `sessions.jsonl` + `STATE.md` are persisted to origin BEFORE worktree removal
+- **Detection helper:** `parseSessionId()` from `scripts/lib/session-id.mjs` (#572)
+- **AUQ rule:** `.claude/rules/ask-via-tool.md` AUQ-004 — coordinator-only invocation
+- **Companion phases:** P3.1 PROMOTION_OFFER (`enterWorktree()` in `parallel-aware-auq.md`) creates the worktree; this phase removes it.
 
 ## Phase 5: Issue Cleanup
 
