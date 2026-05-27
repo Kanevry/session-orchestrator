@@ -10,8 +10,8 @@
  *     PID is the *hook* PID, not the session PID, so PID-liveness incorrectly
  *     filtered out locks whose semantic owner (Claude harness) was still
  *     alive (D2 defect from Epic #583 audit).
- *   - `isPidAlive` is preserved in session-lock.mjs as a forensic helper but
- *     is not called from the discovery decision tree.
+ *   - `isPidAliveOnHost` is preserved in session-lock.mjs as a forensic helper
+ *     but is not called from the discovery decision tree.
  *
  * Cross-host policy:
  *   - Same-host: heartbeat freshness rules.

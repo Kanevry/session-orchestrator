@@ -37,6 +37,22 @@ function readLock() {
   return JSON.parse(readFileSync(lockPath, 'utf8'));
 }
 
+function readCurrentSession() {
+  const sessionPath = join(sandbox, '.orchestrator', 'current-session.json');
+  if (!existsSync(sessionPath)) return null;
+  return JSON.parse(readFileSync(sessionPath, 'utf8'));
+}
+
+/** Seed an existing current-session.json with the canonical SessionStart fields. */
+function seedCurrentSession(body) {
+  const dir = join(sandbox, '.orchestrator');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'current-session.json'),
+    JSON.stringify(body, null, 2) + '\n',
+  );
+}
+
 /** Stub acquire() that writes a v1-shape lock to disk and returns ok:true. */
 function makeAcquireStub(opts = {}) {
   return vi.fn((args) => {
@@ -293,6 +309,182 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     // emitEvent failure is non-fatal — helper still returns the enriched lock.
     expect(result).not.toBeNull();
     expect(result.session_id).toBe('main-2026-05-27-deep-1');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Conflict signal — foreign-active lock writes conflict_with_session_id (#590 Item 1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
+  /** Acquire stub that reports a foreign session already owns the lock. */
+  function makeForeignActiveAcquire(foreignSessionId) {
+    return vi.fn(() => ({
+      ok: false,
+      reason: 'active',
+      existingLock: {
+        session_id: foreignSessionId,
+        started_at: '2026-05-27T11:00:00.000Z',
+        mode: 'deep',
+        pid: 88888,
+        host: 'test-host',
+        ttl_hours: 4,
+      },
+    }));
+  }
+
+  it('returns null on the foreign-active bail path (return contract unchanged)', async () => {
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: makeForeignActiveAcquire('foreign-xyz'),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('writes conflict_with_session_id equal to the foreign session_id', async () => {
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: makeForeignActiveAcquire('foreign-xyz'),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    const session = readCurrentSession();
+    expect(session).not.toBeNull();
+    expect(session.conflict_with_session_id).toBe('foreign-xyz');
+  });
+
+  it('records a conflict_detected_at ISO-8601 timestamp', async () => {
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: makeForeignActiveAcquire('foreign-xyz'),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    const session = readCurrentSession();
+    // Assert a real ISO-8601 instant (Date round-trip is exact), not just truthiness.
+    expect(session.conflict_detected_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+    );
+    expect(new Date(session.conflict_detected_at).toISOString()).toBe(
+      session.conflict_detected_at,
+    );
+  });
+
+  it('preserves all pre-existing current-session.json fields (read-modify-write)', async () => {
+    // Seed the canonical SessionStart fields plus a concurrently-written array
+    // that another hook (cwd-change-restore) would append.
+    seedCurrentSession({
+      session_id: 'main-2026-05-27-deep-6',
+      semantic_session_id: 'main-2026-05-27-deep-6',
+      pid: 4242,
+      source: 'generated-uuid-fallback',
+      timestamp: '2026-05-27T10:00:00.000Z',
+      cwd_changes: [
+        { timestamp: '2026-05-27T10:05:00.000Z', previous_cwd: '/a', new_cwd: '/b' },
+      ],
+    });
+
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: makeForeignActiveAcquire('foreign-abc'),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    const session = readCurrentSession();
+    // Conflict fields added …
+    expect(session.conflict_with_session_id).toBe('foreign-abc');
+    // … and every pre-existing field is intact (not clobbered).
+    expect(session.session_id).toBe('main-2026-05-27-deep-6');
+    expect(session.semantic_session_id).toBe('main-2026-05-27-deep-6');
+    expect(session.pid).toBe(4242);
+    expect(session.source).toBe('generated-uuid-fallback');
+    expect(session.timestamp).toBe('2026-05-27T10:00:00.000Z');
+    expect(session.cwd_changes).toEqual([
+      { timestamp: '2026-05-27T10:05:00.000Z', previous_cwd: '/a', new_cwd: '/b' },
+    ]);
+  });
+
+  it('does NOT write a conflict field when acquire succeeds (happy path)', async () => {
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: makeAcquireStub(),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    // No current-session.json should have been created by bootstrapLock on the
+    // happy path — it only touches session.lock.
+    expect(readCurrentSession()).toBeNull();
+  });
+
+  it('does NOT write a conflict field when the active lock is OUR OWN session (force-refresh)', async () => {
+    const sessionId = 'main-2026-05-27-deep-6';
+    const liveAcquire = vi.fn(() => ({
+      ok: false,
+      reason: 'active',
+      existingLock: {
+        session_id: sessionId, // same id → force-refresh path, NOT a conflict
+        started_at: '2026-05-27T11:00:00.000Z',
+        mode: 'deep',
+        pid: 99999,
+        host: 'test-host',
+        ttl_hours: 4,
+      },
+    }));
+
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId,
+      semanticSessionId: sessionId,
+      mode: 'deep',
+      _acquireImpl: liveAcquire,
+      _forceAcquireImpl: makeAcquireStub(),
+      _emitEventImpl: noopEmit,
+    });
+
+    // Same-session active → force-refresh succeeded → no conflict recorded.
+    expect(readCurrentSession()).toBeNull();
+  });
+
+  it('does NOT write a conflict field on a non-active, non-stale failure', async () => {
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({
+        ok: false,
+        reason: 'active-compatible-parallel',
+        exclusivityClass: 'parallel-ok',
+        allActiveSessions: [],
+      })),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    // 'active-compatible-parallel' is a legitimate parallel-ok outcome, not a
+    // foreign-lock collision — no conflict signal is recorded.
+    expect(readCurrentSession()).toBeNull();
   });
 });
 

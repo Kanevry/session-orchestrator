@@ -304,4 +304,24 @@ describe('checkPeerStateMd', () => {
     expect(result.peer).toBeNull();
     expect(result.reason).toContain('status:');
   });
+
+  // H5 ─────────────────────────────────────────────────────────────────────
+  it('H5: status:active with no session: field → peer null, reason "no session field"', () => {
+    // The `if (sessionField === null) return { peer: null, reason: 'no session field' }`
+    // branch (SUT lines 168-170) is only reachable when status === 'active' AND
+    // the `session:` frontmatter key is absent. Build that exact fixture by
+    // omitting the `session` key from the fields object.
+    writeStateMd(repoRoot, buildStateMd({
+      'schema-version': 1,
+      'session-type': 'deep',
+      'started_at': minutesAgo(5),
+      'status': 'active',
+      'current-wave': 2,
+    }));
+
+    const result = checkPeerStateMd(repoRoot, 'main-2026-05-27-deep-6');
+
+    expect(result.peer).toBeNull();
+    expect(result.reason).toBe('no session field');
+  });
 });

@@ -36,7 +36,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
+import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
 
 /**
  * Bootstrap the session.lock for this hook invocation.
@@ -73,14 +73,6 @@ export async function bootstrapLock({
   if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
   if (typeof mode !== 'string' || mode.length === 0) return null;
 
-  // Normalize mode to a value known by exclusivity-matrix.mjs so acquire()
-  // does not emit a stderr WARN. Hook is informational-only and MUST NOT
-  // pollute stderr (existing tests in tests/hooks/on-session-start.test.mjs
-  // assert stderr is empty on register-failure paths). The actual mode is
-  // still preserved on the lock body via the rawMode passed in — only the
-  // mode handed to acquire() is normalized.
-  const lockMode = mapToKnownMode(mode);
-
   // Resolve DI shims at call time so test mocks can replace the imports.
   let acquireFn = _acquireImpl;
   let forceAcquireFn = _forceAcquireImpl;
@@ -101,7 +93,9 @@ export async function bootstrapLock({
   // last_heartbeat gets refreshed.
   let acquireResult;
   try {
-    acquireResult = acquireFn({ sessionId, mode: lockMode, ttlHours, repoRoot });
+    // quiet: true suppresses the unknown-mode stderr WARN in acquire() (#592 MED-2).
+    // The hook is informational-only and tests assert stderr is empty.
+    acquireResult = acquireFn({ sessionId, mode, ttlHours, repoRoot, quiet: true });
   } catch {
     return null;
   }
@@ -119,7 +113,7 @@ export async function bootstrapLock({
 
   if (!acquireResult.ok && shouldForce) {
     try {
-      acquireResult = forceAcquireFn({ sessionId, mode: lockMode, ttlHours, repoRoot });
+      acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot });
     } catch {
       return null;
     }
@@ -127,7 +121,28 @@ export async function bootstrapLock({
 
   // Any other non-ok reason (parallel-conflict, fs-error, other-session-active)
   // → bail without enriching. The hook stays non-blocking.
-  if (!acquireResult || acquireResult.ok !== true) return null;
+  //
+  // Issue #590 Item 1: before bailing, record a durable conflict signal for the
+  // FOREIGN-active case — reason 'active' where the existing lock belongs to a
+  // DIFFERENT session than ours (the same-session case was already force-refreshed
+  // above via shouldForce). Without this, the operator gets no signal that a
+  // parallel session owns the worktree. We persist the foreign session_id into
+  // current-session.json for forensics/operator visibility. Best-effort: any FS
+  // failure is swallowed and the bail proceeds. The return contract is unchanged —
+  // bootstrapLock STILL returns null on this path.
+  if (!acquireResult || acquireResult.ok !== true) {
+    if (
+      acquireResult &&
+      acquireResult.reason === 'active' &&
+      acquireResult.existingLock &&
+      typeof acquireResult.existingLock.session_id === 'string' &&
+      acquireResult.existingLock.session_id.length > 0 &&
+      acquireResult.existingLock.session_id !== sessionId
+    ) {
+      recordConflictSignal(repoRoot, acquireResult.existingLock.session_id);
+    }
+    return null;
+  }
 
   // Step 2: enrich the lock with v2 fields (last_heartbeat + semantic_session_id).
   // We re-read the file fresh (acquire() just wrote it) and overlay the new
@@ -163,12 +178,13 @@ export async function bootstrapLock({
         : (typeof baseLock.session_id === 'string' ? baseLock.session_id : sessionId),
   };
 
-  try {
-    writeJsonAtomic(lockFile, enriched);
-  } catch {
-    // Failed to overwrite — base lock is still on disk, so we degrade
-    // gracefully. Return null so the caller logs no spurious success.
-    return null;
+  {
+    const w = writeJsonAtomicSync(lockFile, enriched, { tmpPrefix: '.session.lock.boot.tmp' });
+    if (!w.ok) {
+      // Failed to overwrite — base lock is still on disk, so we degrade
+      // gracefully. Return null so the caller logs no spurious success.
+      return null;
+    }
   }
 
   // Step 3: best-effort observability breadcrumb. Failures are swallowed
@@ -195,54 +211,52 @@ export async function bootstrapLock({
 }
 
 /**
- * Map an arbitrary mode string to a value known by exclusivity-matrix.mjs.
+ * Record a foreign-session conflict signal into current-session.json (Issue #590
+ * Item 1). When bootstrapLock detects that a DIFFERENT session already owns the
+ * worktree lock, it persists the colliding session_id (plus a forensic timestamp)
+ * so the operator and downstream skills have a durable record of the collision —
+ * the previous behaviour bailed silently with no signal whatsoever.
  *
- * Why: acquire() in scripts/lib/session-lock.mjs emits a `console.warn` to
- * stderr when it encounters an unknown mode (catch on classifyMode throw).
- * The SessionStart hook is informational-only and existing tests assert
- * `result.stderr === ''` — see tests/hooks/on-session-start.test.mjs
- * `register-failed observability breadcrumb > does not write to stderr`.
+ * Uses an atomic read-modify-write (read → merge → tmp+rename) that PRESERVES
+ * every existing field (`session_id`, `semantic_session_id`, `pid`, `source`,
+ * `timestamp`, and any concurrently-appended `cwd_changes` / `corrective_context`
+ * / `last_batch` arrays). It never overwrites the whole file — it overlays only
+ * the two conflict fields on top of whatever is currently on disk.
  *
- * Strategy: pass-through any mode the matrix already knows; for unknowns,
- * default to "feature" (parallel-ok) which is the safest catch-all — it
- * matches `/session` (no explicit subtype) and `/session deep` semantics
- * without claiming exclusivity. Operators who actually run `/housekeeping`
- * or `/memory-cleanup` will have the exact mode propagated upstream by the
- * skill before any session-end action takes effect.
+ * Best-effort: any FS error (missing file, parse failure, write race) is swallowed
+ * so the SessionStart hook stays non-blocking. The conflict signal is a forensic
+ * breadcrumb, not a correctness requirement.
  *
- * Documented modes (cross-reference exclusivity-matrix.mjs):
- *   exclusive    — bootstrap, housekeeping, memory-cleanup
- *   parallel-ok  — deep, feature
- *   always-ok    — discovery, evolve, plan, repo-audit, portfolio
- *
- * @param {string} rawMode
- * @returns {string} a mode name known to classifyMode().
+ * @param {string} repoRoot — absolute path to the repository root.
+ * @param {string} foreignSessionId — the session_id of the lock holder we collided with.
  */
-function mapToKnownMode(rawMode) {
-  const KNOWN = new Set([
-    'bootstrap', 'housekeeping', 'memory-cleanup',
-    'deep', 'feature',
-    'discovery', 'evolve', 'plan', 'repo-audit', 'portfolio',
-  ]);
-  const m = String(rawMode).trim().toLowerCase();
-  if (KNOWN.has(m)) return m;
-  return 'feature';
-}
+function recordConflictSignal(repoRoot, foreignSessionId) {
+  try {
+    const sessionFile = path.join(repoRoot, '.orchestrator', 'current-session.json');
 
-/**
- * Atomic JSON write via tmp file + rename. Mirrors the helper used by
- * scripts/lib/session-lock.mjs:writeLockAtomic — we duplicate the pattern
- * here rather than importing the private function to keep the helper
- * dependency-light and to avoid coupling to an internal symbol.
- *
- * @param {string} target — absolute path to write.
- * @param {object} obj — JSON-serializable body.
- */
-function writeJsonAtomic(target, obj) {
-  const dir = path.dirname(target);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmpSuffix = crypto.randomBytes(6).toString('hex');
-  const tmpFile = path.join(dir, `.session.lock.boot.tmp.${tmpSuffix}`);
-  fs.writeFileSync(tmpFile, JSON.stringify(obj, null, 2) + '\n', { encoding: 'utf8' });
-  fs.renameSync(tmpFile, target);
+    // Read-modify-write: start from whatever is on disk (or {} when absent /
+    // unparseable) so concurrently-written fields survive the overlay.
+    let current = {};
+    try {
+      const raw = fs.readFileSync(sessionFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        current = parsed;
+      }
+    } catch {
+      // File absent or unparseable — start from an empty object. The conflict
+      // signal is still worth recording even if the session file was not yet written.
+    }
+
+    const merged = {
+      ...current,
+      conflict_with_session_id: foreignSessionId,
+      conflict_detected_at: new Date().toISOString(),
+    };
+
+    // Best-effort atomic write — return value swallowed intentionally.
+    writeJsonAtomicSync(sessionFile, merged, { tmpPrefix: '.current-session.conflict.tmp' });
+  } catch {
+    // Best-effort — any failure is swallowed; the caller still returns null.
+  }
 }

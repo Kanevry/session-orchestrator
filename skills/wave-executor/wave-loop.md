@@ -652,6 +652,16 @@ After each wave completes and before the progress update, update `<state-dir>/ST
    - [<ISO timestamp>] Wave N: <what changed and why>
    ```
 
+5. **Heartbeat refresh (#590-3)** — after the STATE.md write, refresh the session-lock heartbeat so long-running deep sessions do not let the 4h TTL lapse between waves. Best-effort: a failure must NOT block the wave.
+
+   ```js
+   // Per-wave heartbeat refresh (#590-3) — keeps session.lock fresh during long deep sessions.
+   import { updateHeartbeat } from '../../scripts/lib/session-lock.mjs';
+   updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+   ```
+
+   Skip silently if `persistence: false` in Session Config (no session.lock exists in that mode).
+
 ### 3b. Persona-Gate Hook (#458)
 
 > Opt-in mid-wave hook that fans out a `/persona-panel`-style review after a configured wave completes. Distinct from `### 5a. Persona-reviewer dispatch` (which uses the `wave-reviewers` Session Config key and dispatches code-oriented `architect-reviewer` / `qa-strategist` / `analyst` agents). This hook uses the `persona-gate-wave` Session Config key and dispatches catalog personas (domain-experts, buyer-personas, auditors) from `.claude/personas/`. The two keys are independent and may both be configured on the same project.

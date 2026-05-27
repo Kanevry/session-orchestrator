@@ -482,4 +482,27 @@ describe('Group G — registry-fallback merge (Epic #583, W2-I3)', () => {
 
     expect(result).toHaveLength(0);
   });
+
+  it('H3: fail-open — throwing registryReader does not reject; lock-only results survive', async () => {
+    // Write ONE live lock so lock-sourced results are non-empty.
+    writeLock(repoRoot, lockBody({
+      session_id: 'lock-only-H3',
+      pid:        process.pid,
+      host:       hostname(),
+    }));
+
+    // Inject a registryReader that always throws to exercise the catch block at
+    // session-discovery.mjs ~L222-225: `catch { registrySessions = []; }`.
+    const result = await discoverActiveSessions(repoRoot, {
+      listWorktreesImpl: singleWtImpl(repoRoot),
+      registryReader: async () => { throw new Error('registry read failed'); },
+    });
+
+    // The promise must RESOLVE (not reject) — fail-open contract.
+    // The lock-sourced session must survive.
+    expect(result).toHaveLength(1);
+    expect(result[0].sessionId).toBe('lock-only-H3');
+    // Falsifiability: removing the catch block would cause `discoverActiveSessions`
+    // to propagate the thrown Error, rejecting this promise and failing the test.
+  });
 });

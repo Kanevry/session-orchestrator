@@ -20,7 +20,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
-import { isPidAlive } from '../session-lock.mjs';
+import { isPidAliveOnHost } from '../session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -289,10 +289,10 @@ async function acquireProposalsLock(lockFile, timeoutMs) {
       //
       // #548 A5 — TOCTOU acknowledgment:
       // There is a small, theoretically-existing race window between the
-      // `isPidAlive(existing.pid)` check on the next line and the subsequent
+      // `isPidAliveOnHost(existing.pid)` check on the next line and the subsequent
       // `replaceLockAtomic(lockFile, body)` call. Concretely:
       //
-      //   T0: isPidAlive(pid) === false  // PID was dead at check time
+      //   T0: isPidAliveOnHost(pid) === false  // PID was dead at check time
       //   T1: kernel recycles the same numeric PID for an UNRELATED process
       //   T2: replaceLockAtomic() overrides the lock
       //
@@ -313,7 +313,7 @@ async function acquireProposalsLock(lockFile, timeoutMs) {
       const sameHost =
         typeof existing.host === 'string' && existing.host === os.hostname();
       const pidIsNumber = typeof existing.pid === 'number';
-      const pidDead = sameHost && pidIsNumber && isPidAlive(existing.pid) === false;
+      const pidDead = sameHost && pidIsNumber && isPidAliveOnHost(existing.pid) === false;
 
       if (pidDead) {
         process.stderr.write(

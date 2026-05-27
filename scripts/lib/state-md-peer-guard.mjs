@@ -155,6 +155,13 @@ export function checkPeerStateMd(repoRoot, mySessionId, opts = {}) {
   // ------------------------------------------------------------------
   // Step 4: check session identity
   // ------------------------------------------------------------------
+  // PRECONDITION (invariant): `mySessionId` and `fm.session` MUST be expressed
+  // in the SAME id-space (both semantic OR both UUID). The equality check below
+  // is plain string-equality — a semantic-vs-UUID mismatch for the SAME logical
+  // session would be misclassified as a foreign peer (fail-safe: extra AUQ, never
+  // a missed peer). When `mySessionId === null` ("no session yet"), the ownership
+  // short-circuit is skipped and any active session with a `session` field counts
+  // as a peer.
   const sessionField = typeof fm.session === 'string' ? fm.session : null;
 
   // No session field → cannot identify a peer; allow overwrite.

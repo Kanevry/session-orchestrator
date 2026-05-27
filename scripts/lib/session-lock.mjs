@@ -61,6 +61,20 @@ export const STAGING_FENCE_LOCK_POLL_MS = 100;
  * Returns true when the process exists (even if we lack kill permission).
  * Returns false when the process does not exist (ESRCH).
  *
+ * @forensic
+ * This is a SAME-HOST PID liveness probe (POSIX `process.kill(pid, 0)`,
+ * signal-0). It is NOT the discovery-path liveness check. Since Epic #583
+ * (W1-D1/W1-D4) the discovery decision tree uses heartbeat-age via
+ * {@link isLockLive} instead, because the `pid` recorded on a session.lock is
+ * the *ephemeral hook subprocess* PID — that process exits ~500ms after the
+ * SessionStart hook returns, so a signal-0 probe of it reports "dead" while the
+ * semantic owner (the Claude harness) is still alive (the D2 production defect).
+ * Cross-host callers MUST pass `null` for the liveness slot and never call this
+ * function. Remaining same-host callers (`acquire`, `checkStale`,
+ * `tryAcquireStateLock`, `tryAcquireStagingFenceLock`) use it only for the
+ * short-lived state-lock / staging-fence-lock stale-override path, where the
+ * recorded PID IS the live writer's PID.
+ *
  * @param {number} pid  Process ID to probe via the POSIX signal-0 trick.
  * @returns {boolean}   true when a process with the given PID exists; false
  *                      when no such process exists or the probe failed.
@@ -88,7 +102,7 @@ export const STAGING_FENCE_LOCK_POLL_MS = 100;
  *    every acquire/release branch for a single-missed-race-per-incident
  *    impact. Current trade-off is operationally sound at our scale.
  */
-export function isPidAlive(pid) {
+export function isPidAliveOnHost(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -266,6 +280,54 @@ function writeLockAtomic(lockFile, lock) {
   }
 }
 
+/**
+ * Atomically create the session-lock file via tmp + hardlink (create-or-fail).
+ *
+ * TOCTOU fix (#590 Item 2): the previous fresh-acquire path used
+ * `writeLockAtomic` (tmp + renameSync), which is last-writer-wins — two
+ * concurrent SessionStart hooks that BOTH observed `readLock() === null` would
+ * BOTH rename their tmp file over the lock and BOTH believe they acquired it.
+ * `linkSync` is POSIX-atomic create-or-fail: exactly one concurrent caller wins
+ * the create, every other caller gets EEXIST. This is the same idiom already
+ * used by {@link createStateLockExclusive} and
+ * {@link createStagingFenceLockExclusive} in this file.
+ *
+ * Used ONLY by the no-existing-lock branch of {@link acquire}. The
+ * intentional-overwrite paths (`forceAcquire`, `updateHeartbeat`) keep using
+ * `writeLockAtomic` because they MUST replace an existing lock, not fail on it.
+ *
+ * @param {string} lockFile  Absolute path to .orchestrator/session.lock.
+ * @param {object} lock      Lock object to serialize.
+ * @returns {{ ok: true } | { ok: false, reason: 'exists' } | { ok: false, reason: 'fs-error', error: string }}
+ */
+function createSessionLockExclusive(lockFile, lock) {
+  const dir = path.dirname(lockFile);
+  let tmpFile;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpSuffix = crypto.randomBytes(8).toString('hex');
+    tmpFile = path.join(dir, `.session.lock.create.tmp.${tmpSuffix}`);
+    fs.writeFileSync(tmpFile, JSON.stringify(lock, null, 2) + '\n', { encoding: 'utf8' });
+  } catch (err) {
+    if (tmpFile) {
+      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  try {
+    fs.linkSync(tmpFile, lockFile);
+    return { ok: true };
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      return { ok: false, reason: 'exists' };
+    }
+    return { ok: false, reason: 'fs-error', error: err.message };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Exported API
 // ---------------------------------------------------------------------------
@@ -303,6 +365,14 @@ export function readLock(opts = {}) {
  *   Optional always-semantic session id (e.g., `<branch>-<date>-<mode>-<n>`).
  *   When `sessionId` is a UUID (Claude Code path) and a semantic id is also
  *   known, pass it here to be persisted alongside the UUID. Schema v2.
+ * @param {boolean} [args.quiet=false]
+ *   When true, the unknown-mode classify path SKIPS the `console.warn`-to-stderr
+ *   while still defaulting the caller-class to 'parallel-ok'. Added for #592
+ *   MED-2: the SessionStart hook (lock-bootstrap.mjs) must keep stderr empty,
+ *   and previously pre-sanitised the mode locally to dodge this warn. This flag
+ *   lets callers opt into silent unknown-mode handling without duplicating the
+ *   mode-mapping logic. PURELY ADDITIVE — default (warn) behaviour is unchanged,
+ *   and the raw `mode` is still persisted on the lock body either way.
  * @param {Array<{mode:string,pid:number,host:string,sessionId:string}>} [args.activeSessions]
  *   Optional pre-computed array from discoverActiveSessions(repoRoot). When omitted,
  *   matrix consultation is skipped (legacy behavior). Callers (worktree-pipeline.mjs,
@@ -334,24 +404,28 @@ export function readLock(opts = {}) {
  * The caller (session-start) decides whether to invoke forceAcquire() after
  * obtaining user consent.
  */
-export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId } = {}) {
+export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId, quiet = false } = {}) {
   const lockFile = lockPathFor(repoRoot);
 
   // -------------------------------------------------------------------------
   // Safe classifyMode wrapper — unknown modes default to 'parallel-ok' (most
   // permissive) rather than propagating an exception into the try/catch below
   // where it would be silently turned into an 'fs-error'. A console.warn is
-  // emitted for visibility. This call is intentionally OUTSIDE the main
-  // try/catch so that only fs-errors reach the catch block.
+  // emitted for visibility UNLESS the caller passes `quiet: true` (#592 MED-2 —
+  // lets lock-bootstrap.mjs keep stderr empty without pre-mapping the mode).
+  // This call is intentionally OUTSIDE the main try/catch so that only
+  // fs-errors reach the catch block.
   // -------------------------------------------------------------------------
   let callerClass;
   try {
     callerClass = classifyMode(mode);
   } catch {
-    console.warn(
-      `acquire: unknown mode "${mode}" — defaulting exclusivityClass to "parallel-ok". ` +
-      'Add the mode to exclusivity-matrix.mjs if intentional.',
-    );
+    if (quiet !== true) {
+      console.warn(
+        `acquire: unknown mode "${mode}" — defaulting exclusivityClass to "parallel-ok". ` +
+        'Add the mode to exclusivity-matrix.mjs if intentional.',
+      );
+    }
     callerClass = 'parallel-ok';
   }
 
@@ -416,14 +490,14 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
   // Local lock check — unchanged logic from original acquire().
   // -------------------------------------------------------------------------
   try {
-    const existing = readLock({ repoRoot });
-
-    if (existing !== null) {
-      // A lock is present — classify it.
+    // Classify an existing lock into the correct failure result. Shared by the
+    // up-front readLock() check AND the create-race EEXIST-loser path below so
+    // both report identical active / stale-pid-dead / stale-pid-alive reasons.
+    const classifyExisting = (existing) => {
       const expired = isTtlExpired(existing);
       const sameHost = existing.host === os.hostname();
       // PID liveness is only meaningful on the same host.
-      const pidAlive = sameHost ? isPidAlive(existing.pid) : null;
+      const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : null;
 
       if (!expired && pidAlive !== false) {
         // TTL still valid AND (PID is alive OR we can't check because cross-host).
@@ -433,14 +507,39 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
       // TTL expired or PID is confirmed dead — classify the stale variant.
       const reason = (pidAlive === false) ? 'stale-pid-dead' : 'stale-pid-alive';
       return { ok: false, reason, existingLock: existing, exclusivityClass: callerClass };
+    };
+
+    const existing = readLock({ repoRoot });
+
+    if (existing !== null) {
+      // A lock is present — classify it.
+      return classifyExisting(existing);
     }
 
-    // No existing lock — write a new one.
+    // No existing lock — create one with a TOCTOU-safe create-or-fail (#590).
+    // Two concurrent SessionStart hooks can both reach this branch having each
+    // observed readLock() === null; linkSync guarantees exactly one wins.
     const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
-    const writeResult = writeLockAtomic(lockFile, lock);
-    if (!writeResult.ok) return writeResult;
+    const createResult = createSessionLockExclusive(lockFile, lock);
 
-    return { ok: true, lock, exclusivityClass: callerClass };
+    if (createResult.ok) {
+      return { ok: true, lock, exclusivityClass: callerClass };
+    }
+    if (createResult.reason === 'fs-error') {
+      return { ok: false, reason: 'fs-error', error: createResult.error, exclusivityClass: callerClass };
+    }
+
+    // reason === 'exists' — we lost the create race. Re-read the now-present
+    // lock and classify it exactly as if we had seen it on the up-front check.
+    const raced = readLock({ repoRoot });
+    if (raced === null) {
+      // The EEXIST winner's lock vanished before we could re-read it (ENOENT /
+      // unparseable). Defensive fallback: report 'active' so the caller defers
+      // rather than racing again — mirrors tryAcquireStateLock's vanish-race
+      // handling (a lost-then-vanished race resolves conservatively).
+      return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
+    }
+    return classifyExisting(raced);
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message, exclusivityClass: callerClass };
   }
@@ -563,7 +662,7 @@ export function checkStale({ repoRoot } = {}) {
   const ttlExpired = isTtlExpired(lock);
   const sameHost = lock.host === os.hostname();
   // Only attempt PID check when the lock was written on this machine.
-  const pidAlive = sameHost ? isPidAlive(lock.pid) : null;
+  const pidAlive = sameHost ? isPidAliveOnHost(lock.pid) : null;
 
   return {
     exists: true,
@@ -768,7 +867,7 @@ function tryAcquireStateLock(lockFile, body) {
 
     const sameHost = existing.host === os.hostname();
     // PID liveness is only meaningful on the same host.
-    const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
+    const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : true;
 
     if (pidAlive) {
       return { ok: false, reason: 'held', existingLock: existing };
@@ -1144,7 +1243,7 @@ function tryAcquireStagingFenceLock(lockFile, body) {
     }
 
     const sameHost = existing.host === os.hostname();
-    const pidAlive = sameHost ? isPidAlive(existing.pid) : true;
+    const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : true;
 
     if (pidAlive) {
       return { ok: false, reason: 'held', existingLock: existing };

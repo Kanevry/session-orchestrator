@@ -13,8 +13,8 @@
  * propagation, edge / error-handling cases.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -107,6 +107,154 @@ describe('acquire', () => {
     const entries = readdirSync(orchDir);
     const tmpFiles = entries.filter((e) => e.includes('.tmp.'));
     expect(tmpFiles).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)
+// ---------------------------------------------------------------------------
+//
+// The fresh-acquire write path migrated from writeLockAtomic (tmp + rename,
+// last-writer-wins) to createSessionLockExclusive (tmp + linkSync, create-or-
+// fail). These tests pin the deterministic, single-process behaviour of the new
+// path: a clean create writes correct content and leaves no residue; the
+// EEXIST-loser classification reuses the same active/stale logic as the
+// up-front readLock() branch. The cross-process race test (two acquirers, one
+// wins) is intentionally NOT here — it is owned by a later wave.
+
+describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', () => {
+  it('fresh acquire writes the full lock body via the create path', () => {
+    const result = acquire({ sessionId: 'sess-create', mode: 'feature', repoRoot });
+
+    expect(result.ok).toBe(true);
+
+    // The on-disk content must be the complete, parseable lock — proving the
+    // tmp file was hardlinked into place with its full body (not an empty
+    // O_EXCL placeholder).
+    const lockFile = join(repoRoot, LOCK_PATH);
+    const raw = readFileSync(lockFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    expect(parsed.session_id).toBe('sess-create');
+    expect(parsed.mode).toBe('feature');
+    expect(parsed.ttl_hours).toBe(DEFAULT_TTL_HOURS);
+  });
+
+  it('no .session.lock.create.tmp.* residue remains after a clean fresh acquire', () => {
+    acquire({ sessionId: 'sess-create-hygiene', mode: 'deep', repoRoot });
+
+    const orchDir = join(repoRoot, '.orchestrator');
+    const residue = readdirSync(orchDir).filter((e) => e.startsWith('.session.lock.create.tmp.'));
+    expect(residue).toHaveLength(0);
+  });
+
+  it('EEXIST loser path: a second acquire over a live lock returns reason=active', () => {
+    // First acquire wins the create. Second acquire sees the present lock; the
+    // result must be the classified 'active' reason regardless of which branch
+    // (up-front readLock or create-race loser) produced it.
+    acquire({ sessionId: 'sess-winner', mode: 'feature', repoRoot });
+    const result = acquire({ sessionId: 'sess-loser', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock.session_id).toBe('sess-winner');
+  });
+
+  it('EEXIST loser path: a second acquire over a dead-PID lock returns reason=stale-pid-dead', () => {
+    // Pre-write a same-host lock whose PID is guaranteed dead.
+    const deadLock = {
+      session_id: 'sess-dead-winner',
+      started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      mode: 'feature',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(deadLock) + '\n');
+
+    const result = acquire({ sessionId: 'sess-new', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-pid-dead');
+    expect(result.existingLock.session_id).toBe('sess-dead-winner');
+  });
+
+  it('forceAcquire still overwrites an existing lock (NOT migrated to create-or-fail)', () => {
+    // Regression guard: the create-or-fail migration must be scoped to the
+    // fresh-acquire path only. forceAcquire MUST still replace a present lock.
+    acquire({ sessionId: 'sess-old-fa', mode: 'feature', repoRoot });
+    const result = forceAcquire({ sessionId: 'sess-new-fa', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.session_id).toBe('sess-new-fa');
+    expect(result.replacedLock.session_id).toBe('sess-old-fa');
+    expect(readLock({ repoRoot }).session_id).toBe('sess-new-fa');
+  });
+
+  it('updateHeartbeat still rewrites an existing lock (NOT migrated to create-or-fail)', () => {
+    // Regression guard: updateHeartbeat overwrites an already-owned lock, so it
+    // must keep using the rename-based path — a create-or-fail there would
+    // EEXIST and fail to refresh the heartbeat.
+    acquire({ sessionId: 'sess-hb', mode: 'deep', repoRoot });
+    const ok = updateHeartbeat({ sessionId: 'sess-hb', repoRoot });
+    expect(ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acquire() — quiet unknown-mode option (#592 MED-2)
+// ---------------------------------------------------------------------------
+
+describe('acquire() — quiet unknown-mode option (#592 MED-2)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('default acquire() warns to console.warn on an unknown mode', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = acquire({ sessionId: 'sess-warn', mode: 'totally-unknown-mode', repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('unknown mode "totally-unknown-mode"');
+  });
+
+  it('acquire({ quiet: true }) suppresses the unknown-mode warn but still acquires', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = acquire({ sessionId: 'sess-quiet', mode: 'totally-unknown-mode', quiet: true, repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('quiet acquire() still persists the RAW unknown mode on the lock body', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = acquire({ sessionId: 'sess-quiet-mode', mode: 'my-custom-mode', quiet: true, repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.mode).toBe('my-custom-mode');
+    expect(readLock({ repoRoot }).mode).toBe('my-custom-mode');
+  });
+
+  it('quiet acquire() defaults exclusivityClass to parallel-ok for an unknown mode', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Pass an empty activeSessions so the success result carries exclusivityClass.
+    const result = acquire({
+      sessionId: 'sess-quiet-class',
+      mode: 'another-unknown-mode',
+      quiet: true,
+      activeSessions: [],
+      repoRoot,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.exclusivityClass).toBe('parallel-ok');
   });
 });
 
@@ -496,30 +644,42 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
   });
 
   // L2: updateHeartbeat() updates ONLY last_heartbeat, preserving other fields.
-  it('L2: updateHeartbeat() updates only last_heartbeat, preserving other fields', async () => {
-    acquire({ sessionId: 'sess-L2', mode: 'deep', repoRoot });
-    const before = readLock({ repoRoot });
+  // AP1 (#591): replaced a wall-clock `setTimeout(r, 5)` sleep with fake timers
+  // so the test is deterministic on contended CI. acquire() + updateHeartbeat()
+  // are SYNCHRONOUS, so the body is sync (no async). nowIso() resolves to
+  // `new Date().toISOString()`, which fake timers control via setSystemTime →
+  // advancing the clock guarantees a strictly-later heartbeat without sleeping.
+  it('L2: updateHeartbeat() updates only last_heartbeat, preserving other fields', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-05-27T12:00:00.000Z'));
+      acquire({ sessionId: 'sess-L2', mode: 'deep', repoRoot });
+      const before = readLock({ repoRoot });
 
-    // Yield long enough that nowIso() definitely advances.
-    await new Promise((r) => setTimeout(r, 5));
+      // Advance the controlled clock so nowIso() yields a strictly-later stamp.
+      vi.advanceTimersByTime(10);
 
-    const ok = updateHeartbeat({ sessionId: 'sess-L2', repoRoot });
-    expect(ok).toBe(true);
+      const ok = updateHeartbeat({ sessionId: 'sess-L2', repoRoot });
+      expect(ok).toBe(true);
 
-    const after = readLock({ repoRoot });
+      const after = readLock({ repoRoot });
 
-    // last_heartbeat advanced.
-    expect(after.last_heartbeat).not.toBe(before.last_heartbeat);
-    expect(Date.parse(after.last_heartbeat))
-      .toBeGreaterThanOrEqual(Date.parse(before.last_heartbeat));
+      // last_heartbeat advanced (started_at + 10ms == 2026-05-27T12:00:00.010Z).
+      expect(after.last_heartbeat).not.toBe(before.last_heartbeat);
+      expect(after.last_heartbeat).toBe('2026-05-27T12:00:00.010Z');
+      expect(Date.parse(after.last_heartbeat))
+        .toBeGreaterThanOrEqual(Date.parse(before.last_heartbeat));
 
-    // All OTHER fields preserved.
-    expect(after.session_id).toBe(before.session_id);
-    expect(after.started_at).toBe(before.started_at);
-    expect(after.mode).toBe(before.mode);
-    expect(after.pid).toBe(before.pid);
-    expect(after.host).toBe(before.host);
-    expect(after.ttl_hours).toBe(before.ttl_hours);
+      // All OTHER fields preserved.
+      expect(after.session_id).toBe(before.session_id);
+      expect(after.started_at).toBe(before.started_at);
+      expect(after.mode).toBe(before.mode);
+      expect(after.pid).toBe(before.pid);
+      expect(after.host).toBe(before.host);
+      expect(after.ttl_hours).toBe(before.ttl_hours);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // L3: updateHeartbeat() refuses to update a lock owned by a different session_id.
@@ -534,6 +694,22 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
     const after = readLock({ repoRoot });
     expect(after.session_id).toBe('sess-L3-owner');
     expect(after.last_heartbeat).toBe(before.last_heartbeat);
+  });
+
+  // H2 (#591) — updateHeartbeat() against a repo with NO lock file. Exercises
+  // the `if (existing === null) return false` early-return at line ~624 that
+  // every other test bypasses (they acquire() first). The `repoRoot` here is
+  // the fresh mkdtemp from beforeEach with no prior acquire → readLock() is
+  // null → must return false and write nothing.
+  // Mutation-falsification: if the null-guard were removed, buildLock would
+  // throw / writeLockAtomic would create a lock and `readLock` would be non-null,
+  // failing both assertions below.
+  it('H2: updateHeartbeat() on a repo with no lock returns false and writes no lock', () => {
+    const result = updateHeartbeat({ sessionId: 'sess-no-lock', repoRoot });
+
+    expect(result).toBe(false);
+    // Nothing was written — readLock stays null.
+    expect(readLock({ repoRoot })).toBeNull();
   });
 
   // L4: Old-schema lock (no last_heartbeat) is read with last_heartbeat == started_at.
@@ -584,6 +760,39 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
       ttl_hours: 4,
     };
     expect(isLockLive(lock)).toBe(false);
+  });
+
+  // H1 (#591) — exact-TTL boundary. isLockLive uses STRICT `<` (line ~253:
+  // `(nowMs - heartbeatMs) < ttlMs`), so a heartbeat that is EXACTLY ttl_hours
+  // old must be reported DEAD (false), and one 1ms younger must be LIVE (true).
+  // The function takes an explicit `nowMs`, so this is fully deterministic — no
+  // fake timers. Hardcoded ISO heartbeat; the expiry edge is the heartbeat ms
+  // plus the exact ttl window so the boundary is reproduced precisely.
+  // Mutation-falsification: if `<` were reverted to `<=`, the exact-edge case
+  // would flip to `true` and the first assertion below would FAIL.
+  it('H1: isLockLive at exactly ttl_hours old returns false (strict <), 1ms under returns true', () => {
+    const heartbeatIso = '2026-05-27T12:00:00.000Z';
+    const heartbeatMs = Date.parse(heartbeatIso); // hardcoded reference epoch
+    const ttlHours = 4;
+    const ttlMs = ttlHours * 3600 * 1000; // 14_400_000
+    const lock = {
+      session_id: 'x',
+      started_at: heartbeatIso,
+      last_heartbeat: heartbeatIso,
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: ttlHours,
+    };
+
+    // Exactly ttl_hours later: (nowMs - heartbeatMs) === ttlMs → strict < is false.
+    expect(isLockLive(lock, heartbeatMs + ttlMs)).toBe(false);
+
+    // 1ms before the exact edge: (nowMs - heartbeatMs) === ttlMs - 1 → live.
+    expect(isLockLive(lock, heartbeatMs + ttlMs - 1)).toBe(true);
+
+    // 1ms past the exact edge: clearly expired.
+    expect(isLockLive(lock, heartbeatMs + ttlMs + 1)).toBe(false);
   });
 
   // semantic_session_id propagation: acquire() persists it when provided.

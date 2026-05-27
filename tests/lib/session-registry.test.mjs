@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -126,13 +126,20 @@ describe('session-registry', () => {
 
   describe('heartbeat', () => {
     it('refreshes last_heartbeat and leaves other fields intact', async () => {
-      const initial = await registerSelf({ sessionId: 'hb', projectRoot: '/tmp/proj' });
-      await new Promise((r) => setTimeout(r, 5));
-      const updated = await heartbeat('hb');
-      expect(updated.last_heartbeat).not.toBe(initial.last_heartbeat);
-      expect(Date.parse(updated.last_heartbeat)).toBeGreaterThanOrEqual(Date.parse(initial.last_heartbeat));
-      expect(updated.session_id).toBe(initial.session_id);
-      expect(updated.started_at).toBe(initial.started_at);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-27T00:00:00.000Z'));
+      try {
+        const initial = await registerSelf({ sessionId: 'hb', projectRoot: '/tmp/proj' });
+        // Advance clock by 10ms so the next utcTimestamp() call produces a later ISO string.
+        vi.advanceTimersByTime(10);
+        const updated = await heartbeat('hb');
+        expect(updated.last_heartbeat).not.toBe(initial.last_heartbeat);
+        expect(Date.parse(updated.last_heartbeat)).toBeGreaterThanOrEqual(Date.parse(initial.last_heartbeat));
+        expect(updated.session_id).toBe(initial.session_id);
+        expect(updated.started_at).toBe(initial.started_at);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('applies status + currentWave patches', async () => {

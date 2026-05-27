@@ -252,6 +252,75 @@ describe('Epic #583 AC1 — registry-fallback detection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// T2b — AC1 multi-peer: 3+ concurrent sessions all discovered (Issue #591 H6)
+// ---------------------------------------------------------------------------
+
+describe('Epic #583 AC1 — 3+ concurrent peers are all discovered', () => {
+  it('discoverActiveSessions returns all three registry peers in the same repo with no drop or dedup-collapse', async () => {
+    // Three concurrent sessions registered against the SAME repo path
+    // (worktree2 — the discovery caller's root). The registry fallback keys on
+    // repo_path_hash(repoRoot), so all three must share that root to be merged.
+    // Distinct modes (one per exclusivity class) make the assertion stronger:
+    // it catches a merge bug that attaches the wrong mode to a sessionId, not
+    // just a missing-peer bug.
+    const peers = [
+      { sessionId: 'peer-deep-1',         mode: 'deep' },          // parallel-ok
+      { sessionId: 'peer-feature-2',      mode: 'feature' },       // parallel-ok
+      { sessionId: 'peer-housekeeping-3', mode: 'housekeeping' },  // exclusive
+    ];
+
+    const registered = [];
+    for (const p of peers) {
+      registered.push(await registerSelf({
+        sessionId:   p.sessionId,
+        projectRoot: worktree2,
+        mode:        p.mode,
+        status:      'active',
+      }));
+    }
+
+    try {
+      const listWorktreesImpl = makeListWorktreesImpl([
+        { path: worktree2, branch: 'main' },
+      ]);
+
+      const result = await discoverActiveSessions(worktree2, { listWorktreesImpl });
+
+      // AC1.a — exactly three sessions surfaced (no peer dropped, none collapsed
+      // by the dedupeBySessionId pass since all three ids are distinct).
+      expect(result).toHaveLength(3);
+
+      // AC1.b — the exact set of (sessionId, mode) pairs round-trips. Sorting
+      // by sessionId makes the comparison order-independent (discovery merge
+      // order is not part of the contract).
+      const pairs = result
+        .map((r) => ({ sessionId: r.sessionId, mode: r.mode }))
+        .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+      expect(pairs).toEqual([
+        { sessionId: 'peer-deep-1',         mode: 'deep' },
+        { sessionId: 'peer-feature-2',      mode: 'feature' },
+        { sessionId: 'peer-housekeeping-3', mode: 'housekeeping' },
+      ]);
+
+      // AC1.c — classifyMode buckets each discovered peer correctly across the
+      // mixed-exclusivity set (proves the modes survived the registry → session
+      // shape conversion intact, per Epic #583 W2-I3 schema-v2 mode field).
+      const classByMode = Object.fromEntries(
+        result.map((r) => [r.mode, classifyMode(r.mode)]),
+      );
+      expect(classByMode).toEqual({
+        deep:         'parallel-ok',
+        feature:      'parallel-ok',
+        housekeeping: 'exclusive',
+      });
+    } finally {
+      // Cleanup so the seeded registry state never leaks into sibling tests.
+      for (const r of registered) await deregisterSelf(r.session_id);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T3 — AC2 preamble fires when a real conflicting peer exists
 // ---------------------------------------------------------------------------
 

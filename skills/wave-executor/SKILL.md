@@ -438,6 +438,10 @@ The fixer-agent prompt MUST include a reminder of `.claude/rules/test-quality.md
 real failure is a regression vector. The fixer prompt should explicitly say:
 "Do NOT change test mocks to make tests pass. Fix the actual code defect."
 
+### Heartbeat cadence at inter-wave checkpoints (#590-3)
+
+After each quality-gate PASS, the coordinator refreshes the session-lock heartbeat via the post-wave STATE.md step. See `wave-loop.md § 3a. Post-Wave: Update STATE.md` — step 5 contains the `updateHeartbeat` instruction and best-effort framing.
+
 ## Frontmatter-Guard (#328)
 
 When an agent's task scope includes vault paths (`~/Projects/vault/` or vault subdirectories such as `40-learnings/`, `50-sessions/`, `03-daily/`, `01-projects/`), the wave-executor injects a deterministic frontmatter-schema snippet into the agent's prompt. This eliminates the recurring failure class where agents guess at enum values for `type`, `status`, or `tags`.

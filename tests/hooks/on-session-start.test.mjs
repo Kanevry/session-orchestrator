@@ -416,7 +416,9 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     const entries = await readRegistry();
     expect(entries).toHaveLength(1);
     expect(entries[0].pid).toBe(entries[0].pid); // sanity
-    expect(entries[0].session_id).toBeTruthy();
+    expect(entries[0].session_id).toMatch(
+      /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
+    );
     expect(entries[0].repo_name).toBe(path.basename(dir));
     expect(entries[0].status).toBe('active');
   });
@@ -448,7 +450,9 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     await runHook({ projectDir: dir });
     const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
     const parsed = JSON.parse(raw);
-    expect(parsed.session_id).toBeTruthy();
+    expect(parsed.session_id).toMatch(
+      /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
+    );
     expect(parsed.source).toMatch(/^generated(-semantic|-uuid-fallback)?$/);
   });
 

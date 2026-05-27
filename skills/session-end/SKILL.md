@@ -255,6 +255,18 @@ Pass the aggregated counts and mode forward to Phase 6 Final Report (Docs Health
 
 ## Phase 3: Documentation Updates
 
+> **Final heartbeat (#590-3)** — at Phase 3 entry, refresh the session-lock heartbeat BEFORE the multi-minute close-out chain (vault-mirror, dialectic, durable-commit, metrics). A long-idle deep session may not have had PostToolBatch activity for >4h; without a refresh the 4h-TTL lock would lapse mid-close and appear stale to a concurrent session. Place this call BEFORE Phase 3.8 Session Lock Release (which deletes the lock — refreshing a deleted lock is a no-op). Best-effort: a failure must NOT block the close.
+>
+> ```js
+> // Final heartbeat (#590-3) — refresh before the multi-minute close-out (vault-mirror, dialectic, durable-commit)
+> // so a long-idle deep session's 4h-TTL lock does not lapse mid-close.
+> // BEFORE Phase 3.8 lock-release (which deletes the lock).
+> import { updateHeartbeat } from 'scripts/lib/session-lock.mjs';
+> updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+> ```
+>
+> Skip silently if `persistence: false` in Session Config (no session.lock exists in that mode).
+
 ### 3.0 Defensive Cleanup
 
 Delete `<state-dir>/wave-scope.json` if it still exists:
