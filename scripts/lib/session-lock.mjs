@@ -24,6 +24,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
+import { classifyMode } from './exclusivity-matrix.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -231,21 +232,126 @@ export function readLock(opts = {}) {
 /**
  * Atomically acquire the session lock.
  *
- * Returns:
- *   { ok: true, lock }                                              — lock created
- *   { ok: false, reason: 'active', existingLock }                  — live TTL, live PID
- *   { ok: false, reason: 'stale-pid-dead', existingLock }          — expired TTL or dead PID
- *   { ok: false, reason: 'stale-pid-alive', existingLock }         — expired TTL but PID still running
- *   { ok: false, reason: 'fs-error', error: string }               — filesystem failure
+ * Consults the P1.1 exclusivity-matrix when `activeSessions` is provided.
+ * When omitted, falls back to the legacy local-lock-only logic (backward compat).
+ *
+ * @param {object} args
+ * @param {string} args.sessionId
+ * @param {string} args.mode
+ * @param {number} [args.ttlHours]
+ * @param {string} [args.repoRoot]
+ * @param {Array<{mode:string,pid:number,host:string,sessionId:string}>} [args.activeSessions]
+ *   Optional pre-computed array from discoverActiveSessions(repoRoot). When omitted,
+ *   matrix consultation is skipped (legacy behavior). Callers (worktree-pipeline.mjs,
+ *   hooks/on-session-start.mjs) call discoverActiveSessions() themselves and pass the
+ *   result — this keeps acquire() synchronous.
+ *
+ * Returns one of:
+ *   { ok: true, lock, exclusivityClass? }
+ *       — lock created
+ *   { ok: false, reason: 'active', existingLock, exclusivityClass? }
+ *       — local lock held (live TTL, live PID)
+ *   { ok: false, reason: 'stale-pid-dead', existingLock, exclusivityClass? }
+ *       — local lock stale (dead PID)
+ *   { ok: false, reason: 'stale-pid-alive', existingLock, exclusivityClass? }
+ *       — local lock stale (live PID, TTL expired)
+ *   { ok: false, reason: 'fs-error', error, exclusivityClass? }
+ *       — filesystem failure
+ *   { ok: false, reason: 'active-incompatible-exclusive', allActiveSessions, blockingSession, exclusivityClass }
+ *       — caller blocked by an active exclusive-class session (P1.2 #570)
+ *   { ok: false, reason: 'active-compatible-parallel', allActiveSessions, exclusivityClass }
+ *       — caller could create a parallel session; preamble offers Worktree-Auto-Promotion (P1.2 #570)
+ *   { ok: false, reason: 'active-readonly-bypass', allActiveSessions, exclusivityClass: 'always-ok' }
+ *       — caller is read-only-class; preamble passes through without AUQ (P1.2 #570).
+ *       Callers for 'always-ok' modes SHOULD interpret this as "proceed without AUQ, no lock needed".
+ *
+ * The `exclusivityClass` field is optional (undefined when activeSessions is not passed)
+ * and is added to ALL return shapes so callers can always observe the caller's class.
  *
  * The caller (session-start) decides whether to invoke forceAcquire() after
  * obtaining user consent.
- *
- * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string }} args
  */
-export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot } = {}) {
+export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions } = {}) {
   const lockFile = lockPathFor(repoRoot);
 
+  // -------------------------------------------------------------------------
+  // Safe classifyMode wrapper — unknown modes default to 'parallel-ok' (most
+  // permissive) rather than propagating an exception into the try/catch below
+  // where it would be silently turned into an 'fs-error'. A console.warn is
+  // emitted for visibility. This call is intentionally OUTSIDE the main
+  // try/catch so that only fs-errors reach the catch block.
+  // -------------------------------------------------------------------------
+  let callerClass;
+  try {
+    callerClass = classifyMode(mode);
+  } catch {
+    console.warn(
+      `acquire: unknown mode "${mode}" — defaulting exclusivityClass to "parallel-ok". ` +
+      'Add the mode to exclusivity-matrix.mjs if intentional.',
+    );
+    callerClass = 'parallel-ok';
+  }
+
+  // -------------------------------------------------------------------------
+  // P1.2 exclusivity-matrix consultation — only when activeSessions is provided.
+  // Run BEFORE local-lock check so parallel-session conflicts surface first.
+  // -------------------------------------------------------------------------
+  if (Array.isArray(activeSessions) && activeSessions.length > 0) {
+    let hasCompatibleParallel = false;
+
+    for (const entry of activeSessions) {
+      // Safe classify for each active session's mode.
+      let entryClass;
+      try {
+        entryClass = classifyMode(entry.mode);
+      } catch {
+        // Unknown active session mode — treat as parallel-ok (most permissive default).
+        entryClass = 'parallel-ok';
+      }
+
+      if (entryClass === 'exclusive' && callerClass !== 'always-ok') {
+        // An exclusive active session blocks all non-always-ok callers.
+        return {
+          ok: false,
+          reason: 'active-incompatible-exclusive',
+          exclusivityClass: callerClass,
+          allActiveSessions: activeSessions,
+          blockingSession: entry,
+        };
+      }
+
+      if (entryClass === 'parallel-ok' && callerClass === 'parallel-ok') {
+        hasCompatibleParallel = true;
+      }
+    }
+
+    // After loop: handle always-ok bypass (read-only caller).
+    if (callerClass === 'always-ok') {
+      return {
+        ok: false,
+        reason: 'active-readonly-bypass',
+        exclusivityClass: 'always-ok',
+        allActiveSessions: activeSessions,
+      };
+    }
+
+    // Parallel-compatible situation: preamble should offer Worktree-Auto-Promotion.
+    if (hasCompatibleParallel) {
+      return {
+        ok: false,
+        reason: 'active-compatible-parallel',
+        exclusivityClass: callerClass,
+        allActiveSessions: activeSessions,
+      };
+    }
+
+    // All active sessions are 'always-ok' and caller is non-always-ok, or
+    // no blocking condition was found — fall through to local-lock check.
+  }
+
+  // -------------------------------------------------------------------------
+  // Local lock check — unchanged logic from original acquire().
+  // -------------------------------------------------------------------------
   try {
     const existing = readLock({ repoRoot });
 
@@ -258,12 +364,12 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
 
       if (!expired && pidAlive !== false) {
         // TTL still valid AND (PID is alive OR we can't check because cross-host).
-        return { ok: false, reason: 'active', existingLock: existing };
+        return { ok: false, reason: 'active', existingLock: existing, exclusivityClass: callerClass };
       }
 
       // TTL expired or PID is confirmed dead — classify the stale variant.
       const reason = (pidAlive === false) ? 'stale-pid-dead' : 'stale-pid-alive';
-      return { ok: false, reason, existingLock: existing };
+      return { ok: false, reason, existingLock: existing, exclusivityClass: callerClass };
     }
 
     // No existing lock — write a new one.
@@ -271,9 +377,9 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     const writeResult = writeLockAtomic(lockFile, lock);
     if (!writeResult.ok) return writeResult;
 
-    return { ok: true, lock };
+    return { ok: true, lock, exclusivityClass: callerClass };
   } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
+    return { ok: false, reason: 'fs-error', error: err.message, exclusivityClass: callerClass };
   }
 }
 

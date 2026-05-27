@@ -18,6 +18,21 @@ description: >
 
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). Wherever this skill mentions `CLAUDE.md`, the alias rule applies.
 
+## Phase 0.5: Parallel-Aware Preamble
+
+> Skip silently when `persistence: false` in Session Config.
+
+Before any Phase 1 work, run the parallel-aware preamble per `skills/_shared/parallel-aware-preamble.md`. The preamble detects other active sessions in the worktree-family via `discoverActiveSessions(repoRoot)`, classifies the caller's mode via `classifyMode(callerMode)` against the exclusivity-matrix, and either:
+
+- Returns `PASS_THROUGH` (no other session / `always-ok` mode) → continue to Phase 1
+- Returns `EXCLUSIVE_BLOCKED` → fires Exclusive-Conflict AUQ from `skills/_shared/parallel-aware-auq.md`
+- Returns `PROMOTION_OFFER` → fires Worktree-Promotion AUQ (P3.1 #574 fills the worktree-creation action)
+
+On any non-PASS_THROUGH outcome that does not result in immediate exit, append a Deviation to STATE.md via `appendDeviationOnDisk(repoRoot, isoTimestamp, message)` from `scripts/lib/state-md.mjs`.
+
+**Implementation reference:** `skills/_shared/parallel-aware-preamble.md § Implementation`.
+**AUQ reference:** `skills/_shared/parallel-aware-auq.md`.
+
 ## Purpose
 
 Transform the agreed session scope (from session-start Q&A) into an executable wave plan (using role-based assignment) with specific agent assignments, file scopes, and acceptance criteria per task.

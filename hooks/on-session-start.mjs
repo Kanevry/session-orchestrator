@@ -226,8 +226,93 @@ async function readStdinJson(timeoutMs = 500) {
  */
 async function resolveSessionId(input, projectRoot) {
   const fromStdin = (input && (input.session_id || input.sessionId)) ?? null;
-  const sessionId =
-    typeof fromStdin === 'string' && fromStdin.length > 0 ? fromStdin : randomUUID();
+
+  let sessionId;
+  let source;
+
+  if (typeof fromStdin === 'string' && fromStdin.length > 0) {
+    sessionId = fromStdin;
+    source = 'stdin';
+  } else {
+    // No stdin id — generate a semantic session-id via P2.2 #573 (PRD §3 P2).
+    // Falls back to randomUUID() on any failure to keep the hook non-blocking.
+    try {
+      const { resolveSemanticSessionId } = await import('../scripts/lib/session-id.mjs');
+      const { discoverActiveSessions } = await import('../scripts/lib/session-discovery.mjs');
+      const { execSync } = await import('node:child_process');
+
+      // Derive branch from git (cheap, ~5ms). Fall back to 'main' if outside a repo.
+      let branch = 'main';
+      try {
+        branch = execSync('git rev-parse --abbrev-ref HEAD', {
+          cwd: projectRoot,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          encoding: 'utf8',
+          timeout: 1000,
+        }).trim();
+        if (!branch || branch === 'HEAD') branch = 'main';
+      } catch { /* keep default 'main' */ }
+
+      // Derive mode from input — input may carry mode, session_type, or fall back to 'session'.
+      const rawMode = (input && (input.mode || input.session_type)) || 'session';
+
+      // Discover other active sessions for n-incrementing. We merge two sources:
+      //   1. worktree-local: discoverActiveSessions(projectRoot) reads each worktree's session.lock
+      //   2. host-wide:      readRegistry() reads the per-host multi-session registry
+      // The merge is necessary because the host-wide registry is the single source
+      // of truth for cross-repo uniqueness — two unrelated repos on the same host
+      // would otherwise collide on the same default `<branch>-<date>-<mode>-1` id.
+      // Best-effort: both sources may fail; we proceed with whatever we get.
+      const { readRegistry } = await import('../scripts/lib/session-registry.mjs');
+      const [localSessions, registryEntries] = await Promise.all([
+        discoverActiveSessions(projectRoot).catch(() => []),
+        readRegistry().catch(() => []),
+      ]);
+      const registrySessions = registryEntries.map((r) => ({
+        sessionId: r.session_id,
+        mode: r.mode ?? 'session',
+      }));
+      const activeSessions = [...localSessions, ...registrySessions];
+
+      const candidate = await resolveSemanticSessionId({
+        branch,
+        mode: String(rawMode).toLowerCase().replace(/[^a-z-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'session',
+        activeSessions,
+        repoRoot: projectRoot,
+      });
+
+      // Race-free host-wide uniqueness: try to atomically claim the registry slot
+      // for this sessionId via O_CREAT|O_EXCL. If another process won the race
+      // (EEXIST), fall back to UUID-v4 to guarantee distinct sessionIds across
+      // parallel hook invocations. The empty file is immediately overwritten by
+      // registerSelf() with the real entry — _validEntry() in readers filters
+      // any zero-content artifact during the millisecond gap.
+      try {
+        const { activeDir, entryPath } = await import('../scripts/lib/session-registry.mjs');
+        const fsAsync = await import('node:fs/promises');
+        await fsAsync.mkdir(activeDir(), { recursive: true });
+        const claimPath = entryPath(candidate);
+        const handle = await fsAsync.open(claimPath, 'wx'); // O_CREAT|O_EXCL — fails with EEXIST on collision
+        await handle.close();
+        sessionId = candidate;
+        source = 'generated-semantic';
+      } catch (claimErr) {
+        if (claimErr.code === 'EEXIST') {
+          // Collision with another parallel hook — fall back to UUID-v4 silently.
+          // Hook is informational-only; never write to stderr per existing convention.
+          sessionId = randomUUID();
+          source = 'generated-uuid-fallback-collision';
+        } else {
+          throw claimErr; // surfaces to outer catch → UUID fallback
+        }
+      }
+    } catch {
+      // Semantic id generation failed for any reason — silently fall back to UUID-v4.
+      // Hook is informational-only; never write to stderr per existing convention.
+      sessionId = randomUUID();
+      source = 'generated-uuid-fallback';
+    }
+  }
 
   try {
     const dir = path.join(projectRoot, '.orchestrator');
@@ -235,7 +320,7 @@ async function resolveSessionId(input, projectRoot) {
     const payload = {
       session_id: sessionId,
       pid: process.pid,
-      source: fromStdin ? 'stdin' : 'generated',
+      source,
       timestamp: new Date().toISOString(),
     };
     await writeFile(

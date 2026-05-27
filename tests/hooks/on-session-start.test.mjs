@@ -404,20 +404,26 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     expect(entries[0].session_id).toBe(stdinId);
   });
 
-  it('falls back to a generated uuid when stdin carries no session_id', async () => {
+  it('generates a session id when stdin carries no session_id', async () => {
+    // Post-P2.2 (#573): hook prefers semantic format `<branch>-<YYYY-MM-DD>-<mode>-<n>`,
+    // with UUID-v4 as the fallback when semantic resolution fails.
+    // Both formats are valid per PRD §3 P2 row 3 (backward-compat reader via parseSessionId).
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
     const entries = await readRegistry();
-    expect(entries[0].session_id).toMatch(/^[a-f0-9-]{36}$/);
+    expect(entries[0].session_id).toMatch(
+      /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
+    );
   });
 
   it('persists the session id to .orchestrator/current-session.json', async () => {
+    // Post-P2.2 (#573): source label is one of: generated-semantic | generated-uuid-fallback | generated (legacy).
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
     const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
     const parsed = JSON.parse(raw);
     expect(parsed.session_id).toBeTruthy();
-    expect(parsed.source).toBe('generated');
+    expect(parsed.source).toMatch(/^generated(-semantic|-uuid-fallback)?$/);
   });
 
   it('records source=stdin when session_id came from stdin', async () => {

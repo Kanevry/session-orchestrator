@@ -17,7 +17,7 @@ current-wave: <N>
 total-waves: <N>
 # Optional fields (schema-version 1, additive for backward-compat):
 updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
-session: <session-id>        # <branch>-<YYYY-MM-DD>-<HHmm>, set Pre-Wave 1b
+session: <session-id>        # <branch>-<YYYY-MM-DD>-<mode>-<n> (semantic, since #573); legacy UUID-v4 also accepted by parseSessionId
 session-start-ref: <sha>     # git ref at session start
 ---
 ```
@@ -25,7 +25,7 @@ session-start-ref: <sha>     # git ref at session start
 ### Required vs. optional fields
 
 - `schema-version`, `session-type`, `branch`, `issues`, `started_at`, `status`, `current-wave`, `total-waves` — **required** in every session-owned STATE.md.
-- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence.
+- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence. The `session` field's value format is `<branch>-<YYYY-MM-DD>-<mode>-<n>` since #573 (Epic #568 Parallel-Aware Sessions P2.2); pre-#573 files may contain a UUID-v4 — both formats are read via `parseSessionId()` from `scripts/lib/session-id.mjs` per PRD §3 P2 row 3 (backward-compat).
 
 The `session-type: none` + `status: idle` combination is used only for bootstrap-scaffolded placeholder files (no active session).
 

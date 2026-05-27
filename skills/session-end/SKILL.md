@@ -26,6 +26,22 @@ Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate 
 Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
 </HARD-GATE>
 
+## Phase 0.5: Parallel-Aware Preamble
+
+> Skip silently when `persistence: false` in Session Config.
+
+Before Phase 1, run the parallel-aware preamble per `skills/_shared/parallel-aware-preamble.md`. The preamble detects other active sessions in the worktree-family via `discoverActiveSessions(repoRoot)`, classifies the caller's mode via `classifyMode(callerMode)` against the exclusivity-matrix, and fires the appropriate AUQ on conflict.
+
+**Outcome handling:**
+- `PASS_THROUGH` → continue to Phase 1
+- `EXCLUSIVE_BLOCKED` → exit Phase 0 cleanly per the AUQ outcome
+- `PROMOTION_OFFER` → user picks Worktree-Promotion (P3.1 #574), in-place + Deviation, or Abbrechen
+
+For session-end specifically: the preamble is DETECTION-ONLY. The lock-release path in later phases keeps its current behavior — releasing the OWN session's lock requires no matrix consultation.
+
+**Implementation reference:** `skills/_shared/parallel-aware-preamble.md § Implementation`.
+**AUQ reference:** `skills/_shared/parallel-aware-auq.md`.
+
 ## Phase 1: Plan Verification
 
 Read back the session plan that was agreed at the start. For EACH planned item:

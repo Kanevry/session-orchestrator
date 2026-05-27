@@ -7,6 +7,10 @@
  * release (matching session_id, mismatched session_id, no lock present),
  * checkStale (missing lock, TTL-expired classification, cross-host),
  * forceAcquire (replaces existing, creates from scratch).
+ *
+ * P1.2 (#570) additions: acquire() with exclusivity-matrix integration —
+ * backward-compat (omit activeSessions), matrix happy-paths, exclusivityClass
+ * propagation, edge / error-handling cases.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -246,5 +250,156 @@ describe('forceAcquire', () => {
     expect(result.ok).toBe(true);
     expect(result.lock.session_id).toBe('sess-fresh');
     expect(result.replacedLock).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acquire() with exclusivity-matrix integration (P1.2 #570)
+// ---------------------------------------------------------------------------
+
+describe('acquire() with exclusivity-matrix integration (P1.2 #570)', () => {
+  // ---------------------------------------------------------------------------
+  // Backward-compat group (1 test)
+  // ---------------------------------------------------------------------------
+
+  it('acquire() with activeSessions omitted reproduces pre-P1.2 active reason unchanged', () => {
+    // Establish a lock without activeSessions (pre-P1.2 call shape).
+    acquire({ sessionId: 'sess-compat-first', mode: 'feature', repoRoot });
+
+    // Second acquire also omits activeSessions — must still produce 'active'.
+    const result = acquire({ sessionId: 'sess-compat-second', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock.session_id).toBe('sess-compat-first');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Matrix happy-path group (3 tests)
+  // ---------------------------------------------------------------------------
+
+  it('acquire() returns active-incompatible-exclusive when housekeeping running and deep caller requests lock', () => {
+    // activeSessions contains a housekeeping entry (exclusive class).
+    // Caller is deep (parallel-ok class) → must be blocked.
+    const activeSessions = [
+      { mode: 'housekeeping', pid: process.pid, host: hostname(), sessionId: 'existing-hk-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'new-deep-sess', mode: 'deep', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-incompatible-exclusive');
+    expect(result.exclusivityClass).toBe('parallel-ok');
+    expect(result.blockingSession.sessionId).toBe('existing-hk-sess');
+    expect(result.blockingSession.mode).toBe('housekeeping');
+    expect(Array.isArray(result.allActiveSessions)).toBe(true);
+    expect(result.allActiveSessions).toHaveLength(1);
+  });
+
+  it('acquire() returns active-compatible-parallel when deep running and deep caller requests lock', () => {
+    // activeSessions contains a deep entry (parallel-ok class).
+    // Caller is also deep (parallel-ok class) → signals promotion-opportunity.
+    const activeSessions = [
+      { mode: 'deep', pid: process.pid, host: hostname(), sessionId: 'existing-deep-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'new-deep-sess', mode: 'deep', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-compatible-parallel');
+    expect(result.exclusivityClass).toBe('parallel-ok');
+    expect(Array.isArray(result.allActiveSessions)).toBe(true);
+    expect(result.allActiveSessions).toHaveLength(1);
+  });
+
+  it('acquire() returns active-readonly-bypass when deep running and discovery caller requests lock', () => {
+    // activeSessions contains a deep entry (parallel-ok class).
+    // Caller is discovery (always-ok class) → passes through regardless.
+    const activeSessions = [
+      { mode: 'deep', pid: process.pid, host: hostname(), sessionId: 'existing-deep-sess' },
+    ];
+
+    const result = acquire({ sessionId: 'new-discovery-sess', mode: 'discovery', activeSessions, repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-readonly-bypass');
+    expect(result.exclusivityClass).toBe('always-ok');
+    expect(Array.isArray(result.allActiveSessions)).toBe(true);
+    expect(result.allActiveSessions).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // exclusivityClass propagation group (2 tests)
+  // ---------------------------------------------------------------------------
+
+  it('acquire() success path includes exclusivityClass when activeSessions is provided and empty', () => {
+    // Empty activeSessions: no conflicts, lock should be created.
+    // success result must include exclusivityClass for the caller's mode (feature → parallel-ok).
+    const result = acquire({ sessionId: 'fresh-feature-sess', mode: 'feature', activeSessions: [], repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.session_id).toBe('fresh-feature-sess');
+    expect(result.exclusivityClass).toBe('parallel-ok');
+  });
+
+  it('acquire() existing-lock active reason includes exclusivityClass when activeSessions is provided', () => {
+    // Pre-establish a lock directly.
+    acquire({ sessionId: 'first-hk-sess', mode: 'housekeeping', repoRoot });
+
+    // Second acquire with activeSessions: [] — file lock is present (active reason),
+    // but caller is housekeeping (exclusive class) so exclusivityClass should reflect caller.
+    const result = acquire({ sessionId: 'second-hk-sess', mode: 'housekeeping', activeSessions: [], repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock.session_id).toBe('first-hk-sess');
+    expect(result.exclusivityClass).toBe('exclusive');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Edge / error-handling group (2 tests)
+  // ---------------------------------------------------------------------------
+
+  it('acquire() with unknown mode does not throw and returns a structured result', () => {
+    // classifyMode throws for unknown modes, but acquire() must catch that and
+    // handle gracefully per I1's safe-handling spec (fall back to parallel-ok).
+    // We pass activeSessions with a feature session to trigger matrix evaluation.
+    const activeSessions = [
+      { mode: 'feature', pid: process.pid, host: hostname(), sessionId: 'existing-feature-sess' },
+    ];
+
+    // Must not throw — acquire() is specified as no-throw.
+    let result;
+    expect(() => {
+      result = acquire({ sessionId: 'new-unknown-sess', mode: 'unknown-mode-xyz', activeSessions, repoRoot });
+    }).not.toThrow();
+
+    // Result must be a structured object (not undefined or null).
+    expect(typeof result).toBe('object');
+    expect(result).not.toBeNull();
+    // ok must be a boolean — shape is always present.
+    expect(typeof result.ok).toBe('boolean');
+  });
+
+  it('acquire() does not crash when activeSessions entry has a live PID (normal usage)', () => {
+    // discoverActiveSessions() filters dead PIDs before passing activeSessions.
+    // Verify acquire() handles a normal live-PID activeSessions entry without throwing.
+    // (housekeeping → exclusive, caller deep → parallel-ok → blocked)
+    const activeSessions = [
+      { mode: 'housekeeping', pid: process.pid, host: hostname(), sessionId: 'live-hk-sess' },
+    ];
+
+    let result;
+    expect(() => {
+      result = acquire({ sessionId: 'new-deep-sess-2', mode: 'deep', activeSessions, repoRoot });
+    }).not.toThrow();
+
+    // Shape must be structured.
+    expect(typeof result).toBe('object');
+    expect(result).not.toBeNull();
+    expect(typeof result.ok).toBe('boolean');
+    // The exclusive blocker must produce a failure (not a lock write).
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active-incompatible-exclusive');
   });
 });
