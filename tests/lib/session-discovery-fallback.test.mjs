@@ -24,15 +24,28 @@ import {
 const DEAD_PID = 999999;
 
 let repoRoot;
+let registryDir;
+let prevRegistryEnv;
 let stderrSpy;
 
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'session-discovery-fallback-test-'));
+  // Isolate registry from the user's real ~/.config/session-orchestrator/sessions
+  // (Epic #583, W2-I3: discoverActiveSessions now consults the registry).
+  registryDir = mkdtempSync(join(tmpdir(), 'session-discovery-fallback-registry-'));
+  prevRegistryEnv = process.env.SO_SESSION_REGISTRY_DIR;
+  process.env.SO_SESSION_REGISTRY_DIR = registryDir;
   stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 });
 
 afterEach(() => {
   rmSync(repoRoot, { recursive: true, force: true });
+  rmSync(registryDir, { recursive: true, force: true });
+  if (prevRegistryEnv === undefined) {
+    delete process.env.SO_SESSION_REGISTRY_DIR;
+  } else {
+    process.env.SO_SESSION_REGISTRY_DIR = prevRegistryEnv;
+  }
   stderrSpy.mockRestore();
 });
 
@@ -177,12 +190,23 @@ describe('Group B — timeout fallback (listWorktreesImpl slower than opts.timeo
 // ---------------------------------------------------------------------------
 
 describe('Group C — A1 fallback dead-PID and cross-host filtering', () => {
-  it('excludes same-host dead-PID from A1 result (stale lock detection)', async () => {
-    writeLocalLock(lockBody({ pid: DEAD_PID, host: hostname() }));
+  it('excludes stale-heartbeat lock from A1 result (Epic #583, W2-I3 — heartbeat IS the liveness signal)', async () => {
+    // Pre-#583 this test exercised PID-liveness exclusion. The liveness rule
+    // changed to heartbeat-freshness; a fresh-heartbeat lock is INCLUDED even
+    // with a dead PID (the writer-process is transient). To exercise the
+    // exclusion path now, give the lock a heartbeat older than ttl_hours.
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeLocalLock(lockBody({
+      pid:            DEAD_PID,
+      host:           hostname(),
+      started_at:     fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      ttl_hours:      4,
+    }));
     const result = await discoverActiveSessions(repoRoot, {
       listWorktreesImpl: () => { throw new Error('fail'); },
     });
-    // Dead PID on same host → excluded as stale.
+    // Stale heartbeat → excluded under the new liveness rule.
     expect(result).toHaveLength(0);
   });
 

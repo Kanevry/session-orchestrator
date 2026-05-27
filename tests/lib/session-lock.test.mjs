@@ -25,6 +25,8 @@ import {
   forceAcquire,
   release,
   checkStale,
+  isLockLive,
+  updateHeartbeat,
 } from '@lib/session-lock.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
@@ -472,5 +474,137 @@ describe('acquire() with exclusivity-matrix integration (P1.2 #570)', () => {
     expect(result.exclusivityClass).toBe('exclusive');
     expect(result.blockingSession.sessionId).toBe('first-exclusive-sess');
     expect(result.blockingSession.mode).toBe('housekeeping');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)
+// ---------------------------------------------------------------------------
+
+describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)', () => {
+  // L1: acquire() writes a lock with last_heartbeat == started_at initially.
+  it('L1: acquire() writes a lock with last_heartbeat === started_at', () => {
+    const result = acquire({ sessionId: 'sess-L1', mode: 'feature', repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(typeof result.lock.last_heartbeat).toBe('string');
+    expect(result.lock.last_heartbeat).toBe(result.lock.started_at);
+
+    // Persisted to disk identically.
+    const onDisk = readLock({ repoRoot });
+    expect(onDisk.last_heartbeat).toBe(onDisk.started_at);
+  });
+
+  // L2: updateHeartbeat() updates ONLY last_heartbeat, preserving other fields.
+  it('L2: updateHeartbeat() updates only last_heartbeat, preserving other fields', async () => {
+    acquire({ sessionId: 'sess-L2', mode: 'deep', repoRoot });
+    const before = readLock({ repoRoot });
+
+    // Yield long enough that nowIso() definitely advances.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const ok = updateHeartbeat({ sessionId: 'sess-L2', repoRoot });
+    expect(ok).toBe(true);
+
+    const after = readLock({ repoRoot });
+
+    // last_heartbeat advanced.
+    expect(after.last_heartbeat).not.toBe(before.last_heartbeat);
+    expect(Date.parse(after.last_heartbeat))
+      .toBeGreaterThanOrEqual(Date.parse(before.last_heartbeat));
+
+    // All OTHER fields preserved.
+    expect(after.session_id).toBe(before.session_id);
+    expect(after.started_at).toBe(before.started_at);
+    expect(after.mode).toBe(before.mode);
+    expect(after.pid).toBe(before.pid);
+    expect(after.host).toBe(before.host);
+    expect(after.ttl_hours).toBe(before.ttl_hours);
+  });
+
+  // L3: updateHeartbeat() refuses to update a lock owned by a different session_id.
+  it('L3: updateHeartbeat() refuses to update a lock owned by a different session_id', () => {
+    acquire({ sessionId: 'sess-L3-owner', mode: 'feature', repoRoot });
+    const before = readLock({ repoRoot });
+
+    const ok = updateHeartbeat({ sessionId: 'sess-L3-intruder', repoRoot });
+    expect(ok).toBe(false);
+
+    // Lock content unchanged — same heartbeat as before.
+    const after = readLock({ repoRoot });
+    expect(after.session_id).toBe('sess-L3-owner');
+    expect(after.last_heartbeat).toBe(before.last_heartbeat);
+  });
+
+  // L4: Old-schema lock (no last_heartbeat) is read with last_heartbeat == started_at.
+  it('L4: old-schema v1 lock (no last_heartbeat) is normalised with last_heartbeat = started_at', () => {
+    // Write a v1 lock manually (no last_heartbeat field).
+    const v1Lock = {
+      session_id: 'sess-L4',
+      started_at: '2026-05-27T11:04:39.516Z',
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+      // last_heartbeat intentionally absent — pre-#583 schema v1.
+    };
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(v1Lock) + '\n');
+
+    const lock = readLock({ repoRoot });
+    expect(lock).not.toBeNull();
+    expect(lock.last_heartbeat).toBe(lock.started_at);
+    expect(lock.started_at).toBe('2026-05-27T11:04:39.516Z');
+  });
+
+  // Bonus: isLockLive helper contract.
+  it('isLockLive: fresh heartbeat within ttl_hours returns true', () => {
+    const lock = {
+      session_id: 'x',
+      started_at: '2026-05-27T11:04:39.516Z',
+      last_heartbeat: new Date().toISOString(),
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    expect(isLockLive(lock)).toBe(true);
+  });
+
+  it('isLockLive: heartbeat older than ttl_hours returns false', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    const lock = {
+      session_id: 'x',
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    expect(isLockLive(lock)).toBe(false);
+  });
+
+  // semantic_session_id propagation: acquire() persists it when provided.
+  it('acquire() persists semantic_session_id when provided', () => {
+    const result = acquire({
+      sessionId: 'uuid-bcfa-1234-...',
+      semanticSessionId: 'main-2026-05-27-deep-5',
+      mode: 'deep',
+      repoRoot,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.semantic_session_id).toBe('main-2026-05-27-deep-5');
+    expect(readLock({ repoRoot }).semantic_session_id).toBe('main-2026-05-27-deep-5');
+  });
+
+  it('acquire() omits semantic_session_id when not provided', () => {
+    const result = acquire({ sessionId: 'sess-no-semantic', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.lock.semantic_session_id).toBeUndefined();
+    expect(readLock({ repoRoot }).semantic_session_id).toBeUndefined();
   });
 });

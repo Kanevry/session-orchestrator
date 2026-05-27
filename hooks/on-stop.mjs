@@ -27,6 +27,7 @@ import { appendJsonl } from '../scripts/lib/common.mjs';
 import { eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
+import { updateHeartbeat } from '../scripts/lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — no io.mjs because Stop hooks exit 0 always, never deny)
@@ -220,6 +221,14 @@ async function handleStop(input) {
       // Do NOT throw, do NOT write to stderr: the hook is informational-only.
       logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
+
+    // Epic #583 W5-F1c — refresh session.lock heartbeat on every turn-end.
+    // Augments PostToolBatch's heartbeat (closes W4-Q3 H2 cadence finding:
+    // a session with no PostToolBatch activity would otherwise go heartbeat-stale).
+    // Best-effort: never throws, never blocks the Stop hook.
+    try {
+      updateHeartbeat({ sessionId, repoRoot: projectRoot });
+    } catch { /* best-effort */ }
   }
 
   // duration_ms: if input provides a start time we compute from it, else 0
