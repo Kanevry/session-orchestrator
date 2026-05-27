@@ -54,6 +54,16 @@ function _resolveStateMdPath(repoRoot) {
  * Returns Infinity on unparseable input so callers treat malformed dates as
  * "very old" (safe-side: allow overwrite).
  *
+ * DIVERGENCE NOTE: `_ageHoursFrom` in peer-discovery.mjs returns undefined on
+ * unparseable input so callers can omit the ageHours field rather than emit a
+ * misleading number. This function returns Infinity instead — a fail-safe
+ * semantics: a malformed date is treated as "infinitely old/definitely-stale"
+ * which permits the overwrite rather than blocking on an indeterminate age.
+ * The divergence is intentional: peer-guard needs a conservative yes/no
+ * decision, so Infinity is the correct safe default; peer-discovery emits
+ * structured data, so undefined (field omission) is correct. Do NOT merge
+ * or unify these helpers.
+ *
  * @param {string|null|undefined} startedAt
  * @returns {number}  Hours elapsed (may be Infinity).
  */

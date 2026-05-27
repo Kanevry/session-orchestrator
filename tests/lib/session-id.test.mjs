@@ -274,6 +274,55 @@ describe('Group D — SEMANTIC_ID_RE and UUID_V4_RE regex validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Group D2 — AP2: parseSessionId strict-UUID rejection (#596)
+//
+// Verifies that the strict UUID_V4_RE (version nibble = '4', variant in
+// {8,9,a,b}) causes parseSessionId to return null for inputs that a LOOSE
+// pattern like /^[a-f0-9-]{36}$/i would wrongly accept.
+//
+// Note: the test-side assertion regex in tests/hooks/on-session-start.test.mjs
+// uses the looser [a-f0-9-]{36} alternative — the STRICT SUT validator is
+// UUID_V4_RE / parseSessionId here, which is the authoritative gate.
+//
+// Surviving mutation: if UUID_V4_RE is loosened to /^[a-f0-9-]{36}$/i the
+// '36 dashes' and non-v4 version-nibble cases below would wrongly return a
+// non-null result, causing expect(result).toBeNull() to FAIL — proving these
+// assertions are load-bearing against the strict validator.
+// ---------------------------------------------------------------------------
+
+describe('Group D2 — AP2: parseSessionId strict-UUID negative cases', () => {
+  it('returns null for 36 consecutive dashes (false-positive for loose /^[a-f0-9-]{36}$/i)', () => {
+    // A loose regex /^[a-f0-9-]{36}$/i would accept this because '-' is in its
+    // character class and total length is 36. UUID_V4_RE rejects it because the
+    // segment structure ([0-9a-f]{8}-…) is not satisfied.
+    const result = parseSessionId('-'.repeat(36));
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null for an empty string', () => {
+    const result = parseSessionId('');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null for a plaintext string that matches neither format', () => {
+    const result = parseSessionId('not a valid id!!');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null for a non-v4 UUID (version nibble = 1, not 4)', () => {
+    // UUID version nibble is the 13th character: '1' here vs required '4'.
+    // The strict UUID_V4_RE requires the third group to start with '4'.
+    // A loose /^[a-f0-9-]{36}$/i would wrongly accept this.
+    const result = parseSessionId('12345678-1234-1234-1234-123456789012');
+
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Group E — history-aware n-increment (#585): sessions.jsonl + STATE.md
 // ---------------------------------------------------------------------------
 

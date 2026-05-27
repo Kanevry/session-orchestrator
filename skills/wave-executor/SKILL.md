@@ -440,7 +440,7 @@ real failure is a regression vector. The fixer prompt should explicitly say:
 
 ### Heartbeat cadence at inter-wave checkpoints (#590-3)
 
-After each quality-gate PASS, the coordinator refreshes the session-lock heartbeat via the post-wave STATE.md step. See `wave-loop.md § 3a. Post-Wave: Update STATE.md` — step 5 contains the `updateHeartbeat` instruction and best-effort framing.
+After each quality-gate PASS, the coordinator refreshes the session-lock heartbeat via the post-wave STATE.md step. See `wave-loop.md § 3a. Post-Wave: Update STATE.md` — step 5 contains the `updateHeartbeat` instruction and best-effort framing. The `sessionId` passed to `updateHeartbeat` is the session identifier established by session-start Phase 1.2 `acquire()` and stored in `.orchestrator/session.lock` (its `session_id` field); it matches the STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
 
 ## Frontmatter-Guard (#328)
 

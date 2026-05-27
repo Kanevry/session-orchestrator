@@ -19,19 +19,15 @@
  *
  * Design (decided by coordinator — provenance-tagged flat list, shape (a)):
  *
- *   Each output entry carries a `source` of 'lock' | 'registry' | 'state-md'
- *   plus a sessionId. Callers inspect `source` to reason about which surface
+ *   Each output entry carries a `source` of 'discovered' | 'state-md' plus a
+ *   sessionId. Callers inspect `source` to reason about which surface
  *   independently flagged a peer (defense-in-depth).
  *
- *   Provenance heuristic for discoverActiveSessions entries — that function
- *   ALREADY dedupes lock + registry into a single shape, so the original
- *   surface cannot be cleanly re-split from the return value. We apply a
- *   best-effort heuristic: lock-sourced entries carry a real per-worktree
- *   path AND a live writer PID (`pid > 0`), whereas registry-sourced entries
- *   fall back to `worktreePath === repoRoot` and may default `pid` to 0 when
- *   the registry recorded none. Heuristic: `pid > 0` ⇒ 'lock', else 'registry'.
- *   This is documented as approximate — a registry entry that happens to carry
- *   a real pid will be tagged 'lock'. The tag is advisory provenance, not a
+ *   Provenance for discoverActiveSessions entries — that function ALREADY
+ *   dedupes lock + registry into one irreversible shape (identical 7-field
+ *   shapes, flattened). The lock vs registry distinction is NOT recoverable
+ *   from the return value, so all entries from this surface are tagged
+ *   'discovered' unconditionally. The tag is advisory provenance, not a
  *   security boundary.
  *
  *   Cross-source dedup is INTENTIONALLY NOT performed: if the STATE.md peer's
@@ -42,14 +38,9 @@
  *
  * Error semantics (load-bearing): findPeers NEVER throws. Each surface fails
  * open independently:
- *   - discoverActiveSessions rejects/throws  → contribute empty lock+registry list.
+ *   - discoverActiveSessions rejects/throws  → contribute empty discovered list.
  *   - checkPeerStateMd throws (it shouldn't)  → contribute no state-md entry.
  *   - Worst case returns `{ peers: [] }`.
- *
- * LIBRARY-ONLY: no callers are migrated here. Caller-migration (Phase 0.5 +
- * Phase 1.2.1) and the provenance-heuristic resolution are tracked in #594.
- * This module exists to be genuinely callable + exercised by tests with real
- * data flowing through both surfaces until that migration lands.
  *
  * @module peer-discovery
  */
@@ -58,14 +49,21 @@ import { discoverActiveSessions } from './session-discovery.mjs';
 import { checkPeerStateMd } from './state-md-peer-guard.mjs';
 
 /** Closed enum of provenance sources. */
-const SOURCE_LOCK = 'lock';
-const SOURCE_REGISTRY = 'registry';
+const SOURCE_DISCOVERED = 'discovered'; // lock + registry unified (irreversibly merged upstream)
 const SOURCE_STATE_MD = 'state-md';
 
 /**
  * Compute age in decimal hours from an ISO-8601 `startedAt` string to a `now`
  * reference (ms-since-epoch). Returns undefined when the input is unparseable
  * so callers can omit the field rather than emit a misleading number.
+ *
+ * DIVERGENCE NOTE: `_ageHoursFromStartedAt` in state-md-peer-guard.mjs returns
+ * Infinity on unparseable input (fail-safe: treat malformed date as "very old"
+ * → allow overwrite). This function returns undefined instead, so the caller
+ * can omit the ageHours field entirely rather than emitting a misleading number.
+ * The divergence is intentional: peer-discovery treats unparseable as
+ * "unknown/omit"; peer-guard treats it as "infinitely old/definitely-stale →
+ * fail-safe". Do NOT merge or unify these helpers.
  *
  * @param {string|null|undefined} startedAt
  * @param {number} nowMs
@@ -86,9 +84,9 @@ function _ageHoursFrom(startedAt, nowMs) {
  * @returns {object}
  */
 function _peerFromDiscovered(s, nowMs) {
-  // Provenance heuristic (see module header): a live writer PID is the most
-  // honest available signal that the entry came from a per-worktree lock.
-  const source = typeof s.pid === 'number' && s.pid > 0 ? SOURCE_LOCK : SOURCE_REGISTRY;
+  // Lock + registry are irreversibly merged by discoverActiveSessions — tag all
+  // entries 'discovered' unconditionally (see module header provenance note).
+  const source = SOURCE_DISCOVERED;
   const ageHours = _ageHoursFrom(s.startedAt, nowMs);
   const peer = {
     source,
@@ -117,10 +115,10 @@ function _peerFromDiscovered(s, nowMs) {
  *   `sessionId` + (when parseable) `ageHours`. The remaining fields are
  *   per-source — only the fields the originating surface can supply are emitted
  *   (no field is advertised that the implementation does not set):
- *     - source 'lock' | 'registry' (from discoverActiveSessions):
+ *     - source 'discovered' (from discoverActiveSessions — lock + registry unified):
  *         { source, sessionId, mode|null, host, pid, worktreePath, ageHours? }
  *     - source 'state-md' (from checkPeerStateMd):
- *         { source, sessionId, mode|null, currentWave, ageHours? }
+ *         { source, sessionId, mode|null, currentWave, reason, ageHours? }
  */
 export async function findPeers(repoRoot, opts = {}) {
   const nowMs = typeof opts.now === 'number' ? opts.now : Date.now();
@@ -159,7 +157,7 @@ export async function findPeers(repoRoot, opts = {}) {
   // appears above (intentional non-dedup-across-sources — provenance matters).
   // ------------------------------------------------------------------
   try {
-    const { peer } = checkPeerStateMd(repoRoot, mySessionId, {
+    const { peer, reason } = checkPeerStateMd(repoRoot, mySessionId, {
       maxAgeHours: opts.maxAgeHours,
     });
     if (peer && typeof peer.sessionId === 'string') {
@@ -168,6 +166,7 @@ export async function findPeers(repoRoot, opts = {}) {
         sessionId: peer.sessionId,
         mode: peer.mode ?? null,
         currentWave: peer.currentWave,
+        reason,
       };
       if (typeof peer.ageHours === 'number') entry.ageHours = peer.ageHours;
       peers.push(entry);

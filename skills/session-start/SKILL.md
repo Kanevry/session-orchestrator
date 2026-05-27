@@ -146,10 +146,13 @@ When `existingLock.host !== os.hostname()`, PID liveness cannot be checked (`pid
 After Phase 1.2 acquires (or confirms) the lock, call `checkPeerStateMd(repoRoot, sessionId)` from `scripts/lib/state-md-peer-guard.mjs`. This catches the rare case where lock-based detection missed an active peer (e.g., the peer's `session.lock` was force-deleted by an out-of-band sweep but STATE.md is still `status: active`, OR the peer's registry write succeeded but the lock-bootstrap hook crashed before the lock landed).
 
 ```javascript
-import { checkPeerStateMd } from '$PLUGIN_ROOT/scripts/lib/state-md-peer-guard.mjs';
-const { peer, reason } = checkPeerStateMd(process.cwd(), sessionId);
+import { findPeers } from '$PLUGIN_ROOT/scripts/lib/peer-discovery.mjs';
+const { peers } = await findPeers(process.cwd(), { mySessionId: sessionId });
+const peer = peers.find((p) => p.source === 'state-md') ?? null;
+// Phase 1.2.1 consumes only the 'state-md' subset (STATE.md surface only).
 if (peer) {
   // STATE.md is owned by an active peer — do NOT overwrite.
+  // peer.sessionId, peer.mode, peer.currentWave, peer.ageHours are populated.
   // Fire the Worktree-Promotion AUQ from parallel-aware-auq.md.
 }
 ```

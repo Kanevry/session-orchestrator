@@ -656,6 +656,9 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 
    ```js
    // Per-wave heartbeat refresh (#590-3) — keeps session.lock fresh during long deep sessions.
+   // sessionId = the session identifier established by session-start Phase 1.2 acquire()
+   //   and stored in .orchestrator/session.lock (session_id field); matches the
+   //   STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
    import { updateHeartbeat } from '../../scripts/lib/session-lock.mjs';
    updateHeartbeat({ sessionId, repoRoot: process.cwd() });
    ```

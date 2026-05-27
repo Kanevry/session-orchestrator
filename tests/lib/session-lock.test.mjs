@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import fs from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -815,5 +816,161 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
     expect(result.ok).toBe(true);
     expect(result.lock.semantic_session_id).toBeUndefined();
     expect(readLock({ repoRoot }).semantic_session_id).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #596 — fault-injection tests: MED-1a, MED-1b, MED-2
+//
+// These three tests verify the fs-error / EEXIST-vanish paths inside
+// createSessionLockExclusive (private) and the acquire() EEXIST-loser branch.
+// All reach the SUT via the exported acquire() on a fresh repoRoot.
+//
+// Spy technique: vi.spyOn on the DEFAULT-import `fs` binding (same binding the
+// SUT uses — `import fs from 'node:fs'`). This is proven to work by the
+// slopcheck tests (same default-import spy pattern, same vitest 4.x).
+// ---------------------------------------------------------------------------
+
+describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() vanish path', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // -------------------------------------------------------------------------
+  // MED-1a: linkSync throws a non-EEXIST error (EACCES) — must return fs-error.
+  //
+  // SUT path: createSessionLockExclusive (~L318-325) — after the tmp write,
+  //   `fs.linkSync(tmpFile, lockFile)` is called; `if (err.code === 'EEXIST')`
+  //   routes to `{reason:'exists'}`, any other code falls through to
+  //   `return { ok: false, reason: 'fs-error', error: err.message }`.
+  //   acquire() at L528-529 forwards: `return { ok:false, reason:'fs-error', ... }`.
+  //
+  // Surviving mutation killed:
+  //   Mutation A — `if (err.code === 'EEXIST')` → `if (true)` (mis-routes EACCES
+  //   as 'exists' instead of 'fs-error'): this test fails because result.reason
+  //   would be 'active' (from the re-read on 'exists') rather than 'fs-error'.
+  //   Mutation B — dropping the fs-error return (falls through to false {ok:true}):
+  //   result.ok would be true, failing expect(result.ok).toBe(false).
+  // -------------------------------------------------------------------------
+  it('MED-1a: linkSync non-EEXIST (EACCES) → acquire returns reason=fs-error, no throw', () => {
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementationOnce(() => {
+      const e = new Error('EACCES: permission denied, link');
+      e.code = 'EACCES';
+      throw e;
+    });
+
+    const result = acquire({ sessionId: 'sess-acces-fault', mode: 'feature', repoRoot });
+
+    // Must have intercepted linkSync (proves spy is wired).
+    expect(linkSpy).toHaveBeenCalled();
+
+    // Core assertions: the EACCES error must not be swallowed or mis-routed.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(typeof result.error).toBe('string');
+    expect(result.error.length).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // MED-1b: writeFileSync of the tmp file throws — must return fs-error.
+  //
+  // SUT path: createSessionLockExclusive (~L310-315) — `fs.writeFileSync` of the
+  //   tmp file (path contains `.session.lock.create.tmp.`); on throw → best-effort
+  //   unlink → `return { ok: false, reason: 'fs-error', error: err.message }`.
+  //   acquire() at L528-529 forwards the fs-error to the caller.
+  //
+  // The spy passes through all OTHER writeFileSync calls (e.g. mkdirSync uses
+  // open internally, not writeFileSync; but other tmp writes by the test harness
+  // must not be blocked). The original function is captured before mocking.
+  //
+  // Surviving mutation killed:
+  //   Mutation A — removing the try/catch around the tmp write (→ throws out of
+  //   acquire() instead of returning a structured result): expect(...).not.toThrow()
+  //   would catch the propagated throw.
+  //   Mutation B — `reason: 'fs-error'` → `reason: 'exists'` in the catch block:
+  //   result.reason would be 'exists', failing the toBe('fs-error') assertion.
+  // -------------------------------------------------------------------------
+  it('MED-1b: tmp-file writeFileSync throws ENOSPC → acquire returns reason=fs-error, no throw', () => {
+    const originalWrite = fs.writeFileSync.bind(fs);
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((p, ...rest) => {
+      if (typeof p === 'string' && p.includes('.session.lock.create.tmp.')) {
+        const e = new Error('ENOSPC: no space left on device, write');
+        e.code = 'ENOSPC';
+        throw e;
+      }
+      return originalWrite(p, ...rest);
+    });
+
+    const result = acquire({ sessionId: 'sess-nospc-fault', mode: 'feature', repoRoot });
+
+    // Spy must have been called with the tmp-file path (proves interception).
+    expect(writeSpy).toHaveBeenCalled();
+    const tmpCall = writeSpy.mock.calls.find(
+      (args) => typeof args[0] === 'string' && args[0].includes('.session.lock.create.tmp.'),
+    );
+    expect(tmpCall).not.toBeUndefined();
+
+    // Core assertions: structured failure, no propagated throw.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(typeof result.error).toBe('string');
+    expect(result.error.length).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // MED-2: EEXIST-loser + re-read returns null (winner's lock vanished) →
+  //         acquire returns { ok:false, reason:'active', existingLock:null }.
+  //
+  // SUT path (~L534-540):
+  //   - linkSync throws EEXIST → reason='exists' from createSessionLockExclusive
+  //   - acquire re-reads via readLock(); if null → returns
+  //     { ok:false, reason:'active', existingLock:null, exclusivityClass:... }
+  //
+  // Spy plan:
+  //   1. Force linkSync to ALWAYS throw EEXIST (so create-race loser path fires).
+  //   2. Force readFileSync to throw ENOENT for the lock path (so readLock → null).
+  //      Other readFileSync calls (e.g. package.json) must pass through.
+  //
+  // Surviving mutation killed (the documented MED-2 mutation):
+  //   Mutation A — `reason: 'active'` → `reason: 'fs-error'` on the vanish path:
+  //   result.reason would be 'fs-error', failing toBe('active').
+  //   Mutation B — `existingLock: null` → a stub object: result.existingLock
+  //   would not be null, failing toBeNull().
+  // -------------------------------------------------------------------------
+  it('MED-2: EEXIST-loser + re-read null (vanished lock) → reason=active, existingLock=null', () => {
+    // Capture originals before mocking so pass-through works.
+    const originalLink = fs.linkSync.bind(fs);
+    const originalRead = fs.readFileSync.bind(fs);
+
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((src, dest) => {
+      // Always throw EEXIST to simulate losing the create-race for the lock file.
+      if (typeof dest === 'string' && dest.includes('session.lock') && !dest.includes('.tmp.')) {
+        const e = new Error('EEXIST: file already exists, link');
+        e.code = 'EEXIST';
+        throw e;
+      }
+      return originalLink(src, dest);
+    });
+
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+      // Make the lock path unreadable so readLock() returns null (vanish path).
+      if (typeof p === 'string' && p.endsWith('session.lock')) {
+        const e = new Error('ENOENT: no such file or directory, open');
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return originalRead(p, ...rest);
+    });
+
+    const result = acquire({ sessionId: 'sess-vanish-race', mode: 'feature', repoRoot });
+
+    // Spies must have fired (proves interception).
+    expect(linkSpy).toHaveBeenCalled();
+    expect(readSpy).toHaveBeenCalled();
+
+    // Core assertions: the vanish path must conservatively report 'active' with null.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock).toBeNull();
   });
 });

@@ -486,6 +486,64 @@ describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
     // foreign-lock collision — no conflict signal is recorded.
     expect(readCurrentSession()).toBeNull();
   });
+
+  // MED-3 (#596): array-input guard test.
+  //
+  // The recordConflictSignal read-modify-write has the guard:
+  //   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  // This test seeds current-session.json as a top-level JSON array, then
+  // triggers the conflict path. It asserts the merged output is a clean OBJECT
+  // (not a numeric-keyed spread of the array) with the conflict fields intact.
+  //
+  // Surviving mutation: deleting the `!Array.isArray(parsed)` guard would cause
+  // the array to be spread into the merged object as numeric-keyed properties
+  // ('0', '1', ...). The assertions `expect(result).not.toHaveProperty('0')`
+  // and the clean conflict field checks would then FAIL — proving the guard is load-bearing.
+  it('MED-3: array-shaped current-session.json is rejected (not spread), conflict fields written cleanly', async () => {
+    // Seed current-session.json as a top-level JSON array — the guard must reject this.
+    const dir = join(sandbox, '.orchestrator');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'current-session.json'),
+      JSON.stringify(['x', 'y']),
+    );
+
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-6',
+      semanticSessionId: 'main-2026-05-27-deep-6',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({
+        ok: false,
+        reason: 'active',
+        existingLock: {
+          session_id: 'foreign-xyz',
+          started_at: '2026-05-27T11:00:00.000Z',
+          mode: 'deep',
+          pid: 88888,
+          host: 'test-host',
+          ttl_hours: 4,
+        },
+      })),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    const result = readCurrentSession();
+    expect(result).not.toBeNull();
+
+    // Conflict fields must be present with correct values.
+    expect(result.conflict_with_session_id).toBe('foreign-xyz');
+    expect(result.conflict_detected_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+    );
+
+    // The array was REJECTED by the guard — it must NOT have been spread into
+    // numeric-keyed properties. Deleting `!Array.isArray(parsed)` would cause
+    // these to appear and the assertions below would FAIL.
+    expect(result).not.toHaveProperty('0');
+    expect(result).not.toHaveProperty('1');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

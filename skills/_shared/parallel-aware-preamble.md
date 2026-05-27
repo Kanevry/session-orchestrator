@@ -34,10 +34,11 @@ The preamble passes through with zero AUQ regardless of other active sessions. R
 Execute these steps in order. Any classification determines outcome.
 
 ```
-1. Call discoverActiveSessions(repoRoot) from scripts/lib/session-discovery.mjs.
-   - Returns: Array<{worktreePath, sessionId, mode, startedAt, pid, host, branch}>
-   - 2-second timeout built-in. On timeout or git failure: A1 fallback (single-worktree mode).
-   - Empty array → no parallel context → PASS_THROUGH (continue immediately).
+1. Call findPeers(repoRoot, { mySessionId: callerSessionId }) from scripts/lib/peer-discovery.mjs.
+   - Returns: { peers: Array<{source, sessionId, mode, pid, host, worktreePath, ageHours?, currentWave?}> }
+   - Phase 0.5 consumes the non-'state-md' subset: peers.filter(p => p.source !== 'state-md').
+   - 2-second timeout built-in (via discoverActiveSessions). On timeout or git failure: A1 fallback (single-worktree mode).
+   - Empty active list → no parallel context → PASS_THROUGH (continue immediately).
 
 2. Classify the caller's mode via classifyMode(callerMode) from scripts/lib/exclusivity-matrix.mjs.
    - GOTCHA: classifyMode throws on unknown mode. Wrap in try/catch; on throw, default to 'parallel-ok' (most permissive default) and log a stderr WARN.
@@ -60,16 +61,19 @@ Execute these steps in order. Any classification determines outcome.
 ## Implementation (JavaScript reference)
 
 ```js
-import { discoverActiveSessions } from '../../scripts/lib/session-discovery.mjs';
+import { findPeers } from '../../scripts/lib/peer-discovery.mjs';
 import { classifyMode } from '../../scripts/lib/exclusivity-matrix.mjs';
 
 async function runParallelAwarePreamble({ repoRoot, callerMode, callerSessionId }) {
-  // Step 1: discover active sessions (with built-in 2s timeout fallback)
+  // Step 1: discover active sessions via unified findPeers (fail-open, never throws).
+  // Phase 0.5 consumes only the non-'state-md' subset (lock+registry surface).
+  // The 'state-md' subset is reserved for Phase 1.2.1 (peer-guard after lock acquire).
   let active;
   try {
-    active = await discoverActiveSessions(repoRoot);
+    const { peers } = await findPeers(repoRoot, { mySessionId: callerSessionId });
+    active = peers.filter((p) => p.source !== 'state-md');
   } catch (err) {
-    process.stderr.write(`[parallel-aware-preamble] WARN: discoverActiveSessions failed: ${err.message} — passing through (A1 fallback)\n`);
+    process.stderr.write(`[parallel-aware-preamble] WARN: findPeers failed: ${err.message} — passing through (A1 fallback)\n`);
     return { outcome: 'PASS_THROUGH', reason: 'discovery-error' };
   }
 
@@ -126,16 +130,16 @@ The skill consuming the preamble translates the outcome:
 
 ## Phase 1b Peer-Guard (defense-in-depth)
 
-After Phase 0.5 (parallel-aware preamble) and Phase 1.2 (session-lock acquire), session-start Phase 1b initializes STATE.md. Before overwriting, the guard from `scripts/lib/state-md-peer-guard.mjs:checkPeerStateMd()` MUST run.
+After Phase 0.5 (parallel-aware preamble) and Phase 1.2 (session-lock acquire), session-start Phase 1b initializes STATE.md. Before overwriting, the guard MUST run — via `findPeers(repoRoot, { mySessionId })` consuming the `state-md`-sourced subset (which delegates internally to `scripts/lib/state-md-peer-guard.mjs:checkPeerStateMd()`).
 
-If `checkPeerStateMd(repoRoot, sessionId)` returns `{peer: non-null}`, fire the Worktree-Promotion AUQ from `parallel-aware-auq.md`. This catches races where the preamble's lock-based detection missed an active peer (e.g., a session whose lock was force-deleted but STATE.md is still status:active).
+If `findPeers` yields a `state-md`-sourced peer (non-null), fire the Worktree-Promotion AUQ from `parallel-aware-auq.md`. This catches races where the preamble's lock-based detection missed an active peer (e.g., a session whose lock was force-deleted but STATE.md is still status:active).
 
 The guard is a SOFT-GATE — operator can override, but the warning is mandatory.
 
 ### Guard decision tree (for Phase 1b callers)
 
 ```
-checkPeerStateMd(repoRoot, mySessionId) →
+findPeers(repoRoot, { mySessionId }) → peer = peers.find((p) => p.source === 'state-md') →
   peer === null  →  safe to write STATE.md; continue Phase 1b normally.
   peer !== null  →  fire Promotion AUQ (parallel-aware-auq.md "Promotion" block).
                     On "Worktree anlegen": enterWorktree() → continue in sibling.
@@ -146,11 +150,13 @@ checkPeerStateMd(repoRoot, mySessionId) →
 ### Integration reference
 
 ```js
-import { checkPeerStateMd } from '../../scripts/lib/state-md-peer-guard.mjs';
+import { findPeers } from '../../scripts/lib/peer-discovery.mjs';
 
 // Inside Phase 1b, before writing STATE.md:
-const guard = checkPeerStateMd(repoRoot, sessionId);
-if (guard.peer !== null) {
+const { peers } = await findPeers(repoRoot, { mySessionId: sessionId });
+const peer = peers.find((p) => p.source === 'state-md') ?? null;
+// Phase 1.2.1 consumes only the 'state-md' subset (STATE.md surface only).
+if (peer !== null) {
   // peer.sessionId, peer.mode, peer.currentWave, peer.ageHours are populated.
   // Fire the Promotion AUQ — do NOT silently overwrite.
   // ... AUQ logic per parallel-aware-auq.md ...

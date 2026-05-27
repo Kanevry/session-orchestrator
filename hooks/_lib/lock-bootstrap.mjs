@@ -227,6 +227,16 @@ export async function bootstrapLock({
  * so the SessionStart hook stays non-blocking. The conflict signal is a forensic
  * breadcrumb, not a correctness requirement.
  *
+ * Lost-update window (Issue #596, deep-6 R2 MED — ACCEPTED): the read→merge→write
+ * is not lock-serialised. recordConflictSignal's only caller is the SessionStart hook
+ * (on-session-start.mjs), which runs it early — well before the slow detectPeers phase.
+ * That hook is async:true, so strict ordering vs the corrective_context/cwd_changes/
+ * last_batch writers (PostToolUse/CwdChanged/PostToolBatch) is not MECHANICALLY
+ * guaranteed; but in practice recordConflictSignal completes in a few ms, long before
+ * any tool-triggered hook can fire. Crucially, the conflict_* fields have zero readers
+ * (forensic-only), so even a lost update is harmless. The real anti-stomp guard is
+ * state.lock/PSA-005, not this advisory file.
+ *
  * @param {string} repoRoot — absolute path to the repository root.
  * @param {string} foreignSessionId — the session_id of the lock holder we collided with.
  */

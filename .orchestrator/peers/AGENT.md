@@ -25,6 +25,7 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - 5W×6A thin-slice epics with shipped substrate: W1 6 parallel Explore, W2 6 file-disjoint code-implementers, W3 typically reduces to 4 after W2 absorption, W4 test-writers + security-reviewer, W5 2-3 agents.
 - Inter-wave Quality-Lite gate after Impl-Core must include `npm test` when production fixes touch files with adjacent test files — typecheck+lint alone is insufficient.
 - When session-reviewer reports BLOCK at end of W2, add the fix as a new agent in W3 (Impl-Polish); do not restart W2.
+- Test-writers must verify both `npm test` (all tests pass) AND `npm run lint` (zero lint errors) before reporting done. Lint-only verification allows stylistic regressions to slip to Full Gate.
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -33,6 +34,7 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - W1 Discovery findings that warrant scope reduction or expansion must surface via AUQ before W2 dispatch.
 - When Discovery reveals the planned work was already shipped by a prior session, immediately reduce scope rather than re-implementing.
 - For sessions where issue bodies claim external submission status (e.g., "awesome-list"), W1 must web-fetch the upstream list to confirm current state before dispatching W2 work.
+- W1 agents must grep-verify all file-location claims and API-shape assumptions from the issue body before W2 scope takes shape. Pattern: issue claims "function X exported from module Y" → grep Y for the export; issue lists N callsites → grep the repo to verify only those N exist. Pre-dispatch verification catches mismatches (CLI-only vs importable, file renames, missing exports, SUT mis-attribution) before W2 wastes effort.
 <!-- END MANAGED: discovery-and-scope-adjustment -->
 
 <!-- BEGIN MANAGED: architecture-and-code-patterns -->

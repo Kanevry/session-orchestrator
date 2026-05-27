@@ -579,6 +579,9 @@ After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendat
 
 ```javascript
 import { release } from 'scripts/lib/session-lock.mjs';
+// sessionId = the session identifier established by session-start Phase 1.2 acquire()
+//   and stored in .orchestrator/session.lock (session_id field); matches the
+//   STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
 const result = release({ sessionId, repoRoot: process.cwd() });
 // result.ok is always true unless a filesystem error occurred.
 // result.deleted === true  → lock file removed successfully.
