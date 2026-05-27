@@ -24,11 +24,15 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-// Mock the three I/O dependencies BEFORE importing memory-banner so the
+// Mock the four I/O dependencies BEFORE importing memory-banner so the
 // mocks are wired up for renderMemoryBanner (Group G). The pure helpers
 // (Groups A–F) are unaffected — they take synthetic inputs directly.
-vi.mock('@lib/auto-dream.mjs', () => ({
+//
+// Issue #512: `resolveMemoryDir` was extracted to `memory-paths.mjs`.
+vi.mock('@lib/memory-paths.mjs', () => ({
   resolveMemoryDir: vi.fn(() => '/mocked/memory'),
+}));
+vi.mock('@lib/auto-dream.mjs', () => ({
   readDreamSignals: vi.fn(async () => ({ lastCleanupAt: null })),
 }));
 vi.mock('@lib/peer-cards/reader.mjs', () => ({
@@ -39,16 +43,17 @@ vi.mock('@lib/learnings/surface.mjs', () => ({
 }));
 
 import {
-  truncateLine,
-  formatLearningLine,
-  formatStatsLine,
-  extractCardExcerpt,
-  formatBanner,
+  _truncateLine,
+  _formatLearningLine,
+  _formatStatsLine,
+  _extractCardExcerpt,
+  _formatBanner,
   readBannerInputs,
   renderMemoryBanner,
 } from '@lib/memory-banner.mjs';
 
-import { resolveMemoryDir, readDreamSignals } from '@lib/auto-dream.mjs';
+import { resolveMemoryDir } from '@lib/memory-paths.mjs';
+import { readDreamSignals } from '@lib/auto-dream.mjs';
 import { readPeerCards } from '@lib/peer-cards/reader.mjs';
 import { surfaceTopN } from '@lib/learnings/surface.mjs';
 
@@ -70,47 +75,47 @@ afterEach(() => {
 // Group A — extractCardExcerpt
 // ---------------------------------------------------------------------------
 
-describe('extractCardExcerpt', () => {
+describe('_extractCardExcerpt', () => {
   it('returns [null, null] for an empty string body', () => {
-    expect(extractCardExcerpt('')).toEqual([null, null]);
+    expect(_extractCardExcerpt('')).toEqual([null, null]);
   });
 
   it('returns [null, null] for null input', () => {
-    expect(extractCardExcerpt(null)).toEqual([null, null]);
+    expect(_extractCardExcerpt(null)).toEqual([null, null]);
   });
 
   it('returns [null, null] for undefined input', () => {
-    expect(extractCardExcerpt(undefined)).toEqual([null, null]);
+    expect(_extractCardExcerpt(undefined)).toEqual([null, null]);
   });
 
   it('returns [null, firstNonBlank] when body has no "## " header', () => {
     const body = 'just some content\nsecond line';
-    expect(extractCardExcerpt(body)).toEqual([null, 'just some content']);
+    expect(_extractCardExcerpt(body)).toEqual([null, 'just some content']);
   });
 
   it('returns ["Section", "First content"] when body has header + content', () => {
     const body = '## Section\nFirst content';
-    expect(extractCardExcerpt(body)).toEqual(['Section', 'First content']);
+    expect(_extractCardExcerpt(body)).toEqual(['Section', 'First content']);
   });
 
   it('finds header when there are leading blank lines', () => {
     const body = '\n\n## Section\nFirst content';
-    expect(extractCardExcerpt(body)).toEqual(['Section', 'First content']);
+    expect(_extractCardExcerpt(body)).toEqual(['Section', 'First content']);
   });
 
   it('skips blank lines between header and content', () => {
     const body = '## Section\n\n\nFirst content';
-    expect(extractCardExcerpt(body)).toEqual(['Section', 'First content']);
+    expect(_extractCardExcerpt(body)).toEqual(['Section', 'First content']);
   });
 
   it('returns ["Section", null] when header has no following content', () => {
     const body = '## Section\n\n\n';
-    expect(extractCardExcerpt(body)).toEqual(['Section', null]);
+    expect(_extractCardExcerpt(body)).toEqual(['Section', null]);
   });
 
   it('strips leading whitespace from the first content line', () => {
     const body = '## Section\n    indented content';
-    expect(extractCardExcerpt(body)).toEqual(['Section', 'indented content']);
+    expect(_extractCardExcerpt(body)).toEqual(['Section', 'indented content']);
   });
 
   it('only matches "## " (h2), not "### " (h3) — h3 line becomes first content line', () => {
@@ -119,16 +124,16 @@ describe('extractCardExcerpt', () => {
     // fails. The line then falls into the content scan and is returned as the
     // first non-blank line (the skip-`## ` filter also rejects `### `).
     const body = '### subheader\nbody content';
-    expect(extractCardExcerpt(body)).toEqual([null, '### subheader']);
+    expect(_extractCardExcerpt(body)).toEqual([null, '### subheader']);
   });
 
   it('skips a subsequent ## header when searching for content', () => {
     const body = '## First Section\n## Second Section\nactual content';
-    expect(extractCardExcerpt(body)).toEqual(['First Section', 'actual content']);
+    expect(_extractCardExcerpt(body)).toEqual(['First Section', 'actual content']);
   });
 
   it('returns [null, null] for whitespace-only body', () => {
-    expect(extractCardExcerpt('   \n\n   \n')).toEqual([null, null]);
+    expect(_extractCardExcerpt('   \n\n   \n')).toEqual([null, null]);
   });
 });
 
@@ -136,45 +141,45 @@ describe('extractCardExcerpt', () => {
 // Group B — formatLearningLine
 // ---------------------------------------------------------------------------
 
-describe('formatLearningLine', () => {
+describe('_formatLearningLine', () => {
   it('formats a plain learning to the exact literal "  • x-y-z (0.9, pattern)"', () => {
-    expect(formatLearningLine({ subject: 'x-y-z', confidence: 0.9, type: 'pattern' }))
+    expect(_formatLearningLine({ subject: 'x-y-z', confidence: 0.9, type: 'pattern' }))
       .toBe('  • x-y-z (0.9, pattern)');
   });
 
   it('uses toFixed(1) which truncates 0.85 → "0.8" (banker rounding)', () => {
-    expect(formatLearningLine({ subject: 'x', confidence: 0.85, type: 'p' }))
+    expect(_formatLearningLine({ subject: 'x', confidence: 0.85, type: 'p' }))
       .toBe('  • x (0.8, p)');
   });
 
   it('uses toFixed(1) which rounds 0.95 → "0.9" (banker rounding)', () => {
-    expect(formatLearningLine({ subject: 'x', confidence: 0.95, type: 'p' }))
+    expect(_formatLearningLine({ subject: 'x', confidence: 0.95, type: 'p' }))
       .toBe('  • x (0.9, p)');
   });
 
   it('renders confidence=0 as "0.0"', () => {
-    expect(formatLearningLine({ subject: 'x', confidence: 0, type: 'p' }))
+    expect(_formatLearningLine({ subject: 'x', confidence: 0, type: 'p' }))
       .toBe('  • x (0.0, p)');
   });
 
   it('defaults non-numeric confidence to "0.0"', () => {
-    expect(formatLearningLine({ subject: 'x', confidence: 'nope', type: 'p' }))
+    expect(_formatLearningLine({ subject: 'x', confidence: 'nope', type: 'p' }))
       .toBe('  • x (0.0, p)');
   });
 
   it('defaults missing/empty type to "unknown"', () => {
-    expect(formatLearningLine({ subject: 'x', confidence: 0.5, type: '' }))
+    expect(_formatLearningLine({ subject: 'x', confidence: 0.5, type: '' }))
       .toBe('  • x (0.5, unknown)');
   });
 
   it('treats non-string subject as empty string', () => {
-    expect(formatLearningLine({ subject: 42, confidence: 0.5, type: 'p' }))
+    expect(_formatLearningLine({ subject: 42, confidence: 0.5, type: 'p' }))
       .toBe('  •  (0.5, p)');
   });
 
   it('truncates an over-long subject, keeping the (conf, type) suffix intact', () => {
     const long = 'a'.repeat(80);
-    const result = formatLearningLine({ subject: long, confidence: 0.9, type: 'pattern' });
+    const result = _formatLearningLine({ subject: long, confidence: 0.9, type: 'pattern' });
     // Suffix preserved at end
     expect(result.endsWith(' (0.9, pattern)')).toBe(true);
     // Total length ≤ 80
@@ -185,20 +190,20 @@ describe('formatLearningLine', () => {
 
   it('truncated long-subject result is exactly 80 chars wide', () => {
     const long = 'a'.repeat(80);
-    const result = formatLearningLine({ subject: long, confidence: 0.9, type: 'pattern' });
+    const result = _formatLearningLine({ subject: long, confidence: 0.9, type: 'pattern' });
     expect(result.length).toBe(80);
   });
 
   it('passes special-char subjects (quotes, brackets) through verbatim — banner is plain text', () => {
-    expect(formatLearningLine({ subject: 'a"b[c]', confidence: 0.5, type: 't' }))
+    expect(_formatLearningLine({ subject: 'a"b[c]', confidence: 0.5, type: 't' }))
       .toBe('  • a"b[c] (0.5, t)');
   });
 
   it('falls back to plain truncation when the suffix alone overshoots width', () => {
     // type='a'.repeat(70) makes the suffix ~78 chars → budget < 0 → fall back
-    // to truncateLine(naive). Result must be exactly 80 chars with ellipsis.
+    // to _truncateLine(naive). Result must be exactly 80 chars with ellipsis.
     const longType = 'a'.repeat(70);
-    const out = formatLearningLine({ subject: 'sub', confidence: 0.5, type: longType });
+    const out = _formatLearningLine({ subject: 'sub', confidence: 0.5, type: longType });
     expect(out.length).toBe(80);
     expect(out.endsWith('…')).toBe(true);
   });
@@ -209,7 +214,7 @@ describe('formatLearningLine', () => {
     // Place '📚' (surrogate pair) so its high-surrogate sits at index 65 (last
     // kept code unit) → defensive trim drops it.
     const subj = 'x'.repeat(65) + '📚' + 'y'.repeat(20);
-    const result = formatLearningLine({ subject: subj, confidence: 0.9, type: 'p' });
+    const result = _formatLearningLine({ subject: subj, confidence: 0.9, type: 'p' });
     // Suffix preserved
     expect(result.endsWith(' (0.9, p)')).toBe(true);
     // No orphan high-surrogate emitted
@@ -221,34 +226,34 @@ describe('formatLearningLine', () => {
 // Group C — formatStatsLine
 // ---------------------------------------------------------------------------
 
-describe('formatStatsLine', () => {
+describe('_formatStatsLine', () => {
   it('formats all-present stats to exact literal with "days ago" suffix', () => {
-    expect(formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: 3 }))
+    expect(_formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: 3 }))
       .toBe('12 memory files · 42 sessions ever · last cleanup 3 days ago');
   });
 
   it('renders "last cleanup: never" when daysSinceCleanup is null', () => {
-    expect(formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: null }))
+    expect(_formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: null }))
       .toBe('12 memory files · 42 sessions ever · last cleanup: never');
   });
 
   it('renders "last cleanup: never" when daysSinceCleanup is undefined', () => {
-    expect(formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: undefined }))
+    expect(_formatStatsLine({ memoryFiles: 12, sessionsEver: 42, daysSinceCleanup: undefined }))
       .toBe('12 memory files · 42 sessions ever · last cleanup: never');
   });
 
   it('renders all-zero values as exact literal', () => {
-    expect(formatStatsLine({ memoryFiles: 0, sessionsEver: 0, daysSinceCleanup: 0 }))
+    expect(_formatStatsLine({ memoryFiles: 0, sessionsEver: 0, daysSinceCleanup: 0 }))
       .toBe('0 memory files · 0 sessions ever · last cleanup 0 days ago');
   });
 
   it('defaults non-numeric memoryFiles to 0', () => {
-    expect(formatStatsLine({ memoryFiles: 'nope', sessionsEver: 5, daysSinceCleanup: 1 }))
+    expect(_formatStatsLine({ memoryFiles: 'nope', sessionsEver: 5, daysSinceCleanup: 1 }))
       .toBe('0 memory files · 5 sessions ever · last cleanup 1 days ago');
   });
 
   it('defaults non-numeric sessionsEver to 0', () => {
-    expect(formatStatsLine({ memoryFiles: 3, sessionsEver: null, daysSinceCleanup: null }))
+    expect(_formatStatsLine({ memoryFiles: 3, sessionsEver: null, daysSinceCleanup: null }))
       .toBe('3 memory files · 0 sessions ever · last cleanup: never');
   });
 });
@@ -257,20 +262,20 @@ describe('formatStatsLine', () => {
 // Group D — formatBanner
 // ---------------------------------------------------------------------------
 
-describe('formatBanner', () => {
+describe('_formatBanner', () => {
   it('AC-mandated EXACT fresh-repo fallback literal when fresh===true', () => {
-    expect(formatBanner({ fresh: true })).toBe(
+    expect(_formatBanner({ fresh: true })).toBe(
       "📚 Memory: 0 entries yet (first session). I'll start learning from this session forward.",
     );
   });
 
   it('fresh===true output has NO trailing newline', () => {
-    const result = formatBanner({ fresh: true });
+    const result = _formatBanner({ fresh: true });
     expect(result.endsWith('\n')).toBe(false);
   });
 
   it('fresh===true ignores every other input field (no learnings/stats/peers rendered)', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: true,
       topLearnings: [{ subject: 'x', confidence: 0.9, type: 'p' }],
       stats: { memoryFiles: 99, sessionsEver: 99, daysSinceCleanup: 99 },
@@ -282,15 +287,15 @@ describe('formatBanner', () => {
   });
 
   it('returns "" for null inputs', () => {
-    expect(formatBanner(null)).toBe('');
+    expect(_formatBanner(null)).toBe('');
   });
 
   it('returns "" for undefined inputs', () => {
-    expect(formatBanner(undefined)).toBe('');
+    expect(_formatBanner(undefined)).toBe('');
   });
 
   it('renders header + 5 learning lines + stats line + 2 peer excerpts', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [
         { subject: 'a', confidence: 0.9, type: 'p' },
@@ -320,7 +325,7 @@ describe('formatBanner', () => {
   });
 
   it('renders only N learning lines when topLearnings has N<5 entries', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [
         { subject: 'a', confidence: 0.9, type: 'p' },
@@ -340,7 +345,7 @@ describe('formatBanner', () => {
   });
 
   it('skips BOTH peer excerpts when both are null', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [],
       stats: { memoryFiles: 1, sessionsEver: 1, daysSinceCleanup: null },
@@ -355,7 +360,7 @@ describe('formatBanner', () => {
   });
 
   it('renders only USER.md line when only user excerpt is present', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [],
       stats: { memoryFiles: 1, sessionsEver: 1, daysSinceCleanup: null },
@@ -371,7 +376,7 @@ describe('formatBanner', () => {
   });
 
   it('renders only AGENT.md line when only agent excerpt is present', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [],
       stats: { memoryFiles: 1, sessionsEver: 1, daysSinceCleanup: null },
@@ -387,7 +392,7 @@ describe('formatBanner', () => {
   });
 
   it('skips stats line when inputs.stats is null', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [{ subject: 'x', confidence: 0.9, type: 'p' }],
       stats: null,
@@ -402,7 +407,7 @@ describe('formatBanner', () => {
   });
 
   it('skips entries that are not objects in topLearnings', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [
         null,
@@ -421,7 +426,7 @@ describe('formatBanner', () => {
   });
 
   it('renders peer line with section-only when content is null', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [],
       stats: null,
@@ -436,7 +441,7 @@ describe('formatBanner', () => {
   });
 
   it('renders peer line with content-only when section is null', () => {
-    const result = formatBanner({
+    const result = _formatBanner({
       fresh: false,
       topLearnings: [],
       stats: null,
@@ -455,7 +460,7 @@ describe('formatBanner', () => {
 // Group E — formatBanner snapshot stability (inline)
 // ---------------------------------------------------------------------------
 
-describe('formatBanner snapshot stability', () => {
+describe('_formatBanner snapshot stability', () => {
   it('renders a stable banner shape for a frozen synthetic input', () => {
     const inputs = {
       fresh: false,
@@ -470,7 +475,7 @@ describe('formatBanner snapshot stability', () => {
         agent: ['Style', 'Be terse and exact'],
       },
     };
-    expect(formatBanner(inputs)).toMatchInlineSnapshot(`
+    expect(_formatBanner(inputs)).toMatchInlineSnapshot(`
       "📚 Loaded from memory
         • count-drift-recurrence (0.9, pattern)
         • mock-leakage (0.7, pitfall)
@@ -486,41 +491,41 @@ describe('formatBanner snapshot stability', () => {
 // Group F — truncateLine
 // ---------------------------------------------------------------------------
 
-describe('truncateLine', () => {
+describe('_truncateLine', () => {
   it('returns short strings unchanged', () => {
-    expect(truncateLine('short', 80)).toBe('short');
+    expect(_truncateLine('short', 80)).toBe('short');
   });
 
   it('truncates a 100-char string to exactly 80 chars including the ellipsis', () => {
-    const out = truncateLine('x'.repeat(100), 80);
+    const out = _truncateLine('x'.repeat(100), 80);
     expect(out.length).toBe(80);
     expect(out.endsWith('…')).toBe(true);
   });
 
   it('returns empty string for empty input', () => {
-    expect(truncateLine('', 80)).toBe('');
+    expect(_truncateLine('', 80)).toBe('');
   });
 
   it('returns input unchanged when length === width', () => {
     const exact = 'x'.repeat(80);
-    expect(truncateLine(exact, 80)).toBe(exact);
+    expect(_truncateLine(exact, 80)).toBe(exact);
   });
 
   it('truncates to exactly width chars when input is longer than width by 1', () => {
-    const out = truncateLine('x'.repeat(81), 80);
+    const out = _truncateLine('x'.repeat(81), 80);
     expect(out.length).toBe(80);
     expect(out.endsWith('…')).toBe(true);
   });
 
   it('defaults to width=80 when called with a single argument', () => {
-    const out = truncateLine('y'.repeat(100));
+    const out = _truncateLine('y'.repeat(100));
     expect(out.length).toBe(80);
   });
 
   it('returns empty string for non-string input', () => {
-    expect(truncateLine(null)).toBe('');
-    expect(truncateLine(undefined)).toBe('');
-    expect(truncateLine(42)).toBe('');
+    expect(_truncateLine(null)).toBe('');
+    expect(_truncateLine(undefined)).toBe('');
+    expect(_truncateLine(42)).toBe('');
   });
 
   it('does not split a surrogate pair at the truncation boundary', () => {
@@ -528,7 +533,7 @@ describe('truncateLine', () => {
     // confirm the defensive surrogate trim drops the orphan.
     const prefix = 'a'.repeat(78);
     const input = prefix + '📚' + 'b'.repeat(20);
-    const out = truncateLine(input, 80);
+    const out = _truncateLine(input, 80);
     // The high-surrogate at position 79 would be orphaned; the trim drops it
     // so the result is `aaa…aaa` + `…` = 79 chars total (one shorter than width).
     expect(out.length).toBe(79);

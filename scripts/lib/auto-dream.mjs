@@ -11,6 +11,10 @@
  *   - memory-cleanup-soft-limit (default 180) — MEMORY.md line ceiling
  *   - kill-switch: threshold === 0 → never trigger
  *
+ * Proposal-emit min-confidence filter (issue #566) lives in
+ * `scripts/lib/memory-proposals/collector.mjs`, gated by Session Config key
+ * `auto-dream.min-confidence` (default 0.5). See session-end Phase 3.6.3.
+ *
  * No external deps — Node 20+ stdlib only.
  */
 
@@ -18,29 +22,6 @@ import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import os from 'node:os';
-
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the project-specific memory directory used by the Claude Code harness.
- *
- * Mirrors the harness convention: `~/.claude/projects/<encoded-cwd>/memory/`
- * where `<encoded-cwd>` is the cwd with BOTH `/` AND `.` replaced by `-`. The
- * dot replacement matters for users with a trailing-`.` in their home dir
- * (e.g. `/Users/bernhardg.`) — without it the resolved path diverges from
- * what the harness actually wrote.
- *
- * Verified empirically against `~/.claude/projects/` directory naming.
- *
- * @returns {string} Absolute path to the memory directory (not guaranteed to exist).
- */
-export function resolveMemoryDir() {
-  const encoded = process.cwd().replaceAll('/', '-').replaceAll('.', '-');
-  return path.join(os.homedir(), '.claude', 'projects', encoded, 'memory');
-}
 
 // ---------------------------------------------------------------------------
 // Signal reader — MEMORY.md size + sessions-since-last-cleanup
@@ -61,7 +42,7 @@ export function resolveMemoryDir() {
  *
  * @param {object} args
  * @param {string} args.repoRoot   Absolute path to the repo root.
- * @param {string} args.memoryDir  Absolute path to the memory dir (use resolveMemoryDir()).
+ * @param {string} args.memoryDir  Absolute path to the memory dir (use resolveMemoryDir() from './memory-paths.mjs').
  * @returns {Promise<{memoryLines:number, lastCleanupAt:string|null, sessionsSinceCleanup:number, sessionsFilePath:string}>}
  */
 export async function readDreamSignals({ repoRoot, memoryDir }) {

@@ -214,7 +214,7 @@ describe('memory-banner integration (#505)', () => {
 
       // Note: (0.85).toFixed(1) === "0.8" in V8 due to IEEE 754
       // representation of 0.85 as 0.8499999…; that is the documented
-      // formatLearningLine behaviour, not a test bug. The third 0.8 entry
+      // _formatLearningLine behaviour, not a test bug. The third 0.8 entry
       // also formats as "0.8", which is the intended floor behaviour
       // for two distinct confidences that share a one-decimal rendering.
       expect(banner).toMatchInlineSnapshot(`

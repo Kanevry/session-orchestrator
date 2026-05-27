@@ -366,5 +366,15 @@ describe('#22 — vault-mirror defaults propagate end-to-end', () => {
     expect(action.action).toBe('created');
     expect(action.path).toContain('40-learnings/');
     expect(existsSync(join(vaultDir, action.path))).toBe(true);
+
+    // The mirrored note must carry the fixture's insight verbatim — existsSync
+    // alone does not prove the file body contains the source learning. The
+    // insight string is pinned literally (matches the fixture above at the
+    // `insight:` field — a fixture edit must update this assertion too).
+    const mirrored = readFileSync(join(vaultDir, action.path), 'utf8');
+    expect(mirrored).toContain('Confidence 0.6 is above the 0.5 default.');
+    // Vault-mirror quality gate min-narrative-chars default is 400 — the
+    // file body must exceed that floor or the mirror would have been skipped.
+    expect(mirrored.length).toBeGreaterThan(400);
   });
 });

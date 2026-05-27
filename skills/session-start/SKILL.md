@@ -667,11 +667,11 @@ if (bannerText) {
 ### Implementation notes
 
 - All inputs are derived through `readBannerInputs()` in `scripts/lib/memory-banner.mjs`; the skill never reads JSONL directly — keeps the banner authoritative for output format.
-- Memory-file count = `*.md` files under the memory directory (resolved by `resolveMemoryDir()` from `auto-dream.mjs`). Sessions count = lines in `.orchestrator/metrics/sessions.jsonl`. `daysSinceCleanup` = floor((now - lastCleanupAt) / 86400000); `null` when never cleaned.
+- Memory-file count = `*.md` files under the memory directory (resolved by `resolveMemoryDir()` from `scripts/lib/memory-paths.mjs`, extracted from `auto-dream.mjs` in #512). Sessions count = lines in `.orchestrator/metrics/sessions.jsonl`. `daysSinceCleanup` = floor((now - lastCleanupAt) / 86400000); `null` when never cleaned.
 - Banner truncates subject and excerpt strings at ~80 visible chars (with `…`).
 - The banner NEVER exposes raw JSON; all values are pre-cleaned scalars.
 
-Cross-reference: PRD F2.3 acceptance criteria (#505); `scripts/lib/memory-banner.mjs` API (`renderMemoryBanner`, `readBannerInputs`, `formatBanner`, `extractCardExcerpt`).
+Cross-reference: PRD F2.3 acceptance criteria (#505); `scripts/lib/memory-banner.mjs` API (`renderMemoryBanner`, `readBannerInputs`; test-only exports `_formatBanner`, `_extractCardExcerpt` carry the `_`-prefix per #542 convention).
 
 ## Phase 7: Research (session type dependent)
 

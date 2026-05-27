@@ -55,6 +55,7 @@ import {
   loadVaultMigrationRules,
   VAULT_MIGRATION_RULES_PATH,
 } from './lib/vault-migration-rules.mjs';
+import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 
 const MARKER_REL = '.orchestrator/welcome-banner-pending';
 const ORCH_REL = '.orchestrator';
@@ -64,9 +65,36 @@ const SESSIONS_REL = '.orchestrator/metrics/sessions.jsonl';
 // Arg parsing
 // ---------------------------------------------------------------------------
 
-const args = process.argv.slice(2);
+// CLI parsing via the shared helper (#510). Migrated from the previous
+// ad-hoc args.includes()/knownFlags-Set pattern — same behaviour, single
+// source for unknown-flag rejection (exit 1) and `--json`/`--dry-run`/`--apply`
+// conventions. Per-script semantics (mutex check, --repos comma-split done
+// at the use site) remain in this file.
+let parsedFlags;
+try {
+  parsedFlags = parseColumnFlags({
+    knownBool: {
+      apply: false,
+      'dry-run': false,
+      json: false,
+      help: { short: 'h', default: false },
+    },
+    knownString: { repos: null },
+  });
+} catch (err) {
+  if (err instanceof CliFlagError) {
+    // Preserve the legacy "unknown flag" prose (the prior knownFlags-Set
+    // implementation used that wording; tests at
+    // tests/scripts/migrate-cold-start-seed.test.mjs assert against it).
+    // node:util parseArgs emits "Unknown option '--foo'" — map to legacy.
+    const legacy = err.message.replace(/^Unknown option/, 'unknown flag');
+    process.stderr.write(`migrate-cold-start-seed: ${legacy}\n`);
+    process.exit(1);
+  }
+  throw err;
+}
 
-const helpFlag = args.includes('--help') || args.includes('-h');
+const helpFlag = parsedFlags.values.help === true;
 if (helpFlag) {
   process.stderr.write(`Usage: migrate-cold-start-seed.mjs [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
 
@@ -106,9 +134,9 @@ Exit codes:  0 success  1 input error  2 I/O error
   process.exit(0);
 }
 
-const applyFlag = args.includes('--apply');
-const dryRunFlag = args.includes('--dry-run');
-const jsonFlag = args.includes('--json');
+const applyFlag = parsedFlags.values.apply === true;
+const dryRunFlag = parsedFlags.values['dry-run'] === true;
+const jsonFlag = parsedFlags.values.json === true;
 
 if (applyFlag && dryRunFlag) {
   process.stderr.write('migrate-cold-start-seed: --dry-run and --apply are mutually exclusive\n');
@@ -118,23 +146,10 @@ if (applyFlag && dryRunFlag) {
 // Default is dry-run (matches scripts/migrate-learnings-jsonl.mjs convention).
 const dryRun = !applyFlag;
 
-const reposIdx = args.indexOf('--repos');
-const reposArg =
-  reposIdx !== -1 && args[reposIdx + 1] ? args[reposIdx + 1] : null;
-
-// Detect unknown flags after consuming known ones.
-const knownFlags = new Set(['--dry-run', '--apply', '--json', '--help', '-h', '--repos']);
-for (let i = 0; i < args.length; i++) {
-  const a = args[i];
-  if (a === '--repos') {
-    i++; // skip the value
-    continue;
-  }
-  if (a.startsWith('-') && !knownFlags.has(a)) {
-    process.stderr.write(`migrate-cold-start-seed: unknown flag: ${a}\n`);
-    process.exit(1);
-  }
-}
+// `--repos` is kept as the raw comma-separated string here (split later, at
+// the use site below). Preserves the legacy "null when omitted" contract that
+// downstream branches depend on.
+const reposArg = parsedFlags.values.repos ?? null;
 
 // ---------------------------------------------------------------------------
 // Helpers

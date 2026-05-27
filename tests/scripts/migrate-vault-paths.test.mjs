@@ -376,16 +376,17 @@ describe('migrate-vault-paths — classification', () => {
 
     const result = runScript(['--repos', repo, '--json']);
 
-    const lines = result.stdout.trim().split('\n').filter(Boolean);
-    const hit = lines.find((l) => {
-      try {
-        const rec = JSON.parse(l);
-        return rec.classification === 'vault-dir-drift';
-      } catch {
-        return false;
-      }
-    });
-    expect(hit).toBeTruthy();
+    const records = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const hits = records.filter((r) => r.classification === 'vault-dir-drift');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ classification: 'vault-dir-drift' });
+    expect(hits[0].file).toContain('CLAUDE.md');
+    // Symmetric no-leak guard — a vault-dir: line must NOT also be classified as path-drift.
+    expect(records.some((r) => r.classification === 'path-drift')).toBe(false);
   });
 
   it('classifies a non-vault-dir reference as path-drift', () => {
@@ -394,15 +395,16 @@ describe('migrate-vault-paths — classification', () => {
 
     const result = runScript(['--repos', repo, '--json']);
 
-    const lines = result.stdout.trim().split('\n').filter(Boolean);
-    const hit = lines.find((l) => {
-      try {
-        const rec = JSON.parse(l);
-        return rec.classification === 'path-drift';
-      } catch {
-        return false;
-      }
-    });
-    expect(hit).toBeTruthy();
+    const records = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const hits = records.filter((r) => r.classification === 'path-drift');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ classification: 'path-drift' });
+    expect(hits[0].file).toContain('STATE.md');
+    // Symmetric no-leak guard — a non-vault-dir reference must NOT be classified as vault-dir-drift.
+    expect(records.some((r) => r.classification === 'vault-dir-drift')).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import {
   finalizeState,
 } from './telemetry.mjs';
 import { durableCommit } from './durable-telemetry.mjs';
+import { SO_STATE_DIR } from '../platform.mjs';
 
 // Internal clamp — mirrors flags.mjs internal; not re-exported there.
 function clampNumber(value, { min, max, fallback }) {
@@ -301,15 +302,16 @@ export async function runLoop(opts = {}) {
   // Normal loop exit: a nested session ran, so sessions.jsonl + STATE.md now exist
   // alongside autopilot.jsonl. Commit all three per ADR 0003:32 mandate (#490) so the
   // full telemetry triple survives ephemeral-clone reclamation in cloud execution.
-  // NOTE: '.claude/STATE.md' here is the clone-relative path — autopilot commits the
-  // worktree's own copy. session-end Phase 3.7b resolves the host <state-dir> instead;
-  // the two durableCommit owners' path forms intentionally differ (#490 / ADR-0009).
+  // NOTE: `${SO_STATE_DIR}/STATE.md` is the clone-relative path (platform-resolved) —
+  // autopilot commits the worktree's own copy. session-end Phase 3.7b resolves the host
+  // <state-dir> instead; the two durableCommit owners' path forms intentionally differ
+  // (#490 / ADR-0009).
   await durableCommit({
     sessionId: state.autopilot_run_id,
     files: [
       jsonlPath.replace(process.cwd() + '/', ''),
       '.orchestrator/metrics/sessions.jsonl',
-      '.claude/STATE.md',
+      `${SO_STATE_DIR}/STATE.md`,
     ],
     enabled: false,
   });

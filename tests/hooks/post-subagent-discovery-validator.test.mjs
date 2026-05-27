@@ -317,4 +317,69 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // (a) Multi-violation count: 2 distinct distributional-claim patterns in
+  // the same transcript (NEITHER with adjacent grep) → both flagged via the
+  // multi-violation loop at hook:305-313.
+  // -------------------------------------------------------------------------
+
+  it('ENABLED + two distinct bare claims → two violation events appended', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const claim1 = '4 of 4 callers opt-in to the helper.';
+    const claim2 = 'no remaining references to the old API.';
+    const transcript = writeTranscript([
+      [
+        claim1,
+        '',
+        'Some narrative prose without any grep verification.',
+        '',
+        claim2,
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(2);
+    expect(events[0].claim_text).toBe(claim1);
+    expect(events[1].claim_text).toBe(claim2);
+  });
+
+  // -------------------------------------------------------------------------
+  // (b) TAIL_RECORDS=8 boundary: 10 assistant records — a bare claim in
+  // record #1 (outside the last-8 window → NOT scanned) and a bare claim in
+  // the last record (in-window → flagged). Only the in-window claim appears
+  // in events.jsonl.
+  // -------------------------------------------------------------------------
+
+  it('ENABLED + 10-record transcript: only claims inside last-8 records are flagged', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const outOfWindowClaim = '100% of call sites use the legacy pattern.';
+    const inWindowClaim = 'every caller imports the shared module.';
+    // 10 assistant records: index 0 has the out-of-window claim, indices 1..8
+    // are filler (no claims), index 9 has the in-window claim. The hook scans
+    // .slice(-8) → indices 2..9. Record 0 (and 1) must be excluded.
+    const blocks = [
+      outOfWindowClaim,                 // index 0 — outside last-8
+      'Filler narrative record one.',   // index 1 — outside last-8
+      'Filler narrative record two.',   // index 2
+      'Filler narrative record three.', // index 3
+      'Filler narrative record four.',  // index 4
+      'Filler narrative record five.',  // index 5
+      'Filler narrative record six.',   // index 6
+      'Filler narrative record seven.', // index 7
+      'Filler narrative record eight.', // index 8
+      inWindowClaim,                    // index 9 — in last-8 window
+    ];
+    const transcript = writeTranscript(blocks);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe(inWindowClaim);
+  });
 });

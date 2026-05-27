@@ -90,10 +90,8 @@ async function isHostBannerEnabled(projectRoot) {
 /**
  * Read `cold-start.*` block from Session Config with PRD defaults applied.
  *
- * Preferred path: `parseSessionConfig(md)['cold-start']` once I6 wires the
- * `cold-start` parser into `scripts/lib/config.mjs`. Until then this helper
- * falls back to a tolerant regex scan of the Session Config block so the
- * cold-start nudge ships before the config schema is extended.
+ * Uses `parseSessionConfig(md)['cold-start']` (wired via I6). Any parse
+ * failure returns defaults so the cold-start nudge is never blocked.
  *
  * All keys are optional. Returns:
  *   { enabled: boolean, 'nudge-after-hours': number, 'silence-after-sessions': number }
@@ -108,9 +106,6 @@ async function readColdStartConfig(projectRoot) {
     'silence-after-sessions': 1,
   };
 
-  // 1) Try the structured parser first — picks up `cold-start:` block
-  //    once I6 wires it in. parseSessionConfig() may throw on enum
-  //    violations elsewhere; swallow + fall through to regex below.
   try {
     const md = await readConfigFile(projectRoot);
     try {
@@ -129,41 +124,11 @@ async function readColdStartConfig(projectRoot) {
               : defaults['silence-after-sessions'],
         };
       }
-    } catch { /* fall through to tolerant regex */ }
-
-    // 2) Tolerant fallback — same shape as peerWarnThreshold(). Looks for
-    //    a flat `cold-start.<key>: <value>` form OR a `cold-start:` block
-    //    with indented `<key>: <value>` lines. Both shapes pass parse-config
-    //    drift-check; neither is required.
-    const enabledFlat = md.match(/^\s*cold-start\.enabled:\s*(true|false)\b/im);
-    const nudgeFlat = md.match(/^\s*cold-start\.nudge-after-hours:\s*(\d+)\b/im);
-    const silenceFlat = md.match(/^\s*cold-start\.silence-after-sessions:\s*(\d+)\b/im);
-
-    // Block form: capture the cold-start: ... block then scan inside.
-    // Match until the next non-indented line (a new top-level key) or end
-    // of file. JS regex has no \Z; the alternation `^\S|$(?![\s\S])` covers
-    // both terminators under the /m flag.
-    const blockMatch = md.match(/^\s*cold-start:\s*$([\s\S]*?)(?=^\S|$(?![\s\S]))/im);
-    const blockBody = blockMatch ? blockMatch[1] : '';
-
-    const enabledBlock = blockBody.match(/^\s+enabled:\s*(true|false)\b/im);
-    const nudgeBlock = blockBody.match(/^\s+nudge-after-hours:\s*(\d+)\b/im);
-    const silenceBlock = blockBody.match(/^\s+silence-after-sessions:\s*(\d+)\b/im);
-
-    const enabledRaw = (enabledFlat || enabledBlock)?.[1];
-    const nudgeRaw = (nudgeFlat || nudgeBlock)?.[1];
-    const silenceRaw = (silenceFlat || silenceBlock)?.[1];
-
-    return {
-      enabled: enabledRaw ? enabledRaw.toLowerCase() === 'true' : defaults.enabled,
-      'nudge-after-hours': nudgeRaw ? parseInt(nudgeRaw, 10) : defaults['nudge-after-hours'],
-      'silence-after-sessions': silenceRaw
-        ? parseInt(silenceRaw, 10)
-        : defaults['silence-after-sessions'],
-    };
+    } catch { return defaults; }
   } catch {
     return defaults;
   }
+  return defaults;
 }
 
 /**

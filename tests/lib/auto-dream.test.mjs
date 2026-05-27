@@ -2,8 +2,11 @@
  * tests/lib/auto-dream.test.mjs
  *
  * Unit tests for scripts/lib/auto-dream.mjs (Issue #502, PRD F2.2).
- * Covers: resolveMemoryDir, readDreamSignals, shouldDispatchAutoDream,
- * writePendingDream, readPendingDream, applyPendingDream.
+ * Covers: readDreamSignals, shouldDispatchAutoDream, writePendingDream,
+ * readPendingDream, applyPendingDream.
+ *
+ * Note: `resolveMemoryDir` was extracted to `scripts/lib/memory-paths.mjs`
+ * in Issue #512; its tests live in `tests/lib/memory-paths.test.mjs`.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -12,7 +15,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-  resolveMemoryDir,
   readDreamSignals,
   shouldDispatchAutoDream,
   writePendingDream,
@@ -66,33 +68,6 @@ function makeFakeRepo({ memoryLines = 0, sessions = [] } = {}) {
   }
   return { repoRoot, memoryDir, sessionsPath, memoryPath };
 }
-
-// ---------------------------------------------------------------------------
-// resolveMemoryDir — JSDoc contract: replace BOTH '/' AND '.' with '-'
-// ---------------------------------------------------------------------------
-
-describe('resolveMemoryDir', () => {
-  it('encodes trailing-dot in cwd as "-" not "."', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue('/Users/bernhardg.');
-    const dir = resolveMemoryDir();
-    // The encoded segment must contain '-Users-bernhardg-' and NOT '-Users-bernhardg.'
-    expect(dir).toContain('-Users-bernhardg-');
-    expect(dir).not.toContain('-Users-bernhardg.');
-  });
-
-  it('replaces both slashes and dots in cwd path', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue('/Users/x/project.git');
-    const dir = resolveMemoryDir();
-    expect(dir).toContain('-Users-x-project-git');
-    expect(dir).not.toContain('/Users/x/project.git');
-  });
-
-  it('returns a path ending in "/memory"', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue('/tmp/foo');
-    const dir = resolveMemoryDir();
-    expect(dir.endsWith('/memory')).toBe(true);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // readDreamSignals

@@ -1,7 +1,7 @@
 # ADR 0009: Worktree Path-Layouts — Two Functions, Two Layouts, No Unification
 
 > Status: Accepted · session main-2026-05-27-deep-3 · issues #574 #580
-> Source: `scripts/lib/autopilot/worktree-pipeline.mjs` JSDoc + module-level comment (lines 1-15, 437-605); `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling; `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 layout requirement.
+> Source: `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment + `enterWorktree()` / `setupWorktree()`; `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling; `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 layout requirement.
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context
@@ -32,7 +32,7 @@ This seam divergence is intentional. Forcing a single seam across the async and 
 - Making the sync helpers async (introducing `await` into steps that the session-end and memory-cleanup coordinators rely on being synchronous), or
 - Making the async functions synchronous (breaking the zx-based git call model and the lazy-import isolation that Pipeline 3848 commit 1347c7a established to prevent `vi.mock` routing failures).
 
-The module-level JSDoc in `worktree-pipeline.mjs` (lines 1-15) explicitly documents this: *"The seams are kept divergent on purpose — forcing a single seam would break the sync/async boundary. Do NOT unify."*
+The module-header comment in `worktree-pipeline.mjs` (§ DI seam #580-DI-001) explicitly documents this: *"The seams are kept divergent on purpose — forcing a single seam would break the sync/async boundary. Do NOT unify."*
 
 ## Decision
 
@@ -75,7 +75,7 @@ The `opts.$` / `opts.execFileFn` seam split is preserved as the canonical patter
 
 - Issue #574 — P3.1 Worktree-Auto-Promotion (`enterWorktree()` + sibling-flat layout)
 - Issue #580 — follow-up audit; #580-DI-001 seam-divergence documentation
-- `scripts/lib/autopilot/worktree-pipeline.mjs` module-level JSDoc (lines 1-15) and `enterWorktree()` JSDoc (lines 442-482)
+- `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment and `enterWorktree()` JSDoc
 - `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling
 - `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 layout requirement (Gherkin row-1)
 - `scripts/lib/session-end/worktree-cleanup.mjs` — `detectAutoPromotedWorktree()` (consumes sibling-flat naming contract)

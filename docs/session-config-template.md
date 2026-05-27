@@ -244,6 +244,17 @@ Agents invoke via `SO_WAVE_AGENT=1 node scripts/memory-propose.mjs …`. The `SO
 
 Read by: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
 
+## Auto-Dream Proposal Filter (#566)
+
+Collect-emit confidence floor applied at session-end Phase 3.6.3 by `collectProposals()` (`scripts/lib/memory-proposals/collector.mjs`). This is a SECOND gate above the write-time `memory.proposals.confidence-floor` enforced by `scripts/memory-propose.mjs`: the per-record write-floor runs first when an agent calls the CLI; the collect-emit floor here filters what surfaces to the operator's AUQ at session-end. Issue #566.
+
+```yaml
+auto-dream:
+  min-confidence: 0.5                  # float 0.0..1.0 — collect-emit floor for proposals surfaced to AUQ
+```
+
+Read by: `scripts/lib/config/auto-dream.mjs` (parser), `scripts/lib/memory-proposals/collector.mjs` (filter applied at session-end Phase 3.6.3 inside `collectProposals()`).
+
 ## STATE.md Lock
 
 Mechanical write-lock around STATE.md to prevent race conditions between parallel worker sessions writing the same file (PRD gsd Pattern 1 / issue #518). When enabled, `withStateMdLock(fn)` acquires `.orchestrator/state.lock` before invoking `fn` and releases on completion or throw. Stale-lock override via PID-liveness mirrors the existing `session.lock` design.
@@ -570,6 +581,10 @@ memory:
     enabled: true                # PRD F2.1 (#501) — agent-writable memory tool (memory.propose CLI + session-end AUQ)
     quota-per-wave: 5            # max proposals one agent can queue per wave (exit 1 / quota-exceeded when exceeded)
     confidence-floor: 0.5        # proposals below this are rejected (exit 2 / rejected-low-confidence)
+
+# Auto-Dream proposal filter (#566) — SECOND gate above memory.proposals.confidence-floor
+auto-dream:
+  min-confidence: 0.5            # collect-emit floor applied by collectProposals() at session-end Phase 3.6.3
 
 # STATE.md lock (PRD gsd Pattern 1 / #518)
 state-md-lock:

@@ -233,7 +233,20 @@ function accumulateSummaryStats(summaries) {
  * per-wave summary JSONs, aggregate into a structured payload.
  *
  * @param {object} args
- * @param {string} args.repoRoot  Absolute path to the repo root.
+ * @param {string} args.repoRoot      Absolute path to the repo root.
+ * @param {number|null} [args.minConfidence=null]
+ *   Optional collect-emit confidence floor (issue #566). When a finite number
+ *   is supplied, records with `record.confidence < minConfidence` are dropped
+ *   from the returned `queue` BEFORE the function returns. When `null`,
+ *   `undefined`, or non-numeric, no filtering is applied (back-compat).
+ *
+ *   This is a SECOND gate above the write-time
+ *   `memory.proposals.confidence-floor` enforced by
+ *   `scripts/memory-propose.mjs` — the per-record write-floor runs first,
+ *   then the collect-emit floor here filters what surfaces to the operator's
+ *   AUQ at session-end Phase 3.6.3. `stats` reflect the full intake (not
+ *   post-filter) because they are accumulated from the per-wave summaries,
+ *   not from the returned queue.
  * @returns {Promise<{
  *   queue: object[],
  *   stats: {
@@ -246,7 +259,7 @@ function accumulateSummaryStats(summaries) {
  *   perWaveSummaries: Record<string, object>,
  * }>}
  */
-export async function collectProposals({ repoRoot }) {
+export async function collectProposals({ repoRoot, minConfidence = null }) {
   // Short-circuit: if proposals.jsonl doesn't exist, nothing was ever queued.
   const jsonlPath = proposalsJsonlPath(repoRoot);
   if (!existsSync(jsonlPath)) {
@@ -265,7 +278,7 @@ export async function collectProposals({ repoRoot }) {
 
   // Extract results, treating rejections as empty/no-op (should not happen
   // since both functions catch internally, but guard defensively).
-  const queue = queueResult.status === 'fulfilled' ? queueResult.value : [];
+  let queue = queueResult.status === 'fulfilled' ? queueResult.value : [];
   const summaries =
     perWaveSummaries.status === 'fulfilled' ? perWaveSummaries.value : {};
 
@@ -298,6 +311,20 @@ export async function collectProposals({ repoRoot }) {
     // File became unreadable between the two reads — treat as 0 parse errors.
   }
   stats.parse_errors = parseErrors;
+
+  // Collect-emit confidence filter (issue #566). Applies AFTER parse_errors
+  // is computed against the raw-line count, so parse_errors stays anchored to
+  // what the file actually contains. The filter only affects what the
+  // coordinator surfaces to the operator AUQ; stats reflect the full intake.
+  if (typeof minConfidence === 'number' && Number.isFinite(minConfidence)) {
+    queue = queue.filter((record) => {
+      const c = record && typeof record.confidence === 'number' ? record.confidence : null;
+      // Records with no confidence field (or NaN) are kept — the gate only
+      // drops records that actively report a confidence below the floor.
+      if (c === null || !Number.isFinite(c)) return true;
+      return c >= minConfidence;
+    });
+  }
 
   return {
     queue,

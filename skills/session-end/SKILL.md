@@ -373,12 +373,19 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 #### Coordinator-direct procedure
 
-1. Read Session Config: `memory.proposals.enabled` (default `true`), `memory.proposals.quota-per-wave` (default 5), `memory.proposals.confidence-floor` (default 0.5).
+1. Read Session Config: `memory.proposals.enabled` (default `true`), `memory.proposals.quota-per-wave` (default 5), `memory.proposals.confidence-floor` (default 0.5), `auto-dream.min-confidence` (default 0.5 — issue #566; SECOND gate above the write-time `memory.proposals.confidence-floor`).
 
-2. Invoke `collectProposals` from `scripts/lib/memory-proposals/collector.mjs`:
+2. Invoke `collectProposals` from `scripts/lib/memory-proposals/collector.mjs`, passing the collect-emit confidence floor from Session Config:
    ```javascript
    import { collectProposals } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/collector.mjs';
-   const { queue, stats, perWaveSummaries } = await collectProposals({ repoRoot: process.cwd() });
+   const { queue, stats, perWaveSummaries } = await collectProposals({
+     repoRoot: process.cwd(),
+     // Issue #566: collect-emit confidence floor. Records with
+     // `record.confidence < minConfidence` are dropped from `queue` (but
+     // counted in stats). When the key is absent, defaults to 0.5 via the
+     // `_parseAutoDream` parser.
+     minConfidence: config['auto-dream']?.['min-confidence'],
+   });
    ```
 
 3. If `queue.length === 0`: log `memory-proposals: queue empty (stats: ${JSON.stringify(stats)})` and continue.
@@ -440,7 +447,8 @@ After learnings are written (Phase 3.6), determine whether to dispatch a `/memor
 2. Invoke `shouldDispatchAutoDream` from `scripts/lib/auto-dream.mjs`:
 
    ```javascript
-   import { shouldDispatchAutoDream, resolveMemoryDir } from '${PLUGIN_ROOT}/scripts/lib/auto-dream.mjs';
+   import { shouldDispatchAutoDream } from '${PLUGIN_ROOT}/scripts/lib/auto-dream.mjs';
+   import { resolveMemoryDir } from '${PLUGIN_ROOT}/scripts/lib/memory-paths.mjs';
    const memoryDir = resolveMemoryDir();
    const decision = await shouldDispatchAutoDream({
      repoRoot: process.cwd(),

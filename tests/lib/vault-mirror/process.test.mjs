@@ -111,7 +111,9 @@ describe('emitAction', () => {
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/40-learnings/my-learning.md';
-    const { lines } = captureStdout(() => emitAction('created', filePath, 'learning', 'my-id', vaultDir));
+    const { lines } = captureStdout(() =>
+      emitAction({ action: 'created', path: filePath, kind: 'learning', id: 'my-id', vaultDir }),
+    );
     expect(lines).toHaveLength(1);
     expect(lines[0].action).toBe('created');
     expect(lines[0].kind).toBe('learning');
@@ -127,7 +129,9 @@ describe('emitAction', () => {
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/50-sessions/session.md';
-    const { lines } = captureStdout(() => emitAction('created', filePath, 'session', 'sess-id', vaultDir));
+    const { lines } = captureStdout(() =>
+      emitAction({ action: 'created', path: filePath, kind: 'session', id: 'sess-id', vaultDir }),
+    );
     expect(lines[0].path).toBe('50-sessions/session.md');
   });
 });

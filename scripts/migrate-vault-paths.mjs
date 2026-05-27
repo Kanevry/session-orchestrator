@@ -56,6 +56,7 @@ import {
   loadVaultMigrationRules,
   VAULT_MIGRATION_RULES_PATH,
 } from './lib/vault-migration-rules.mjs';
+import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -109,65 +110,75 @@ function isHistorical(filePath) {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = argv.slice(2);
-  const out = {
-    help: false,
-    apply: false,
-    json: false,
-    repos: null, // null = use config defaults / auto-discover
-    from: null,  // null = read from config
-    to: null,    // null = read from config
-  };
-
-  // Mutex tracking: --dry-run and --apply share the same `apply` field;
-  // detect when both are passed and fail loudly (silent last-wins is a
-  // dangerous footgun — see GitLab #509). Mirrors the canonical pattern in
-  // scripts/migrate-cold-start-seed.mjs:113-116.
-  let applyFlag = false;
-  let dryRunFlag = false;
-
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--help' || a === '-h') out.help = true;
-    else if (a === '--apply') { out.apply = true; applyFlag = true; }
-    else if (a === '--dry-run') { out.apply = false; dryRunFlag = true; }
-    else if (a === '--json') out.json = true;
-    else if (a === '--repos') {
-      const next = args[i + 1];
-      if (!next || next.startsWith('--')) {
-        process.stderr.write('migrate-vault-paths: --repos requires a comma-separated list\n');
-        process.exit(1);
-      }
-      out.repos = next.split(',').map((s) => s.trim()).filter(Boolean);
-      i++;
-    } else if (a === '--from') {
-      const next = args[i + 1];
-      if (!next || next.startsWith('--')) {
-        process.stderr.write('migrate-vault-paths: --from requires a literal source segment\n');
-        process.exit(1);
-      }
-      out.from = next;
-      i++;
-    } else if (a === '--to') {
-      const next = args[i + 1];
-      if (!next || next.startsWith('--')) {
-        process.stderr.write('migrate-vault-paths: --to requires a literal target segment\n');
-        process.exit(1);
-      }
-      out.to = next;
-      i++;
-    } else {
-      process.stderr.write(`migrate-vault-paths: unknown argument: ${a}\n`);
+  // Migrated to scripts/lib/cli-flags.mjs (#510). Per-script semantics
+  // (mutex check, --repos comma-split, "next arg starts with --" guards)
+  // remain here; the helper owns argv tokenisation + unknown-flag rejection.
+  //
+  // Note: `node:util` parseArgs strict mode already rejects "--from --to"
+  // patterns by treating `--to` as the missing-value for `--from` (the prior
+  // hand-rolled check covered the same case, with a different error message).
+  let parsedFlags;
+  try {
+    parsedFlags = parseColumnFlags({
+      argv: argv.slice(2),
+      knownBool: {
+        help: { short: 'h', default: false },
+        apply: false,
+        'dry-run': false,
+        json: false,
+      },
+      knownString: {
+        repos: null, // raw comma-separated string; split below
+        from: null,
+        to: null,
+      },
+    });
+  } catch (err) {
+    if (err instanceof CliFlagError) {
+      // Preserve legacy prose so the existing test contracts at
+      // tests/scripts/migrate-vault-paths.test.mjs ("unknown argument",
+      // "--repos requires") keep passing — same exit-1 behaviour, same
+      // user-visible message shape, helper owns the actual parsing.
+      const legacy = err.message
+        .replace(/^Unknown option/, 'unknown argument')
+        .replace(/^Option '--repos <value>' argument missing$/, '--repos requires a comma-separated list')
+        .replace(/^Option '--from <value>' argument missing$/, '--from requires a literal source segment')
+        .replace(/^Option '--to <value>' argument missing$/, '--to requires a literal target segment');
+      process.stderr.write(`migrate-vault-paths: ${legacy}\n`);
       process.exit(1);
     }
+    throw err;
   }
 
+  const values = parsedFlags.values;
+
+  // Mutex check: --dry-run and --apply on the same invocation is the
+  // canonical footgun (issue #509). Preserved verbatim.
+  const applyFlag = values.apply === true;
+  const dryRunFlag = values['dry-run'] === true;
   if (applyFlag && dryRunFlag) {
     process.stderr.write('migrate-vault-paths: --dry-run and --apply are mutually exclusive\n');
     process.exit(1);
   }
 
-  return out;
+  // Split --repos into a string[] at the use site, preserving the prior shape
+  // contract (the downstream code at main() iterates opts.repos as an array).
+  let repos = null;
+  if (values.repos !== undefined && values.repos !== null) {
+    repos = values.repos
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  return {
+    help: values.help === true,
+    apply: applyFlag, // --dry-run leaves this false (matches the prior shape)
+    json: values.json === true,
+    repos,
+    from: values.from ?? null,
+    to: values.to ?? null,
+  };
 }
 
 function printHelp() {

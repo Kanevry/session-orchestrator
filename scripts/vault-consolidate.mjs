@@ -80,9 +80,9 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { parseArgs } from 'node:util';
 
 import { die, utcTimestamp } from './lib/common.mjs';
+import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 
 const SCRIPT_NAME = 'vault-consolidate';
 const DEFAULT_SOURCE = '~/Projects/vault';
@@ -141,23 +141,26 @@ Exit codes:
 
 let parsed;
 try {
-  parsed = parseArgs({
-    options: {
-      'dry-run': { type: 'boolean', default: false },
-      apply: { type: 'boolean', default: false },
-      source: { type: 'string' },
-      canonical: { type: 'string' },
-      json: { type: 'boolean', default: false },
-      resolve: { type: 'string', multiple: true, default: [] },
-      help: { type: 'boolean', short: 'h', default: false },
+  parsed = parseColumnFlags({
+    knownBool: {
+      'dry-run': false,
+      apply: false,
+      json: false,
+      help: { short: 'h', default: false },
     },
-    allowPositionals: false,
-    strict: true,
+    knownString: {
+      source: null,
+      canonical: null,
+      resolve: { multiple: true, default: [] },
+    },
   });
 } catch (err) {
-  process.stderr.write(`${SCRIPT_NAME}: ${err.message}\n\n`);
-  printHelp();
-  process.exit(1);
+  if (err instanceof CliFlagError) {
+    process.stderr.write(`${SCRIPT_NAME}: ${err.message}\n\n`);
+    printHelp();
+    process.exit(1);
+  }
+  throw err;
 }
 
 if (parsed.values.help) {

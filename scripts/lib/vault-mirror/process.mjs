@@ -52,27 +52,34 @@ export function deriveRepo() {
 /**
  * Emit a JSON action line to stdout.
  *
- * @param {string} action — action name (e.g. 'created', 'updated', 'skipped-quality-low')
- * @param {string|null} filePath — absolute path to the file (or null when no file
+ * Takes a single self-documenting options object (issue #511). `emitAction` is a
+ * module-level export (independently unit-tested), so `vaultDir` is carried as a
+ * named option field rather than pulled from a closure — both callers
+ * (processLearning, processSession) destructure it from their own `ctx` and pass
+ * it through.
+ *
+ * @param {object} opts
+ * @param {string} opts.action — action name (e.g. 'created', 'updated', 'skipped-quality-low')
+ * @param {string|null} opts.path — absolute path to the file (or null when no file
  *   was created/touched, e.g. for quality-gate skips before any write)
- * @param {string} fileKind — 'learning' or 'session'
- * @param {string|null} id — entry id
- * @param {string} vaultDir — vault root (used to relativise filePath)
- * @param {object} [meta] — optional extra fields merged into the emitted JSON
- *   (used for quality-gate skips to carry a `reason` field). Backward-compatible:
- *   callers that omit `meta` get the original JSON shape unchanged.
+ * @param {string} opts.kind — 'learning' or 'session'
+ * @param {string|null} opts.id — entry id
+ * @param {string} opts.vaultDir — vault root (used to relativise `path`)
+ * @param {object} [opts.meta] — optional extra fields merged into the emitted JSON
+ *   (used for quality-gate skips to carry a `reason` field). Callers that omit
+ *   `meta` get the base JSON shape unchanged.
  */
-export function emitAction(action, filePath, fileKind, id, vaultDir, meta) {
+export function emitAction({ action, path, kind, id, vaultDir, meta }) {
   let rel;
-  if (filePath === null || filePath === undefined) {
+  if (path === null || path === undefined) {
     rel = null;
   } else {
     const resolvedVaultDir = resolve(vaultDir);
-    rel = filePath.startsWith(resolvedVaultDir)
-      ? filePath.slice(resolvedVaultDir.length + 1)
-      : filePath;
+    rel = path.startsWith(resolvedVaultDir)
+      ? path.slice(resolvedVaultDir.length + 1)
+      : path;
   }
-  const payload = { action, path: rel, kind: fileKind, id };
+  const payload = { action, path: rel, kind, id };
   if (meta && typeof meta === 'object') {
     Object.assign(payload, meta);
   }
@@ -120,14 +127,14 @@ export async function processLearning(entry, _lineNum, ctx) {
   // Missing/non-numeric confidence is treated as 1.0 (legacy entries pass).
   const learningConfidence = typeof entry.confidence === 'number' ? entry.confidence : 1.0;
   if (learningConfidence < qualityMinConfidence) {
-    emitAction(
-      'skipped-quality-low',
-      null,
+    emitAction({
+      action: 'skipped-quality-low',
+      path: null,
       kind,
-      entryId,
+      id: entryId,
       vaultDir,
-      { reason: `confidence:${learningConfidence} < min:${qualityMinConfidence}` },
-    );
+      meta: { reason: `confidence:${learningConfidence} < min:${qualityMinConfidence}` },
+    });
     return;
   }
 
@@ -143,14 +150,14 @@ export async function processLearning(entry, _lineNum, ctx) {
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
       process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
-      emitAction('skipped-handwritten', targetPath, kind, entryId, vaultDir);
+      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
       return;
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
       // Different generator — treat as hand-written to be safe
       process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
-      emitAction('skipped-handwritten', targetPath, kind, entryId, vaultDir);
+      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
       return;
     }
 
@@ -166,41 +173,41 @@ export async function processLearning(entry, _lineNum, ctx) {
         const disambigFm = parseFrontmatter(disambigContent);
         if (!disambigFm || !disambigFm['_generator']) {
           process.stderr.write(`SKIP hand-written (disambig): ${targetPath}\n`);
-          emitAction('skipped-handwritten', targetPath, kind, entryId, vaultDir);
+          emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
           return;
         }
         // Check updated advancement
         const entryUpdated = toDate(dateSource);
         if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
-          emitAction('skipped-noop', targetPath, kind, disambigSlug, vaultDir);
+          emitAction({ action: 'skipped-noop', path: targetPath, kind, id: disambigSlug, vaultDir });
           return;
         }
       }
 
       const content = generator(entry, slug);
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-      emitAction('skipped-collision-resolved', targetPath, kind, slug, vaultDir);
+      emitAction({ action: 'skipped-collision-resolved', path: targetPath, kind, id: slug, vaultDir });
       return;
     }
 
     // Same id: check if updated would advance (unless --force overrides)
     const entryUpdated = toDate(dateSource);
     if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-      emitAction('skipped-noop', targetPath, kind, slug, vaultDir);
+      emitAction({ action: 'skipped-noop', path: targetPath, kind, id: slug, vaultDir });
       return;
     }
 
     // Overwrite with advanced updated date (or forced re-render)
     const content = generator(entry, slug);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-    emitAction('updated', targetPath, kind, slug, vaultDir);
+    emitAction({ action: 'updated', path: targetPath, kind, id: slug, vaultDir });
     return;
   }
 
   // File does not exist — create
   const content = generator(entry, slug);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-  emitAction('created', targetPath, kind, slug, vaultDir);
+  emitAction({ action: 'created', path: targetPath, kind, id: slug, vaultDir });
 }
 
 export async function processSession(entry, _lineNum, ctx) {
@@ -251,14 +258,14 @@ export async function processSession(entry, _lineNum, ctx) {
   const narrativeBody = renderedBody.replace(/^---[\s\S]*?---/m, '').trim();
   const narrativeChars = narrativeBody.length;
   if (narrativeChars < qualityMinNarrativeChars) {
-    emitAction(
-      'skipped-quality-low',
-      null,
+    emitAction({
+      action: 'skipped-quality-low',
+      path: null,
       kind,
-      session_id,
+      id: session_id,
       vaultDir,
-      { reason: `narrative:${narrativeChars} < min:${qualityMinNarrativeChars}` },
-    );
+      meta: { reason: `narrative:${narrativeChars} < min:${qualityMinNarrativeChars}` },
+    });
     return;
   }
 
@@ -279,13 +286,13 @@ export async function processSession(entry, _lineNum, ctx) {
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
       process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
-      emitAction('skipped-handwritten', targetPath, kind, session_id, vaultDir);
+      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: session_id, vaultDir });
       return;
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
       process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
-      emitAction('skipped-handwritten', targetPath, kind, session_id, vaultDir);
+      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: session_id, vaultDir });
       return;
     }
 
@@ -293,11 +300,11 @@ export async function processSession(entry, _lineNum, ctx) {
     if (fm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
       if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-        emitAction('skipped-noop', targetPath, kind, session_id, vaultDir);
+        emitAction({ action: 'skipped-noop', path: targetPath, kind, id: session_id, vaultDir });
         return;
       }
       if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-      emitAction('updated', targetPath, kind, session_id, vaultDir);
+      emitAction({ action: 'updated', path: targetPath, kind, id: session_id, vaultDir });
       return;
     }
   }
@@ -305,5 +312,5 @@ export async function processSession(entry, _lineNum, ctx) {
   // File does not exist — create. Reuse the rendered body computed during the
   // quality-gate check (avoids a second generator invocation).
   if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-  emitAction('created', targetPath, kind, session_id, vaultDir);
+  emitAction({ action: 'created', path: targetPath, kind, id: session_id, vaultDir });
 }

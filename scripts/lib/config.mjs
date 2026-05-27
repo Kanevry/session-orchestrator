@@ -49,6 +49,7 @@ import { _parseCrossRepo } from './config/cross-repo.mjs';
 import { _parsePersonaGateWave } from './config/persona-gate-wave.mjs';
 import { _parseVaultMirrorQuality } from './config/vault-mirror-quality.mjs';
 import { _parseColdStart } from './config/cold-start.mjs';
+import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
@@ -241,6 +242,11 @@ export function parseSessionConfig(mdContent) {
   // cold-start: parsed from full content (PRD F1.3 / issue #500)
   const coldStart = _parseColdStart(mdContent);
 
+  // auto-dream: parsed from full content (issue #566). The `min-confidence`
+  // field is consumed by `collectProposals()` at session-end Phase 3.6.3 as a
+  // SECOND confidence gate above `memory.proposals.confidence-floor`.
+  const autoDream = _parseAutoDream(mdContent);
+
   // state-md-lock: parsed from full content (PRD gsd Pattern 1 / issues #517, #518)
   const stateMdLock = _parseStateMdLock(mdContent);
 
@@ -345,6 +351,7 @@ export function parseSessionConfig(mdContent) {
     'vault-integration': vaultIntegration,
     'vault-mirror': vaultMirror,
     'cold-start': coldStart,
+    'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'slopcheck': slopcheck,
     'discovery-validator': discoveryValidator,

@@ -155,7 +155,19 @@ describe('detectColdStart — emit decisions', () => {
     expect(result.markerPath).toBe(repoPath(WELCOME_MARKER_REL));
     expect(result.reason).toBe('migration-marker-present');
     expect(Array.isArray(result.bannerLines)).toBe(true);
-    expect(result.bannerLines.length).toBeGreaterThan(0);
+    // Pin to the exact operator-facing headline emitted by buildBannerLines()
+    // (cold-start-detector.mjs:67). Generic length/regex checks let a banner
+    // rewrite silently break the operator-visible string.
+    expect(result.bannerLines).toContain(
+      "📚 First session not yet — your repo is set up but the orchestrator hasn't run anything yet."
+    );
+    // Bootstrap-timestamp tail (cold-start-detector.mjs:63-65) only appears when
+    // bootstrappedAt is non-null — the marker branch passes it through.
+    expect(result.bannerLines).toContain('Bootstrap completed: ' + HOURS_AGO(48));
+    // Try-line is the operator's call-to-action — pin it so a wording drift fails.
+    expect(result.bannerLines).toContain(
+      'Try: `/session housekeeping`  ← 3-5 minutes, low-risk warm-up'
+    );
   });
 
   it('emits with markerPath undefined when marker file is absent', async () => {

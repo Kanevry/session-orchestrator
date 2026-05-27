@@ -2,7 +2,7 @@
  * memory-banner.mjs — Phase 6.7 "What I Remembered" banner renderer (issue #505).
  *
  * Produces the session-start banner string the caller (session-start Phase 6.7)
- * then prints. Pure-ish: only `readBannerInputs` does I/O; `formatBanner` and
+ * then prints. Pure-ish: only `readBannerInputs` does I/O; `_formatBanner` and
  * the helpers are deterministic and unit-testable on their own.
  *
  * Behavioural contract (issue #505 AC):
@@ -23,7 +23,8 @@ import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { resolveMemoryDir, readDreamSignals } from './auto-dream.mjs';
+import { resolveMemoryDir } from './memory-paths.mjs';
+import { readDreamSignals } from './auto-dream.mjs';
 import { readPeerCards } from './peer-cards/reader.mjs';
 import { surfaceTopN } from './learnings/surface.mjs';
 
@@ -61,7 +62,7 @@ const FRESH_LINE =
  * @param {number} [width=MAX_LINE_WIDTH]
  * @returns {string}
  */
-export function truncateLine(line, width = MAX_LINE_WIDTH) {
+export function _truncateLine(line, width = MAX_LINE_WIDTH) {
   if (typeof line !== 'string') return '';
   if (line.length <= width) return line;
   let cut = line.slice(0, width - 1);
@@ -83,7 +84,7 @@ export function truncateLine(line, width = MAX_LINE_WIDTH) {
  * @param {{subject: string, confidence: number, type: string}} learning
  * @returns {string}
  */
-export function formatLearningLine({ subject, confidence, type }) {
+export function _formatLearningLine({ subject, confidence, type }) {
   const subj = typeof subject === 'string' ? subject : '';
   const conf =
     typeof confidence === 'number' && Number.isFinite(confidence)
@@ -103,7 +104,7 @@ export function formatLearningLine({ subject, confidence, type }) {
   const budget = MAX_LINE_WIDTH - prefix.length - suffix.length - 1;
   if (budget <= 0) {
     // Suffix alone overshoots — fall back to plain truncation.
-    return truncateLine(naive);
+    return _truncateLine(naive);
   }
   let trimmed = subj.slice(0, budget);
   // Defensive: avoid orphan high-surrogate at the tail.
@@ -121,7 +122,7 @@ export function formatLearningLine({ subject, confidence, type }) {
  * @param {{memoryFiles: number, sessionsEver: number, daysSinceCleanup: number|null}} stats
  * @returns {string}
  */
-export function formatStatsLine({ memoryFiles, sessionsEver, daysSinceCleanup }) {
+export function _formatStatsLine({ memoryFiles, sessionsEver, daysSinceCleanup }) {
   const mf = Number.isFinite(memoryFiles) ? memoryFiles : 0;
   const se = Number.isFinite(sessionsEver) ? sessionsEver : 0;
   const cleanup =
@@ -129,7 +130,7 @@ export function formatStatsLine({ memoryFiles, sessionsEver, daysSinceCleanup })
       ? 'last cleanup: never'
       : `last cleanup ${daysSinceCleanup} days ago`;
   const line = `${mf} memory files · ${se} sessions ever · ${cleanup}`;
-  return truncateLine(line);
+  return _truncateLine(line);
 }
 
 /**
@@ -144,7 +145,7 @@ export function formatStatsLine({ memoryFiles, sessionsEver, daysSinceCleanup })
  * @param {string|null|undefined} cardBody
  * @returns {[string|null, string|null]}
  */
-export function extractCardExcerpt(cardBody) {
+export function _extractCardExcerpt(cardBody) {
   if (typeof cardBody !== 'string' || cardBody.length === 0) return [null, null];
 
   const lines = cardBody.split('\n');
@@ -203,7 +204,7 @@ function formatPeerExcerptLine(label, excerpt) {
     // !section && content
     line = `  ${label} — ${content}`;
   }
-  return truncateLine(line);
+  return _truncateLine(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +226,7 @@ function formatPeerExcerptLine(label, excerpt) {
  * @param {boolean} inputs.fresh
  * @returns {string}
  */
-export function formatBanner(inputs) {
+export function _formatBanner(inputs) {
   if (!inputs || typeof inputs !== 'object') return '';
 
   if (inputs.fresh === true) {
@@ -237,11 +238,11 @@ export function formatBanner(inputs) {
   const topLearnings = Array.isArray(inputs.topLearnings) ? inputs.topLearnings : [];
   for (const learning of topLearnings) {
     if (!learning || typeof learning !== 'object') continue;
-    lines.push(formatLearningLine(learning));
+    lines.push(_formatLearningLine(learning));
   }
 
   if (inputs.stats && typeof inputs.stats === 'object') {
-    lines.push(formatStatsLine(inputs.stats));
+    lines.push(_formatStatsLine(inputs.stats));
   }
 
   const peers = inputs.peerExcerpts ?? {};
@@ -389,11 +390,11 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
     const cards = await readPeerCards(repoRoot, { now: clock });
     const userExcerpt =
       cards?.user && typeof cards.user.body === 'string'
-        ? extractCardExcerpt(cards.user.body)
+        ? _extractCardExcerpt(cards.user.body)
         : null;
     const agentExcerpt =
       cards?.agent && typeof cards.agent.body === 'string'
-        ? extractCardExcerpt(cards.agent.body)
+        ? _extractCardExcerpt(cards.agent.body)
         : null;
 
     // Normalize [null, null] tuples to null so the formatter can simply
@@ -457,5 +458,5 @@ export async function renderMemoryBanner(opts = {}) {
   }
 
   const inputs = await readBannerInputs({ repoRoot, memoryDir, now });
-  return formatBanner(inputs);
+  return _formatBanner(inputs);
 }

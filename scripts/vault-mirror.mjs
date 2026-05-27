@@ -55,18 +55,56 @@ import { createReadStream } from 'node:fs';
 
 import { processLearning, processSession } from './lib/vault-mirror/process.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
+import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
+//
+// Migrated to scripts/lib/cli-flags.mjs (#510). Behaviour changes vs prior
+// hand-rolled getArg() parser:
+//   - Unknown flags now exit 1 instead of being SILENTLY IGNORED. This is an
+//     intentional uniform reject policy per #510 — grep-verified that no
+//     current caller passes unknown flags (3 invocation sites: session-end
+//     Phase 1, evolve Phase, vault-mirror SKILL examples; all use known flags
+//     only). See W2 STATUS for the grep evidence.
+// Behaviour explicitly preserved:
+//   - Wet-run is the DEFAULT (omitting --dry-run → live write). This script
+//     stays divergent from the other 3 migration scripts on purpose; flipping
+//     it to dry-run-default would break every existing invocation in
+//     skills/session-end/, skills/evolve/, and skills/vault-mirror/.
+//   - --help / -h prints to stdout and exits 0 BEFORE any required-flag check.
+//   - Int/float coercion for --quality-min-* (strict — string input → exit 1).
 
-const args = process.argv.slice(2);
-
-function getArg(name) {
-  const idx = args.indexOf(name);
-  return idx !== -1 ? args[idx + 1] : undefined;
+let parsedFlags;
+try {
+  parsedFlags = parseColumnFlags({
+    knownBool: {
+      help: { short: 'h', default: false },
+      'dry-run': false,
+      'strict-schema': false,
+      'no-commit': false,
+      force: false,
+    },
+    knownString: {
+      'vault-dir': null,
+      source: null,
+      kind: null,
+      'session-id': null,
+      'quality-min-narrative-chars': null,
+      'quality-min-confidence': null,
+    },
+  });
+} catch (err) {
+  if (err instanceof CliFlagError) {
+    process.stderr.write(`vault-mirror: ${err.message}\n`);
+    process.exit(1);
+  }
+  throw err;
 }
 
+const flagValues = parsedFlags.values;
+
 // --help support: print usage and exit 0 (no other validation runs).
-if (args.includes('--help') || args.includes('-h')) {
+if (flagValues.help === true) {
   process.stdout.write(
     [
       'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session>',
@@ -97,14 +135,14 @@ if (args.includes('--help') || args.includes('-h')) {
   process.exit(0);
 }
 
-const vaultDir = getArg('--vault-dir');
-const source = getArg('--source');
-const kind = getArg('--kind');
-const dryRun = args.includes('--dry-run');
-const strictSchema = args.includes('--strict-schema');
-const noCommit = args.includes('--no-commit');
-const force = args.includes('--force');
-const sessionIdArg = getArg('--session-id');
+const vaultDir = flagValues['vault-dir'];
+const source = flagValues.source;
+const kind = flagValues.kind;
+const dryRun = flagValues['dry-run'] === true;
+const strictSchema = flagValues['strict-schema'] === true;
+const noCommit = flagValues['no-commit'] === true;
+const force = flagValues.force === true;
+const sessionIdArg = flagValues['session-id'];
 
 // Quality-gate thresholds (PRD F1.2). Parse as numbers; reject malformed input
 // loudly so CI cannot accidentally pass a string ("400px") and silently fall
@@ -112,9 +150,8 @@ const sessionIdArg = getArg('--session-id');
 const QUALITY_MIN_NARRATIVE_DEFAULT = 400;
 const QUALITY_MIN_CONFIDENCE_DEFAULT = 0.5;
 
-function parseIntFlag(name, fallback) {
-  const raw = getArg(name);
-  if (raw === undefined) return fallback;
+function parseIntFlag(name, raw, fallback) {
+  if (raw === undefined || raw === null) return fallback;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || String(n) !== String(raw).trim()) {
     process.stderr.write(`vault-mirror: invalid integer for ${name}: "${raw}"\n`);
@@ -123,9 +160,8 @@ function parseIntFlag(name, fallback) {
   return n;
 }
 
-function parseFloatFlag(name, fallback) {
-  const raw = getArg(name);
-  if (raw === undefined) return fallback;
+function parseFloatFlag(name, raw, fallback) {
+  if (raw === undefined || raw === null) return fallback;
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) {
     process.stderr.write(`vault-mirror: invalid number for ${name}: "${raw}"\n`);
@@ -136,10 +172,12 @@ function parseFloatFlag(name, fallback) {
 
 const qualityMinNarrativeChars = parseIntFlag(
   '--quality-min-narrative-chars',
+  flagValues['quality-min-narrative-chars'],
   QUALITY_MIN_NARRATIVE_DEFAULT,
 );
 const qualityMinConfidence = parseFloatFlag(
   '--quality-min-confidence',
+  flagValues['quality-min-confidence'],
   QUALITY_MIN_CONFIDENCE_DEFAULT,
 );
 

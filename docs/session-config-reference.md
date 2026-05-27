@@ -431,6 +431,27 @@ Together: F2.1 captures fresh insight mid-flight, F2.2 consolidates old insight 
 
 **Cross-reference:** issue #501, PRD F2.1 in the Learning-Memory Modernization PRD. Sibling features: `memory.banner` (above, F2.3 / #505), `dialectic.cadence` (F2.5 / #506), Auto-Dream (F2.2 / #502, surfaced via `memory-cleanup-soft-limit`).
 
+## Auto-Dream Proposal Filter (#566)
+
+Collect-emit confidence floor for memory proposals. Applied by `collectProposals()` (`scripts/lib/memory-proposals/collector.mjs`) at session-end Phase 3.6.3, immediately before the operator AUQ that promotes/rejects queued proposals. This is a **second** confidence gate above the write-time `memory.proposals.confidence-floor` (default `0.5`) enforced by `scripts/memory-propose.mjs`: the per-record write-floor runs first when an agent calls the CLI; the collect-emit floor here filters what surfaces to the operator's AUQ at session-end.
+
+The two floors are additive — a proposal queued by an agent at confidence `0.6` will pass the default write-floor of `0.5` and be appended to `proposals.jsonl`, but if `auto-dream.min-confidence: 0.7` is set in Session Config, it is dropped from the queue at collect-emit time and never surfaces to the operator. The per-wave summaries in `stats` reflect the full intake (pre-filter) so audit trails remain accurate; only the AUQ-visible queue is filtered.
+
+All fields live under a top-level `auto-dream` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+auto-dream:
+  min-confidence: 0.5
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto-dream.min-confidence` | float | `0.5` | Minimum confidence (0.0..1.0) for a queued proposal to surface in the session-end AUQ. Records with `record.confidence < min-confidence` are dropped from the returned queue (but counted in stats). Set to `0.0` to surface every proposal regardless of confidence. Set to `1.0` to surface only fully-confident records. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. Second confidence gate applied to memory-proposals at session-end Phase 3.6.3 collect-emit (above the write-time `memory.proposals.confidence-floor`). Issue #566. |
+
+**Used by:** `scripts/lib/config/auto-dream.mjs` (parser), `scripts/lib/memory-proposals/collector.mjs` (filter applied inside `collectProposals()`), `skills/session-end/SKILL.md` Phase 3.6.3.
+
+**Cross-reference:** issue #566. Sibling feature: `memory.proposals.confidence-floor` (above, F2.1 / #501 — the write-time floor that runs first).
+
 ## Cold Start (#500)
 
 Opt-out configuration for the cold-start detector. The detector nudges the operator at session-start when sessions go silent — no commits, no learnings, long wall-clock idle. PRD F1.3.
