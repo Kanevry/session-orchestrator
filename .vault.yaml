@@ -1,4 +1,4 @@
-apiVersion: vault.session-orchestrator/v1
+apiVersion: vault.gotzendorfer/v1
 kind: Repository
 
 metadata:
