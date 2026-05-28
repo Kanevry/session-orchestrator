@@ -10,9 +10,11 @@
  *
  * Exit codes: 0 always (informational hooks must never block).
  *
- * JSONL format (`.orchestrator/metrics/events.jsonl`):
- *   Stop:        {"event":"stop","timestamp":<ISO>,"session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>}
- *   SubagentStop: {"event":"subagent_stop","timestamp":<ISO>,"agent":"<name>"}
+ * JSONL format (`.orchestrator/metrics/events.jsonl`) — emitted via the canonical
+ * `emitEvent()` so the JSONL record and the optional Clank webhook always carry the
+ * SAME dotted event name (was: bare `stop`/`subagent_stop` in JSONL vs dotted in webhook):
+ *   Stop:        {"timestamp":<ISO>,"event":"orchestrator.session.stopped","session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>}
+ *   SubagentStop: {"timestamp":<ISO>,"event":"orchestrator.agent.stopped","agent":"<name>"}
  */
 
 import path from 'node:path';
@@ -23,8 +25,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('on-stop')) process.exit(0);
 
-import { appendJsonl } from '../scripts/lib/common.mjs';
-import { eventsFilePath } from '../scripts/lib/events.mjs';
+import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { updateHeartbeat } from '../scripts/lib/session-lock.mjs';
@@ -139,36 +140,6 @@ async function readWaveNumber(projectRoot) {
 }
 
 // ---------------------------------------------------------------------------
-// webhook fire-and-forget
-// ---------------------------------------------------------------------------
-
-/**
- * POST event to Clank Event Bus if CLANK_EVENT_SECRET and CLANK_EVENT_URL are
- * both configured. Swallows all errors — fire and forget.
- * No personal-domain default URL: CLANK_EVENT_URL must be set explicitly (#228).
- * @param {string} type
- * @param {object} payload
- */
-function fireWebhook(type, payload) {
-  if (!process.env.CLANK_EVENT_SECRET || !process.env.CLANK_EVENT_URL) return;
-  const url = process.env.CLANK_EVENT_URL;
-  const body = JSON.stringify({
-    event_type: type,
-    source: 'session-orchestrator',
-    payload,
-  });
-  fetch(`${url}/api/webhooks/events`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.CLANK_EVENT_SECRET}`,
-    },
-    body,
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => {});
-}
-
-// ---------------------------------------------------------------------------
 // event handlers
 // ---------------------------------------------------------------------------
 
@@ -202,7 +173,6 @@ async function resolveSessionId(input, projectRoot) {
  * @param {object|null} input
  */
 async function handleStop(input) {
-  const timestamp = new Date().toISOString();
   const projectRoot = SO_PROJECT_DIR;
 
   const wave = await readWaveNumber(projectRoot);
@@ -235,40 +205,25 @@ async function handleStop(input) {
   const durationMs =
     typeof input?.start_ms === 'number' ? Date.now() - input.start_ms : 0;
 
-  const record = {
-    event: 'stop',
-    timestamp,
+  // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
+  // JSONL record AND fires the optional Clank webhook with the SAME event name — no
+  // more bare-`stop` (JSONL) vs dotted-`stopped` (webhook) divergence.
+  await emitEvent('orchestrator.session.stopped', {
     ...(sessionId !== null ? { session_id: sessionId } : {}),
     wave,
     ...(branch !== null ? { branch } : {}),
     ...(commit !== null ? { commit } : {}),
     duration_ms: durationMs,
-  };
-
-  const filePath = eventsFilePath();
-  await appendJsonl(filePath, record);
-
-  fireWebhook('orchestrator.session.stopped', { wave });
+  });
 }
 
 /**
- * Handle a SubagentStop event. Extracts agent name, appends JSONL.
+ * Handle a SubagentStop event. Extracts agent name, emits orchestrator.agent.stopped.
  * @param {object|null} input
  */
 async function handleSubagentStop(input) {
-  const timestamp = new Date().toISOString();
   const agent = input?.agent_type ?? 'unknown';
-
-  const record = {
-    event: 'subagent_stop',
-    timestamp,
-    agent,
-  };
-
-  const filePath = eventsFilePath();
-  await appendJsonl(filePath, record);
-
-  fireWebhook('orchestrator.agent.stopped', { agent });
+  await emitEvent('orchestrator.agent.stopped', { agent });
 }
 
 // ---------------------------------------------------------------------------

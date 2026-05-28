@@ -22,9 +22,10 @@
  */
 
 import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { emitEvent } from '../scripts/lib/events.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // exit 0 immediately when this hook is disabled via profile/env
@@ -149,28 +150,6 @@ async function resolveWave(projectDir) {
   }
 }
 
-/**
- * Append a single-line JSON event to .orchestrator/metrics/events.jsonl.
- * Creates the parent directory if absent. Fire-and-forget: any error is
- * caught and reported to stderr without blocking.
- *
- * @param {string} eventsPath  Absolute path to events.jsonl
- * @param {object} event       Event object to serialise as a single line
- */
-function appendEvent(eventsPath, event) {
-  try {
-    const dir = path.dirname(eventsPath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    appendFileSync(eventsPath, JSON.stringify(event) + '\n', 'utf8');
-  } catch (err) {
-    process.stderr.write(
-      `⚠ pre-bash-memory-propose-audit: failed to append event — ${err?.message || err}\n`,
-    );
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -203,19 +182,15 @@ async function main() {
   // G6 — redact argv: strip sensitive flag values, keep flag names
   const argvRedacted = redactArgv(command);
 
-  // G7 — append event to events.jsonl
-  const eventsPath = path.join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
-  const event = {
-    event: 'memory_propose_invoked',
-    timestamp: new Date().toISOString(),
+  // G7 — emit canonical event via emitEvent (single emission path: schema + webhook,
+  // replacing the local hand-rolled appendFileSync bypass).
+  await emitEvent('orchestrator.memory.propose_invoked', {
     session_id: sessionId,
     wave,
     argv_truncated: argvRedacted.slice(0, 512),
     cwd: process.cwd(),
     exit_code: null,
-  };
-
-  appendEvent(eventsPath, event);
+  });
 
   // Always allow — this is an observe-only audit hook
   return emitAllow();

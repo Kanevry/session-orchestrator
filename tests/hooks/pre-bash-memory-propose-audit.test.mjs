@@ -365,7 +365,7 @@ describe('G3 — MEMORY_PROPOSE_REGEX', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe('memory_propose_invoked');
+    expect(events[0].event).toBe('orchestrator.memory.propose_invoked');
   });
 
   it('G3 accepts env-prefixed SO_WAVE_AGENT=1 node scripts/memory-propose.mjs', async () => {
@@ -380,7 +380,7 @@ describe('G3 — MEMORY_PROPOSE_REGEX', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe('memory_propose_invoked');
+    expect(events[0].event).toBe('orchestrator.memory.propose_invoked');
   });
 });
 

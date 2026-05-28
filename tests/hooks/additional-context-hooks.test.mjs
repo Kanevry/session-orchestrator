@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import path from 'node:path';
@@ -67,6 +67,13 @@ function runHook(hookRelPath, inputObject) {
       },
     },
   );
+}
+
+/** Read parsed events.jsonl records written into the tmp CLAUDE_PROJECT_DIR. */
+function readEvents() {
+  const p = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+  if (!existsSync(p)) return [];
+  return readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +148,56 @@ describe('post-tool-batch-wave-signal.mjs additionalContext (#428 adjusted)', ()
   it('exits 0 with empty-object stdin (no wave-signal field)', () => {
     const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {});
     expect(result.status).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// post-tool-batch-wave-signal.mjs — wave-lifecycle events (#610)
+// ---------------------------------------------------------------------------
+
+describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
+  it('emits orchestrator.wave.completed on wave-complete signal', () => {
+    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
+      wave_signal: 'wave-complete',
+      wave_number: 3,
+      next_wave_role: 'quality-reviewer',
+      batch_id: 'b-001',
+      batch_size: 7,
+    });
+    expect(result.status).toBe(0);
+    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.completed');
+    expect(wave).toBeDefined();
+    expect(wave.wave_number).toBe(3);
+    expect(wave.next_wave_role).toBe('quality-reviewer');
+  });
+
+  it('emits orchestrator.wave.started on wave-start signal', () => {
+    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
+      wave_signal: 'wave-start',
+      wave_number: 2,
+      batch_id: 'b-010',
+      batch_size: 5,
+    });
+    expect(result.status).toBe(0);
+    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.started');
+    expect(wave).toBeDefined();
+    expect(wave.wave_number).toBe(2);
+  });
+
+  it('emits no orchestrator.wave.* event when wave_signal is absent', () => {
+    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', { batch_id: 'b-002', batch_size: 3 });
+    expect(result.status).toBe(0);
+    const waveEvents = readEvents().filter(
+      (e) => typeof e.event === 'string' && e.event.startsWith('orchestrator.wave.'),
+    );
+    expect(waveEvents).toEqual([]);
+  });
+
+  it('wave.completed record carries a parseable ISO timestamp', () => {
+    runHook('hooks/post-tool-batch-wave-signal.mjs', { wave_signal: 'wave-complete', wave_number: 4 });
+    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.completed');
+    expect(wave).toBeDefined();
+    expect(Number.isNaN(Date.parse(wave.timestamp))).toBe(false);
   });
 });
 

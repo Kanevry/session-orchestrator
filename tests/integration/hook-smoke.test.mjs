@@ -190,7 +190,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     expect(result.code).toBe(0);
   });
 
-  it('writes a "stop" event to events.jsonl', async () => {
+  it('writes a "orchestrator.session.stopped" event to events.jsonl', async () => {
     const dir = await mkTempProject();
     await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
     await fs.writeFile(
@@ -205,7 +205,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const stopEvent = events.find((e) => e.event === 'stop');
+    const stopEvent = events.find((e) => e.event === 'orchestrator.session.stopped');
     expect(stopEvent).toBeDefined();
   });
 
@@ -224,7 +224,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const stopEvent = events.find((e) => e.event === 'stop');
+    const stopEvent = events.find((e) => e.event === 'orchestrator.session.stopped');
     expect(stopEvent).toBeDefined();
     const timestamp = stopEvent.ts ?? stopEvent.timestamp;
     expect(isIso8601Utc(timestamp)).toBe(true);
@@ -245,7 +245,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const stopEvent = events.find((e) => e.event === 'stop');
+    const stopEvent = events.find((e) => e.event === 'orchestrator.session.stopped');
     expect(stopEvent).toBeDefined();
     expect(stopEvent.session_id).toBe('test-123');
   });
@@ -272,7 +272,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     expect(result.code).toBe(0);
   });
 
-  it('writes a "subagent_stop" event to events.jsonl', async () => {
+  it('writes a "orchestrator.agent.stopped" event to events.jsonl', async () => {
     const dir = await mkTempProject();
     await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
     await fs.writeFile(
@@ -287,7 +287,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const subEvent = events.find((e) => e.event === 'subagent_stop');
+    const subEvent = events.find((e) => e.event === 'orchestrator.agent.stopped');
     expect(subEvent).toBeDefined();
   });
 
@@ -306,7 +306,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const subEvent = events.find((e) => e.event === 'subagent_stop');
+    const subEvent = events.find((e) => e.event === 'orchestrator.agent.stopped');
     expect(subEvent).toBeDefined();
     expect(subEvent.agent).toBe('code-implementer');
   });
@@ -326,7 +326,7 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     });
 
     const events = await readEvents(dir);
-    const subEvent = events.find((e) => e.event === 'subagent_stop');
+    const subEvent = events.find((e) => e.event === 'orchestrator.agent.stopped');
     expect(subEvent).toBeDefined();
     const timestamp = subEvent.ts ?? subEvent.timestamp;
     expect(isIso8601Utc(timestamp)).toBe(true);

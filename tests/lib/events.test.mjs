@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { validateEventRecord } from '@lib/events-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,5 +230,51 @@ describe('emitEvent — fetch called when both CLANK_EVENT_SECRET and CLANK_EVEN
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await expect(emitEvent('network.error', {})).resolves.toBeUndefined();
     await new Promise(r => setImmediate(r));
+  });
+
+  // Webhook payload contract (#609 W4 fold-in) — guards the divergence-fix's core
+  // value: JSONL and webhook MUST carry the SAME dotted event name + full payload.
+  it('webhook body carries event_type (dotted name), source, and the full payload', async () => {
+    process.env.CLANK_EVENT_SECRET = 'sek';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('{}', { status: 200 })
+    );
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    await emitEvent('orchestrator.session.stopped', { session_id: 's1', branch: 'main', commit: 'abc123', wave: 2 });
+    await new Promise(r => setImmediate(r));
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.event_type).toBe('orchestrator.session.stopped');
+    expect(body.source).toBe('session-orchestrator');
+    expect(body.payload).toEqual({ session_id: 's1', branch: 'main', commit: 'abc123', wave: 2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// producer ↔ schema: emitEvent output must satisfy validateEventRecord (#609)
+// ---------------------------------------------------------------------------
+
+describe('emitEvent output conforms to events-schema validateEventRecord', () => {
+  let tmpDir;
+  let origClaudeProjectDir;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), 'events-schema-conform-'));
+    origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+  });
+
+  afterEach(async () => {
+    if (origClaudeProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a record written by emitEvent passes validateEventRecord', async () => {
+    const mod = await importEventsWithDir(tmpDir);
+    await mod.emitEvent('orchestrator.session.ended', { session_id: 's1', reason: 'clear', duration_ms: 4200 });
+    const raw = await readFile(mod.eventsFilePath(), 'utf8');
+    const record = JSON.parse(raw.trim().split('\n').pop());
+    expect(validateEventRecord(record)).toEqual({ valid: true, errors: [] });
   });
 });

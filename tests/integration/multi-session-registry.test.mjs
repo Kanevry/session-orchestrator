@@ -384,7 +384,7 @@ describe('deregister idempotency', { timeout: 15000 }, () => {
     expect(stopResult1.code).toBe(0);
 
     const eventsAfterFirst = await readEvents(dir);
-    const firstStopEvents = eventsAfterFirst.filter((e) => e.event === 'stop');
+    const firstStopEvents = eventsAfterFirst.filter((e) => e.event === 'orchestrator.session.stopped');
     expect(firstStopEvents).toHaveLength(1);
 
     // Second stop — heartbeat file already gone; hook must still exit 0
@@ -396,7 +396,7 @@ describe('deregister idempotency', { timeout: 15000 }, () => {
 
     // Second run must append another stop event (idempotent on registry, not on events)
     const eventsAfterSecond = await readEvents(dir);
-    const allStopEvents = eventsAfterSecond.filter((e) => e.event === 'stop');
+    const allStopEvents = eventsAfterSecond.filter((e) => e.event === 'orchestrator.session.stopped');
     expect(allStopEvents).toHaveLength(2);
 
     // Heartbeat file must still not exist (was never re-created by stop hook)
@@ -462,7 +462,7 @@ describe('stop event records registry-linked session_id', { timeout: 15000 }, ()
     });
 
     const events = await readEvents(dir);
-    const stopEvent = events.find((e) => e.event === 'stop');
+    const stopEvent = events.find((e) => e.event === 'orchestrator.session.stopped');
     expect(stopEvent).toBeDefined();
     expect(stopEvent.session_id).toBe(sessionId);
   });

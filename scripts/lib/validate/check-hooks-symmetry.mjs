@@ -19,7 +19,7 @@ const HOOKS_DIR = join(PLUGIN_ROOT, 'hooks');
 // Anything NOT in this list that's asymmetric → FAIL (drift).
 const DOCUMENTED_ASYMMETRIES = {
   // Events from hooks.json/hooks-codex.json that are intentionally absent in hooks-cursor.json
-  cursorMissingFromMain: ['SessionStart', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'Stop', 'SubagentStart', 'SubagentStop', 'CwdChanged', 'PreToolUse'],
+  cursorMissingFromMain: ['SessionStart', 'SessionEnd', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'Stop', 'SubagentStart', 'SubagentStop', 'CwdChanged', 'PreToolUse'],
   // Events unique to hooks-cursor.json (Cursor IDE-specific)
   cursorOnly: ['afterFileEdit', 'beforeShellExecution'],
 };

@@ -38,6 +38,7 @@ import { spawnSync } from 'node:child_process';
 
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
+import { emitEvent } from './lib/events.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -201,4 +202,15 @@ if (result.error) {
   die(`Failed to run gate script: ${result.error.message}`);
 }
 
-process.exit(result.status ?? 1);
+// Quality-gate telemetry — one canonical event per gate run via emitEvent
+// (single emission path). Best-effort: a telemetry failure must NEVER alter the
+// gate's authoritative exit code.
+const exitCode = result.status ?? 1;
+try {
+  await emitEvent(`orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`, {
+    variant,
+    exit_code: exitCode,
+  });
+} catch { /* best-effort telemetry — gate result is authoritative */ }
+
+process.exit(exitCode);

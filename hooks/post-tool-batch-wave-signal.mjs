@@ -40,6 +40,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
 
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { emitEvent } from '../scripts/lib/events.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -199,6 +200,27 @@ async function main() {
       updateHeartbeat({ repoRoot: SO_PROJECT_DIR, sessionId });
     }
   } catch { /* best effort — hook must remain non-blocking */ }
+
+  // Emit wave-lifecycle events via the canonical stream when the orchestrator
+  // populates wave_signal ('wave-start' | 'wave-complete'). Mechanical seam —
+  // see docs/events-schema.md. Best-effort; never blocks the hook. (Live firing
+  // depends on wave_signal being injected into the batch payload — tracked
+  // separately; this completes the emission seam.)
+  if (waveSignal === 'wave-start' || waveSignal === 'wave-complete') {
+    try {
+      await emitEvent(
+        waveSignal === 'wave-start'
+          ? 'orchestrator.wave.started'
+          : 'orchestrator.wave.completed',
+        {
+          ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
+          ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
+          ...(batchId !== null ? { batch_id: batchId } : {}),
+          ...(batchSize !== null ? { batch_size: batchSize } : {}),
+        },
+      );
+    } catch { /* best-effort — hook must remain non-blocking */ }
+  }
 
   // If a wave-complete signal is present, surface it as additionalContext so
   // Claude sees the state change at the next turn boundary.

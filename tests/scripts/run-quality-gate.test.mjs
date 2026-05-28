@@ -9,10 +9,12 @@
  * tests hermetic (no network, no build tool dependency).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../scripts/run-quality-gate.mjs');
@@ -285,5 +287,43 @@ describe('run-quality-gate.mjs — config handling', () => {
     // in CI — that's expected. We just assert the script launched.)
     // The warning message about invalid config must appear on stderr.
     expect(r.stderr).toContain('Config is neither a valid file path nor valid JSON');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// quality_gate telemetry emission (#610) — emits one canonical event per run
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () => {
+  let tmp;
+
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'qg-emit-')); });
+  afterEach(() => { if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true }); });
+
+  /** Read parsed events.jsonl records from the isolated tmp project dir. */
+  function readEvents() {
+    const p = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(p)) return [];
+    return readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  it('emits orchestrator.quality_gate.passed when a full-gate run passes', () => {
+    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'skip', 'lint-command': 'skip' });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.variant).toBe('full-gate');
+    expect(ev.exit_code).toBe(0);
+  });
+
+  it('emits orchestrator.quality_gate.failed when a full-gate check fails', () => {
+    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'false', 'lint-command': 'skip' });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).not.toBe(0);
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toBeDefined();
+    expect(ev.variant).toBe('full-gate');
+    expect(ev.exit_code).toBe(r.status);
   });
 });

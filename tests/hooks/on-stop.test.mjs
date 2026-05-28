@@ -8,9 +8,9 @@
  * project dir so parallel runs cannot interfere with each other.
  *
  * Covered cases:
- *   1. Stop with session_id — record has event="stop", session_id, wave, duration_ms
- *   2. Stop without session_id — record has event="stop", no session_id key
- *   3. SubagentStop with agent_type — record has event="subagent_stop", agent=<type>
+ *   1. Stop with session_id — record has event="orchestrator.session.stopped", session_id, wave, duration_ms
+ *   2. Stop without session_id — record has event="orchestrator.session.stopped", no session_id key
+ *   3. SubagentStop with agent_type — record has event="orchestrator.agent.stopped", agent=<type>
  *   4. Missing / empty stdin — exits 0, writes a stop record (graceful degradation)
  *   5. git info unavailable (non-git dir) — exits 0, record omits branch/commit
  *   6. Discriminator via hook_event_name="SubagentStop" — writes subagent_stop record
@@ -178,14 +178,14 @@ describe('Stop event with session_id', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
   });
 
-  it('writes event="stop" to events.jsonl', async () => {
+  it('writes event="orchestrator.session.stopped" to events.jsonl', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ session_id: 'sess-abc123' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
   });
 
   it('record includes session_id', async () => {
@@ -244,14 +244,14 @@ describe('Stop event without session_id', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
   });
 
-  it('writes event="stop" and omits session_id key', async () => {
+  it('writes event="orchestrator.session.stopped" and omits session_id key', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ wave: 2 }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
     expect(Object.prototype.hasOwnProperty.call(record, 'session_id')).toBe(false);
   });
 });
@@ -270,14 +270,14 @@ describe('SubagentStop via agent_type field', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
   });
 
-  it('writes event="subagent_stop" to events.jsonl', async () => {
+  it('writes event="orchestrator.agent.stopped" to events.jsonl', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ agent_type: 'code-implementer' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
   });
 
   it('record includes agent field with the agent_type value', async () => {
@@ -306,25 +306,25 @@ describe('SubagentStop via agent_type field', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('SubagentStop via hook_event_name field', { timeout: 15000 }, () => {
-  it('writes event="subagent_stop" when hook_event_name is "SubagentStop"', async () => {
+  it('writes event="orchestrator.agent.stopped" when hook_event_name is "SubagentStop"', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'ui-developer' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
     expect(record.agent).toBe('ui-developer');
   });
 
-  it('writes event="stop" when hook_event_name is "Stop"', async () => {
+  it('writes event="orchestrator.session.stopped" when hook_event_name is "Stop"', async () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-xyz' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
   });
 });
 
@@ -343,7 +343,7 @@ describe('empty stdin (no hook payload)', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     await runHook({ projectDir: dir, stdin: '' });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
   });
 });
 
@@ -369,7 +369,7 @@ describe('git info unavailable', { timeout: 15000 }, () => {
       stdin: JSON.stringify({ session_id: 'no-git' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
     // branch and commit should be absent (gitInfo returns null → omitted)
     expect(Object.prototype.hasOwnProperty.call(record, 'branch')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(record, 'commit')).toBe(false);
@@ -390,7 +390,7 @@ describe('webhook — CLANK_EVENT_SECRET not set', { timeout: 15000 }, () => {
     });
     expect(result.code).toBe(0);
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
   });
 });
 
@@ -427,7 +427,7 @@ describe('webhook — CLANK_EVENT_SECRET set', { timeout: 15000 }, () => {
       },
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
     expect(record.session_id).toBe('webhook-test-2');
   });
 });
@@ -460,7 +460,7 @@ describe('SubagentStop with missing agent_type', { timeout: 15000 }, () => {
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
     expect(record.agent).toBe('unknown');
   });
 });
@@ -477,7 +477,7 @@ describe('issue #32 — agent_type is the upstream contract', { timeout: 15000 }
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'code-implementer' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
     expect(record.agent).toBe('code-implementer');
   });
 
@@ -488,7 +488,7 @@ describe('issue #32 — agent_type is the upstream contract', { timeout: 15000 }
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
     expect(record.agent).toBe('unknown');
   });
 
@@ -501,7 +501,7 @@ describe('issue #32 — agent_type is the upstream contract', { timeout: 15000 }
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_name: 'legacy-name' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('subagent_stop');
+    expect(record.event).toBe('orchestrator.agent.stopped');
     expect(record.agent).toBe('unknown');
   });
 });
@@ -641,7 +641,7 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
     const result = await runHook({ projectDir: dir, stdin: '' });
     expect(result.code).toBe(0);
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
     expect(record.session_id).toBeUndefined();
   });
 
@@ -792,7 +792,7 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
     expect(result.code).toBe(0);
     // Hook still writes the stop event.
     const record = await readLastEvent(dir);
-    expect(record.event).toBe('stop');
+    expect(record.event).toBe('orchestrator.session.stopped');
   });
 
   it('uses current-session.json fallback when stdin lacks session_id', async () => {
