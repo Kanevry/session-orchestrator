@@ -3,8 +3,8 @@ id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-05-25T17:34:29.831Z"
-source_sessions: ["evolve-2026-05-25T1638"]
+updated: "2026-05-28T08:43:36.000Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839"]
 ---
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
@@ -26,6 +26,7 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - Inter-wave Quality-Lite gate after Impl-Core must include `npm test` when production fixes touch files with adjacent test files — typecheck+lint alone is insufficient.
 - When session-reviewer reports BLOCK at end of W2, add the fix as a new agent in W3 (Impl-Polish); do not restart W2.
 - Test-writers must verify both `npm test` (all tests pass) AND `npm run lint` (zero lint errors) before reporting done. Lint-only verification allows stylistic regressions to slip to Full Gate.
+- When a test-writer agent runs tests against production code, then mutates the SUT to a known-broken state and re-runs to observe failure, this falsifiability cycle proves the test catches the regression it claims to cover. Mutation+revert cycles are expected in test delivery.
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -34,7 +35,8 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - W1 Discovery findings that warrant scope reduction or expansion must surface via AUQ before W2 dispatch.
 - When Discovery reveals the planned work was already shipped by a prior session, immediately reduce scope rather than re-implementing.
 - For sessions where issue bodies claim external submission status (e.g., "awesome-list"), W1 must web-fetch the upstream list to confirm current state before dispatching W2 work.
-- W1 agents must grep-verify all file-location claims and API-shape assumptions from the issue body before W2 scope takes shape. Pattern: issue claims "function X exported from module Y" → grep Y for the export; issue lists N callsites → grep the repo to verify only those N exist. Pre-dispatch verification catches mismatches (CLI-only vs importable, file renames, missing exports, SUT mis-attribution) before W2 wastes effort.
+- W1 agents must grep-verify all file-location claims and API-shape assumptions from the issue body before W2 scope takes shape. Pattern: issue claims "function X exported from module Y" → grep Y for the export; issue lists N callsites → grep the repo to verify only those N exist. Pre-dispatch verification catches mismatches (CLI-only vs importable, file renames, missing exports, SUT mis-attribution) before W2 wastes effort. Quote the exact grep pattern, file scope, and result count in the Discovery report.
+- When Discovery grep-verifies that an issue AC is factually impossible or wrong (e.g., AC says "filter in file X" but grep proves file X has 0 references to the filter), the coordinator MUST surface the ambiguity via AUQ BEFORE Impl-Core dispatches against the wrong locus. The agent role is to report the contradiction with evidence; the coordinator decides how to proceed (adapt AC, reduce scope, ask user for clarification). Never let Impl agents silently resolve factual contradictions.
 <!-- END MANAGED: discovery-and-scope-adjustment -->
 
 <!-- BEGIN MANAGED: architecture-and-code-patterns -->
@@ -44,6 +46,7 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - The file-conflict matrix (D5 Discovery) checks file overlap, not dependency direction. Architect-reviewer is required to catch circular-import risks from module splits.
 - Production modules that may be `vi.mock`ed in sibling test files must use lazy dynamic imports (`await import(...)`) instead of top-level static imports. Top-level static imports cache the real module in the vitest fork pool, preventing mock interception.
 - `promisify(execFile)` silently ignores `AbortSignal`; use raw `spawn()` with `controller.signal` for genuine cancellation.
+- For ESM SUTs that use default imports (`import fs from 'node:fs'`), test files can intercept calls via `vi.spyOn(fs, 'method')` if the test file also uses the same default import. The key step: capture the original before mocking with `const orig = fs.method.bind(fs)`, then pass-through calls that don't match the fault target via `orig.apply(fs, args)`. The `.bind(fs)` is load-bearing — without it, `this` inside the original implementation may be undefined.
 - `vi.spyOn` on ESM named exports fails with `Cannot redefine property`; use real filesystem error injection (e.g., `chmodSync(dir, 0o555)`) instead.
 - ESLint `eqeqeq` rejects `x == null`; write `x === null || x === undefined` explicitly or use nullish-coalescing.
 <!-- END MANAGED: architecture-and-code-patterns -->
@@ -54,6 +57,7 @@ source_sessions: ["evolve-2026-05-25T1638"]
 - CI status at session-start is authoritative. Never claim CI green from local `npm test` alone. Phase 4 CI banner is load-bearing.
 - A top-level `process.exit()` during test file import crashes the vitest fork worker. Subsequent test files in the same fork lose their `vi.mock` registry — diagnostic signature is `ERR_MODULE_NOT_FOUND chunks/utils.*.js`. Guard CLI entry points with `if (import.meta.url === pathToFileURL(process.argv[1]).href)` before calling `main()`.
 - Vitest 4 does not fix tinypool worker-exit hang on Linux CI; the timeout wrapper is still required for GitLab/GitHub Ubuntu runners.
+- Integration tests with real fixtures often surface wiring drift that unit-mocks hide (e.g., module-A output shape differs from module-B input contract). Use integration tests to verify cross-module boundaries, not just to repeat unit-test scenarios with different dependencies.
 <!-- END MANAGED: ci-and-verification -->
 
 <!-- BEGIN MANAGED: security-review-integration -->
