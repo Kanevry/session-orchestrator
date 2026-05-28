@@ -351,6 +351,42 @@ describe('vault-mirror CLI', () => {
     });
   });
 
+  // ── Unknown-flag rejection (#510 → reject, no longer silently ignored) ─────
+  // Regression guard: the pre-#510 hand-rolled getArg() parser SILENTLY ignored
+  // unknown flags. cli-flags.mjs migrated to node:util parseArgs strict mode,
+  // which rejects unknown flags with exit 1. A naive revert to the silent-ignore
+  // parser would exit 0 here and fail this test.
+  describe('--bogus unknown-flag rejection', () => {
+    it('exits 1 and prints the unknown-option message for a trailing unknown flag', () => {
+      const vaultDir = tmp();
+      const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+      const result = runMirror([
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'learning',
+        '--bogus',
+      ]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("vault-mirror: Unknown option '--bogus'");
+    });
+  });
+
+  // ── --help → exit 0 (#589 LOW-qa-4) ────────────────────────────────────────
+  // Regression guard: --help must short-circuit BEFORE any required-flag check
+  // (no --vault-dir/--source/--kind supplied here) and print usage to STDOUT
+  // with exit 0. A regression that moved the --help branch after the
+  // required-flag validation would exit 1 here.
+  describe('--help', () => {
+    it('exits 0 and prints usage to stdout with no required flags supplied', () => {
+      const result = runMirror(['--help']);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session>',
+      );
+      expect(result.stderr).toBe('');
+    });
+  });
+
   it('exits 2 when vault-dir does not exist', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);

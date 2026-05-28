@@ -105,3 +105,89 @@ describe('thresholdMet — m-of-n', () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseThreshold — non-string input guard (M2, #492)
+//
+// The post-#483-LOW-3 change added an explicit type guard at the top of
+// parseThreshold (threshold.mjs L56-60): any non-string input throws
+// InvalidThresholdError with the message "threshold spec must be a string
+// (got <typeof>)". This is the intended defensive contract, NOT a bug — the
+// tests below pin the ACTUAL current behaviour with hardcoded expectations.
+//
+// Note `typeof null === 'object'` and `typeof [] === 'object'` in JS, so the
+// guard reports "got object" for null, arrays, and plain objects alike.
+// ---------------------------------------------------------------------------
+
+describe('parseThreshold — rejects non-string input with InvalidThresholdError (M2)', () => {
+  it.each([
+    [42],
+    [0],
+    [null],
+    [undefined],
+    [true],
+    [false],
+    [{ kind: 'all' }],
+    [['5-of-6']],
+  ])('throws InvalidThresholdError for non-string input %o', (input) => {
+    expect(() => parseThreshold(input)).toThrow(InvalidThresholdError);
+  });
+
+  it('error message names the offending type as "number" for a numeric input', () => {
+    expect(() => parseThreshold(5)).toThrow('threshold spec must be a string (got number)');
+  });
+
+  it('error message names the offending type as "object" for null (typeof null === "object")', () => {
+    expect(() => parseThreshold(null)).toThrow('threshold spec must be a string (got object)');
+  });
+
+  it('error message names the offending type as "undefined" for undefined input', () => {
+    expect(() => parseThreshold(undefined)).toThrow(
+      'threshold spec must be a string (got undefined)',
+    );
+  });
+
+  it('error message names the offending type as "object" for an array input', () => {
+    expect(() => parseThreshold(['5-of-6'])).toThrow(
+      'threshold spec must be a string (got object)',
+    );
+  });
+
+  it('error message names the offending type as "boolean" for a boolean input', () => {
+    expect(() => parseThreshold(true)).toThrow('threshold spec must be a string (got boolean)');
+  });
+
+  it('rejects numeric input via the type guard, not the empty/regex check (string coercion does NOT happen)', () => {
+    // If the guard were missing and the value were coerced via String(6), it would
+    // hit the regex path and produce a "must match M-of-N" message. The type-guard
+    // message proves the non-string branch fired first.
+    expect(() => parseThreshold(6)).toThrow('threshold spec must be a string (got number)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseThreshold — whitespace handling boundary (M2, #492)
+//
+// The guard trims before the empty check (L62-65). A whitespace-only string is
+// a string (passes the type guard) but trims to '' → rejected as empty. A spec
+// with surrounding whitespace trims to a valid token and parses successfully.
+// These boundaries are uncovered by the existing accept/reject lists.
+// ---------------------------------------------------------------------------
+
+describe('parseThreshold — whitespace boundary (M2)', () => {
+  it('rejects a whitespace-only string (trims to empty) with InvalidThresholdError', () => {
+    expect(() => parseThreshold('   ')).toThrow(InvalidThresholdError);
+  });
+
+  it('whitespace-only string is rejected as empty, not as a non-string', () => {
+    expect(() => parseThreshold('   ')).toThrow('threshold spec must not be empty');
+  });
+
+  it('parses "  all  " (surrounding whitespace trimmed) into {kind:"all"}', () => {
+    expect(parseThreshold('  all  ')).toEqual({ kind: 'all' });
+  });
+
+  it('parses " 5-of-6 " (surrounding whitespace trimmed) into {kind:"m-of-n", m:5, n:6}', () => {
+    expect(parseThreshold(' 5-of-6 ')).toEqual({ kind: 'm-of-n', m: 5, n: 6 });
+  });
+});

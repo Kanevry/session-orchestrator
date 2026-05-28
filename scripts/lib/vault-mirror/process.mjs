@@ -58,6 +58,12 @@ export function deriveRepo() {
  * (processLearning, processSession) destructure it from their own `ctx` and pass
  * it through.
  *
+ * #589 LOW-arch-3 — the `vaultDir`-in-options-object pattern is consciously
+ * accepted: the 16 call-sites in THIS module repeat `vaultDir` as boilerplate,
+ * but there is only one consumer module, so a `makeEmitAction({ vaultDir })`
+ * closure factory would be premature (YAGNI). Extract the factory ONLY when a
+ * SECOND module needs `emitAction` and would otherwise re-thread `vaultDir`.
+ *
  * @param {object} opts
  * @param {string} opts.action — action name (e.g. 'created', 'updated', 'skipped-quality-low')
  * @param {string|null} opts.path — absolute path to the file (or null when no file

@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { EARS_PATTERNS } from '../../_shared/ears-patterns.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const FEATURE_TEMPLATE = join(REPO_ROOT, 'skills', 'plan', 'prd-feature-template.md');
@@ -197,13 +198,8 @@ describe('prd-reviewer-prompt.md — EARS bullet completeness on a single line',
   it('the EARS-awareness bullet contains all 5 canonical pattern names on the same line', () => {
     const content = readFileSync(REVIEWER_PROMPT, 'utf8');
     const lines = content.split('\n');
-    const earsLine = lines.find(
-      (line) =>
-        line.includes('Ubiquitous') &&
-        line.includes('State-driven') &&
-        line.includes('Event-driven') &&
-        line.includes('Optional feature') &&
-        line.includes('Unwanted behaviour'),
+    const earsLine = lines.find((line) =>
+      EARS_PATTERNS.every((pattern) => line.includes(pattern)),
     );
     expect(earsLine).not.toBeUndefined();
   });

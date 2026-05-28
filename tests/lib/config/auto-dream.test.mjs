@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { _parseAutoDream } from '@lib/config/auto-dream.mjs';
+import { parseSessionConfig } from '@lib/config.mjs';
 
 const DEFAULTS = {
   'min-confidence': 0.5,
@@ -168,5 +169,53 @@ describe('_parseAutoDream', () => {
       ].join('\n');
       expect(_parseAutoDream(content)['min-confidence']).toBe(0.4);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseSessionConfig integration (MED-5, issue #589)
+//
+// _parseAutoDream is wired into the full Session Config parser at
+// scripts/lib/config.mjs:250 — `const autoDream = _parseAutoDream(mdContent)`
+// surfaced under the `auto-dream` key (config.mjs:356). The collector reads
+// `config['auto-dream']['min-confidence']` at session-end Phase 3.6.3
+// (skills/session-end/SKILL.md:399). These cases exercise the FULL parser
+// path (a complete `## Session Config` doc), not just the leaf parser.
+//
+// Mirrors the "TASK B integration" block in
+// tests/lib/config/discovery-validator.test.mjs:199-227.
+// ---------------------------------------------------------------------------
+
+describe('parseSessionConfig integration', () => {
+  it('parseSessionConfig surfaces auto-dream.min-confidence override (0.8)', () => {
+    const content = [
+      '# Project',
+      '',
+      '## Session Config',
+      '',
+      'persistence: true',
+      'auto-dream:',
+      '  min-confidence: 0.8',
+      '',
+    ].join('\n');
+    const result = parseSessionConfig(content);
+    // FALSIFICATION: if _parseAutoDream were not wired into config.mjs, or the
+    // block were not read, this would be the default 0.5 (or undefined).
+    expect(result['auto-dream']['min-confidence']).toBe(0.8);
+  });
+
+  it('parseSessionConfig returns the default min-confidence (0.5) when the auto-dream block is absent', () => {
+    const content = [
+      '# Project',
+      '',
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+    ].join('\n');
+    const result = parseSessionConfig(content);
+    // FALSIFICATION: a non-default fallback (e.g. 0 or undefined) would fail
+    // here — the PRD default for #566 is 0.5.
+    expect(result['auto-dream']['min-confidence']).toBe(0.5);
   });
 });

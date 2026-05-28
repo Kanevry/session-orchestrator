@@ -192,6 +192,16 @@ describe('_parseDiscoveryValidator — CRLF tolerance', () => {
   });
 });
 
+describe('_parseDiscoveryValidator — tab-indented child line', () => {
+  it('parses tab-indented "enabled: true" as true (^\\ s+ regex accepts tabs)', () => {
+    // The block-key regex (/^\s+([a-zA-Z_-]+):\s*(.*)/) uses \s+ which matches
+    // a TAB character. This test pins that behaviour so a future tightening to
+    // /^ +/ (spaces-only) would break loudly.
+    const content = 'discovery-validator:\n\tenabled: true\n';
+    expect(_parseDiscoveryValidator(content)).toEqual({ enabled: true });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // TASK B — parseSessionConfig integration
 // ---------------------------------------------------------------------------

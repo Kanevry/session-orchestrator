@@ -193,6 +193,19 @@ describe('vault-consolidate CLI', () => {
     expect(result.stderr).toContain('--resolve choice must be one of src|dst|skip');
   });
 
+  it('P0: --help → exit 0 and prints usage to stderr (#589 LOW-qa-4)', () => {
+    // Regression guard: --help must short-circuit BEFORE the canonical/source
+    // pre-flight checks (none supplied here) and print usage to STDERR (per the
+    // documented "Print this message to stderr and exit 0" contract), with
+    // exit 0. A regression that exited 1, or wrote help to stdout, fails here.
+    const result = runScript(['--help']);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      'Usage: vault-consolidate [--dry-run|--apply]',
+    );
+    expect(result.stdout).toBe('');
+  });
+
   // -------------------------------------------------------------------------
   // P0 — Classification matrix
   // -------------------------------------------------------------------------

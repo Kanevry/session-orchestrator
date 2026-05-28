@@ -133,6 +133,10 @@ describe('emitAction', () => {
       emitAction({ action: 'created', path: filePath, kind: 'session', id: 'sess-id', vaultDir }),
     );
     expect(lines[0].path).toBe('50-sessions/session.md');
+    // Negative: the absolute input path must NOT leak into the emitted payload
+    // under a `filePath` key. Kills a mutation that bundles the raw absolute
+    // path alongside the relativized `path` (e.g. { path: rel, filePath: path }).
+    expect(lines[0]).not.toHaveProperty('filePath');
   });
 });
 

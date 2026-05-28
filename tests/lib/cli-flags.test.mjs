@@ -7,10 +7,11 @@
  *     production formula — see .claude/rules/test-quality.md § Banned Anti-Patterns)
  *   - defaults flow through the post-parse `defaults` slot
  *   - unknown flag → throws CliFlagError (the test-equivalent of "exit 1")
- *   - onUnknown: 'ignore' suppresses the throw (vault-mirror legacy path,
- *     wired for the documented escape hatch even though no current caller
- *     uses it — see W2 STATUS for the grep evidence)
- *   - invalid onUnknown values are rejected at the API edge
+ *
+ * Issue #589 MED-1: the `onUnknown: 'ignore'` escape hatch was removed — it had
+ * ZERO production callers (PSA-006 grep: all four scripts use the default
+ * reject). The parser now unconditionally rejects unknown flags; the
+ * unknown-flag-policy tests below cover that single behaviour.
  *
  * Coverage carries the migrated-script behavioural contract: the four scripts
  * each have their own end-to-end tests (tests/unit/vault-mirror.test.mjs,
@@ -175,37 +176,31 @@ describe('parseColumnFlags — unknown-flag policy (reject = default)', () => {
   });
 });
 
-describe('parseColumnFlags — onUnknown: ignore (legacy vault-mirror escape hatch)', () => {
-  it('silently drops unknown flags when onUnknown="ignore"', () => {
-    const { values } = parseColumnFlags({
-      argv: ['--apply', '--this-is-not-known'],
-      knownBool: { apply: false },
-      onUnknown: 'ignore',
-    });
-    expect(values).toEqual({ apply: true });
-  });
-
-  it('still parses known flags correctly under onUnknown="ignore"', () => {
-    const { values } = parseColumnFlags({
-      argv: ['--source', '/tmp/x.jsonl', '--bogus-extra'],
-      knownString: { source: null },
-      onUnknown: 'ignore',
-    });
-    expect(values).toEqual({ source: '/tmp/x.jsonl' });
-  });
-});
-
-describe('parseColumnFlags — API edge errors', () => {
-  it('rejects an invalid onUnknown policy value', () => {
+describe('parseColumnFlags — unknown flags are always rejected (#589 MED-1)', () => {
+  it('throws CliFlagError on an unknown flag mixed with a known one (no ignore escape hatch)', () => {
+    // Regression guard for #589 MED-1: the removed onUnknown:'ignore' option
+    // would have silently dropped `--this-is-not-known` and returned
+    // { apply: true }. Post-removal the parser MUST throw — proving the dead
+    // seam is gone, not merely defaulted off.
     expect(() =>
       parseColumnFlags({
-        argv: [],
+        argv: ['--apply', '--this-is-not-known'],
         knownBool: { apply: false },
-        onUnknown: 'silently-pass',
       }),
     ).toThrow(CliFlagError);
   });
 
+  it('throws CliFlagError on a trailing unknown flag after a parsed string value', () => {
+    expect(() =>
+      parseColumnFlags({
+        argv: ['--source', '/tmp/x.jsonl', '--bogus-extra'],
+        knownString: { source: null },
+      }),
+    ).toThrow(CliFlagError);
+  });
+});
+
+describe('parseColumnFlags — API edge errors', () => {
   it('returns positionals: [] when allowPositionals is off (strict mode)', () => {
     // Strict mode rejects positionals, so the only "no positionals" case is
     // when argv had no positionals to begin with. Confirms the shape contract.

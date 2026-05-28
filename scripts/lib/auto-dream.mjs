@@ -11,9 +11,11 @@
  *   - memory-cleanup-soft-limit (default 180) — MEMORY.md line ceiling
  *   - kill-switch: threshold === 0 → never trigger
  *
- * Proposal-emit min-confidence filter (issue #566) lives in
- * `scripts/lib/memory-proposals/collector.mjs`, gated by Session Config key
- * `auto-dream.min-confidence` (default 0.5). See session-end Phase 3.6.3.
+ * Proposal-emit min-confidence filter (issue #566): the `auto-dream.min-confidence`
+ * key (default 0.5) is PARSED in `scripts/lib/config/auto-dream.mjs`, but its FILTER
+ * BEHAVIOR lives in `collectProposals()` (`scripts/lib/memory-proposals/collector.mjs`
+ * ~L319). Accepted trade-off (#589 MED-2): filter co-located with the queue it filters;
+ * renaming to a `memory.proposals.*` key would break #566's naming. Phase 3.6.3.
  *
  * No external deps — Node 20+ stdlib only.
  */

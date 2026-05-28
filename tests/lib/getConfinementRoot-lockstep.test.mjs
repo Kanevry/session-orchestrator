@@ -17,12 +17,25 @@
  *     causes the ≥2 callsites count test to fail.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { getConfinementRoot } from '../../scripts/lib/config/cross-repo.mjs';
+
+// M4 (#492): mock `node:os` so the empty-string fallback expected value is a
+// HARDCODED LITERAL ("/home/fixed/Projects") rather than computed from the live
+// homedir (test-quality.md: no computed expected values). `vi.spyOn(os, ...)`
+// is rejected under this ESM config ("Module namespace is not configurable"),
+// so we use a hoisted vi.mock factory that preserves all real exports except
+// homedir. `join` lives in node:path and is unaffected. The existing behaviour
+// tests below import `homedir` from node:os too, so they see the same mocked
+// value — their assertions stay green because the SUT uses the same binding.
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, homedir: vi.fn(() => '/home/fixed') };
+});
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..');
@@ -72,6 +85,47 @@ describe('getConfinementRoot — behaviour', () => {
     const result = getConfinementRoot();
     expect(typeof result).toBe('string');
     expect(result.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4 (#492): empty-string and whitespace-only env-var values
+//
+// getConfinementRoot returns `process.env.CROSS_REPO_CONFINEMENT_ROOT ||
+// join(homedir(), 'Projects')` (cross-repo.mjs:32). The existing tests cover
+// set + unset, but NOT the two `||`-boundary values:
+//
+//   - ''     → falsy → falls back to join(homedir(), 'Projects')
+//   - '   '  → TRUTHY → returned verbatim (3-space path) — a LATENT BUG: a
+//              whitespace-only env value short-circuits the `||` and yields a
+//              non-sensical path of spaces instead of the intended default.
+//
+// Per scope, these tests PIN the actual current behaviour (stay green) and do
+// NOT fix the SUT. The whitespace case is flagged in STATUS as a defect.
+//
+// homedir() is mocked (file-top vi.mock) → the empty-string expected value is
+// the hardcoded literal '/home/fixed/Projects', not a computed live path.
+// ---------------------------------------------------------------------------
+
+describe('getConfinementRoot — empty / whitespace env-var (M4)', () => {
+  it('treats CROSS_REPO_CONFINEMENT_ROOT="" as falsy and falls back to <homedir>/Projects', () => {
+    savedEnv = process.env.CROSS_REPO_CONFINEMENT_ROOT ?? null;
+    process.env.CROSS_REPO_CONFINEMENT_ROOT = '';
+
+    // '' is falsy → `||` selects join(homedir(), 'Projects'); homedir() is
+    // mocked to '/home/fixed', so the expected path is a hardcoded literal.
+    expect(getConfinementRoot()).toBe('/home/fixed/Projects');
+  });
+
+  it('returns a whitespace-only CROSS_REPO_CONFINEMENT_ROOT="   " VERBATIM (latent bug: truthy spaces)', () => {
+    savedEnv = process.env.CROSS_REPO_CONFINEMENT_ROOT ?? null;
+    process.env.CROSS_REPO_CONFINEMENT_ROOT = '   ';
+
+    // '   ' is truthy → `||` short-circuits and returns it unchanged. This is
+    // the current (buggy) contract: a 3-space string is treated as a valid
+    // confinement root. Pinned here so the behaviour cannot silently change
+    // without updating this test. NOT fixed (out of scope).
+    expect(getConfinementRoot()).toBe('   ');
   });
 });
 

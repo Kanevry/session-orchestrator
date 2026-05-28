@@ -229,7 +229,7 @@ Issue #501 mandates this file as part of the memory-proposal-collector component
 in `agents/` alongside the other behavioural specifications is the natural location for
 anyone tracing the session-end flow — it documents what the coordinator does at Phase 3.6.3
 in the same directory where all other coordinator-invoked agent patterns live. The file uses
-`sandbox-tier: reference-only` and `tools: []` to unambiguously mark itself as
+`sandbox-tier: read-only` and `tools: Read, Grep, Glob` to unambiguously mark itself as
 non-dispatchable. Any dispatch attempt using this name will fail at the harness's agent-type
 resolver, which is the correct failure mode.
 

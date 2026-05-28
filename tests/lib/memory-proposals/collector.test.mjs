@@ -201,6 +201,45 @@ describe('collectProposals — #566 collect-emit confidence filter', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Keep-branch (MED-6, issue #589) — a record with NO confidence field is
+  // KEPT even under an ACTIVE filter. collector.mjs:320-325: when
+  // `typeof record.confidence !== 'number'`, `c === null` → `return true`.
+  // `JSON.stringify({confidence: undefined})` omits the key entirely, so the
+  // deserialized record has no `confidence` property. deserializeProposal
+  // (schema.mjs:276) does NOT re-validate, so the field-less record survives
+  // to the filter.
+  //
+  // The existing suite only exercises the keep-branch with an INACTIVE filter
+  // (minConfidence=0). This case proves the keep semantics hold while the
+  // filter is genuinely active and dropping a sibling record.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('keeps a no-confidence record under an ACTIVE filter while dropping a below-floor record', async () => {
+    // makeJsonl(undefined, …) → the `confidence` key is omitted by
+    // JSON.stringify, producing a record with no confidence field at all.
+    const t1 = '2026-05-27T10:00:00.000Z';
+    const t2 = '2026-05-27T10:00:01.000Z';
+    const lines = [
+      makeJsonl(undefined, 'no-conf-record', { created_at: t1 }),
+      makeJsonl(0.3, 'below-floor-record', { created_at: t2 }),
+    ];
+    writeFileSync(proposalsJsonlPath, lines.join('\n') + '\n', 'utf8');
+
+    const { queue } = await collectProposals({
+      repoRoot: tmpRepo,
+      minConfidence: 0.5,
+    });
+
+    // FALSIFICATION: a mutation of the keep-branch (L324
+    // `c === null || !Number.isFinite(c)` → `false`) would route the
+    // field-less record into `c >= minConfidence` (`null >= 0.5` === false),
+    // dropping it — queue.length would be 0 instead of 1.
+    expect(queue).toHaveLength(1);
+    expect(queue[0].subject).toBe('no-conf-record');
+    expect(queue[0].confidence).toBeUndefined();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Edge — minConfidence=1 keeps only confidence=1 records
   // ─────────────────────────────────────────────────────────────────────────
 

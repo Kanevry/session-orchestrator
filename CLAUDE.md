@@ -83,7 +83,7 @@ memory:
     quota-per-wave: 5            # max proposals per wave-executor agent
     confidence-floor: 0.5        # below this confidence, propose() returns rejected-low-confidence
 auto-dream:
-  min-confidence: 0.5            # issue #566 — filter applied at memory-proposals collect-emit (session-end Phase 3.6.3); SECOND gate above memory.proposals.confidence-floor
+  min-confidence: 0.5            # issue #566 — filter applied at memory-proposals collect-emit (session-end Phase 3.6.3); SECOND gate above memory.proposals.confidence-floor — inert at default; only bites when set HIGHER than confidence-floor (persist-medium / surface-high)
 cold-start:
   enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
   nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires

@@ -158,6 +158,11 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('active');
     expect(result.existingLock.session_id).toBe('sess-winner');
+    // #599 LOW: exclusivityClass is emitted on ALL return shapes (classifyExisting
+    // sets it from callerClass) — even without activeSessions. Caller mode 'deep'
+    // → parallel-ok. Kills a mutation that drops exclusivityClass from the
+    // active/stale return path.
+    expect(result.exclusivityClass).toBe('parallel-ok');
   });
 
   it('EEXIST loser path: a second acquire over a dead-PID lock returns reason=stale-pid-dead', () => {
@@ -972,5 +977,86 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('active');
     expect(result.existingLock).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // #599 MED — unreadable EXISTING lock (readLock's blanket-catch fault-tolerance).
+  //
+  // Scenario: a REAL same-host, live-PID lock already sits on disk (it would
+  // classify as 'active' if readable). Then `fs.readFileSync` is forced to throw
+  // EACCES *persistently* for the lock path. The SUT reaches the lock check in
+  // this order:
+  //   1. acquire() up-front readLock({repoRoot}) (~L512): spy throws EACCES →
+  //      readLock's blanket-catch (~L348-350) swallows → returns null.
+  //   2. existing === null → create-path: createSessionLockExclusive writes the
+  //      tmp file, then `fs.linkSync(tmp, lockFile)` → the lock file ALREADY
+  //      EXISTS → EEXIST → { reason: 'exists' } (~L322-323).
+  //   3. acquire() re-reads via readLock({repoRoot}) (~L534): spy STILL throws →
+  //      null again → vanish-race fallback (~L535-540) returns
+  //      { ok:false, reason:'active', existingLock:null }.
+  //
+  // Two reads occur, so the spy MUST be persistent (mockImplementation, NOT
+  // mockImplementationOnce). The terminal reason was OBSERVED to be 'active'
+  // (not 'fs-error') — the EACCES is swallowed by readLock at both read sites,
+  // and the EEXIST create-or-fail PRESERVES the existing lock content.
+  //
+  // Surviving mutations this test kills:
+  //   M1 (remove readLock's blanket-catch → it rethrows EACCES): the throw would
+  //   propagate out of acquire()'s outer try into the catch (~L543), flipping the
+  //   reason to 'fs-error' → the reason assertion FAILS.
+  //   M2 (no-existing-lock branch silently overwrites via rename instead of
+  //   linkSync create-or-fail): the on-disk session_id would become the NEW
+  //   caller's id → the lock-preservation assertion FAILS.
+  // -------------------------------------------------------------------------
+  it('#599 MED: unreadable existing lock (EACCES swallowed) → reason=active, existing lock preserved, no silent overwrite', () => {
+    // Pre-write a REAL same-host, live-PID lock that WOULD classify as 'active'.
+    const existingLock = {
+      session_id: 'sess-existing-winner',
+      started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      mode: 'feature',
+      pid: process.pid, // live PID → would be 'active' if readable
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    const lockFile = join(orchDir, 'session.lock');
+    writeFileSync(lockFile, JSON.stringify(existingLock) + '\n');
+
+    // Capture the original BEFORE mocking so the post-assertion read bypasses the spy.
+    const originalRead = fs.readFileSync.bind(fs);
+    // Persistent (mockImplementation) — the SUT reads the lock path TWICE
+    // (up-front + EEXIST re-read). Other reads (package.json, etc.) pass through.
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+      if (typeof p === 'string' && p.endsWith('session.lock')) {
+        const e = new Error('EACCES: permission denied, open');
+        e.code = 'EACCES';
+        throw e;
+      }
+      return originalRead(p, ...rest);
+    });
+
+    let result;
+    // acquire() is contractually no-throw — the EACCES must be absorbed.
+    expect(() => {
+      result = acquire({ sessionId: 'sess-new-caller', mode: 'feature', repoRoot });
+    }).not.toThrow();
+
+    // Spy fired (proves the lock read was intercepted).
+    expect(readSpy).toHaveBeenCalled();
+
+    // Terminal reason is the conservative 'active' (NOT 'fs-error') — readLock's
+    // blanket-catch swallowed EACCES at both read sites. existingLock is null
+    // because the re-read also failed.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock).toBeNull();
+
+    // No silent overwrite: the create-or-fail (linkSync) refused to clobber the
+    // pre-existing lock, so its content is byte-for-byte preserved on disk.
+    const onDisk = JSON.parse(originalRead(lockFile, 'utf8'));
+    expect(onDisk.session_id).toBe('sess-existing-winner');
+    expect(onDisk.mode).toBe('feature');
   });
 });

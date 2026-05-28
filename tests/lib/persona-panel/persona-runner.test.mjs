@@ -27,6 +27,16 @@
  * Falsification check: each test asserts on an observable contract output.
  * Removing the buildPersonaPrompt / computePromptHash / validatePersonaOutput
  * bodies causes assertion failure.
+ *
+ * Sidecar-write coverage (#492 L3): persona-runner.mjs has NO sidecar-write
+ * responsibility — it only builds prompts, hashes them, and validates Agent
+ * output. The sidecar-write integration (writeJsonAtomic roundtrip,
+ * validator-before-write, no-tmp-leak, concurrent-write, AJV schema validation)
+ * is a REAL integration test in tests/lib/persona-panel/sidecar-roundtrip.test.mjs
+ * (Tests 1-9), not a docs-grep. The only docs-grep canary is Test 10 there
+ * (Q1-LOW-6, SKILL.md mentions validatePathInsideProject). The #492 L3 gap is
+ * therefore already closed in sidecar-roundtrip.test.mjs — no assertion is
+ * duplicated here.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';

@@ -103,13 +103,19 @@ describe('vault-mirror entry-point invariant (#536)', () => {
   });
 
   it('invariant: pending-dream.md as --source fails when file missing (exit 2)', () => {
-    // Layer 2 rejection: existsSync gate at scripts/vault-mirror.mjs:166-169.
-    // A literal reference to the sidecar path does not exist relative to the
-    // tmp cwd, so the mirror refuses to read it and exits 2.
+    // Layer 2 rejection: existsSync gate at scripts/vault-mirror.mjs:204-207.
+    // #597: the --source path MUST resolve to a guaranteed-nonexistent location.
+    // A relative path like '.orchestrator/pending-dream.md' resolves against the
+    // subprocess cwd (the runner's repo root), so it would FIND a real sidecar
+    // mid-consolidation and fall through to exit 1 (markdown != JSONL) — a
+    // cwd-dependent flake invisible in clean-checkout CI. Anchoring at an
+    // absolute path inside a fresh tmp dir we never create makes exit 2
+    // deterministic regardless of cwd or whether real sidecars exist.
     const vaultDir = tmp();
+    const missingSidecar = join(tmp(), '.orchestrator', 'pending-dream.md');
     const result = runMirror([
       '--vault-dir', vaultDir,
-      '--source', '.orchestrator/pending-dream.md',
+      '--source', missingSidecar,
       '--kind', 'learning',
     ]);
     expect(result.status).toBe(2);
@@ -140,11 +146,15 @@ describe('vault-mirror entry-point invariant (#536)', () => {
   it('invariant: dialectic-pending.md as --source fails when file missing (exit 2)', () => {
     // Layer 2 rejection for the second sidecar (PRD F2.5 / #506). Same shape
     // as the pending-dream existsSync case; documents that the same guard
-    // protects both sidecars.
+    // protects both sidecars. #597: absolute path inside a fresh, never-created
+    // tmp dir keeps exit 2 deterministic — a relative '.orchestrator/...' path
+    // would resolve against the runner cwd and find a real sidecar mid-
+    // consolidation, flaking to exit 1 (markdown != JSONL).
     const vaultDir = tmp();
+    const missingSidecar = join(tmp(), '.orchestrator', 'dialectic-pending.md');
     const result = runMirror([
       '--vault-dir', vaultDir,
-      '--source', '.orchestrator/dialectic-pending.md',
+      '--source', missingSidecar,
       '--kind', 'session',
     ]);
     expect(result.status).toBe(2);

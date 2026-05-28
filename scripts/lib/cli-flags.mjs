@@ -6,17 +6,30 @@
  * used a `getArg`/`includes` style that SILENTLY ignored unknown flags,
  * `migrate-cold-start-seed.mjs` used `includes` + a `knownFlags` Set, and
  * `migrate-vault-paths.mjs` used a custom for-loop. This module unifies the
- * PARSING + unknown-flag policy layer behind a single function so the CLI
- * convention (reject-on-unknown by default, `--json`/`--dry-run`/`--apply`
- * support) has one source of truth.
+ * PARSING + unknown-flag rejection behind a single function so the CLI
+ * convention (reject-on-unknown, `--json`/`--dry-run`/`--apply` support) has
+ * one source of truth.
  *
  * `parseColumnFlags` is intentionally THIN: it owns argv tokenisation,
- * known-flag declaration, defaults, and the unknown-flag policy. It does NOT
+ * known-flag declaration, defaults, and unknown-flag rejection. It does NOT
  * own per-script semantics like int/float coercion, `--dry-run`/`--apply`
  * mutex checks, `--repos` comma-splitting, or required-flag validation — those
  * stay in each script's post-parse block because they differ per script. The
  * reference implementation is `node:util` parseArgs in strict mode, matching
  * `vault-consolidate.mjs`'s prior style.
+ *
+ * `--dry-run`/`--apply` mutex — why it is NOT a shared helper here (#589
+ * LOW-qa-5, document-as-accepted): the three scripts that carry the mutex
+ * (`vault-consolidate.mjs`, `migrate-cold-start-seed.mjs`,
+ * `migrate-vault-paths.mjs`) each emit DIVERGENT, test-pinned error prose
+ * (different script-name prefixes; `die()` vs raw `process.stderr.write`) and
+ * derive `apply`/`dryRun` at different points in their own entry-point flow.
+ * The detection predicate (`values['dry-run'] && values.apply`) is a one-liner
+ * per script; centralising only that predicate would yield a seam that no
+ * caller can use without ALSO duplicating the per-script message — i.e. it
+ * would reproduce the exact dead-but-tested speculative-seam smell that #589
+ * MED-1 removed (the old `onUnknown:'ignore'` option). The mutex stays
+ * per-script by design.
  *
  * Usage:
  *   import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
@@ -97,23 +110,15 @@ function toParseArgsOption(type, descriptor) {
  * @param {Object<string, *>} [spec.knownString] String flags. Value = bare default (string|null) OR { short, default, multiple }.
  * @param {Object<string, *>} [spec.defaults]   Optional explicit default overrides, merged onto values AFTER parse
  *                                               (only applied where parseArgs left the key undefined).
- * @param {'reject'|'ignore'} [spec.onUnknown]  Unknown-flag policy. 'reject' (default) → strict parseArgs (throws
- *                                               CliFlagError on unknown). 'ignore' → tolerant parse (unknown flags
- *                                               dropped). Default 'reject' per #510 goal.
  * @returns {{ values: object, positionals: string[] }}
- * @throws {CliFlagError} on any parse failure when onUnknown='reject'.
+ * @throws {CliFlagError} on any parse failure (unknown flag, missing string value, …).
  */
 export function parseColumnFlags({
   argv = process.argv.slice(2),
   knownBool = {},
   knownString = {},
   defaults = {},
-  onUnknown = 'reject',
 } = {}) {
-  if (onUnknown !== 'reject' && onUnknown !== 'ignore') {
-    throw new CliFlagError(`invalid onUnknown policy: "${onUnknown}" (expected "reject" or "ignore")`);
-  }
-
   const options = {};
   for (const [name, descriptor] of Object.entries(knownBool)) {
     options[name] = toParseArgsOption('boolean', descriptor);
@@ -129,9 +134,7 @@ export function parseColumnFlags({
       options,
       allowPositionals: false,
       // strict=true rejects unknown flags AND missing values for string flags.
-      // strict=false silently tolerates unknowns (the legacy vault-mirror
-      // behaviour) and is only selected when onUnknown==='ignore'.
-      strict: onUnknown === 'reject',
+      strict: true,
     });
   } catch (err) {
     // Re-wrap node:util's ERR_PARSE_ARGS_* errors as our typed CliFlagError so
@@ -139,17 +142,9 @@ export function parseColumnFlags({
     throw new CliFlagError(err.message);
   }
 
-  // Under onUnknown='ignore', parseArgs non-strict mode KEEPS unknown tokens
-  // in parsed.values (as booleans for `--foo`-style tokens). Filter them so
-  // the returned `values` only contains declared keys — preserves the
-  // "ignore" contract callers expect (silent drop, not silent passthrough).
-  const declaredKeys = new Set([...Object.keys(knownBool), ...Object.keys(knownString)]);
-  const values = {};
-  for (const [key, value] of Object.entries(parsed.values)) {
-    if (onUnknown === 'reject' || declaredKeys.has(key)) {
-      values[key] = value;
-    }
-  }
+  // Strict parseArgs only returns declared keys (unknown flags throw above), so
+  // parsed.values already contains exactly the declared set — copy it directly.
+  const values = { ...parsed.values };
 
   // Apply explicit post-parse defaults only where parseArgs left the key
   // undefined (a string flag with no `default` reads back undefined). This lets

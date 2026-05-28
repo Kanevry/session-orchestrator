@@ -613,3 +613,128 @@ describe('validatePersonaSpec — tier enum validation', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 17 (M3): preCheckOutputContract — `not` and `definitions` forbidden keys
+//
+// FORBIDDEN_SCHEMA_KEYS (catalog-loader.mjs L89-97) includes 'not' and
+// 'definitions', but the existing Test-13 it.each only exercised $ref/$defs/
+// allOf/anyOf/oneOf. These two cases pin the remaining forbidden keys so a
+// future edit that drops 'not' or 'definitions' from the set fails here.
+//
+// Assertion shape matches the existing Test-13 rejection block:
+//   { ok: false }, errors is a non-empty array.
+// Plus a hardcoded-substring check on the SUT's actual message
+// ("is not permitted") per test-quality.md (specific assertion, no `||`).
+// ---------------------------------------------------------------------------
+
+describe('preCheckOutputContract — `not` and `definitions` forbidden (H3, M3)', () => {
+  it.each([
+    ['not forbidden', { not: { type: 'string' } }],
+    ['definitions forbidden', { definitions: { foo: { type: 'string' } }, type: 'object' }],
+  ])('%s returns {ok: false} with a non-empty errors array', (_label, schema) => {
+    const result = preCheckOutputContract(schema);
+    expect(result.ok).toBe(false);
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('the `not` rejection error names the forbidden key and says "is not permitted"', () => {
+    const result = preCheckOutputContract({ not: { type: 'string' } });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain(
+      'output_contract.not is not permitted (schema combinators and refs are blocked for safety)',
+    );
+  });
+
+  it('the `definitions` rejection error names the forbidden key and says "is not permitted"', () => {
+    const result = preCheckOutputContract({ definitions: { foo: { type: 'string' } }, type: 'object' });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain(
+      'output_contract.definitions is not permitted (schema combinators and refs are blocked for safety)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 18 (M6): loadCatalog — concurrent mid-load reads are consistent + isolated
+//
+// loadCatalog holds no module-level cache: each call resolves the personas
+// root, reads the directory fresh, and builds a NEW Map. The invariant under
+// concurrency is therefore determinism — three overlapping calls against the
+// same directory must each return an equal catalog with NO torn read and NO
+// cross-call state leak (distinct Map instances, identical contents).
+//
+// This is NOT a timing/wall-clock test: it asserts the determinism of the
+// concurrent reads, never their ordering. The Promise.all overlaps the three
+// loads at the event-loop level (real fs/promises I/O interleaves), which is
+// what makes a shared-state regression observable here.
+// ---------------------------------------------------------------------------
+
+describe('loadCatalog — concurrent reads (M6)', () => {
+  /** Normalise a catalog Map into a stable, comparable plain structure. */
+  function normalize(map) {
+    return [...map.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, entry]) => ({
+        key,
+        name: entry.persona.name,
+        body: entry.body,
+        sourcePath: entry.sourcePath,
+        frontmatter: entry.frontmatter,
+      }));
+  }
+
+  it('three concurrent loadCatalog calls all resolve to size-2 catalogs with identical contents', async () => {
+    makePersonasDir(tmp, {
+      'persona-alpha.md': minimalContent({ name: 'persona-alpha' }),
+      'persona-beta.md': minimalContent({ name: 'persona-beta' }),
+    });
+
+    const [a, b, c] = await Promise.all([
+      loadCatalog({ projectRoot: tmp }),
+      loadCatalog({ projectRoot: tmp }),
+      loadCatalog({ projectRoot: tmp }),
+    ]);
+
+    // No partial / torn read — every concurrent call sees both personas.
+    expect(a.size).toBe(2);
+    expect(b.size).toBe(2);
+    expect(c.size).toBe(2);
+
+    // Contents are identical across all three calls (deterministic reads).
+    expect(normalize(a)).toEqual(normalize(b));
+    expect(normalize(b)).toEqual(normalize(c));
+
+    // Concrete content pin (hardcoded) — guards against a normalize() tautology.
+    expect([...a.keys()].sort()).toEqual(['persona-alpha', 'persona-beta']);
+    expect(a.get('persona-alpha').persona.name).toBe('persona-alpha');
+    expect(b.get('persona-beta').persona.name).toBe('persona-beta');
+  });
+
+  it('concurrent calls return distinct Map instances (no shared-state / cache corruption)', async () => {
+    makePersonasDir(tmp, {
+      'persona-alpha.md': minimalContent({ name: 'persona-alpha' }),
+      'persona-beta.md': minimalContent({ name: 'persona-beta' }),
+    });
+
+    const [a, b, c] = await Promise.all([
+      loadCatalog({ projectRoot: tmp }),
+      loadCatalog({ projectRoot: tmp }),
+      loadCatalog({ projectRoot: tmp }),
+    ]);
+
+    // Each call builds its own Map — there is no shared cache to corrupt.
+    expect(a).not.toBe(b);
+    expect(b).not.toBe(c);
+    expect(a).not.toBe(c);
+
+    // Mutating one returned Map must not affect the others (proves isolation).
+    a.delete('persona-alpha');
+    expect(a.size).toBe(1);
+    expect(b.size).toBe(2);
+    expect(c.size).toBe(2);
+    expect(b.has('persona-alpha')).toBe(true);
+    expect(c.has('persona-alpha')).toBe(true);
+  });
+});

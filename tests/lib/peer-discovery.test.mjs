@@ -545,6 +545,50 @@ describe('Group F — LOW: freshnessMin pass-through to discoverActiveSessions',
     expect(discovered).toHaveLength(1);
     expect(discovered[0].sessionId).toBe('reg-fresh-F');
   });
+
+  // -------------------------------------------------------------------------
+  // F3 (#599): freshnessMin:0 boundary — a 0-minute window EXCLUDES even a
+  // near-fresh entry. isRegistryEntryFresh uses `_ageMinutes <= freshnessMin`
+  // (session-registry.mjs:268), and session-discovery.mjs:169 guards the
+  // freshnessMin default with `typeof opts.freshnessMin === 'number' ? ... : 15`
+  // — NOT a truthy-coercion. `now` is pinned and the heartbeat is set 1ms
+  // EARLIER (age ≈ 0.0000167 min, strictly > 0), so:
+  //   - freshnessMin:0 (correct): 0.0000167 <= 0 is FALSE → EXCLUDED (0 peers).
+  //   - mutation `freshnessMin || 15` (0 coerced → 15): 0.0000167 <= 15 is TRUE
+  //     → INCLUDED (1 peer) → the toHaveLength(0) assertion FAILS.
+  // NOTE: the heartbeat MUST be strictly before `now` — an EXACTLY-equal
+  // heartbeat gives age 0 and `0 <= 0` is TRUE (included), which would mask the
+  // boundary. The 1ms offset makes the test deterministic regardless of the
+  // wall clock (no reliance on the fixture-vs-call timing gap).
+  // -------------------------------------------------------------------------
+  it('F3: a near-fresh registry entry (heartbeat 1ms before now) is EXCLUDED when freshnessMin: 0', async () => {
+    const nowMs = Date.parse('2026-05-27T12:00:00.000Z');
+    const heartbeat1msBeforeNow = new Date(nowMs - 1).toISOString();
+    const nearFreshEntry = {
+      session_id: 'reg-nearfresh-F3',
+      pid: 0,
+      platform: 'claude',
+      repo_path_hash: repoPathHash(repoRoot),
+      repo_name: 'test-repo',
+      branch: 'main',
+      started_at: heartbeat1msBeforeNow,
+      last_heartbeat: heartbeat1msBeforeNow,
+      status: 'active',
+      current_wave: 0,
+      host_class: null,
+      mode: 'feature',
+    };
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: 'main-2026-05-27-deep-6',
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [nearFreshEntry],
+      freshnessMin: 0,
+      now: nowMs,
+    });
+
+    expect(result.peers.filter((p) => p.source === 'discovered')).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

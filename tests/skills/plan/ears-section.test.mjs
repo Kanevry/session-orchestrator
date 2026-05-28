@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { EARS_PATTERNS } from '../../_shared/ears-patterns.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const FEATURE_TEMPLATE = join(REPO_ROOT, 'skills', 'plan', 'prd-feature-template.md');
@@ -33,29 +34,9 @@ describe('prd-feature-template.md — EARS section header', () => {
 });
 
 describe('prd-feature-template.md — EARS canonical pattern names', () => {
-  it('contains the Ubiquitous pattern name', () => {
+  it.each(EARS_PATTERNS)('contains the %s pattern name', (pattern) => {
     const content = readFileSync(FEATURE_TEMPLATE, 'utf8');
-    expect(content).toContain('Ubiquitous');
-  });
-
-  it('contains the State-driven pattern name', () => {
-    const content = readFileSync(FEATURE_TEMPLATE, 'utf8');
-    expect(content).toContain('State-driven');
-  });
-
-  it('contains the Event-driven pattern name', () => {
-    const content = readFileSync(FEATURE_TEMPLATE, 'utf8');
-    expect(content).toContain('Event-driven');
-  });
-
-  it('contains the Optional feature pattern name', () => {
-    const content = readFileSync(FEATURE_TEMPLATE, 'utf8');
-    expect(content).toContain('Optional feature');
-  });
-
-  it('contains the Unwanted behaviour pattern name', () => {
-    const content = readFileSync(FEATURE_TEMPLATE, 'utf8');
-    expect(content).toContain('Unwanted behaviour');
+    expect(content).toContain(pattern);
   });
 });
 
@@ -104,29 +85,9 @@ describe('prd-full-template.md — EARS section header', () => {
 });
 
 describe('prd-full-template.md — EARS canonical pattern names', () => {
-  it('contains the Ubiquitous pattern name', () => {
+  it.each(EARS_PATTERNS)('contains the %s pattern name', (pattern) => {
     const content = readFileSync(FULL_TEMPLATE, 'utf8');
-    expect(content).toContain('Ubiquitous');
-  });
-
-  it('contains the State-driven pattern name', () => {
-    const content = readFileSync(FULL_TEMPLATE, 'utf8');
-    expect(content).toContain('State-driven');
-  });
-
-  it('contains the Event-driven pattern name', () => {
-    const content = readFileSync(FULL_TEMPLATE, 'utf8');
-    expect(content).toContain('Event-driven');
-  });
-
-  it('contains the Optional feature pattern name', () => {
-    const content = readFileSync(FULL_TEMPLATE, 'utf8');
-    expect(content).toContain('Optional feature');
-  });
-
-  it('contains the Unwanted behaviour pattern name', () => {
-    const content = readFileSync(FULL_TEMPLATE, 'utf8');
-    expect(content).toContain('Unwanted behaviour');
+    expect(content).toContain(pattern);
   });
 });
 
@@ -171,11 +132,8 @@ describe('prd-reviewer-prompt.md — Clarity section EARS-awareness bullet', () 
 
   it('EARS-awareness bullet references all 5 canonical pattern names', () => {
     const content = readFileSync(REVIEWER_PROMPT, 'utf8');
-    expect(content).toContain('Ubiquitous');
-    expect(content).toContain('State-driven');
-    expect(content).toContain('Event-driven');
-    expect(content).toContain('Optional feature');
-    expect(content).toContain('Unwanted behaviour');
+    const present = EARS_PATTERNS.filter((pattern) => content.includes(pattern));
+    expect(present).toEqual([...EARS_PATTERNS]);
   });
 
   it('EARS mention appears inside the Clarity section (not before it)', () => {

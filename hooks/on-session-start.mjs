@@ -99,7 +99,7 @@ async function isHostBannerEnabled(projectRoot) {
  * PRD defaults (F1.3): enabled=true, nudge-after-hours=1,
  * silence-after-sessions=1. Any parse failure → defaults.
  */
-async function readColdStartConfig(projectRoot) {
+export async function readColdStartConfig(projectRoot) {
   const defaults = {
     enabled: true,
     'nudge-after-hours': 1,

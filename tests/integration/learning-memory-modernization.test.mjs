@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 import { detectColdStart, consumeMarker, MS_PER_HOUR } from '@lib/cold-start-detector.mjs';
 import { _parseColdStart } from '@lib/config/cold-start.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
+import { collectProposals } from '@lib/memory-proposals/collector.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -376,5 +377,83 @@ describe('#22 — vault-mirror defaults propagate end-to-end', () => {
     // Vault-mirror quality gate min-narrative-chars default is 400 — the
     // file body must exceed that floor or the mirror would have been skipped.
     expect(mirrored.length).toBeGreaterThan(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #23 — auto-dream parser → collectProposals queue (MED-8, issue #589)
+// ---------------------------------------------------------------------------
+//
+// End-to-end chain for the SECOND confidence gate (issue #566): the value the
+// session-end AUQ surfaces is the FILTERED collectProposals queue, and the
+// filter threshold comes straight from Session Config. The consumption point
+// is documented at skills/session-end/SKILL.md:399
+// (`minConfidence: config['auto-dream']?.['min-confidence']`).
+//
+// STEP1 parse a config doc with auto-dream.min-confidence: 0.6
+// STEP2 write a proposals.jsonl with a 0.4 record + a 0.7 record
+// STEP3 collectProposals({ repoRoot, minConfidence: config[...]['min-confidence'] })
+// STEP4 assert the returned queue DROPS 0.4 and KEEPS 0.7
+
+describe('#23 — auto-dream parser → collectProposals queue', () => {
+  // Build a complete proposal JSONL line (mirrors the makeJsonl helper in
+  // tests/lib/memory-proposals/collector.test.mjs). `confidence` is the field
+  // the #566 filter inspects; the rest is plausible filler for the deserializer.
+  function makeProposalJsonl(confidence, subject, createdAt) {
+    return JSON.stringify({
+      schema_version: 1,
+      id: `prop-${subject}`,
+      type: 'workflow-pattern',
+      subject,
+      insight: 'insight body',
+      evidence: 'evidence body',
+      confidence,
+      wave_id: 'W1',
+      created_at: createdAt,
+    });
+  }
+
+  it('parsed min-confidence: 0.6 → collectProposals drops the 0.4 record and keeps the 0.7 record', async () => {
+    // STEP 1 — Parse the Session Config doc and read the threshold.
+    const claudeMdContent = [
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'auto-dream:',
+      '  min-confidence: 0.6',
+      '',
+    ].join('\n');
+
+    const config = parseSessionConfig(claudeMdContent);
+    expect(config['auto-dream']['min-confidence']).toBe(0.6);
+
+    // STEP 2 — Build a tmp repo with a proposals.jsonl (one below, one above
+    // the 0.6 threshold). created_at deltas keep FIFO ordering deterministic.
+    const repo = mkTmp('autodream-collect-');
+    mkdirSync(join(repo, '.orchestrator', 'metrics'), { recursive: true });
+    const proposalsPath = join(repo, '.orchestrator', 'metrics', 'proposals.jsonl');
+    const lines = [
+      makeProposalJsonl(0.4, 'below-threshold', '2026-05-27T10:00:00.000Z'),
+      makeProposalJsonl(0.7, 'above-threshold', '2026-05-27T10:00:01.000Z'),
+    ];
+    writeFileSync(proposalsPath, lines.join('\n') + '\n', 'utf8');
+
+    // STEP 3 — Invoke the consumer with the PARSED threshold (the exact wiring
+    // session-end uses at SKILL.md:399).
+    const { queue } = await collectProposals({
+      repoRoot: repo,
+      minConfidence: config['auto-dream']['min-confidence'],
+    });
+
+    // STEP 4 — The AUQ-surfaced queue must contain ONLY the 0.7 record.
+    // FALSIFICATION: if the parsed threshold were not threaded through (e.g.
+    // the filter ran with no minConfidence), the 0.4 record would survive and
+    // queue.length would be 2. If the threshold were mis-read as a higher value
+    // (≥0.7), the 0.7 record would be at the boundary — pinning subject + value
+    // catches a wrong-record-kept regression too.
+    expect(queue).toHaveLength(1);
+    expect(queue[0].subject).toBe('above-threshold');
+    expect(queue[0].confidence).toBe(0.7);
   });
 });

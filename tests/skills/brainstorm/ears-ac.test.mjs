@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { EARS_PATTERNS } from '../../_shared/ears-patterns.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'brainstorm', 'SKILL.md');
@@ -42,29 +43,9 @@ describe('brainstorm/SKILL.md — EARS AC section header', () => {
 // ---------------------------------------------------------------------------
 
 describe('brainstorm/SKILL.md — EARS canonical pattern names', () => {
-  it('contains the Ubiquitous pattern name', () => {
+  it.each(EARS_PATTERNS)('contains the %s pattern name', (pattern) => {
     const content = readFileSync(SKILL_PATH, 'utf8');
-    expect(content).toContain('Ubiquitous');
-  });
-
-  it('contains the State-driven pattern name', () => {
-    const content = readFileSync(SKILL_PATH, 'utf8');
-    expect(content).toContain('State-driven');
-  });
-
-  it('contains the Event-driven pattern name', () => {
-    const content = readFileSync(SKILL_PATH, 'utf8');
-    expect(content).toContain('Event-driven');
-  });
-
-  it('contains the Optional feature pattern name', () => {
-    const content = readFileSync(SKILL_PATH, 'utf8');
-    expect(content).toContain('Optional feature');
-  });
-
-  it('contains the Unwanted behaviour pattern name', () => {
-    const content = readFileSync(SKILL_PATH, 'utf8');
-    expect(content).toContain('Unwanted behaviour');
+    expect(content).toContain(pattern);
   });
 });
 
