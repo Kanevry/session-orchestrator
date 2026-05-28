@@ -134,6 +134,29 @@ async function resolveSessionIdForHeartbeat(input, sessionFile) {
   return null;
 }
 
+/**
+ * Resolve the current wave number from .claude/wave-scope.json `.wave`.
+ * Returns 0 when the file is absent or unparseable, mirroring the
+ * pre-bash-memory-propose-audit.mjs G5 precedent ("wave defaults to 0 when
+ * wave-scope.json absent"). The file is deleted mid-session at Quality phase
+ * transitions and final cleanup, so absence is an expected, non-error state.
+ *
+ * @param {string} projectDir
+ * @returns {Promise<number>}
+ */
+async function resolveWaveNumber(projectDir) {
+  const waveFile = path.join(projectDir, '.claude', 'wave-scope.json');
+  try {
+    const raw = await readFile(waveFile, 'utf8');
+    const data = JSON.parse(raw);
+    const wave = data?.wave;
+    return typeof wave === 'number' ? wave : 0;
+  } catch {
+    // Absent or unparseable — treat as 0 (no active wave).
+    return 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -203,9 +226,14 @@ async function main() {
 
   // Emit wave-lifecycle events via the canonical stream when the orchestrator
   // populates wave_signal ('wave-start' | 'wave-complete'). Mechanical seam —
-  // see docs/events-schema.md. Best-effort; never blocks the hook. (Live firing
-  // depends on wave_signal being injected into the batch payload — tracked
-  // separately; this completes the emission seam.)
+  // see docs/events-schema.md. Best-effort; never blocks the hook.
+  //
+  // Live path today: the `wave_signal === null` branch below provides the
+  // mechanical wave-lifecycle fallback (#612). It fires live by diffing
+  // `.claude/wave-scope.json` `.wave` against the persisted `last_wave` — no
+  // payload injection required. This explicit-signal branch remains as the
+  // preferred path for whenever the harness DOES inject `wave_signal` into the
+  // batch payload (it takes precedence over the fallback when present).
   if (waveSignal === 'wave-start' || waveSignal === 'wave-complete') {
     try {
       await emitEvent(
@@ -219,6 +247,62 @@ async function main() {
           ...(batchSize !== null ? { batch_size: batchSize } : {}),
         },
       );
+    } catch { /* best-effort — hook must remain non-blocking */ }
+  } else if (waveSignal === null) {
+    // ------------------------------------------------------------------
+    // Mechanical wave-lifecycle fallback (#612, Option b).
+    // ------------------------------------------------------------------
+    // When the harness does NOT inject an explicit wave_signal (the common
+    // case today — nothing populates it), detect wave boundaries from the
+    // coordinator-written .claude/wave-scope.json `.wave` number, diffed
+    // against `last_wave` persisted in current-session.json. The explicit
+    // path above takes precedence — this branch only runs when wave_signal
+    // is absent (backward-compatible).
+    //
+    // Only a STRICT INCREASE (wave > last_wave AND wave > 0) is a real wave
+    // boundary. wave-scope.json is deleted mid-session at Quality phase
+    // transitions and final cleanup, so resolveWaveNumber() returns 0 in
+    // those windows — a drop to 0 (or any non-increase) is NOT a wave change
+    // and is ignored, preventing spurious emissions on every batch.
+    //
+    // Final-wave limitation: the LAST wave never receives a `completed` event
+    // here because there is no N+1 transition to trigger it. The coordinator
+    // emits the final orchestrator.wave.completed at session close.
+    try {
+      const wave = await resolveWaveNumber(SO_PROJECT_DIR);
+      if (wave > 0) {
+        // Read last_wave from the just-written session file (after the
+        // last_batch RMW above, so we observe the latest persisted value).
+        let lastWave = 0;
+        try {
+          const raw = await readFile(sessionFile, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (typeof parsed.last_wave === 'number') lastWave = parsed.last_wave;
+        } catch { /* absent/unparseable → lastWave stays 0 */ }
+
+        if (wave > lastWave) {
+          // Close the prior wave first (only when there was one).
+          if (lastWave > 0) {
+            await emitEvent('orchestrator.wave.completed', {
+              wave_number: lastWave,
+              ...(batchId !== null ? { batch_id: batchId } : {}),
+              ...(batchSize !== null ? { batch_size: batchSize } : {}),
+            });
+          }
+          // Open the new wave.
+          await emitEvent('orchestrator.wave.started', {
+            wave_number: wave,
+            ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
+            ...(batchId !== null ? { batch_id: batchId } : {}),
+            ...(batchSize !== null ? { batch_size: batchSize } : {}),
+          });
+          // Persist the high-water mark so the next batch does not re-emit.
+          await atomicMutateJson(sessionFile, {}, (current) => ({
+            ...current,
+            last_wave: wave,
+          }));
+        }
+      }
     } catch { /* best-effort — hook must remain non-blocking */ }
   }
 

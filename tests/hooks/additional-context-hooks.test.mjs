@@ -199,6 +199,26 @@ describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
     expect(wave).toBeDefined();
     expect(Number.isNaN(Date.parse(wave.timestamp))).toBe(false);
   });
+
+  it('wave_number:0 is threaded and next_wave_role key is absent when omitted (#613)', () => {
+    // Boundary: wave_number 0 is a valid number — it must be emitted, NOT dropped
+    // as a falsy value (a `wave_number > 0` truthiness check would lose it). And
+    // an OMITTED next_wave_role must be ABSENT from the payload (conditional-spread
+    // contract), never present-as-null/undefined (a key with undefined value would
+    // round-trip through JSON as absent, but emitting it would still be wrong shape).
+    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
+      wave_signal: 'wave-complete',
+      wave_number: 0,
+      batch_id: 'b-zero',
+      batch_size: 2,
+    });
+    expect(result.status).toBe(0);
+    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.completed');
+    expect(wave).toBeDefined();
+    expect(wave.wave_number).toBe(0);
+    // next_wave_role was omitted from the input → key must not exist on the record.
+    expect(Object.prototype.hasOwnProperty.call(wave, 'next_wave_role')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

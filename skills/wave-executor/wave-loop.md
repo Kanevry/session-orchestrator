@@ -188,7 +188,7 @@ Capture stdout as `$GROUNDING_BLOCK`. If empty, dispatch the agent unchanged (le
 
     <original prompt>
 
-The helper emits one `grounding_injected` event per injected file to `.orchestrator/metrics/events.jsonl`. The helper never returns non-zero; any failure (missing jq, missing events.jsonl, unreadable file) results in silent no-op so wave dispatch is never blocked.
+The helper emits one `orchestrator.grounding.injected` event per injected file to `.orchestrator/metrics/events.jsonl` (routed through `scripts/emit-event.mjs` → the canonical `emitEvent()` path). The helper never returns non-zero; any failure (missing jq, missing events.jsonl, unreadable file) results in silent no-op so wave dispatch is never blocked.
 
 **Fallback for agents without explicit file scope:** if the session plan's agent specification does not list a "Files:" scope for an agent, fall back to the wave-level `allowedPaths` (from `wave-scope.json`). If that is also empty, skip injection for that agent.
 

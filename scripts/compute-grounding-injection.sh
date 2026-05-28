@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # compute-grounding-injection.sh — emit line-numbered GROUNDING blocks for files
 # with recent edit-format-friction stagnation history in the agent's file scope.
-# Appends grounding_injected events to events.jsonl when PERSISTENCE=true.
+# Appends orchestrator.grounding.injected events to events.jsonl when PERSISTENCE=true.
 # Never exits non-zero — wave dispatch must not be blocked by helper failures.
 
 set -uo pipefail
+
+# --- Resolve this script's own directory + repo root (for emit-event.mjs) ---
+# Robust against symlinks and being invoked from any CWD. The script lives at
+# <repo>/scripts/compute-grounding-injection.sh, so the repo root is the parent
+# of the scripts/ directory. Used to locate scripts/emit-event.mjs (#611).
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  _dir="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$_dir/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+EMIT_EVENT_CLI="$REPO_ROOT/scripts/emit-event.mjs"
 
 # --- Early-exit cases (exit 0, empty stdout, no events write) ---
 
@@ -144,18 +158,28 @@ for FILE in "${SELECTED[@]+"${SELECTED[@]}"}"; do
 
   LINES=$(wc -l < "$FILE" | tr -d ' ')
 
-  # Append grounding_injected event when persistence is enabled
-  if [[ "$PERSISTENCE" == "true" ]]; then
-    jq -nc \
-      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  # Emit an orchestrator.grounding.injected event when persistence is enabled.
+  # Routed through the canonical emitEvent() path (scripts/emit-event.mjs) rather
+  # than a hand-rolled `jq >> file` append, so the JSONL record and the optional
+  # Clank webhook always carry the SAME dotted event name (#611). emitEvent()
+  # generates its own `timestamp`, so the payload below omits it.
+  if [[ "$PERSISTENCE" == "true" && -f "$EMIT_EVENT_CLI" ]]; then
+    PAYLOAD=$(jq -nc \
       --arg session "$SESSION_ID" \
       --argjson wave "$WAVE" \
       --arg agent "$AGENT_TYPE" \
       --arg file "$FILE" \
       --argjson lines "$LINES" \
       --argjson capped "$CAPPED" \
-      '{event:"grounding_injected",timestamp:$ts,session:$session,wave:$wave,agent:$agent,file:$file,lines:$lines,grounding_capped:$capped}' \
-      >> "$EVENTS_JSONL" 2>/dev/null || true
+      '{session:$session,wave:$wave,agent:$agent,file:$file,lines:$lines,grounding_capped:$capped}' \
+      2>/dev/null) || PAYLOAD=""
+    if [[ -n "$PAYLOAD" ]]; then
+      node "$EMIT_EVENT_CLI" \
+        --type orchestrator.grounding.injected \
+        --file "$EVENTS_JSONL" \
+        --payload "$PAYLOAD" \
+        >/dev/null 2>&1 || true
+    fi
   fi
 done
 

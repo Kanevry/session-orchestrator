@@ -27,6 +27,13 @@ event name on both sides. Hand-rolled appenders drift: the JSONL and the webhook
 end up with different names (the `stop` vs `orchestrator.session.stopped`
 divergence that issue #609 fixed).
 
+Shell and other non-Node emitters MUST route through the **`scripts/emit-event.mjs`**
+CLI (`--type <name> --payload <json>` + optional `--file <path>`, plus `--json`/`--help`),
+which wraps `emitEvent()` so they inherit the same canonical record + webhook fan-out
+instead of `jq >> events.jsonl`. For callers that manage their own stream path,
+`emitEvent(type, payload, { filePath })` accepts an additive optional path override
+(default = the resolved `eventsFilePath()`); existing two-argument callers are unchanged.
+
 ## Naming convention
 
 Orchestrator-owned events use a dotted namespace:
@@ -54,19 +61,20 @@ namespace we own. The validator + regex live in `scripts/lib/events-schema.mjs`
 | `orchestrator.session.lock.acquired` | `hooks/_lib/lock-bootstrap.mjs` | SessionStart |
 | `orchestrator.agent.stopped` | `hooks/on-stop.mjs` | SubagentStop |
 | `orchestrator.memory.propose_invoked` | `hooks/pre-bash-memory-propose-audit.mjs` | PreToolUse(Bash) |
-| `orchestrator.wave.started` / `.completed` | `hooks/post-tool-batch-wave-signal.mjs` | PostToolBatch — wired; fires live once `wave_signal` is injected (#612) |
+| `orchestrator.wave.started` / `.completed` | `hooks/post-tool-batch-wave-signal.mjs` | PostToolBatch — fires live via `.claude/wave-scope.json` `.wave` increase (mechanical fallback, #612); an explicit injected `wave_signal` still takes precedence |
 | `orchestrator.quality_gate.passed` / `.failed` | `scripts/run-quality-gate.mjs` | per gate-CLI run (live) |
+| `orchestrator.grounding.injected` | `scripts/compute-grounding-injection.sh` (via `scripts/emit-event.mjs`) | grounding injection, when `PERSISTENCE=true` |
 
 Non-orchestrator names still present in the stream: `tmux-layout.{invoked,completed,degraded}`
-(tmux-layout skill), `grounding_injected` (legacy — migrates to
-`orchestrator.grounding.injected` in #611), `stagnation_detected`.
+(tmux-layout skill) and `stagnation_detected`. (`grounding_injected` was migrated to
+the dotted `orchestrator.grounding.injected` in #611 — see the catalog above.)
 
 ## Consumers
 
 - `scripts/lib/convergence-monitor.mjs` — tails events.jsonl; reads `event_type ?? event`.
 - `scripts/lib/tmux-layout/telemetry-stats.mjs` — filters `event.startsWith('tmux-layout.')`.
 - `scripts/lib/events-rotation.mjs` — size-based archival.
-- `skills/session-end/metrics-collection.md` — jq roll-ups (incl. `grounding_injected`).
+- `skills/session-end/metrics-collection.md` — jq roll-ups (incl. `orchestrator.grounding.injected`).
 
 Renaming an existing event name is a breaking change to the stream + these
 consumers — verify with `grep` (PSA-006) and update consumers in lockstep.

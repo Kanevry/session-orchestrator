@@ -560,6 +560,119 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// High-water-mark preservation across SessionStart (#612 root-cause fix)
+// ---------------------------------------------------------------------------
+//
+// SessionStart fires on startup|clear|compact|resume. On clear/compact/resume
+// of the SAME logical session the UUID session_id changes but the
+// semantic_session_id stays stable. The hook must therefore PRESERVE the
+// last_wave / last_batch high-water marks (written mid-session by
+// post-tool-batch-wave-signal.mjs) when the prior current-session.json carries
+// the SAME semantic_session_id — otherwise a full overwrite drops last_wave,
+// and the next PostToolBatch re-emits a duplicate orchestrator.wave.started{N}.
+// For a genuinely NEW logical session (different/absent semantic id) the marks
+// are RESET (current behaviour).
+
+describe('high-water-mark preservation across SessionStart (#612)', { timeout: 15000 }, () => {
+  async function readSessionFile(projectDir) {
+    const raw = await fs.readFile(
+      path.join(projectDir, '.orchestrator', 'current-session.json'),
+      'utf8',
+    );
+    return JSON.parse(raw);
+  }
+
+  /**
+   * Wipe the isolated session registry's active dir so a subsequent hook run
+   * resolves the SAME semantic id (the n-counter increments off active +
+   * historical sessions; a clean registry yields `-1` again). This deterministically
+   * simulates a clear/compact/resume of the SAME logical session — the new UUID
+   * changes but the semantic id is stable while current-session.json's
+   * high-water mark persists on disk.
+   */
+  async function clearActiveRegistry() {
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    await fs.rm(activeDir, { recursive: true, force: true });
+  }
+
+  it('preserves last_wave when the prior session file carries the SAME semantic_session_id', async () => {
+    const dir = await mkProjectTracked();
+    // First run establishes the semantic_session_id this fixture resolves to
+    // (derived from branch+date+mode+history; we read it back rather than
+    // hardcode a derived value).
+    await runHook({ projectDir: dir });
+    const firstSemanticId = (await readSessionFile(dir)).semantic_session_id;
+    expect(typeof firstSemanticId).toBe('string');
+    expect(firstSemanticId.length).toBeGreaterThan(0);
+
+    // Reclaim the registry slot so the next run resolves the SAME semantic id,
+    // then simulate mid-session state: the same logical session has progressed
+    // to wave 3 (current-session.json carries the SAME semantic id + marks).
+    await clearActiveRegistry();
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'prev-uuid-aaaa',
+          semantic_session_id: firstSemanticId,
+          pid: 12345,
+          source: 'stdin',
+          timestamp: '2026-05-28T00:00:00.000Z',
+          last_wave: 3,
+          last_batch: { batch_id: 'wave3-batch1', batch_size: 6 },
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    // A clear/compact/resume of the SAME logical session re-fires SessionStart.
+    // The semantic id resolves identically, so last_wave/last_batch MUST survive.
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    expect(after.semantic_session_id).toBe(firstSemanticId);
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave')).toBe(true);
+    expect(after.last_wave).toBe(3);
+    expect(after.last_batch).toEqual({ batch_id: 'wave3-batch1', batch_size: 6 });
+  });
+
+  it('resets last_wave when the prior session file carries a DIFFERENT semantic_session_id', async () => {
+    const dir = await mkProjectTracked();
+    // The hook creates .orchestrator/ on its own, but we seed current-session.json
+    // BEFORE the run, so create the dir first.
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    // Pre-seed a current-session.json for a DIFFERENT logical session that had
+    // progressed to wave 3. The hook will resolve its own (different) semantic
+    // id this run, so the marks belong to a stale session and must be dropped.
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'stale-uuid-bbbb',
+          semantic_session_id: 'some-other-branch-2020-01-01-deep-9',
+          pid: 54321,
+          source: 'stdin',
+          timestamp: '2020-01-01T00:00:00.000Z',
+          last_wave: 3,
+          last_batch: { batch_id: 'stale-batch', batch_size: 2 },
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    // The resolved semantic id differs from the stale one, so NO preservation.
+    expect(after.semantic_session_id).not.toBe('some-other-branch-2020-01-01-deep-9');
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_batch')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mechanical session.lock writer (Epic #583 P3 — #584 + #587)
 // ---------------------------------------------------------------------------
 //

@@ -280,6 +280,37 @@ async function resolveSessionId(input, projectRoot) {
   try {
     const dir = path.join(projectRoot, '.orchestrator');
     await mkdir(dir, { recursive: true });
+    const sessionFilePath = path.join(dir, 'current-session.json');
+
+    // High-water-mark preservation (#612 root-cause fix).
+    // SessionStart fires on startup|clear|compact|resume of the SAME logical
+    // session. On clear/compact/resume the UUID `session_id` changes but the
+    // `semantic_session_id` (branch+date+mode+n) stays stable. A naive full
+    // overwrite of current-session.json drops the `last_wave` / `last_batch`
+    // markers written mid-session by post-tool-batch-wave-signal.mjs, which
+    // makes the next PostToolBatch re-read last_wave as absent→0 and re-emit a
+    // duplicate orchestrator.wave.started{N} with no intervening
+    // wave.completed. To prevent that, PRESERVE last_wave/last_batch across a
+    // SessionStart of the SAME logical session (matching semantic id), while
+    // still RESETTING them for a genuinely new session (different/absent
+    // semantic id, or an unparseable prior file). Best-effort: a read failure
+    // must never throw — we simply fall through to the reset path.
+    const preserved = {};
+    if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
+      try {
+        const prevRaw = await readFile(sessionFilePath, 'utf8');
+        const prev = JSON.parse(prevRaw);
+        if (prev && prev.semantic_session_id === semanticSessionId) {
+          if (Object.prototype.hasOwnProperty.call(prev, 'last_wave')) {
+            preserved.last_wave = prev.last_wave;
+          }
+          if (Object.prototype.hasOwnProperty.call(prev, 'last_batch')) {
+            preserved.last_batch = prev.last_batch;
+          }
+        }
+      } catch { /* absent / unparseable → no preservation (reset) */ }
+    }
+
     // Epic #583 W5-F1c — surface semantic_session_id (Q5 H1 / Issue #587 completion).
     // current-session.json now carries BOTH the UUID session_id (Claude Code default)
     // AND the semantic_session_id derived from branch+date+mode+history.
@@ -289,9 +320,12 @@ async function resolveSessionId(input, projectRoot) {
       pid: process.pid,
       source,
       timestamp: new Date().toISOString(),
+      // Spread AFTER the base fields so the preserved high-water marks survive
+      // (and never clobber the identity fields above).
+      ...preserved,
     };
     await writeFile(
-      path.join(dir, 'current-session.json'),
+      sessionFilePath,
       JSON.stringify(payload, null, 2) + '\n',
       'utf8',
     );

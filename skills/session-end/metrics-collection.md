@@ -28,7 +28,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
      [.[] | select(.session == $sid)]
      | {
          stagnation: [.[] | select(.event == "stagnation_detected")],
-         grounding:  [.[] | select(.event == "grounding_injected")]
+         grounding:  [.[] | select(.event == "orchestrator.grounding.injected")]
        }
    ' .orchestrator/metrics/events.jsonl
    ```
@@ -144,4 +144,4 @@ Finalize session metrics by reading the wave data accumulated during execution:
 > - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
 > - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
 > - `stagnation_events`: populated ONLY when ≥1 stagnation event was logged to `events.jsonl` during this session. When `total == 0`, the field is omitted from the JSONL entry.
-> - `grounding_injections`: populated ONLY when ≥1 `grounding_injected` event was logged to `events.jsonl` during this session. When `count == 0`, the field is omitted from the JSONL entry.
+> - `grounding_injections`: populated ONLY when ≥1 `orchestrator.grounding.injected` event was logged to `events.jsonl` during this session. When `count == 0`, the field is omitted from the JSONL entry.

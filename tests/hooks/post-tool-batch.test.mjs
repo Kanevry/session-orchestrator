@@ -52,6 +52,37 @@ function readSessionFile() {
   return JSON.parse(readFileSync(filePath, 'utf8'));
 }
 
+const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
+
+/**
+ * Read and parse all JSONL event records the hook emitted via emitEvent()
+ * (which resolves to CLAUDE_PROJECT_DIR/.orchestrator/metrics/events.jsonl).
+ * Returns [] when the file is absent (no events emitted).
+ */
+function readEvents() {
+  const filePath = join(tmp, EVENTS_REL);
+  if (!existsSync(filePath)) return [];
+  return readFileSync(filePath, 'utf8')
+    .trim()
+    .split('\n')
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l));
+}
+
+/** Write .claude/wave-scope.json with the given wave number. */
+function writeWaveScope(wave) {
+  const claudeDir = join(tmp, '.claude');
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(join(claudeDir, 'wave-scope.json'), JSON.stringify({ wave }), 'utf8');
+}
+
+/** Write .orchestrator/current-session.json with the given fields. */
+function writeCurrentSession(obj) {
+  const orchDir = join(tmp, '.orchestrator');
+  mkdirSync(orchDir, { recursive: true });
+  writeFileSync(join(orchDir, 'current-session.json'), JSON.stringify(obj, null, 2) + '\n', 'utf8');
+}
+
 describe('post-tool-batch-wave-signal hook', () => {
   it('happy path: valid payload writes last_batch signal and exits 0', () => {
     const payload = JSON.stringify({
@@ -226,5 +257,74 @@ describe('post-tool-batch heartbeat refresh (Epic #583 W3-P3)', () => {
     // current-session.json is still written (the existing happy-path contract).
     const sessionFile = join(tmp, '.orchestrator', 'current-session.json');
     expect(existsSync(sessionFile)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mechanical wave-lifecycle fallback (#612, Option b)
+// ---------------------------------------------------------------------------
+//
+// When the harness does NOT inject an explicit wave_signal (the common case),
+// the hook detects wave boundaries by diffing .claude/wave-scope.json `.wave`
+// against `last_wave` persisted in current-session.json, emitting
+// orchestrator.wave.{started,completed} on a STRICT INCREASE (wave > last_wave
+// AND wave > 0). It then persists the new high-water mark so the next batch on
+// the same wave does NOT re-emit. The in-session idempotency contract:
+//   - same wave as last_wave        → ZERO new wave events (re-emit suppressed)
+//   - strict increase               → completed{prev} + started{new}, persist
+//   - drop to 0 / non-increase       → ignored (wave-scope deleted mid-phase)
+// These payloads carry NO wave_signal, so they exercise the fallback branch.
+
+describe('post-tool-batch mechanical wave-lifecycle fallback (#612)', () => {
+  it('suppresses re-emit when wave == last_wave (same wave, no boundary)', () => {
+    writeWaveScope(3);
+    writeCurrentSession({ session_id: 's', last_wave: 3 });
+
+    // Batch payload with NO wave_signal → exercises the fallback branch.
+    const result = runHook(JSON.stringify({ batch_id: 'b1', batch_size: 6 }));
+    expect(result.status).toBe(0);
+
+    const waveEvents = readEvents().filter((e) =>
+      e.event === 'orchestrator.wave.started' || e.event === 'orchestrator.wave.completed',
+    );
+    expect(waveEvents).toEqual([]);
+    // last_wave is unchanged (still 3).
+    expect(readSessionFile().last_wave).toBe(3);
+  });
+
+  it('emits completed{prev}+started{new} and persists last_wave on a strict increase', () => {
+    writeWaveScope(2);
+    writeCurrentSession({ session_id: 's', last_wave: 1 });
+
+    const result = runHook(JSON.stringify({ batch_id: 'b2', batch_size: 4 }));
+    expect(result.status).toBe(0);
+
+    const events = readEvents();
+    const completed = events.filter((e) => e.event === 'orchestrator.wave.completed');
+    const started = events.filter((e) => e.event === 'orchestrator.wave.started');
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0].wave_number).toBe(1);
+    expect(started).toHaveLength(1);
+    expect(started[0].wave_number).toBe(2);
+
+    // High-water mark advanced to the new wave and persisted.
+    expect(readSessionFile().last_wave).toBe(2);
+  });
+
+  it('emits NO wave events when wave drops to 0 (wave-scope deleted mid-phase)', () => {
+    // wave-scope.json absent → resolveWaveNumber() returns 0; current-session
+    // still holds last_wave: 3. A non-increase (3 → 0) MUST be ignored.
+    writeCurrentSession({ session_id: 's', last_wave: 3 });
+
+    const result = runHook(JSON.stringify({ batch_id: 'b3', batch_size: 2 }));
+    expect(result.status).toBe(0);
+
+    const waveEvents = readEvents().filter((e) =>
+      e.event === 'orchestrator.wave.started' || e.event === 'orchestrator.wave.completed',
+    );
+    expect(waveEvents).toEqual([]);
+    // last_wave is untouched — the drop did not rewrite the high-water mark.
+    expect(readSessionFile().last_wave).toBe(3);
   });
 });

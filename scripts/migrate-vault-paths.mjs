@@ -50,6 +50,7 @@
 
 import { promises as fs, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -68,6 +69,23 @@ const PROJECTS_ROOT = path.join(HOME, 'Projects');
 // Set at startup from CLI args or config. Helpers read these; main() resolves them.
 let OLD_SEGMENT = null;
 let NEW_SEGMENT = null;
+
+/**
+ * Test-only seam (architect MED #607 D3): set the module-level OLD/NEW segments
+ * that the exported pure helpers (rewriteContent, findMissingSegmentHits,
+ * isOwnedByUsernamePath, classifyHit) read. The CLI path sets these inside
+ * main() from --from/--to or config; importing tests have no other way to drive
+ * the segment-dependent helpers. Underscore prefix = internal-but-test-visible,
+ * mirroring the _parseVaultIntegration / _parseMemoryProposals convention.
+ *
+ * Returns the prior values so a test can save/restore around an assertion.
+ */
+function _setSegmentsForTest(oldSeg, newSeg) {
+  const prev = { OLD_SEGMENT, NEW_SEGMENT };
+  OLD_SEGMENT = oldSeg;
+  NEW_SEGMENT = newSeg;
+  return prev;
+}
 
 // ── Missing-segment class (GitLab #600 D3) ────────────────────────────────────
 // A second, username-independent drift class: a `vault-dir:` value that points at
@@ -88,6 +106,12 @@ let NEW_SEGMENT = null;
 // The owner segment is the canonical `Bernhard`; the rewrite inserts it between
 // `Projects/` and `vault`.
 const MISSING_SEGMENT_OWNER = 'Bernhard';
+
+// Classification label for the missing-/Bernhard/-segment drift class. Referenced
+// in findMissingSegmentHits() (hit record) and the emit() action strings — hoisted
+// here so the literal lives in exactly one place (architect MED #607 D3).
+const MISSING_SEGMENT_CLASS = 'vault-dir-missing-segment';
+
 const MISSING_SEGMENT_RE = new RegExp(
   // (1) vault-dir: prefix (with optional surrounding whitespace)
   // (2) value root: ~ or /Users/<user>
@@ -392,8 +416,26 @@ function lineHasMissingSegment(line) {
 }
 
 /**
+ * Is this line owned by the username-rewrite path (i.e. does it carry OLD_SEGMENT)?
+ *
+ * The missing-segment pass must never touch a line the username rewrite owns — a
+ * `vault-dir: /Users/oldname/Projects/vault` line is a username drift, not a
+ * missing-segment drift. This single predicate is the shared invariant used by
+ * BOTH findMissingSegmentHits() (skip the hit) and rewriteMissingSegment() (skip
+ * the rewrite, gated on the ORIGINAL line text). Extracted to one place so the
+ * two sites cannot drift apart (architect MED #607 D3).
+ *
+ * `line` may be undefined when an original-content array is shorter than the
+ * working-content array (chained transforms can change line count); an undefined
+ * line is, by definition, not owned by the username path → returns false.
+ */
+function isOwnedByUsernamePath(line) {
+  return line !== undefined && line.includes(OLD_SEGMENT);
+}
+
+/**
  * Find missing-segment hits in a file's content, returning
- * [{line, text, classification: 'vault-dir-missing-segment'}].
+ * [{line, text, classification: MISSING_SEGMENT_CLASS}].
  * Historical files (decisions.md, archive/, …) are reported but not rewritten,
  * mirroring the OLD_SEGMENT path — classifyHit's isHistorical() guard.
  *
@@ -408,12 +450,12 @@ function findMissingSegmentHits(filePath, content) {
   const lines = content.split('\n');
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(OLD_SEGMENT)) continue; // owned by username-rewrite path
+    if (isOwnedByUsernamePath(lines[i])) continue; // owned by username-rewrite path
     if (lineHasMissingSegment(lines[i])) {
       hits.push({
         line: i + 1, // 1-indexed
         text: lines[i],
-        classification: historical ? 'historical' : 'vault-dir-missing-segment',
+        classification: historical ? 'historical' : MISSING_SEGMENT_CLASS,
       });
     }
   }
@@ -431,14 +473,20 @@ function findMissingSegmentHits(filePath, content) {
  * path and is skipped, even though the username rewrite may have produced a
  * `/Users/newname/Projects/vault` form that would otherwise match the regex.
  * This keeps the two classes from colliding when both transforms chain.
+ *
+ * `originalContent` is REQUIRED (no default): the collision-gate is meaningless
+ * without the pre-rewrite text, and a `= content` default silently fails open if
+ * a future caller forgets it — passing the already-rewritten content as its own
+ * "original" would let a chained username rewrite leak a spurious /Bernhard/
+ * segment. Callers MUST pass the original content explicitly (architect MED #607 D3).
  */
-function rewriteMissingSegment(content, originalContent = content) {
+function rewriteMissingSegment(content, originalContent) {
   const origLines = originalContent.split('\n');
   return content
     .split('\n')
     .map((line, i) => {
       // Skip lines the username path owns (matched on the ORIGINAL line text).
-      if (origLines[i] !== undefined && origLines[i].includes(OLD_SEGMENT)) return line;
+      if (isOwnedByUsernamePath(origLines[i])) return line;
       MISSING_SEGMENT_RE.lastIndex = 0;
       return line.replace(
         MISSING_SEGMENT_RE,
@@ -660,7 +708,7 @@ async function main() {
     for (const h of fixableMissing) {
       totalLinesFixed++;
       emit(opts, {
-        action: opts.apply ? 'vault-dir-missing-segment-fixed' : 'vault-dir-missing-segment-would-fix',
+        action: opts.apply ? `${MISSING_SEGMENT_CLASS}-fixed` : `${MISSING_SEGMENT_CLASS}-would-fix`,
         reason: null,
         file: filePath,
         line: h.line,
@@ -712,7 +760,37 @@ function emit(opts, rec) {
   process.stdout.write(`migrate-vault-paths: ${where}: ${cls} → ${rec.action}\n`);
 }
 
-main().catch((err) => {
-  process.stderr.write(`migrate-vault-paths: FATAL: ${err.message}\n`);
-  process.exit(2);
-});
+// ---------------------------------------------------------------------------
+// Entry guard + exports (architect MED #607 D3)
+//
+// Run main() only when invoked directly as a CLI (node scripts/migrate-vault-paths.mjs).
+// When imported by a test (or another module), the pure helpers below are
+// available without firing the one-shot migration as a side effect.
+//
+// `process.argv[1]` is the invoked script path under `node <script>`, but it is
+// `undefined` under `node -e "import(...)"` and some dynamic-import contexts —
+// pathToFileURL(undefined) throws ERR_INVALID_ARG_TYPE. Guard the falsy case so
+// importing the module is never a hard error regardless of how the importer runs.
+// ---------------------------------------------------------------------------
+
+const invokedDirectly =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    process.stderr.write(`migrate-vault-paths: FATAL: ${err.message}\n`);
+    process.exit(2);
+  });
+}
+
+export {
+  rewriteMissingSegment,
+  rewriteContent,
+  lineHasMissingSegment,
+  findMissingSegmentHits,
+  isHistorical,
+  classifyHit,
+  isOwnedByUsernamePath,
+  MISSING_SEGMENT_CLASS,
+  _setSegmentsForTest,
+};

@@ -4,7 +4,7 @@
  * Exports: detectLearningSchema, generateLearningNote, generateLearningNoteV2
  */
 
-import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug } from './utils.mjs';
+import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, buildTag } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -36,8 +36,12 @@ export function generateLearningNote(entry, slug) {
   const titleRaw = truncateAtWord(insight, 80);
   const title = yamlQuoteIfNeeded(titleRaw);
 
+  // #602: type/status are interpolated raw upstream; route every tag segment
+  // through buildTag so each is kebab-slugified and capped at 64 chars. The
+  // existing source/<session> slug is preserved (buildTag is idempotent for an
+  // already-kebab value and adds the length cap).
   const sourceTag = subjectToSlug(String(source_session)) || 'unknown';
-  const tags = `[learning/${type}, status/${status}, source/${sourceTag}]`;
+  const tags = `[${buildTag(['learning', type])}, ${buildTag(['status', status])}, ${buildTag(['source', sourceTag])}]`;
 
   // Check if expires has a value; it's optional in schema
   const expiresLine = expires ? `expires: ${expires}\n` : '';
@@ -95,8 +99,9 @@ export function generateLearningNoteV2(entry, slug) {
   const titleRaw = truncateAtWord(text, 80);
   const title = yamlQuoteIfNeeded(titleRaw);
 
+  // #602: type/status interpolated raw upstream — slugify + cap each segment.
   const scopeTag = subjectToSlug(scope) || 'unscoped';
-  const tags = `[learning/${type}, status/${status}, scope/${scopeTag}]`;
+  const tags = `[${buildTag(['learning', type])}, ${buildTag(['status', status])}, ${buildTag(['scope', scopeTag])}]`;
 
   return `---
 id: ${slug}

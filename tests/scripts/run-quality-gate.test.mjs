@@ -326,4 +326,18 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev.variant).toBe('full-gate');
     expect(ev.exit_code).toBe(r.status);
   });
+
+  it('emits orchestrator.quality_gate.passed with variant "incremental" for a passing incremental run (#613)', () => {
+    // Emission was previously asserted only for the full-gate variant. This pins
+    // that the emitted `variant` field carries the raw --variant CLI value, so an
+    // incremental run is telemetered distinctly from full-gate. Falsification: if
+    // the emit hard-coded "full-gate" (or dropped variant), this assertion fails.
+    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'skip' });
+    const r = run(['--variant', 'incremental', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.variant).toBe('incremental');
+    expect(ev.exit_code).toBe(0);
+  });
 });

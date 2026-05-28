@@ -53,10 +53,51 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 import { processLearning, processSession } from './lib/vault-mirror/process.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
+
+// ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
+// These are module-level (above the CLI bootstrap) so the module is import-safe
+// for unit tests: importing scripts/vault-mirror.mjs from vitest pulls in these
+// exported helpers WITHOUT running the CLI (the CLI bootstrap + main() are gated
+// behind an import.meta.url entry-guard at the bottom). The canonical-vault
+// guard usage lives in main(); see the rationale block there.
+
+/**
+ * Resolve the canonical vault suffix from an env override, defaulting to
+ * `/agents/vault` when the override is missing or blank (whitespace-only).
+ * Pure helper so the empty-/whitespace-string fallback is unit-testable without
+ * mutating process.env (#607 D2). Returns the TRIMMED override when set, so a
+ * value like `"  gitlab.example.com/agents/vault  "` matches as expected.
+ * @param {string|undefined} envValue
+ * @returns {string}
+ */
+export function _resolveCanonicalSuffix(envValue) {
+  return envValue && envValue.trim() ? envValue.trim() : '/agents/vault';
+}
+
+const CANONICAL_VAULT_SUFFIX = _resolveCanonicalSuffix(
+  process.env.VAULT_MIRROR_CANONICAL_SUFFIX,
+);
+
+/**
+ * Normalize a git remote URL to a host/path tail for canonical-suffix matching
+ * (#607 D2 — exported for unit tests). Strips `.git`, the `git@host:` / scheme
+ * prefixes, and trailing slashes.
+ * @param {string} url
+ * @returns {string}
+ */
+export function _normalizeRemote(url) {
+  return String(url ?? '')
+    .trim()
+    .replace(/\.git$/, '')
+    .replace(/^git@([^:]+):/, '$1/')
+    .replace(/^[a-z]+:\/\//, '')
+    .replace(/\/+$/, '');
+}
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
 //
@@ -75,9 +116,18 @@ import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 //   - --help / -h prints to stdout and exits 0 BEFORE any required-flag check.
 //   - Int/float coercion for --quality-min-* (strict — string input → exit 1).
 
-let parsedFlags;
-try {
-  parsedFlags = parseColumnFlags({
+// Entry-guard (#607 D2): run the CLI bootstrap (arg parsing, validation, and
+// main()) ONLY when this file is invoked directly as a subprocess
+// (`node vault-mirror.mjs ...`). When imported from a unit test, argv belongs to
+// the test runner — parsing it would spuriously process.exit. The exported
+// helpers above are unaffected by this guard.
+const _isDirectInvocation =
+  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (_isDirectInvocation) {
+  let parsedFlags;
+  try {
+    parsedFlags = parseColumnFlags({
     knownBool: {
       help: { short: 'h', default: false },
       'dry-run': false,
@@ -218,20 +268,10 @@ if (kind !== 'learning' && kind !== 'session') {
 // Apply the same trim-as-truthy-probe pattern as #601 getConfinementRoot: a
 // whitespace-only env override would otherwise short-circuit `||` and yield a
 // meaningless suffix. Fail-safe (a non-matching suffix only widens rejection),
-// but the bug class is recurring — fix at the source.
-const _vmCanonicalSuffixEnv = process.env.VAULT_MIRROR_CANONICAL_SUFFIX;
-const CANONICAL_VAULT_SUFFIX = (_vmCanonicalSuffixEnv && _vmCanonicalSuffixEnv.trim())
-  ? _vmCanonicalSuffixEnv
-  : '/agents/vault';
-
-function normalizeRemote(url) {
-  return url
-    .trim()
-    .replace(/\.git$/, '')
-    .replace(/^git@([^:]+):/, '$1/')
-    .replace(/^[a-z]+:\/\//, '')
-    .replace(/\/+$/, '');
-}
+// but the bug class is recurring — fix at the source. The helpers + the
+// CANONICAL_VAULT_SUFFIX const live near the top of the module (just after the
+// imports) so they are import-safe and unit-testable; see _resolveCanonicalSuffix
+// / _normalizeRemote there (#607 D2).
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -245,7 +285,7 @@ async function main() {
     const res = spawnSync('git', ['-C', resolve(vaultDir), 'remote', 'get-url', 'origin'], {
       encoding: 'utf8',
     });
-    const ok = res.status === 0 && normalizeRemote(res.stdout).endsWith(CANONICAL_VAULT_SUFFIX);
+    const ok = res.status === 0 && _normalizeRemote(res.stdout).endsWith(CANONICAL_VAULT_SUFFIX);
     if (!ok) {
       const got = res.status === 0 ? res.stdout.trim() : 'no git origin';
       process.stderr.write(
@@ -338,7 +378,8 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`vault-mirror: unexpected error: ${err.message}\n`);
-  process.exit(2);
-});
+  main().catch((err) => {
+    process.stderr.write(`vault-mirror: unexpected error: ${err.message}\n`);
+    process.exit(2);
+  });
+}

@@ -4,7 +4,7 @@
  * Exports: detectSessionSchema, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3
  */
 
-import { toDate } from './utils.mjs';
+import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -80,7 +80,12 @@ export function generateSessionNote(entry, options = {}) {
   // Always quote session title — it contains em-dash
   const title = `"${titleValue}"`;
 
-  const tags = `[session/${session_type}, status/verified]`;
+  // #602: session_type is interpolated raw upstream; slugify each tag segment
+  // and cap the combined tag at 64 chars so the frontmatter passes the vault
+  // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
+  // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
+  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
 
   // Build wave table rows
   const waveRows = waves
@@ -98,7 +103,7 @@ export function generateSessionNote(entry, options = {}) {
   const { repo } = options;
 
   return `---
-id: ${session_id}
+id: ${noteId}
 type: session
 title: ${title}
 status: verified
@@ -161,7 +166,12 @@ export function generateSessionNoteV2(entry, options = {}) {
   const titleValue = `Session ${created} — ${session_type}`;
   const title = `"${titleValue}"`;
 
-  const tags = `[session/${session_type}, status/verified]`;
+  // #602: session_type is interpolated raw upstream; slugify each tag segment
+  // and cap the combined tag at 64 chars so the frontmatter passes the vault
+  // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
+  // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
+  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
 
   const waveRows = waves
     .map((w) => `| ${w.wave} | ${w.role} | ${w.agents ?? '?'} | ${w.dispatch ?? '?'} | ${w.duration_s ?? '?'}s | ${w.agents_done ?? 0}/${w.agents_partial ?? 0}/${w.agents_failed ?? 0} |`)
@@ -175,7 +185,7 @@ export function generateSessionNoteV2(entry, options = {}) {
   const { repo } = options;
 
   return `---
-id: ${session_id}
+id: ${noteId}
 type: session
 title: ${title}
 status: verified
@@ -265,7 +275,12 @@ export function generateSessionNoteV3(entry, options = {}) {
 
   const titleValue = `Session ${created} — ${session_type}`;
   const title = `"${titleValue}"`;
-  const tags = `[session/${session_type}, status/verified]`;
+  // #602: session_type is interpolated raw upstream; slugify each tag segment
+  // and cap the combined tag at 64 chars so the frontmatter passes the vault
+  // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
+  // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
+  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
 
   const platformBullet = platform === null || platform === undefined || platform === '' ? '' : ` · **Platform:** ${platform}`;
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
@@ -274,7 +289,7 @@ export function generateSessionNoteV3(entry, options = {}) {
   const { repo } = options;
 
   return `---
-id: ${session_id}
+id: ${noteId}
 type: session
 title: ${title}
 status: verified

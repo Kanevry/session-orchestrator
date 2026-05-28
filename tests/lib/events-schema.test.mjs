@@ -47,6 +47,19 @@ describe('isIso8601', () => {
   it('rejects a non-string', () => {
     expect(isIso8601(1716900913000)).toBe(false);
   });
+
+  it('rejects a regex-shaped string that is not a real date — Date.parse guard is load-bearing (#613)', () => {
+    // "2026-13-45T99:99:99Z" matches the ISO_8601_RE shape (4-2-2 T 2:2:2 Z) but
+    // is an impossible calendar instant (month 13, day 45, 99h99m99s). isIso8601
+    // chains ISO_8601_RE.test(value) AND !Number.isNaN(Date.parse(value)). If the
+    // second guard were removed (dead-code), this would WRONGLY return true.
+    const impossible = '2026-13-45T99:99:99Z';
+    // Premise check — confirm the input truly exercises the Date.parse branch:
+    // Date.parse (the exact dependency the guard calls) yields NaN for this value.
+    expect(Number.isNaN(Date.parse(impossible))).toBe(true);
+    // Load-bearing assertion — must be rejected despite passing the regex shape.
+    expect(isIso8601(impossible)).toBe(false);
+  });
 });
 
 describe('ORCHESTRATOR_EVENT_RE', () => {

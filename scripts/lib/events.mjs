@@ -37,15 +37,23 @@ export function eventsFilePath() {
  *
  * @param {string} type — event type (e.g. "orchestrator.session.started")
  * @param {object} [payload={}] — additional fields shallow-merged into the record
+ * @param {object} [opts={}] — emission options.
+ * @param {string} [opts.filePath] — override the destination JSONL path. Defaults
+ *   to `eventsFilePath()` (the project's `.orchestrator/metrics/events.jsonl`).
+ *   Used by `scripts/emit-event.mjs --file` so shell callers (e.g.
+ *   compute-grounding-injection.sh) can target a pre-resolved EVENTS_JSONL path
+ *   without depending on platform.mjs CWD/env resolution (#611).
  * @returns {Promise<void>}
  */
-export async function emitEvent(type, payload = {}) {
+export async function emitEvent(type, payload = {}, opts = {}) {
   // Build the JSONL record: ts + event come first, payload spreads last.
   const record = { timestamp: new Date().toISOString(), event: type, ...payload };
   const line = JSON.stringify(record) + '\n';
 
-  // Ensure .orchestrator/metrics/ exists before appending.
-  const filePath = eventsFilePath();
+  // Ensure the destination directory exists before appending. The default
+  // resolution is unchanged for 2-arg callers — only an explicit opts.filePath
+  // overrides it (#611, additive).
+  const filePath = opts.filePath ?? eventsFilePath();
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');
 

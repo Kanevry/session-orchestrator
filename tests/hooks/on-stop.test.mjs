@@ -93,6 +93,27 @@ async function mkGitDir() {
 }
 
 /**
+ * Create a temporary git repo WITH a committed HEAD so `git rev-parse HEAD`
+ * resolves a real SHA. Returns { dir, committed } where committed=false means
+ * git was unavailable (caller should skip the assertion).
+ */
+async function mkCommittedGitDir() {
+  const dir = await mkTmpDir();
+  const { $ } = await import('zx');
+  $.verbose = false;
+  $.quiet = true;
+  try {
+    await $`git -C ${dir} init -q`;
+    await $`git -C ${dir} config user.email test@example.com`;
+    await $`git -C ${dir} config user.name Test`;
+    await $`git -C ${dir} commit --allow-empty -q -m probe`;
+    return { dir, committed: true };
+  } catch {
+    return { dir, committed: false };
+  }
+}
+
+/**
  * Read and parse the last JSONL line written to <projectDir>/.orchestrator/metrics/events.jsonl.
  */
 async function readLastEvent(projectDir) {
@@ -373,6 +394,35 @@ describe('git info unavailable', { timeout: 15000 }, () => {
     // branch and commit should be absent (gitInfo returns null → omitted)
     expect(Object.prototype.hasOwnProperty.call(record, 'branch')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(record, 'commit')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6b. git info AVAILABLE — populated branch/commit positive path (#613)
+// ---------------------------------------------------------------------------
+//
+// The "git info unavailable" block above asserts branch/commit are ABSENT.
+// A bug where gitInfo() always returns { commit: null, branch: null } (e.g. a
+// broken `git rev-parse`) reads IDENTICALLY to "not a git repo" — both omit the
+// keys. This positive path distinguishes the two: in a committed git repo the
+// record MUST carry a real commit SHA and a non-empty branch name.
+
+describe('git info available — populated branch/commit', { timeout: 15000 }, () => {
+  it('record carries a commit SHA and non-empty branch when HEAD is committed', async () => {
+    const { dir, committed } = await mkCommittedGitDir();
+    await track(dir);
+    expect(committed).toBe(true); // guard: git must be available in this env
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: 'git-positive' }),
+    });
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.session.stopped');
+    // commit is a 7–40 char lowercase hex SHA (full SHA from `git rev-parse HEAD`).
+    expect(record.commit).toMatch(/^[0-9a-f]{7,40}$/);
+    // branch is a non-empty string (default branch name, e.g. "main"/"master").
+    expect(typeof record.branch).toBe('string');
+    expect(record.branch.length).toBeGreaterThan(0);
   });
 });
 
