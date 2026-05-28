@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
 import { detectLearningSchema, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
-import { detectSessionSchema, generateSessionNote, generateSessionNoteV2 } from './render-sessions.mjs';
+import { detectSessionSchema, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -227,7 +227,8 @@ export async function processSession(entry, _lineNum, ctx) {
   } = ctx;
   const { session_id: rawSessionId } = entry;
   const schema = detectSessionSchema(entry);
-  const generator = schema === 'v2' ? generateSessionNoteV2 : generateSessionNote;
+  const generator =
+    schema === 'v3' ? generateSessionNoteV3 : schema === 'v2' ? generateSessionNoteV2 : generateSessionNote;
 
   // Validate session_id as a filesystem-safe slug; fall back via subjectToSlug
   // (which collapses slashes to last segment + strips invalid chars) before

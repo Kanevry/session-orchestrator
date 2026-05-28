@@ -5,4 +5,4 @@
  */
 
 export { detectLearningSchema, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
-export { detectSessionSchema, generateSessionNote, generateSessionNoteV2 } from './render-sessions.mjs';
+export { detectSessionSchema, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';

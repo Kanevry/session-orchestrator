@@ -8,6 +8,7 @@ import {
   detectSessionSchema,
   generateSessionNote,
   generateSessionNoteV2,
+  generateSessionNoteV3,
 } from '@lib/vault-mirror/render-sessions.mjs';
 
 // ── detectSessionSchema ───────────────────────────────────────────────────────
@@ -28,6 +29,22 @@ describe('detectSessionSchema', () => {
   it('returns "v1" when files_changed is absent and total_agents is absent', () => {
     // Both absent → condition `total_agents === undefined && files_changed !== undefined` = false
     expect(detectSessionSchema({ session_id: 'test' })).toBe('v1');
+  });
+
+  it('returns "v3" when waves is a scalar number (coordinator-direct record) (#491)', () => {
+    expect(detectSessionSchema({ waves: 5, agents_dispatched: 18 })).toBe('v3');
+  });
+
+  it('returns "v3" for a scalar-waves record even when total_agents is also present', () => {
+    expect(detectSessionSchema({ waves: 3, total_agents: 6 })).toBe('v3');
+  });
+
+  it('still returns "v2" when waves is an array and total_agents is absent', () => {
+    expect(detectSessionSchema({ waves: [{ wave: 1 }], files_changed: 5 })).toBe('v2');
+  });
+
+  it('still returns "v1" when waves is an array and total_agents is present', () => {
+    expect(detectSessionSchema({ waves: [{ wave: 1 }], total_agents: 4, files_changed: 5 })).toBe('v1');
   });
 });
 
@@ -232,5 +249,116 @@ describe('generateSessionNoteV2', () => {
   it('emits the generator marker', () => {
     const out = generateSessionNoteV2(makeV2Entry());
     expect(out).toContain('_generator: session-orchestrator-vault-mirror@1');
+  });
+});
+
+// ── generateSessionNoteV3 (coordinator-direct, scalar waves) ──────────────────
+
+// Mirrors the shape session-end actually writes to sessions.jsonl (#491).
+function makeV3Entry(overrides = {}) {
+  return {
+    schema_version: 1,
+    session_id: 'main-2026-05-28-deep-1',
+    session_type: 'deep',
+    branch: 'main',
+    started_at: '2026-05-28T10:25:00.000Z',
+    completed_at: '2026-05-28T11:51:31.000Z',
+    duration_minutes: 86,
+    waves: 5,
+    agents_dispatched: 18,
+    agents_max_parallel: 4,
+    agent_summary: { complete: 18, partial: 0, failed: 0, spiral: 0 },
+    planned_issues: 2,
+    effectiveness: { completion_rate: 1, carryover_ratio: 0, completed_issues: 2, carryover: 0, unplanned_finds: 2 },
+    commits: ['403e66a', 'ef82027', '913ff2d', 'a16ebcf', '36d4301'],
+    issues_closed: [357, 227],
+    follow_ups_filed: [487, 488, 489, 490],
+    tests_added: 168,
+    tests_total_pre: 4784,
+    tests_total_post: 4952,
+    total_waves: 5,
+    ...overrides,
+  };
+}
+
+describe('generateSessionNoteV3', () => {
+  it('throws when required field "session_id" is undefined', () => {
+    expect(() => generateSessionNoteV3(makeV3Entry({ session_id: undefined }))).toThrow("missing required field 'session_id'");
+  });
+
+  it('throws when required field "waves" is undefined', () => {
+    expect(() => generateSessionNoteV3(makeV3Entry({ waves: undefined }))).toThrow("missing required field 'waves'");
+  });
+
+  it('throws when waves is an array (wrong shape for v3)', () => {
+    expect(() => generateSessionNoteV3(makeV3Entry({ waves: [{ wave: 1 }] }))).toThrow("'waves' must be a number");
+  });
+
+  it('throws when effectiveness is null', () => {
+    expect(() => generateSessionNoteV3(makeV3Entry({ effectiveness: null }))).toThrow("missing required field 'effectiveness'");
+  });
+
+  it('renders scalar waves and agents_dispatched in the summary line', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('**Waves:** 5 · **Agents:** 18 · **Commits:** 5');
+  });
+
+  it('renders duration from duration_minutes', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('**Duration:** 86m');
+  });
+
+  it('falls back to duration_seconds when duration_minutes is absent', () => {
+    const entry = makeV3Entry({ duration_minutes: undefined, duration_seconds: 120 });
+    const out = generateSessionNoteV3(entry);
+    expect(out).toContain('**Duration:** 2m');
+  });
+
+  it('renders completion rate and effectiveness aggregates', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('planned=2, completed=2, carryover=0, emergent=2, rate=100%');
+  });
+
+  it('renders the tests pre→post delta', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('**Tests:** 4784 → 4952');
+  });
+
+  it('renders issues_closed and follow_ups_filed with # prefixes', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('**Issues closed:** #357, #227');
+    expect(out).toContain('**Follow-ups filed:** #487, #488, #489, #490');
+  });
+
+  it('uses em-dash when issues_closed is empty', () => {
+    const out = generateSessionNoteV3(makeV3Entry({ issues_closed: [] }));
+    expect(out).toContain('**Issues closed:** —');
+  });
+
+  it('renders the agent summary line', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('Complete: 18 · Partial: 0 · Failed: 0 · Spiral: 0');
+  });
+
+  it('emits repo line in frontmatter when options.repo is set', () => {
+    const out = generateSessionNoteV3(makeV3Entry(), { repo: 'org/name' });
+    expect(out).toMatch(/^repo: org\/name$/m);
+  });
+
+  it('does not emit repo line when options.repo is absent', () => {
+    const out = generateSessionNoteV3(makeV3Entry(), {});
+    expect(out).not.toMatch(/^repo: /m);
+    expect(out).not.toContain('repo: undefined');
+  });
+
+  it('emits the generator marker', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    expect(out).toContain('_generator: session-orchestrator-vault-mirror@1');
+  });
+
+  it('produces a narrative body over the 400-char quality-gate floor', () => {
+    const out = generateSessionNoteV3(makeV3Entry());
+    const narrative = out.replace(/^---[\s\S]*?---/m, '').trim();
+    expect(narrative.length).toBeGreaterThan(400);
   });
 });
