@@ -135,7 +135,7 @@ describe('checkVaultStaleness — banner classification (#319)', () => {
     expect(result.message).toContain('24h');
   });
 
-  it("classifies severity 'alert' when stale_count=12 and max delta=140.7h, mentions Clank-Vault-Sync", () => {
+  it("classifies severity 'alert' when stale_count=12 and max delta=140.7h, hints at broken cron", () => {
     const repo = makeRepo();
     const rec = record({
       stale_count: 12,
@@ -154,7 +154,7 @@ describe('checkVaultStaleness — banner classification (#319)', () => {
     expect(result.maxDeltaHours).toBe(140.7);
     expect(result.message).toContain('12 projects stale');
     expect(result.message).toContain('140.7h');
-    expect(result.message).toContain('Clank-Vault-Sync');
+    expect(result.message).toContain('Vault-Sync cron likely broken');
   });
 
   it("boundary: max delta exactly 48h → severity 'warn' (<= 48 is warn)", () => {

@@ -69,6 +69,33 @@ const PROJECTS_ROOT = path.join(HOME, 'Projects');
 let OLD_SEGMENT = null;
 let NEW_SEGMENT = null;
 
+// ── Missing-segment class (GitLab #600 D3) ────────────────────────────────────
+// A second, username-independent drift class: a `vault-dir:` value that points at
+// `~/Projects/vault` (or `/Users/<user>/Projects/vault`) — MISSING the canonical
+// `/Bernhard/` owner segment — must become `~/Projects/Bernhard/vault`.
+//
+// Scoping discipline (do NOT blunt-rewrite every `~/Projects/` path):
+//   - Only lines in a `vault-dir:` context (vault-integration.vault-dir /
+//     vault-sync.vault-dir) are touched. `cache: ~/Projects/vault-backups` and
+//     other unrelated `~/Projects/...` paths are left untouched.
+//   - The match anchors the value to `~` or `/Users/<user>` immediately before
+//     `/Projects/vault`, and requires a path boundary AFTER `vault` (negative
+//     lookahead `(?![\w-])`) so `vault-backups` / `vaultfoo` never match.
+//   - Matching `Projects/vault` directly (not `Projects/Bernhard/vault`) yields
+//     idempotency for free: a canonical line has `Projects/Bernhard/vault`, so
+//     the pattern does not match it → no `.../Bernhard/Bernhard/vault`.
+//
+// The owner segment is the canonical `Bernhard`; the rewrite inserts it between
+// `Projects/` and `vault`.
+const MISSING_SEGMENT_OWNER = 'Bernhard';
+const MISSING_SEGMENT_RE = new RegExp(
+  // (1) vault-dir: prefix (with optional surrounding whitespace)
+  // (2) value root: ~ or /Users/<user>
+  // (3) /Projects/vault, NOT followed by a word char or hyphen (path boundary)
+  String.raw`(vault-dir:\s*['"]?)(~|/Users/[^/\s'"]+)/Projects/vault(?![\w-])`,
+  'g',
+);
+
 const EXCLUDE_GLOBS = [
   '/tests/',
   '/fixtures/',
@@ -253,6 +280,16 @@ function findCandidateFiles(roots) {
     ],
     { encoding: 'utf8' },
   );
+  // ENOENT guard (GitLab #600 F2): when the `grep` binary is missing from PATH,
+  // spawnSync sets `result.error` (ENOENT) and `result.status` is null. The
+  // status check below treats null as a failure but reports an empty stderr
+  // ("grep failed: "), masking the real cause. Surface the spawn error first.
+  if (result.error) {
+    process.stderr.write(
+      `migrate-vault-paths: grep/find not found on PATH (${result.error.code ?? result.error.message})\n`,
+    );
+    process.exit(2);
+  }
   // grep exits 1 when no matches; both 0 and 1 are valid responses
   if (result.status !== 0 && result.status !== 1) {
     process.stderr.write(`migrate-vault-paths: grep failed: ${result.stderr}\n`);
@@ -266,12 +303,61 @@ function findCandidateFiles(roots) {
 }
 
 /**
- * Auto-discover ALL repos under ~/Projects/** that contain the literal.
- * Used in tandem with the default-target list to find drift we don't already know about.
+ * Discover files containing a missing-segment `vault-dir:` drift (GitLab #600
+ * D3) — i.e. a `vault-dir:` line pointing at `~/Projects/vault` (or
+ * `/Users/<user>/Projects/vault`) that lacks the canonical `/Bernhard/` owner
+ * segment. These files do NOT contain OLD_SEGMENT, so findCandidateFiles() (which
+ * greps OLD_SEGMENT) cannot find them.
+ *
+ * grep matches the literal `Projects/vault`; per-file classification then applies
+ * the precise MISSING_SEGMENT_RE (vault-dir context + path-boundary + not-canonical)
+ * to weed out false positives such as `cache: ~/Projects/vault-backups`. Test-dir
+ * and other EXCLUDE_GLOBS are filtered out so tests/** fixtures are never rewritten.
+ */
+function findMissingSegmentFiles(roots) {
+  if (roots.length === 0) return [];
+  const result = spawnSync(
+    'grep',
+    [
+      '-r',
+      '-l',
+      '-I',
+      '--include=*.md',
+      // Coarse literal pre-filter; precise vault-dir/idempotency check happens
+      // per-line in findMissingSegmentHits(). 'Projects/vault' also matches
+      // canonical 'Projects/Bernhard/vault' lines, but those are dropped later.
+      'Projects/vault',
+      ...roots,
+    ],
+    { encoding: 'utf8' },
+  );
+  if (result.error) {
+    process.stderr.write(
+      `migrate-vault-paths: grep/find not found on PATH (${result.error.code ?? result.error.message})\n`,
+    );
+    process.exit(2);
+  }
+  if (result.status !== 0 && result.status !== 1) {
+    process.stderr.write(`migrate-vault-paths: grep failed: ${result.stderr}\n`);
+    process.exit(2);
+  }
+  return result.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((p) => !EXCLUDE_GLOBS.some((g) => p.includes(g)));
+}
+
+/**
+ * Auto-discover ALL repos under ~/Projects/** that contain the OLD_SEGMENT
+ * literal OR a missing-segment `vault-dir:` drift. Used in tandem with the
+ * default-target list to find drift we don't already know about.
  */
 function discoverAdditionalFiles() {
   if (!existsSync(PROJECTS_ROOT)) return [];
-  return findCandidateFiles([PROJECTS_ROOT]);
+  const set = new Set(findCandidateFiles([PROJECTS_ROOT]));
+  for (const f of findMissingSegmentFiles([PROJECTS_ROOT])) set.add(f);
+  return [...set];
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +377,75 @@ function classifyHit(filePath, line) {
     return 'vault-dir-drift';
   }
   return 'path-drift';
+}
+
+/**
+ * Does this line carry a missing-segment `vault-dir:` drift (GitLab #600 D3)?
+ * Returns true only for a `vault-dir:` value at `~/Projects/vault` or
+ * `/Users/<user>/Projects/vault` that is NOT already canonical
+ * (`~/Projects/Bernhard/vault`) — see MISSING_SEGMENT_RE for the precise shape.
+ * `RegExp.test` advances lastIndex on a /g regex, so reset it before each probe.
+ */
+function lineHasMissingSegment(line) {
+  MISSING_SEGMENT_RE.lastIndex = 0;
+  return MISSING_SEGMENT_RE.test(line);
+}
+
+/**
+ * Find missing-segment hits in a file's content, returning
+ * [{line, text, classification: 'vault-dir-missing-segment'}].
+ * Historical files (decisions.md, archive/, …) are reported but not rewritten,
+ * mirroring the OLD_SEGMENT path — classifyHit's isHistorical() guard.
+ *
+ * Lines that also contain OLD_SEGMENT are owned by the username-rewrite path and
+ * deliberately skipped here: a `vault-dir: /Users/oldname/Projects/vault` line is
+ * a username drift (→ /Users/newname/Projects/vault), NOT a missing-segment drift.
+ * Without this guard the two classes collide and the username output would gain a
+ * spurious /Bernhard/ segment.
+ */
+function findMissingSegmentHits(filePath, content) {
+  const historical = isHistorical(filePath);
+  const lines = content.split('\n');
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(OLD_SEGMENT)) continue; // owned by username-rewrite path
+    if (lineHasMissingSegment(lines[i])) {
+      hits.push({
+        line: i + 1, // 1-indexed
+        text: lines[i],
+        classification: historical ? 'historical' : 'vault-dir-missing-segment',
+      });
+    }
+  }
+  return hits;
+}
+
+/**
+ * Rewrite missing-segment `vault-dir:` values in `content`: insert the canonical
+ * `/Bernhard/` owner segment between `Projects/` and `vault`. Only `vault-dir:`
+ * lines matching MISSING_SEGMENT_RE are touched — unrelated `~/Projects/...`
+ * paths (e.g. `cache: ~/Projects/vault-backups`) are preserved verbatim.
+ *
+ * `originalContent` (the file BEFORE rewriteContent ran) gates which lines are
+ * eligible: any line whose original carried OLD_SEGMENT is owned by the username
+ * path and is skipped, even though the username rewrite may have produced a
+ * `/Users/newname/Projects/vault` form that would otherwise match the regex.
+ * This keeps the two classes from colliding when both transforms chain.
+ */
+function rewriteMissingSegment(content, originalContent = content) {
+  const origLines = originalContent.split('\n');
+  return content
+    .split('\n')
+    .map((line, i) => {
+      // Skip lines the username path owns (matched on the ORIGINAL line text).
+      if (origLines[i] !== undefined && origLines[i].includes(OLD_SEGMENT)) return line;
+      MISSING_SEGMENT_RE.lastIndex = 0;
+      return line.replace(
+        MISSING_SEGMENT_RE,
+        (_m, prefix, root) => `${prefix}${root}/Projects/${MISSING_SEGMENT_OWNER}/vault`,
+      );
+    })
+    .join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -396,8 +551,12 @@ async function main() {
     }
   }
 
-  // Initial file discovery within named repos
-  let candidateFiles = findCandidateFiles(repoRoots);
+  // Initial file discovery within named repos: OLD_SEGMENT files AND
+  // missing-segment vault-dir drift files (GitLab #600 D3 — the latter do not
+  // contain OLD_SEGMENT, so findCandidateFiles alone would miss them).
+  const candidateSet = new Set(findCandidateFiles(repoRoots));
+  for (const f of findMissingSegmentFiles(repoRoots)) candidateSet.add(f);
+  let candidateFiles = [...candidateSet];
 
   // If NO explicit repo list was given (neither --repos nor config.audited-repos),
   // expand scan to discover anything else under ~/Projects/**.
@@ -447,16 +606,22 @@ async function main() {
     }
 
     totalScanned++;
+    // Two independent drift classes, each discovered per-line:
+    //   - OLD_SEGMENT username drift  → rewriteContent (split+join)
+    //   - missing /Bernhard/ segment  → rewriteMissingSegment (#600 D3)
     const hits = findHits(filePath, content);
-    if (hits.length === 0) continue;
+    const missingHits = findMissingSegmentHits(filePath, content);
+    if (hits.length === 0 && missingHits.length === 0) continue;
 
     // Decide per-file: if every hit is historical → skip the whole file.
-    // Otherwise, rewrite the whole file (split+join is global) — historical hits in mixed files
-    // are rare; if any exist, classify each line and skip-count appropriately.
+    // Otherwise, rewrite the whole file (transforms are global) — historical hits
+    // in mixed files are rare; if any exist, classify each line and skip-count.
     const fixableHits = hits.filter((h) => h.classification !== 'historical');
     const historicalHits = hits.filter((h) => h.classification === 'historical');
+    const fixableMissing = missingHits.filter((h) => h.classification !== 'historical');
+    const historicalMissing = missingHits.filter((h) => h.classification === 'historical');
 
-    for (const h of historicalHits) {
+    for (const h of [...historicalHits, ...historicalMissing]) {
       totalHistoricalSkipped++;
       emit(opts, {
         action: 'skipped',
@@ -468,18 +633,34 @@ async function main() {
       });
     }
 
-    if (fixableHits.length === 0) continue;
+    if (fixableHits.length === 0 && fixableMissing.length === 0) continue;
 
     // Defense-in-depth: if the entire file is in a historical context, skip
     // rewriting even if any hit slipped past per-line classification.
     if (isHistorical(filePath)) continue;
 
-    const newContent = rewriteContent(content);
+    // Chain both transforms. rewriteContent (username) runs first; the
+    // missing-segment pass is then gated on the ORIGINAL content so it never
+    // touches a line the username rewrite already owns (see rewriteMissingSegment).
+    let newContent = content;
+    if (fixableHits.length > 0) newContent = rewriteContent(newContent);
+    if (fixableMissing.length > 0) newContent = rewriteMissingSegment(newContent, content);
 
     for (const h of fixableHits) {
       totalLinesFixed++;
       emit(opts, {
         action: opts.apply ? 'fixed' : 'would-fix',
+        reason: null,
+        file: filePath,
+        line: h.line,
+        classification: h.classification,
+        text: truncate(h.text),
+      });
+    }
+    for (const h of fixableMissing) {
+      totalLinesFixed++;
+      emit(opts, {
+        action: opts.apply ? 'vault-dir-missing-segment-fixed' : 'vault-dir-missing-segment-would-fix',
         reason: null,
         file: filePath,
         line: h.line,

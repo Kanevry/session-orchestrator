@@ -89,43 +89,48 @@ describe('getConfinementRoot — behaviour', () => {
 });
 
 // ---------------------------------------------------------------------------
-// M4 (#492): empty-string and whitespace-only env-var values
+// M4 (#492) + #601: empty-string and whitespace-only env-var values
 //
-// getConfinementRoot returns `process.env.CROSS_REPO_CONFINEMENT_ROOT ||
-// join(homedir(), 'Projects')` (cross-repo.mjs:32). The existing tests cover
-// set + unset, but NOT the two `||`-boundary values:
+// getConfinementRoot uses `(v && v.trim()) ? v : join(homedir(), 'Projects')`
+// (cross-repo.mjs). The corrected implementation handles all four boundary cases:
 //
+//   - unset  → falls back to join(homedir(), 'Projects')
 //   - ''     → falsy → falls back to join(homedir(), 'Projects')
-//   - '   '  → TRUTHY → returned verbatim (3-space path) — a LATENT BUG: a
-//              whitespace-only env value short-circuits the `||` and yields a
-//              non-sensical path of spaces instead of the intended default.
+//   - '   '  → trim() is '' → falsy → falls back to join(homedir(), 'Projects')
+//              (FIXED by #601: previously returned the 3-space string verbatim)
+//   - '  /x  ' → trim() is '/x' (truthy) → returns ORIGINAL v = '  /x  ' verbatim
+//              (real paths with surrounding spaces are preserved untrimmed)
 //
-// Per scope, these tests PIN the actual current behaviour (stay green) and do
-// NOT fix the SUT. The whitespace case is flagged in STATUS as a defect.
-//
-// homedir() is mocked (file-top vi.mock) → the empty-string expected value is
+// homedir() is mocked (file-top vi.mock) → the fallback expected value is
 // the hardcoded literal '/home/fixed/Projects', not a computed live path.
 // ---------------------------------------------------------------------------
 
-describe('getConfinementRoot — empty / whitespace env-var (M4)', () => {
+describe('getConfinementRoot — empty / whitespace env-var (M4 / #601)', () => {
   it('treats CROSS_REPO_CONFINEMENT_ROOT="" as falsy and falls back to <homedir>/Projects', () => {
     savedEnv = process.env.CROSS_REPO_CONFINEMENT_ROOT ?? null;
     process.env.CROSS_REPO_CONFINEMENT_ROOT = '';
 
-    // '' is falsy → `||` selects join(homedir(), 'Projects'); homedir() is
+    // '' is falsy → trim check selects join(homedir(), 'Projects'); homedir() is
     // mocked to '/home/fixed', so the expected path is a hardcoded literal.
     expect(getConfinementRoot()).toBe('/home/fixed/Projects');
   });
 
-  it('returns a whitespace-only CROSS_REPO_CONFINEMENT_ROOT="   " VERBATIM (latent bug: truthy spaces)', () => {
+  it('treats whitespace-only CROSS_REPO_CONFINEMENT_ROOT="   " as blank and falls back to <homedir>/Projects', () => {
     savedEnv = process.env.CROSS_REPO_CONFINEMENT_ROOT ?? null;
     process.env.CROSS_REPO_CONFINEMENT_ROOT = '   ';
 
-    // '   ' is truthy → `||` short-circuits and returns it unchanged. This is
-    // the current (buggy) contract: a 3-space string is treated as a valid
-    // confinement root. Pinned here so the behaviour cannot silently change
-    // without updating this test. NOT fixed (out of scope).
-    expect(getConfinementRoot()).toBe('   ');
+    // '   '.trim() === '' (falsy) → selects join(homedir(), 'Projects').
+    // #601 fix: previously the truthy spaces were returned verbatim; now they fall back.
+    expect(getConfinementRoot()).toBe('/home/fixed/Projects');
+  });
+
+  it('returns CROSS_REPO_CONFINEMENT_ROOT with surrounding spaces verbatim when it contains non-whitespace', () => {
+    savedEnv = process.env.CROSS_REPO_CONFINEMENT_ROOT ?? null;
+    process.env.CROSS_REPO_CONFINEMENT_ROOT = '  /x  ';
+
+    // '  /x  '.trim() === '/x' (truthy) → returns original value '  /x  ' untrimmed.
+    // Real paths with surrounding spaces (unusual but valid) are preserved verbatim.
+    expect(getConfinementRoot()).toBe('  /x  ');
   });
 });
 

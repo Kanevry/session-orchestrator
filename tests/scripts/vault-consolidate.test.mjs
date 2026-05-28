@@ -34,6 +34,8 @@ import {
   readFileSync,
   rmSync,
   readdirSync,
+  symlinkSync,
+  existsSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -592,5 +594,232 @@ describe('vault-consolidate CLI', () => {
     expect(actions).toHaveLength(1);
     expect(actions[0].rel).toBe('real.md');
     expect(actions[0].action).toBe('copy');
+  });
+
+  // -------------------------------------------------------------------------
+  // Symlink / robustness hardening (#514 + folded-in F5 + F1)
+  // -------------------------------------------------------------------------
+
+  it('#514: symlinked source file is never dereferenced into the backup or canonical (--apply)', () => {
+    // A symlink `evil.md → ../target-secret.txt` must NOT have its target's
+    // contents copied anywhere. Defense-in-depth: TWO layers protect this —
+    //   (1) walkFiles() skips the symlink (Dirent lstat semantics + the
+    //       explicit isSymbolicLink() guard), so it never reaches the apply
+    //       loop; this layer fires first in the live CLI flow.
+    //   (2) stageBackup() lstat-guards independently, so even a future refactor
+    //       that switched walk to fs.stat (which follows links) would still
+    //       refuse to dereference a symlink into the backup. This layer is
+    //       SHADOWED by (1) in the end-to-end flow, hence not separately
+    //       observable here — the CLI is the contract and never routes a
+    //       symlink to stageBackup. We assert the COMBINED observable contract:
+    //       the secret never reaches canonical, never reaches the backup
+    //       archive, and a WARN is emitted.
+    const tmpParent = mkTmp('symlink-file');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+
+    // The dereference target lives OUTSIDE the source vault (out-of-tree).
+    const secret = 'TOP-SECRET-TARGET-CONTENT\n';
+    writeFileSync(join(tmpParent, 'target-secret.txt'), secret, 'utf8');
+    symlinkSync(join(tmpParent, 'target-secret.txt'), join(source, 'evil.md'));
+
+    // A genuine file so a backup IS staged + compressed (the copy path runs).
+    writeFileSync(join(source, 'real.md'), 'real-content\n', 'utf8');
+
+    const result = runScript([
+      '--source', source,
+      '--canonical', canonical,
+      '--apply',
+      '--json',
+    ]);
+
+    expect(result.status).toBe(0);
+
+    // 1. The symlink target's content NEVER landed in canonical.
+    expect(existsSync(join(canonical, 'evil.md'))).toBe(false);
+    // 2. The genuine file WAS copied (proves the copy path actually ran).
+    expect(readFileSync(join(canonical, 'real.md'), 'utf8')).toBe('real-content\n');
+
+    // 3. The backup archive does NOT contain the dereferenced secret.
+    const archives = readdirSync(source).filter(
+      (n) => n.startsWith('.vault-backup-') && n.endsWith('.tar.gz'),
+    );
+    expect(archives).toHaveLength(1);
+    const archivePath = join(source, archives[0]);
+    const list = spawnSync('tar', ['-tzf', archivePath], { encoding: 'utf8' });
+    expect(list.status).toBe(0);
+    // evil.md must not appear as a staged entry inside the archive.
+    expect(list.stdout.includes('evil.md')).toBe(false);
+
+    // 4. A WARN naming the skipped symlink was emitted to stderr.
+    expect(result.stderr).toContain('skipping symlink');
+    expect(result.stderr).toContain('evil.md');
+  });
+
+  it('F5: symlinked directory is not recursed — its target entries never appear', () => {
+    // A symlinked directory `linkdir → ../outside-dir` must NOT be recursed
+    // into; the file inside the link target must be invisible to the walk.
+    const tmpParent = mkTmp('symlink-dir');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+
+    // An out-of-source directory with a sentinel file.
+    const outsideDir = join(tmpParent, 'outside-dir');
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(outsideDir, 'sentinel.md'), 'should-not-be-seen\n', 'utf8');
+
+    // Symlink it into the source vault.
+    symlinkSync(outsideDir, join(source, 'linkdir'));
+
+    // A genuine file at the source root so the walk still finds real work.
+    writeFileSync(join(source, 'real.md'), 'real-content\n', 'utf8');
+
+    const result = runScript([
+      '--source', source,
+      '--canonical', canonical,
+      '--dry-run',
+      '--json',
+    ]);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    const actions = lines.filter((r) => r.kind === 'action');
+
+    // ONLY real.md — the sentinel inside the symlinked dir was never recursed.
+    expect(actions).toHaveLength(1);
+    expect(actions[0].rel).toBe('real.md');
+    // No action references the link path or the sentinel rel-path.
+    const rels = actions.map((a) => a.rel);
+    expect(rels.some((r) => r.includes('sentinel.md'))).toBe(false);
+    expect(rels.some((r) => r.includes('linkdir'))).toBe(false);
+
+    // WARN naming the skipped symlinked directory.
+    expect(result.stderr).toContain('skipping symlink');
+    expect(result.stderr).toContain('linkdir');
+  });
+
+  it('F1: tar non-ENOENT failure (status 1) → uncompressed staging dir kept, "tar failed" WARN, not regressed by F1 res.error guard', () => {
+    // Companion to the ENOENT test: when `tar` IS found on PATH but EXITS with
+    // a non-zero status (e.g. bad arg, corrupted destination, full disk), the
+    // script must STILL fall back to leaving the uncompressed staging dir
+    // in place — the F1 res.error guard above must not have regressed this
+    // pre-existing fallback path. We simulate the non-zero-exit case with a
+    // fake `tar` binary on PATH that prints to stderr and exits 1.
+    //
+    // Why not use res.error: F1 specifically guards ENOENT. A genuine `status
+    // !== 0` (tar present, archive failed) falls through to the original
+    // generic "tar failed" branch. This test pins THAT branch so a future
+    // refactor that conflated the two error classes would fail loudly.
+    const tmpParent = mkTmp('tar-status1');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    const fakeBin = join(tmpParent, 'fake-bin');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+    mkdirSync(fakeBin, { recursive: true });
+
+    // Fake `tar` that prints a fake error and exits 1. Bash shebang is portable
+    // on the macOS test host and the Linux CI runners; we need an executable
+    // file (not a node script) so spawnSync('tar', ...) resolves it via PATH.
+    const fakeTar = join(fakeBin, 'tar');
+    writeFileSync(
+      fakeTar,
+      '#!/bin/sh\necho "fake-tar: simulated archive failure" >&2\nexit 1\n',
+      'utf8',
+    );
+    // chmod +x — required for spawn to find it as an executable on PATH.
+    spawnSync('chmod', ['+x', fakeTar]);
+
+    // A copy action triggers backup staging + the (now-failing) compression.
+    writeFileSync(join(source, 'note.md'), 'will-be-copied\n', 'utf8');
+
+    // PATH=fakeBin first so the fake `tar` resolves ahead of /usr/bin/tar.
+    // The script's own `spawnSync('tar', ...)` invocation is bare-name, so it
+    // walks PATH and finds our fake binary. Other helpers (cp, mkdir) are
+    // invoked via Node libraries, not subprocess, so they're unaffected.
+    // We keep /bin so /bin/sh (the shebang) is findable.
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, '--source', source, '--canonical', canonical, '--apply', '--json'],
+      { encoding: 'utf8', env: { PATH: `${fakeBin}:/bin:/usr/bin` } },
+    );
+
+    // Copy still succeeded — tar failure only affects backup compression.
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(canonical, 'note.md'), 'utf8')).toBe('will-be-copied\n');
+
+    // Generic "tar failed (status 1)" WARN — NOT the ENOENT "tar not found" branch.
+    expect(result.stderr).toContain('tar failed (status 1)');
+    expect(result.stderr).not.toContain('tar not found on PATH');
+
+    // Fallback: uncompressed staging dir is preserved; no .tar.gz archive.
+    const entries = readdirSync(source);
+    const stagingDirs = entries.filter(
+      (n) => n.startsWith('.vault-backup-') && !n.endsWith('.tar.gz'),
+    );
+    const archives = entries.filter(
+      (n) => n.startsWith('.vault-backup-') && n.endsWith('.tar.gz'),
+    );
+    expect(stagingDirs).toHaveLength(1);
+    expect(archives).toHaveLength(0);
+    // Staged file is preserved inside the surviving uncompressed dir.
+    expect(
+      readFileSync(join(source, stagingDirs[0], 'note.md'), 'utf8'),
+    ).toBe('will-be-copied\n');
+  });
+
+  it('F1: tar absent (ENOENT) → clear "tar not found" WARN, uncompressed staging dir kept as fallback', () => {
+    // Simulate a minimal environment with no `tar` on PATH by pointing PATH at
+    // an empty dir. spawnSync('tar', ...) then sets res.error (ENOENT) with
+    // res.status === null. The F1 guard must surface "tar not found on PATH"
+    // (NOT "tar failed (status null)") and leave the staging directory intact.
+    const tmpParent = mkTmp('tar-enoent');
+    const source = join(tmpParent, 'source');
+    const canonical = join(tmpParent, 'canonical');
+    const emptyBin = join(tmpParent, 'empty-bin');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(canonical, { recursive: true });
+    mkdirSync(emptyBin, { recursive: true });
+
+    // A copy action triggers backup staging + the (now-failing) compression.
+    writeFileSync(join(source, 'note.md'), 'will-be-copied\n', 'utf8');
+
+    // Spawn with the ABSOLUTE node path (process.execPath) and an empty PATH:
+    // node itself still resolves, but the script's inner `spawnSync('tar', ...)`
+    // cannot find `tar` → ENOENT (res.error set, res.status === null). Using
+    // the runScript('node', ...) helper would instead break node's OWN
+    // resolution under the empty PATH, so we invoke the binary directly here.
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, '--source', source, '--canonical', canonical, '--apply', '--json'],
+      { encoding: 'utf8', env: { PATH: emptyBin } },
+    );
+
+    // Copy still succeeded — tar failure only affects the backup compression.
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(canonical, 'note.md'), 'utf8')).toBe('will-be-copied\n');
+
+    // Clear, specific WARN — not the confusing "status null" message.
+    expect(result.stderr).toContain('tar not found on PATH');
+    expect(result.stderr).not.toContain('status null');
+
+    // Fallback: the UNCOMPRESSED staging dir remains (no .tar.gz produced).
+    const entries = readdirSync(source);
+    const stagingDirs = entries.filter(
+      (n) => n.startsWith('.vault-backup-') && !n.endsWith('.tar.gz'),
+    );
+    const archives = entries.filter(
+      (n) => n.startsWith('.vault-backup-') && n.endsWith('.tar.gz'),
+    );
+    expect(stagingDirs).toHaveLength(1);
+    expect(archives).toHaveLength(0);
+    // The genuine file is preserved inside the uncompressed staging dir.
+    expect(
+      readFileSync(join(source, stagingDirs[0], 'note.md'), 'utf8'),
+    ).toBe('will-be-copied\n');
   });
 });

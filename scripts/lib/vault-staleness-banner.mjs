@@ -107,8 +107,8 @@ export function checkVaultStaleness({ repoRoot } = {}) {
     if (severity === 'alert') {
       message =
         `⚠ vault-staleness: ${staleCount} projects stale ` +
-        `(max delta: ${deltaStr}h) — Clank-Vault-Sync cron likely broken, ` +
-        `see agents/vault#70 fix pattern.`;
+        `(max delta: ${deltaStr}h) — Vault-Sync cron likely broken; ` +
+        `verify the cron source and the last-success timestamp.`;
     } else {
       message =
         `⚠ vault-staleness: ${staleCount} projects stale ` +

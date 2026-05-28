@@ -181,7 +181,7 @@ Auto-sync that writes learnings + session summaries into a Meta-Vault after each
 ```yaml
 vault-integration:
   enabled: false                       # opt-in
-  vault-dir: ~/Projects/vault          # absolute path to vault repo
+  vault-dir: ~/Projects/Bernhard/vault  # absolute path to vault repo
   mode: warn                           # warn | strict | off
   gitlab-groups:                       # optional — for /plan retro vault-backfill sub-mode
     - infrastructure
@@ -557,7 +557,7 @@ vault-sync:
 # Vault integration
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/vault
+  vault-dir: ~/Projects/Bernhard/vault
   mode: warn
   gitlab-groups: []
 

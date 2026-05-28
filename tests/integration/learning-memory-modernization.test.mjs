@@ -179,6 +179,8 @@ describe('#19 — vault-mirror-quality parser → vault-mirror CLI', () => {
     writeFileSync(sourceJsonl, JSON.stringify(learning) + '\n', 'utf8');
 
     // STEP 3 — Invoke vault-mirror CLI with the parsed value
+    // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1: vault-mirror's #600 D2 guard rejects non-git tmp vault-dirs;
+    // bypass it here because this test uses a tmp dir, not the real canonical Meta-Vault.
     const result = spawnSync(
       process.execPath,
       [
@@ -188,7 +190,7 @@ describe('#19 — vault-mirror-quality parser → vault-mirror CLI', () => {
         '--kind', 'learning',
         '--quality-min-confidence', String(config['vault-mirror'].quality['min-confidence']),
       ],
-      { encoding: 'utf8', timeout: 15_000 }
+      { encoding: 'utf8', timeout: 15_000, env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' } }
     );
 
     expect(result.status).toBe(0);
@@ -344,6 +346,7 @@ describe('#22 — vault-mirror defaults propagate end-to-end', () => {
     writeFileSync(sourceJsonl, JSON.stringify(learning) + '\n', 'utf8');
 
     // STEP 3 — Invoke without --quality-min-confidence (so CLI uses its own default 0.5)
+    // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1: bypass the #600 D2 canonical-vault guard (tmp vault is not a git repo).
     const result = spawnSync(
       process.execPath,
       [
@@ -352,7 +355,7 @@ describe('#22 — vault-mirror defaults propagate end-to-end', () => {
         '--source', sourceJsonl,
         '--kind', 'learning',
       ],
-      { encoding: 'utf8', timeout: 15_000 }
+      { encoding: 'utf8', timeout: 15_000, env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' } }
     );
 
     expect(result.status).toBe(0);

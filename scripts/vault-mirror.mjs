@@ -48,6 +48,7 @@
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -193,12 +194,65 @@ if (kind !== 'learning' && kind !== 'session') {
   process.exit(1);
 }
 
+// ── Canonical Meta-Vault guard (#600 D2) ───────────────────────────────────────
+//
+// vault-dir-drift proximate cause: the existsSync(vaultDir) check below passes for
+// ANY directory that happens to exist on disk. When a stray wrong-target path
+// existed (e.g. a typo'd vault location), mirror writes succeeded SILENTLY into
+// it — the wrong vault accumulated notes and the real Meta-Vault drifted.
+//
+// Defense: probe the vault-dir's git origin and refuse to mirror unless its URL
+// ends with the canonical-vault path suffix (default `/agents/vault`; override
+// via env VAULT_MIRROR_CANONICAL_SUFFIX, e.g. `<host>/agents/vault` for a strict
+// host-qualified check). A wrong vault is a WHOLE-RUN failure (process.exit(2)),
+// not a per-entry skip — mirroring even one note into the wrong place is the bug.
+//
+// `git remote get-url origin` exit codes (probed): 128 = not a git repo,
+// 2 = git repo without an origin remote, 0 = prints the URL. Any non-zero exit or
+// a non-matching URL fails closed.
+//
+// The VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 escape hatch is load-bearing for the
+// test suite: vault-mirror's own tests mirror into non-git tmp dirs and must
+// bypass this network-of-trust check. It is NOT documented as an operator flag —
+// production callers (session-end Phase 3.7, evolve) always target the real vault.
+// Apply the same trim-as-truthy-probe pattern as #601 getConfinementRoot: a
+// whitespace-only env override would otherwise short-circuit `||` and yield a
+// meaningless suffix. Fail-safe (a non-matching suffix only widens rejection),
+// but the bug class is recurring — fix at the source.
+const _vmCanonicalSuffixEnv = process.env.VAULT_MIRROR_CANONICAL_SUFFIX;
+const CANONICAL_VAULT_SUFFIX = (_vmCanonicalSuffixEnv && _vmCanonicalSuffixEnv.trim())
+  ? _vmCanonicalSuffixEnv
+  : '/agents/vault';
+
+function normalizeRemote(url) {
+  return url
+    .trim()
+    .replace(/\.git$/, '')
+    .replace(/^git@([^:]+):/, '$1/')
+    .replace(/^[a-z]+:\/\//, '')
+    .replace(/\/+$/, '');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
   if (!existsSync(resolve(vaultDir))) {
     process.stderr.write(`vault-mirror: vault-dir not found: ${vaultDir}\n`);
     process.exit(2);
+  }
+
+  if (process.env.VAULT_MIRROR_SKIP_CANONICAL_CHECK !== '1') {
+    const res = spawnSync('git', ['-C', resolve(vaultDir), 'remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+    });
+    const ok = res.status === 0 && normalizeRemote(res.stdout).endsWith(CANONICAL_VAULT_SUFFIX);
+    if (!ok) {
+      const got = res.status === 0 ? res.stdout.trim() : 'no git origin';
+      process.stderr.write(
+        `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin .../agents/vault; got ${got})\n`,
+      );
+      process.exit(2);
+    }
   }
 
   if (!existsSync(resolve(source))) {

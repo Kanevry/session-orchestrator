@@ -311,7 +311,7 @@ All fields live under a top-level `vault-integration` object in your Session Con
 ```yaml
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/vault
+  vault-dir: ~/Projects/Bernhard/vault
   mode: warn
 ```
 

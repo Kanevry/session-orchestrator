@@ -29,7 +29,8 @@ import { readConfigFile } from '../config.mjs';
  * @returns {string} absolute path
  */
 export function getConfinementRoot() {
-  return process.env.CROSS_REPO_CONFINEMENT_ROOT || join(homedir(), 'Projects');
+  const v = process.env.CROSS_REPO_CONFINEMENT_ROOT;
+  return (v && v.trim()) ? v : join(homedir(), 'Projects');
 }
 
 // Allowlist: only characters that are safe in shell contexts and file paths.

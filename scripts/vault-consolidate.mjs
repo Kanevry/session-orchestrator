@@ -269,6 +269,25 @@ async function walkFiles(root) {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
 
+      // F5 (issue #514 fold-in) — symlink guard, evaluated FIRST.
+      //
+      // `fs.readdir(dir, { withFileTypes: true })` populates each Dirent from
+      // an `lstat` of the entry, so a symlink-to-directory already reports
+      // `isDirectory() === false` (and `isSymbolicLink() === true`) and would
+      // fall through both branches below untouched. This explicit guard makes
+      // the skip OBSERVABLE (a WARN line) and hardens against any future
+      // refactor that switches to `fs.stat`-based classification — which DOES
+      // follow symlinks and could recurse into an out-of-tree directory or
+      // copy a dereferenced target into the backup. We never follow a symlink:
+      // neither symlinked directories (recursion risk) nor symlinked files
+      // (the dereference-into-backup risk #514 also guards at stageBackup).
+      if (entry.isSymbolicLink()) {
+        process.stderr.write(
+          `${SCRIPT_NAME}: WARN skipping symlink (not dereferenced): ${fullPath}\n`
+        );
+        continue;
+      }
+
       if (entry.isDirectory()) {
         // Skip hidden dirs and prior backup staging dirs
         if (entry.name === '.git') continue;
@@ -291,7 +310,7 @@ async function walkFiles(root) {
         if (entry.name.startsWith(BACKUP_PREFIX)) continue;
         out.push(fullPath);
       }
-      // Symlinks: skip — vaults are plain markdown trees in our deployment.
+      // (Symlinks already handled by the isSymbolicLink() guard above.)
     }
   }
 
@@ -488,8 +507,25 @@ async function copyFilePreservingMtime(srcAbs, dstAbs) {
 
 /**
  * Stage one file into the backup directory, preserving its relative path.
+ *
+ * #514 — symlink defense (defense-in-depth alongside the walk-level guard).
+ * `fs.copyFile()` and `fs.stat()` both FOLLOW symlinks, so a symlinked source
+ * entry (e.g. `evil.md → /etc/passwd`) would silently copy the TARGET's
+ * contents into the backup. We `fs.lstat()` first (which does NOT follow the
+ * link) and skip the copy entirely if the source is a symlink, so a symlink is
+ * never dereferenced into the backup.
+ *
+ * @returns {Promise<{staged: boolean}>}  staged=false when skipped (symlink)
  */
 async function stageBackup(backupRoot, srcAbs, rel) {
+  const linkStat = await fs.lstat(srcAbs);
+  if (linkStat.isSymbolicLink()) {
+    process.stderr.write(
+      `${SCRIPT_NAME}: WARN refusing to back up symlink (not dereferenced): ${srcAbs}\n`
+    );
+    return { staged: false };
+  }
+
   const stagedAbs = path.join(backupRoot, rel);
   await fs.mkdir(path.dirname(stagedAbs), { recursive: true });
   await fs.copyFile(srcAbs, stagedAbs);
@@ -499,6 +535,7 @@ async function stageBackup(backupRoot, srcAbs, rel) {
   } catch {
     // non-fatal
   }
+  return { staged: true };
 }
 
 /**
@@ -517,6 +554,20 @@ async function compressAndCleanupBackup(backupRoot) {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   });
+
+  // F1 (issue #514 fold-in) — distinguish "tar not on PATH" (ENOENT) from a
+  // non-zero tar exit. On ENOENT `spawnSync` sets `res.error` and leaves
+  // `res.status === null`; the generic branch below would otherwise print a
+  // confusing "tar failed (status null)". Surface the real cause and keep the
+  // uncompressed staging dir as the documented fallback.
+  if (res.error) {
+    const reason = res.error.code === 'ENOENT' ? 'tar not found on PATH' : res.error.message;
+    process.stderr.write(
+      `${SCRIPT_NAME}: WARN ${reason} — cannot compress backup. ` +
+        `Leaving staging directory at ${backupRoot} for manual archival.\n`
+    );
+    return { archive: null, removed: false };
+  }
 
   if (res.status === 0) {
     // Remove the now-redundant staging directory

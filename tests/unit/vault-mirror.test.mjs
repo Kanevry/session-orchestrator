@@ -42,7 +42,14 @@ const VALID_SESSION = JSON.stringify({
 });
 
 function runMirror(args) {
-  return spawnSync('node', [MIRROR, ...args], { encoding: 'utf8' });
+  // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 bypasses the #600 canonical-vault guard:
+  // every test here mirrors into a non-git mkdtempSync tmp dir, which would be
+  // rejected by the guard (no git origin). The guard's own behaviour is covered
+  // black-box in tests/scripts/vault-mirror-entry-point.test.mjs.
+  return spawnSync('node', [MIRROR, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' },
+  });
 }
 
 function makeTmpDir() {
