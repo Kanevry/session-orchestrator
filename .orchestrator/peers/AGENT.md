@@ -3,8 +3,8 @@ id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-05-28T08:43:36.000Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839"]
+updated: "2026-05-28T11:52:26.975Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152"]
 ---
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
@@ -27,6 +27,7 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839"]
 - When session-reviewer reports BLOCK at end of W2, add the fix as a new agent in W3 (Impl-Polish); do not restart W2.
 - Test-writers must verify both `npm test` (all tests pass) AND `npm run lint` (zero lint errors) before reporting done. Lint-only verification allows stylistic regressions to slip to Full Gate.
 - When a test-writer agent runs tests against production code, then mutates the SUT to a known-broken state and re-runs to observe failure, this falsifiability cycle proves the test catches the regression it claims to cover. Mutation+revert cycles are expected in test delivery.
+- When a wave ships a fix for a recurring anti-pattern, run a pattern-replication audit on the rest of the diff before W4 closes — the agent who just fixed the bug is the most likely to re-introduce it elsewhere in the same change set. A single-agent review misses the recurrence; a multi-reviewer W4 panel catches it. Add a 1-line grep of the diff for other instances of the just-fixed pattern.
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -49,6 +50,7 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839"]
 - For ESM SUTs that use default imports (`import fs from 'node:fs'`), test files can intercept calls via `vi.spyOn(fs, 'method')` if the test file also uses the same default import. The key step: capture the original before mocking with `const orig = fs.method.bind(fs)`, then pass-through calls that don't match the fault target via `orig.apply(fs, args)`. The `.bind(fs)` is load-bearing — without it, `this` inside the original implementation may be undefined.
 - `vi.spyOn` on ESM named exports fails with `Cannot redefine property`; use real filesystem error injection (e.g., `chmodSync(dir, 0o555)`) instead.
 - ESLint `eqeqeq` rejects `x == null`; write `x === null || x === undefined` explicitly or use nullish-coalescing.
+- `existsSync(target)` is not an authorization check — it answers "does this path exist", not "is this the RIGHT path". For any write-gate where writing to the wrong target is the failure mode (vault mirror, deploy target, backup destination), guard on an IDENTITY probe (git remote get-url origin, a sentinel marker file, a known UUID) and host-qualify the match (`endsWith('host.tld/org/repo')`) so a same-named repo on a different host is still rejected. Fail closed: any non-zero probe exit OR non-matching identity is a whole-run `exit(2)`, not a per-entry skip. Provide a load-bearing env-var bypass for tests that legitimately target non-canonical tmp dirs, and cover the guard black-box with the bypass off.
 <!-- END MANAGED: architecture-and-code-patterns -->
 
 <!-- BEGIN MANAGED: ci-and-verification -->
