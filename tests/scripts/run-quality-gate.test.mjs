@@ -318,7 +318,8 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
   });
 
   it('emits orchestrator.quality_gate.failed when a full-gate check fails', () => {
-    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'false', 'lint-command': 'skip' });
+    // Cross-platform fail stand-in: POSIX `false` is not a cmd.exe builtin (Windows CI).
+    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'node -e "process.exit(1)"', 'lint-command': 'skip' });
     const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
     expect(r.status).not.toBe(0);
     const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');

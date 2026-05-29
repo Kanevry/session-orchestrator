@@ -18,8 +18,10 @@
  * Isolation strategy:
  *   - runQualityGateWithRetry is NOT mocked — it is the system under test.
  *   - dispatchFixer is a vi.fn() — it IS mocked (external I/O: subagent dispatch).
- *   - Shell commands: use POSIX `true` (exit 0) and `false` (exit 1) as
- *     deterministic stand-ins. No real npm/typecheck invocations.
+ *   - Shell commands: use cross-platform `node -e` stand-ins (PASS/FAIL helpers,
+ *     exit 0/1). POSIX `true`/`false`/`test` are NOT cmd.exe builtins, so they
+ *     exit 1 on the Windows CI runner — `node` is portable. No real
+ *     npm/typecheck invocations.
  *   - File system: each test gets a fresh mkdtempSync() repoRoot.
  *     beforeEach/afterEach clean up reliably.
  *
@@ -56,12 +58,28 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Helper: always-pass commands (POSIX `true` exits 0)
+// Cross-platform shell stand-ins (Windows CI portability)
+//
+// POSIX `true` / `false` / `test` are NOT cmd.exe builtins — on the Windows CI
+// runner they are "not recognized" and exit 1, so a gate that should PASS fails.
+// The gate sub-process is spawned via `spawnSync(cmd, { shell: true })`, which
+// uses cmd.exe on Windows. `node` is guaranteed present (it runs these tests),
+// so we use `node -e` as the portable stand-in for every gate command.
 // ---------------------------------------------------------------------------
-const PASS_COMMANDS = { lint: 'true', typecheck: 'true', test: 'true' };
+const PASS = 'node -e "process.exit(0)"';
+const FAIL = 'node -e "process.exit(1)"';
+
+/** Single-quote + escape a path for safe embedding inside a `node -e "..."` JS string. */
+const sq = (p) => `'${String(p).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+
+/** Portable replacement for `test -f <p>`: exits 0 iff `p` exists on disk. */
+const fileExistsCmd = (p) => `node -e "process.exit(require('fs').existsSync(${sq(p)})?0:1)"`;
+
+// Helper: always-pass commands
+const PASS_COMMANDS = { lint: PASS, typecheck: PASS, test: PASS };
 
 // Helper: always-fail lint, everything else passes
-const FAIL_LINT_COMMANDS = { lint: 'false', typecheck: 'true', test: 'true' };
+const FAIL_LINT_COMMANDS = { lint: FAIL, typecheck: PASS, test: PASS };
 
 // ---------------------------------------------------------------------------
 // 1. Happy path
@@ -526,7 +544,7 @@ describe('runQualityGateWithRetry — gate order', () => {
       maxRetries: 1,
       dispatchFixer,
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(result.finalFailure.gate).toBe('lint');
@@ -539,7 +557,7 @@ describe('runQualityGateWithRetry — gate order', () => {
       maxRetries: 1,
       dispatchFixer,
       repoRoot,
-      commands: { lint: 'true', typecheck: 'false', test: 'true' },
+      commands: { lint: PASS, typecheck: FAIL, test: PASS },
     });
 
     expect(result.finalFailure.gate).toBe('typecheck');
@@ -552,7 +570,7 @@ describe('runQualityGateWithRetry — gate order', () => {
       maxRetries: 1,
       dispatchFixer,
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'false' },
+      commands: { lint: PASS, typecheck: PASS, test: FAIL },
     });
 
     expect(result.finalFailure.gate).toBe('test');
@@ -572,7 +590,7 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
     // We need commands that fail first and pass after. Use a script that checks
     // a shared flag. Since commands are shell strings, we use a temp file flag.
     const flagFile = join(repoRoot, 'fixed.flag');
-    const conditionalLint = `test -f ${flagFile}`;
+    const conditionalLint = fileExistsCmd(flagFile);
 
     const wrappedFixer = vi.fn().mockImplementation(async (_ctx) => {
       // Create the flag file to make subsequent gate runs pass
@@ -584,7 +602,7 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
       maxRetries: 2,
       dispatchFixer: wrappedFixer,
       repoRoot,
-      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+      commands: { lint: conditionalLint, typecheck: PASS, test: PASS },
     });
 
     expect(result.ok).toBe(true);
@@ -592,7 +610,7 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
 
   it('returns attempts: 2 when gate passes on the first retry', async () => {
     const flagFile = join(repoRoot, 'fixed.flag');
-    const conditionalLint = `test -f ${flagFile}`;
+    const conditionalLint = fileExistsCmd(flagFile);
 
     const wrappedFixer = vi.fn().mockImplementation(async () => {
       writeFileSync(flagFile, '1', 'utf8');
@@ -602,7 +620,7 @@ describe('runQualityGateWithRetry — fixer succeeds on first retry', () => {
       maxRetries: 2,
       dispatchFixer: wrappedFixer,
       repoRoot,
-      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+      commands: { lint: conditionalLint, typecheck: PASS, test: PASS },
     });
 
     expect(result.attempts).toBe(2);
@@ -716,7 +734,7 @@ describe('W4-A6 Group E — runGate timeout + maxBuffer behaviour', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(result.ok).toBe(false);
@@ -737,7 +755,7 @@ describe('W4-A6 Group E — runGate timeout + maxBuffer behaviour', () => {
       dispatchFixer: async () => {},
       repoRoot,
       // lint: large output but exits 0; typecheck: fails with a line
-      commands: { lint: bigOutputCmd, typecheck: failWithOutputCmd, test: 'true' },
+      commands: { lint: bigOutputCmd, typecheck: failWithOutputCmd, test: PASS },
     });
 
     // typecheck fails → ok: false, but the function returned (no crash/hang)
@@ -776,7 +794,7 @@ describe('W4-A6 Group F — multi-gate cascade', () => {
       maxRetries: 0,
       dispatchFixer,
       repoRoot,
-      commands: { lint: 'false', typecheck: 'echo tc-never-runs', test: 'echo test-never-runs' },
+      commands: { lint: FAIL, typecheck: 'echo tc-never-runs', test: 'echo test-never-runs' },
     });
 
     expect(result.ok).toBe(false);
@@ -790,9 +808,9 @@ describe('W4-A6 Group F — multi-gate cascade', () => {
     const testFlagFile = join(repoRoot, 'test-fixed.flag');
 
     // Commands check for flag files
-    const lintCmd = `test -f ${lintFlagFile}`;
-    const tcCmd = `test -f ${typecheckFlagFile}`;
-    const testCmd = `test -f ${testFlagFile}`;
+    const lintCmd = fileExistsCmd(lintFlagFile);
+    const tcCmd = fileExistsCmd(typecheckFlagFile);
+    const testCmd = fileExistsCmd(testFlagFile);
 
     // Fixer creates all flag files on first call
     const dispatchFixer = vi.fn().mockImplementation(async () => {
@@ -898,7 +916,7 @@ describe('W4-A6 Group G — SO_WAVE_ID env + dispatchFixer defaults', () => {
 describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)', () => {
   it('H1: diagnosticsBundlePath is undefined when gate passes after fixer dispatch', async () => {
     const flagFile = join(repoRoot, 'h1-fixed.flag');
-    const conditionalLint = `test -f ${flagFile}`;
+    const conditionalLint = fileExistsCmd(flagFile);
 
     const wrappedFixer = vi.fn().mockImplementation(async () => {
       writeFileSync(flagFile, '1', 'utf8');
@@ -908,7 +926,7 @@ describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)'
       maxRetries: 2,
       dispatchFixer: wrappedFixer,
       repoRoot,
-      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+      commands: { lint: conditionalLint, typecheck: PASS, test: PASS },
     });
 
     // Gate passes → no abort → no bundle path written
@@ -917,7 +935,7 @@ describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)'
 
   it('H2: result.ok is true when gate passes after fixer dispatch (confirming no abort occurred)', async () => {
     const flagFile = join(repoRoot, 'h2-fixed.flag');
-    const conditionalLint = `test -f ${flagFile}`;
+    const conditionalLint = fileExistsCmd(flagFile);
 
     const wrappedFixer = vi.fn().mockImplementation(async () => {
       writeFileSync(flagFile, '1', 'utf8');
@@ -927,7 +945,7 @@ describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)'
       maxRetries: 2,
       dispatchFixer: wrappedFixer,
       repoRoot,
-      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+      commands: { lint: conditionalLint, typecheck: PASS, test: PASS },
     });
 
     // If ok === true, the gate passed and no diagnostics bundle is warranted.
@@ -962,7 +980,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     // The function returned — no crash.
@@ -977,7 +995,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     expect(result.ok).toBe(false);
@@ -988,7 +1006,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     expect(result.finalFailure).toBeDefined();
@@ -1003,7 +1021,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     expect(result.finalFailure.exitCode).toBe(1);
@@ -1024,7 +1042,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     const outputLen = result.finalFailure.output?.length ?? 0;
@@ -1041,7 +1059,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: OVERFLOW_CMD, typecheck: 'true', test: 'true' },
+      commands: { lint: OVERFLOW_CMD, typecheck: PASS, test: PASS },
     });
 
     expect(result.diagnosticsBundlePath).toBeDefined();
@@ -1050,11 +1068,12 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
 
   it('I7: overflow gate does not prevent downstream gate from running after fixer fixes the overflow gate', { timeout: 30_000 }, async () => {
     // Regression guard: verify the loop re-runs correctly after an overflow
-    // failure. The fixer swaps the lint command to 'true'; the retry passes.
+    // failure. The fixer swaps the lint command to a passing one; the retry passes.
     const flagFile = join(repoRoot, 'i7-overflow-fixed.flag');
     // On first run: lint emits 21 MiB (overflow → exit 1); after fixer writes
     // the flag file, the conditional command succeeds.
-    const conditionalLint = `test -f ${flagFile} || (node -e "process.stdout.write('x'.repeat(1024*1024*21))" && false)`;
+    // Portable: exit 0 iff flagFile exists; else emit 21 MB and exit 1.
+    const conditionalLint = `node -e "const fs=require('fs'); if (fs.existsSync(${sq(flagFile)})) { process.exit(0); } else { process.stdout.write('x'.repeat(1024*1024*21)); process.exit(1); }"`;
 
     const fixer = vi.fn().mockImplementation(async () => {
       writeFileSync(flagFile, '1', 'utf8');
@@ -1064,7 +1083,7 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
       maxRetries: 1,
       dispatchFixer: fixer,
       repoRoot,
-      commands: { lint: conditionalLint, typecheck: 'true', test: 'true' },
+      commands: { lint: conditionalLint, typecheck: PASS, test: PASS },
     });
 
     // After fixer creates the flag, the gate passes — ok: true on the retry.

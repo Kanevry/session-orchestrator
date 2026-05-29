@@ -24,7 +24,8 @@
  *   - Real git repos are initialised with execSync — no mocking of git.
  *   - Real CLAUDE.md files are written to tmpdir — no mocking of fs.
  *   - parse-config.mjs subprocess is invoked for real.
- *   - Gates use `true` / `false` shell commands for hermetic control.
+ *   - Gates use cross-platform `node -e` exit-0/1 stand-ins (PASS/FAIL) for
+ *     hermetic control. POSIX `true`/`false` are not cmd.exe builtins (Windows CI).
  *
  * Per .claude/rules/testing.md: testTimeout configured at suite level via
  * describe-scoped options. Integration tests with git subprocesses can take
@@ -64,6 +65,16 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(repoRoot, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-platform shell stand-ins (Windows CI portability)
+//
+// POSIX `true` / `false` are NOT cmd.exe builtins — they exit 1 on the Windows
+// CI runner, so a gate that should PASS fails. The gate sub-process is spawned
+// via `spawnSync(cmd, { shell: true })` (cmd.exe on Windows). `node` is portable.
+// ---------------------------------------------------------------------------
+const PASS = 'node -e "process.exit(0)"';
+const FAIL = 'node -e "process.exit(1)"';
 
 // ---------------------------------------------------------------------------
 // Git repo helper — initialise a minimal git repo in tmpdir
@@ -220,7 +231,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B1: writes HEAD SH
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     const shaFile = join(repoRoot, '.orchestrator', 'runtime', 'last-green-sha.txt');
@@ -234,7 +245,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B1: writes HEAD SH
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     const shaFile = join(repoRoot, '.orchestrator', 'runtime', 'last-green-sha.txt');
@@ -249,7 +260,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B1: writes HEAD SH
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     const runtimeDir = join(repoRoot, '.orchestrator', 'runtime');
@@ -267,7 +278,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B2: overwrites on 
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     // Add a second commit to advance HEAD
@@ -278,7 +289,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B2: overwrites on 
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     const shaFile = join(repoRoot, '.orchestrator', 'runtime', 'last-green-sha.txt');
@@ -302,7 +313,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B3: creates runtim
       maxRetries: 0,
       dispatchFixer: async () => {},
       repoRoot,
-      commands: { lint: 'true', typecheck: 'true', test: 'true' },
+      commands: { lint: PASS, typecheck: PASS, test: PASS },
     });
 
     expect(existsSync(runtimeDir)).toBe(true);
@@ -331,7 +342,7 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C1: changed files b
         capturedChangedFiles = changedFiles;
       },
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(capturedChangedFiles).toContain('B.txt');
@@ -351,7 +362,7 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C2: HEAD~1 as defau
         capturedChangedFiles = changedFiles;
       },
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(Array.isArray(capturedChangedFiles)).toBe(true);
@@ -371,7 +382,7 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C3: non-git directo
         capturedChangedFiles = changedFiles;
       },
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(capturedChangedFiles).toEqual([]);
@@ -397,7 +408,7 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C4: no changes betw
         capturedChangedFiles = changedFiles;
       },
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(capturedChangedFiles).toEqual([]);
@@ -422,7 +433,7 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C5: paths with spac
         capturedChangedFiles = changedFiles;
       },
       repoRoot,
-      commands: { lint: 'false', typecheck: 'true', test: 'true' },
+      commands: { lint: FAIL, typecheck: PASS, test: PASS },
     });
 
     expect(capturedChangedFiles).toContain('my dir/file.txt');
