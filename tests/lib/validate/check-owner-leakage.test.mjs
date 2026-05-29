@@ -197,6 +197,66 @@ describe('Positive-5: events.gotzendorfer.at string-literal (not doc-comment)', 
 });
 
 // ---------------------------------------------------------------------------
+// Positive-6: full RFC1918 private dotted-quad (P8)
+// ---------------------------------------------------------------------------
+
+describe('Positive-6: RFC1918 private IP leak (P8)', () => {
+  it('exits 1 when a tracked file contains a 10.x.x.x private IP', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'infra.md'), '# Infra\nThe service runs at 10.1.2.3 internally.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P8');
+  });
+
+  it('exits 1 for 192.168.x.x and 172.16-31.x.x private IPs', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'a.md'), 'gateway 192.168.1.1\n');
+      writeFileSync(join(r, 'b.md'), 'host 172.20.0.5\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, 'P8')).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does NOT flag placeholder .x forms or TEST-NET (192.0.2.x) — SSRF docs stay clean', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'ssrf.md'),
+        'Blocks private ranges (10.x, 172.16-31.x, 192.168.x, 127.x). Example 192.0.2.1 (TEST-NET).\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('does NOT flag 172.15/172.32 (outside the private 16-31 range)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'public.md'), 'public 172.15.0.1 and 172.32.0.1\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('exempts the IP-redaction test file (P8_ALLOWLIST) from P8', () => {
+    const root = makeTmpRepo((r) => {
+      mkdirSync(join(r, 'tests', 'scripts'), { recursive: true });
+      writeFileSync(
+        join(r, 'tests', 'scripts', 'export-hw-learnings.test.mjs'),
+        "const s = 'Server at 10.0.0.1 responded';\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Negative-1: clean fixture
 // ---------------------------------------------------------------------------
 

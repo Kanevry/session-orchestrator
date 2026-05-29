@@ -43,6 +43,7 @@ coverage/
 # Per-session runtime state (machine-specific, never committable)
 .orchestrator/host.json
 .orchestrator/current-session.json
+.orchestrator/STATE.md
 # Issue #330: distributed session-lock
 .orchestrator/session.lock
 
@@ -50,6 +51,8 @@ coverage/
 .orchestrator/pending-dream.md
 .orchestrator/dialectic-pending.md
 .orchestrator/dialectic-last-run
+# Applied/consumed sidecar archives — internal session exhaust, never for public repo
+.orchestrator/consumed/
 
 # Per-session audit drafts and historical audit dumps (local artefacts of
 # /repo-audit and /discovery; never committed to plugin source)
@@ -59,6 +62,7 @@ coverage/
 # Per-session scratch (W5 narratives, drafts) and test-run artifacts
 # (from /test command runs); never committed to plugin source
 .orchestrator/scratch/
+.orchestrator/session-artifacts/
 .orchestrator/metrics/test-runs/
 
 # Auto-Fix diagnostics bundles may contain secrets — never commit

@@ -14,6 +14,9 @@
  *   P5  DEFAULT_GITLAB_HOST on line with 'gotzendorfer' OR as exported const
  *   P6  private project slugs (see PRIVATE_SLUGS constant below)
  *   P7  /gotzendorfer\.at/ not matching an allowlisted exclusion
+ *   P8  full RFC1918 private dotted-quad (10.x.x.x / 192.168.x.x / 172.16-31.x.x)
+ *       — internal IP leak. Placeholder `.x` forms and CIDR/range notation are NOT
+ *       matched (only literal 4-octet IPs), so SSRF-range docs stay clean.
  *
  * Exclusions (line-scoped, never whole-file):
  *   1. Lines with office@gotzendorfer.at or security@gotzendorfer.at
@@ -28,6 +31,8 @@
  *   6. tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line:
  *      " *   - No literal `events.gotzendorfer.at` URL appears anywhere in scripts/ or hooks/."
  *      (a real string-literal events.gotzendorfer.at elsewhere in that file still FAILs)
+ *   7. tests/scripts/export-hw-learnings.test.mjs — exempt from P8 ONLY: the RFC1918
+ *      IPs there are the redaction subject of the anonymizeString suite, not leaks.
  *
  * Exit codes:
  *   0 — all checks passed
@@ -86,6 +91,17 @@ const P6_PATTERNS = PRIVATE_SLUGS.map((slug) => new RegExp(`\\b${escapeRegex(slu
 
 /** P7: catch-all gotzendorfer.at (must not match allowlist) */
 const P7 = /gotzendorfer\.at/;
+
+/**
+ * P8: full RFC1918 private dotted-quad — internal-IP leak.
+ * Matches only literal 4-octet private IPs (10.x.x.x, 192.168.x.x, 172.16-31.x.x).
+ * Deliberately does NOT match placeholder `.x` forms (10.x, 192.168.x) or CIDR/range
+ * notation used in SSRF-range documentation, nor TEST-NET (192.0.2.x, RFC 5737).
+ */
+const P8 = /(?:\b10(?:\.\d{1,3}){3}|\b192\.168(?:\.\d{1,3}){2}|\b172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})/;
+
+/** P8 allowlist: files where RFC1918 IPs are a legitimate test subject (IP-redaction fixtures). */
+const P8_ALLOWLIST = new Set(['tests/scripts/export-hw-learnings.test.mjs']);
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -330,6 +346,11 @@ for (const filePath of scanFiles) {
       if (!isAllowlisted(relPath, line)) {
         violations.push({ relPath, lineNum, pattern: 'P7 (gotzendorfer.at catch-all)', lineContent: line.trim() });
       }
+    }
+
+    // P8: full RFC1918 private dotted-quad — internal IP leak (redaction-test fixtures exempt)
+    if (P8.test(line) && !P8_ALLOWLIST.has(relPath)) {
+      violations.push({ relPath, lineNum, pattern: 'P8 (RFC1918 private IP)', lineContent: line.trim() });
     }
   });
 }

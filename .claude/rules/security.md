@@ -49,7 +49,7 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 
 ## SSRF Prevention (SEC-014)
 - Use `safeFetch()` / `safeFetchJSON()` from `@your-org/http-client` for all user-supplied URLs. These block private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, ::1, 169.254.x) and non-HTTP schemes before requesting.
-- For internal service-to-service calls (e.g., Clank → 10.0.0.x), use `fetchWithTimeout()` or pass `allowPrivateNetworks: true`.
+- For internal service-to-service calls (e.g., Clank → an internal host on a private IP range), use `fetchWithTimeout()` or pass `allowPrivateNetworks: true`.
 - **DNS rebinding defense:** Set `dnsValidation: true` in `safeFetch()`/`safeFetchJSON()` options to resolve DNS and validate the resolved IP before connecting. When enabled, DNS validation is also applied on each redirect hop. **Node.js-only** — uses `dns.promises.lookup()`. For standalone use, `resolveAndValidate()` is exported from `@your-org/http-client`.
 - Set explicit timeouts (5s default) and limit redirects (max 3 with re-validation) on server-side HTTP clients.
 - Redirect handling: use `redirect: 'manual'` and re-validate each Location URL via `validateUrl()` before following. This prevents redirect-based SSRF attacks. The `safeFetch()` function in `@your-org/http-client` implements this pattern with `RedirectLimitError` for exceeded limits.

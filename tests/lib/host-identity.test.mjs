@@ -47,12 +47,12 @@ describe('host-identity', () => {
     });
 
     it('returns true when SSH_CONNECTION is set', () => {
-      process.env.SSH_CONNECTION = '10.0.0.1 59210 10.0.0.2 22';
+      process.env.SSH_CONNECTION = '192.0.2.1 59210 192.0.2.2 22';
       expect(isSSH()).toBe(true);
     });
 
     it('returns true when SSH_CLIENT is set', () => {
-      process.env.SSH_CLIENT = '10.0.0.1 59210 22';
+      process.env.SSH_CLIENT = '192.0.2.1 59210 22';
       expect(isSSH()).toBe(true);
     });
 
