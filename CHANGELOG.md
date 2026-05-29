@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-05-29
+
 ### Added
+
+- **Housekeeping: GitHub public-safety + green CI** — restored a clean public mirror (github.com/Kanevry/session-orchestrator) with a green CI badge.
+  - **CI green:** dropped the never-green `windows-latest` leg from the GitHub Actions test matrix. The orchestrator is POSIX-first (paths, `/tmp`, symlinks, shell built-ins) and Windows was never a required check nor a supported target; ~49 suites failed on Windows. CI now runs ubuntu + macOS + security (macOS is the priority platform). Also made the quality-gate test stand-ins cross-platform (`node -e` replacing POSIX `true`/`false`/`test -f`) as a correctness improvement.
+  - **Privacy hardening:** scrubbed the literal internal subnet from the SSRF example in `security.md`; extended `check-owner-leakage.mjs` with P8 — full RFC1918 dotted-quad detection (placeholder `.x`/CIDR forms and TEST-NET exempt; the IP-redaction test allowlisted) + 5 regression tests; genericized SSH-string test fixtures to TEST-NET (192.0.2.x). Leak-scanner GREEN (1073 files, 0 leaks).
+  - **Repo hygiene:** removed internal session-exhaust artifacts that had been committed to the public repo (`.orchestrator/{scratch,session-artifacts,consumed}`) and added gitignore rules for these + `.orchestrator/STATE.md` (was untracked-but-unignored). Project-private feature names (Clank, vault, projects-baseline) are intentional and retained per maintainer decision.
 
 - **Vault + Observability Follow-up Drain (session-1, resumed)** — closes #602, #604, #607, #611, #612, #613. Resumed a crashed deep session at the W2→W3 boundary: verified the crashed W2 work (vault track + #612, 420 tests green / no regression), then completed W3–W5. 5 waves / 7 subagents / 8232 tests passing (+6 net from the W5 fold-in), 0 fail. 0 BLOCKER across 4 W4 reviewers (security PROCEED clean). Follow-ups #615 (#607 items 4/5/7 vault-path housekeeping), #616 (W4 test-depth + emitEvent `{filePath}` contract).
   - **#611 (Track A observability)** — additive `emitEvent(type, payload, { filePath })` path override (default unchanged; 9 existing 2-arg callers grep-verified unbroken); new `scripts/emit-event.mjs` CLI (`--type/--payload/--file/--json/--help`, exit `0/1/2` per cli-design.md); `compute-grounding-injection.sh` routed through the CLI (jq `--arg`/`--argjson` escaping preserved); `grounding_injected` → `orchestrator.grounding.injected` rename with both consumers (`metrics-collection.md` jq filter + `wave-loop.md`) updated in lockstep.

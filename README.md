@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.7.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.8.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-7360%20passing-brightgreen.svg)](#development)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
