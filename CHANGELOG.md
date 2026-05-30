@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Housekeeping: cut dead session-end auto-consolidation dispatch + add a dispatch-target guard** — closes #614, #606; closes #489 (moot). Express-path coordinator-direct session.
+  - **#614 (dead automation)** — session-end Phase 3.6.5 (Auto-Dream) and Phase 3.6.7 (Auto-Dialectic) dispatched `subagent_type`s (`memory-cleanup`, `evolve`) that were never built in `agents/`, so the dispatch never fired — the symptom was a recurring "auto-dream/dialectic SKIPPED (agent-types unavailable)" line in 7+ session memories. Replaced both dead `Agent({…})` blocks with a lean manual-cadence nudge (run `/memory-cleanup --dry-run` / `/evolve --dialectic --dry-run` manually next session); the `shouldDispatchAutoDream` / `shouldDispatchAutoDialectic` decision helpers + `auto-dream.mjs` / `auto-dialectic.mjs` libs are preserved (they compute the signal that drives the nudge). Auto-dialectic advances `.orchestrator/dialectic-last-run` on nudge-emit so the reminder surfaces once per cadence window rather than every session. Also corrected the documented `writeDialecticLastRun(repoRoot, …)` positional call to the real `{ repoRoot, isoTimestamp }` object signature.
+  - **New guard** — `scripts/lib/validate/check-subagent-types.mjs` asserts every `subagent_type: "session-orchestrator:<X>"` reference under `skills/**` resolves to an existing `agents/<X>.md`; wired into `scripts/validate-plugin.mjs` (exits non-zero on any unresolved reference). Supports an inline `check-subagent-types:ignore` marker for documenting historical/example dead references. +9 unit/integration tests.
+  - **#606 (docs)** — documented the `VAULT_MIRROR_CANONICAL_SUFFIX` env-var (host-qualified canonical-vault guard override; environment-only, intentionally not a Session Config key) in `docs/session-config-reference.md`.
+  - **#489 (moot)** — closed: the Windows-only test failures it tracked can no longer occur after `windows-latest` was dropped from the test matrix (v3.8.0 / `990be3a`).
+
 ## [3.8.0] - 2026-05-29
 
 ### Added

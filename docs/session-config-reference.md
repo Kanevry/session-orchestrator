@@ -322,6 +322,16 @@ vault-integration:
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
 | `vault-integration.gitlab-groups` | string[] or null | `null` | List of GitLab group paths to scan for repos missing `.vault.yaml`. Consumed by `scripts/vault-backfill.mjs` (via `readVaultIntegrationConfig()`) and the `/plan retro` vault-backfill sub-mode (`skills/plan/mode-retro.md` Phase 1.6 Step 1). When null/unset, the backfill CLI exits with a "no groups configured" notice. |
 
+### Environment override: `VAULT_MIRROR_CANONICAL_SUFFIX`
+
+`vault-mirror.mjs` refuses to mirror into any directory whose `git remote get-url origin` does not end with a canonical-vault path suffix — a network-of-trust guard (#600 D2) that stops notes from silently accumulating in a wrong or typo'd vault location. A non-matching suffix fails the **whole run** (`process.exit(2)`), not a per-entry skip — mirroring even one note into the wrong place is the bug it prevents.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `VAULT_MIRROR_CANONICAL_SUFFIX` | env-var (string) | `/agents/vault` | Tightens the guard from the host-agnostic default (`/agents/vault`, suffix-only — matches that tail on **any** host) to a **host-qualified** match for high-threat / multi-host environments. Example: `VAULT_MIRROR_CANONICAL_SUFFIX=gitlab.mycompany.com/agents/vault`. Whitespace-only values fall back to the default. |
+
+This is an **environment variable only — not a Session Config key** (intentional: a host-qualified suffix embeds an operator-specific hostname, which must never be committed into a public `CLAUDE.md` / `AGENTS.md`). Set it in your shell profile or CI secret store. The sibling `VAULT_MIRROR_SKIP_CANONICAL_CHECK` is an internal test-only escape hatch and is intentionally **not** an operator flag.
+
 ## Vault Mirror Quality (#504)
 
 Opt-in quality thresholds applied by `scripts/vault-mirror.mjs` before mirroring a learning or session note to the Meta-Vault. Notes that fail the thresholds are skipped silently (not an error). PRD F1.2.
