@@ -186,4 +186,4 @@ securityMiddleware(app);
 - **Template Literals**: Never use tagged template literals with user input for SQL, HTML, or shell commands. Use parameterized queries, DOMPurify, or `child_process.execFile()` respectively.
 
 ## See Also
-development.md · security.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md

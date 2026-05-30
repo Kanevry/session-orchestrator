@@ -35,4 +35,4 @@
 - Missing time-box: starting work without appetite/deadline defined.
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · cli-design.md · parallel-sessions.md

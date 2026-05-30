@@ -14,7 +14,7 @@ code-implementer fixer-agent retries on each failure before hard abort.
 
 ## Anti-pattern guardrails (BE-012)
 
-The fixer-agent prompt MUST include a reminder of `.claude/rules/test-quality.md`
+The fixer-agent prompt MUST include a reminder of `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention"
 "test-the-mock" anti-pattern. A fix that makes tests green by mocking the
 real failure is a silent-pass regression vector — exactly the bug class that
 the BE-012 wrapper contract was designed to prevent.
@@ -118,9 +118,9 @@ RCE-equivalent within the bounds of the repo's trust model.
 
 - API: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`)
 - Wave-executor integration: `skills/wave-executor/SKILL.md` § "Inter-Wave Quality-Gate (with Auto-Fix Loop — #521)"
-- Test anti-patterns: `.claude/rules/test-quality.md` (BE-012, test-the-mock)
+- Test anti-patterns: `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention" (BE-012, test-the-mock)
 - PRD: `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 4
 - Issue: #521
 
 ## See Also
-development.md · testing.md · test-quality.md · verification-before-completion.md · parallel-sessions.md
+development.md · testing.md · verification-before-completion.md · parallel-sessions.md

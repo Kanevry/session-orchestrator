@@ -40,7 +40,7 @@ globs:
 
 ## RLS Performance (MUST)
 
-Supabase RLS policies can degrade query performance 10-100x without these optimizations. Full checklist with examples: see `security-compliance.md` > RLS Performance Checklist.
+Supabase RLS policies can degrade query performance 10-100x without these optimizations. Full checklist with examples: see the baseline `security-compliance` rules § RLS Performance Checklist (not vendored into this plugin).
 
 - **Index policy columns:** Every column referenced in an RLS policy MUST have a btree index. Missing indexes are the #1 RLS performance killer.
 - **Wrap `auth.uid()` in `(SELECT ...)`:** Use `(SELECT auth.uid())` instead of bare `auth.uid()`. This enables PostgreSQL initPlan caching (9ms vs 179ms on 100K rows).
@@ -161,4 +161,4 @@ async function updateUser(id: string, data: Partial<User>): Promise<void> {
 - Batch operations: use `.upsert()` or `.insert()` with arrays instead of individual inserts in loops.
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md

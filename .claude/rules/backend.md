@@ -93,7 +93,7 @@ function withAuth<T>(fn: (ctx: AuthCtx, input: any) => Promise<T>) {
 ```bash
 rg -n "return \{\s*success:\s*(true|false)" src/app/actions/ src/services/
 ```
-Any hit inside a function that is then passed through `withAuth(...)` / `withTenant(...)` / `withValidation(...)` is a likely BE-012 violation. Test-quality cross-reference: `test-quality.md` covers how unit tests must assert `data`/`error` fields shape, not just `success` boolean.
+Any hit inside a function that is then passed through `withAuth(...)` / `withTenant(...)` / `withValidation(...)` is a likely BE-012 violation. Test-quality cross-reference: `testing.md` § "Test Quality — False-Positive Prevention" covers how unit tests must assert `data`/`error` fields shape, not just `success` boolean.
 
 **Evidence:** A production Next.js app migration converted 66+ server actions after discovering the silent-pass pattern in production.
 
@@ -131,7 +131,7 @@ Split api and worker into separate processes when any of these apply: queue-base
 - Never log PII (emails, names, IBANs, Steuernummer). Use UUIDs and correlation IDs instead.
 - Use `req.id` or `x-request-id` header for request correlation. Inject into logger context.
 - Log levels: `error` (failures), `warn` (degraded), `info` (request lifecycle), `debug` (dev only).
-- Cross-references: structured logging in `infrastructure.md`, DSGVO PII rules in `security-compliance.md`.
+- Cross-references: structured logging and DSGVO PII rules live in the baseline `infrastructure` / `security-compliance` rules (not vendored into this plugin).
 
 ### Sentry Integration
 - **SDK selection:** Next.js App Router → `@sentry/nextjs` | Express/Docker → `@sentry/node` | Swift → `sentry-cocoa`.
@@ -250,7 +250,7 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
 - Add custom spans for: external API calls, database transactions, message queue operations, and any operation >100ms. Use `tracer.startActiveSpan()` with `span.end()` in `finally`.
 - Inject `traceId` into Pino log bindings for log-trace correlation. Use `trace-context` middleware to expose `req.traceId`.
 - Call `shutdown()` during graceful shutdown to flush pending spans before process exit.
-- Backend: Grafana Tempo. See `infrastructure.md` > Tracing Backend.
+- Backend: Grafana Tempo. See the baseline `infrastructure` rules § Tracing Backend (not vendored into this plugin).
 
 ## Bounded Ring-Buffer for Admin Observability
 - Fixed-capacity FIFO ring buffer of recent backend events (exits, errors, rate-limit hits, quota exhaustion) exposed via an authenticated admin endpoint. In-memory only — **zero DB overhead**, intended for rapid diagnosis between scrapes.
@@ -382,4 +382,4 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
 - Checking budget after the LLM call (check before, enforce before spending)
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend-data.md · infrastructure.md · observability.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · security-web.md · testing.md · frontend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md

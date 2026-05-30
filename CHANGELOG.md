@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sunset-review surface tooling + rule-reference hygiene** — closes #444, #445, #617; closes #446 (moot). Reduces backlog/review noise and gives the plugin a read-only way to find its own dead skills/agents/commands.
+  - **#444 (sunset-review)** — new `scripts/lib/sunset/walker.mjs`: a READ-ONLY surface walker that enumerates the skill/agent/command surface, combines agent-dispatch telemetry (`subagents.jsonl`, `event==="start"` only) with static reference scanning, and classifies each item into a 4-tier verdict (Active / Investigate / Demote / Retire). Low-confidence guardrail downgrades every Retire to Investigate when telemetry coverage < window. JSON-first CLI (`--json`/`--window-days`/`--kind`, exit `0/1/2` per cli-design.md). **W5 hardening:** a command whose `skills/<name>/SKILL.md` linkage points at a skill no longer present on disk now classifies **Investigate** (reason "command invokes a skill not present on disk"), not Active — the exact staleness a sunset tool must catch (R1 architect + R3 qa convergent MED). +6 test-depth gaps (command read-error graceful degradation, `--kind` filter + hand-computed summary tally, skill-kind README boilerplate exclusion, scanned-dir `node_modules` skip).
+  - **#445 (rule merge)** — merged `.claude/rules/test-quality.md` into `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention"; redirected the 3 orphaned intra-repo links (`skills/wave-executor/SKILL.md` ×1, `skills/write-executable-plan/SKILL.md` ×2) to the new section, plus a `check-rules-references` guard against future dangling rule links.
+  - **#617 (review-noise)** — stop auto-filing MED/LOW review findings as backlog issues (the backlog-noise root cause; #614 sibling).
+  - **#446 (moot)** — closed; folded into the vault decisions log.
+
 ### Fixed
 
 - **Housekeeping: cut dead session-end auto-consolidation dispatch + add a dispatch-target guard** — closes #614, #606; closes #489 (moot). Express-path coordinator-direct session.

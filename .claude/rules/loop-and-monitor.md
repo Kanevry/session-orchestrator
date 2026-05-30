@@ -135,6 +135,6 @@ it as you would any coordinator action:
 
 - `parallel-sessions.md` (PSA discipline that applies inside loop bodies)
 - `ask-via-tool.md` (loop bodies must still use AUQ for user decisions)
-- `development.md` · `security.md` · `mvp-scope.md` · `cli-design.md` · `ai-agent.md`
+- `development.md` · `security.md` · `mvp-scope.md` · `cli-design.md`
 - Project file: `.claude/loop.md` (the orchestrator's bare-`/loop` body)
 - Reference: `skills/_shared/monitor-patterns.md` (vetted Monitor filter snippets)

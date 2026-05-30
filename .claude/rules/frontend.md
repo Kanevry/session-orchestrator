@@ -59,4 +59,4 @@ globs:
 - `dangerouslySetInnerHTML` without DOMPurify sanitization.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · test-quality.md · backend.md · backend-data.md · mvp-scope.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · security-web.md · testing.md · backend.md · backend-data.md · mvp-scope.md · parallel-sessions.md

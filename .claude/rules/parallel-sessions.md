@@ -149,4 +149,4 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
 
 ## See Also
-development.md · security.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · ai-agent.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency)
+development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency)

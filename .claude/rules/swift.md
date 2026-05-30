@@ -60,4 +60,4 @@ globs:
 - Validate all server-sent data with Codable schemas. Never `force-unwrap` optional JSON fields.
 
 ## See Also
-development.md · security.md · testing.md · test-quality.md · frontend.md · backend.md · mvp-scope.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · testing.md · frontend.md · backend.md · mvp-scope.md · parallel-sessions.md

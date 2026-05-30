@@ -127,7 +127,14 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
    - **Context**: the session plan (issues, acceptance criteria) and all wave results from STATE.md
 2. Wait for the reviewer's **Verdict**:
    - **PROCEED** — continue to Phase 2
-   - **FIX REQUIRED** — address each listed item before proceeding. For quick fixes (<2 min each), fix inline. For larger items, create carryover issues (same as Phase 1.2) and note them as unresolved review findings in the Final Report
+   - **FIX REQUIRED** — disposition each listed item by severity:
+
+     | Finding class | Disposition |
+     |---|---|
+     | HIGH+ / blocking review finding | Fix inline if quick (<2 min); else create an issue (`priority:high`, `status:ready`) and note it in the Final Report |
+     | MED / LOW review finding | Fold in-session if quick; else record under "Unresolved Review Findings" in the Final Report — DO NOT create an issue (#617) |
+     | Planned-carryover (item was in the plan, not finished) | ALWAYS create a `[Carryover]` issue per Phase 1.2 — unchanged |
+     | SPIRAL / FAILED agent carryover | ALWAYS file via `createSpiralCarryoverIssue` per Phase 1.6 — unchanged |
 
 ### 1.9 Mission-Status Classification (when `mission-status` present in STATE.md)
 
@@ -742,7 +749,7 @@ For each finding with severity `critical` or `high` from Phase 1.5:
 2. Log each created issue ID for the Final Report
 3. Update `discovery_stats.issues_created` count
 
-4. **Create gap issues**: for newly-discovered problems
+4. **Create gap issues for HIGH+/blocking newly-discovered problems only** — MED/LOW review findings are recorded in the Final Report, not filed as issues (#617; see the Phase 1.8 severity-disposition table). This mirrors the Phase 5 "Discovery Issue Creation" gate (critical/high only).
 5. **Update milestones**: if milestone progress changed
 
 ## Phase 6: Final Report
@@ -763,6 +770,10 @@ Present to the user:
 ### New Issues Created
 - #R: [title] (priority: [X], status: ready)
 - #S: [title] (priority: [X], status: ready)
+
+### Unresolved Review Findings (MED/LOW — recorded, not ticketed) [#617]
+- [MED] <finding> — <file:line> — <why deferred / fold decision>
+- [LOW] <finding> — <file:line>
 
 ### Metrics
 - Duration: [total wall-clock time]
@@ -828,7 +839,8 @@ Present to the user:
 - **NEVER commit with TypeScript errors** — 0 errors is non-negotiable
 - **NEVER use `git add .`** — stage files individually to avoid capturing parallel session work
 - **NEVER skip issue updates** — VCS must reflect reality after every session
-- **ALWAYS create issues for unfinished work** — nothing should be "remembered" without a ticket
+- **ALWAYS create issues for unfinished PLANNED work** — SPIRAL/FAILED agent carryover and partially-done plan items (Phase 1.2 / 1.6) ALWAYS get a ticket; nothing planned-but-unfinished is "remembered" without one.
+- **DO NOT auto-file MED/LOW review findings as issues** — newly-surfaced reviewer findings (Phase 1.8 / W4 panel) at MED or LOW severity are folded in-session or recorded in the Final Report under "Unresolved Review Findings". Only HIGH+/blocking review findings get an issue. (Issue #617 — stops the self-referential low-priority backlog.)
 - **ALWAYS push to origin** — local-only work is lost work
 - **ALWAYS mirror to GitHub** if configured — keep mirrors in sync
 - **ALWAYS review `git diff --cached`** before committing — verify only YOUR changes are staged

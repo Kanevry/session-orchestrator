@@ -1,12 +1,12 @@
 # Security Rules (Always-on)
 
-Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `security-web.md`. Compliance and AI/LLM rules are in `security-compliance.md`.
+Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `security-web.md`. Compliance and AI/LLM rules live in the baseline `security-compliance` rules (not vendored into this plugin).
 
 ## SEC Rule Numbering Convention
 SEC identifiers are assigned sequentially as rules are created. Gaps are intentional:
 - **SEC-001 to SEC-003**: Reserved for future core authentication/authorization rules
 - **SEC-004 to SEC-009**: Core security rules (auth, validation, SQL, secrets, errors)
-- **SEC-010 to SEC-012**: Compliance rules (documented in security-compliance.md)
+- **SEC-010 to SEC-012**: Compliance rules (documented in the baseline `security-compliance` rules, not vendored into this plugin)
 - **SEC-013 to SEC-015**: Advanced protection (XXE, SSRF, crypto)
 - **SEC-016 to SEC-017**: Data integrity (CSV injection, session hardening — in security-web.md)
 - **SEC-018 to SEC-019**: Reserved candidates (prototype pollution CWE-1321, unsafe deserialization CWE-502 — currently covered by SEC-006)
@@ -35,7 +35,7 @@ SEC identifiers are assigned sequentially as rules are created. Gaps are intenti
 - Rotate secrets on any suspected exposure. Immediately.
 
 ### Secrets Inventory (SEC-005)
-Once a service crosses ~10 managed secrets, `.env.example` alone stops being a useful audit tool — it documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md` with one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries) where drift between "what's in .env" and "what's actually in use" became unmanageable without it. Sweep quarterly; open a `priority:high` issue for any secret expiring in < 30 days. Rotation schedule per secret type lives in `infrastructure.md`.
+Once a service crosses ~10 managed secrets, `.env.example` alone stops being a useful audit tool — it documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md` with one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries) where drift between "what's in .env" and "what's actually in use" became unmanageable without it. Sweep quarterly; open a `priority:high` issue for any secret expiring in < 30 days. Rotation schedule per secret type lives in the baseline `infrastructure` rules (not vendored into this plugin).
 
 ## Error Exposure (SEC-009)
 - Never return `error.message` directly to the client.
@@ -120,7 +120,7 @@ Cross-references:
 | A02 | Cryptographic Failures | SEC-015 (below), weak-hash (CWE-328), TLS validation (CWE-295), Math.random detection (CWE-338), Semgrep rules #37-38, #42-43 |
 | A03 | Injection | SEC-006 (Zod), SEC-007 (parameterized queries), SEC-013 (XXE), prototype-pollution (CWE-1321), ReDoS (CWE-1333), DOMPurify sanitization |
 | A04 | Insecure Design | MVP scope rules (mvp-scope.md), threat modeling at design phase |
-| A05 | Security Misconfiguration | security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), infrastructure.md (Docker hardening) |
+| A05 | Security Misconfiguration | security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), baseline infrastructure rules — Docker hardening (not vendored) |
 | A06 | Vulnerable Components | Dependencies section (pnpm audit), CI Semgrep (65+ custom rules) + Gitleaks (37 rules) |
 | A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in security-web.md) |
 | A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
@@ -140,4 +140,4 @@ Cross-references:
 - Template at `templates/shared/SECURITY.md`. Customize contact email and scope per project.
 
 ## See Also
-development.md · security-web.md · security-compliance.md · testing.md · test-quality.md · frontend.md · backend.md · backend-data.md · infrastructure.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · ai-agent.md
+development.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md

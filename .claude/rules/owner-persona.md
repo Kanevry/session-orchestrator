@@ -76,4 +76,4 @@ This archives the existing `owner.yaml` (timestamped backup in the same director
 - Repos are safe to be public. `owner.yaml` cannot appear in any repo commit under any normal or misconfigured workflow.
 
 ## See Also
-development.md · security.md · cli-design.md · mvp-scope.md · parallel-sessions.md · ai-agent.md
+development.md · security.md · cli-design.md · mvp-scope.md · parallel-sessions.md

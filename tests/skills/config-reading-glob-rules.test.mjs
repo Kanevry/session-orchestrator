@@ -118,7 +118,11 @@ describe('empty scopePaths', () => {
 // ---------------------------------------------------------------------------
 
 describe('scope path matching multiple rules', () => {
-  it('loads both testing.md and test-quality.md when scope is a test file', () => {
+  it('loads testing.md when scope is a test file (test-quality.md merged in via #445)', () => {
+    // #445 merged test-quality.md into testing.md (both were path-scoped with a
+    // shared glob set — the only safe merge). The Swift-test globs (`**/*Tests*`,
+    // `**/WalkAITalkieTests/**`) were unioned into testing.md so the merged rule
+    // still loads for both JS/TS and Swift test files.
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
       scopePaths: ['tests/lib/foo.test.mjs'],
@@ -126,7 +130,16 @@ describe('scope path matching multiple rules', () => {
 
     const names = results.map((r) => r.path.split('/').pop());
     expect(names).toContain('testing.md');
-    expect(names).toContain('test-quality.md');
+  });
+
+  it('loads testing.md for a Swift test file (merged WalkAITalkieTests glob from #445)', () => {
+    const results = loadApplicableRules({
+      rulesDir: RULES_DIR,
+      scopePaths: ['Sources/App/WalkAITalkieTests/EngineTests.swift'],
+    });
+
+    const names = results.map((r) => r.path.split('/').pop());
+    expect(names).toContain('testing.md');
   });
 
   it('loads backend.md and security-web.md for an API route', () => {

@@ -433,7 +433,7 @@ const result = await runQualityGateWithRetry({
 
 ### Anti-pattern (BE-012 awareness)
 
-The fixer-agent prompt MUST include a reminder of `.claude/rules/test-quality.md`
+The fixer-agent prompt MUST include a reminder of `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention"
 "test-the-mock" anti-pattern. A fix that makes tests green by mocking out the
 real failure is a regression vector. The fixer prompt should explicitly say:
 "Do NOT change test mocks to make tests pass. Fix the actual code defect."
