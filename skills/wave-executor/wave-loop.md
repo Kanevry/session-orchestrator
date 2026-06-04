@@ -741,6 +741,53 @@ When the hook is skipped (gate condition false), omit the `persona_gate` field e
 
 **Motivating example:** the `gotzendorfer-v2` W5 Buyer-Panel pattern (six buyer personas at `hard-gate-threshold` `6-of-6`, `mode: 'strict'`, `after: 'quality'`) — UI work is gate-checked against every persona before commit, abort on any dissent. See `docs/session-config-reference.md § Persona-Gate Wave (#458)` and `commands/persona-panel.md` for the standalone CLI equivalent.
 
+### 3c. Strategic Compact-Nudge (#620)
+
+> Advisory-only checkpoint. Never auto-compacts. `/compact` is a user slash-command; the coordinator/operator decides when to invoke it.
+
+**Gate conditions** — ALL must be true for the nudge to emit:
+
+1. `compact-nudge.enabled: true` in Session Config (default: `false`).
+2. The just-completed wave's role is listed in `compact-nudge.after` (default: `['discovery', 'impl']`). Compare the wave's canonical role string (lower-case) against the list.
+3. `compact-nudge.mode !== 'off'` (when `mode: 'off'` the nudge is a silent no-op even when `enabled: true`).
+
+When any gate condition is false, skip this step entirely — proceed to `### 4. Progress Update`.
+
+**Nudge format** — when the gate fires, append ONE advisory bullet to the wave progress update (step `### 4`):
+
+```
+- 💡 Compact checkpoint: Wave N (<Role>) complete — consider /compact before Wave N+1 (<NextRole>) to free context (advisory only; see decision table). Never auto-compacts.
+```
+
+**What survives `/compact` vs what is lost:**
+
+| Survives | Lost |
+|---|---|
+| CLAUDE.md, STATE.md (on disk), wave-scope.json, JSONL metrics (.orchestrator/), git history, all files on disk | Intermediate reasoning/thinking traces, previously-read file contents cached in context, tool-call history for prior waves |
+
+This frames the nudge: the persistent artefacts (plan, scope, STATE.md, git diff) are the distilled output of completed work; losing in-context file reads is the cost. Compact is worth it when the completed wave produced bulky research/audit output that is unlikely to be re-referenced verbatim.
+
+**Decision table:**
+
+| Wave boundary (completed → next) | Compact? | Why |
+|---|---|---|
+| Discovery → Impl-Core | Yes | Research/audit context is bulky; the plan + wave-scope.json is the distilled output. |
+| Impl-Core → Impl-Polish (long Core) | Maybe | Compact only if Polish targets different files; keep if Polish builds on Core's changes. |
+| Impl-Polish → Quality | No | Quality references the just-written code; losing it is costly. |
+| Quality → Finalization | No | Finalization needs the full session diff. |
+| Mid-implementation (within a wave) | No | Losing file paths + partial state is expensive. |
+| After a FAILED/aborted wave | Yes | Clear the dead-end reasoning before the adapted retry. |
+| Switching to an unrelated task block (deep session) | Yes | Debug/exploration traces pollute unrelated downstream work. |
+
+**Behaviour by mode:**
+
+| `mode` | Action |
+|--------|--------|
+| `off` | No nudge (gate condition above). |
+| `warn` | Emit the advisory bullet in the wave progress update. Coordinator/operator acts at their discretion. |
+
+The nudge is informational only — no AskUserQuestion, no state-md write, no sidecar. This step never blocks forward progress.
+
 ### 4. Progress Update
 
 After each wave, provide a brief status:

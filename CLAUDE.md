@@ -102,3 +102,15 @@ verification-auto-fix:
   max-retries: 2                 # bounded retries
 discovery-validator:
   enabled: false                 # PSA-006 (#567) — opt-in distributional-claim grep-verification enforcement (SubagentStop hook, non-blocking)
+loop-guard:
+  enabled: true                  # ecc-analysis (#619) — PostToolUse runaway tool-loop detector (warn-only, non-blocking); profile-gate also applies
+  threshold: 3                   # identical (tool+argsHash) calls within window before a loop-warning fires
+  window: 5                      # ring-buffer size (recent tool calls tracked per session)
+config-protection:
+  enabled: true                  # ecc-analysis (#622) — PreToolUse guard: warn when an Edit/Write LOOSENS a quality gate (eslint/vitest/tsconfig/gitleaks/...)
+  mode: warn                     # warn (stderr + event, exit 0) | strict (block loosening edits, exit 2)
+allow-config-weakening: false    # ecc-analysis (#622) — per-session bypass for config-protection (mirrors allow-destructive-ops)
+compact-nudge:
+  enabled: false                 # ecc-analysis (#620) — opt-in advisory /compact nudge at inter-wave checkpoints (never auto-compacts)
+  after: [discovery, impl]       # wave boundaries that may fire the nudge — subset of {discovery, impl, failed-wave}
+  mode: warn                     # warn (surface one bullet in the wave progress update) | off (silent no-op)

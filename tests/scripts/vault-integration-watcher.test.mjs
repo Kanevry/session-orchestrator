@@ -125,7 +125,12 @@ function ensureStubGlab() {
  * @param {string} state 'opened' | 'closed'
  * @param {string} [createdAt]
  */
-function writeIssueFixture(dir, id, state, createdAt = '2026-04-01T00:00:00Z') {
+// Default to a recent (5-days-ago) created_at so non-stagnation tests are never
+// falsely tripped by the watcher's 60-day stagnation guard. Hardcoding an absolute
+// date (was '2026-04-01') is a time-bomb: it silently crossed the 60d threshold on
+// ~2026-06-01 and turned these tests red without any code change. Tests that WANT a
+// stagnant issue (Test 6) pass an explicit relative old date — mirror that here.
+function writeIssueFixture(dir, id, state, createdAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()) {
   writeFileSync(
     join(dir, `issue-${id}.json`),
     JSON.stringify({

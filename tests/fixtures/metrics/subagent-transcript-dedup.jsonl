@@ -1,0 +1,6 @@
+{"type":"user","requestId":"ignored","message":{"role":"user","content":"go"}}
+{"type":"assistant","requestId":"req_AAA","message":{"role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":5000,"cache_read_input_tokens":0,"output_tokens":40,"service_tier":"standard"}}}
+{"type":"assistant","requestId":"req_AAA","message":{"role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":5000,"cache_read_input_tokens":0,"output_tokens":40,"service_tier":"standard"}}}
+{"type":"assistant","requestId":"req_AAA","message":{"role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":5000,"cache_read_input_tokens":0,"output_tokens":40,"service_tier":"standard"}}}
+{"type":"assistant","requestId":"req_BBB","message":{"role":"assistant","usage":{"input_tokens":200,"cache_creation_input_tokens":6000,"cache_read_input_tokens":0,"output_tokens":60,"service_tier":"standard"}}}
+{"type":"assistant","requestId":"req_BBB","message":{"role":"assistant","usage":{"input_tokens":200,"cache_creation_input_tokens":6000,"cache_read_input_tokens":0,"output_tokens":60,"service_tier":"standard"}}}

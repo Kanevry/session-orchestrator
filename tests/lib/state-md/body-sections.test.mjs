@@ -4,6 +4,9 @@ import {
   readCurrentTask,
   appendDeviation,
   markExpressPathComplete,
+  appendWhatNotToRetry,
+  readWhatNotToRetry,
+  MAX_WHAT_NOT_TO_RETRY,
 } from '@lib/state-md/body-sections.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -267,5 +270,243 @@ describe('markExpressPathComplete', () => {
       timestamp: '2026-05-01T12:00:00Z',
     });
     expect(parseStateMd(out)).not.toBeNull();
+  });
+});
+
+// ─── What Not To Retry (#623) ──────────────────────────────────────────────────
+
+const WNTR_NO_SECTION = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+`;
+
+const WNTR_PLACEHOLDER = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## What Not To Retry
+
+(none yet)
+
+## Wave History
+`;
+
+const WNTR_WITH_ENTRY = `---
+schema-version: 1
+status: active
+updated: 2026-05-01T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## What Not To Retry
+
+- **Rewrite the parser from scratch** (deep-100, 2026-05-01)
+  - why: blew the appetite, regressed 40 tests
+
+## Wave History
+`;
+
+describe('appendWhatNotToRetry', () => {
+  const ENTRY = {
+    approach: 'Switch DB driver to pg-native',
+    why_failed: 'native build fails on CI runners',
+    session_id: 'deep-200',
+    date: '2026-06-04',
+  };
+
+  it('creates the section when missing', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, ENTRY);
+    expect(out).toContain('## What Not To Retry');
+    const currentWaveIdx = out.indexOf('## Current Wave');
+    const wntrIdx = out.indexOf('## What Not To Retry');
+    expect(wntrIdx).toBeGreaterThan(currentWaveIdx);
+  });
+
+  it('renders the exact head + why sub-bullet format', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, ENTRY);
+    expect(out).toContain('- **Switch DB driver to pg-native** (deep-200, 2026-06-04)');
+    expect(out).toContain('  - why: native build fails on CI runners');
+  });
+
+  it('replaces the (none yet) placeholder', () => {
+    const out = appendWhatNotToRetry(WNTR_PLACEHOLDER, ENTRY);
+    expect(out).not.toContain('(none yet)');
+    expect(out).toContain('- **Switch DB driver to pg-native** (deep-200, 2026-06-04)');
+    expect(out).toContain('  - why: native build fails on CI runners');
+  });
+
+  it('appends after the last existing entry, before the next heading', () => {
+    const out = appendWhatNotToRetry(WNTR_WITH_ENTRY, ENTRY);
+    // First (existing) entry preserved.
+    expect(out).toContain('- **Rewrite the parser from scratch** (deep-100, 2026-05-01)');
+    expect(out).toContain('  - why: blew the appetite, regressed 40 tests');
+    // New entry present.
+    expect(out).toContain('- **Switch DB driver to pg-native** (deep-200, 2026-06-04)');
+    // New entry appears AFTER the existing one and BEFORE ## Wave History.
+    const existingIdx = out.indexOf('- **Rewrite the parser from scratch**');
+    const newIdx = out.indexOf('- **Switch DB driver to pg-native**');
+    const waveHistoryIdx = out.indexOf('## Wave History');
+    expect(newIdx).toBeGreaterThan(existingIdx);
+    expect(newIdx).toBeLessThan(waveHistoryIdx);
+  });
+
+  it('returns input unchanged on unparseable input', () => {
+    const input = '# no frontmatter';
+    expect(appendWhatNotToRetry(input, ENTRY)).toBe(input);
+  });
+
+  it('coerces missing fields to defaults', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, {});
+    expect(out).toContain('- **(unspecified approach)** (unknown-session,');
+    expect(out).toContain('  - why: (no reason recorded)');
+  });
+
+  it('output is parseable by parseStateMd and preserves frontmatter', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, ENTRY);
+    const parsed = parseStateMd(out);
+    expect(parsed).not.toBeNull();
+    expect(parsed.frontmatter['schema-version']).toBe(1);
+    expect(parsed.frontmatter.status).toBe('active');
+  });
+
+  it('caps the section to exactly 10 entries, dropping the oldest 2 (FIFO)', () => {
+    let contents = WNTR_NO_SECTION;
+    for (let n = 1; n <= 12; n++) {
+      contents = appendWhatNotToRetry(contents, {
+        approach: `approach-${n}`,
+        why_failed: `reason-${n}`,
+        session_id: 'deep-300',
+        date: '2026-06-04',
+      });
+    }
+    const entries = readWhatNotToRetry(contents);
+    // Exactly 10 survive.
+    expect(entries).toHaveLength(10);
+    // Oldest two (approach-1, approach-2) dropped.
+    const approaches = entries.map((e) => e.approach);
+    expect(approaches).not.toContain('approach-1');
+    expect(approaches).not.toContain('approach-2');
+    // Most-recent (approach-12) kept; oldest survivor is approach-3.
+    expect(approaches[0]).toBe('approach-3');
+    expect(approaches[9]).toBe('approach-12');
+    // Hard literal count of top-level bullets in the rendered section.
+    const section = contents.slice(contents.indexOf('## What Not To Retry'));
+    const topLevelBullets = section.split('\n').filter((l) => /^-\s+\*\*/.test(l));
+    expect(topLevelBullets).toHaveLength(10);
+  });
+
+  it('MAX_WHAT_NOT_TO_RETRY constant is 10', () => {
+    expect(MAX_WHAT_NOT_TO_RETRY).toBe(10);
+  });
+
+  it('round-trips: append → serialize → parse → readWhatNotToRetry returns all 4 fields', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, ENTRY);
+    const entries = readWhatNotToRetry(out);
+    expect(entries).toEqual([
+      {
+        approach: 'Switch DB driver to pg-native',
+        why_failed: 'native build fails on CI runners',
+        session_id: 'deep-200',
+        date: '2026-06-04',
+      },
+    ]);
+  });
+
+  it('collapses newlines in why_failed so the full reason round-trips without truncation (#623)', () => {
+    // A multi-line why would previously lose everything after line 1 (the entry
+    // is a single-line bullet and readWhatNotToRetry reads one line per field).
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, {
+      approach: 'Inline the retry loop',
+      why_failed: 'first line of reason\nsecond line of reason\nthird line',
+      session_id: 'deep-500',
+      date: '2026-06-04',
+    });
+    // The rendered why bullet is single-line (no trailing-line bleed).
+    expect(out).toContain('  - why: first line of reason second line of reason third line');
+    const entries = readWhatNotToRetry(out);
+    expect(entries).toEqual([
+      {
+        approach: 'Inline the retry loop',
+        why_failed: 'first line of reason second line of reason third line',
+        session_id: 'deep-500',
+        date: '2026-06-04',
+      },
+    ]);
+  });
+
+  it('collapses newlines in approach so the head bullet round-trips without truncation (#623)', () => {
+    const out = appendWhatNotToRetry(WNTR_NO_SECTION, {
+      approach: 'Approach line one\nApproach line two',
+      why_failed: 'single-line reason',
+      session_id: 'deep-501',
+      date: '2026-06-04',
+    });
+    expect(out).toContain('- **Approach line one Approach line two** (deep-501, 2026-06-04)');
+    const entries = readWhatNotToRetry(out);
+    expect(entries[0].approach).toBe('Approach line one Approach line two');
+    expect(entries[0].why_failed).toBe('single-line reason');
+  });
+});
+
+describe('readWhatNotToRetry', () => {
+  it('returns [] when section is absent', () => {
+    expect(readWhatNotToRetry(WNTR_NO_SECTION)).toEqual([]);
+  });
+
+  it('returns [] when section holds only the (none yet) placeholder', () => {
+    expect(readWhatNotToRetry(WNTR_PLACEHOLDER)).toEqual([]);
+  });
+
+  it('returns [] on unparseable input', () => {
+    expect(readWhatNotToRetry('# no frontmatter')).toEqual([]);
+  });
+
+  it('parses an existing entry with approach, session_id, date, and why_failed', () => {
+    const entries = readWhatNotToRetry(WNTR_WITH_ENTRY);
+    expect(entries).toEqual([
+      {
+        approach: 'Rewrite the parser from scratch',
+        why_failed: 'blew the appetite, regressed 40 tests',
+        session_id: 'deep-100',
+        date: '2026-05-01',
+      },
+    ]);
+  });
+
+  it('parses an entry whose why sub-bullet is absent (why_failed empty)', () => {
+    const noWhy = `---
+status: active
+---
+
+## What Not To Retry
+
+- **Approach with no why** (deep-400, 2026-06-04)
+
+## Wave History
+`;
+    const entries = readWhatNotToRetry(noWhy);
+    expect(entries).toEqual([
+      {
+        approach: 'Approach with no why',
+        why_failed: '',
+        session_id: 'deep-400',
+        date: '2026-06-04',
+      },
+    ]);
   });
 });

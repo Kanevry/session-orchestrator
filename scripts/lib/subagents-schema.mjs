@@ -21,6 +21,9 @@
  *   parent_session_id string | null — session that spawned this subagent
  *   token_input       integer | null — prompt token count for this subagent
  *   token_output      integer | null — completion token count for this subagent
+ *   total_cost_usd    number  | null — native total cost in USD (#624, fractional,
+ *                                      best-effort: null when the harness does not
+ *                                      expose it; no rate table is applied)
  *
  * OTel aliases (optional, stop-only, additive — #411, schema_version=1 backwards-compat):
  *   gen_ai.usage.input_tokens   integer | null — alias of token_input
@@ -153,6 +156,13 @@ export function validateSubagent(entry) {
     }
   }
 
+  // total_cost_usd (optional, #624) — fractional number (not integer), best-effort.
+  if (entry.total_cost_usd !== undefined && entry.total_cost_usd !== null) {
+    if (typeof entry.total_cost_usd !== 'number' || !Number.isFinite(entry.total_cost_usd) || entry.total_cost_usd < 0) {
+      throw new ValidationError('total_cost_usd must be a non-negative number or null', 'total_cost_usd');
+    }
+  }
+
   // OTel alias — #411 additive, schema_version=1 backwards-compat
   const otelInputTokens = entry['gen_ai.usage.input_tokens'];
   if (otelInputTokens !== undefined && otelInputTokens !== null) {
@@ -200,6 +210,8 @@ export function normalizeSubagent(entry) {
     parent_session_id: entry.parent_session_id ?? null,
     token_input: entry.token_input ?? null,
     token_output: entry.token_output ?? null,
+    // total_cost_usd — #624 additive, best-effort native cost (null when absent)
+    total_cost_usd: entry.total_cost_usd ?? null,
     // OTel alias — #411 additive, schema_version=1 backwards-compat
     'gen_ai.usage.input_tokens': entry['gen_ai.usage.input_tokens'] ?? null,
     'gen_ai.usage.output_tokens': entry['gen_ai.usage.output_tokens'] ?? null,

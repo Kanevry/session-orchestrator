@@ -213,3 +213,80 @@ describe('normalizeSubagent — OTel alias fields survive normalization', () => 
     expect(normalized.token_output).toBe(800);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 7 — total_cost_usd field (#624): optional, fractional, best-effort
+// ---------------------------------------------------------------------------
+
+describe('total_cost_usd field — #624', () => {
+  it('validates a populated Stop record carrying non-null tokens and a fractional total_cost_usd', () => {
+    const record = {
+      timestamp: '2026-06-04T10:25:05.000Z',
+      event: 'stop',
+      agent_id: 'cost-agent-1',
+      schema_version: 1,
+      duration_ms: 5000,
+      token_input: 300,
+      token_output: 100,
+      total_cost_usd: 0.0123,
+      'gen_ai.usage.input_tokens': 300,
+      'gen_ai.usage.output_tokens': 100,
+      'gen_ai.system': 'anthropic',
+    };
+    expect(validateSubagent(record)).toBe(record);
+  });
+
+  it('validates an all-null Stop record (missing-usage path: no tokens, no cost)', () => {
+    const record = {
+      timestamp: '2026-06-04T10:25:05.000Z',
+      event: 'stop',
+      agent_id: 'cost-agent-null',
+      schema_version: 1,
+      duration_ms: 0,
+      token_input: null,
+      token_output: null,
+      total_cost_usd: null,
+      'gen_ai.usage.input_tokens': null,
+      'gen_ai.usage.output_tokens': null,
+      'gen_ai.system': 'anthropic',
+    };
+    expect(validateSubagent(record)).toBe(record);
+  });
+
+  it('accepts a fractional (non-integer) total_cost_usd value', () => {
+    const record = {
+      timestamp: '2026-06-04T10:25:05.000Z',
+      event: 'stop',
+      agent_id: 'cost-agent-fractional',
+      schema_version: 1,
+      duration_ms: 1000,
+      total_cost_usd: 1.75,
+    };
+    expect(() => validateSubagent(record)).not.toThrow();
+  });
+
+  it('rejects a negative total_cost_usd value', () => {
+    const record = {
+      timestamp: '2026-06-04T10:25:05.000Z',
+      event: 'stop',
+      agent_id: 'cost-agent-negative',
+      schema_version: 1,
+      duration_ms: 1000,
+      total_cost_usd: -0.5,
+    };
+    expect(() => validateSubagent(record)).toThrow(/total_cost_usd/);
+  });
+
+  it('defaults absent total_cost_usd to null on normalize', () => {
+    const record = legacyStop(); // has no total_cost_usd field
+    expect('total_cost_usd' in record).toBe(false);
+    const normalized = normalizeSubagent(record);
+    expect(normalized.total_cost_usd).toBeNull();
+  });
+
+  it('preserves a present total_cost_usd value on normalize', () => {
+    const record = { ...legacyStop(), total_cost_usd: 0.42 };
+    const normalized = normalizeSubagent(record);
+    expect(normalized.total_cost_usd).toBe(0.42);
+  });
+});

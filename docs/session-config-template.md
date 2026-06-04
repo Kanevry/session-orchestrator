@@ -651,6 +651,24 @@ events-rotation:
 express-path:
   enabled: true
 
+# Runaway tool-loop guard (ecc-analysis / #619)
+loop-guard:
+  enabled: true            # PostToolUse warn-only loop detector; profile-gate also gates it
+  threshold: 3             # identical (tool+argsHash) calls within window before warn
+  window: 5                # ring-buffer size
+
+# Config-protection guard (ecc-analysis / #622)
+config-protection:
+  enabled: true            # PreToolUse: warn on gate-weakening Edit/Write
+  mode: warn               # warn | strict (strict blocks loosening, exit 2)
+allow-config-weakening: false   # per-session bypass (mirrors allow-destructive-ops)
+
+# Strategic compact-nudge (ecc-analysis / #620)
+compact-nudge:
+  enabled: false           # opt-in advisory /compact nudge at inter-wave checkpoints
+  after: [discovery, impl] # subset of {discovery, impl, failed-wave}
+  mode: warn               # warn | off
+
 # Webhooks (URLs are required when used — no defaults)
 # webhooks:
 #   slack:

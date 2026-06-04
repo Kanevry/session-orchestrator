@@ -124,6 +124,237 @@ export function appendDeviation(contents, isoTimestamp, message) {
 }
 
 /**
+ * Maximum number of top-level `## What Not To Retry` entries retained.
+ *
+ * "Pruned on success" (issue #623) is implemented as a simple last-N FIFO:
+ * after each append, the section is trimmed to the most-recent
+ * `MAX_WHAT_NOT_TO_RETRY` entries (oldest dropped first). This is NOT a
+ * per-entry success-clear — entries are not individually retired when an
+ * approach later succeeds; the cap is the only pruning mechanism. The slot is
+ * a cross-session continuity record that SURVIVES the completed-branch Idle
+ * Reset (unlike per-session `## Deviations`).
+ */
+export const MAX_WHAT_NOT_TO_RETRY = 10;
+
+/**
+ * Collapse every run of CR/LF into a single space (#623).
+ *
+ * `## What Not To Retry` entries are single-line bullets and `readWhatNotToRetry`
+ * reads ONE line per field, so an embedded newline in `approach` or `why_failed`
+ * would lose everything after line 1 on round-trip. Collapsing here keeps the
+ * entry single-line and lossless. Leading/trailing whitespace introduced by the
+ * collapse is trimmed.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function collapseNewlines(value) {
+  return value.replace(/\r?\n+/g, ' ').trim();
+}
+
+/**
+ * Reads the `## What Not To Retry` section into an array of entries.
+ *
+ * Each top-level `- **<approach>** (<session_id>, <date>)` bullet (optionally
+ * followed by an indented `- why: <why_failed>` sub-bullet) becomes one entry.
+ * Returns `[]` when the section is absent, empty, or holds only the
+ * `(none yet)` placeholder. Returns `[]` on unparseable input.
+ *
+ * @param {string} contents
+ * @returns {Array<{approach: string, why_failed: string, session_id: string, date: string}>}
+ */
+export function readWhatNotToRetry(contents) {
+  const parsed = parseStateMd(contents);
+  if (parsed === null) return [];
+  const lines = parsed.body.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length && !/^##\s+What Not To Retry\b/.test(lines[i])) i++;
+  if (i === lines.length) return [];
+  i++;
+  const entries = [];
+  for (; i < lines.length; i++) {
+    if (/^##\s+/.test(lines[i])) break;
+    // Top-level entry: `- **<approach>** (<session_id>, <date>)`
+    const head = /^-\s+\*\*(.+?)\*\*\s+\((.+),\s*(.+)\)\s*$/.exec(lines[i]);
+    if (!head) continue;
+    const approach = head[1];
+    const session_id = head[2].trim();
+    const date = head[3].trim();
+    let why_failed = '';
+    // Look ahead for the `- why: <...>` sub-bullet within this entry.
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^##\s+/.test(lines[j])) break;
+      if (/^-\s+\*\*/.test(lines[j].trim())) break; // next top-level entry
+      const why = /^-\s+why:\s*(.*)$/.exec(lines[j].trim());
+      if (why) {
+        why_failed = why[1];
+        break;
+      }
+    }
+    entries.push({ approach, why_failed, session_id, date });
+  }
+  return entries;
+}
+
+/**
+ * Appends an entry to the `## What Not To Retry` section in the STATE.md body.
+ *
+ * Creates the section if missing. Replaces a `(none yet)` placeholder if
+ * present. After appending, prunes the section to the most-recent
+ * `MAX_WHAT_NOT_TO_RETRY` top-level entries (FIFO — oldest dropped first).
+ *
+ * Mirrors `appendDeviation` in structure. No-op (returns input unchanged) on
+ * unparseable input.
+ *
+ * @param {string} contents
+ * @param {object} entry
+ * @param {string} [entry.approach]      — the approach that failed; defaults to '(unspecified approach)'
+ * @param {string} [entry.why_failed]    — why it failed; defaults to '(no reason recorded)'
+ * @param {string} [entry.session_id]    — originating session id; defaults to 'unknown-session'
+ * @param {string} [entry.date]          — YYYY-MM-DD; defaults to today (UTC date slice)
+ * @returns {string}
+ */
+export function appendWhatNotToRetry(contents, entry) {
+  const parsed = parseStateMd(contents);
+  if (parsed === null) return contents;
+  const e = entry || {};
+  const approach = (typeof e.approach === 'string' && e.approach.length > 0)
+    ? e.approach
+    : '(unspecified approach)';
+  const why = (typeof e.why_failed === 'string' && e.why_failed.length > 0)
+    ? e.why_failed
+    : '(no reason recorded)';
+  const sid = (typeof e.session_id === 'string' && e.session_id.length > 0)
+    ? e.session_id
+    : 'unknown-session';
+  const date = (typeof e.date === 'string' && e.date.length > 0)
+    ? e.date
+    : new Date().toISOString().slice(0, 10);
+
+  // Collapse embedded newlines (#623): the entry renders as single-line bullets
+  // (`- **<approach>**` + `  - why: <why>`), and readWhatNotToRetry reads ONE
+  // line per field. A multi-line `approach`/`why_failed` would silently truncate
+  // everything after line 1 on round-trip. Collapse `\r?\n+` runs to a single
+  // space so the entry stays single-line and round-trips losslessly.
+  const headBullet = `- **${collapseNewlines(approach)}** (${sid}, ${date})`;
+  const whyBullet = `  - why: ${collapseNewlines(why)}`;
+
+  const lines = parsed.body.split('\n');
+  let headingIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+What Not To Retry\b/.test(lines[i])) {
+      headingIdx = i;
+      break;
+    }
+  }
+
+  let rebuiltBody;
+  if (headingIdx === -1) {
+    // Append section at end of body. Ensure trailing newline before adding.
+    let bodyOut = parsed.body;
+    if (!bodyOut.endsWith('\n')) bodyOut += '\n';
+    bodyOut += `\n## What Not To Retry\n\n${headBullet}\n${whyBullet}\n`;
+    rebuiltBody = bodyOut;
+  } else {
+    // Find end-of-section: next `## ` heading or end of lines.
+    let sectionEnd = lines.length;
+    for (let i = headingIdx + 1; i < lines.length; i++) {
+      if (/^##\s+/.test(lines[i])) {
+        sectionEnd = i;
+        break;
+      }
+    }
+    // Look for placeholder or last top-level entry bullet within the section.
+    let placeholderIdx = -1;
+    let lastEntryIdx = -1;
+    for (let i = headingIdx + 1; i < sectionEnd; i++) {
+      const t = lines[i].trim();
+      if (t === '(none yet)' || t === '_(none yet)_' || t === '*(none yet)*') {
+        placeholderIdx = i;
+      }
+      if (/^-\s+\*\*/.test(t)) {
+        lastEntryIdx = i;
+      }
+    }
+    if (placeholderIdx !== -1) {
+      // Replace the placeholder line with the head bullet, then insert why.
+      lines.splice(placeholderIdx, 1, headBullet, whyBullet);
+    } else if (lastEntryIdx !== -1) {
+      // Insert after the last entry's why sub-bullet (or the entry itself):
+      // scan forward over any indented sub-bullets belonging to lastEntryIdx.
+      let insertAt = lastEntryIdx + 1;
+      while (
+        insertAt < sectionEnd &&
+        lines[insertAt].trim() !== '' &&
+        !/^-\s+\*\*/.test(lines[insertAt].trim()) &&
+        /^\s+-\s+/.test(lines[insertAt])
+      ) {
+        insertAt++;
+      }
+      lines.splice(insertAt, 0, headBullet, whyBullet);
+    } else {
+      // Empty section (heading only): insert heading, blank, entry, why.
+      let insertAt = headingIdx + 1;
+      while (insertAt < sectionEnd && lines[insertAt].trim() === '') insertAt++;
+      const before = lines.slice(0, headingIdx + 1);
+      const after = lines.slice(insertAt);
+      const rebuilt = [...before, '', headBullet, whyBullet, ...after];
+      rebuiltBody = rebuilt.join('\n');
+    }
+    if (rebuiltBody === undefined) {
+      rebuiltBody = lines.join('\n');
+    }
+  }
+
+  // Prune to the most-recent MAX_WHAT_NOT_TO_RETRY top-level entries (FIFO).
+  rebuiltBody = pruneWhatNotToRetry(rebuiltBody);
+
+  return serializeStateMd({ frontmatter: parsed.frontmatter, body: rebuiltBody });
+}
+
+/**
+ * Trims the `## What Not To Retry` section to the most-recent
+ * `MAX_WHAT_NOT_TO_RETRY` top-level entries, dropping the oldest. Each entry is
+ * its top-level `- **...**` bullet plus any immediately-following indented
+ * sub-bullets (e.g. `  - why: ...`). No-op when the section is absent or the
+ * entry count is at/under the cap.
+ *
+ * @param {string} body — STATE.md body (no frontmatter)
+ * @returns {string}
+ */
+function pruneWhatNotToRetry(body) {
+  const lines = body.split('\n');
+  let headingIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+What Not To Retry\b/.test(lines[i])) {
+      headingIdx = i;
+      break;
+    }
+  }
+  if (headingIdx === -1) return body;
+  let sectionEnd = lines.length;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    if (/^##\s+/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+  // Collect the start index of each top-level entry within the section.
+  const entryStarts = [];
+  for (let i = headingIdx + 1; i < sectionEnd; i++) {
+    if (/^-\s+\*\*/.test(lines[i].trim())) entryStarts.push(i);
+  }
+  if (entryStarts.length <= MAX_WHAT_NOT_TO_RETRY) return body;
+  // Keep the last MAX_WHAT_NOT_TO_RETRY entries; drop everything from the first
+  // entry up to (but not including) the first kept entry.
+  const dropCount = entryStarts.length - MAX_WHAT_NOT_TO_RETRY;
+  const firstKeptIdx = entryStarts[dropCount];
+  const firstDropIdx = entryStarts[0];
+  lines.splice(firstDropIdx, firstKeptIdx - firstDropIdx);
+  return lines.join('\n');
+}
+
+/**
  * Records an auto-commit checkpoint in the `## Deviations` section of STATE.md.
  *
  * Phase-1 stub — appends a human-readable deviation entry only. Does NOT perform
@@ -216,6 +447,27 @@ export async function appendDeviationOnDisk(repoRoot, isoTimestamp, message, opt
   return writeStateMd(
     repoRoot,
     (contents) => appendDeviation(contents, isoTimestamp, message),
+    opts
+  );
+}
+
+/**
+ * Lock-guarded append to the `## What Not To Retry` section (#623).
+ *
+ * Delegates to the pure `appendWhatNotToRetry` helper; the read+write cycle is
+ * serialized via `withStateMdLock` (PSA-005 mechanical enforcement).
+ *
+ * @param {string} repoRoot  — absolute path to the repository root (required)
+ * @param {object} entry  See appendWhatNotToRetry signature above.
+ * @param {object} [opts]
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
+ */
+export async function appendWhatNotToRetryOnDisk(repoRoot, entry, opts = {}) {
+  requireRepoRoot(repoRoot, 'appendWhatNotToRetryOnDisk');
+  return writeStateMd(
+    repoRoot,
+    (contents) => appendWhatNotToRetry(contents, entry),
     opts
   );
 }

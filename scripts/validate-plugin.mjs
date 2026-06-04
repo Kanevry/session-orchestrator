@@ -155,6 +155,9 @@ if (runCheck('check-subagent-types.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-rules-references.mjs') !== 0) checkFailed = 1;
 
+process.stdout.write('\n');
+if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

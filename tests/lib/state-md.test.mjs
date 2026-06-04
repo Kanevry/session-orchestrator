@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as stateMdBarrel from '@lib/state-md.mjs';
 import {
   parseStateMd,
   serializeStateMd,
@@ -8,6 +9,9 @@ import {
   updateFrontmatterFields,
   appendDeviation,
   markExpressPathComplete,
+  appendWhatNotToRetry,
+  readWhatNotToRetry,
+  appendWhatNotToRetryOnDisk,
 } from '@lib/state-md.mjs';
 
 const SAMPLE = `---
@@ -32,6 +36,20 @@ Wave 2 — Impl-Core
 ### Wave 1 — Discovery
 - Agent X: done
 `;
+
+describe('barrel re-exports (#623 What Not To Retry)', () => {
+  it('re-exports appendWhatNotToRetry, readWhatNotToRetry, appendWhatNotToRetryOnDisk', () => {
+    expect(typeof appendWhatNotToRetry).toBe('function');
+    expect(typeof readWhatNotToRetry).toBe('function');
+    expect(typeof appendWhatNotToRetryOnDisk).toBe('function');
+  });
+
+  it('the three What-Not-To-Retry symbols are present on the barrel namespace', () => {
+    expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetry');
+    expect(stateMdBarrel).toHaveProperty('readWhatNotToRetry');
+    expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetryOnDisk');
+  });
+});
 
 describe('parseStateMd', () => {
   it('parses a valid STATE.md', () => {
