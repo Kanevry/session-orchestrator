@@ -10,6 +10,8 @@
  *   Pane 2 (top-right)    — tail -F <stateDir>/STATE.md
  *   Pane 3 (bottom-right) — vcs-aware CI watch (poll-loop from detectVcsCommand)
  *   Pane 4 (bottom-left)  — tail -F .orchestrator/metrics/events.jsonl | jq select(wave|gate|spiral)
+ *   Pane 5 (optional)     — agent-status telemetry (#565), only when withStatusPane is true:
+ *                           poll-loop over .orchestrator/runtime/agent-status-current.json
  *
  * Debug layout pane map (user-facing numbering):
  *   Pane 1 (top-left)     — scratch shell (NO command — default tmux shell, AUQ-001 compliance)
@@ -70,10 +72,10 @@ function shellQuote(s) {
  *   - If session already exists and --force is false → refuse with an error.
  *   - If session already exists and --force is true  → kill it first.
  *
- * @param {{ sessionName: string, force: boolean, projectRoot: string, vcsConfig?: object }} ctx
+ * @param {{ sessionName: string, force: boolean, projectRoot: string, vcsConfig?: object, withStatusPane?: boolean }} ctx
  * @returns {Promise<{ ok: boolean, oneliner: string, panes: number, degraded: boolean, attachCommand: string, error?: string }>}
  */
-async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsConfig }) {
+async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsConfig, withStatusPane = false }) {
   // 1. Resolve STATE.md path: resolveStateDir() returns '.claude' / '.codex' / '.cursor'
   //    We intentionally do NOT hard-code projectRoot into the STATE.md path inside the
   //    one-liner — the user pastes the command in THEIR second terminal from the same
@@ -89,6 +91,9 @@ async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsC
   const pane2Cmd = `tail -F ${stateMdPath}`;
   const pane3Cmd = vcs.command;
   const pane4Cmd = `tail -F .orchestrator/metrics/events.jsonl | jq --unbuffered 'select(.event | test("wave|gate|spiral"))'`;
+  // Pane 5 (optional, #565): poll the LWW agent-status map. The `|| echo` fallback
+  // (mirrors Pane 3 style) keeps a missing file / absent jq from erroring the pane.
+  const pane5Cmd = `while true; do clear; jq . .orchestrator/runtime/agent-status-current.json 2>/dev/null || echo 'no agent-status yet — set persistence:true + run a wave (see skills/wave-executor/wave-loop.md § 3a-bis)'; sleep 2; done`;
 
   // 4. Session-collision check
   const collision = isSessionCollision(sessionName);
@@ -130,6 +135,12 @@ async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsC
   segments.push(`tmux split-window -v -t ${sessionName}:0.0`);
   segments.push(`tmux send-keys -t ${sessionName}:0.3 ${shellQuote(pane4Cmd)} Enter`);
 
+  // Pane 5 (tmux index 0.4, optional #565): split off Pane 4, run agent-status poll-loop
+  if (withStatusPane) {
+    segments.push(`tmux split-window -v -t ${sessionName}:0.3`);
+    segments.push(`tmux send-keys -t ${sessionName}:0.4 ${shellQuote(pane5Cmd)} Enter`);
+  }
+
   // Select Pane 1 (scratch shell) as the active pane, then attach
   segments.push(`tmux select-pane -t ${sessionName}:0.0`);
   segments.push(`tmux attach-session -t ${sessionName}`);
@@ -140,7 +151,7 @@ async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsC
   return {
     ok: true,
     oneliner,
-    panes: 4,
+    panes: withStatusPane ? 5 : 4,
     // degraded = true when no vcs tool available (Pane 3 shows a help message instead)
     degraded: vcs.bin === null,
     attachCommand,

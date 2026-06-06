@@ -626,6 +626,52 @@ describe('config-protection hook', () => {
     expect(events[0].action).toBe('blocked');
   });
 
+  // ----- #626: legacy .eslintrc* forms are matched as quality-gate configs ---
+
+  // (E1) PIN: an Edit to a LEGACY .eslintrc.json (numeric severity 2→0) is
+  //      detected as a quality-gate config and flagged as loosening. The flat
+  //      `eslint.config.*` form is already covered above; this pins that the
+  //      `/^\.eslintrc(?:\..+)?$/` matcher also catches the legacy filenames so
+  //      a future refactor of the matcher cannot silently drop them.
+  it('Edit to a legacy .eslintrc.json that disables a rule (2→0) is detected → warn + event', () => {
+    writeClaudeMd(CLAUDE_MD_DEFAULT);
+    const file = writeFixture(
+      '.eslintrc.json',
+      '{ "rules": { "no-console": 2 } }\n'
+    );
+
+    const result = runHook(editPayload(file, '"no-console": 2', '"no-console": 0'));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].file).toBe('.eslintrc.json');
+    expect(events[0].action).toBe('warned');
+    expect(events[0].reasons.some((r) => r.startsWith('rule-relaxed'))).toBe(true);
+  });
+
+  // (E2) PIN: a NEUTRAL edit to a legacy .eslintrc.cjs is recognised as a
+  //      protected file but produces NO event (no loosening) — proving the
+  //      matcher scopes the file without false-positiving on a non-loosening edit.
+  it('Edit to a legacy .eslintrc.cjs that adds an eslint-disable directive → warn + event', () => {
+    writeClaudeMd(CLAUDE_MD_DEFAULT);
+    const file = writeFixture('.eslintrc.cjs', 'module.exports = { rules: {} };\n');
+
+    const result = runHook(
+      editPayload(
+        file,
+        'module.exports = { rules: {} };\n',
+        'module.exports = { rules: {} };\n// eslint-disable-next-line no-undef\n'
+      )
+    );
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].file).toBe('.eslintrc.cjs');
+    expect(events[0].reasons.some((r) => r.startsWith('disable-directive-added'))).toBe(true);
+  });
+
   // session_id is threaded into the event when present.
   it('event includes session_id when the payload carries one', () => {
     writeClaudeMd(CLAUDE_MD_DEFAULT);

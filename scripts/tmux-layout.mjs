@@ -32,6 +32,7 @@ function printHelp() {
   -l, --layout <name>      Layout variant: default | debug  (default: default)
       --session-name <s>   Custom tmux session name          (default: so-layout-<layout>)
   -f, --force              Replace existing tmux session (PSA-003 escape hatch)
+      --with-status-pane   Add a 5th pane tailing agent-status telemetry (#565)
       --json               Machine-readable JSON output to stdout
   -h, --help               Show this help
   -V, --version            Show version
@@ -51,12 +52,13 @@ function parseCliArgs(argv) {
   return parseArgs({
     args: argv,
     options: {
-      layout:          { type: 'string',  short: 'l', default: 'default' },
-      'session-name':  { type: 'string' },
-      force:           { type: 'boolean', short: 'f', default: false },
-      json:            { type: 'boolean', default: false },
-      help:            { type: 'boolean', short: 'h', default: false },
-      version:         { type: 'boolean', short: 'V', default: false },
+      layout:             { type: 'string',  short: 'l', default: 'default' },
+      'session-name':     { type: 'string' },
+      force:              { type: 'boolean', short: 'f', default: false },
+      'with-status-pane': { type: 'boolean', default: false },
+      json:               { type: 'boolean', default: false },
+      help:               { type: 'boolean', short: 'h', default: false },
+      version:            { type: 'boolean', short: 'V', default: false },
     },
     allowPositionals: false,
   });
@@ -153,6 +155,7 @@ async function dispatch({ values }) {
   const ctx = {
     sessionName,
     force: values.force,
+    withStatusPane: values['with-status-pane'],
     projectRoot,
     stateDir,
     vcsConfig,

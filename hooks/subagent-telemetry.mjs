@@ -39,6 +39,14 @@ import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 
 const JSONL_PATH = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics', 'subagents.jsonl');
 
+/**
+ * Defense-in-depth byte ceiling for transcript reads (#624). The transcript path
+ * is harness-trusted, so this is not an exploitable vector — but the repo follows
+ * a bounded-read discipline: a pathologically large transcript is skipped (yields
+ * the empty/zero-usage result) rather than read whole into memory.
+ */
+const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // ~50 MB
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -111,6 +119,13 @@ function extractTranscriptUsage(transcriptPath) {
   try {
     if (typeof transcriptPath !== 'string' || !transcriptPath.trim()) return nullResult;
     if (!fs.existsSync(transcriptPath)) return nullResult;
+
+    // Bounded-read guard (#624): skip an oversized transcript gracefully rather
+    // than read the whole file into memory. statSync failure (race/unreadable)
+    // falls through to the readFileSync attempt below — both stay inside the
+    // no-throw try/catch, so the worst case is still nullResult, never a throw.
+    const { size } = fs.statSync(transcriptPath);
+    if (size > MAX_TRANSCRIPT_BYTES) return nullResult;
 
     const raw = fs.readFileSync(transcriptPath, 'utf8');
     const lines = raw.split('\n');

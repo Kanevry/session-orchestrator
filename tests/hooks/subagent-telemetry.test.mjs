@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,19 +81,21 @@ describe('subagent-telemetry hook', () => {
     expect(typeof rec.timestamp).toBe('string');
   });
 
-  it('malformed stdin: exits 0 and writes nothing (hook exits early on null input)', () => {
+  it('malformed stdin: exits 0 and writes no valid records (hook exits early on null input)', async () => {
     const result = runHook('this is definitely not json');
     expect(result.status).toBe(0);
 
-    // The hook returns early when input is null — no file should be written
+    // The documented intent is "no valid records written". `readSubagents`
+    // returns [] for a missing file AND skips malformed lines in an existing
+    // file, so a single hardcoded length-0 assertion covers both outcomes
+    // (file absent — the actual behaviour here — or file present-but-empty).
     const jsonlPath = join(tmp, JSONL_REL);
-    // Either no file at all (expected) or an empty file — no valid records
-    if (existsSync(jsonlPath)) {
-      // If file was created, no records should be parseable
-      // (we re-use readSubagents which skips malformed lines)
-    }
-    // The key assertion: process exits clean
-    expect(result.status).toBe(0);
+    const records = await readSubagents(jsonlPath);
+    expect(records).toHaveLength(0);
+
+    // Concrete file-state check: the hook returns early on null input, so it
+    // must not have created the JSONL file at all.
+    expect(existsSync(jsonlPath)).toBe(false);
   });
 
   it('idempotency: two invocations produce two valid JSONL records', async () => {
@@ -305,6 +307,70 @@ describe('subagent-telemetry hook', () => {
     // Hardcoded literals — no dedup, all 3 turns counted.
     expect(records[0].token_input).toBe(350);
     expect(records[0].token_output).toBe(110);
+  });
+
+  // -------------------------------------------------------------------------
+  // #624 — bounded-read guard: an oversized transcript (> ~50 MB) is skipped
+  // gracefully (null usage), never read whole into memory, never throws.
+  // -------------------------------------------------------------------------
+
+  it('stop with an OVERSIZED transcript (> 50 MB): token fields null, exit 0 (skipped, no throw)', async () => {
+    const big = join(tmp, 'agent-oversized.jsonl');
+    // One genuinely valid assistant turn (100/40) that WOULD parse if the file
+    // were under the cap — then pad past the 50 MB ceiling so the guard skips it.
+    writeFileSync(
+      big,
+      '{"type":"assistant","requestId":"req_BIG","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":40}}}\n',
+      'utf8',
+    );
+    appendFileSync(big, Buffer.alloc(51 * 1024 * 1024, 0x20)); // 51 MB of spaces
+    expect(statSync(big).size).toBeGreaterThan(50 * 1024 * 1024);
+
+    const payload = JSON.stringify({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'token-agent-oversized',
+      duration_ms: 3000,
+      transcript_path: big,
+    });
+
+    const result = runHook(payload);
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records).toHaveLength(1);
+    // The oversized transcript is skipped — its 100/40 turn is NOT counted.
+    expect(records[0].token_input).toBeNull();
+    expect(records[0].token_output).toBeNull();
+    expect(records[0]['gen_ai.usage.input_tokens']).toBeNull();
+    expect(records[0]['gen_ai.usage.output_tokens']).toBeNull();
+  });
+
+  it('stop with a NORMAL-size transcript just under the cap still parses (guard does not break the happy path)', async () => {
+    const ok = join(tmp, 'agent-under-cap.jsonl');
+    // Two unique requestIds, well under 50 MB — must still produce the deduped sum.
+    writeFileSync(
+      ok,
+      '{"type":"assistant","requestId":"req_U1","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":40}}}\n' +
+        '{"type":"assistant","requestId":"req_U2","message":{"role":"assistant","usage":{"input_tokens":200,"output_tokens":60}}}\n',
+      'utf8',
+    );
+    expect(statSync(ok).size).toBeLessThan(50 * 1024 * 1024);
+
+    const payload = JSON.stringify({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'token-agent-under-cap',
+      duration_ms: 3000,
+      transcript_path: ok,
+    });
+
+    const result = runHook(payload);
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records).toHaveLength(1);
+    // Hardcoded literals — under the cap, both turns parse and dedup-sum.
+    expect(records[0].token_input).toBe(300);
+    expect(records[0].token_output).toBe(100);
   });
 
   it('stop with a turn that has input_tokens but NO output_tokens: output contributes 0 (not null)', async () => {

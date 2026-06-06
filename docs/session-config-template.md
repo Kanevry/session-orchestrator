@@ -667,6 +667,10 @@ allow-config-weakening: false   # per-session bypass (mirrors allow-destructive-
 compact-nudge:
   enabled: false           # opt-in advisory /compact nudge at inter-wave checkpoints
   after: [discovery, impl] # subset of {discovery, impl, failed-wave}
+  # NOTE: `discovery` / `impl` are wave ROLES — the §3c gate matches them against
+  # the wave's role string. `failed-wave` is NOT a role; it keys off the wave's
+  # failure OUTCOME (any wave that did not pass its quality gate), so it can fire
+  # after a wave of any role.
   mode: warn               # warn | off
 
 # Webhooks (URLs are required when used — no defaults)

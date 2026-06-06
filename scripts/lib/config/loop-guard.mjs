@@ -101,6 +101,12 @@ export function _parseLoopGuard(content) {
     }
   }
 
+  // Clamp: a `window` smaller than `threshold` is dead config — the same
+  // (tool+argsHash) can never recur `threshold` times inside a shorter ring, so
+  // the guard would silently never fire. Self-heal by widening the window to at
+  // least `threshold` (#619 / #628 hardening).
+  if (lgWindow < lgThreshold) lgWindow = lgThreshold;
+
   return {
     enabled: lgEnabled,
     threshold: lgThreshold,

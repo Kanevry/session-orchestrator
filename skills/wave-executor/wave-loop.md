@@ -665,6 +665,43 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 
    Skip silently if `persistence: false` in Session Config (no session.lock exists in that mode).
 
+### 3a-bis. Agent-Status Telemetry (#565)
+
+> Optional operator-side observability — NOT load-bearing. Best-effort, fire-and-forget telemetry that a tmux `--with-status-pane` (see `skills/tmux-layout/SKILL.md`) renders as a live side-channel per ADR-0007. A status push must NEVER block or fail a wave — mirror the §3a heartbeat-refresh framing exactly.
+
+**Gate:** `persistence: true` in Session Config. When `persistence: false`, skip every push below — there is no runtime side-channel to feed.
+
+The helper is `scripts/lib/agent-status.mjs`. Its exports (`setStatus`, `setProgress`, `readCurrentStatus`) are all no-throw and return `{ ok: true } | { ok: false, reason }`; the coordinator ignores the return value (best-effort). Push at **three anchors** in the wave loop:
+
+1. **dispatch** — in `### 1. Dispatch Agents`, as each agent is dispatched, push its status. Use `setProgress` when the wave's per-agent ordinal is meaningful, else `setStatus`:
+
+   ```js
+   import { setStatus, setProgress } from '../../scripts/lib/agent-status.mjs';
+
+   // For each agent dispatched in this wave (i = 0-based position, total = wave agent count):
+   await setStatus(agentId, `dispatched — ${subagentType}`);              // free-text variant
+   // — or —
+   await setProgress(agentId, { step: i + 1, total, label: subagentType }); // progress variant
+   ```
+
+   `agentId` is a stable per-agent key (e.g. `wave${waveN}-${i}-${subagentType}`). There is **no separate "agent-start" hook distinct from dispatch** — wave agents are in-process `Agent()` calls with no PID/TTY (see `skills/tmux-layout/SKILL.md § When NOT to Use`), so dispatch IS the start signal. Do not invent one.
+
+2. **agent-end** — in `### 2. Review Agent Outputs` step 1 (Read each agent's result), as each agent's terminal status is determined, push it:
+
+   ```js
+   // status ∈ {'done','partial','failed'} from the agent's STATUS: line
+   await setStatus(agentId, status);
+   ```
+
+3. **wave-end rollup** — in `### 3a. Post-Wave: Update STATE.md`, beside the `updateHeartbeat` call (step 5), push one wave-level rollup using a wave-scoped key:
+
+   ```js
+   // e.g. agentId = `wave${waveN}` ; counts from the wave's per-agent results
+   await setStatus(`wave${waveN}`, `wave ${waveN} complete — ${done} done, ${partial} partial, ${failed} failed`);
+   ```
+
+A push failure (timeout, fs-error, invalid-input) is logged to the wave progress update at most as a one-line WARN — never block, never retry, never surface to the user. If `agent-status.mjs` is absent (older plugin checkout), wrap the import defensively and no-op, exactly as `layouts.mjs` does for its telemetry import.
+
 ### 3b. Persona-Gate Hook (#458)
 
 > Opt-in mid-wave hook that fans out a `/persona-panel`-style review after a configured wave completes. Distinct from `### 5a. Persona-reviewer dispatch` (which uses the `wave-reviewers` Session Config key and dispatches code-oriented `architect-reviewer` / `qa-strategist` / `analyst` agents). This hook uses the `persona-gate-wave` Session Config key and dispatches catalog personas (domain-experts, buyer-personas, auditors) from `.claude/personas/`. The two keys are independent and may both be configured on the same project.

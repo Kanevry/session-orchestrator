@@ -113,6 +113,17 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId) {
   }
 
   const subject = `chore(vault): mirror ${sessionId} — ${learningsCount} learnings + ${sessionsCount} sessions`;
+  // --no-verify is intentional (issue #603). This is an unattended machine auto-commit at
+  // session-end Phase 3.7 / evolve Phase 3.5. Two reasons the vault's pre-commit hooks are
+  // bypassed here:
+  //   1. Redundant validation — every staged path has already passed isMirrorArtifact() above
+  //      (generator-marker frontmatter check), which supersets what the vault's frontmatter /
+  //      wiki-link validator hook would re-check. The files were written by vault-mirror's own
+  //      generator, which enforces conformant frontmatter before they ever reach this commit.
+  //   2. Must not block an unattended close — an interactive, slow, or failing vault-side hook
+  //      would stall session-end. Per .claude/rules/development.md Git Safety Protocol the bypass
+  //      is allowed because it is explicit, documented (skills/vault-mirror/SKILL.md), and the
+  //      committed content is already validated. See SKILL.md § "Pre-commit hook bypass (--no-verify)".
   const commit = git(vaultDirPath, ['commit', '-m', subject, '--no-verify']);
   if (commit.status !== 0) {
     process.stderr.write(`vault-mirror: auto-commit git-commit failed: ${commit.stderr}\n`);

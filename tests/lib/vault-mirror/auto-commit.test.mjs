@@ -231,6 +231,38 @@ describe('autoCommitVaultMirror — action emission', () => {
     expect(lines).toHaveLength(1);
   });
 
+  it('commit is run with --no-verify (intentional bypass — issue #603)', async () => {
+    // Pins the documented --no-verify behaviour so a future silent removal fails CI.
+    // Rationale: see scripts/lib/vault-mirror/auto-commit.mjs line ~116 and
+    // skills/vault-mirror/SKILL.md § "Pre-commit hook bypass (--no-verify)".
+    existsSyncSpy.mockImplementation((p) => {
+      if (p.endsWith('40-learnings') || p.endsWith('50-sessions')) return true;
+      return true;
+    });
+    spawnSyncSpy
+      .mockReturnValueOnce({ status: 0, stdout: '.git', stderr: '' })   // rev-parse --git-dir
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })        // git add
+      .mockReturnValueOnce({ status: 0, stdout: '40-learnings/a.md\n', stderr: '' }) // git diff
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })        // git commit
+      .mockReturnValueOnce({ status: 0, stdout: 'sha123\n', stderr: '' }); // rev-parse HEAD
+    readFileSyncSpy.mockReturnValue(`---\n_generator: ${GENERATOR_MARKER}\n---\n`);
+    const autoCommitVaultMirror = await getAutoCommit();
+
+    const lines = captureStdout(() => autoCommitVaultMirror(VAULT, SESSION));
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('auto-commit-created');
+
+    // Find the actual `git commit` spawnSync call and assert it carries --no-verify.
+    const commitCall = spawnSyncSpy.mock.calls.find(([cmd, args]) =>
+      cmd === 'git' && Array.isArray(args) && args.includes('commit'),
+    );
+    expect(commitCall).toBeDefined();
+    const [, commitArgs] = commitCall;
+    expect(commitArgs).toContain('--no-verify');
+    // Sanity: the bypass sits on the commit (not some unrelated git invocation).
+    expect(commitArgs).toContain('-m');
+  });
+
   it('isMirrorArtifact returns false when readFileSync throws ENOENT', async () => {
     existsSyncSpy.mockImplementation((p) => {
       if (p.endsWith('40-learnings') || p.endsWith('50-sessions')) return true;

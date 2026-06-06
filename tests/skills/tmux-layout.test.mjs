@@ -274,3 +274,40 @@ describe('tmux-layout integration gaps (best-practice E2E coverage)', () => {
     }
   });
 });
+
+// --with-status-pane flag (#565) — integrates the agent-status helper (scripts/lib/agent-status.mjs)
+// as an optional 5th pane. Exercises the real renderer via the CLI (no mocks).
+describe('tmux-layout --with-status-pane flag (#565 agent-status integration)', () => {
+  it('default layout WITHOUT the flag stays at 4 panes and has no agent-status reference', () => {
+    const result = runSkill(['--json'], {
+      TMUX_STUB_VERSION: 'tmux 3.4',
+      TMUX_STUB_HAS_SESSION_RESULT: '1',
+    });
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout.trim());
+    expect(json.panes).toBe(4);
+    // No 5th-pane split-window, and no reference to the agent-status runtime file.
+    expect(json.oneliner).not.toContain('0.4');
+    expect(json.oneliner).not.toContain('agent-status-current.json');
+  });
+
+  it('default layout WITH --with-status-pane renders 5 panes including the agent-status pane', () => {
+    const result = runSkill(['--with-status-pane', '--json'], {
+      TMUX_STUB_VERSION: 'tmux 3.4',
+      TMUX_STUB_HAS_SESSION_RESULT: '1',
+    });
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout.trim());
+    expect(json.panes).toBe(5);
+    // The 5th pane sends a command tailing the agent-status LWW map.
+    expect(json.oneliner).toContain('agent-status-current.json');
+    // It is wired as tmux pane index 0.4 (the 5th pane).
+    expect(json.oneliner).toContain(`send-keys -t ${json.sessionName}:0.4`);
+  });
+
+  it('--with-status-pane is listed in --help output', () => {
+    const result = runSkill(['--help']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--with-status-pane');
+  });
+});
