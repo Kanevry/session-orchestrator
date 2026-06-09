@@ -11,8 +11,8 @@ Turn ad-hoc Claude Code sessions into a repeatable loop with verification gates.
 
 ## What you get
 
-- **38 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, persona panels, harness/repo audits, tmux visualization, and more
-- **18 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/autopilot`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
+- **40 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, harness/repo audits, tmux visualization, and more
+- **20 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
 - **13 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, …)
 - **14 hook event handlers** enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
 - **7360 vitest tests** passing on every commit, validate-plugin 94/94, typecheck 230 files OK, lint 0
@@ -235,7 +235,7 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 |---|---|---|
 | Execution model | 5 typed waves (Discovery → Impl-Core → Impl-Polish → Quality → Finalization) with inter-wave quality gates and confidence-scored session-reviewer | 4-phase sequential model with parallel subagents |
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE (3) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
-| VCS integration | GitLab-first with GitHub mirror (auto-detected); 14 hook handlers + 18 commands wire to both | Runtime-agnostic; VCS work delegated to user |
+| VCS integration | GitLab-first with GitHub mirror (auto-detected); 14 hook handlers + 20 commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries in `.orchestrator/metrics/learnings.jsonl`; surfaced at session-start; opt-in `/evolve` review | Session archival to `docs/maestro/` without explicit learning extraction |
 | Specialist agents | 13 typed agents (code-implementer, security-reviewer, test-writer, qa-strategist, dialectic-deriver, memory-proposal-collector, etc.) | 39 specialist agents across design/impl/review/debugging/security/compliance |
 
@@ -246,7 +246,7 @@ We see the two plugins as complementary rather than competing: session-orchestra
 | Feature | Claude Code | Codex CLI | Cursor IDE |
 |---------|------------|-----------|------------|
 | OS | macOS, Linux, **Windows (native)** | macOS, Linux, **Windows (native)** | macOS, Linux, **Windows (native)** |
-| All 17 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) |
+| All 20 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` |
 | Shared knowledge | `.orchestrator/metrics/` | `.orchestrator/metrics/` | `.orchestrator/metrics/` |

@@ -56,7 +56,7 @@ describe('disable-model-invocation (#430)', () => {
   // MODEL-INVOCABLE: read-only probes, analytical commands, and orchestrators
   // that the model may legitimately invoke when context warrants it.
   const modelInvocableCommands = [
-    'autopilot', 'autopilot-multi', 'debug', 'discovery', 'evolve',
+    'autopilot', 'autopilot-multi', 'debug', 'discovery', 'evolve', 'grill',
     'harness-audit', 'memory-cleanup', 'portfolio', 'repo-audit', 'session', 'test',
   ];
 
