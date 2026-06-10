@@ -3,8 +3,8 @@ id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-05-28T11:52:26.975Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152"]
+updated: "2026-05-30T09:13:23.849Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913"]
 ---
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
@@ -28,6 +28,7 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - Test-writers must verify both `npm test` (all tests pass) AND `npm run lint` (zero lint errors) before reporting done. Lint-only verification allows stylistic regressions to slip to Full Gate.
 - When a test-writer agent runs tests against production code, then mutates the SUT to a known-broken state and re-runs to observe failure, this falsifiability cycle proves the test catches the regression it claims to cover. Mutation+revert cycles are expected in test delivery.
 - When a wave ships a fix for a recurring anti-pattern, run a pattern-replication audit on the rest of the diff before W4 closes — the agent who just fixed the bug is the most likely to re-introduce it elsewhere in the same change set. A single-agent review misses the recurrence; a multi-reviewer W4 panel catches it. Add a 1-line grep of the diff for other instances of the just-fixed pattern.
+- MEDIUM findings discovered in-session (during W3/W4) should be folded and documented in STATE.md Deviations rather than filed as carryover issues. Exceptions: MEDIUM findings that require redesign (scope change beyond the current agent's file boundary) stay as blockers.
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -51,6 +52,7 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - `vi.spyOn` on ESM named exports fails with `Cannot redefine property`; use real filesystem error injection (e.g., `chmodSync(dir, 0o555)`) instead.
 - ESLint `eqeqeq` rejects `x == null`; write `x === null || x === undefined` explicitly or use nullish-coalescing.
 - `existsSync(target)` is not an authorization check — it answers "does this path exist", not "is this the RIGHT path". For any write-gate where writing to the wrong target is the failure mode (vault mirror, deploy target, backup destination), guard on an IDENTITY probe (git remote get-url origin, a sentinel marker file, a known UUID) and host-qualify the match (`endsWith('host.tld/org/repo')`) so a same-named repo on a different host is still rejected. Fail closed: any non-zero probe exit OR non-matching identity is a whole-run `exit(2)`, not a per-entry skip. Provide a load-bearing env-var bypass for tests that legitimately target non-canonical tmp dirs, and cover the guard black-box with the bypass off.
+- When wiring automation or telemetry into an existing seam (e.g., post-tool-batch hook), grep for the WRITER of the trigger field across scripts/, skills/, and hooks/, not just the reader. A seam that is tested and read but never written is dormant — distinguish wired from live in your issue tracking.
 <!-- END MANAGED: architecture-and-code-patterns -->
 
 <!-- BEGIN MANAGED: ci-and-verification -->
@@ -75,4 +77,10 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - Phase A (contract) → Phase B Scaffold → Phase B-N (fill + wire) shipped as distinct sessions over 24h is the proven cadence for v3.x epics. Each session is narrow-scope (1-2 issues), narrow-file.
 - For appetite:2w issues, split at natural seams: pure-function-checkable work now vs wave-executor-signal-dependent work later. This avoids partial-state corruption and enables mid-cycle pivots.
 - PRD → skill scaffold → command stub → vault mirror → narrative → numbered sub-issues for runtime impl is the proven Phase scaffold sequence for new capabilities.
-<!-- END MANAGED: incremental-epic-delivery -->
+<!-- END MANAGED: incremental-epic-delivery --><!-- BEGIN MANAGED: crashed-session-recovery -->
+## Crashed session recovery
+
+- On resuming a crashed session, the STATE.md mission premise may be hallucinated. Before continuing any work, grep-verify the referenced issues and PRDs against the actual issue tracker + code repo. If all referenced issues are CLOSED or unrelated, reground the mission to actual code + learnings before proceeding.
+- The crashed session's `.claude/wave-scope.json` (if present and valid) is the definitive artifact for work planned vs completed. Its `allowedPaths` show which files the wave intended to touch. Diff against working-tree state to identify the gap.
+- After work from a crashed session is verified sound (existing tests green, grep-confirms the code is on-target), the cross-batch watermark tokens (e.g., `last_wave`) are preserved by gating on `semantic_session_id` equality in on-session-start. This prevents double-emission of wave.started on resume.
+<!-- END MANAGED: crashed-session-recovery -->
