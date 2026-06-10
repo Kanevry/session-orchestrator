@@ -1,10 +1,10 @@
 # Loop & Monitor Routing (Always-on)
 
-`/loop`, `Monitor`, and `Routines` / Desktop scheduled tasks share the
-"recurring or polling-style work" slot but are **not interchangeable**.
-Picking the wrong primitive wastes tokens, masks failures, or loses
-durability. This rule encodes the routing decision once so future sessions
-do not re-derive it.
+`/goal`, `/loop`, `Monitor`, and `Routines` / Desktop scheduled tasks share
+the "recurring, polling-style, or keep-going-until-done work" slot but are
+**not interchangeable**. Picking the wrong primitive wastes tokens, masks
+failures, or loses durability. This rule encodes the routing decision once so
+future sessions do not re-derive it.
 
 Anthropic's own `/loop` documentation (https://code.claude.com/docs/en/scheduled-tasks) is explicit:
 > *"When you ask for a dynamic /loop schedule, Claude may use the Monitor
@@ -14,21 +14,33 @@ Anthropic's own `/loop` documentation (https://code.claude.com/docs/en/scheduled
 ## LM-001: Decision Tree — Pick the Primitive First
 
 ```
-Is the watched thing a STREAM I can tail (logs, file changes, CI
-status transitions, autopilot.jsonl entries)?
+Is the work a FINITE objective with a recognizable done-condition that
+Claude's OWN surfaced output can demonstrate (refactor until the tests
+referenced in the transcript pass, drain a worklist, reach a state you
+can describe in ≤ 4000 chars)?
 │
-├─ Yes → Monitor.
-│        Each stdout line = one notification. Zero polling tokens.
+├─ Yes → /goal.
+│        Continuation across turns until the condition is confirmed.
+│        (Completion-condition axis — see LM-008.)
+│        Pair with deterministic gates — /goal continues, it never judges.
+│        NOT: "until CI goes green" — that is an EXTERNAL stream the
+│        evaluator cannot see → Monitor (next branch).
 │
-└─ No  → Is the watched thing PERIODIC and bounded by THIS session
-         (≤ 7 days, in-memory acceptable)?
+└─ No  → Is the watched thing a STREAM I can tail (logs, file changes, CI
+         status transitions, autopilot.jsonl entries)?
          │
-         ├─ Yes → /loop.
-         │        Use dynamic mode unless the cadence is genuinely fixed.
+         ├─ Yes → Monitor.
+         │        Each stdout line = one notification. Zero polling tokens.
          │
-         └─ No  → Routines (cloud) or Desktop scheduled tasks.
-                  Daily notes, weekly audits, cross-repo sweeps.
-                  /loop CANNOT cover these — it dies with the session.
+         └─ No  → Is the watched thing PERIODIC and bounded by THIS session
+                  (≤ 7 days, in-memory acceptable)?
+                  │
+                  ├─ Yes → /loop.
+                  │        Use dynamic mode unless the cadence is genuinely fixed.
+                  │
+                  └─ No  → Routines (cloud) or Desktop scheduled tasks.
+                           Daily notes, weekly audits, cross-repo sweeps.
+                           /loop CANNOT cover these — it dies with the session.
 ```
 
 ## LM-002: Use Monitor When …
@@ -96,7 +108,7 @@ the work will eventually be missed.
 
 ## LM-005: Never Reimplement These as `/loop`
 
-- **`/autopilot`.** It is already a child-process driver with eight
+- **`/autopilot`.** It is already a child-process driver with ten
   kill-switches and `autopilot.jsonl` telemetry. Wrapping it in `/loop`
   loses both. Pair them — never replace.
 - **Wave-executor inter-wave checkpoints.** Synchronous by design.
@@ -104,6 +116,11 @@ the work will eventually be missed.
   These block the wave on purpose. Run them once, sequentially.
 - **Hook-served events.** `PostToolUse`, `Stop`, `SubagentStop` already
   fire at the right moment. A `/loop` poll on top is redundant.
+- **`/goal`.** Do not hand-roll a per-turn Stop-hook prompt evaluator to
+  keep Claude working until a condition holds — `/goal` IS that mechanism,
+  natively (a session-scoped prompt-based Stop hook). Re-implementing it as
+  a custom Stop hook or a `/loop` body duplicates the machinery and loses
+  the built-in `--resume` restoration and `/goal clear` lifecycle. See LM-008.
 
 ## LM-006: PSA-003 Applies
 
@@ -130,11 +147,70 @@ it as you would any coordinator action:
   hides the kill-switches.
 - Cadence at `300s` — prompt cache is dropped without buying a longer
   wait. Pick `270s` or `1200s+`.
+- Using `/goal` as a quality gate — the evaluator reads the transcript
+  only and runs no tools, so a goal "tests pass" is satisfied the moment
+  Claude *claims* tests pass, not when `npm test` actually exits 0. Pair
+  `/goal` with a deterministic exit-code gate (see LM-008).
+- Setting an unbounded `/goal` with no turn/time-bound clause — without
+  an explicit "or stop after N turns" / "or stop after M minutes" the
+  loop can churn indefinitely on a condition it cannot satisfy. Always
+  embed a bound.
+
+## LM-008: Use `/goal` When …
+
+`/goal <condition>` (Claude Code v2.1.139+) keeps Claude working across turns
+until a stated completion condition is confirmed. It is a wrapper around a
+session-scoped, prompt-based Stop hook: after each turn the configured
+small-fast evaluator model (default Haiku) reads the condition plus the
+conversation and returns yes/no + reason. Cost is typically negligible. See
+https://code.claude.com/docs/en/goal.
+
+**Use `/goal` when:**
+- The work is a **finite objective**, not an open-ended watch — "refactor
+  `foo.ts` until the tests referenced in this transcript pass", "drain the
+  worklist of 12 TODO items", "reach a state where every probe reports green".
+- It needs **multiple turns** to converge but the operator should not have to
+  re-prompt "keep going" after each one.
+- The done-condition is **demonstrable from Claude's own surfaced output** —
+  the evaluator runs NO tools, so it can only judge what already appears in
+  the conversation. Make the work surface its evidence (paste the test
+  summary, echo the worklist, print the state) so the evaluator can see it.
+
+**How to write the condition:**
+- Write conditions the transcript can demonstrate. "All referenced tests show
+  as passing in the conversation output" works; "the production database is
+  consistent" does not — the evaluator cannot inspect anything Claude has not
+  already surfaced.
+- **Always embed a bound.** Append "or stop after 20 turns" / "or stop after
+  30 minutes" so a non-converging goal terminates. 4000-char condition limit;
+  one goal per session; `/goal clear` removes it; restored on `--resume`;
+  works headless (`claude -p "/goal …"`).
+
+**The load-bearing caveat — `/goal` provides CONTINUATION, never JUDGMENT.**
+The evaluator is a transcript reader, not a verifier. Deterministic quality
+gates remain the source of truth: `npm test`, `npm run typecheck`,
+`npm run lint` and their **exit codes** decide whether work is correct. Never
+replace an exit-code gate with a Haiku vote. The two compose cleanly: `/goal`
+keeps the loop alive across turns, the gate decides whether the loop is done.
+The correct pattern is a goal whose condition references freshly-run gate
+output ("…until `npm test` prints 0 failures **in this turn's output**"),
+backed by an actual gate run each turn — not a goal that asserts success on
+its own.
+
+**Availability constraints:** requires Claude Code v2.1.139+; one active goal
+per session; UNAVAILABLE when `disableAllHooks` or `allowManagedHooksOnly` is
+set (the mechanism is a managed Stop hook). When unavailable, fall back to a
+bounded `/loop` body that re-runs the deterministic gate and reports.
+
+See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
+`/goal` slots alongside `/loop`, Monitor, and Routines in the orchestrator.
 
 ## See Also
 
 - `parallel-sessions.md` (PSA discipline that applies inside loop bodies)
 - `ask-via-tool.md` (loop bodies must still use AUQ for user decisions)
 - `development.md` · `security.md` · `mvp-scope.md` · `cli-design.md`
+- `verification-before-completion.md` (why `/goal` never replaces an exit-code gate)
+- ADR: `docs/adr/0010-native-autonomy-commands.md` (full `/goal` vs `/loop` vs Monitor vs Routines verdict)
 - Project file: `.claude/loop.md` (the orchestrator's bare-`/loop` body)
 - Reference: `skills/_shared/monitor-patterns.md` (vetted Monitor filter snippets)

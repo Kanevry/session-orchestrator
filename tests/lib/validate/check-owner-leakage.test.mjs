@@ -10,7 +10,7 @@
  * (status-only is the silent-pass class per test-quality.md).
  *
  * Cases:
- *   Positive-1:  path leak (/Users/bernhardx/...)          → status 1, FAIL
+ *   Positive-1:  path leak (/Users/bernhardg/...)          → status 1, FAIL
  *   Positive-2:  gitlab host (gitlab.gotzendorfer.at)      → status 1, FAIL
  *   Positive-3:  private slug (buchhaltgenie)              → status 1, FAIL
  *   Positive-4:  @goetzendorfer/ scope import              → status 1, FAIL
@@ -22,7 +22,7 @@
  *   Exclusion-3: manifest author block                     → status 0
  *   Exclusion-4: events test doc-comment line              → status 0
  *   Exclusion-bypass: real leak inside excluded file
- *                (SECURITY.md with /Users/bernhardx/)      → status 1, FAIL
+ *                (SECURITY.md with /Users/bernhardg/)      → status 1, FAIL
  *   Edge:        empty / no-git repo                       → status 0
  */
 
@@ -89,9 +89,9 @@ function countOccurrences(str, sub) {
 // ---------------------------------------------------------------------------
 
 describe('Positive-1: personal home path leak', () => {
-  it('exits 1 when a tracked file contains a /Users/bernhardx/ path', () => {
+  it('exits 1 when a tracked file contains a /Users/bernhardg/ path', () => {
     const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), '# test\nPath: /Users/bernhardx/secret/config.txt\n');
+      writeFileSync(join(r, 'leak.md'), '# test\nPath: /Users/bernhardg/secret/config.txt\n');
     });
     const result = runCheck(root);
     expect(result.status).toBe(1);
@@ -105,6 +105,59 @@ describe('Positive-1: personal home path leak', () => {
     const result = runCheck(root);
     expect(result.stdout).toContain('  FAIL:');
     expect(result.stdout).toContain('leak.md');
+  });
+
+  // --- Issue #631 regressions: bare trailing-dot home path (no slash after) ---
+
+  it('exits 1 on bare /Users/bernhardg. at end-of-line (issue #631 blindspot)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'home: /Users/bernhardg.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 1 on /Users/bernhardg. before " && ls" (issue #631 blindspot)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.sh'), 'cd /Users/bernhardg. && ls\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 1 on home=/Users/bernhardg. followed by a newline (issue #631 blindspot)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.txt'), 'home=/Users/bernhardg.\nnext line\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('still exits 1 on /Users/bernhardg./ and /Users/bernhardg./Projects/x (no regression)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'leak.md'),
+        'a: /Users/bernhardg./\nb: /Users/bernhardg./Projects/x\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 0 on near-miss prefixes /Users/bernhardo-other/ and /Users/bernhardgXfoo (false-positive guard)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'clean.md'),
+        'a: /Users/bernhardo-other/\nb: /Users/bernhardgXfoo\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
   });
 });
 
@@ -377,15 +430,15 @@ describe('Exclusion-4: events doc-comment line in tests/lib/events-default-url.t
 // ---------------------------------------------------------------------------
 
 describe('Exclusion-bypass: real leak inside a normally-excluded file', () => {
-  it('exits 1 when SECURITY.md has /Users/bernhardx/ path (not covered by email exclusion)', () => {
+  it('exits 1 when SECURITY.md has /Users/bernhardg/ path (not covered by email exclusion)', () => {
     const root = makeTmpRepo((r) => {
       writeFileSync(
         join(r, 'SECURITY.md'),
-        '**Email:** security@gotzendorfer.at\nSee: /Users/bernhardx/secret.key\n',
+        '**Email:** security@gotzendorfer.at\nSee: /Users/bernhardg/secret.key\n',
       );
     });
     const result = runCheck(root);
-    // The /Users/bernhardx/ line is not covered by any exclusion → FAIL
+    // The /Users/bernhardg/ line is not covered by any exclusion → FAIL
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('  FAIL:');
   });
@@ -462,6 +515,110 @@ describe('Exclusion-5: persona content-lint detection-fixture file', () => {
 });
 
 // ---------------------------------------------------------------------------
+// P3 depth: additional scanner edge-cases (Wave-3 additions)
+// ---------------------------------------------------------------------------
+
+describe('P3 depth: scanner edge-cases', () => {
+  // --- bare /Users/bernhardg without trailing dot (zero [a-z.]* chars + \b) ---
+  it('exits 1 on bare /Users/bernhardg (no dot) at end-of-line', () => {
+    // Regex: /\/Users\/bernhardg[a-z.]*(\/|\b)/ — zero chars after g, then \b fires at EOL.
+    // Mutation guard: restoring the OLD regex /\/Users\/bernhardg[a-z.]*\// would
+    // require a slash after the username, so bare /Users/bernhardg at EOL would NOT
+    // match and this test would fail → catches the #631 regression class.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.txt'), 'USER_HOME=/Users/bernhardg\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  // --- /Users/bernhardg. inside JSON quotes ---
+  it('exits 1 on /Users/bernhardg. inside a JSON string value', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'config.json'),
+        '{"home": "/Users/bernhardg."}\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  // --- env-assignment form mid-file ---
+  it('exits 1 on BERNHARD_HOME=/Users/bernhardg. env-assignment form in a scanned .sh file', () => {
+    // Tests that mid-line env-assignment syntax (VAR=/Users/bernhardg.) is caught.
+    // Uses a .sh extension which IS in TEXT_EXTS; .env.example has extname ".example"
+    // which is NOT in TEXT_EXTS and therefore NOT scanned (pinned by the .png test below).
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'setup.sh'),
+        '#!/bin/sh\nBERNHARD_HOME=/Users/bernhardg.\nexport BERNHARD_HOME\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  // --- case-sensitivity: lowercase /users/bernhardg. must NOT match ---
+  it('exits 0 on lowercase /users/bernhardg. (P1 is case-sensitive — /Users only)', () => {
+    // P1 = /\/Users\/bernhardg.../ — no i flag; lowercase /users/ is not an owner path.
+    // Pins the case-sensitivity contract so a future `gi` flag change triggers a test failure.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'see /users/bernhardg. for config\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  // --- multiple P1 hits on one line: violations array records one per match site ---
+  it('reports at least one FAIL when a single line has two /Users/bernhardg. paths', () => {
+    // The scanner loops lines and records one violation per pattern per line.
+    // This test pins that multiple hits on one line produce at least one FAIL entry.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'multi.sh'),
+        'cp /Users/bernhardg./src /Users/bernhardg./dst\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    // At least one FAIL: line must appear — the exact count is impl-specific (1 per line).
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBeGreaterThanOrEqual(1);
+  });
+
+  // --- /Users/bernhardgoetzendorfer/ (old all-lowercase username form) must still match ---
+  it('exits 1 on /Users/bernhardgoetzendorfer/ (old full-username form, #605 drift class)', () => {
+    // Critical regression guard: Candidate F regex must still catch the original
+    // long-form username via the [a-z.]* suffix + trailing slash.
+    // Mutation: removing [a-z.]* from P1 would make this test fail.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'legacy.md'), 'Path: /Users/bernhardgoetzendorfer/projects/\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  // --- binary/non-TEXT_EXTS file (e.g. .png) is NOT scanned even if it has text content ---
+  it('exits 0 when a leak string lives only in a .png file (outside TEXT_EXTS allowlist)', () => {
+    // TEXT_EXTS = {.md, .mjs, .js, .ts, .json, .yml, .yaml, .sh, .txt}
+    // .png is not in the list → the file is skipped → no FAIL even if it contains the pattern.
+    // Pins the enumeration-contract: only whitelisted extensions are scanned.
+    const root = makeTmpRepo((r) => {
+      // .png extension but plain text content containing a P1 hit
+      writeFileSync(join(r, 'image.png'), '/Users/bernhardg./secret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge: empty dir / no-git repo
 // ---------------------------------------------------------------------------
 
@@ -481,5 +638,90 @@ describe('Edge: empty dir or no-git repo', () => {
     }, { initGit: false });
     const result = runCheck(root);
     expect(result.status).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W5 fold-in (W3-P3 finding): .env.example DOTFILE_ALLOWLIST reachability —
+// extname('.env.example') is '.example' (truthy), so the pre-fix extension-first
+// isTextFile() never reached the dotfile allowlist and silently skipped the file.
+// Mutation caught: reverting isTextFile() to extension-first makes this exit 0.
+// ---------------------------------------------------------------------------
+
+describe('fold-in: .env.example is scanned (dotfile-allowlist reachability)', () => {
+  it('exits 1 on a home-path leak inside .env.example', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, '.env.example'), 'OWNER_HOME=/Users/bernhardg.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
+  });
+
+  it('exits 0 on a clean .env.example (still scanned, no false positive)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, '.env.example'), 'API_URL=https://api.example.com\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W5 fold-in (#634 + W4 qa-strategist boundary pins):
+// P9 dash-encoded home path + Candidate-F word-boundary intent documentation.
+// ---------------------------------------------------------------------------
+
+describe('fold-in: P9 dash-encoded home path (#634)', () => {
+  it('exits 1 on the Claude-Code projects-dir encoded form', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'doc.md'),
+        'See .claude/projects/-Users-bernhardg--Projects-x/memory/foo.md for details\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
+    expect(result.stdout).toContain('P9 (dash-encoded home path)');
+  });
+
+  it('exits 0 on a dash-encoded path of a different user', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'doc.md'), 'See -Users-alice--Projects-x/memory/foo.md\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+describe('fold-in: Candidate-F word-boundary intent pins (W4 qa)', () => {
+  it('does NOT match digit-continuation /Users/bernhardg9/ (different user, out-of-scope near-miss)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg9/proj\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('does NOT match underscore-continuation /Users/bernhardg_home (different user)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg_home\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('DOES match hyphen-suffixed /Users/bernhardg-backup/ (owner prefix + non-word boundary = leak)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg-backup/x\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
   });
 });

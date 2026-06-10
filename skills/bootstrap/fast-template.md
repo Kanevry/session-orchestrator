@@ -154,9 +154,10 @@ Shell:
 ```bash
 mkdir -p "$REPO_ROOT/.claude/rules"
 cp "$PLUGIN_ROOT/templates/_shared/rules/parallel-sessions.md" "$REPO_ROOT/.claude/rules/parallel-sessions.md"
+cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
 ```
 
-Why: PSA-003 destructive-command safeguards require every consumer repo to carry the rule. See issue #155.
+Why: PSA-003 destructive-command safeguards require every consumer repo to carry the rule. See issue #155. The `loop.md` vendor gives bare `/loop` a repo-aware maintenance prompt (issue #633 Hebel 3).
 
 ## Step 4: Generate README.md
 

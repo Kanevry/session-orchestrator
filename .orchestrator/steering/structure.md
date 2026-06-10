@@ -17,8 +17,9 @@
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
 | `.claude/rules/` | Always-on rule files loaded by Claude Code |
 | `scripts/` | Node.js automation scripts (`.mjs` only) — includes Phase 1 migration helpers `vault-consolidate.mjs` (#499), `migrate-vault-paths.mjs` (#499), `migrate-cold-start-seed.mjs` (#507) |
-| `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `cold-start-detector.mjs` (#500), `auto-dream.mjs` (#502), and `config/{cold-start,vault-mirror-quality}.mjs` parsers |
+| `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `cold-start-detector.mjs` (#500), `auto-dream.mjs` (#502), `loop-readiness-banner.mjs` (#633), and `config/{cold-start,vault-mirror-quality}.mjs` parsers |
 | `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` |
+| `templates/` | Vendorable scaffolding (`_shared/loop.md` bare-`/loop` baseline #633, `_shared/rules/`) copied into consumer repos |
 | `docs/` | PRDs, ADRs, retros, marketplace, CI setup |
 | `.claude-plugin/` | Claude Code plugin manifest |
 | `.codex-plugin/` | Codex CLI plugin manifest |

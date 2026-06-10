@@ -7,7 +7,7 @@
  * Usage: check-owner-leakage.mjs <plugin-root>
  *
  * Forbidden patterns (P1–P7):
- *   P1  /\/Users\/bernhard[a-z.]*\//  — personal home path
+ *   P1  /\/Users\/bernhardg[a-z.]*(\/|\b)/  — personal home path (issue #631)
  *   P2  /\bgitlab\.gotzendorfer\.at\b/  — private GitLab host
  *   P3  /\bevents\.gotzendorfer\.at\b/  — private events domain
  *   P4  /@goetzendorfer\/[A-Za-z0-9*_-]+/  — private package scope
@@ -17,6 +17,8 @@
  *   P8  full RFC1918 private dotted-quad (10.x.x.x / 192.168.x.x / 172.16-31.x.x)
  *       — internal IP leak. Placeholder `.x` forms and CIDR/range notation are NOT
  *       matched (only literal 4-octet IPs), so SSRF-range docs stay clean.
+ *   P9  /-Users-bernhardg[a-z.]*-/  — dash-encoded personal home path
+ *       (Claude Code projects-dir encoding of /Users/bernhardg.; issue #634)
  *
  * Exclusions (line-scoped, never whole-file):
  *   1. Lines with office@gotzendorfer.at or security@gotzendorfer.at
@@ -70,8 +72,19 @@ const PRIVATE_SLUGS = [
 // Forbidden patterns
 // ---------------------------------------------------------------------------
 
-/** P1: personal home path */
-const P1 = /\/Users\/bernhard[a-z.]*\//;
+/**
+ * P1: personal home path (issue #631 — Candidate F).
+ *
+ * Anchors on the real owner prefix `bernhardg`, then matches a trailing-slash
+ * OR a word boundary. The trailing-slash-OR-word-boundary alternation is the
+ * fix for the original `…[a-z.]*\//` form, which REQUIRED a slash after the
+ * username and so let bare `/Users/bernhardg.` (end-of-line, before `&&`,
+ * before a newline) pass undetected. The `g`-anchor keeps the
+ * false-positive profile tight: `/Users/bernhardgX` (uppercase continuation),
+ * `/Users/bernhardo-other`, `/Users/bernhardt`, `/Users/bernhardus/`, and bare
+ * `/Users/bernhard` are all correctly rejected.
+ */
+const P1 = /\/Users\/bernhardg[a-z.]*(\/|\b)/;
 
 /** P2: private GitLab host */
 const P2 = /\bgitlab\.gotzendorfer\.at\b/;
@@ -103,6 +116,13 @@ const P8 = /(?:\b10(?:\.\d{1,3}){3}|\b192\.168(?:\.\d{1,3}){2}|\b172\.(?:1[6-9]|
 /** P8 allowlist: files where RFC1918 IPs are a legitimate test subject (IP-redaction fixtures). */
 const P8_ALLOWLIST = new Set(['tests/scripts/export-hw-learnings.test.mjs']);
 
+/**
+ * P9: dash-encoded personal home path — the Claude Code projects-dir encoding
+ * of `/Users/bernhardg.` (slashes → dashes, e.g. `-Users-bernhardg--Projects-…`).
+ * Same sensitivity class as P1 but invisible to the slash-form regex (issue #634).
+ */
+const P9 = /-Users-bernhardg[a-z.]*-/;
+
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -112,15 +132,16 @@ function escapeRegex(s) {
 // ---------------------------------------------------------------------------
 const TEXT_EXTS = new Set(['.md', '.mjs', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.txt']);
 
-// Dotfiles to include (extensionless)
+// Dotfiles to include (checked by basename, BEFORE the extension gate —
+// extname('.env.example') is '.example' (truthy), so an extension-first check
+// would make that allowlist entry unreachable; W3-P3 finding, 2026-06-10)
 const DOTFILE_ALLOWLIST = new Set(['.env.example', '.nvmrc', '.vault.yaml']);
 
 function isTextFile(filePath) {
-  const ext = extname(filePath);
-  if (ext) return TEXT_EXTS.has(ext);
-  // extensionless — check if it's an allowed dotfile
   const base = basename(filePath);
-  return DOTFILE_ALLOWLIST.has(base);
+  if (DOTFILE_ALLOWLIST.has(base)) return true;
+  const ext = extname(filePath);
+  return ext ? TEXT_EXTS.has(ext) : false;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +300,9 @@ const SELF_EXCLUSIONS = new Set([
   'tests/lib/validate/check-owner-leakage.test.mjs',
   'tests/templates/personas/content-lint.test.mjs',
   'tests/husky/pre-commit-owner-leakage.test.mjs',
+  // #634: encoding-contract fixtures (`-Users-bernhardg-` expected-value literals
+  // are load-bearing for the resolveMemoryDir() assertions; P9 would self-flag them)
+  'tests/lib/memory-paths.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
@@ -351,6 +375,11 @@ for (const filePath of scanFiles) {
     // P8: full RFC1918 private dotted-quad — internal IP leak (redaction-test fixtures exempt)
     if (P8.test(line) && !P8_ALLOWLIST.has(relPath)) {
       violations.push({ relPath, lineNum, pattern: 'P8 (RFC1918 private IP)', lineContent: line.trim() });
+    }
+
+    // P9: dash-encoded home path (Claude Code projects-dir encoding) — #634
+    if (P9.test(line)) {
+      violations.push({ relPath, lineNum, pattern: 'P9 (dash-encoded home path)', lineContent: line.trim() });
     }
   });
 }

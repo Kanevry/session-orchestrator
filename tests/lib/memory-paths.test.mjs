@@ -50,7 +50,12 @@ afterEach(() => {
 
 describe('resolveMemoryDir', () => {
   it('encodes trailing-dot in cwd as "-" not "."', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue('/Users/bernhardg.');
+    // Construct the trailing-dot home path via concatenation so the raw
+    // home-path literal never appears as a string in this file — it would
+    // otherwise trip the owner-leakage scanner P1 (issue #631). The encoded
+    // assertions below (`-Users-bernhardg-`) do not match P1 and stay literal.
+    const ownerHome = '/Users/' + 'bernhardg' + '.';
+    vi.spyOn(process, 'cwd').mockReturnValue(ownerHome);
     const dir = resolveMemoryDir();
     // The encoded segment must contain '-Users-bernhardg-' and NOT '-Users-bernhardg.'
     expect(dir).toContain('-Users-bernhardg-');

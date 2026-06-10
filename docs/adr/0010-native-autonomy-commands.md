@@ -1,0 +1,54 @@
+# ADR 0010: Native Autonomy Commands (/goal, /batch, /background, /loop) vs Hand-Rolled Orchestration Stack
+
+> Status: ACCEPTED · session main-2026-06-10-deep-1 · issue #633
+> Source research: Wave-1 live-docs verification 2026-06-10 (Claude Code v2.1.170) — https://code.claude.com/docs/en/goal · https://code.claude.com/docs/en/commands · https://code.claude.com/docs/en/scheduled-tasks
+> Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md). Wherever this ADR says `CLAUDE.md`, the alias rule applies.
+
+## Context
+
+Anthropic has shipped a family of native **autonomy commands** that overlap this repo's hand-rolled orchestration stack — yet the keystone gap is that ADR-0002 (Agent Teams, #437), ADR-0003 (Routines, #438), and ADR-0004 (context-mode, #439) each pin one native primitive to one of our abstractions, while the `/goal · /batch · /background · /loop` family has **no ADR at all**. Every session re-derives adopt-or-stay from scratch. This ADR closes that gap with a verdict-per-primitive table.
+
+The load-bearing question: **do these four native commands replace any load-bearing piece of our autonomy stack, or are they raw capability layered onto a safety surface they do not provide?** The four hand-rolled pieces they overlap (Wave-1 grep-verified):
+
+- `skills/autopilot/` + `scripts/lib/autopilot/kill-switches.mjs:18-32` — headless walk-away driver with **exactly 10 kill-switches** (the frozen runtime enum is SSOT; `skills/autopilot/SKILL.md` prose formerly said 8 — corrected to 10 by this session's W3-P2 pass; ADR-0002:33 / ADR-0003:15 correctly say 10). Autopilot is in-process only: *"Claude must stay in the chat"* (`skills/autopilot/SKILL.md`); the headless wrapper reserved for Phase C-5 is **UNSHIPPED**.
+- `commands/autopilot-multi.md` + `scripts/autopilot-multi.mjs` — N parallel issue pipelines in worktrees, GitLab-MR-shaped, kill-switches + `autopilot.jsonl` telemetry (v1 thin-slice).
+- `skills/convergence-monitoring/` — 3-signal Stop/Continue/Investigate monitor that answers *"are we progressing?"*, not *"are we done?"*.
+- PRD-366 (`docs/prd/2026-05-10-366-stop-hook-verification-loop.md`) — a "keep going until verified" Stop-hook loop, **shaped but UNSHIPPED**: `hooks/on-stop.mjs` is informational-only and always exits 0; `grep VERIFICATION_BUDGET scripts/lib/` returns zero hits. The /goal comparison below is against a *design*, not shipped code.
+
+Native surface verified on v2.1.170: **/goal** (since v2.1.139) is a session-scoped prompt-based Stop hook — per turn, the condition + conversation go to a small-fast model (default Haiku) returning yes/no + reason; the evaluator *"does not call tools, so it can only judge what Claude has already surfaced in the conversation"* (verbatim), cost "typically negligible", one goal/session, restored on `--resume`, works headless, unavailable under `disableAllHooks`/`allowManagedHooksOnly`. **/batch** decomposes into 5–30 independent units, one background subagent per isolated worktree, per-unit tests, one PR per unit (GitHub-PR-shaped). **/background** (`/bg`) detaches the entire session into the background-agent runtime (`claude agents`, `/stop`, `/tasks`). **/loop** has interval + dynamic (self-paced via `ScheduleWakeup`, 1min–1h) modes, bare `/loop` runs `.claude/loop.md` (project) or `~/.claude/loop.md` (user; project wins), 7-day auto-expiry, and the docs explicitly note a dynamic `/loop` *"may use the Monitor tool directly … often more token-efficient … than re-running a prompt on an interval"*. Cross-harness: Codex CLI 0.128.0 has /goal (SQLite-backed, not a Stop-hook); /loop on Codex is only PROPOSED (openai/codex#25466 open); Cursor has neither and uses cloud Automations.
+
+## Decision
+
+A per-primitive verdict, in house vocabulary:
+
+| Primitive | Verdict | One-line rationale |
+|---|---|---|
+| **/loop** | **Adopt** | Already de-facto adopted — `.claude/loop.md` *is* the native customization seam; this session ships the user-level baseline + readiness banner. |
+| **/goal** | **Adapter** | Adopt the per-turn continuation mechanism for goal-anchored work; keep judgment deterministic — the transcript-only evaluator never replaces exit-code quality gates. |
+| **/batch** | **Stay** | Our `autopilot-multi` is GitLab-MR + kill-switch + telemetry shaped; /batch is GitHub-PR shaped with no kill-switches/telemetry. |
+| **/background** | **Adapter** | Native walk-away UX that can substitute for the unshipped autopilot Phase C-5 headless wrapper — gated on one falsifiable detachment test. |
+
+**/loop = Adopt.** Adopt is correct because the customization seam already exists in-tree: `.claude/loop.md`. This session ships the user-level `~/.claude/loop.md` baseline plus a session-start readiness banner. The sibling LM-001 routing tree (Monitor//loop/Routines) is unchanged; LM-005's "never reimplement `/autopilot` as `/loop`" guard stands.
+
+**/goal = Adapter.** Adopt the native per-turn *continuation* mechanism for goal-anchored work, but **keep judgment deterministic** — this is the load-bearing design rule (Hebel-5 verdict). Because the evaluator reads the transcript only and *runs no tools*, it can confirm "Claude said it passed", never "`npm test` exited 0". It MUST therefore anchor continuation, never replace the exit-code proof commands (`npm test` / `npm run typecheck` / `npm run lint`) that gate completion. /goal **supersedes the unshipped PRD-366 Phase-1 continuation half**; PRD-366's deterministic-verification half remains valid as the required complement. *Adopt-fully is refuted*: making /goal the completion authority would re-introduce the silent-pass class `verification-before-completion.md` exists to kill. **Falsifiable revisit:** if Anthropic ships tool-calling goal evaluators, re-evaluate this caveat.
+
+**/batch = Stay (for now).** Stay because `autopilot-multi` is shaped for our world — GitLab MRs, the 10 kill-switches, `autopilot.jsonl` telemetry — and /batch is GitHub-PR shaped with no kill-switch or telemetry equivalent. *Adopt is refuted*: swapping in /batch forfeits the guard+telemetry surface to gain decomposition we already have. **Quantified revisit-trigger:** re-open when /batch gains GitLab/MR support OR a kill-switch-equivalent bound (per-unit budget/turn cap) — whichever ships first.
+
+**/background = Adapter.** /background is the native walk-away UX that can substitute for the unshipped autopilot Phase C-5 headless wrapper — without us building C-5. *Build-C-5-now is refuted* by the appetite rule. **Falsifiable test (the only gate to any wiring):** run one bounded autopilot-style session detached via /background and verify the 10 kill-switches + `autopilot.jsonl` telemetry survive detachment. Scope-bound: do not build C-5 before that test passes.
+
+## Consequences
+
+**What changes:** `~/.claude/loop.md` user-level baseline + readiness banner ship this session (/loop Adopt). A sibling agent adds the LM-001 `/goal` branch + new LM-008 in [`.claude/rules/loop-and-monitor.md`](../../.claude/rules/loop-and-monitor.md) alongside this ADR — that rule is the routing home for goal-anchored continuation (LM-008 cross-references this ADR for the full verdict).
+
+**What we keep unchanged:** the 10 kill-switches (`kill-switches.mjs:18-32`), `autopilot-multi`'s GitLab-MR pipeline + telemetry, `convergence-monitoring`'s 3-signal monitor, and PRD-366's deterministic-verification half (the exit-code gate). /goal anchors continuation; it never owns the completion verdict.
+
+**What we explicitly do NOT take on:** (1) /goal as a quality-gate replacement — transcript-only judgment is structurally unable to verify exit codes. (2) /batch as the multi-issue path — no kill-switch/telemetry parity. (3) Autopilot Phase C-5 — deferred behind the /background detachment test, not pre-built.
+
+**Ecosystem interaction & sibling-ADR cross-connection.** This ADR is the fourth in the native-substrate quartet and lands on the same house thesis (`docs/adr/0001-context-vs-orchestration.md`): the platform supplies raw capability, never the safety surface. ADR-0002 (Agent Teams, #437/#484) reached Adapter for parallelism without the guard surface; ADR-0003 (Routines, #438/#485, HARD GATE #490) reached Adapter for laptop-closed durability with no stop-condition primitive — it owns the *durable-scheduling* axis, **not re-decided here**; ADR-0004 (context-mode, #439/#486) reached Stay after re-deriving a headline metric against our architecture. /loop is the lone Adopt because, uniquely, its customization seam was already ours. The four compose but do not stack into an unguarded loop (LM-005).
+
+## Follow-ups
+
+- **#633 levers (shipped this session):** /loop user-level baseline + readiness banner (Hebel-1), the LM-001 `/goal` branch (sibling agent), and this ADR (Hebel keystone).
+- **File a future issue — /background detachment empirical test:** run one bounded autopilot session detached via /background; verify the 10 kill-switches + `autopilot.jsonl` telemetry survive detachment. Pass → C-5 wiring spec; fail → Stay, autopilot stays in-process.
+- **Watch-item — /batch GitLab/MR + kill-switch parity** (quarterly; **next check 2026-09-10**). Re-open the /batch Stay verdict if either lands.
+- **Fix-forward note:** the frozen runtime enum in `kill-switches.mjs:18-32` is SSOT and lists **exactly 10** kill-switches (pre-iteration 6: max-sessions-reached, max-hours-exceeded, resource-overload, low-confidence-fallback, user-abort, token-budget-exceeded · post-iteration 1: stall-timeout · post-session 3: spiral, failed-wave, carryover-too-high). ADR-0002:33 and ADR-0003:15 correctly say 10. The stale "8" claims in `skills/autopilot/SKILL.md` and `commands/autopilot.md` were corrected by the W3-P2 consistency pass — this ADR is born correct.

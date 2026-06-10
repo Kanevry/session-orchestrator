@@ -18,7 +18,7 @@ import os from 'node:os';
  * Mirrors the harness convention: `~/.claude/projects/<encoded-cwd>/memory/`
  * where `<encoded-cwd>` is the cwd with BOTH `/` AND `.` replaced by `-`. The
  * dot replacement matters for users with a trailing-`.` in their home dir
- * (e.g. `/Users/bernhardg.`) — without it the resolved path diverges from
+ * (e.g. `/Users/<owner>.`) — without it the resolved path diverges from
  * what the harness actually wrote.
  *
  * Verified empirically against `~/.claude/projects/` directory naming.

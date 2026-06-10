@@ -33,10 +33,14 @@ If on `main`: list any commits ahead of `origin/main` via `git log origin/main..
 
 ## 3. Vault-mirror backlog
 
-If `~/Projects/vault` exists:
+Resolve the vault directory from `CLAUDE.md` `## Session Config`
+`vault-integration.vault-dir` (the SSOT — currently `~/Projects/Bernhard/vault`;
+expand `~` to `$HOME`). Run this check only if `vault-integration.enabled: true`.
+
+If that directory exists:
 
 - Count diff in `40-learnings/` and `50-sessions/`:
-  `git -C ~/Projects/vault status --short 40-learnings/ 50-sessions/ | wc -l`.
+  `git -C "<vault-dir>" status --short 40-learnings/ 50-sessions/ | wc -l`.
 - If `> 0`, surface the count and remind: GH#31 auto-commit fires at session-end
   and `evolve` runs. Manual catch-up via `node scripts/vault-mirror.mjs --since-last-commit --session-id <id>`.
 

@@ -56,4 +56,4 @@ wins and the warning is still emitted once (because `persona-reviewers` is prese
 
 - Issue #461 (this rename)
 - Issue #457–#461 (persona-panel pattern — distinct from wave-reviewers)
-- See [project_persona_panel_pattern.md](.claude/projects/-Users-bernhardg--Projects-Bernhard-session-orchestrator/memory/project_persona_panel_pattern.md) for the new persona-panel cluster
+- See the host-local Claude auto-memory note `project_persona_panel_pattern.md` (under the per-project memory directory resolved by `scripts/lib/memory-paths.mjs`) for the new persona-panel cluster
