@@ -64,6 +64,29 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 - If still relevant: ensure original issue remains `status:ready`
 - If no longer relevant: close with comment explaining why
 
+### 1.3a Optional /goal Backlog-Drain (opt-in — #636)
+
+> Advisory-only continuation anchor at the session-end backlog seam. Never auto-invokes `/goal`, never blocks the close. `/goal` is a user slash-command; the operator decides whether to drain now or carry over.
+
+**Gate conditions** — ALL must be true for this nudge to surface:
+
+1. `goal-integration.enabled: true` in Session Config (default: `false`).
+2. `session-end-backlog` is listed in `goal-integration.seams`.
+
+When any gate condition is false, skip this step silently — no surfaced suggestion, no STATE.md write, no AUQ.
+
+**What it does** — when the gate fires AND ≥1 still-relevant Not-Started (§1.3) or Partially-Done (§1.2) item exists AND the operator would rather drain the backlog now than carry it to a future session, surface ONE suggested `/goal` command as an advisory bullet. Example:
+
+```
+/goal Drain the remaining backlog items <list>; done when each item's acceptance check passes as shown by 'npm test' output in this turn AND 'npm run typecheck' prints 0 errors in this turn, or stop after 20 turns.
+```
+
+**Advisory-only contract:** this step never auto-invokes `/goal`, never blocks the close, raises no AskUserQuestion, and writes nothing to STATE.md. It is informational prose only — the operator copies the command if they want it. The deterministic **Phase 2 Quality Gate** of session-end remains the completion authority: `/goal` keeps the loop alive across turns, but `npm test` / `npm run typecheck` / `npm run lint` and their exit codes decide whether the drained work is correct.
+
+The `/goal` evaluator reads the transcript only and runs NO tools — it anchors CONTINUATION, never JUDGMENT. The suggested condition therefore references freshly-run gate output "in this turn's output" and embeds a bound ("or stop after N turns"). Cross-reference `.claude/rules/loop-and-monitor.md § LM-008` for the full `/goal` continuation-vs-judgment contract rather than restating it here.
+
+**One goal per session:** only ONE `/goal` can be active at a time. This backlog seam and the inter-wave fix-loop seam (`wave-loop.md` § /goal Continuation Anchor) cannot both hold an active goal simultaneously — the operator picks one.
+
 ### 1.4 Emergent Work
 - Tasks that were NOT in the plan but were done (fixes, discoveries)
 - Document and attribute to relevant issues

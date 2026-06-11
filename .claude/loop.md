@@ -3,6 +3,7 @@
 > Replaces Anthropic's built-in `/loop` maintenance prompt with an
 > orchestrator-aware variant. Picked up automatically by `/loop` (no args)
 > per https://code.claude.com/docs/en/scheduled-tasks#customize-the-default-prompt-with-loop-md.
+> Content beyond 25,000 bytes is truncated (scheduled-tasks#customize-the-default-prompt-with-loop-md).
 
 You are tending the Session Orchestrator working tree. Each iteration, walk through
 the five checks below in order and report findings in **one short summary** at the

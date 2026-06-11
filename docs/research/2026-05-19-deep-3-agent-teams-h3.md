@@ -5,6 +5,8 @@
 > Test harness: `hooks/agent-teams-h3-test.sh`
 > Results log: `.orchestrator/research/h3-hook-seam-test-template.jsonl`
 
+> **Correction (2026-06-11, session main-2026-06-11-session-2):** line ~46 below claims `npm run typecheck` runs `tsgo --noEmit` — it actually runs `node scripts/typecheck.mjs` (package.json:15), which is why the W2 H3 fixture (scripts/spikes/h3-agent-teams/) is self-contained. Also: upstream docs no longer state '~7×' token cost for agent teams, now only 'significantly more tokens'. Current operator package: docs/spikes/2026-06-11-484-h3-operator-runbook.md.
+
 ---
 
 ## Background

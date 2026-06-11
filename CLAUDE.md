@@ -45,7 +45,7 @@ typecheck-command: npm run typecheck
 lint-command: npm run lint
 stale-branch-days: 7
 plugin-freshness-days: 30
-plan-baseline-path: ~/Projects/projects-baseline
+plan-baseline-path: ~/Projects/Bernhard/projects-baseline
 plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal
@@ -114,3 +114,6 @@ compact-nudge:
   enabled: false                 # ecc-analysis (#620) — opt-in advisory /compact nudge at inter-wave checkpoints (never auto-compacts)
   after: [discovery, impl]       # wave boundaries that may fire the nudge — subset of {discovery, impl, failed-wave}
   mode: warn                     # warn (surface one bullet in the wave progress update) | off (silent no-op)
+goal-integration:
+  enabled: false                 # Lever 5 (#636) — opt-in advisory /goal continuation anchor at named seams; ADR-0010: continuation, never judgment
+  seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time

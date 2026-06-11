@@ -5,6 +5,7 @@
 > https://code.claude.com/docs/en/scheduled-tasks#customize-the-default-prompt-with-loop-md.
 > A user-level `~/.claude/loop.md` is the host-wide fallback; this project file
 > takes precedence when present.
+> Content beyond 25,000 bytes is truncated (scheduled-tasks#customize-the-default-prompt-with-loop-md).
 
 You are tending this working tree. Each iteration, walk through the checks below
 in order and report findings in **one short summary** at the end. Skip a check

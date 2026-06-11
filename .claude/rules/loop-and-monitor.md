@@ -26,21 +26,29 @@ can describe in ≤ 4000 chars)?
 │        NOT: "until CI goes green" — that is an EXTERNAL stream the
 │        evaluator cannot see → Monitor (next branch).
 │
-└─ No  → Is the watched thing a STREAM I can tail (logs, file changes, CI
-         status transitions, autopilot.jsonl entries)?
+└─ No  → Is the event PUSHABLE from an external system (CI webhook, error
+         tracker, chat)?
          │
-         ├─ Yes → Monitor.
-         │        Each stdout line = one notification. Zero polling tokens.
+         ├─ Yes → Channels (research preview, v2.1.80+).
+         │        The source pushes the event into the open session via an
+         │        MCP channel plugin — zero polling, reacts while you're away.
+         │        (Push-based sibling of Monitor — see LM-002a.)
          │
-         └─ No  → Is the watched thing PERIODIC and bounded by THIS session
-                  (≤ 7 days, in-memory acceptable)?
+         └─ No  → Is the watched thing a STREAM I can tail (logs, file changes, CI
+                  status transitions, autopilot.jsonl entries)?
                   │
-                  ├─ Yes → /loop.
-                  │        Use dynamic mode unless the cadence is genuinely fixed.
+                  ├─ Yes → Monitor.
+                  │        Each stdout line = one notification. Zero polling tokens.
                   │
-                  └─ No  → Routines (cloud) or Desktop scheduled tasks.
-                           Daily notes, weekly audits, cross-repo sweeps.
-                           /loop CANNOT cover these — it dies with the session.
+                  └─ No  → Is the watched thing PERIODIC and bounded by THIS session
+                           (≤ 7 days, in-memory acceptable)?
+                           │
+                           ├─ Yes → /loop.
+                           │        Use dynamic mode unless the cadence is genuinely fixed.
+                           │
+                           └─ No  → Routines (cloud) or Desktop scheduled tasks.
+                                    Daily notes, weekly audits, cross-repo sweeps.
+                                    /loop CANNOT cover these — it dies with the session.
 ```
 
 ## LM-002: Use Monitor When …
@@ -69,7 +77,30 @@ tail -f run.log | grep -E --line-buffered "elapsed_steps=|Traceback|Error|FAILED
 If you cannot enumerate failure signatures, broaden the alternation
 rather than narrow it. Some extra noise beats missing a crashloop.
 
+Monitor requires v2.1.98+ and is unavailable on Bedrock/Vertex/Foundry and
+when `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set
+— on those configs fall back to a bounded `/loop` poll
+(code.claude.com/docs/en/tools-reference#monitor-tool).
+
 For vetted snippets, see `skills/_shared/monitor-patterns.md`.
+
+## LM-002a: Use Channels When …
+
+Channels (research preview, v2.1.80+) is the **push-based sibling of Monitor**:
+instead of tailing a stream you control, an external system pushes the event
+into your open session via an MCP channel plugin (CI webhook, error tracker,
+chat). Zero polling, and it reacts while you are away from the keyboard.
+
+Constraints (cite https://code.claude.com/docs/en/channels):
+
+- **Anthropic-auth only** — unavailable on Bedrock/Vertex/Foundry.
+- **Per-session opt-in** via the `--channels` flag.
+- **Research-preview status** — the contract may change; do not wire a
+  load-bearing automation onto it without a Monitor/`/loop` fallback.
+
+Choose Channels over Monitor when the source can PUSH (you register a webhook
+endpoint) rather than be TAILED (you run `tail -f`/`glab ci status`). When the
+source can only be polled or tailed, stay on Monitor.
 
 ## LM-003: Use `/loop` When …
 
@@ -80,6 +111,11 @@ For vetted snippets, see `skills/_shared/monitor-patterns.md`.
   keyboard (or will resume with `claude --resume` within 7 days).
 - A custom maintenance loop is wanted at session-start — wire it into
   `.claude/loop.md` (project) or `~/.claude/loop.md` (user).
+
+`/loop` is also exposed as `/proactive` (alias). Dynamic mode self-paces via
+the `ScheduleWakeup` tool (1 min–1 h); the pending wakeup surfaces in
+`session_crons` in the Stop-hook input
+(code.claude.com/docs/en/tools-reference#schedulewakeup).
 
 **Cadence selection** (matters for token cost — Anthropic prompt cache
 TTL is ~5 min):
@@ -201,6 +237,11 @@ its own.
 per session; UNAVAILABLE when `disableAllHooks` or `allowManagedHooksOnly` is
 set (the mechanism is a managed Stop hook). When unavailable, fall back to a
 bounded `/loop` body that re-runs the deterministic gate and reports.
+
+**Pairing with Auto mode (unattended runs).** For an unattended `/goal` that
+must run each turn without per-tool approval prompts, pair it with Auto mode —
+Auto mode removes per-tool prompts, `/goal` removes per-turn prompts; they
+compose (https://code.claude.com/docs/en/goal).
 
 See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 `/goal` slots alongside `/loop`, Monitor, and Routines in the orchestrator.

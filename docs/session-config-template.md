@@ -673,6 +673,19 @@ compact-nudge:
   # after a wave of any role.
   mode: warn               # warn | off
 
+# /goal continuation anchor at named seams (Lever 5 / #636)
+goal-integration:
+  enabled: false                          # opt-in advisory; default off — zero behaviour change when absent
+  seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}
+  # ADVISORY ONLY. Surfaces ONE suggested /goal command at the named seam(s);
+  # never auto-invokes /goal, never blocks. /goal = Adapter (ADR-0010): the
+  # evaluator reads the transcript and runs NO tools — it anchors CONTINUATION,
+  # never JUDGMENT. Deterministic exit-code gates (npm test/typecheck/lint) stay
+  # the completion authority. ONE goal per session — the two seams cannot both
+  # hold an active goal; the operator picks one. See `.claude/rules/loop-and-monitor.md`
+  # § LM-008, `skills/session-end/SKILL.md § 1.3a`, and
+  # `skills/wave-executor/wave-loop.md § /goal Continuation Anchor`.
+
 # Webhooks (URLs are required when used — no defaults)
 # webhooks:
 #   slack:

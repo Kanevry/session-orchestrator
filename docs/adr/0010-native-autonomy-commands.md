@@ -2,6 +2,7 @@
 
 > Status: ACCEPTED · session main-2026-06-10-deep-1 · issue #633
 > Source research: Wave-1 live-docs verification 2026-06-10 (Claude Code v2.1.170) — https://code.claude.com/docs/en/goal · https://code.claude.com/docs/en/commands · https://code.claude.com/docs/en/scheduled-tasks
+> Re-verified 2026-06-11 against v2.1.173 (session main-2026-06-11-session-2 W1-D1) — all four verdicts hold, zero stale claims; revisit-triggers (tool-calling /goal evaluators; /batch GitLab/kill-switch parity) NOT fired. New adjacencies logged as watch-items: Channels (event-push, v2.1.80+) and dynamic Workflows (`Workflow` tool, v2.1.154) — future ADR candidates.
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md). Wherever this ADR says `CLAUDE.md`, the alias rule applies.
 
 ## Context
@@ -51,4 +52,6 @@ A per-primitive verdict, in house vocabulary:
 - **#633 levers (shipped this session):** /loop user-level baseline + readiness banner (Hebel-1), the LM-001 `/goal` branch (sibling agent), and this ADR (Hebel keystone).
 - **File a future issue — /background detachment empirical test:** run one bounded autopilot session detached via /background; verify the 10 kill-switches + `autopilot.jsonl` telemetry survive detachment. Pass → C-5 wiring spec; fail → Stay, autopilot stays in-process.
 - **Watch-item — /batch GitLab/MR + kill-switch parity** (quarterly; **next check 2026-09-10**). Re-open the /batch Stay verdict if either lands.
+- **Watch-item — Channels (event-push, research preview, v2.1.80+):** the push-based sibling of Monitor (external system pushes events into the open session via an MCP channel plugin). Future ADR candidate — re-evaluate when it leaves research preview. Logged in LM-002a of [`.claude/rules/loop-and-monitor.md`](../../.claude/rules/loop-and-monitor.md).
+- **Watch-item — dynamic Workflows (`Workflow` tool, v2.1.154):** native multi-step workflow primitive adjacent to our wave-executor. Future ADR candidate — re-evaluate against the wave abstraction when its contract stabilises.
 - **Fix-forward note:** the frozen runtime enum in `kill-switches.mjs:18-32` is SSOT and lists **exactly 10** kill-switches (pre-iteration 6: max-sessions-reached, max-hours-exceeded, resource-overload, low-confidence-fallback, user-abort, token-budget-exceeded · post-iteration 1: stall-timeout · post-session 3: spiral, failed-wave, carryover-too-high). ADR-0002:33 and ADR-0003:15 correctly say 10. The stale "8" claims in `skills/autopilot/SKILL.md` and `commands/autopilot.md` were corrected by the W3-P2 consistency pass — this ADR is born correct.
