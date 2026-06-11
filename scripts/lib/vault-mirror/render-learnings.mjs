@@ -1,10 +1,10 @@
 /**
  * render-learnings.mjs — Learning markdown generators for vault-mirror (Issue #283 split).
  *
- * Exports: detectLearningSchema, generateLearningNote, generateLearningNoteV2
+ * Exports: detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2
  */
 
-import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, buildTag } from './utils.mjs';
+import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, isValidSlug, buildTag } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -16,6 +16,65 @@ const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
  */
 export function detectLearningSchema(entry) {
   return entry && typeof entry.text === 'string' ? 'v2' : 'v1';
+}
+
+const firstString = (...vals) => vals.find((v) => typeof v === 'string' && v.length > 0);
+
+const joinList = (v) =>
+  Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string') ? v.join(', ') : undefined;
+
+/**
+ * Map known producer alias fields onto the canonical v1 shape (#635).
+ *
+ * Newer producers (evolve consolidation, memory-propose, dialectic) emit
+ * field families the v1 validator rejects — summary/detail, description/rationale,
+ * title/body/how_to_apply, content, narrative, name — causing up to 44% of
+ * learnings to be skipped-invalid at mirror time. Rather than one generator per
+ * producer family, this pure function fills MISSING canonical fields from their
+ * aliases and leaves canonical v1/v2 entries byte-identical (pass-through).
+ *
+ * Returns a new object; never mutates the input. Entries that lack any insight
+ * source remain incomplete and still fail validation (intentional — content-free
+ * records should stay skipped-invalid).
+ */
+export function normalizeLearningEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  if (typeof entry.text === 'string') return entry; // v2 — canonical, untouched
+  const e = { ...entry };
+
+  if (!firstString(e.insight)) {
+    e.insight = firstString(e.detail, e.rationale, e.body, e.narrative, e.content, e.how_to_apply);
+  }
+  if (!firstString(e.subject)) {
+    e.subject = firstString(e.summary, e.title, e.name);
+  }
+  // `description` is ambiguous: insight-like next to name/title, subject-like
+  // next to rationale/detail. Assign it to whichever slot is still empty.
+  if (!firstString(e.insight)) e.insight = firstString(e.description);
+  else if (!firstString(e.subject)) e.subject = firstString(e.description);
+  if (!firstString(e.subject) && firstString(e.insight)) {
+    e.subject = truncateAtWord(e.insight, 80);
+  }
+
+  if (e.evidence === null || e.evidence === undefined || e.evidence === '') {
+    e.evidence = joinList(e.evidence_sessions) ?? joinList(e.files) ?? joinList(e.sessions) ?? '(none recorded)';
+  }
+  if (e.id === null || e.id === undefined) {
+    // subjectToSlug strips whitespace without hyphenating (designed for
+    // kebab-ish inputs) — pre-map whitespace to hyphens for prose subjects.
+    const derived = firstString(e.subject) ? subjectToSlug(e.subject.trim().replace(/\s+/g, '-')) : '';
+    if (isValidSlug(derived)) e.id = derived;
+  }
+  if (e.source_session === null || e.source_session === undefined) {
+    e.source_session =
+      firstString(e.session_id, Array.isArray(e.sessions) ? e.sessions[0] : undefined, e._provenance) ?? 'unknown';
+  }
+  if (e.created_at === null || e.created_at === undefined) {
+    e.created_at = firstString(e.first_seen, e.last_seen, e.updated_at);
+  }
+  if (e.type === null || e.type === undefined) e.type = 'general';
+
+  return e;
 }
 
 export function generateLearningNote(entry, slug) {

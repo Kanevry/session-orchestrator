@@ -1,7 +1,7 @@
 /**
  * render-sessions.mjs — Session markdown generators for vault-mirror (Issue #283 split).
  *
- * Exports: detectSessionSchema, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3
+ * Exports: detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3
  */
 
 import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
@@ -34,6 +34,39 @@ export function detectSessionSchema(entry) {
   if (!entry) return 'v1';
   if (typeof entry.waves === 'number') return 'v3';
   return entry.total_agents === undefined && entry.files_changed !== undefined ? 'v2' : 'v1';
+}
+
+/**
+ * Map known producer alias fields onto the canonical session shapes (#635).
+ *
+ * Several session-end variants emitted alias fields the validators reject:
+ * `ended_at` (for completed_at), `mode` (for session_type), and wave counts
+ * only as `total_waves`/`waves_completed` with no `waves` field at all. Such
+ * records fell through to v1 validation and were skipped-invalid. This pure
+ * function fills MISSING canonical fields from their aliases so the entry
+ * routes to the v3 (scalar-waves) renderer. Canonical v1/v2/v3 entries pass
+ * through untouched (`waves` is only filled when absent — an existing array
+ * or number is never modified).
+ *
+ * Returns a new object; never mutates the input.
+ */
+export function normalizeSessionEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const e = { ...entry };
+
+  if (e.completed_at === null || e.completed_at === undefined) {
+    if (e.ended_at !== null && e.ended_at !== undefined) e.completed_at = e.ended_at;
+  }
+  if (e.session_type === null || e.session_type === undefined) {
+    if (typeof e.mode === 'string' && e.mode.length > 0) e.session_type = e.mode;
+  }
+  if (e.waves === null || e.waves === undefined) {
+    if (typeof e.total_waves === 'number') e.waves = e.total_waves;
+    else if (typeof e.waves_completed === 'number') e.waves = e.waves_completed;
+    else e.waves = 0; // coordinator-direct record with no wave breakdown
+  }
+
+  return e;
 }
 
 export function generateSessionNote(entry, options = {}) {

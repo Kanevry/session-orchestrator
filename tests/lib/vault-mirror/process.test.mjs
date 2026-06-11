@@ -181,18 +181,35 @@ describe('processLearning', () => {
     created_at: '2026-04-13T10:00:00Z',
   };
 
-  it('throws when id is null', async () => {
+  it('derives id from the subject slug when id is null (#635 normalization)', async () => {
+    existsSyncSpy.mockReturnValue(false);
     const processLearning = await getProcessLearning();
-    await expect(
+    const { lines } = await captureStdout(() =>
       processLearning({ ...VALID_V1, id: null }, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' })
-    ).rejects.toThrow("missing required field 'id'");
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'explicit-contracts' });
   });
 
-  it('throws when id is undefined', async () => {
+  it('derives id from the subject slug when id is undefined (#635 normalization)', async () => {
+    existsSyncSpy.mockReturnValue(false);
     const processLearning = await getProcessLearning();
     const { id: _id, ...noId } = VALID_V1;
-    await expect(
+    const { lines } = await captureStdout(() =>
       processLearning(noId, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' })
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'explicit-contracts' });
+  });
+
+  it('still throws missing id when neither id nor any subject/insight source exists', async () => {
+    const processLearning = await getProcessLearning();
+    await expect(
+      processLearning(
+        { type: 'architectural', evidence: 'E', confidence: 0.9, created_at: '2026-04-13T10:00:00Z' },
+        1,
+        { vaultDir: '/vault', dryRun: false, kind: 'learning' }
+      )
     ).rejects.toThrow("missing required field 'id'");
   });
 
@@ -738,5 +755,116 @@ describe('quality gate', () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0].action).toBe('skipped-quality-low');
+  });
+});
+
+// ── #635 slug-length cap (ENAMETOOLONG guard) ────────────────────────────────
+
+describe('processLearning slug-length cap (#635)', () => {
+  let existsSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  it('caps a prose-subject slug at 240 chars so the filename stays under 255 bytes', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+
+    const longSubject = 'w '.repeat(160).trim() + ' tail'; // slugifies far past 240 chars
+    const entry = {
+      id: 'long-subject-entry',
+      type: 'process-pattern',
+      subject: longSubject,
+      insight: 'Some insight',
+      evidence: 'Some evidence',
+      confidence: 0.9,
+      source_session: 's-1',
+      created_at: '2026-06-01T00:00:00Z',
+    };
+
+    const lines = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      if (typeof chunk === 'string') {
+        for (const line of chunk.split('\n').filter(Boolean)) {
+          try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+        }
+      }
+      return true;
+    });
+    await processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' });
+    stdoutSpy.mockRestore();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+    expect(lines[0].id.length).toBeLessThanOrEqual(240);
+    const writtenPath = writeFileSyncSpy.mock.calls[0][0];
+    const filename = writtenPath.split('/').pop();
+    expect(filename.length).toBeLessThanOrEqual(255);
+    expect(existsSyncSpy).toHaveBeenCalled();
+  });
+});
+
+// ── #635 session slug-length cap (symmetric to learnings) ───────────────────
+
+describe('processSession slug-length cap (#635)', () => {
+  beforeEach(() => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  it('caps a pathologically long session_id slug at 240 chars', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const { processSession } = await import('@lib/vault-mirror/process.mjs');
+
+    const longId = 'main-' + 'a1-'.repeat(120) + 'end'; // valid kebab slug far past 240 chars
+    const entry = {
+      session_id: longId,
+      session_type: 'deep',
+      started_at: '2026-06-11T09:00:00Z',
+      completed_at: '2026-06-11T10:00:00Z',
+      waves: 1,
+      agents_dispatched: 2,
+      effectiveness: { completion_rate: 1, carryover: 0, completed_issues: 1 },
+      notes: 'n'.repeat(500), // keep rendered narrative above the 400-char quality floor
+    };
+
+    const lines = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      if (typeof chunk === 'string') {
+        for (const line of chunk.split('\n').filter(Boolean)) {
+          try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+        }
+      }
+      return true;
+    });
+    await processSession(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session' });
+    stdoutSpy.mockRestore();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+    expect(lines[0].id.length).toBeLessThanOrEqual(240);
   });
 });

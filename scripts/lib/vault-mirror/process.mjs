@@ -10,8 +10,8 @@ import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
-import { detectLearningSchema, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
-import { detectSessionSchema, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
+import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
+import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -94,7 +94,7 @@ export function emitAction({ action, path, kind, id, vaultDir, meta }) {
 
 // ── Core processing ───────────────────────────────────────────────────────────
 
-export async function processLearning(entry, _lineNum, ctx) {
+export async function processLearning(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
     dryRun,
@@ -103,6 +103,10 @@ export async function processLearning(entry, _lineNum, ctx) {
     qualityMinConfidence = 0.5,
     qualityMinNarrativeChars: _qualityMinNarrativeChars = 400, // unused for learnings; kept for ctx symmetry
   } = ctx;
+  // #635: map producer alias fields (summary/detail, description/rationale,
+  // title/body, name, narrative, content) onto the canonical v1 shape BEFORE
+  // schema detection and slug/id derivation. Canonical entries pass through.
+  const entry = normalizeLearningEntry(rawEntry);
   const schema = detectLearningSchema(entry);
   const entryId = entry.id;
 
@@ -122,6 +126,14 @@ export async function processLearning(entry, _lineNum, ctx) {
   }
   if (!isValidSlug(slug)) {
     slug = `learning-${uuidPrefix8(entryId)}`;
+  }
+  // #635: cap the slug so `<slug>.md` (plus a possible `-<uuid8>` disambig
+  // suffix) stays under the 255-byte filename limit. Normalized prose subjects
+  // can be arbitrarily long and previously aborted the whole mirror run with
+  // ENAMETOOLONG. 240 + 9 (disambig) + 3 (.md) = 252 — and every pre-existing
+  // vault note (max observed slug: 208 chars) keeps its identity untouched.
+  if (slug.length > 240) {
+    slug = slug.slice(0, 240).replace(/-+$/, '');
   }
 
   // Generator + date source differ by schema
@@ -216,7 +228,7 @@ export async function processLearning(entry, _lineNum, ctx) {
   emitAction({ action: 'created', path: targetPath, kind, id: slug, vaultDir });
 }
 
-export async function processSession(entry, _lineNum, ctx) {
+export async function processSession(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
     dryRun,
@@ -225,6 +237,10 @@ export async function processSession(entry, _lineNum, ctx) {
     qualityMinNarrativeChars = 400,
     qualityMinConfidence: _qualityMinConfidence = 0.5, // unused for sessions; kept for ctx symmetry
   } = ctx;
+  // #635: map producer alias fields (ended_at, mode, total_waves/waves_completed
+  // without a `waves` field) onto the canonical shapes BEFORE schema detection.
+  // Canonical v1/v2/v3 entries pass through untouched.
+  const entry = normalizeSessionEntry(rawEntry);
   const { session_id: rawSessionId } = entry;
   const schema = detectSessionSchema(entry);
   const generator =
@@ -243,6 +259,12 @@ export async function processSession(entry, _lineNum, ctx) {
     session_id = isValidSlug(sanitised) ? sanitised : `session-${uuidPrefix8(rawSessionId)}`;
   } else {
     session_id = `session-${uuidPrefix8(randomUUID())}`;
+  }
+  // #635: symmetric slug-length cap (see processLearning) — a pathologically
+  // long but otherwise valid session_id slug would abort the mirror run with
+  // ENAMETOOLONG when the filename exceeds the 255-byte limit.
+  if (session_id.length > 240) {
+    session_id = session_id.slice(0, 240).replace(/-+$/, '');
   }
 
   // Derive repo once per session so V1+V2 frontmatter both carry it (issue #343).

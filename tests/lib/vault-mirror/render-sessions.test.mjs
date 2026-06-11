@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectSessionSchema,
+  normalizeSessionEntry,
   generateSessionNote,
   generateSessionNoteV2,
   generateSessionNoteV3,
@@ -360,5 +361,116 @@ describe('generateSessionNoteV3', () => {
     const out = generateSessionNoteV3(makeV3Entry());
     const narrative = out.replace(/^---[\s\S]*?---/m, '').trim();
     expect(narrative.length).toBeGreaterThan(400);
+  });
+});
+
+// ── normalizeSessionEntry (#635) ──────────────────────────────────────────────
+
+describe('normalizeSessionEntry (#635 producer-alias normalization)', () => {
+  it('maps ended_at to completed_at when completed_at is missing', () => {
+    const e = normalizeSessionEntry({ session_id: 's', ended_at: '2026-05-01T10:00:00Z' });
+    expect(e.completed_at).toBe('2026-05-01T10:00:00Z');
+  });
+
+  it('does not overwrite an existing completed_at', () => {
+    const e = normalizeSessionEntry({ session_id: 's', completed_at: 'KEEP', ended_at: 'ALIAS' });
+    expect(e.completed_at).toBe('KEEP');
+  });
+
+  it('maps mode to session_type when session_type is missing', () => {
+    const e = normalizeSessionEntry({ session_id: 's', mode: 'housekeeping' });
+    expect(e.session_type).toBe('housekeeping');
+  });
+
+  it('does not overwrite an existing session_type', () => {
+    const e = normalizeSessionEntry({ session_id: 's', session_type: 'deep', mode: 'housekeeping' });
+    expect(e.session_type).toBe('deep');
+  });
+
+  it('fills scalar waves from total_waves so the entry routes to v3', () => {
+    const e = normalizeSessionEntry({ session_id: 's', total_waves: 5 });
+    expect(e.waves).toBe(5);
+    expect(detectSessionSchema(e)).toBe('v3');
+  });
+
+  it('falls back to waves_completed when total_waves is absent', () => {
+    const e = normalizeSessionEntry({ session_id: 's', waves_completed: 3 });
+    expect(e.waves).toBe(3);
+  });
+
+  it('defaults waves to 0 when no wave info exists at all (coordinator-direct)', () => {
+    const e = normalizeSessionEntry({ session_id: 's' });
+    expect(e.waves).toBe(0);
+    expect(detectSessionSchema(e)).toBe('v3');
+  });
+
+  it('never touches an existing waves array (v1/v2 pass-through)', () => {
+    const waves = [{ wave: 1, role: 'discovery', agent_count: 2, files_changed: 0, quality: 'pass' }];
+    const e = normalizeSessionEntry({ session_id: 's', total_waves: 1, waves });
+    expect(e.waves).toBe(waves);
+  });
+
+  it('never touches an existing scalar waves (v3 pass-through)', () => {
+    const e = normalizeSessionEntry({ session_id: 's', waves: 4, total_waves: 9 });
+    expect(e.waves).toBe(4);
+  });
+
+  it('passes a fully canonical v3 entry through unchanged', () => {
+    const v3 = {
+      session_id: 'main-2026-06-10-deep-1',
+      session_type: 'deep',
+      started_at: '2026-06-10T12:55:00Z',
+      completed_at: '2026-06-10T14:46:03Z',
+      waves: 5,
+      effectiveness: { completion_rate: 1, carryover: 0 },
+    };
+    expect(normalizeSessionEntry(v3)).toEqual(v3);
+  });
+
+  it('does not mutate the input entry', () => {
+    const raw = { session_id: 's', ended_at: 'E', mode: 'deep', total_waves: 2 };
+    const frozen = JSON.parse(JSON.stringify(raw));
+    normalizeSessionEntry(raw);
+    expect(raw).toEqual(frozen);
+  });
+
+  it('returns null/undefined input unchanged', () => {
+    expect(normalizeSessionEntry(null)).toBe(null);
+    expect(normalizeSessionEntry(undefined)).toBe(undefined);
+  });
+
+  it('renders the ended_at/mode/total_waves producer shape via v3 after normalization', () => {
+    const raw = {
+      session_id: 'main-2026-05-12-session-2',
+      mode: 'housekeeping',
+      started_at: '2026-05-12T09:00:00Z',
+      ended_at: '2026-05-12T10:30:00Z',
+      total_waves: 1,
+      branch: 'main',
+      effectiveness: { completion_rate: 1, carryover: 0, completed_issues: 2 },
+      quality_gates: { tests: 'pass' },
+    };
+    const e = normalizeSessionEntry(raw);
+    expect(detectSessionSchema(e)).toBe('v3');
+    expect(() => generateSessionNoteV3(e, { repo: 'org/repo' })).not.toThrow();
+  });
+
+  it('renders the waves_completed/files_changed_total producer shape after normalization', () => {
+    const raw = {
+      session_id: 'main-2026-05-08-deep-1',
+      session_type: 'deep',
+      started_at: '2026-05-08T09:00:00Z',
+      completed_at: '2026-05-08T12:00:00Z',
+      total_waves: 5,
+      waves_completed: 5,
+      files_changed_total: 12,
+      agent_summary: { complete: 10, partial: 0, failed: 0 },
+      effectiveness: { completion_rate: 1, carryover: 0 },
+      issues_planned: [1, 2],
+      recommendations: [],
+    };
+    const e = normalizeSessionEntry(raw);
+    expect(detectSessionSchema(e)).toBe('v3');
+    expect(() => generateSessionNoteV3(e, { repo: 'org/repo' })).not.toThrow();
   });
 });

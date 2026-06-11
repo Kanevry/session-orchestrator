@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectLearningSchema,
+  normalizeLearningEntry,
   generateLearningNote,
   generateLearningNoteV2,
 } from '@lib/vault-mirror/render-learnings.mjs';
@@ -203,5 +204,187 @@ describe('generateLearningNoteV2', () => {
   it('emits the generator marker in frontmatter', () => {
     const out = generateLearningNoteV2(makeV2Entry(), 'my-slug');
     expect(out).toContain('_generator: session-orchestrator-vault-mirror@1');
+  });
+});
+
+// ── normalizeLearningEntry (#635) ─────────────────────────────────────────────
+
+describe('normalizeLearningEntry (#635 producer-alias normalization)', () => {
+  it('normalizes the summary/detail/sessions producer shape to renderable v1', () => {
+    const raw = {
+      id: 'count-drift-recurrence',
+      type: 'recurring-issue',
+      summary: 'Pinned artifact counts drift on catalog growth',
+      detail: 'Use floor/ceiling range assertions for dynamically-grown artifact sets',
+      sessions: ['main-2026-05-22T19-57-19-deep'],
+      confidence: 0.9,
+      created_at: '2026-05-22T20:00:00Z',
+      updated_at: '2026-05-23T08:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.subject).toBe('Pinned artifact counts drift on catalog growth');
+    expect(e.insight).toBe('Use floor/ceiling range assertions for dynamically-grown artifact sets');
+    expect(e.evidence).toBe('main-2026-05-22T19-57-19-deep');
+    expect(e.source_session).toBe('main-2026-05-22T19-57-19-deep');
+    expect(() => generateLearningNote(e, 'test-slug')).not.toThrow();
+  });
+
+  it('normalizes the description/rationale/files/session_id producer shape', () => {
+    const raw = {
+      id: 'hook-batching',
+      type: 'proven-pattern',
+      description: 'Hook batching pattern',
+      rationale: 'Batch PostToolUse signals to avoid per-call overhead',
+      files: ['hooks/post-edit-validate.mjs', 'hooks/post-tool-batch-wave-signal.mjs'],
+      session_id: 'main-2026-05-17-deep-1',
+      confidence: 0.8,
+      created_at: '2026-05-17T10:00:00Z',
+      next_review: '2026-06-17',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.insight).toBe('Batch PostToolUse signals to avoid per-call overhead');
+    expect(e.subject).toBe('Hook batching pattern');
+    expect(e.evidence).toBe('hooks/post-edit-validate.mjs, hooks/post-tool-batch-wave-signal.mjs');
+    expect(e.source_session).toBe('main-2026-05-17-deep-1');
+    expect(() => generateLearningNote(e, 'test-slug')).not.toThrow();
+  });
+
+  it('derives id from subject slug and source_session from _provenance when id is missing', () => {
+    const raw = {
+      type: 'anti-pattern',
+      subject: 'Dead fallback removal when primary parser matures',
+      insight: 'Remove the fallback once the primary path is proven',
+      evidence: 'grep transcript',
+      _provenance: 'agent-proposed@W3-H-deep-4',
+      confidence: 0.7,
+      created_at: '2026-05-23T10:00:00Z',
+      expires_at: '2026-06-23T10:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.id).toBe('dead-fallback-removal-when-primary-parser-matures');
+    expect(e.source_session).toBe('agent-proposed@W3-H-deep-4');
+    expect(() => generateLearningNote(e, 'test-slug')).not.toThrow();
+  });
+
+  it('normalizes body/evidence_sessions shape with "unknown" source fallback', () => {
+    const raw = {
+      id: 'some-id',
+      type: 'process-pattern',
+      subject: 'A subject',
+      body: 'The insight lives in body',
+      evidence_sessions: ['main-2026-05-22-082624-housekeeping'],
+      occurrences: 3,
+      status: 'active',
+      confidence: 0.9,
+      created_at: '2026-05-22T08:00:00Z',
+      last_seen: '2026-05-30T08:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.insight).toBe('The insight lives in body');
+    expect(e.evidence).toBe('main-2026-05-22-082624-housekeeping');
+    expect(e.source_session).toBe('unknown');
+    expect(() => generateLearningNote(e, 'test-slug')).not.toThrow();
+  });
+
+  it('maps narrative to insight', () => {
+    const raw = {
+      id: 'x', type: 'workflow', subject: 'S', narrative: 'Narrative insight',
+      evidence: 'E', confidence: 0.9, created_at: '2026-05-01T00:00:00Z',
+    };
+    expect(normalizeLearningEntry(raw).insight).toBe('Narrative insight');
+  });
+
+  it('maps name to subject and description to insight (name/description family)', () => {
+    const raw = {
+      id: 'x', type: 'general', name: 'Short name', description: 'Longer description text',
+      confidence: 0.9, created_at: '2026-05-01T00:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.subject).toBe('Short name');
+    expect(e.insight).toBe('Longer description text');
+  });
+
+  it('maps title to subject and body to insight (body/title/how_to_apply family)', () => {
+    const raw = {
+      id: 'x', type: 'general', title: 'A title', body: 'Body text', how_to_apply: 'Apply it so',
+      confidence: 0.9, created_at: '2026-05-01T00:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.subject).toBe('A title');
+    expect(e.insight).toBe('Body text');
+  });
+
+  it('derives subject by truncating insight when only content is present (content/sessions family)', () => {
+    const raw = {
+      id: 'x', type: 'general', content: 'Content-only insight text',
+      sessions: ['s-1', 's-2'], confidence: 0.9, created_at: '2026-05-01T00:00:00Z',
+    };
+    const e = normalizeLearningEntry(raw);
+    expect(e.insight).toBe('Content-only insight text');
+    expect(e.subject).toBe('Content-only insight text');
+    expect(e.evidence).toBe('s-1, s-2');
+    expect(e.source_session).toBe('s-1');
+  });
+
+  it('falls back created_at from first_seen, then last_seen, then updated_at', () => {
+    const base = { id: 'x', type: 't', subject: 'S', insight: 'I', evidence: 'E', confidence: 0.9 };
+    expect(normalizeLearningEntry({ ...base, first_seen: 'A', last_seen: 'B', updated_at: 'C' }).created_at).toBe('A');
+    expect(normalizeLearningEntry({ ...base, last_seen: 'B', updated_at: 'C' }).created_at).toBe('B');
+    expect(normalizeLearningEntry({ ...base, updated_at: 'C' }).created_at).toBe('C');
+  });
+
+  it('passes a canonical v1 entry through unchanged', () => {
+    const v1 = {
+      id: 'a1b2c3d4-0001-4000-8000-000000000001',
+      type: 'architectural',
+      subject: 'cross-repo-deep-session',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Three modules broke',
+      confidence: 0.9,
+      source_session: 'session-2026-04-13',
+      created_at: '2026-04-13T10:00:00Z',
+    };
+    expect(normalizeLearningEntry(v1)).toEqual(v1);
+  });
+
+  it('returns v2 entries (text field) untouched by reference', () => {
+    const v2 = { id: 's69-x', type: 'pattern', text: 'v2 insight', scope: 'repo', confidence: 0.8, first_seen: '2026-05-01' };
+    expect(normalizeLearningEntry(v2)).toBe(v2);
+  });
+
+  it('does not mutate the input entry', () => {
+    const raw = { id: 'x', type: 't', summary: 'S', detail: 'D', confidence: 0.9, created_at: '2026-05-01T00:00:00Z' };
+    const frozen = JSON.parse(JSON.stringify(raw));
+    normalizeLearningEntry(raw);
+    expect(raw).toEqual(frozen);
+  });
+
+  it('leaves entries with no insight source incomplete (still rejected by the generator)', () => {
+    const raw = { id: 'x', type: 't', confidence: 0.9, created_at: '2026-05-01T00:00:00Z' };
+    const e = normalizeLearningEntry(raw);
+    expect(() => generateLearningNote(e, 'test-slug')).toThrow(/missing required field/);
+  });
+
+  it('returns null/undefined input unchanged', () => {
+    expect(normalizeLearningEntry(null)).toBe(null);
+    expect(normalizeLearningEntry(undefined)).toBe(undefined);
+  });
+});
+
+describe('normalizeLearningEntry evidence empty-string fold (#635 review)', () => {
+  it('treats evidence:"" as missing and applies the alias fallback', () => {
+    const e = normalizeLearningEntry({
+      id: 'x', type: 't', subject: 'S', insight: 'I', evidence: '',
+      sessions: ['s-1'], confidence: 0.9, created_at: '2026-06-01T00:00:00Z',
+    });
+    expect(e.evidence).toBe('s-1');
+  });
+
+  it('falls back to "(none recorded)" when evidence is "" and no alias exists', () => {
+    const e = normalizeLearningEntry({
+      id: 'x', type: 't', subject: 'S', insight: 'I', evidence: '',
+      confidence: 0.9, created_at: '2026-06-01T00:00:00Z',
+    });
+    expect(e.evidence).toBe('(none recorded)');
   });
 });
