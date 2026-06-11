@@ -9,54 +9,7 @@
 
 Turn ad-hoc Claude Code sessions into a repeatable loop with verification gates. Session Orchestrator adds a structured `research → plan → execute in waves → close` cycle on top of your existing agent — across Claude Code, Codex CLI, and Cursor IDE. Inter-wave reviews catch regressions before they ship; carryover issues mean nothing slips through.
 
-## What you get
-
-- **40 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, harness/repo audits, tmux visualization, and more
-- **20 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
-- **13 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, …)
-- **14 hook event handlers** enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
-- **7360 vitest tests** passing on every commit, validate-plugin 94/94, typecheck 230 files OK, lint 0
-
-## Lifecycle at a glance
-
-```mermaid
-flowchart TD
-    A["/plan [feature|retro]"] -->|optional, defines WHAT| B["/session [type]"]
-    B -->|research + Q&A| C["/go"]
-    C -->|5 waves with quality gates| D["/close"]
-    D -->|verifies + commits| E["/evolve [analyze]"]
-    E -->|extracts cross-session learnings| B
-    style C fill:#1f6feb,color:#fff
-    style D fill:#238636,color:#fff
-```
-
-`/plan` is optional. You can create issues manually and jump straight to `/session`. `/evolve` runs deliberately after 5+ sessions, not automatically.
-
-## Quick Start
-
-Add a `## Session Config` section to your project's `CLAUDE.md` (or `AGENTS.md` on Codex CLI), then run three commands:
-
-```text
-/session feature
-/go
-/close
-```
-
-The smallest valid Session Config is seven fields:
-
-```yaml
-## Session Config
-
-test-command: npm test
-typecheck-command: npm run typecheck
-lint-command: npm run lint
-agents-per-wave: 6
-waves: 5
-persistence: true
-enforcement: warn
-```
-
-Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-config-template.md) for the full template and [`docs/session-config-reference.md`](docs/session-config-reference.md) for the canonical type and default reference.
+Community plugin (MIT, not affiliated with Anthropic) for solo devs and small teams using Claude Code, Codex CLI or Cursor.
 
 ## Install
 
@@ -100,6 +53,71 @@ node scripts/cursor-install.mjs /path/to/your/project
 ```
 
 Setup guides: [Codex](docs/codex-setup.md) and [Cursor IDE](docs/cursor-setup.md). Per-IDE setup notes for `CLAUDE.md` vs `AGENTS.md`: [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md).
+
+## Quick Start
+
+Add a `## Session Config` section to your project's `CLAUDE.md` (or `AGENTS.md` on Codex CLI), then run three commands:
+
+```text
+/session feature
+/go
+/close
+```
+
+The smallest valid Session Config is seven fields:
+
+```yaml
+## Session Config
+
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
+agents-per-wave: 6
+waves: 5
+persistence: true
+enforcement: warn
+```
+
+Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-config-template.md) for the full template and [`docs/session-config-reference.md`](docs/session-config-reference.md) for the canonical type and default reference.
+
+## Support & expectations
+
+Session Orchestrator is MIT-licensed and provided **as-is, with no SLA**. It is a community project, **not an official Anthropic product**.
+
+- Questions, ideas, show-and-tell → [GitHub Discussions](https://github.com/Kanevry/session-orchestrator/discussions).
+- Bugs and feature requests → [Issues](https://github.com/Kanevry/session-orchestrator/issues).
+
+There is no commercial support contract or guaranteed response time; maintenance happens on a best-effort basis.
+
+## What this is NOT
+
+- **Not an official Anthropic product.** Not affiliated with or endorsed by Anthropic.
+- **Not a replacement for Claude Code** (or Codex CLI / Cursor). It is a workflow layer that runs *on top of* your existing agent — you still need one of those tools installed.
+- **Not a hosted service.** Everything runs locally as plain Markdown plus a thin Node runtime; there is no server, account, or cloud component.
+- **No guarantee that telemetry numbers transfer to your repo.** Reported test counts and metrics describe this repository under its own conditions — see [`docs/telemetry/telemetry-claims.md`](docs/telemetry/telemetry-claims.md). Your results will vary by stack, project size, and configuration.
+
+## What you get
+
+- **40 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, harness/repo audits, tmux visualization, and more
+- **20 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
+- **13 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, …)
+- **10 hook event types** (handlers under `hooks/`) enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
+- **7360 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 128/128, typecheck OK, lint 0
+
+## Lifecycle at a glance
+
+```mermaid
+flowchart TD
+    A["/plan [feature|retro]"] -->|optional, defines WHAT| B["/session [type]"]
+    B -->|research + Q&A| C["/go"]
+    C -->|5 waves with quality gates| D["/close"]
+    D -->|verifies + commits| E["/evolve [analyze]"]
+    E -->|extracts cross-session learnings| B
+    style C fill:#1f6feb,color:#fff
+    style D fill:#238636,color:#fff
+```
+
+`/plan` is optional. You can create issues manually and jump straight to `/session`. `/evolve` runs deliberately after 5+ sessions, not automatically.
 
 ## How it works
 
@@ -177,26 +195,26 @@ Full table and follow-ups in `CLAUDE.md` (or `AGENTS.md` on Codex CLI) and CHANG
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>38 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>18 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>40 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>20 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>13 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
     AG -.-> W3[security-reviewer]
     AG -.-> W4[session-reviewer]
-    HOOK[Hooks<br/>11 event handlers] -.->|enforce scope + commands| COORD
+    HOOK[Hooks<br/>10 event types] -.->|enforce scope + commands| COORD
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
 ## Components
 
-**Skills (38 user-facing).** Lifecycle: `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`. Authoring: `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`. Planning & discovery: `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`. Architecture: `architecture`, `domain-model`, `ubiquitous-language`. Cross-session: `evolve`, `convergence-monitoring`, `memory-cleanup`. Vault & docs: `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`. Ecosystem: `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`. Testing: `test-runner`, `playwright-driver`, `peekaboo-driver`. Content review: `persona-panel`. Visualization: `tmux-layout` (opt-in, operator side-channel — ADR-0007).
+**Skills (40 user-facing).** Lifecycle: `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`. Authoring: `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`. Planning & discovery: `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`. Architecture: `architecture`, `domain-model`, `ubiquitous-language`. Cross-session: `evolve`, `convergence-monitoring`, `memory-cleanup`, `sunset-review`. Vault & docs: `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`. Ecosystem: `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`. Testing: `test-runner`, `playwright-driver`, `peekaboo-driver`. Content review: `persona-panel`. Visualization: `tmux-layout` (opt-in, operator side-channel — ADR-0007).
 
-**Commands (17).** `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`.
+**Commands (20).** `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`.
 
-**Agents (11).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`.
+**Agents (13 typed sub-agents).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`.
 
-**Hook event matchers / handlers (12 / 12).** `SessionStart` (banner + init), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first), `PostToolUse` (edit validation), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
+**Hook event types (10).** `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
 
 **Output Styles.** 3 (`session-report`, `wave-summary`, `finding-report`) for consistent reporting.
 
@@ -204,7 +222,7 @@ flowchart LR
 
 **Codex.** `.codex-plugin/plugin.json` (manifest), compatibility config, 3 agent role definitions, marketplace `composerIcon`.
 
-**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 6600+ tests.
+**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 7360+ tests.
 
 ### `/harness-audit` — Anthropic large-codebase rubric
 
@@ -235,7 +253,7 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 |---|---|---|
 | Execution model | 5 typed waves (Discovery → Impl-Core → Impl-Polish → Quality → Finalization) with inter-wave quality gates and confidence-scored session-reviewer | 4-phase sequential model with parallel subagents |
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE (3) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
-| VCS integration | GitLab-first with GitHub mirror (auto-detected); 14 hook handlers + 20 commands wire to both | Runtime-agnostic; VCS work delegated to user |
+| VCS integration | GitLab-first with GitHub mirror (auto-detected); 10 hook event types + 20 commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries in `.orchestrator/metrics/learnings.jsonl`; surfaced at session-start; opt-in `/evolve` review | Session archival to `docs/maestro/` without explicit learning extraction |
 | Specialist agents | 13 typed agents (code-implementer, security-reviewer, test-writer, qa-strategist, dialectic-deriver, memory-proposal-collector, etc.) | 39 specialist agents across design/impl/review/debugging/security/compliance |
 
@@ -345,6 +363,7 @@ For contributor-facing architecture, hook authoring, and the `zx`-vs-stdlib heur
 - [Plugin Architecture (v3)](docs/plugin-architecture-v3.md): contributor guide, layering, hook anatomy, lib catalog, testing
 - [CONTRIBUTING.md](CONTRIBUTING.md): plugin architecture, skill anatomy, development setup
 - [CHANGELOG.md](CHANGELOG.md): version history
+- [Telemetry claims](docs/telemetry/telemetry-claims.md): how the reported test counts and metrics are measured, and why they may not transfer to your repo
 - [Example Configs](docs/examples/): Session Config examples for Next.js, Express, Swift
 
 ## Community
