@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p5-solo
+name: buyer-p5-solo
 schema_version: 1
 version: "1"
 role: "Solo-Gründer, 1-Person-SaaS/Beratung (1–10 FTE, bootstrapped) — bewertet Tools aus frugal-pragmatischer Gründerperspektive"

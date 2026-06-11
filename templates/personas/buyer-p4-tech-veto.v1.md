@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p4-tech-veto
+name: buyer-p4-tech-veto
 schema_version: 1
 version: "1"
 role: "Engineering Manager, B2B-SaaS (~120 Entwickler) — bewertet Tool-Adoptionen mit Veto-Recht aus Dev-Ops-Perspektive"

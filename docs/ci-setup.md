@@ -1,5 +1,7 @@
 # CI Setup — session-orchestrator
 
+> **Maintainer-internal.** This document describes the maintainer's private CI mirror setup. It is not required for using the plugin.
+
 ## schema-drift-check job
 
 The `schema-drift-check` job compares the vendored `vault-frontmatter` schema

@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p3-build
+name: buyer-p3-build
 schema_version: 1
 version: "1"
 role: "Procurement Manager im Tier-2-Mittelstand — bewertet B2B-Software-Anbieter aus Beschaffungsperspektive (TCO, Vendor-Lock-In, Exit-Klauseln)"

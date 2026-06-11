@@ -123,13 +123,13 @@ Sidecar: .orchestrator/persona-panel/2026-05-20T14-30-00Z-a1b2c3d4.json
 
 ---
 
-### Example 2 — Buyer-Panel Hard-Gate (products/gotzendorfer-v2)
+### Example 2 — Buyer-Panel Hard-Gate (products/example-app)
 
 **Scenario:** A landing page component must pass review from all 6 buyer personas before the
 copy is considered launch-ready. One `fail` blocks the whole gate.
 
 **Catalog files:** `.claude/personas/` contains
-`gotzendorfer-buyer-p1-cto.md` through `gotzendorfer-buyer-p6-*.md`.
+`buyer-p1-cto.md` through `buyer-p6-*.md`.
 
 ```bash
 /persona-panel src/landing-page.tsx --mode hard-gate --threshold all
@@ -145,7 +145,7 @@ Because `--threshold all` is the default for `hard-gate`, this is equivalent to:
 
 ```
 Consolidation (hard-gate-threshold): 5 pass / 1 fail / 0 warn — Final: FAIL
-Dissenting: gotzendorfer-buyer-p3-kanzlei
+Dissenting: buyer-p3-kanzlei
 
 ## Persona Panel Report
 
@@ -155,12 +155,12 @@ Final verdict: FAIL
 
 | Persona                       | Tier          | Verdict | Rationale (excerpt)                    |
 |-------------------------------|---------------|---------|----------------------------------------|
-| gotzendorfer-buyer-p1-cto     | buyer-persona | pass    | Value proposition clear for CTO ...   |
-| gotzendorfer-buyer-p2-kanzlei | buyer-persona | pass    | Compliance language acceptable ...    |
-| gotzendorfer-buyer-p3-kanzlei | buyer-persona | fail    | DSGVO section too vague for ...       |
+| buyer-p1-cto     | buyer-persona | pass    | Value proposition clear for CTO ...   |
+| buyer-p2-kanzlei | buyer-persona | pass    | Compliance language acceptable ...    |
+| buyer-p3-kanzlei | buyer-persona | fail    | DSGVO section too vague for ...       |
 | ...                           | ...           | pass    | ...                                   |
 
-Dissenting: gotzendorfer-buyer-p3-kanzlei
+Dissenting: buyer-p3-kanzlei
 Sidecar: .orchestrator/persona-panel/2026-05-20T16-00-00Z-b2c3d4e5.json
 ```
 
@@ -221,8 +221,8 @@ and recommendations from the compliance persona so the issue can be addressed sp
   klima-ai-expert.md
   accounting-tax-advisor.md
   accounting-compliance.md
-  gotzendorfer-buyer-p1-cto.md
-  gotzendorfer-buyer-p2-kanzlei.md
+  buyer-p1-cto.md
+  buyer-p2-kanzlei.md
 ```
 
 Each file is a Markdown document with YAML frontmatter. All six frontmatter fields are required.
@@ -426,8 +426,8 @@ or commit them if you want an auditable history.
 - `skills/persona-panel/persona-format.md` — persona file format specification: frontmatter
   fields, body sections, verdict contract, security rationale for criteria delimiters
 - `templates/personas/*.v1.md` — 6 catalog templates: `klima-physicist`, `klima-ai-expert`,
-  `accounting-tax-advisor`, `accounting-compliance`, `gotzendorfer-buyer-p1-cto`,
-  `gotzendorfer-buyer-p2-kanzlei`
+  `accounting-tax-advisor`, `accounting-compliance`, `buyer-p1-cto`,
+  `buyer-p2-kanzlei`
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema (Draft 2020-12)
 - Issue #457 (foundation), #458 (wave-hook integration), #459 (trend tracking), #460 (catalog
   templates)

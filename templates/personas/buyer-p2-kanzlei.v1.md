@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p2-kanzlei
+name: buyer-p2-kanzlei
 schema_version: 1
 version: "1"
 role: "Kanzleipartnerin, AT-Steuerkanzlei (~75 FTE) — bewertet AI-Buchhaltungstool aus Kanzlei-Perspektive"

@@ -111,7 +111,7 @@ these primitives:
   `loadOwnerConfig()` from the session-start hook, then `merge()` with any
   per-session overrides, then resolves `{{tone.style}}` /
   `{{efficiency.output-level}}` / `{{owner.language}}` template slots.
-- **[#177 D4](../../../-/issues/177) — projects-baseline propagation**: stamps a
+- **#177 D4 — projects-baseline propagation**: stamps a
   reference to the canonical path into every consumer repo's CLAUDE.md
   frontmatter (path reference only — never the content).
 - **[#168 C4](../../../-/issues/168) — hardware-sharing consent prompt**: writes

@@ -37,10 +37,10 @@ const REPO_ROOT = join(HERE, '..', '..', '..');
 const PERSONAS_DIR = join(REPO_ROOT, 'templates', 'personas');
 
 const NEW_PERSONAS = [
-  'gotzendorfer-buyer-p3-build',
-  'gotzendorfer-buyer-p4-tech-veto',
-  'gotzendorfer-buyer-p5-solo',
-  'gotzendorfer-buyer-p6-ld',
+  'buyer-p3-build',
+  'buyer-p4-tech-veto',
+  'buyer-p5-solo',
+  'buyer-p6-ld',
 ];
 
 // ---------------------------------------------------------------------------
@@ -156,8 +156,8 @@ describe('README cross-link', () => {
   const readmePath = join(PERSONAS_DIR, 'README.md');
   const readme = readFileSync(readmePath, 'utf8');
 
-  it('README.md references the gotzendorfer-buyer-p1-cto through p6-ld range covering new personas', () => {
-    expect(readme).toContain('gotzendorfer-buyer-p1-cto.v1.md');
-    expect(readme).toContain('gotzendorfer-buyer-p6-ld.v1.md');
+  it('README.md references the buyer-p1-cto through p6-ld range covering new personas', () => {
+    expect(readme).toContain('buyer-p1-cto.v1.md');
+    expect(readme).toContain('buyer-p6-ld.v1.md');
   });
 });

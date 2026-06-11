@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p1-cto
+name: buyer-p1-cto
 schema_version: 1
 version: "1"
 role: "CTO, Mittelstand-Maschinenbau (~180 FTE) — bewertet B2B-AI-Produkt aus technischer Einkäuferperspektive"

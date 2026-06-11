@@ -1,5 +1,5 @@
 ---
-name: gotzendorfer-buyer-p6-ld
+name: buyer-p6-ld
 schema_version: 1
 version: "1"
 role: "Learning & Development Managerin, Konzern (~1500 MA) — bewertet Lernplattformen aus L&D-Perspektive (ROI, LMS-Integration, Completion-Rates)"

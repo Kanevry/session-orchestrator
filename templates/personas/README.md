@@ -45,7 +45,7 @@ Subject-matter experts (SMEs) reviewing outputs for technical correctness — ac
 
 Synthetic archetype of a target customer reviewing for market fit, pain-point resonance, and willingness-to-pay signals. Names are archetypes (e.g. Markus, Sabine, Andreas) — never real individuals.
 
-**Exemplars:** `gotzendorfer-buyer-p1-cto.v1.md` through `gotzendorfer-buyer-p6-ld.v1.md` (6-persona set covering CTO, Kanzlei, Build-buyer, Tech-veto, Solopreneur, L&D).
+**Exemplars:** `buyer-p1-cto.v1.md` through `buyer-p6-ld.v1.md` (6-persona set covering CTO, Kanzlei, Build-buyer, Tech-veto, Solopreneur, L&D).
 
 **Recommended model:** `claude-opus-4-7` for high-stakes go/no-go reviews; Sonnet acceptable for lower-stakes copy tests.
 
@@ -107,7 +107,7 @@ The persona body (Mission, Evaluation Criteria, Output Template) is treated as *
 - `skills/persona-panel/persona-format.md` — full field spec, frontmatter requirements, output-contract schema, hash canonicalization.
 - `skills/persona-panel/SKILL.md` — execution flow (Phases 0-5), consolidation modes, sidecar structure.
 - `scripts/lib/persona-panel/catalog-loader.mjs` — validation rules (`SAFE_PERSONA_NAME_RE`, model allowlist, `output_contract` pre-checks).
-- `templates/personas/` — starter exemplars: `accounting-compliance.v1.md`, `accounting-tax-advisor.v1.md`, `klima-ai-expert.v1.md`, `klima-physicist.v1.md`, `gotzendorfer-buyer-p1-cto.v1.md` through `gotzendorfer-buyer-p6-ld.v1.md`.
+- `templates/personas/` — starter exemplars: `accounting-compliance.v1.md`, `accounting-tax-advisor.v1.md`, `klima-ai-expert.v1.md`, `klima-physicist.v1.md`, `buyer-p1-cto.v1.md` through `buyer-p6-ld.v1.md`.
 
 ## Example: Creating a Custom Reviewer
 

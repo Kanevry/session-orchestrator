@@ -776,7 +776,7 @@ On a clean `PROCEED` no deviation is written — the sidecar alone is sufficient
 
 When the hook is skipped (gate condition false), omit the `persona_gate` field entirely — never write `triggered: false` for skipped runs, so a downstream consumer can distinguish "hook did not fire" from "hook fired but found no dissent".
 
-**Motivating example:** the `gotzendorfer-v2` W5 Buyer-Panel pattern (six buyer personas at `hard-gate-threshold` `6-of-6`, `mode: 'strict'`, `after: 'quality'`) — UI work is gate-checked against every persona before commit, abort on any dissent. See `docs/session-config-reference.md § Persona-Gate Wave (#458)` and `commands/persona-panel.md` for the standalone CLI equivalent.
+**Motivating example:** a flagship product's W5 Buyer-Panel pattern (six buyer personas at `hard-gate-threshold` `6-of-6`, `mode: 'strict'`, `after: 'quality'`) — UI work is gate-checked against every persona before commit, abort on any dissent. See `docs/session-config-reference.md § Persona-Gate Wave (#458)` and `commands/persona-panel.md` for the standalone CLI equivalent.
 
 ### 3c. Strategic Compact-Nudge (#620)
 
