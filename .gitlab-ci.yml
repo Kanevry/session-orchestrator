@@ -17,6 +17,10 @@
 #   typecheck, and the bash + vitest test suites (no schema-drift check).
 #   Leave that file untouched — it serves the public GitHub mirror only.
 
+# 2026-05-20 — Phase-4 Stufe-B cutover to hetzner-autoscaler-v2 (runner_id=3)
+default:
+  tags: [linux, hetzner-auto]
+
 stages:
   - security
   - validate
