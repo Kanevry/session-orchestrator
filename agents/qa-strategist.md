@@ -2,7 +2,7 @@
 name: qa-strategist
 description: Use this agent for read-only test-coverage gap analysis between waves. Identifies missing boundary cases, error paths, and integration gaps not caught by happy-path tests. <example>Context: Impl-Core shipped a new auth flow with 6 unit tests. user: "Check the test coverage gaps." assistant: "I'll dispatch qa-strategist to identify boundary cases and error-path coverage gaps before Quality wave." <commentary>QA-strategist surfaces test depth gaps the test-writer agent missed.</commentary></example>
 model: inherit
-color: cyan
+color: purple
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
 output-schema: schemas/qa-strategist.schema.json

@@ -28,13 +28,11 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 import { appendJsonl } from './common.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
-import { isPidAliveOnHost } from './session-lock.mjs';
+import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,117 +87,43 @@ function truncate(s) {
 }
 
 /**
- * Parse a lock body. The repo's session-lock `parseLock` is not exported, so we
- * carry a tiny local parser per the issue's instruction. Returns null on any
- * parse failure or shape mismatch.
- * @param {string} raw
- * @returns {{ pid: number, host: string, acquiredAt: string } | null}
- */
-function parseLockBody(raw) {
-  try {
-    const obj = JSON.parse(raw);
-    if (
-      obj &&
-      typeof obj === 'object' &&
-      typeof obj.pid === 'number' &&
-      typeof obj.host === 'string'
-    ) {
-      return obj;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Atomically create the lock via tmp + linkSync (POSIX create-or-fail). The
- * winner creates the hard link; every loser gets EEXIST. Mirrors the
- * createSessionLockExclusive idiom in session-lock.mjs.
- * @param {string} lockFile
- * @param {object} body
- * @returns {{ ok: true } | { ok: false, reason: 'exists' } | { ok: false, reason: 'fs-error', error: string }}
- */
-function createLockExclusive(lockFile, body) {
-  const dir = path.dirname(lockFile);
-  let tmpFile;
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    const suffix = crypto.randomBytes(8).toString('hex');
-    tmpFile = path.join(dir, `.agent-status.lock.create.tmp.${suffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body) + '\n', { encoding: 'utf8' });
-  } catch (err) {
-    if (tmpFile) {
-      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-    }
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
-  }
-
-  try {
-    fs.linkSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'EEXIST') return { ok: false, reason: 'exists' };
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-  }
-}
-
-/**
  * Acquire the write-mutex. Polls every POLL_MS until acquired or the timeout
  * deadline. The first iteration is unconditional so timeoutMs:0 still tries
  * exactly once. On EEXIST, inspects the existing lock and atomically overrides
  * it ONLY when same-host AND its PID is dead, or its body is unparseable
  * (PSA-003: never auto-override a cross-host lock).
  *
+ * Delegates to the shared file-lock primitive (issue #630). Behavior is
+ * preserved exactly: compact body `{pid, host, acquiredAt}` (indent:null),
+ * synchronous busy-wait poll (sync variant), PID staleCheck, console.warn
+ * override channel with the original message, override tmp prefix
+ * `.agent-status.lock.replace`, and the ENOENT-on-read race collapsed into a
+ * retry (signalVanished:false).
+ *
  * @param {string} lockFile
  * @param {number} timeoutMs
  * @returns {{ ok: true, body: object } | { ok: false, reason: 'timeout'|'fs-error', error?: string }}
  */
 function acquireLock(lockFile, timeoutMs) {
-  const host = os.hostname();
-  const myBody = { pid: process.pid, host, acquiredAt: new Date().toISOString() };
   const deadline = Date.now() + Math.max(0, timeoutMs);
   let firstPass = true;
 
   while (firstPass || Date.now() < deadline) {
     firstPass = false;
 
-    const created = createLockExclusive(lockFile, myBody);
-    if (created.ok) return { ok: true, body: myBody };
-    if (created.reason === 'fs-error') {
-      return { ok: false, reason: 'fs-error', error: created.error };
+    const attempt = tryAcquireFileLock(lockFile, {
+      staleCheck: 'pid',
+      indent: null,
+      tmpPrefix: '.agent-status.lock.replace',
+      warnMessage: (reason, lp) => `⚠ agent-status: overriding stale lock (${reason}) at ${lp}`,
+    });
+    if (attempt.acquired) return { ok: true, body: attempt.body };
+    if (attempt.reason === 'fs-error') {
+      return { ok: false, reason: 'fs-error', error: attempt.error };
     }
 
-    // reason === 'exists' — inspect the holder.
-    let raw;
-    try {
-      raw = fs.readFileSync(lockFile, 'utf8');
-    } catch (err) {
-      // The holder released between linkSync and read — retry immediately.
-      if (err.code === 'ENOENT') continue;
-      return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
-    }
-
-    const existing = parseLockBody(raw);
-    const sameHost = existing && existing.host === host;
-    const dead = existing && !isPidAliveOnHost(existing.pid);
-
-    if (!existing || (sameHost && dead)) {
-      // Stale (unparseable body, or same-host dead PID) → atomically replace.
-      const reason = !existing ? 'unparseable body' : `dead pid ${existing.pid}`;
-      console.warn(`⚠ agent-status: overriding stale lock (${reason}) at ${lockFile}`);
-      const replaced = writeJsonAtomicSync(lockFile, myBody, { tmpPrefix: '.agent-status.lock.replace' });
-      if (replaced.ok) {
-        // Confirm we are the holder after the override (LWW replace is benign
-        // here because only stale-override paths reach this branch).
-        return { ok: true, body: myBody };
-      }
-      return { ok: false, reason: 'fs-error', error: replaced.error };
-    }
-
-    // Live holder (or cross-host) → poll until the deadline.
+    // reason === 'held' (live holder, cross-host, or vanished-collapsed-to-held)
+    // → poll until the deadline.
     if (Date.now() >= deadline) break;
     sleepMs(POLL_MS);
   }
@@ -227,22 +151,18 @@ function sleepMs(ms) {
 
 /**
  * Release the lock — but ONLY if WE own it (pid + host match). PSA-003: never
- * delete a lock another holder owns.
+ * delete a lock another holder owns. Delegates to releaseFileLock with the
+ * default owner-guard (no holder label → falls back to pid+host equality,
+ * exactly as the original did).
  * @param {string} lockFile
- * @param {object} myBody  The body returned by acquireLock.
+ * @param {object} _myBody  The body returned by acquireLock (unused — the
+ *   primitive re-reads the on-disk body and matches pid+host of the current
+ *   process, which is the same process that called acquireLock).
  */
-function releaseLock(lockFile, myBody) {
-  try {
-    const raw = fs.readFileSync(lockFile, 'utf8');
-    const existing = parseLockBody(raw);
-    if (existing && existing.pid === myBody.pid && existing.host === myBody.host) {
-      fs.unlinkSync(lockFile);
-    }
-    // If the holder is not us (a stale-override stole it, or it vanished), leave
-    // it alone — releasing another holder's lock would be a PSA-003 violation.
-  } catch {
-    // ENOENT or read error → nothing to release. Best-effort.
-  }
+function releaseLock(lockFile, _myBody) {
+  // ownerGuard:true with no holder → unlink IFF on-disk pid+host match this
+  // process. Result reasons (not-found/not-owner) are ignored: best-effort.
+  releaseFileLock(lockFile, { ownerGuard: true });
 }
 
 /**

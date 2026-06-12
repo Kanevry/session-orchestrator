@@ -621,6 +621,57 @@ test:
 | `test.mode` | string (`warn` \| `strict` \| `off`) | `warn` | Issue reconciliation severity. `warn` files findings non-blockingly. `strict` blocks session-end on HIGH/CRITICAL findings. `off` skips reconciliation entirely. |
 | `test.retention-days` | integer | `30` | Days to retain `.orchestrator/metrics/test-runs/<run-id>/` artifacts before cleanup. Set to `0` to disable cleanup. |
 
+## Custom Phases (#637)
+
+Opt-in, repo-declared deterministic phases that run as their own phase during session close (and/or housekeeping). Where the freeform `special:` key gives no execution guarantee, `custom-phases` is a **contract**: each phase runs a deterministic `command` via Bash with exit-code gating and summary reporting, so a repo can run a domain command (e.g. an eval-learn aggregate) as a first-class close step. Absent/empty ⇒ `[]` ⇒ no custom phases run; existing sessions are unaffected.
+
+The block is a YAML list under a top-level `custom-phases` key:
+
+```yaml
+custom-phases:
+  - name: eval-learn-aggregate         # required, non-empty, SAFE slug
+    when: housekeeping                  # housekeeping | session-end | both (default: session-end)
+    command: npm run eval:aggregate     # required; run verbatim — NO interpolation from records
+    mode: hard                          # warn | hard | off (default: warn)
+    review: docs/eval/last-run.md       # optional; SAFE path; default null
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | — (required) | Phase identifier. Must match `^[A-Za-z0-9._-]+$` (SAFE slug — no spaces, no shell metacharacters). A record missing `name` or carrying an unsafe `name` is dropped with a stderr WARN. |
+| `when` | string (`housekeeping` \| `session-end` \| `both`) | `session-end` | Trigger gate against STATE.md `session-type`. `housekeeping` ⇒ only housekeeping sessions; `session-end` ⇒ every non-housekeeping session-type; `both` ⇒ all. Invalid values fall back SILENTLY to `session-end`. |
+| `command` | string | — (required) | Shell command run verbatim via Bash. NO value from any record is interpolated. Rejects shell metacharacters (`; $ \` \| & > <`); records with an unsafe `command` (or missing `command`) are dropped with a stderr WARN. |
+| `mode` | string (`warn` \| `hard` \| `off`) | `warn` | `off` skips the phase. `warn` runs + reports in the Final Report but never blocks. `hard` + non-zero exit code BLOCKS the close (AskUserQuestion: Fix / Override+log Deviation / Abort). Invalid values fall back SILENTLY to `warn`. **Note:** the blocking value is `hard`, not `strict` — unlike `vault-sync`/`drift-check` (see #217). |
+| `review` | string \| null | `null` | Optional repo-relative or absolute file path the coordinator reads as a review step after the command. SAFE-path validated (`^[A-Za-z0-9._~/-]+$`); an unsafe path drops the whole record with a stderr WARN. |
+
+**Security note.** Like the mandatory `test-command` / `typecheck-command` / `lint-command`, a `custom-phases[].command` is executed by the shell and is therefore a command-bearing surface. It is acceptable under the same **VCS-trust-anchor** model: any change to `custom-phases` is commit-gated and visible in `git log` for review. The parser additionally rejects shell metacharacters in `command`/`review`/`name` as a defense-in-depth layer. See `.claude/rules/quality-gates-autofix.md` § "Session Config Command Injection (RCE via shell: true)".
+
+Read by: `scripts/lib/config/custom-phases.mjs` (parser), `skills/session-end/SKILL.md` Phase 2.5 (executor + routing).
+
+## Evolve Extra Sources (#638)
+
+Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per flag that has persisted across ≥2 consecutive sessions. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.
+
+The block is a nested YAML list under a top-level `evolve` key with an `extra-sources` sub-key. The returned config value is exposed as the dotted key `evolve.extra-sources` (mirroring the `cross-repo.projects` precedent), defaulting to `[]`:
+
+```yaml
+evolve:
+  extra-sources:
+    - path: eval/learn/reports/latest.json   # required; SAFE path
+      kind: regression-flags                  # enum: regression-flags
+      learning-type: domain-regression        # enum: domain-regression
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | — (required) | Repo-relative or absolute path to the sidecar JSON. SAFE-path validated (`^[A-Za-z0-9._~/-]+$`); a record missing `path` or carrying a shell-metacharacter in `path` is dropped with a stderr WARN. The sidecar is schema-gated by `/evolve` against `{ flags: [{ metric, baseline, recent, delta }] }`; an unknown/missing schema ⇒ skip + WARN. |
+| `kind` | string (`regression-flags`) | `regression-flags` | Selects the sidecar parser. Only `regression-flags` is defined; an unknown value DROPS the entry with a stderr WARN (schema gate — `/evolve` never guesses a parser). |
+| `learning-type` | string (`domain-regression`) | `domain-regression` | Stamps the emitted learning candidate's `type`. Only `domain-regression` is registered (in `LEARNING_TTL_DAYS` and `PROPOSAL_TYPES`); an unknown value DROPS the entry with a stderr WARN. |
+
+**Security note.** `path` is a read-only file path consumed by `/evolve`; it rejects shell metacharacters as a defense-in-depth layer. Confinement at the read sink is the actual path-traversal guard. Changes are commit-gated under the same **VCS-trust-anchor** model as the other path/command-bearing keys.
+
+Read by: `scripts/lib/config/evolve.mjs` (parser), `skills/evolve/SKILL.md` Step 3.1b (read + emit).
+
 ## STATE.md Schema §Recommendations (v1.1)
 
 > Added by Epic #271 Phase A (issues #272–#275). **Additive** — `schema-version` remains `1`. Absence of all 5 fields is a valid `schema-version: 1` STATE.md meaning "no recommendation available" (pre-v1.1 compatibility). Readers MUST treat missing fields identically to explicit nulls.

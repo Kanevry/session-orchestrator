@@ -66,7 +66,11 @@ cd scripts/spikes/h3-agent-teams
 # 2. Follow the printed steps per run: toggle → launch in-process → paste the
 #    lead prompt → observe (Shift+Down teammate pane, Ctrl+T task list) →
 #    record one JSONL line into /tmp/h3-agent-teams-test/h3-results.jsonl →
-#    reset (cleanup + setup) before the next run.
+#    reset before the next run. To KEEP appended evidence across the 3 runs,
+#    re-run ./setup.sh alone (now create-if-missing — never truncates the log)
+#    and remove only the team/task state — do NOT run `run-h3.sh cleanup`
+#    between runs (it rm -rf's the whole fixture incl. the results log). See
+#    "Known Issues" #2 below (#627 codex review).
 
 # 3. Cleanup after all 3 runs.
 ./run-h3.sh cleanup
@@ -118,3 +122,10 @@ Fresh team per run (the harness's reset step removes `~/.claude/teams/h3-test-48
 ## Terminal constraint
 
 Split-pane swarm view is unsupported in Ghostty → `--teammate-mode in-process` is mandatory on this host. Observation is via in-pane keys (Shift+Down / Ctrl+T) rather than a side-by-side swarm layout.
+
+## Known Issues (from #627 codex review)
+
+The multi-model adversarial review (`docs/spikes/2026-06-04-627-multi-model-adversarial-review.md`, C3) surfaced two defects in the H3 shell scripts. Both have been hardened in place; the notes below record the finding, the fix, and the residual operator guidance.
+
+1. **HIGH — `setup.sh` predictable-`/tmp`-path symlink-following (CWE-377/CWE-61).** The fixture path `/tmp/h3-agent-teams-test` is fixed and predictable, so a pre-planted symlink at that path (e.g. `-> $HOME`) would make `setup.sh`'s `cat >` writes follow out-of-dir and clobber files outside `/tmp` (`$HOME/package.json`, `$HOME/.claude/settings.json`). **Fix applied:** `setup.sh` now refuses to proceed (`exit 1`) if `${FIXTURE}` exists as a symlink, *before* any write. The fixed path is intentional — it is shared across `setup.sh` / `toggle.sh` / `preflight.sh` / `run-h3.sh` and the cleanup commands in this runbook — so the guard hardens in place rather than switching to `mktemp -d`, which would break that cross-script + runbook contract (each script would resolve a different random dir, and the operator's documented `rm -rf /tmp/h3-agent-teams-test` cleanup would no longer match). **Operator note:** if `setup.sh` aborts with the symlink refusal, run `rm -f /tmp/h3-agent-teams-test` and re-run — do not `mkdir`/`rm -rf` through the symlink. Blast radius on a single-user dev Mac is low (`/tmp → /private/tmp`), but the guard makes the seam test safe to run anywhere.
+2. **MEDIUM — between-run reset destroyed `h3-results.jsonl`.** The documented reset (`run-h3.sh cleanup` → `setup.sh`) re-truncated the results log via `setup.sh`'s `: > h3-results.jsonl`, destroying the run-N evidence the operator was just told (How-to-run step 5 / `run-h3.sh` step 5) to append before run-N+1. **Fix applied:** `setup.sh` now creates the results log only if absent (create-if-missing, never truncate). A full `run-h3.sh cleanup` still removes the entire fixture dir — that remains the intended *full* reset. **Operator note:** to preserve evidence across the 3 runs, do NOT run `run-h3.sh cleanup` between runs if you want to keep prior lines; re-running `setup.sh` alone now leaves appended results intact. Only `cleanup` (which removes the whole dir) clears the log.

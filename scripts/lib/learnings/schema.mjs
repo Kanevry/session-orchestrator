@@ -54,6 +54,10 @@ export const LEARNING_TTL_DAYS = Object.freeze({
   'proven-pattern': 90,
   'anti-pattern': 90,
   'autopilot-effectiveness': 90,
+  // domain-regression (#638): a sidecar-sourced regression flag (metric baseline→recent
+  // delta) surfaced via /evolve extra-sources. 60d aligns with the moderate-decay tier
+  // (hardware-pattern / default) — a regression signal should age out if it stops recurring.
+  'domain-regression': 60,
   default: 60,
 });
 

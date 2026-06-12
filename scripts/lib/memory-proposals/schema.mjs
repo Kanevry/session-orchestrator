@@ -57,6 +57,7 @@ export const PROPOSAL_TYPES = Object.freeze([
   'proven-pattern',
   'anti-pattern',
   'autopilot-effectiveness',
+  'domain-regression',
 ]);
 
 // ---------------------------------------------------------------------------

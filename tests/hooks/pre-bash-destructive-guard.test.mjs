@@ -65,6 +65,7 @@ const FIXTURE_POLICY = {
       id: 'rm-rf-destructive',
       pattern: 'rm -rf',
       severity: 'block',
+      'path-allowlist': ['/tmp/', '/private/tmp/', '$TMPDIR'],
       rationale: 'Deletes files that may belong to another session.',
     },
     {
@@ -380,6 +381,201 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('rm -rf /'),
+    });
+    expect(result.code).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #641 — /tmp allowlist false-positive fixes (exit 0)
+// ---------------------------------------------------------------------------
+
+describe('#641 rm -rf /tmp allowlist (exit 0)', { timeout: 15000 }, () => {
+  it('allows "rm -rf /tmp/wondraiwork-632" (FP1 — agent tmp clone)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /private/tmp/foo'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
+    const dir = await mkProjectTracked();
+    const target = path.join(os.tmpdir(), 'agent-scratch-641');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`rm -rf ${target}`),
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #641 — quoted-payload guard false-positive fixes (exit 0)
+// Blocked substrings are built from fragments so they never appear literally on
+// the test-runner shell command line; they reach the hook only via stdin JSON.
+// ---------------------------------------------------------------------------
+
+describe('#641 quoted-payload false positives (exit 0)', { timeout: 15000 }, () => {
+  it('allows memory-propose with blocked substrings inside quoted args (FP2)', async () => {
+    const dir = await mkProjectTracked();
+    const insight = 'workaround used ' + 'rm ' + '-rf /tmp/x';
+    const evidence = 'see ' + 'git ' + 'reset --hard note';
+    const command = `node scripts/memory-propose.mjs --insight "${insight}" --evidence "${evidence}"`;
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows node script with a force-push warning string in a quoted arg', async () => {
+    const dir = await mkProjectTracked();
+    const msg = 'do not run ' + 'git ' + 'push --force';
+    const command = `node x.mjs --msg "${msg}"`;
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows echo of a quoted destructive literal', async () => {
+    const dir = await mkProjectTracked();
+    const command = 'echo "' + 'rm ' + '-rf /"';
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #641 — bypass vectors must STILL block (exit 2)
+// ---------------------------------------------------------------------------
+
+describe('#641 bypass vectors still blocked (exit 2)', { timeout: 30000 }, () => {
+  const RMRF = 'rm ' + '-rf';
+  const RESET = 'git ' + 'reset --hard';
+  const vectors = [
+    ['bash -c', `bash -c "${RMRF} /data"`],
+    ['sh -c', `sh -c "${RMRF} /data"`],
+    ['eval', `eval "${RMRF} /data"`],
+    ['xargs', `echo /data | xargs ${RMRF}`],
+    ['semicolon', `ls; ${RMRF} /data`],
+    ['and-and', `true && ${RMRF} /data`],
+    ['pipe-to-rm', `echo x | ${RMRF} /data`],
+    ['env-assign', `FOO=1 ${RMRF} /data`],
+    ['cmd-subst', `x=$(${RMRF} /data)`],
+    ['command-prefix', `command ${RMRF} /data`],
+    ['chained-reset', `ls && ${RESET} HEAD`],
+    ['bare-reset', `${RESET} HEAD~1`],
+  ];
+
+  it.each(vectors)('blocks bypass vector: %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks mixed chain where one rm target is non-allowlisted', async () => {
+    const dir = await mkProjectTracked();
+    const command = `${RMRF} /tmp/x; ${RMRF} src/`;
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #641 — /tmp allowlist path-traversal escape must STILL block (exit 2)
+//
+// isRmPathAllowed normalises `..` BEFORE the allowlist-prefix check, so a
+// traversal target like `/tmp/../etc` collapses to `/etc` ∉ allowlist → block.
+// These tests pin that SAFE behaviour: a future refactor that swapped the
+// path.normalize+prefix check for a naive `startsWith('/tmp')` would re-open
+// `rm -rf /tmp/../etc` → /etc deletion, and exactly these assertions would flip
+// from exit 2 to exit 0 and fail.
+// ---------------------------------------------------------------------------
+
+describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 15000 }, () => {
+  it('blocks "rm -rf /tmp/../etc" (traversal escapes allowlist to /etc)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/../etc'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks "rm -rf /tmp/x/../../etc" (deeper traversal escapes to /etc)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/x/../../etc'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks "rm -rf /private/tmp/../etc" (macOS canonical /tmp traversal escape)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /private/tmp/../etc'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks "rm -rf /tmp/ /etc" (one allowlisted + one non-allowlisted target)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/ /etc'),
+    });
+    expect(result.code).toBe(2);
+  });
+});
+
+describe('#641 rm -rf /tmp allowlist legit controls (exit 0)', { timeout: 15000 }, () => {
+  it('allows "rm -rf /tmp/x" (genuinely under /tmp — no traversal)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/x'),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows "rm -rf /tmp/wondraiwork-632" (original #641 FP case)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #641 — gap closures: rm flag-form variants must block
+// ---------------------------------------------------------------------------
+
+describe('#641 rm flag-form gap closures (exit 2)', { timeout: 15000 }, () => {
+  it('blocks "rm -r -f /data" (split flags)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -r -f /data'),
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks "rm -fr /data" (reordered combined flags)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -fr /data'),
     });
     expect(result.code).toBe(2);
   });

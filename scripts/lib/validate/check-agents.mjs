@@ -399,6 +399,54 @@ if (existsSync(agentsDir)) {
   }
 }
 
+// ============================================================================
+// Check 9: color-collision aggregation (issue #443).
+//   The 9-color palette is an operator side-channel (distinguishes co-running
+//   agents at a glance). With more than 9 agents, colors are deliberately
+//   shared — but two DISPATCHABLE agents sharing a color is a likely
+//   same-wave collision and surfaces as a WARN (not FAIL: deliberate
+//   cross-phase shares are legitimate — see agents/AGENTS.md § Color
+//   Allocation Strategy).
+//   Non-dispatchable reference docs (description contains "NOT a dispatchable"
+//   or "Reference documentation") are excluded from the aggregation: they
+//   never dispatch as a subagent, so their color can never collide on screen.
+// ============================================================================
+console.log('');
+console.log('--- Check 9: agent color collisions ---');
+
+if (existsSync(agentsDir)) {
+  const colorMap = new Map(); // color -> [agentFile, ...]
+  const colorMdFiles = readdirSync(agentsDir).filter(isAgentDefFile);
+  for (const agentFile of colorMdFiles) {
+    const filePath = join(agentsDir, agentFile);
+    const content = readFileSync(filePath, 'utf8');
+    const fm = extractFrontmatter(content);
+    if (!fm) continue; // already caught by Check 6
+
+    const description = getField(fm, 'description') ?? '';
+    const isNonDispatchable =
+      /NOT a dispatchable/i.test(description) || /Reference documentation/i.test(description);
+    if (isNonDispatchable) continue;
+
+    const colorVal = getField(fm, 'color');
+    if (!colorVal) continue; // missing/invalid color already caught by Check 6
+
+    if (!colorMap.has(colorVal)) colorMap.set(colorVal, []);
+    colorMap.get(colorVal).push(agentFile);
+  }
+
+  let collisions = 0;
+  for (const [color, names] of colorMap) {
+    if (names.length > 1) {
+      collisions++;
+      warn(`color collision: ${color} shared by dispatchable agents ${names.sort().join(', ')} — confirm they never co-run in one wave (agents/AGENTS.md § Color Allocation Strategy)`);
+    }
+  }
+  if (collisions === 0) {
+    pass('no color collisions among dispatchable agents');
+  }
+}
+
 console.log('');
 console.log(`Results: ${passed} passed, ${failed} failed`);
 

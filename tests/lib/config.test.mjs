@@ -189,6 +189,16 @@ describe('parseSessionConfig', () => {
         'ssh-no-docker': true,
       });
     });
+
+    it('defaults custom-phases to [] (#637)', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['custom-phases']).toEqual([]);
+    });
+
+    it('defaults evolve.extra-sources to [] (#638)', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['evolve.extra-sources']).toEqual([]);
+    });
   });
 
   describe('full config (CLAUDE.md fixture)', () => {
@@ -1017,6 +1027,83 @@ describe('cross-repo.projects parsing (#469)', () => {
     expect(() => parseSessionConfig(content)).not.toThrow();
     const config = parseSessionConfig(content);
     expect(config['cross-repo.projects']).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// custom-phases parsing (#637)
+// ---------------------------------------------------------------------------
+
+describe('custom-phases parsing (#637)', () => {
+  it('defaults to [] when the custom-phases: block is absent', () => {
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    expect(config['custom-phases']).toEqual([]);
+  });
+
+  it('exposes custom-phases as a top-level key', () => {
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    expect(config).toHaveProperty('custom-phases');
+  });
+
+  it('parses a full custom-phases record through parseSessionConfig', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'custom-phases:',
+      '  - name: eval-learn-aggregate',
+      '    when: housekeeping',
+      '    command: npm run eval:aggregate',
+      '    mode: hard',
+      '    review: docs/eval/last-run.md',
+      '',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['custom-phases']).toEqual([
+      {
+        name: 'eval-learn-aggregate',
+        when: 'housekeeping',
+        command: 'npm run eval:aggregate',
+        mode: 'hard',
+        review: 'docs/eval/last-run.md',
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evolve.extra-sources parsing (#638)
+// ---------------------------------------------------------------------------
+
+describe('evolve.extra-sources parsing (#638)', () => {
+  it('defaults to [] when the evolve: block is absent', () => {
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    expect(config['evolve.extra-sources']).toEqual([]);
+  });
+
+  it('exposes evolve.extra-sources as a top-level key', () => {
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    expect(config).toHaveProperty('evolve.extra-sources');
+  });
+
+  it('parses a full evolve.extra-sources record through parseSessionConfig', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'evolve:',
+      '  extra-sources:',
+      '    - path: eval/learn/reports/latest.json',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['evolve.extra-sources']).toEqual([
+      {
+        path: 'eval/learn/reports/latest.json',
+        kind: 'regression-flags',
+        'learning-type': 'domain-regression',
+      },
+    ]);
   });
 });
 

@@ -96,14 +96,28 @@ RCE-equivalent within the bounds of the repo's trust model.
   runs with `verification-auto-fix.enabled: true`. A repo without that flag enabled
   never parses Session Config commands at all.
 
+### Command-bearing surfaces (the sanctioned four)
+
+Four Session Config surfaces carry a shell command executed under the same trust model:
+
+1. `test-command` — Quality-Gate test runner.
+2. `typecheck-command` — Quality-Gate typecheck runner.
+3. `lint-command` — Quality-Gate lint runner.
+4. `custom-phases[].command` (#637) — repo-declared deterministic close/housekeeping
+   phases run at session-end Phase 2.5 via Bash with exit-code gating. Same VCS-trust-anchor
+   model as the trio above: any change is commit-gated and visible in `git log`. As
+   defense-in-depth, `scripts/lib/config/custom-phases.mjs` additionally rejects shell
+   metacharacters in `command`/`review`/`name` and drops the offending record with a WARN.
+
 ### Operator Advice
 
 1. **Review Session Config drift** as part of standard code review. Any PR that modifies
-   the `*-command` keys MUST show the before/after — unexpected values are an audit
+   a command-bearing key MUST show the before/after — unexpected values are an audit
    opportunity.
-2. **Watch for unexpected Session Config keys.** If a PR introduces a new `*-command`
-   entry outside the documented trio (`lint-command`, `typecheck-command`, `test-command`),
-   investigate — `scripts/parse-config.mjs` only recognises those three.
+2. **Watch for unexpected Session Config keys.** If a PR introduces a new command-bearing
+   entry outside the documented set (`lint-command`, `typecheck-command`, `test-command`,
+   and `custom-phases[].command`), investigate — these are the surfaces `scripts/parse-config.mjs`
+   parses into executable commands.
 3. **Treat Session Config like code.** A malicious Session Config change is equivalent
    to a malicious code change. Rely on your existing VCS review process; do not add
    extra gates for Session Config specifically.

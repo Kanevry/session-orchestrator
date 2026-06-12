@@ -53,6 +53,29 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 - Length: 500–3000 words is the recommended range. Below 500 reads as under-specified; above 3000 reads as bloated.
 - Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`.
 
+## Color Allocation Strategy (#443)
+
+`color` is an **operator side-channel**, not a cosmetic field. In a `/tmux-layout` or multi-pane session, the per-agent color lets the operator tell co-running agents apart at a glance. With only a 9-color palette (`blue | cyan | green | yellow | purple | orange | pink | red | magenta`) and more than 9 agents in this directory, some colors are **deliberately shared** — but never carelessly.
+
+**Hard rule:** No two agents that CAN be dispatched in the SAME wave may share a color. Same-wave color collisions defeat the side-channel — the operator can no longer disambiguate two concurrent agents by color. The validator (`scripts/lib/validate/check-agents.mjs`) emits a **WARN** (not FAIL) when two dispatchable agents share a color, so an unintended collision surfaces in CI without blocking distribution.
+
+**Co-dispatch sets** (agents that co-run in one wave — no intra-set color may repeat):
+
+| Set | When co-run | Members (color) |
+|---|---|---|
+| **Quality wave** | end-of-impl QA pass | test-writer (orange), security-reviewer (red), session-reviewer (pink), qa-strategist (purple) |
+| **wave-reviewers (5a)** | inter-wave architecture/QA panel | architect-reviewer (blue), qa-strategist (purple), analyst (yellow) |
+| **Impl wave** | feature build | code-implementer (green), ui-developer (magenta), db-specialist (purple), test-writer (orange), docs-writer (cyan) |
+
+qa-strategist takes **purple**: it co-runs with the Quality wave (orange/red/pink) and the wave-reviewers panel (blue/yellow), but never with the Impl wave — so it safely borrows db-specialist's impl-only purple.
+
+**Deliberate-share exceptions** (a same color is acceptable ONLY when the agents can never collide on screen):
+
+- **(a) Dispatchable + non-dispatchable reference doc.** `memory-proposal-collector` carries `color: cyan` but is a coordinator-direct reference doc (its `description` begins "Reference documentation (NOT a dispatchable agent)"). It never dispatches as a subagent, so its color can never collide. The validator skips such files when aggregating collisions.
+- **(b) Mutually-exclusive-phase agents.** Two dispatchable agents that run in different, non-overlapping phases never appear in the same wave. Examples: `ux-evaluator` (blue) is dispatched **solo** by test-runner/driver skills and never co-runs with anything — it shares blue with `architect-reviewer` (inter-wave reviewer panel) harmlessly. `dialectic-deriver` (cyan, `/evolve` phase) and `docs-writer` (cyan, impl/finalization phase) run in different phases.
+
+**Instruction for new agents:** when adding an agent past the 9-color budget, do NOT pick a free-looking color blindly. Pick the color of an agent you can **never co-run with** (a different-phase or solo-dispatch agent), and record the pairing rationale in your agent's body or in this table. If you cannot find a safe share, the collision is real — fix the dispatch design, not the color.
+
 ## Optional `sandbox-tier:` field (#418)
 
 Agents MAY declare their sandbox permission tier. Valid values:

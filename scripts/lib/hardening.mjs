@@ -226,13 +226,233 @@ export function pathMatchesPattern(relPath, pattern) {
 }
 
 /**
- * Test whether a command string contains a blocked pattern with shell-aware boundaries.
+ * Shell interpreters whose QUOTED argument text is still executed as a command.
+ * When a command segment's argv[0] (or `command <verb>` / `env … <verb>`) is one
+ * of these, a blocked pattern found inside a quoted token is NOT inert — it is the
+ * payload the interpreter will run. Includes SQL executors (`psql -c "DROP TABLE …"`)
+ * and `find` (`find . -exec rm -rf {} \;`).
  *
- * Match rule: boundary characters are whitespace, shell operators
- * (`;`, `|`, `&`, `(`, `)`, `{`, `}`, backtick), or string quotes (`'`, `"`).
- * Catches bypasses like `ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`,
- * `` `rm -rf /` ``, and `psql -c "DROP TABLE …"` (quoted SQL-in-shell).
- * Case-sensitive.
+ * Used by the quoted-payload guard in commandMatchesBlocked (#641).
+ */
+const SHELL_EXEC_INTERPRETERS = new Set([
+  'bash', 'sh', 'zsh', 'dash', 'ksh',
+  'eval', 'xargs', 'env', 'command',
+  'psql', 'mysql', 'sqlite3',
+  'find',
+]);
+
+/**
+ * Hand-rolled quote-aware command lexer.
+ *
+ * Splits a command string into tokens on UNQUOTED whitespace, tracking single- and
+ * double-quote state and backslash escapes. Each token records whether ANY of its
+ * characters originated inside quotes (`quoted: true`). Quote characters and the
+ * escaping backslash are consumed (not part of the token text), so the returned
+ * token text is the logical argument value a shell would pass.
+ *
+ * This is deliberately NOT node:util.parseArgs — parseArgs operates on an already-
+ * tokenized argv array and does not lex raw shell strings with quote semantics.
+ * No new npm dependency is introduced (hook hot-path constraint).
+ *
+ * Notes / scope (sufficient for the guard, not a full POSIX shell parser):
+ *   - Single quotes: literal, no escapes inside (POSIX).
+ *   - Double quotes: backslash escapes the next char.
+ *   - Outside quotes: backslash escapes the next char (incl. whitespace → same token).
+ *   - A token that mixes quoted + unquoted runs (e.g. foo"bar") is `quoted: true`
+ *     because part of it came from a quoted run — conservative for the guard.
+ *
+ * @param {string} command
+ * @returns {Array<{ text: string, quoted: boolean }>}
+ */
+export function tokenizeCommand(command) {
+  const tokens = [];
+  if (typeof command !== 'string' || command.length === 0) return tokens;
+
+  let text = '';
+  let started = false;     // a token is in progress
+  let sawQuote = false;    // any char of the current token came from inside quotes
+  let state = 'normal';    // 'normal' | 'single' | 'double'
+
+  const flush = () => {
+    if (started) {
+      tokens.push({ text, quoted: sawQuote });
+      text = '';
+      started = false;
+      sawQuote = false;
+    }
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+
+    if (state === 'single') {
+      if (ch === "'") { state = 'normal'; continue; }
+      text += ch; started = true; sawQuote = true;
+      continue;
+    }
+
+    if (state === 'double') {
+      if (ch === '"') { state = 'normal'; continue; }
+      if (ch === '\\' && i + 1 < command.length) {
+        const next = command[i + 1];
+        // In double quotes, backslash only escapes a small set; keep it simple:
+        // consume the backslash and take the next char literally.
+        text += next; started = true; sawQuote = true; i++;
+        continue;
+      }
+      text += ch; started = true; sawQuote = true;
+      continue;
+    }
+
+    // state === 'normal'
+    if (ch === "'") { state = 'single'; started = true; continue; }
+    if (ch === '"') { state = 'double'; started = true; continue; }
+    if (ch === '\\' && i + 1 < command.length) {
+      text += command[i + 1]; started = true; i++;
+      continue;
+    }
+    if (/\s/.test(ch)) { flush(); continue; }
+
+    // Unquoted shell control operators become standalone tokens so chain-splitting
+    // and per-segment verb detection work even without surrounding whitespace
+    // (e.g. `/tmp/x;rm -rf src/`). Recognised: ; && || | & — longest match first.
+    if (ch === ';' || ch === '|' || ch === '&') {
+      flush();
+      let op = ch;
+      if ((ch === '&' || ch === '|') && command[i + 1] === ch) { op = ch + ch; i++; }
+      tokens.push({ text: op, quoted: false });
+      continue;
+    }
+
+    text += ch; started = true;
+  }
+
+  // Unterminated quote → flush whatever accumulated (mark quoted so the guard treats
+  // the dangling text conservatively).
+  if (state === 'single' || state === 'double') sawQuote = true;
+  flush();
+
+  return tokens;
+}
+
+/**
+ * Split a tokenized command into chained segments on shell control operators
+ * (`;`, `&&`, `||`, `|`, `&`). Only UNQUOTED single-token operators split; an
+ * operator that arrived inside quotes stays part of its segment.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} tokens
+ * @returns {Array<Array<{ text: string, quoted: boolean }>>}
+ */
+function splitSegments(tokens) {
+  const segments = [];
+  let current = [];
+  const operators = new Set([';', '&&', '||', '|', '&']);
+  for (const tok of tokens) {
+    if (!tok.quoted && operators.has(tok.text)) {
+      segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(tok);
+  }
+  segments.push(current);
+  return segments.filter((s) => s.length > 0);
+}
+
+/**
+ * Resolve the effective argv[0] (the command verb) for a chain segment, skipping
+ * leading `VAR=value` env assignments and unwrapping `env …`/`command …` prefixes.
+ * Returns the bare program name (basename, no path) or null.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {string|null}
+ */
+function segmentVerb(segment) {
+  let i = 0;
+  // Skip leading FOO=bar env assignments (unquoted).
+  while (i < segment.length && !segment[i].quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i].text)) {
+    i++;
+  }
+  // Unwrap `env [VAR=val …]` and `command` prefixes that delegate to a real verb.
+  while (i < segment.length) {
+    const raw = segment[i].text;
+    const verb = raw.replace(/^.*\//, ''); // basename
+    if (verb === 'env') {
+      i++;
+      // env may carry its own VAR=val assignments before the real command
+      while (i < segment.length && !segment[i].quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i].text)) {
+        i++;
+      }
+      continue;
+    }
+    if (verb === 'command') { i++; continue; }
+    break;
+  }
+  if (i >= segment.length) return null;
+  return segment[i].text.replace(/^.*\//, '');
+}
+
+/**
+ * Build the case-sensitive boundary regex for a blocked pattern. Boundary chars:
+ * whitespace + shell operators + quotes. Matches at start/end too.
+ *
+ * @param {string} pattern
+ * @returns {RegExp}
+ */
+function boundaryRegex(pattern) {
+  const escaped = pattern.replace(/[.*+?|[\](){}\\^$]/g, '\\$&');
+  const boundary = '[\\s;|&(){}`\'"]';
+  return new RegExp(`(^|${boundary})${escaped}(${boundary}|$)`);
+}
+
+/**
+ * Test whether a blocked pattern occurs in the raw concatenation of a segment's
+ * QUOTED token payloads (with the boundary rule applied per token). Used to decide
+ * whether an interpreter segment carries the pattern inside its quoted argument.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {RegExp} re
+ * @returns {boolean}
+ */
+function quotedTokensMatch(segment, re) {
+  for (const tok of segment) {
+    if (tok.quoted && re.test(tok.text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Test whether a blocked pattern occurs OUTSIDE quoted tokens within a segment.
+ * Reconstructs the unquoted skeleton (quoted tokens replaced by a single space
+ * placeholder so they cannot bridge an adjacent-token match) and applies the
+ * boundary regex.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {RegExp} re
+ * @returns {boolean}
+ */
+function unquotedSegmentMatch(segment, re) {
+  const skeleton = segment.map((t) => (t.quoted ? ' ' : t.text)).join(' ');
+  return re.test(skeleton);
+}
+
+/**
+ * Test whether a command string contains a blocked pattern with shell-aware
+ * boundaries AND a quoted-payload guard (#641).
+ *
+ * Verb detection stays boundary-tolerant: a pattern that appears UNQUOTED — including
+ * across shell operators (`ls;rm -rf /`, `ls&&rm -rf /`, `(rm -rf /)`, piped into
+ * `xargs rm -rf`, prefixed by `FOO=1 …`) — still matches.
+ *
+ * Quoted-payload guard: a pattern whose ONLY occurrences are wholly inside quoted
+ * tokens is treated as inert literal text (no match) UNLESS the enclosing chain
+ * segment's verb (argv[0], after skipping env-assignments and unwrapping
+ * `env`/`command`) is a shell-exec interpreter (`bash -c "rm -rf /"`,
+ * `eval "…"`, `psql -c "DROP TABLE …"`, `find … -exec …`). The guard is applied
+ * PER chain segment: a quoted pattern in segment N is judged against segment N's verb.
+ *
+ * Boundary characters: whitespace, shell operators (`;`, `|`, `&`, `(`, `)`,
+ * `{`, `}`, backtick), or string quotes (`'`, `"`). Case-sensitive.
  *
  * @param {string} command — full command string
  * @param {string} pattern — blocked pattern to search for
@@ -240,10 +460,32 @@ export function pathMatchesPattern(relPath, pattern) {
  */
 export function commandMatchesBlocked(command, pattern) {
   if (!pattern) return false;
-  const escaped = pattern.replace(/[.*+?|[\](){}\\^$]/g, '\\$&');
-  // Boundary: whitespace + shell operators + quotes. Matches at start/end too.
-  const boundary = '[\\s;|&(){}`\'"]';
-  return new RegExp(`(^|${boundary})${escaped}(${boundary}|$)`).test(command);
+  if (typeof command !== 'string' || command.length === 0) return false;
+
+  const re = boundaryRegex(pattern);
+
+  // Fast path: if the boundary regex does not match the raw string at all, no
+  // tokenization can produce a match. (Tokenization strips quotes, so it cannot
+  // create new matches the raw string lacks for our boundary set.)
+  if (!re.test(command)) return false;
+
+  const segments = splitSegments(tokenizeCommand(command));
+
+  for (const segment of segments) {
+    // 1) Unquoted occurrence anywhere in the segment → always a match.
+    if (unquotedSegmentMatch(segment, re)) return true;
+
+    // 2) Quoted occurrence → only a match when the segment verb is an interpreter
+    //    that executes its quoted payload.
+    if (quotedTokensMatch(segment, re)) {
+      const verb = segmentVerb(segment);
+      if (verb && SHELL_EXEC_INTERPRETERS.has(verb)) return true;
+      // else: inert literal inside quotes for a non-interpreter verb → no match
+      // for THIS segment; keep scanning other segments.
+    }
+  }
+
+  return false;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   serializeProposal,
   validateProposalRecord,
 } from '@lib/memory-proposals/schema.mjs';
+import { LEARNING_TTL_DAYS } from '@lib/learnings/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared minimal-valid fixture
@@ -82,6 +83,39 @@ describe('PROPOSAL_TYPES', () => {
     // FALSIFICATION: emptying the array would drop below 5 → test fails
     expect(PROPOSAL_TYPES.length).toBeGreaterThanOrEqual(5);
     expect(PROPOSAL_TYPES.length).toBeLessThanOrEqual(50);
+  });
+
+  it('contains "domain-regression" (#638)', () => {
+    // FALSIFICATION: deleting 'domain-regression' from PROPOSAL_TYPES would fail this
+    expect(PROPOSAL_TYPES).toContain('domain-regression');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// domain-regression registration invariant (#638)
+//
+// The module-comment invariant on PROPOSAL_TYPES requires every type to have a
+// matching LEARNING_TTL_DAYS entry (so a promoted proposal derives a valid TTL).
+// ---------------------------------------------------------------------------
+
+describe('domain-regression registration (#638)', () => {
+  it('LEARNING_TTL_DAYS defines a TTL for domain-regression', () => {
+    // FALSIFICATION: omitting 'domain-regression' from LEARNING_TTL_DAYS leaves it undefined
+    expect(LEARNING_TTL_DAYS['domain-regression']).toBe(60);
+  });
+
+  it('PROPOSAL_TYPES includes domain-regression', () => {
+    // FALSIFICATION: omitting 'domain-regression' from PROPOSAL_TYPES would fail this
+    expect(PROPOSAL_TYPES.includes('domain-regression')).toBe(true);
+  });
+
+  it('every PROPOSAL_TYPES entry has a matching LEARNING_TTL_DAYS entry (module invariant)', () => {
+    // FALSIFICATION: adding a PROPOSAL_TYPES entry without a TTL entry would fail this
+    for (const type of PROPOSAL_TYPES) {
+      expect(LEARNING_TTL_DAYS[type], `missing LEARNING_TTL_DAYS entry for '${type}'`).toBeTypeOf(
+        'number',
+      );
+    }
   });
 });
 

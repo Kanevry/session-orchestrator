@@ -277,9 +277,10 @@ describe('C — Phase 2.3 spec presence in session-end/SKILL.md', () => {
   const skillContent = readFileSync(SKILL_PATH, 'utf8');
 
   // Extract the Phase 2.3 section: from "### 2.3 Vault Staleness Check" to
-  // the next "## Phase 3" heading (inclusive of everything before it).
+  // the next phase heading. Phase 2.5 (Custom Phases, #637) sits between 2.3 and
+  // Phase 3 and legitimately uses the `hard` enum — the slice must not span it.
   const phase23Start = skillContent.indexOf('### 2.3 Vault Staleness Check');
-  const phase3Start = skillContent.indexOf('## Phase 3:');
+  const phase3Start = skillContent.indexOf('## Phase 2.5:');
   const phase23Section =
     phase23Start !== -1 && phase3Start !== -1
       ? skillContent.slice(phase23Start, phase3Start)

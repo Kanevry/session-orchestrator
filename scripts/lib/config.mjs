@@ -57,6 +57,8 @@ import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
 import { _parseMemory } from './config/memory.mjs';
+import { _parseCustomPhases } from './config/custom-phases.mjs';
+import { _parseEvolve } from './config/evolve.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -288,6 +290,17 @@ export function parseSessionConfig(mdContent) {
     );
   }
 
+  // custom-phases: opt-in repo-declared deterministic phases run at session close /
+  // housekeeping with exit-code gating + summary reporting (#637). Defaults to [].
+  const customPhases = _parseCustomPhases(mdContent);
+
+  // evolve.extra-sources: opt-in EXTRA learning sources for /evolve — sidecar JSON
+  // files produced out-of-band by a domain measurement (e.g. an eval-learn regression
+  // report). /evolve READS them and emits domain-regression candidates; it never runs
+  // the measurement (read-only contract). Returned as 'evolve.extra-sources' (dotted,
+  // mirroring the cross-repo.projects precedent). Defaults to []. (#638)
+  const evolveExtraSources = _parseEvolve(mdContent);
+
   // persona-gate-wave: opt-in mid-wave persona-panel hook (#458). Returns null when absent.
   const personaGateWave = _parsePersonaGateWave(mdContent);
   if (personaGateWave !== null && personaGateWave.enabled === true && personaGateWave.mode === 'off') {
@@ -370,6 +383,8 @@ export function parseSessionConfig(mdContent) {
     'gitlab-portfolio': gitlabPortfolio,
     'wave-reviewers': waveReviewers,
     'persona-gate-wave': personaGateWave,
+    'custom-phases': customPhases,
+    'evolve.extra-sources': evolveExtraSources,
   };
 }
 

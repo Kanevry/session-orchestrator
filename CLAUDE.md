@@ -117,3 +117,6 @@ compact-nudge:
 goal-integration:
   enabled: false                 # Lever 5 (#636) — opt-in advisory /goal continuation anchor at named seams; ADR-0010: continuation, never judgment
   seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time
+custom-phases: []                # #637 — repo-declared deterministic close/housekeeping phases (name/when/command/mode/review); empty = none. See docs/session-config-reference.md § Custom Phases
+evolve:
+  extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources

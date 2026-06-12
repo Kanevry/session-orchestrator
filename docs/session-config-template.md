@@ -303,6 +303,49 @@ verification-auto-fix:
 
 Read by: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`), `skills/wave-executor/SKILL.md` inter-wave checkpoint.
 
+## Custom Phases (#637)
+
+Opt-in, repo-declared deterministic phases that run as their own phase during session close (and/or housekeeping). This is a **contract**, not a convention: each phase has a `command` executed via Bash with exit-code gating, plus summary reporting in the Final Report. Empty/absent ⇒ no custom phases run.
+
+```yaml
+custom-phases:
+  - name: eval-learn-aggregate         # required, non-empty, SAFE slug ([A-Za-z0-9._-])
+    when: housekeeping                  # housekeeping | session-end | both (default: session-end)
+    command: npm run eval:aggregate     # required; run verbatim — NO interpolation from records
+    mode: hard                          # warn | hard | off (default: warn)
+    review: docs/eval/last-run.md       # optional; SAFE-path; coordinator reads it after the command (default: null)
+```
+
+Field semantics:
+- **`when`** — `housekeeping` phases run only on housekeeping sessions; `session-end` (default) runs on every non-housekeeping session-type; `both` runs on all.
+- **`mode`** — `off` skips the phase; `warn` (default) runs + reports but never blocks; `hard` + non-zero exit code BLOCKS the close (AskUserQuestion: Fix / Override+log Deviation / Abort).
+- **`review`** — when set, the coordinator reads that file as a review step after the command completes.
+
+Security: `command` and `review` reject shell metacharacters; records failing validation (missing `name`/`command`, unsafe value) are dropped with a stderr WARN. Like `test-command`, a `command` is commit-gated and trusted under the same VCS-trust-anchor model — see `.claude/rules/quality-gates-autofix.md` § "Session Config Command Injection".
+
+Read by: `scripts/lib/config/custom-phases.mjs`, `skills/session-end/SKILL.md` Phase 2.5.
+
+## Evolve Extra Sources (#638)
+
+Opt-in EXTRA learning sources for `/evolve`. A `domain-regression` measurement (e.g. an eval-learn harness) runs OUT-OF-BAND and writes a sidecar JSON; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per persistent regression flag. `/evolve` NEVER runs the measurement itself — this is a strict read-only consumption contract. Absent/empty ⇒ `[]` ⇒ no extra sources are read.
+
+```yaml
+evolve:
+  extra-sources:
+    - path: eval/learn/reports/latest.json   # required; SAFE path (no shell metacharacters)
+      kind: regression-flags                  # enum: regression-flags (only value; unknown ⇒ entry dropped + WARN)
+      learning-type: domain-regression        # enum: domain-regression (only value; unknown ⇒ entry dropped + WARN)
+```
+
+Field semantics:
+- **`path`** — repo-relative or absolute path to a sidecar JSON. Schema gate: `{ flags: [{ metric, baseline, recent, delta }] }`. An unknown/missing sidecar schema ⇒ skip + WARN.
+- **`kind`** — selects the sidecar parser. Only `regression-flags` is defined; an unknown value DROPS the entry with a stderr WARN (schema gate — `/evolve` never guesses a parser).
+- **`learning-type`** — stamps the emitted learning candidate. Only `domain-regression` is registered (in both the learnings TTL schema and the memory-proposals type enum); an unknown value DROPS the entry with a stderr WARN.
+
+Security: `path` rejects shell metacharacters; confinement at the read sink is the path-traversal guard. Like all command/path-bearing config, changes are commit-gated under the VCS-trust-anchor model.
+
+Read by: `scripts/lib/config/evolve.mjs` (parser), `skills/evolve/SKILL.md` Step 3.1b (read + emit).
+
 ## Discovery-Validator (PSA-006 Enforcement)
 
 Opt-in, non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only (exit 0 always) — a blocking hard-gate is reserved for a future iteration. When disabled (default), the hook exits immediately with zero overhead. Issue #567.
@@ -605,6 +648,21 @@ templates-first:
 verification-auto-fix:
   enabled: false
   max-retries: 2
+
+# Custom phases — repo-declared deterministic close/housekeeping phases (#637)
+custom-phases:
+  - name: eval-learn-aggregate         # required, SAFE slug
+    when: housekeeping                  # housekeeping | session-end | both (default: session-end)
+    command: npm run eval:aggregate     # required; run verbatim — no record interpolation
+    mode: hard                          # warn | hard | off (default: warn)
+    review: docs/eval/last-run.md       # optional SAFE path read after the command (default: null)
+
+# Evolve extra-sources — opt-in EXTRA /evolve learning sources (#638)
+evolve:
+  extra-sources:
+    - path: eval/learn/reports/latest.json   # required; SAFE path to a sidecar JSON
+      kind: regression-flags                  # enum: regression-flags (only value)
+      learning-type: domain-regression        # enum: domain-regression (only value)
 
 # Discovery-validator — PSA-006 enforcement (#567)
 discovery-validator:

@@ -23,8 +23,15 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
-import { writeJsonAtomicSync } from './io.mjs';
 import { classifyMode } from './exclusivity-matrix.mjs';
+import { isPidAliveOnHost, tryAcquireFileLock } from './file-lock.mjs';
+
+// isPidAliveOnHost moved into file-lock.mjs in #630 (the file-lock primitive
+// owns it so the dependency edge points file-lock → io, never the reverse).
+// Re-exported here so existing importers (agent-status historically,
+// session-discovery's forensic note, memory-proposals historically, and any
+// external caller) keep resolving `isPidAliveOnHost` from session-lock.mjs.
+export { isPidAliveOnHost };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,62 +63,16 @@ export const STAGING_FENCE_LOCK_POLL_MS = 100;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Check whether a PID corresponds to a live process on this host.
- * Returns true when the process exists (even if we lack kill permission).
- * Returns false when the process does not exist (ESRCH).
- *
- * @forensic
- * This is a SAME-HOST PID liveness probe (POSIX `process.kill(pid, 0)`,
- * signal-0). It is NOT the discovery-path liveness check. Since Epic #583
- * (W1-D1/W1-D4) the discovery decision tree uses heartbeat-age via
- * {@link isLockLive} instead, because the `pid` recorded on a session.lock is
- * the *ephemeral hook subprocess* PID — that process exits ~500ms after the
- * SessionStart hook returns, so a signal-0 probe of it reports "dead" while the
- * semantic owner (the Claude harness) is still alive (the D2 production defect).
- * Cross-host callers MUST pass `null` for the liveness slot and never call this
- * function. Remaining same-host callers (`acquire`, `checkStale`,
- * `tryAcquireStateLock`, `tryAcquireStagingFenceLock`) use it only for the
- * short-lived state-lock / staging-fence-lock stale-override path, where the
- * recorded PID IS the live writer's PID.
- *
- * @param {number} pid  Process ID to probe via the POSIX signal-0 trick.
- * @returns {boolean}   true when a process with the given PID exists; false
- *                      when no such process exists or the probe failed.
- *
- * @remarks
- * PID-recycle trade-off (#560 Q3 L2 — deep-2115 session-reviewer):
- *
- *  - On Unix, `process.kill(pid, 0)` returns true if ANY process exists with
- *    that PID, including a recycled one. The kernel does not distinguish the
- *    original lock-holder from a fresh process that happens to have inherited
- *    the same numeric PID after the lock-holder's death.
- *  - On a long session where the lock-holder died abnormally AND the OS reused
- *    its PID before TTL expiry, this function returns `true` even though the
- *    original lock-holder is gone. The lock is then perceived as held by a
- *    "live" process that is actually unrelated to the original writer.
- *  - Impact: a stale lock waits the full TTL (default 10s for the state-lock,
- *    DEFAULT_TTL_HOURS=4 for the session-lock) before being reclaimed by the
- *    timeout path. Fail-open posture means correctness is preserved — only
- *    operational latency is affected, and the missed race-detection is
- *    bounded to one incident per stale-lock event.
- *  - Trade-off accepted: the alternative would require recording a UUID or
- *    boot-nonce alongside the PID and comparing both fields on stale-detection
- *    (so a recycled PID with a mismatched nonce would be recognised as stale
- *    immediately). That adds complexity to the lock body, parse path, and
- *    every acquire/release branch for a single-missed-race-per-incident
- *    impact. Current trade-off is operationally sound at our scale.
- */
-export function isPidAliveOnHost(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (err.code === 'ESRCH') return false;
-    if (err.code === 'EPERM') return true; // process exists, we just lack permission
-    return false;
-  }
-}
+// isPidAliveOnHost lives in file-lock.mjs (#630) and is re-exported at the top
+// of this module. It is a SAME-HOST PID liveness probe (POSIX signal-0). It is
+// NOT the discovery-path liveness check — since Epic #583 the discovery
+// decision tree uses heartbeat-age via {@link isLockLive} instead, because the
+// `pid` recorded on a session.lock is the *ephemeral hook subprocess* PID.
+// Same-host callers (`acquire`, `checkStale`, and the state-lock /
+// staging-fence stale-override paths, now via the file-lock primitive) use it
+// only for the short-lived stale-override path where the recorded PID IS the
+// live writer's PID. See file-lock.mjs for the full @forensic + PID-recycle
+// trade-off note.
 
 /**
  * Resolve the absolute path to the lock file.
@@ -753,67 +714,10 @@ function parseLockBody(raw) {
   }
 }
 
-/**
- * Atomically create the state-lock file via tmp + hardlink (cross-process mutex).
- *
- * Pattern: write full content to a tmp file, then linkSync(tmp, lockFile).
- * linkSync is POSIX-atomic for create-or-fail: returns success when the link
- * is created, EEXIST when the target already exists. This avoids the
- * O_EXCL+writeSync race where an open-but-empty file is observable to
- * concurrent readers (which then see the file as "unparseable stale" and
- * override the legitimate lock).
- *
- * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
- * @param {object} body      Lock body to serialize.
- * @returns {{ ok: true } | { ok: false, reason: 'exists' | 'fs-error', error?: string }}
- */
-function createStateLockExclusive(lockFile, body) {
-  const dir = path.dirname(lockFile);
-  let tmpFile;
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpSuffix = crypto.randomBytes(8).toString('hex');
-    tmpFile = path.join(dir, `.state.lock.tmp.${tmpSuffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', 'utf8');
-  } catch (err) {
-    if (tmpFile) {
-      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  try {
-    fs.linkSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      return { ok: false, reason: 'exists' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-  }
-}
-
-/**
- * Atomically replace an existing state-lock file via tmp + rename.
- *
- * Used only on the stale-override path, where we KNOW the existing lock is
- * dead (PID-liveness check failed) and we are deliberately overwriting it.
- *
- * Thin wrapper around {@link writeJsonAtomicSync} from scripts/lib/io.mjs
- * (extracted in #558 M1) — preserves the public function name so callers do
- * not change, while consolidating the three near-identical atomic-write
- * implementations onto a single helper. Uses the `.state.lock.tmp` prefix to
- * preserve the existing tmp-file naming convention.
- *
- * @param {string} lockFile  Absolute path to .orchestrator/state.lock.
- * @param {object} body      Lock body to serialize.
- * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
- */
-function replaceStateLockAtomic(lockFile, body) {
-  return writeJsonAtomicSync(lockFile, body, { tmpPrefix: '.state.lock.tmp' });
-}
+// createStateLockExclusive + replaceStateLockAtomic were inlined into the
+// file-lock primitive in #630 — tryAcquireStateLock now delegates to
+// tryAcquireFileLock (indent:2, tmpPrefix:'.state.lock.tmp'), which performs the
+// tmp+linkSync create and the writeJsonAtomicSync stale-override internally.
 
 /**
  * Attempt one acquisition pass. Returns:
@@ -831,56 +735,31 @@ function replaceStateLockAtomic(lockFile, body) {
  * are never auto-overridden (can't signal a process on another machine).
  */
 function tryAcquireStateLock(lockFile, body) {
-  try {
-    // Step 1: try exclusive create (mutex).
-    const createResult = createStateLockExclusive(lockFile, body);
-    if (createResult.ok) {
-      return { ok: true, lock: body };
-    }
-    if (createResult.reason === 'fs-error') {
-      return createResult;
-    }
+  // Delegates to the shared file-lock primitive (issue #630). Behavior is
+  // preserved EXACTLY: pretty-printed body `{pid, host, acquiredAt, holder}`
+  // (indent 2), PID staleCheck, console.warn override channel with the original
+  // messages, override tmp prefix `.state.lock.tmp`, and the ENOENT-on-read race
+  // collapsed into `held`/existingLock:null (signalVanished:false).
+  //
+  // The primitive builds its own body (fresh acquiredAt per attempt) from the
+  // pid/host of THIS process plus the holder carried on `body`. acquiredAt is
+  // only meaningful on the written (winning) attempt, so reusing vs regenerating
+  // it across poll passes is observationally identical.
+  const attempt = tryAcquireFileLock(lockFile, {
+    staleCheck: 'pid',
+    holder: body.holder,
+    indent: 2,
+    tmpPrefix: '.state.lock.tmp',
+    warnMessage: (reason, _lp, existing) =>
+      existing === null
+        ? 'stale state.lock (unparseable contents) overridden'
+        : `stale state.lock from PID ${existing.pid} overridden`,
+  });
 
-    // Step 2: EEXIST — inspect the existing lock.
-    let existingRaw;
-    try {
-      existingRaw = fs.readFileSync(lockFile, 'utf8');
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        // Lock vanished between create-fail and read — race-loser of a race.
-        // Caller's poll loop will retry; report as 'held' to defer.
-        return { ok: false, reason: 'held', existingLock: null };
-      }
-      return { ok: false, reason: 'fs-error', error: err.message };
-    }
-
-    const existing = parseLockBody(existingRaw);
-
-    // Unparseable existing lock — treat as stale and override. We never
-    // know which holder wrote it, so this is the only safe move.
-    if (existing === null) {
-      console.warn('stale state.lock (unparseable contents) overridden');
-      const writeResult = replaceStateLockAtomic(lockFile, body);
-      if (!writeResult.ok) return writeResult;
-      return { ok: true, lock: body };
-    }
-
-    const sameHost = existing.host === os.hostname();
-    // PID liveness is only meaningful on the same host.
-    const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : true;
-
-    if (pidAlive) {
-      return { ok: false, reason: 'held', existingLock: existing };
-    }
-
-    // Same host, dead PID — stale lock. Override atomically + WARN.
-    console.warn(`stale state.lock from PID ${existing.pid} overridden`);
-    const writeResult = replaceStateLockAtomic(lockFile, body);
-    if (!writeResult.ok) return writeResult;
-    return { ok: true, lock: body };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  if (attempt.acquired) return { ok: true, lock: attempt.body };
+  if (attempt.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: attempt.error };
+  // reason === 'held' (live holder, cross-host, or vanished-collapsed-to-held).
+  return { ok: false, reason: 'held', existingLock: attempt.existing ?? null };
 }
 
 /**
@@ -1152,57 +1031,9 @@ function buildStagingFenceLockBody({ holder }) {
   };
 }
 
-/**
- * Atomically create the staging-fence commit-lock via tmp + linkSync.
- * Same pattern as createStateLockExclusive; only the tmp prefix differs.
- *
- * @param {string} lockFile  Absolute path to the staging-fence lockfile.
- * @param {object} body      Lock body to serialize.
- * @returns {{ ok: true } | { ok: false, reason: 'exists' | 'fs-error', error?: string }}
- */
-function createStagingFenceLockExclusive(lockFile, body) {
-  const dir = path.dirname(lockFile);
-  let tmpFile;
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpSuffix = crypto.randomBytes(8).toString('hex');
-    tmpFile = path.join(dir, `.staging-fence.lock.tmp.${tmpSuffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body, null, 2) + '\n', 'utf8');
-  } catch (err) {
-    if (tmpFile) {
-      try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  try {
-    fs.linkSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      return { ok: false, reason: 'exists' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-  }
-}
-
-/**
- * Atomically replace an existing staging-fence lock via tmp + rename. Used
- * only on the stale-override path where we KNOW the existing lock is dead.
- *
- * Thin wrapper around {@link writeJsonAtomicSync} from scripts/lib/io.mjs
- * (extracted in #558 M1). Uses the `.staging-fence.lock.tmp` prefix to
- * preserve the existing tmp-file naming convention.
- *
- * @param {string} lockFile  Absolute path to the staging-fence lockfile.
- * @param {object} body      Lock body to serialize.
- * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
- */
-function replaceStagingFenceLockAtomic(lockFile, body) {
-  return writeJsonAtomicSync(lockFile, body, { tmpPrefix: '.staging-fence.lock.tmp' });
-}
+// createStagingFenceLockExclusive + replaceStagingFenceLockAtomic were inlined
+// into the file-lock primitive in #630 — tryAcquireStagingFenceLock now
+// delegates to tryAcquireFileLock (indent:2, tmpPrefix:'.staging-fence.lock.tmp').
 
 /**
  * Single-pass acquire attempt for the staging-fence lock. Mirrors
@@ -1214,48 +1045,25 @@ function replaceStagingFenceLockAtomic(lockFile, body) {
  *   { ok: false, reason: 'fs-error', error }    — filesystem failure
  */
 function tryAcquireStagingFenceLock(lockFile, body) {
-  try {
-    const createResult = createStagingFenceLockExclusive(lockFile, body);
-    if (createResult.ok) {
-      return { ok: true, lock: body };
-    }
-    if (createResult.reason === 'fs-error') {
-      return createResult;
-    }
+  // Delegates to the shared file-lock primitive (issue #630). Structurally
+  // identical to tryAcquireStateLock — only the tmp prefix + WARN messages
+  // differ. Behavior preserved EXACTLY: pretty body (indent 2), PID staleCheck,
+  // console.warn channel, override prefix `.staging-fence.lock.tmp`,
+  // ENOENT-on-read collapsed into `held`/existingLock:null.
+  const attempt = tryAcquireFileLock(lockFile, {
+    staleCheck: 'pid',
+    holder: body.holder,
+    indent: 2,
+    tmpPrefix: '.staging-fence.lock.tmp',
+    warnMessage: (reason, _lp, existing) =>
+      existing === null
+        ? 'stale staging-fence.lock (unparseable contents) overridden'
+        : `stale staging-fence.lock from PID ${existing.pid} overridden`,
+  });
 
-    let existingRaw;
-    try {
-      existingRaw = fs.readFileSync(lockFile, 'utf8');
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        return { ok: false, reason: 'held', existingLock: null };
-      }
-      return { ok: false, reason: 'fs-error', error: err.message };
-    }
-
-    const existing = parseLockBody(existingRaw); // body shape is identical
-
-    if (existing === null) {
-      console.warn('stale staging-fence.lock (unparseable contents) overridden');
-      const writeResult = replaceStagingFenceLockAtomic(lockFile, body);
-      if (!writeResult.ok) return writeResult;
-      return { ok: true, lock: body };
-    }
-
-    const sameHost = existing.host === os.hostname();
-    const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : true;
-
-    if (pidAlive) {
-      return { ok: false, reason: 'held', existingLock: existing };
-    }
-
-    console.warn(`stale staging-fence.lock from PID ${existing.pid} overridden`);
-    const writeResult = replaceStagingFenceLockAtomic(lockFile, body);
-    if (!writeResult.ok) return writeResult;
-    return { ok: true, lock: body };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  if (attempt.acquired) return { ok: true, lock: attempt.body };
+  if (attempt.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: attempt.error };
+  return { ok: false, reason: 'held', existingLock: attempt.existing ?? null };
 }
 
 /**

@@ -26,29 +26,40 @@ can describe in ≤ 4000 chars)?
 │        NOT: "until CI goes green" — that is an EXTERNAL stream the
 │        evaluator cannot see → Monitor (next branch).
 │
-└─ No  → Is the event PUSHABLE from an external system (CI webhook, error
-         tracker, chat)?
+└─ No  → Is this a ONE-SHOT fan-out across many independent units (codebase-
+         wide audit, 500-file migration, multi-angle cross-checked research)
+         needing dozens-to-hundreds of subagents one conversation cannot
+         coordinate?
          │
-         ├─ Yes → Channels (research preview, v2.1.80+).
-         │        The source pushes the event into the open session via an
-         │        MCP channel plugin — zero polling, reacts while you're away.
-         │        (Push-based sibling of Monitor — see LM-002a.)
+         ├─ Yes → dynamic Workflow (`Workflow` tool / /en/workflows, v2.1.154+).
+         │        Codifies the plan as a rerunnable script; the main context
+         │        holds only the final result, not the per-agent chatter.
+         │        NOT a recurring primitive — for repeated polling stay on the
+         │        axes below. (Fan-out axis — see LM-002b.)
          │
-         └─ No  → Is the watched thing a STREAM I can tail (logs, file changes, CI
-                  status transitions, autopilot.jsonl entries)?
+         └─ No  → Is the event PUSHABLE from an external system (CI webhook, error
+                  tracker, chat)?
                   │
-                  ├─ Yes → Monitor.
-                  │        Each stdout line = one notification. Zero polling tokens.
+                  ├─ Yes → Channels (research preview, v2.1.80+).
+                  │        The source pushes the event into the open session via an
+                  │        MCP channel plugin — zero polling, reacts while you're away.
+                  │        (Push-based sibling of Monitor — see LM-002a.)
                   │
-                  └─ No  → Is the watched thing PERIODIC and bounded by THIS session
-                           (≤ 7 days, in-memory acceptable)?
+                  └─ No  → Is the watched thing a STREAM I can tail (logs, file changes, CI
+                           status transitions, autopilot.jsonl entries)?
                            │
-                           ├─ Yes → /loop.
-                           │        Use dynamic mode unless the cadence is genuinely fixed.
+                           ├─ Yes → Monitor.
+                           │        Each stdout line = one notification. Zero polling tokens.
                            │
-                           └─ No  → Routines (cloud) or Desktop scheduled tasks.
-                                    Daily notes, weekly audits, cross-repo sweeps.
-                                    /loop CANNOT cover these — it dies with the session.
+                           └─ No  → Is the watched thing PERIODIC and bounded by THIS session
+                                    (≤ 7 days, in-memory acceptable)?
+                                    │
+                                    ├─ Yes → /loop.
+                                    │        Use dynamic mode unless the cadence is genuinely fixed.
+                                    │
+                                    └─ No  → Routines (cloud) or Desktop scheduled tasks.
+                                             Daily notes, weekly audits, cross-repo sweeps.
+                                             /loop CANNOT cover these — it dies with the session.
 ```
 
 ## LM-002: Use Monitor When …
@@ -101,6 +112,66 @@ Constraints (cite https://code.claude.com/docs/en/channels):
 Choose Channels over Monitor when the source can PUSH (you register a webhook
 endpoint) rather than be TAILED (you run `tail -f`/`glab ci status`). When the
 source can only be polled or tailed, stay on Monitor.
+
+## LM-002b: Use Workflows When …
+
+Dynamic **Workflows** (`Workflow` tool, v2.1.154+; full doc at
+https://code.claude.com/docs/en/workflows) is the **one-shot fan-out**
+primitive — distinct from every recurring/polling axis above. Reach for it when
+a single objective decomposes into **many independent units** that one
+conversation cannot coordinate without drowning its own context: a codebase-
+wide audit, a 500-file migration, a multi-angle cross-checked research sweep.
+Claude plans the work once, codifies it as a **rerunnable script**, fans out
+**dozens-to-hundreds of subagents**, and returns only the final result to the
+main context — the per-agent chatter never lands in your window. The bundled
+`/deep-research` is the canonical example workflow.
+
+Anthropic's own Workflows documentation is explicit about the niche:
+> *"Workflows are best for tasks that fan out across many independent units of
+> work — a codebase-wide migration, a large audit — where the number of
+> subagents exceeds what a single conversation can track. Claude saves the plan
+> as a reusable workflow you can rerun."*
+
+Constraints (cite https://code.claude.com/docs/en/workflows and
+https://code.claude.com/docs/en/tools-reference#workflow-tool):
+
+- **Caps:** **16 concurrent** agents / **1000 total** agents per run. These are
+  agent-count bounds — a runaway-protection ceiling, NOT a stop-condition
+  surface (see the wave-executor contrast below).
+- **Kill-switch:** disable per-session with `disableWorkflows` (settings) or
+  globally with `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env). One switch, off/on —
+  not the repo's ten kill-switches.
+- **Provider availability:** runs on Bedrock/Vertex/Foundry **as well as**
+  Anthropic-auth — *unlike* Monitor (Anthropic-only, LM-002) and Channels
+  (Anthropic-only, LM-002a). If you are on a non-Anthropic provider, Workflows
+  is reachable where Monitor/Channels are not.
+- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/`
+  (user; project wins) — the same project-over-user precedence as `/loop`'s
+  `.claude/loop.md`.
+- **Trigger:** the `ultracode` planning intensity (`/effort ultracode`) is the
+  on-ramp Anthropic documents for letting Claude reach for a dynamic Workflow.
+
+**Workflows vs the repo's own wave-executor + `autopilot-multi` (open question,
+NOT decided here).** Workflows overlaps `skills/wave-executor/` (parallel
+subagent fan-out) and `commands/autopilot-multi.md` (N parallel issue pipelines
+in worktrees) — but its native caps (16/1000 agents) are **agent-count bounds,
+not the repo's ten kill-switches** (SPIRAL, FAILED-wave, carryover, max-hours,
+max-sessions, resource-overload, token-budget, stall-timeout, low-confidence,
+user-abort — `scripts/lib/autopilot/kill-switches.mjs`), and it ships no
+`autopilot.jsonl`-equivalent telemetry. This is the **same Stay-vs-Adapter
+tension ADR-0010 resolved for `/batch`** (native decomposition we already have,
+minus the guard+telemetry surface). The Adopt/Adapter/Stay verdict for dynamic
+Workflows vs wave-executor is an **open follow-up** logged in ADR-0010 — do not
+swap wave-executor for a bare Workflow on the assumption the caps substitute for
+the kill-switches; they do not.
+
+**Never reimplement a one-shot fan-out as `/loop`.** A `/loop` body re-runs a
+single coordinator prompt on an interval; it has no native fan-out, no agent-
+count cap, and no rerunnable-script artifact. Hand-rolling a Workflow-shaped
+fan-out as a `/loop` (or as a hand-managed swarm of `Task` calls in one
+conversation) re-creates the context-drowning problem Workflows exists to solve.
+If the work is genuinely one-shot fan-out, use the `Workflow` tool; `/loop` is
+for the periodic, in-session axis below.
 
 ## LM-003: Use `/loop` When …
 
@@ -157,6 +228,10 @@ the work will eventually be missed.
   natively (a session-scoped prompt-based Stop hook). Re-implementing it as
   a custom Stop hook or a `/loop` body duplicates the machinery and loses
   the built-in `--resume` restoration and `/goal clear` lifecycle. See LM-008.
+- **One-shot subagent fan-out.** A codebase-wide audit / large migration /
+  multi-angle research sweep is a dynamic Workflow, not a `/loop` — `/loop`
+  has no native fan-out, no agent-count cap, and no rerunnable-script artifact.
+  See LM-002b.
 
 ## LM-006: PSA-003 Applies
 
@@ -191,6 +266,14 @@ it as you would any coordinator action:
   an explicit "or stop after N turns" / "or stop after M minutes" the
   loop can churn indefinitely on a condition it cannot satisfy. Always
   embed a bound.
+- Hand-rolling a one-shot fan-out (codebase-wide audit, large migration) as
+  a `/loop` body or a swarm of `Task` calls in one conversation — use the
+  `Workflow` tool, which caps agent count (16/1000) and saves a rerunnable
+  script. The hand-rolled version drowns the main context. See LM-002b.
+- Swapping wave-executor for a bare Workflow on the assumption its 16/1000
+  caps substitute for the repo's ten kill-switches — they are agent-count
+  bounds, not a stop-condition surface. The Adopt/Adapter/Stay verdict is an
+  open ADR-0010 follow-up; do not pre-decide it. See LM-002b.
 
 ## LM-008: Use `/goal` When …
 
@@ -252,6 +335,7 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 - `ask-via-tool.md` (loop bodies must still use AUQ for user decisions)
 - `development.md` · `security.md` · `mvp-scope.md` · `cli-design.md`
 - `verification-before-completion.md` (why `/goal` never replaces an exit-code gate)
-- ADR: `docs/adr/0010-native-autonomy-commands.md` (full `/goal` vs `/loop` vs Monitor vs Routines verdict)
+- ADR: `docs/adr/0010-native-autonomy-commands.md` (full `/goal` vs `/loop` vs Monitor vs Routines verdict; Workflows watch-item FIRED 2026-06-12)
 - Project file: `.claude/loop.md` (the orchestrator's bare-`/loop` body)
 - Reference: `skills/_shared/monitor-patterns.md` (vetted Monitor filter snippets)
+- Upstream: https://code.claude.com/docs/en/workflows (dynamic Workflows — LM-002b fan-out axis)

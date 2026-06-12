@@ -12,6 +12,19 @@ set -euo pipefail
 
 FIXTURE="/tmp/h3-agent-teams-test"
 
+# Symlink guard (#627 codex review, HIGH — CWE-377/CWE-61). The fixture path is
+# fixed and predictable, so a pre-planted symlink at ${FIXTURE} (e.g. -> $HOME)
+# would make the `cat >` writes below follow out-of-dir and clobber files
+# outside /tmp. Refuse to proceed if ${FIXTURE} exists as a symlink. The fixed
+# path is intentional (shared across setup/toggle/preflight/run-h3 + the
+# operator runbook's cleanup commands), so we harden in place rather than switch
+# to mktemp -d, which would break that cross-script + runbook contract.
+if [ -L "${FIXTURE}" ]; then
+  echo "[setup] REFUSING: ${FIXTURE} is a symlink (possible symlink-following attack)." >&2
+  echo "[setup] remove it and re-run: rm -f \"${FIXTURE}\"" >&2
+  exit 1
+fi
+
 echo "[setup] building H3 fixture at ${FIXTURE}"
 mkdir -p "${FIXTURE}/src" "${FIXTURE}/.claude"
 
@@ -91,8 +104,15 @@ cat > "${FIXTURE}/.claude/settings.json" <<'JSON'
 JSON
 
 # --- results log + template -------------------------------------------------
-# Empty results log the operator appends to; template documents the shape.
-: > "${FIXTURE}/h3-results.jsonl"
+# Results log the operator appends to; template documents the shape.
+# Create-if-absent ONLY — never truncate. The between-run reset rebuilds the
+# fixture (run-h3.sh cleanup → setup.sh); truncating here would destroy the
+# run-N evidence the operator was told (run-h3.sh step 5) to append before
+# run-N+1 (#627 codex review, MEDIUM). A fresh `run-h3.sh cleanup` removes the
+# whole fixture dir, which is the intended full reset.
+if [ ! -f "${FIXTURE}/h3-results.jsonl" ]; then
+  : > "${FIXTURE}/h3-results.jsonl"
+fi
 
 cat > "${FIXTURE}/RESULTS-TEMPLATE.jsonl" <<'JSON'
 {"timestamp":"<ISO>","run_n":1,"src_state":"pass|fail","hook_exit_code":0,"task_status":"completed|blocked|stuck","blocked":false,"feedback_delivered":false,"teammate_retried":false,"transcript_excerpt":"...","notes":"..."}

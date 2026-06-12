@@ -1,6 +1,7 @@
 # Spike Scoping — Routines Cloud-Execution Empirical Spin-up (#485)
 
-> Date: 2026-06-11 · Session: main-2026-06-11-session-2 · Status: SCOPING (no execution — operator-gated on Routines access)
+> **SUPERSEDED 2026-06-12 (issue #485 closed won't-do).** Per operator decision, Anthropic Routines will not be adopted as the cloud-execution substrate — see `docs/adr/0003-routines-cloud-execution.md § Supersession (2026-06-12)`. The empirical spin-up this doc scopes is therefore moot. The durability need is redirected to the in-harness detached headless autopilot path (issue #640, verified PASS — `docs/spikes/2026-06-12-640-background-detachment-test.md`) plus a documented self-hosted-runner follow-up. This scoping doc is retained as a historical record of the (un-executed) Routines plan.
+> Date: 2026-06-11 · Session: main-2026-06-11-session-2 · Status: SUPERSEDED (was: SCOPING — operator-gated on Routines access)
 > ADR: docs/adr/0003-routines-cloud-execution.md (Adapter, ACCEPTED) · Issue: #485
 > Supersedes-by-reference: docs/research/2026-05-19-deep-3-routines-empirical.md (the copy-paste-ready test plan; this doc is the decision frame around it)
 > HARD GATE: issue #490 (3-file durable-telemetry wiring) must close before any `enabled: true` flip — independent of this spike's outcome.

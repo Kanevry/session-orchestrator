@@ -147,6 +147,19 @@ describe('production policy file structure', () => {
     // Verify there is no trailing or leading whitespace in the pattern.
     expect(rule.pattern).toBe(rule.pattern.trim());
   });
+
+  it('rule "rm-rf-destructive" carries a path-allowlist with /tmp + $TMPDIR (#641)', () => {
+    const rule = policy.rules.find((r) => r.id === 'rm-rf-destructive');
+    expect(rule).toBeDefined();
+    expect(rule['path-allowlist']).toEqual(['/tmp/', '/private/tmp/', '$TMPDIR']);
+  });
+
+  it('path-allowlist appears ONLY on rm-rf-destructive (never on git/SQL rules) (#641)', () => {
+    const withAllowlist = policy.rules
+      .filter((r) => r['path-allowlist'] !== undefined)
+      .map((r) => r.id);
+    expect(withAllowlist).toEqual(['rm-rf-destructive']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -190,9 +203,9 @@ describe('hook blocks dangerous commands (exit 2)', { timeout: 20000 }, () => {
     expect(result.code).toBe(2);
   });
 
-  it('blocks "rm -rf /tmp/foo" (rm-rf outside safe paths)', async () => {
+  it('blocks "rm -rf /var/data" (rm-rf outside safe paths)', async () => {
     const dir = await mkTempProject();
-    const result = await runGuard({ projectDir: dir, command: 'rm -rf /tmp/foo' });
+    const result = await runGuard({ projectDir: dir, command: 'rm -rf /var/data' });
     expect(result.code).toBe(2);
   });
 });
@@ -261,5 +274,113 @@ describe('allow-destructive-ops: true in CLAUDE.md overrides block', { timeout: 
     const dir = await mkTempProject({ claudeMd });
     const result = await runGuard({ projectDir: dir, command: 'git reset --hard' });
     expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section 6 — /tmp allowlist + quoted-payload false-positive fixes (#641)
+// Exercises the REAL production policy (which now carries path-allowlist).
+//
+// NOTE: blocked substrings are constructed as JS string literals passed via
+// stdin to the spawned hook — never as literal substrings on this process's
+// shell command line (the guard hook is active on the test runner itself).
+// ---------------------------------------------------------------------------
+
+describe('#641 — /tmp allowlist allows agent-owned scratch (exit 0)', { timeout: 20000 }, () => {
+  it('allows "rm -rf /tmp/wondraiwork-632" (FP1 — agent tmp clone)', async () => {
+    const dir = await mkTempProject();
+    const result = await runGuard({ projectDir: dir, command: 'rm -rf /tmp/wondraiwork-632' });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
+    const dir = await mkTempProject();
+    const result = await runGuard({ projectDir: dir, command: 'rm -rf /private/tmp/foo' });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
+    const dir = await mkTempProject();
+    const target = path.join(os.tmpdir(), 'agent-scratch-641');
+    const result = await runGuard({ projectDir: dir, command: `rm -rf ${target}` });
+    expect(result.code).toBe(0);
+  });
+});
+
+describe('#641 — quoted-payload guard removes false positives (exit 0)', { timeout: 20000 }, () => {
+  it('allows memory-propose with blocked substrings inside quoted args (FP2)', async () => {
+    const dir = await mkTempProject();
+    // The FP2 command: blocked patterns live ONLY inside quoted --insight / --evidence.
+    const insight = 'workaround used ' + 'rm ' + '-rf /tmp/x';
+    const evidence = 'see ' + 'git ' + 'reset --hard note';
+    const command = `node scripts/memory-propose.mjs --insight "${insight}" --evidence "${evidence}"`;
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows node script with a force-push warning string in a quoted arg', async () => {
+    const dir = await mkTempProject();
+    const msg = 'do not run ' + 'git ' + 'push --force';
+    const command = `node x.mjs --msg "${msg}"`;
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows echo of a quoted destructive literal', async () => {
+    const dir = await mkTempProject();
+    const command = 'echo "' + 'rm ' + '-rf /"';
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(0);
+  });
+});
+
+describe('#641 — bypass vectors still blocked against real policy (exit 2)', { timeout: 30000 }, () => {
+  // Build each attack string from fragments so no literal blocked substring
+  // appears on the test-runner shell command line.
+  const RMRF = 'rm ' + '-rf';
+  const RESET = 'git ' + 'reset --hard';
+  const interpreterVectors = [
+    ['bash -c', `bash -c "${RMRF} /data"`],
+    ['sh -c', `sh -c "${RMRF} /data"`],
+    ['eval', `eval "${RMRF} /data"`],
+    ['xargs', `echo /data | xargs ${RMRF}`],
+    ['semicolon', `ls; ${RMRF} /data`],
+    ['and-and', `true && ${RMRF} /data`],
+    ['pipe-to-rm', `echo x | ${RMRF} /data`],
+    ['env-assign', `FOO=1 ${RMRF} /data`],
+    ['cmd-subst', `x=$(${RMRF} /data)`],
+    ['command-prefix', `command ${RMRF} /data`],
+  ];
+
+  it.each(interpreterVectors)('blocks bypass vector: %s', async (_label, command) => {
+    const dir = await mkTempProject();
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks "ls && git reset --hard HEAD" (chained git reset)', async () => {
+    const dir = await mkTempProject();
+    const result = await runGuard({ projectDir: dir, command: `ls && ${RESET} HEAD` });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks bare "git reset --hard HEAD~1"', async () => {
+    const dir = await mkTempProject();
+    const result = await runGuard({ projectDir: dir, command: `${RESET} HEAD~1` });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks psql -c "DROP TABLE users" (SQL executor)', async () => {
+    const dir = await mkTempProject();
+    const command = 'psql -c "' + 'DROP ' + 'TABLE users"';
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(2);
+  });
+
+  it('blocks mixed chain where one rm target is non-allowlisted', async () => {
+    const dir = await mkTempProject();
+    const command = `${RMRF} /tmp/x; ${RMRF} src/`;
+    const result = await runGuard({ projectDir: dir, command });
+    expect(result.code).toBe(2);
   });
 });

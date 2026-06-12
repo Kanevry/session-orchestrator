@@ -26,10 +26,11 @@
 
 import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
-import { commandMatchesBlocked } from '../scripts/lib/hardening.mjs';
+import { commandMatchesBlocked, tokenizeCommand } from '../scripts/lib/hardening.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import fs, { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -137,52 +138,176 @@ async function isGitStashNonEmpty(projectDir) {
 }
 
 /**
- * Parse the first non-flag argument from an `rm -rf` command.
- * Returns the path string or null if unparseable.
- * e.g. "rm -rf src/" → "src/"
- *      "rm -rf -- .orchestrator/tmp/foo" → ".orchestrator/tmp/foo"
+ * Parse ALL non-flag path arguments from every `rm` invocation in a command.
+ *
+ * Hardened over the previous single-target parser (#641): handles `-r -f`,
+ * `-fr`, `-rf`, `--` end-of-options ordering, multiple targets per `rm`, and
+ * chained commands (`rm -rf /tmp/x; rm -rf src/`). Quote-aware via
+ * tokenizeCommand so a path with spaces inside quotes is one target.
+ *
+ * Returns an array of target path strings (possibly empty). The caller treats
+ * the rm-rf rule as "allowed" only when EVERY returned target is allowlisted.
+ *
+ * @param {string} command
+ * @returns {string[]}
  */
-function parseRmTarget(command) {
-  // Strip the "rm" verb and all flags, return first non-flag arg
-  const parts = command.trim().split(/\s+/);
-  let seenDashDash = false;
-  for (let i = 1; i < parts.length; i++) {
-    const part = parts[i];
-    if (!seenDashDash && part === '--') {
-      seenDashDash = true;
-      continue;
+function parseRmTargets(command) {
+  const tokens = tokenizeCommand(command);
+  const targets = [];
+  let i = 0;
+
+  while (i < tokens.length) {
+    const verb = tokens[i].text.replace(/^.*\//, ''); // basename
+    const isOperator = !tokens[i].quoted && /^(;|&&|\|\||\||&)$/.test(tokens[i].text);
+    if (isOperator) { i++; continue; }
+    if (verb !== 'rm') { i++; continue; }
+
+    // Consume this `rm` invocation's args until the next chain operator.
+    i++; // skip `rm`
+    let seenDashDash = false;
+    while (i < tokens.length) {
+      const tok = tokens[i];
+      // Stop at unquoted chain operators — they delimit the next command.
+      if (!tok.quoted && /^(;|&&|\|\||\||&)$/.test(tok.text)) break;
+      if (!seenDashDash && tok.text === '--') { seenDashDash = true; i++; continue; }
+      // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
+      if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') {
+        i++;
+        continue;
+      }
+      targets.push(tok.text);
+      i++;
     }
-    if (!seenDashDash && part.startsWith('-')) continue;
-    return part;
   }
-  return null;
+
+  return targets;
 }
 
 /**
- * Return true when a path should be allowed for `rm -rf` (safe targets).
- * Safe: .orchestrator/tmp (any depth) or node_modules (any depth).
+ * Detect whether the command contains an UNQUOTED `rm` invocation carrying BOTH
+ * recursive (`-r`/`-R`/`--recursive`) AND force (`-f`/`--force`) semantics,
+ * including combined/short forms (`-rf`, `-fr`, `-r -f`). This catches flag-form
+ * variants the literal "rm -rf" pattern misses (#641 gap closure) while staying
+ * consistent with the quoted-payload guard: an `rm` that appears only inside a
+ * quoted token is NOT treated as an invocation here.
+ *
+ * @param {string} command
+ * @returns {boolean}
  */
-function isRmPathAllowed(targetPath, projectDir) {
+function commandHasRecursiveForceRm(command) {
+  const tokens = tokenizeCommand(command);
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    const verb = tok.text.replace(/^.*\//, ''); // basename
+    if (tok.quoted || verb !== 'rm') { i++; continue; }
+
+    // Scan this rm invocation's flags until the next unquoted chain operator.
+    i++; // skip `rm`
+    let recursive = false;
+    let force = false;
+    let seenDashDash = false;
+    while (i < tokens.length) {
+      const t = tokens[i];
+      if (!t.quoted && /^(;|&&|\|\||\||&)$/.test(t.text)) break;
+      if (!seenDashDash && t.text === '--') { seenDashDash = true; i++; continue; }
+      if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
+        if (t.text === '--recursive') recursive = true;
+        else if (t.text === '--force') force = true;
+        else if (/^-[a-zA-Z]+$/.test(t.text)) {
+          // Bundled short flags: -rf, -fr, -Rf, etc.
+          if (/[rR]/.test(t.text)) recursive = true;
+          if (/f/.test(t.text)) force = true;
+        }
+        i++;
+        continue;
+      }
+      i++; // non-flag arg (a target) — skip
+    }
+    if (recursive && force) return true;
+  }
+  return false;
+}
+
+/**
+ * Return true when a single path is a safe `rm -rf` target.
+ *
+ * Safe targets:
+ *   - <projectRoot>/.orchestrator/tmp (any depth)
+ *   - <projectRoot>/node_modules (any depth)
+ *   - /tmp/ (any depth)                    — agent-owned scratch
+ *   - /private/tmp/ (any depth)            — macOS canonical /tmp
+ *   - resolved os.tmpdir() / $TMPDIR (any depth)
+ *
+ * The /tmp-class prefixes come from the rule's optional `path-allowlist` and are
+ * resolved at runtime here.
+ *
+ * @param {string} targetPath
+ * @param {string} projectDir
+ * @param {string[]} ruleAllowlist — `path-allowlist` entries (e.g. "/tmp/", "$TMPDIR")
+ * @returns {boolean}
+ */
+function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
   if (!targetPath) return false;
 
-  // Normalise to absolute for consistent comparison
-  const abs = path.isAbsolute(targetPath)
-    ? path.normalize(targetPath)
-    : path.resolve(projectDir || process.cwd(), targetPath);
-
   const base = projectDir || process.cwd();
+  const wasAbsolute = path.isAbsolute(targetPath);
 
-  const safeAbsolute = [
+  // Project-relative safe dirs (always allowed, independent of the rule allowlist).
+  const abs = wasAbsolute
+    ? path.normalize(targetPath)
+    : path.resolve(base, targetPath);
+
+  const safeProjectDirs = [
     path.join(base, '.orchestrator', 'tmp'),
     path.join(base, 'node_modules'),
   ];
-
-  for (const safe of safeAbsolute) {
-    // The target must be the safe dir itself or a child of it
+  for (const safe of safeProjectDirs) {
     if (abs === safe || abs.startsWith(safe + path.sep)) return true;
   }
 
+  // Rule-driven absolute prefixes (/tmp/, /private/tmp/, $TMPDIR).
+  // Apply ONLY to targets that were ABSOLUTE in the command. A bare relative
+  // target (e.g. "src/") is project-relative and must NEVER be allowlisted by a
+  // /tmp prefix just because the project dir itself happens to live under /tmp
+  // (the case on CI runners where os.tmpdir() === /tmp). #641.
+  if (wasAbsolute) {
+    for (const prefix of resolveAllowlistPrefixes(ruleAllowlist)) {
+      // The target must be the prefix dir itself or a descendant of it.
+      if (abs === prefix || abs.startsWith(prefix + path.sep)) return true;
+    }
+  }
+
   return false;
+}
+
+/**
+ * Resolve the rule's `path-allowlist` entries into concrete absolute directory
+ * prefixes. `$TMPDIR` expands to env.TMPDIR (if set) and os.tmpdir(); literal
+ * paths are normalised. Trailing slashes are stripped for prefix comparison.
+ *
+ * @param {string[]} ruleAllowlist
+ * @returns {string[]} normalised absolute prefixes (no trailing slash)
+ */
+function resolveAllowlistPrefixes(ruleAllowlist) {
+  const out = new Set();
+  const add = (p) => {
+    if (!p) return;
+    const norm = path.normalize(p).replace(/[/\\]+$/, '');
+    if (norm) out.add(norm);
+  };
+
+  for (const entry of Array.isArray(ruleAllowlist) ? ruleAllowlist : []) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    if (entry === '$TMPDIR' || entry === '${TMPDIR}') {
+      if (process.env.TMPDIR) add(process.env.TMPDIR);
+      add(os.tmpdir());
+      continue;
+    }
+    if (path.isAbsolute(entry)) add(entry);
+  }
+
+  return [...out];
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +382,12 @@ async function main() {
   for (const rule of policy.rules) {
     const { id, pattern, severity, rationale = '' } = rule;
 
-    if (!commandMatchesBlocked(command, pattern)) continue;
+    // The rm-rf-destructive rule also fires for recursive+force rm flag variants
+    // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.
+    const matched = id === 'rm-rf-destructive'
+      ? (commandMatchesBlocked(command, pattern) || commandHasRecursiveForceRm(command))
+      : commandMatchesBlocked(command, pattern);
+    if (!matched) continue;
 
     if (severity === 'warn') {
       // Special: git-stash-any — only warn when stash is non-empty
@@ -278,12 +408,19 @@ async function main() {
     if (severity === 'block') {
       // Special: rm-rf-destructive — path exception
       if (id === 'rm-rf-destructive') {
-        const target = parseRmTarget(command);
-        if (isRmPathAllowed(target, projectDir)) {
-          // Safe path (e.g. .orchestrator/tmp or node_modules) — allow
+        const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
+        const targets = parseRmTargets(command);
+        // Allow ONLY when there is at least one target AND every target is
+        // allowlisted. An unparseable command (no targets) or any non-allowlisted
+        // target → block (conservative). This makes mixed chains like
+        // `rm -rf /tmp/x; rm -rf src/` block on the src/ target.
+        const allAllowed =
+          targets.length > 0 &&
+          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist));
+        if (allAllowed) {
+          // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;
         }
-        // target null → block (conservative)
         blockCommand(pattern, id, rationale);
       }
       blockCommand(pattern, id, rationale);

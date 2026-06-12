@@ -307,6 +307,48 @@ totalFindings = projectStaleness.findings.length + narrativeStaleness.findings.l
 
 Pass the aggregated counts and mode forward to Phase 6 Final Report (Docs Health line — see Phase 6 below).
 
+## Phase 2.5: Custom Phases (#637)
+
+> Opt-in. Skip this phase entirely if `custom-phases` in `$CONFIG` is absent or `[]` (the default).
+
+Repos declare deterministic close/housekeeping phases as a **contract** (not the freeform `special:` convention): each phase runs a `command` with exit-code gating and Final-Report reporting. The block is parsed by `scripts/lib/config/custom-phases.mjs`; each record is `{ name, when, command, mode, review }` (already validated — unsafe records were dropped at parse time).
+
+#### Step 1 — Read + filter by `when`
+
+Read `custom-phases` from `$CONFIG` and the `session-type` from STATE.md frontmatter (`feature | deep | housekeeping | none`):
+
+- If `session-type === 'housekeeping'`: keep phases with `when ∈ {housekeeping, both}`.
+- Otherwise (`feature`/`deep`/any other): keep phases with `when ∈ {session-end, both}`.
+
+If no phases remain after filtering, skip to Phase 3.
+
+#### Step 2 — Run each phase in declaration order
+
+For each kept phase:
+
+- `mode === 'off'` ⇒ skip silently (do not run the command).
+- Otherwise run `command` via Bash. Capture the **exit code** and the **last ~10 lines of stdout** (these become the report summary — do NOT inline the full output).
+- If `review` is set, read that file after the command as the review step and note its path in the report.
+
+#### Step 3 — Route by `mode`
+
+- `mode === 'warn'` (default): record the result (name, exit code, summary) for the Phase 6 Final Report "Custom Phases" line. Never block the close — even on a non-zero exit.
+- `mode === 'hard'`:
+  - exit code `0` ⇒ continue; record `<name>: pass (mode=hard)`.
+  - exit code `≠ 0` ⇒ **BLOCK the close** using the same routing pattern as Phase 2.3 strict-mode. Present the phase name + captured summary and offer override:
+    - On Claude Code: AskUserQuestion with options:
+      1. "Fix and retry Phase 2.5" (Recommended) — exit close, let the user investigate.
+      2. "Override and close" — proceed, log a Deviation entry in STATE.md `## Deviations`:
+         `- [<ISO timestamp>] Phase 2.5: custom-phase '<name>' (mode=hard) exited <code>, overridden by user.`
+      3. "Abort close" — exit close without writing.
+    - On Codex CLI / Cursor IDE: same options as a numbered Markdown list.
+
+A `hard`-fail (whether overridden or not) ALWAYS appends its result line to STATE.md `## Deviations`; `warn`-mode results do not.
+
+#### Step 4 — Surface to closing report
+
+Pass each phase result `(name, mode, exitCode, summary, review?)` forward to the Phase 6 Final Report "Custom Phases" line (see Phase 6 below).
+
 ## Phase 3: Documentation Updates
 
 > **Final heartbeat (#590-3)** — at Phase 3 entry, refresh the session-lock heartbeat BEFORE the multi-minute close-out chain (vault-mirror, dialectic, durable-commit, metrics). A long-idle deep session may not have had PostToolBatch activity for >4h; without a refresh the 4h-TTL lock would lapse mid-close and appear stale to a concurrent session. Place this call BEFORE Phase 3.8 Session Lock Release (which deletes the lock — refreshing a deleted lock is a no-op). Best-effort: a failure must NOT block the close.
@@ -839,6 +881,9 @@ Present to the user:
   - Findings present (warn mode): `[N stale projects, M stale narratives] (mode=warn). See .orchestrator/metrics/vault-staleness.jsonl.`
   - Skipped (disabled or mode=off): `skipped (disabled | mode=off).`
   - Clean run: `clean (mode=<mode>).`
+- Custom Phases: [render based on Phase 2.5 result — omit the line entirely if `custom-phases` was absent/empty]
+  - Per phase: `<name>: <pass|FAIL> (exit <code>, mode=<mode>)[ — review: <path>]`
+  - None ran (all filtered out by `when`): `none applicable for session-type=<type>.`
 - Enforcement: [N violations blocked / M warnings] (or "N/A" if enforcement off)
 - Circuit breaker: [N agents hit limits, M spirals detected] (or "none")
 - Metrics written to: `.orchestrator/metrics/sessions.jsonl`

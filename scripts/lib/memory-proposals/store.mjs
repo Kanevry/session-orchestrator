@@ -15,12 +15,11 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
-import { isPidAliveOnHost } from '../session-lock.mjs';
+import { tryAcquireFileLock, releaseFileLock } from '../file-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,236 +117,81 @@ function summaryPathFor(repoRoot, waveId) {
 }
 
 /**
- * Attempt one exclusive lock creation via tmp + linkSync (POSIX mutex).
- *
- * Pattern from session-lock.mjs § createStateLockExclusive:
- *  1. Write full content to a tmp file in the lock directory.
- *  2. linkSync(tmp, lockFile) — atomic create-or-EEXIST.
- *  3. Best-effort unlink(tmp) in finally.
- *
- * On EEXIST, reads the existing lock body and returns it for stale-PID
- * inspection by the caller (#543 H2). If the lock file disappears between
- * the EEXIST and the read (race with concurrent release), this returns a
- * 'vanished' signal so the caller defers rather than overriding.
- * Unparseable contents (parse failure on a present file) ARE treated as
- * stale via `existingLock: null` — they cannot be safely owned.
- *
- * --- #548 A1 — Acknowledged divergence from session-lock.mjs:tryAcquireStateLock ---
- *
- * This helper returns a **3-state** result shape (`exists` / `vanished` /
- * `fs-error`), whereas `scripts/lib/session-lock.mjs:tryAcquireStateLock`
- * (lines ~498-549) returns a **2-state** result that maps ENOENT-on-read
- * to `{ ok: false, reason: 'held', existingLock: null }` — i.e. the
- * session-lock variant collapses the "lock vanished mid-read" race into
- * the generic `held` bucket so the caller's poll loop simply retries.
- *
- * The memory-proposals path surfaces `vanished` as a **distinct third
- * reason** because the 8-worker parallel-write scenario (C9 regression
- * test) needs the caller — `acquireProposalsLock` — to *defer* without
- * any stale-override side-effect. If we collapsed `vanished` into
- * `exists` with `existingLock: null`, the stale-lock branch in
- * `acquireProposalsLock` would call `replaceLockAtomic()` against a
- * possibly-already-reacquired file, producing a double-holder race
- * (regression of C9). Keeping the third reason explicit preserves the
- * "lose race → just retry, never override" invariant.
- *
- * See `acquireProposalsLock` below (specifically the `result.reason ===
- * 'vanished'` branch with its CRITICAL comment) for the consumer side of
- * this contract, and #543 / #548 for context.
- *
- * @param {string} lockFile
- * @param {object} body — lock body to serialize
- * @returns {{ ok: true }
- *   | { ok: false, reason: 'exists', existingLock: object|null }
- *   | { ok: false, reason: 'vanished' }
- *   | { ok: false, reason: 'fs-error', error?: string }}
- */
-function tryCreateLock(lockFile, body) {
-  ensureDir(lockFile);
-  const tmpSuffix = crypto.randomBytes(8).toString('hex');
-  const tmpFile = path.join(path.dirname(lockFile), `.proposals-write.lock.tmp.${tmpSuffix}`);
-
-  try {
-    fs.writeFileSync(tmpFile, JSON.stringify(body), 'utf8');
-  } catch (err) {
-    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  try {
-    fs.linkSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      // Read existing lock body so the caller can apply PID-liveness logic.
-      let raw;
-      try {
-        raw = fs.readFileSync(lockFile, 'utf8');
-      } catch (readErr) {
-        // ENOENT here means the file was unlinked between linkSync EEXIST
-        // and our read — i.e., a concurrent release-then-acquire race. We
-        // are the loser; defer to the next poll iteration. Do NOT override.
-        if (readErr.code === 'ENOENT') {
-          return { ok: false, reason: 'vanished' };
-        }
-        return { ok: false, reason: 'fs-error', error: readErr.message };
-      }
-
-      let existingLock = null;
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          existingLock = parsed;
-        }
-      } catch {
-        // Parseable read but unparseable contents — treat as stale (existingLock=null).
-      }
-      return { ok: false, reason: 'exists', existingLock };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
-  }
-}
-
-/**
- * Atomically replace an existing lock file via tmp + renameSync.
- * Used only on the stale-override path where the existing lock is known dead.
- *
- * Mirrors session-lock.mjs § replaceStateLockAtomic.
- *
- * @param {string} lockFile
- * @param {object} body — lock body to serialize
- * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error?: string }}
- */
-function replaceLockAtomic(lockFile, body) {
-  try {
-    ensureDir(lockFile);
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(path.dirname(lockFile), `.proposals-write.lock.tmp.${tmpSuffix}`);
-    fs.writeFileSync(tmpFile, JSON.stringify(body), 'utf8');
-    fs.renameSync(tmpFile, lockFile);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-}
-
-/**
  * Acquire the proposals write-lock via spin-poll.
  * Returns when the lock is acquired, or after timeoutMs.
  *
- * Stale-lock detection (#543 H2 — mirrors session-lock.mjs § tryAcquireStateLock):
- *  - On EEXIST with an unparseable body → treat as stale, atomic override + WARN.
- *  - On EEXIST with a parseable body whose host matches AND pid is dead →
- *    treat as stale, atomic override + WARN to stderr.
- *  - On EEXIST with a live PID, OR a cross-host body → continue polling.
+ * Delegates to the shared file-lock primitive (issue #630). Behavior is
+ * preserved EXACTLY:
+ *
+ *  - Compact body `{pid, host, acquiredAt}` (indent:null on create).
+ *  - 3-state distinction via `signalVanished:true` — the ENOENT-on-read race
+ *    surfaces as `{ acquired: false, reason: 'vanished' }`, and this loop
+ *    defers WITHOUT any override side-effect. CRITICAL: never override on
+ *    `vanished` — a concurrent acquirer may have already taken the freshly
+ *    vacant lock; overriding would create a double-holder race (regression of
+ *    the C9 8-worker test). This was the reason the memory-proposals copy
+ *    surfaced `vanished` as a distinct third reason rather than collapsing it
+ *    into `held` (#548 A1).
+ *  - PID staleCheck: same-host + dead PID → atomic override + WARN to stderr.
+ *  - WARN channel: `process.stderr.write` with the original messages.
+ *  - Override tmp prefix `.proposals-write.lock.tmp`, compact override body
+ *    (overrideIndent:null) — preserves the original `replaceLockAtomic` format.
+ *
+ * #548 A5 — TOCTOU acknowledgment (now centralized in file-lock.mjs's
+ * isExistingStale → isPidAliveOnHost): a sub-millisecond race exists between
+ * the PID-liveness check and the override write. The window is two sync
+ * syscalls; the consequence is bounded (override a stale lock nobody used).
+ * Accepted, not eliminated. See file-lock.mjs `isPidAliveOnHost` remarks.
  *
  * @param {string} lockFile
  * @param {number} timeoutMs
  * @returns {Promise<{ ok: true } | { ok: false, reason: 'timeout' | 'fs-error', error?: string }>}
  */
 async function acquireProposalsLock(lockFile, timeoutMs) {
-  const body = {
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: new Date().toISOString(),
-  };
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
-    const result = tryCreateLock(lockFile, body);
-    if (result.ok) return { ok: true };
-    if (result.reason === 'fs-error') return result;
+    const result = tryAcquireFileLock(lockFile, {
+      staleCheck: 'pid',
+      signalVanished: true,
+      indent: null,
+      overrideIndent: null,
+      tmpPrefix: '.proposals-write.lock.tmp',
+      warn: (msg) => process.stderr.write(msg),
+      warnMessage: (reason, _lp, existing) =>
+        existing === null
+          ? '⚠ memory-proposals lock: stale lock detected (unparseable body) — reclaiming\n'
+          : `⚠ memory-proposals lock: stale lock detected (pid=${existing.pid}, host=${existing.host}) — reclaiming\n`,
+    });
 
-    // result.reason === 'vanished' — lock file was unlinked between our EEXIST
-    // and our read. Concurrent release race; defer to the next poll iteration.
-    // CRITICAL: do NOT call replaceLockAtomic here — a concurrent acquirer may
-    // have already taken the freshly-vacant lock, and overriding would create
-    // a double-holder race (regression of the C9 8-worker test).
-    if (result.reason === 'vanished') {
-      if (Date.now() >= deadline) {
-        return { ok: false, reason: 'timeout', error: 'lock-timeout' };
-      }
-      await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
-      continue;
-    }
+    if (result.acquired) return { ok: true };
+    if (result.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: result.error };
 
-    // result.reason === 'exists' — inspect for staleness.
-    const existing = result.existingLock;
-
-    // Unparseable existing lock — treat as stale and override.
-    if (existing === null) {
-      process.stderr.write(
-        '⚠ memory-proposals lock: stale lock detected (unparseable body) — reclaiming\n'
-      );
-      const writeResult = replaceLockAtomic(lockFile, body);
-      if (writeResult.ok) return { ok: true };
-      if (writeResult.reason === 'fs-error') return writeResult;
-    } else {
-      // Parseable existing lock — same-host AND dead PID → stale override.
-      //
-      // #548 A5 — TOCTOU acknowledgment:
-      // There is a small, theoretically-existing race window between the
-      // `isPidAliveOnHost(existing.pid)` check on the next line and the subsequent
-      // `replaceLockAtomic(lockFile, body)` call. Concretely:
-      //
-      //   T0: isPidAliveOnHost(pid) === false  // PID was dead at check time
-      //   T1: kernel recycles the same numeric PID for an UNRELATED process
-      //   T2: replaceLockAtomic() overrides the lock
-      //
-      // At T2 we will have stolen the lock from a process that, by PID, looks
-      // alive but is in fact a different program that never held our lock.
-      // The window between T0 and T2 is sub-millisecond in practice (two sync
-      // syscalls back-to-back), and the consequence is bounded — we override
-      // a stale lock that nobody was using anyway. This is the same residual
-      // risk profile as the ftruncate-then-write race in POSIX append-mode
-      // writes: documented, accepted, not eliminated by simple userspace
-      // means. Mirrors session-lock.mjs:tryAcquireStateLock (lines ~533-545)
-      // which has the same structural race without explicit acknowledgment.
-      //
-      // Hardening options (future work, not in scope for #548 A5):
-      //  - Persist a monotonic "lock generation" counter alongside `pid` so
-      //    we detect PID reuse from a different generation.
-      //  - Use Linux `pidfd_open` (not portable; no macOS equivalent).
-      const sameHost =
-        typeof existing.host === 'string' && existing.host === os.hostname();
-      const pidIsNumber = typeof existing.pid === 'number';
-      const pidDead = sameHost && pidIsNumber && isPidAliveOnHost(existing.pid) === false;
-
-      if (pidDead) {
-        process.stderr.write(
-          `⚠ memory-proposals lock: stale lock detected (pid=${existing.pid}, host=${existing.host}) — reclaiming\n`
-        );
-        const writeResult = replaceLockAtomic(lockFile, body);
-        if (writeResult.ok) return { ok: true };
-        if (writeResult.reason === 'fs-error') return writeResult;
-      }
-    }
-
+    // reason === 'vanished' (concurrent release race) OR 'held' (live holder /
+    // cross-host). Both defer to the next poll iteration without overriding.
     if (Date.now() >= deadline) {
       return { ok: false, reason: 'timeout', error: 'lock-timeout' };
     }
-
     await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
   }
 }
 
 /**
  * Release (unlink) the proposals write-lock. Idempotent — ENOENT is ignored.
+ *
+ * Delegates to releaseFileLock with `ownerGuard:false` — reproducing the
+ * original unconditional unlink. PRESERVE this: the memory-proposals release is
+ * intentionally NOT owner-guarded (it always runs inside the same process that
+ * acquired, immediately after the JSONL append, so the on-disk lock is always
+ * ours). Non-ENOENT fs errors are logged to stderr, never re-thrown.
+ *
  * @param {string} lockFile
  */
 function releaseProposalsLock(lockFile) {
-  try {
-    fs.unlinkSync(lockFile);
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      // Log but do not re-throw — release errors must not mask the callers' error.
-      process.stderr.write(
-        `store.mjs: lock release failed (${err.code ?? err.message})\n`
-      );
-    }
-  }
+  releaseFileLock(lockFile, {
+    ownerGuard: false,
+    warn: (errToken) => process.stderr.write(`store.mjs: lock release failed (${errToken})\n`),
+  });
 }
 
 /**

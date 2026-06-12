@@ -93,6 +93,24 @@ Extract learnings from session history.
 - Sort by `completed_at` descending (most recent first)
 - If no sessions found, abort: "No session data available. Complete at least one session before running evolve."
 
+### Step 3.1b: Read Extra Sources (#638)
+
+When `evolve.extra-sources` is configured in Session Config (default `[]` ⇒ this step is a no-op), `/evolve` consumes OUT-OF-BAND domain measurement sidecars to surface `domain-regression` learnings.
+
+**READ-ONLY contract:** `/evolve` NEVER runs the domain measurement. The measurement (e.g. an eval-learn regression harness) runs elsewhere and writes a sidecar JSON; this step only READS that sidecar's output. Never shell out to produce the sidecar from here.
+
+For each configured `extra-sources` entry `{path, kind, learning-type}`:
+
+1. **Read the sidecar** at `path` (resolved against the repo root). If the file is missing or unreadable, **skip with a WARN** (`evolve: extra-source not found: <path>`) — do not abort the whole run.
+2. **Schema-gate** the sidecar against the `kind`'s expected shape. For `kind: regression-flags` the schema is `{ flags: [ { metric, baseline, recent, delta } ] }`. If the parsed JSON does not match (missing `flags` array, or a flag missing a required field), **skip with a WARN** (`evolve: extra-source <path> failed regression-flags schema gate`) — never guess at a different shape.
+3. **Emit one `domain-regression` learning candidate per flag that is PERSISTENT** — i.e. the same `metric` regressed across ≥2 consecutive sessions (cross-reference prior sessions' sidecar reads or the existing learnings store for the same `subject`). A one-off flag is noise; only a persistent regression earns a candidate.
+   - `type`: `learning-type` from the entry (registered enum value `domain-regression`)
+   - `subject`: the flag's `metric`
+   - `insight`: a human-readable regression statement (e.g. "metric `<metric>` regressed: baseline <baseline> → recent <recent> (delta <delta>) persisting across ≥2 sessions")
+   - `evidence`: `baseline → recent` (the concrete data points from the sidecar)
+   - `confidence` / `expires_at`: derived via the existing confidence + decay infrastructure (Step 3.5), exactly as for the built-in learning types. `domain-regression` carries a 60-day TTL (`LEARNING_TTL_DAYS`).
+4. Candidates flow into the SAME Step 3.4 AskUserQuestion confirmation + Step 3.5 write path as the built-in learning types — there is no separate write path.
+
 ### Step 3.2: Pattern Extraction
 
 For each of the 8 learning types, apply these heuristics:
@@ -223,7 +241,7 @@ For confirmed learnings, use atomic rewrite strategy:
 4. Append new learnings with the **canonical schema_version:1 shape** — every field is required (#303):
    - `schema_version`: **1** (integer, ALWAYS — never omit)
    - `id`: UUID v4 string generated via `node -e "const {randomUUID}=require('crypto');process.stdout.write(randomUUID())"` or `uuidgen | tr '[:upper:]' '[:lower:]'`. MUST be a non-empty UUID string. **Never omit** — missing `id` causes 100% mirror-skip (#303).
-   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`, `hardware-pattern`, `autopilot-effectiveness`
+   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`, `hardware-pattern`, `autopilot-effectiveness`, `domain-regression` (#638 — only when sourced from `evolve.extra-sources`, see Step 3.1b)
    - `subject`: the pattern subject
    - `insight`: human-readable description of the pattern. **MUST be `insight`** — do NOT use `description` or `recommendation` (legacy alias keys that vault-mirror cannot read; see #303).
    - `evidence`: specific data points that support the pattern

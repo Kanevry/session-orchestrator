@@ -63,8 +63,9 @@
       "pattern": "rm -rf",
       "severity": "block",
       "allow-override-flag": null,
-      "sources": ["PSA-003", "#155", "wave-executor-baseline"],
-      "rationale": "Recursive force-removal can destroy project files or another session's work with no recovery path. Blocked except for safe paths (.orchestrator/tmp, node_modules) which the pre-bash hook evaluates separately."
+      "path-allowlist": ["/tmp/", "/private/tmp/", "$TMPDIR"],
+      "sources": ["PSA-003", "#155", "wave-executor-baseline", "#641"],
+      "rationale": "Recursive force-removal can destroy project files or another session's work with no recovery path. Blocked except for safe paths (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) which the pre-bash hook evaluates separately."
     },
     {
       "id": "git-push-force",
