@@ -101,7 +101,7 @@ When `evolve.extra-sources` is configured in Session Config (default `[]` ⇒ th
 
 For each configured `extra-sources` entry `{path, kind, learning-type}`:
 
-1. **Read the sidecar** at `path` (resolved against the repo root). If the file is missing or unreadable, **skip with a WARN** (`evolve: extra-source not found: <path>`) — do not abort the whole run.
+1. **Read the sidecar** at `path` (parser-validated as repo-relative, with absolute paths and `..` escape segments dropped before this step, then resolved against the repo root). If the file is missing or unreadable, **skip with a WARN** (`evolve: extra-source not found: <path>`) — do not abort the whole run.
 2. **Schema-gate** the sidecar against the `kind`'s expected shape. For `kind: regression-flags` the schema is `{ flags: [ { metric, baseline, recent, delta } ] }`. If the parsed JSON does not match (missing `flags` array, or a flag missing a required field), **skip with a WARN** (`evolve: extra-source <path> failed regression-flags schema gate`) — never guess at a different shape.
 3. **Emit one `domain-regression` learning candidate per flag that is PERSISTENT** — i.e. the same `metric` regressed across ≥2 consecutive sessions (cross-reference prior sessions' sidecar reads or the existing learnings store for the same `subject`). A one-off flag is noise; only a persistent regression earns a candidate.
    - `type`: `learning-type` from the entry (registered enum value `domain-regression`)

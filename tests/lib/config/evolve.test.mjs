@@ -192,6 +192,32 @@ describe('_parseEvolve — schema-gate drops', () => {
     expect(warns).toHaveLength(1);
   });
 
+  it('drops entries whose path escapes repo-relative scope', () => {
+    const content = [
+      'evolve:',
+      '  extra-sources:',
+      '    - path: ../outside.json',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '    - path: safe/../../outside.json',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '    - path: /etc/passwd',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '    - path: eval/learn/reports/latest.json',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '',
+    ].join('\n');
+    const result = _parseEvolve(content);
+    expect(result).toEqual([
+      { path: 'eval/learn/reports/latest.json', kind: 'regression-flags', 'learning-type': 'domain-regression' },
+    ]);
+    const warns = stderrCapture.filter((m) => m.includes('outside repo-relative scope'));
+    expect(warns).toHaveLength(3);
+  });
+
   it('drops an entry with an unknown kind value', () => {
     const content = [
       'evolve:',

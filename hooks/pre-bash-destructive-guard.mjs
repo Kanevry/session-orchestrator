@@ -296,12 +296,20 @@ function resolveAllowlistPrefixes(ruleAllowlist) {
     const norm = path.normalize(p).replace(/[/\\]+$/, '');
     if (norm) out.add(norm);
   };
+  const tempRoots = ['/tmp', '/private/tmp', '/var/folders'].map((p) => path.normalize(p));
+  const addTemp = (p) => {
+    if (!p || !path.isAbsolute(p)) return;
+    const norm = path.normalize(p).replace(/[/\\]+$/, '');
+    if (tempRoots.some((root) => norm === root || norm.startsWith(root + path.sep))) {
+      out.add(norm);
+    }
+  };
 
   for (const entry of Array.isArray(ruleAllowlist) ? ruleAllowlist : []) {
     if (typeof entry !== 'string' || entry.length === 0) continue;
     if (entry === '$TMPDIR' || entry === '${TMPDIR}') {
-      if (process.env.TMPDIR) add(process.env.TMPDIR);
-      add(os.tmpdir());
+      if (process.env.TMPDIR) addTemp(process.env.TMPDIR);
+      addTemp(os.tmpdir());
       continue;
     }
     if (path.isAbsolute(entry)) add(entry);

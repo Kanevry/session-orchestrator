@@ -9,7 +9,7 @@
  *  - Parity: parseSessionConfig result matches bash scripts/parse-config.sh JSON output
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -1104,6 +1104,26 @@ describe('evolve.extra-sources parsing (#638)', () => {
         'learning-type': 'domain-regression',
       },
     ]);
+  });
+
+  it('drops evolve.extra-sources records that escape repo-relative scope', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const content = [
+        '## Session Config',
+        '',
+        'evolve:',
+        '  extra-sources:',
+        '    - path: ../outside.json',
+        '      kind: regression-flags',
+        '      learning-type: domain-regression',
+        '',
+      ].join('\n');
+      const config = parseSessionConfig(content);
+      expect(config['evolve.extra-sources']).toEqual([]);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 

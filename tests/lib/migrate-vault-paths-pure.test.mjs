@@ -288,6 +288,11 @@ describe('rewriteMissingSegment', () => {
     );
   });
 
+  it('preserves a trailing slash on the rewritten vault-dir value', () => {
+    const input = 'vault-dir: ~/Projects/vault/\n';
+    expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/Bernhard/vault/\n');
+  });
+
   it('leaves a vault-backups line untouched (path-boundary guard)', () => {
     const input = 'vault-dir: ~/Projects/vault-backups\n';
     expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/vault-backups\n');

@@ -11,14 +11,25 @@
 // time and asserting concrete occurrence counts — so a future re-rename (or a
 // stray `.sh` reference) fails here instead of shipping a silent dead bridge.
 
-import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  readFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..');
 const bootstrapDir = path.join(repoRoot, 'skills', 'bootstrap');
+
+const tmpDirs = [];
 
 // The bootstrap files that participate in (or document) the baseline-fetch
 // bridge. Each is read fresh from disk so the test reflects current source.
@@ -46,6 +57,54 @@ function readBootstrap(name) {
   expect(existsSync(full), `expected bootstrap file to exist: ${full}`).toBe(true);
   return readFileSync(full, 'utf8');
 }
+
+function extractBaselineFetchBashBlock() {
+  const body = readBootstrap('_shared-template.md');
+  const match = body.match(/## #baseline-fetch[\s\S]*?```bash\n([\s\S]*?)\n```/);
+  expect(match, 'expected #baseline-fetch section to contain a bash block').toBeTruthy();
+  return match[1];
+}
+
+function extractRulesManifestPaths(bashBlock) {
+  const match = bashBlock.match(/cat > "\$RULES_MANIFEST" <<MANIFEST\n([\s\S]*?)\nMANIFEST/);
+  expect(match, 'expected #baseline-fetch block to contain a RULES_MANIFEST heredoc').toBeTruthy();
+  return match[1].split('\n').filter(Boolean);
+}
+
+function makeTmpDir(prefix) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  tmpDirs.push(dir);
+  return dir;
+}
+
+function writeFetchBaselineStub(pluginRoot, successfulBodies) {
+  const scriptsLib = path.join(pluginRoot, 'scripts', 'lib');
+  mkdirSync(scriptsLib, { recursive: true });
+
+  const entries = JSON.stringify(Object.entries(successfulBodies));
+  writeFileSync(
+    path.join(scriptsLib, 'fetch-baseline.mjs'),
+    `const bodies = new Map(${entries});
+const [, , projectId, filePath, baselineRef] = process.argv;
+if (projectId !== '123' || baselineRef !== 'feature/rules') {
+  console.error('unexpected fetch args');
+  process.exit(3);
+}
+if (!bodies.has(filePath)) {
+  console.error('not found: ' + filePath);
+  process.exit(2);
+}
+process.stdout.write(bodies.get(filePath));
+`,
+    'utf8',
+  );
+}
+
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    rmSync(tmpDirs.pop(), { recursive: true, force: true });
+  }
+});
 
 describe('bootstrap baseline-fetch bridge (#618 regression guard)', () => {
   // ── 1. No `fetch-baseline.sh` anywhere in the bootstrap surface ──────────
@@ -123,5 +182,71 @@ describe('bootstrap baseline-fetch bridge (#618 regression guard)', () => {
         expect(countOccurrences(body, 'DEFAULT_GITLAB_HOST')).toBe(0);
       },
     );
+  });
+});
+
+describe('bootstrap baseline-fetch bridge (#629 spawn-near behavior)', () => {
+  it('fetches successful manifest files, removes 404 artifacts, and writes a JSON lock in success order', { timeout: 30_000 }, () => {
+    const repoFixture = makeTmpDir('bootstrap-baseline-repo-');
+    const pluginFixture = makeTmpDir('bootstrap-baseline-plugin-');
+
+    const successfulBodies = {
+      '.claude/rules/development.md': '# Development\n\nbody\n',
+      '.claude/rules/security.md': '# Security\n\nbody\n',
+      '.claude/rules/testing.md': '# Testing\n\nbody\n',
+      '.claude/rules/parallel-sessions.md': '# Parallel Sessions\n\nbody\n',
+    };
+    writeFetchBaselineStub(pluginFixture, successfulBodies);
+
+    const bashBlock = extractBaselineFetchBashBlock();
+    const manifestPaths = extractRulesManifestPaths(bashBlock);
+    const script = `set -euo pipefail
+${bashBlock}
+`;
+    const result = spawnSync('bash', ['-c', script], {
+      cwd: repoFixture,
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        CONFIG: JSON.stringify({
+          'baseline-ref': 'feature/rules',
+          'baseline-project-id': '123',
+          'gitlab-host': 'gitlab.example.test',
+        }),
+        GITLAB_TOKEN: 'test-token',
+        PLUGIN_ROOT: pluginFixture,
+        REPO_ROOT: repoFixture,
+      },
+    });
+
+    expect(
+      result.status,
+      `baseline-fetch block failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
+
+    for (const [rulePath, expectedBody] of Object.entries(successfulBodies)) {
+      const target = path.join(repoFixture, rulePath);
+      expect(existsSync(target), `expected fetched rule to exist: ${rulePath}`).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe(expectedBody);
+    }
+
+    for (const missingRule of manifestPaths.filter((rulePath) => !(rulePath in successfulBodies))) {
+      expect(
+        existsSync(path.join(repoFixture, missingRule)),
+        `expected 404 rule not to leave an empty artifact: ${missingRule}`,
+      ).toBe(false);
+    }
+
+    const lockFile = path.join(repoFixture, '.claude', '.baseline-fetch.lock');
+    expect(existsSync(lockFile), 'expected baseline-fetch lock file to exist').toBe(true);
+    const lock = JSON.parse(readFileSync(lockFile, 'utf8'));
+    expect(lock).toEqual({
+      version: 1,
+      project_id: 123,
+      baseline_ref: 'feature/rules',
+      fetched_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+      files: manifestPaths.filter((rulePath) => rulePath in successfulBodies),
+    });
   });
 });

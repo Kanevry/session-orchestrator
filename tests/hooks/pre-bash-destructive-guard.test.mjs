@@ -582,6 +582,49 @@ describe('#641 rm flag-form gap closures (exit 2)', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// #642 — rm whitespace-obfuscation and TMPDIR allowlist hardening
+// ---------------------------------------------------------------------------
+
+describe('#642 rm whitespace-obfuscation gap closures (exit 2)', { timeout: 15000 }, () => {
+  it.each([
+    ['IFS braced', 'rm${IFS}-rf /data'],
+    ['IFS bare', 'rm$IFS-rf /data'],
+    ['IFS default', 'rm${IFS:- }-rf /data'],
+    ['ANSI-C tab', "rm$'\\t'-rf /data"],
+  ])('blocks obfuscated rm -rf via %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(command),
+    });
+    expect(result.code).toBe(2);
+  });
+});
+
+describe('#642 TMPDIR allowlist confinement', { timeout: 15000 }, () => {
+  it('blocks inherited TMPDIR=/etc from allowlisting /etc targets', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /etc/sneaky'),
+      env: { TMPDIR: '/etc' },
+    });
+    expect(result.code).toBe(2);
+  });
+
+  it('allows inherited TMPDIR when it stays under a canonical temp root', async () => {
+    const dir = await mkProjectTracked();
+    const tmp = '/var/folders/session-orchestrator-test/T';
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`rm -rf ${tmp}/scratch`),
+      env: { TMPDIR: tmp },
+    });
+    expect(result.code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // git-stash-any — warn only when non-empty stash
 // ---------------------------------------------------------------------------
 

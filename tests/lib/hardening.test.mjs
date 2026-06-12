@@ -392,6 +392,25 @@ describe('commandMatchesBlocked', () => {
     });
   });
 
+  describe('IFS whitespace obfuscation regressions (#642)', () => {
+    it.each([
+      ['rm${IFS}-rf /', 'rm -rf', true],
+      ['rm$IFS-rf /', 'rm -rf', true],
+      ['rm${IFS:- }-rf /', 'rm -rf', true],
+      ["rm$'\\t'-rf /", 'rm -rf', true],
+    ])('commandMatchesBlocked(%s, %s) === %s', (command, pattern, expected) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(expected);
+    });
+
+    it('keeps a quoted obfuscated destructive literal inert for non-interpreters', () => {
+      expect(commandMatchesBlocked("echo 'rm${IFS}-rf /'", 'rm -rf')).toBe(false);
+    });
+
+    it('blocks a quoted obfuscated payload when an interpreter executes it', () => {
+      expect(commandMatchesBlocked("bash -c 'rm${IFS}-rf /'", 'rm -rf')).toBe(true);
+    });
+  });
+
   describe('additional edge cases', () => {
     it('returns false for empty pattern', () => {
       expect(commandMatchesBlocked('rm -rf /', '')).toBe(false);
