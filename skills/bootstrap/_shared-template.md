@@ -160,7 +160,9 @@ MANIFEST
     FETCHED_JSON=$(jq -R . < "$SUCCESS_LOG" | jq -s .)
     LOCK_FILE="$REPO_ROOT/.claude/.baseline-fetch.lock"
     mkdir -p "$REPO_ROOT/.claude"
-    node --input-type=module -e "
+    FETCHED_JSON="$FETCHED_JSON" BASELINE_PROJECT_ID="$BASELINE_PROJECT_ID" \
+      BASELINE_REF="$BASELINE_REF" LOCK_FILE="$LOCK_FILE" \
+      node --input-type=module -e "
       import { writeFileSync } from 'node:fs';
       const files = JSON.parse(process.env.FETCHED_JSON);
       const lock = {
@@ -171,8 +173,7 @@ MANIFEST
         files,
       };
       writeFileSync(process.env.LOCK_FILE, JSON.stringify(lock, null, 2) + '\n');
-    " FETCHED_JSON="$FETCHED_JSON" BASELINE_PROJECT_ID="$BASELINE_PROJECT_ID" \
-        BASELINE_REF="$BASELINE_REF" LOCK_FILE="$LOCK_FILE"
+    "
     echo "Wrote .claude/.baseline-fetch.lock ($(wc -l < "$SUCCESS_LOG" | tr -d ' ') files)"
   else
     echo "WARNING: baseline fetch produced no files; rules will arrive via Clank sync MRs (legacy path)" >&2

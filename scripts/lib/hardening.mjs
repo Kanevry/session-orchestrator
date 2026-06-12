@@ -241,6 +241,158 @@ const SHELL_EXEC_INTERPRETERS = new Set([
   'find',
 ]);
 
+function matchIfsWhitespaceExpansion(command, index) {
+  if (command.startsWith('${IFS', index)) {
+    const end = command.indexOf('}', index + 2);
+    if (end !== -1) {
+      const body = command.slice(index + 2, end);
+      if (body === 'IFS' || /^IFS:-\s*$/.test(body)) return end + 1;
+    }
+  }
+
+  if (command.startsWith('$IFS', index)) {
+    const next = command[index + 4] ?? '';
+    if (!/[A-Za-z0-9_]/.test(next)) return index + 4;
+  }
+
+  return -1;
+}
+
+function isWhitespaceCode(code) {
+  return Number.isFinite(code) && /\s/.test(String.fromCharCode(code));
+}
+
+function matchAnsiCWhitespaceQuote(command, index) {
+  if (!command.startsWith("$'", index)) return -1;
+
+  let i = index + 2;
+  let sawWhitespace = false;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "'") return sawWhitespace ? i + 1 : -1;
+
+    if (ch === '\\') {
+      if (i + 1 >= command.length) return -1;
+      const next = command[i + 1];
+
+      if (next === 't' || next === 'n' || next === 'r' || next === 'v' || next === 'f') {
+        sawWhitespace = true;
+        i += 2;
+        continue;
+      }
+
+      if (next === 'x') {
+        const hex = command.slice(i + 2).match(/^[0-9A-Fa-f]{1,2}/)?.[0];
+        if (!hex) return -1;
+        if (!isWhitespaceCode(Number.parseInt(hex, 16))) return -1;
+        sawWhitespace = true;
+        i += 2 + hex.length;
+        continue;
+      }
+
+      if (/^[0-7]$/.test(next)) {
+        const octal = command.slice(i + 1).match(/^[0-7]{1,3}/)?.[0];
+        if (!octal) return -1;
+        if (!isWhitespaceCode(Number.parseInt(octal, 8))) return -1;
+        sawWhitespace = true;
+        i += 1 + octal.length;
+        continue;
+      }
+
+      if (/\s/.test(next)) {
+        sawWhitespace = true;
+        i += 2;
+        continue;
+      }
+
+      return -1;
+    }
+
+    if (/\s/.test(ch)) {
+      sawWhitespace = true;
+      i++;
+      continue;
+    }
+
+    return -1;
+  }
+
+  return -1;
+}
+
+function matchShellWhitespaceExpansion(command, index) {
+  const ifsEnd = matchIfsWhitespaceExpansion(command, index);
+  if (ifsEnd !== -1) return ifsEnd;
+  return matchAnsiCWhitespaceQuote(command, index);
+}
+
+/**
+ * Normalize common shell whitespace obfuscations into literal spaces before
+ * guard parsing. This is intentionally narrow: it recognizes IFS expansions and
+ * ANSI-C quotes that decode entirely to whitespace, not arbitrary shell syntax.
+ *
+ * By default single-quoted text is preserved because the outer shell treats it
+ * literally. Callers that inspect shell-interpreter payload strings can opt in
+ * to `expandSingleQuoted` because those strings are parsed by a later shell.
+ *
+ * @param {string} command
+ * @param {{ expandSingleQuoted?: boolean, expandDoubleQuoted?: boolean }} [options]
+ * @returns {string}
+ */
+function normalizeShellWhitespaceExpansions(command, options = {}) {
+  const expandSingleQuoted = options.expandSingleQuoted === true;
+  const expandDoubleQuoted = options.expandDoubleQuoted !== false;
+
+  let out = '';
+  let state = 'normal';
+
+  for (let i = 0; i < command.length;) {
+    const ch = command[i];
+
+    if (state === 'single') {
+      if (ch === "'") { state = 'normal'; out += ch; i++; continue; }
+      if (expandSingleQuoted) {
+        const end = matchShellWhitespaceExpansion(command, i);
+        if (end !== -1) { out += ' '; i = end; continue; }
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (state === 'double') {
+      if (ch === '"') { state = 'normal'; out += ch; i++; continue; }
+      if (expandDoubleQuoted) {
+        const end = matchShellWhitespaceExpansion(command, i);
+        if (end !== -1) { out += ' '; i = end; continue; }
+      }
+      if (ch === '\\' && i + 1 < command.length) {
+        out += ch + command[i + 1];
+        i += 2;
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+
+    const end = matchShellWhitespaceExpansion(command, i);
+    if (end !== -1) { out += ' '; i = end; continue; }
+    if (ch === '\\' && i + 1 < command.length) {
+      out += ch + command[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === "'") { state = 'single'; out += ch; i++; continue; }
+    if (ch === '"') { state = 'double'; out += ch; i++; continue; }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
 /**
  * Hand-rolled quote-aware command lexer.
  *
@@ -267,6 +419,7 @@ const SHELL_EXEC_INTERPRETERS = new Set([
 export function tokenizeCommand(command) {
   const tokens = [];
   if (typeof command !== 'string' || command.length === 0) return tokens;
+  command = normalizeShellWhitespaceExpansions(command);
 
   let text = '';
   let started = false;     // a token is in progress
@@ -416,7 +569,9 @@ function boundaryRegex(pattern) {
  */
 function quotedTokensMatch(segment, re) {
   for (const tok of segment) {
-    if (tok.quoted && re.test(tok.text)) return true;
+    if (tok.quoted && re.test(normalizeShellWhitespaceExpansions(tok.text, { expandSingleQuoted: true }))) {
+      return true;
+    }
   }
   return false;
 }
@@ -463,13 +618,17 @@ export function commandMatchesBlocked(command, pattern) {
   if (typeof command !== 'string' || command.length === 0) return false;
 
   const re = boundaryRegex(pattern);
+  const normalizedCommand = normalizeShellWhitespaceExpansions(command);
+  const payloadNormalizedCommand = normalizeShellWhitespaceExpansions(command, {
+    expandSingleQuoted: true,
+  });
 
   // Fast path: if the boundary regex does not match the raw string at all, no
-  // tokenization can produce a match. (Tokenization strips quotes, so it cannot
-  // create new matches the raw string lacks for our boundary set.)
-  if (!re.test(command)) return false;
+  // tokenization can produce a match. Shell whitespace expansions can create
+  // matches, so test the normalized forms rather than the original command.
+  if (!re.test(normalizedCommand) && !re.test(payloadNormalizedCommand)) return false;
 
-  const segments = splitSegments(tokenizeCommand(command));
+  const segments = splitSegments(tokenizeCommand(normalizedCommand));
 
   for (const segment of segments) {
     // 1) Unquoted occurrence anywhere in the segment → always a match.

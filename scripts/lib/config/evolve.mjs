@@ -25,6 +25,8 @@
  * for security-relevant fields the consumer will read.
  */
 
+import pathModule from 'node:path';
+
 /** Per-entry defaults (none beyond the required field-set; documented for symmetry). */
 export const EVOLVE_EXTRA_SOURCE_DEFAULTS = Object.freeze({
   kind: 'regression-flags',
@@ -38,10 +40,10 @@ export const EVOLVE_EXTRA_SOURCE_DEFAULTS = Object.freeze({
 const VALID_KIND = new Set(['regression-flags']);
 const VALID_LEARNING_TYPE = new Set(['domain-regression']);
 
-// Allowlist: a sidecar `path` is a repo-relative or absolute file path — no spaces,
-// no shell metacharacters. Mirrors cross-repo.mjs / custom-phases.mjs SAFE_PATH_RE.
-// Confinement at the sink is the actual path-traversal guard; this rejects only
-// shell-injection vectors.
+// Allowlist: a sidecar `path` is a repo-relative file path — no spaces, no shell
+// metacharacters, and no `..` scope escape. Mirrors cross-repo.mjs /
+// custom-phases.mjs SAFE_PATH_RE for shell-injection filtering, then adds
+// evolve-specific confinement because /evolve resolves sidecars against repo root.
 const SAFE_PATH_RE = /^[A-Za-z0-9._~/-]+$/;
 
 /**
@@ -172,6 +174,12 @@ function _validateRecord(raw) {
   if (!SAFE_PATH_RE.test(path)) {
     process.stderr.write(
       `evolve: dropped extra-source with shell metacharacter in path: ${JSON.stringify(path)}\n`,
+    );
+    return null;
+  }
+  if (pathModule.isAbsolute(path) || path.split('/').includes('..')) {
+    process.stderr.write(
+      `evolve: dropped extra-source outside repo-relative scope: ${JSON.stringify(path)}\n`,
     );
     return null;
   }

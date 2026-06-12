@@ -35,6 +35,32 @@ describe('tokenizeCommand — unquoted whitespace splitting', () => {
       { text: '-la', quoted: false },
     ]);
   });
+
+  it('splits known IFS obfuscations before command detection', () => {
+    expect(tokenizeCommand('rm${IFS}-rf /data')).toEqual([
+      { text: 'rm', quoted: false },
+      { text: '-rf', quoted: false },
+      { text: '/data', quoted: false },
+    ]);
+    expect(tokenizeCommand('rm$IFS-rf /data')).toEqual([
+      { text: 'rm', quoted: false },
+      { text: '-rf', quoted: false },
+      { text: '/data', quoted: false },
+    ]);
+    expect(tokenizeCommand('rm${IFS:- }-rf /data')).toEqual([
+      { text: 'rm', quoted: false },
+      { text: '-rf', quoted: false },
+      { text: '/data', quoted: false },
+    ]);
+  });
+
+  it('splits ANSI-C whitespace quotes before command detection', () => {
+    expect(tokenizeCommand("rm$'\\t'-rf /data")).toEqual([
+      { text: 'rm', quoted: false },
+      { text: '-rf', quoted: false },
+      { text: '/data', quoted: false },
+    ]);
+  });
 });
 
 describe('tokenizeCommand — operator splitting', () => {

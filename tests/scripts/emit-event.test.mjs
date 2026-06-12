@@ -81,6 +81,22 @@ describe('emit-event.mjs CLI — happy path', () => {
     expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
   });
 
+  it('creates parent directories recursively for a nested --file target', () => {
+    const out = join(tmpDir, 'a', 'b', 'c', 'events.jsonl');
+    const res = runCli([
+      '--type', 'test.nested.file',
+      '--file', out,
+      '--payload', '{"scope":"cli","depth":3}',
+    ]);
+    expect(res.status).toBe(0);
+    expect(existsSync(dirname(out))).toBe(true);
+
+    const record = JSON.parse(readFileSync(out, 'utf8').trim().split('\n')[0]);
+    expect(record.event).toBe('test.nested.file');
+    expect(record.scope).toBe('cli');
+    expect(record.depth).toBe(3);
+  });
+
   it('defaults --payload to {} when omitted (record has only timestamp + event)', () => {
     const out = join(tmpDir, 'events.jsonl');
     const res = runCli(['--type', 'test.no.payload', '--file', out]);
