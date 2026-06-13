@@ -70,23 +70,26 @@ function walkUpFor(startDir, marker, kind) {
  *
  * Detection order (mirrors platform.sh):
  * 1. Env-var fast path: CLAUDE_PLUGIN_ROOT → "claude", CODEX_PLUGIN_ROOT → "codex",
- *    CURSOR_RULES_DIR → "cursor"
+ *    CURSOR_RULES_DIR → "cursor", PI_PLUGIN_ROOT → "pi"
  * 2. Filesystem walk from CWD looking for marker dirs:
- *    .claude-plugin → "claude", .codex-plugin → "codex", .cursor/rules → "cursor"
+ *    .claude-plugin → "claude", .codex-plugin → "codex", .cursor/rules → "cursor",
+ *    .pi → "pi"
  * 3. Default: "claude"
  *
- * @returns {"claude"|"codex"|"cursor"}
+ * @returns {"claude"|"codex"|"cursor"|"pi"}
  */
 export function detectPlatform() {
   if (process.env.CLAUDE_PLUGIN_ROOT) return 'claude';
   if (process.env.CODEX_PLUGIN_ROOT)  return 'codex';
   if (process.env.CURSOR_RULES_DIR)   return 'cursor';
+  if (process.env.PI_PLUGIN_ROOT)      return 'pi';
 
   const cwd = process.cwd();
 
   if (walkUpFor(cwd, '.claude-plugin',               'dir')) return 'claude';
   if (walkUpFor(cwd, '.codex-plugin',                'dir')) return 'codex';
   if (walkUpFor(cwd, path.join('.cursor', 'rules'),  'dir')) return 'cursor';
+  if (walkUpFor(cwd, '.pi',                           'dir')) return 'pi';
 
   return 'claude';
 }
@@ -98,15 +101,15 @@ export function detectPlatform() {
 /**
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
- * Delegates to `scripts/lib/plugin-root.mjs` which implements the 4-level fallback
- * (CLAUDE_PLUGIN_ROOT → CODEX_PLUGIN_ROOT → walk from import.meta.url →
+ * Delegates to `scripts/lib/plugin-root.mjs` which implements the layered fallback
+ * (CLAUDE_PLUGIN_ROOT → CODEX_PLUGIN_ROOT → PI_PLUGIN_ROOT → walk from import.meta.url →
  * walk from cwd). The platform-specific CURSOR_RULES_DIR path is handled here
  * as an additional level before falling back to the robust resolver.
  *
  * Returns empty string (never throws) to preserve backward compat with callers
  * that check for a falsy return value.
  *
- * @param {"claude"|"codex"|"cursor"} [platform]
+ * @param {"claude"|"codex"|"cursor"|"pi"} [platform]
  * @returns {string}  Absolute path, or empty string if nothing found
  */
 export function resolvePluginRoot(platform) {
@@ -118,7 +121,7 @@ export function resolvePluginRoot(platform) {
     return process.env.CURSOR_RULES_DIR;
   }
 
-  // Delegate to the robust 4-level resolver (#212)
+  // Delegate to the robust layered resolver (#212 + Pi adapter)
   try {
     return _resolvePluginRootRobust();
   } catch (err) {
@@ -137,12 +140,12 @@ export function resolvePluginRoot(platform) {
  * Resolve the absolute path to the current project root.
  *
  * Detection order (mirrors platform.sh):
- * 1. CLAUDE_PROJECT_DIR → CODEX_PROJECT_DIR → CURSOR_PROJECT_DIR env vars
+ * 1. CLAUDE_PROJECT_DIR → CODEX_PROJECT_DIR → CURSOR_PROJECT_DIR → PI_PROJECT_DIR env vars
  *    (CLAUDE wins when multiple are set — matches .sh order)
  * 2. Walk CWD up looking for platform config file (CLAUDE.md / AGENTS.md) or .git
  * 3. Default: process.cwd()
  *
- * @param {"claude"|"codex"|"cursor"} [platform]
+ * @param {"claude"|"codex"|"cursor"|"pi"} [platform]
  * @returns {string}  Absolute path
  */
 export function resolveProjectDir(platform) {
@@ -152,10 +155,11 @@ export function resolveProjectDir(platform) {
   if (process.env.CLAUDE_PROJECT_DIR)  return process.env.CLAUDE_PROJECT_DIR;
   if (process.env.CODEX_PROJECT_DIR)   return process.env.CODEX_PROJECT_DIR;
   if (process.env.CURSOR_PROJECT_DIR)  return process.env.CURSOR_PROJECT_DIR;
+  if (process.env.PI_PROJECT_DIR)      return process.env.PI_PROJECT_DIR;
 
   // 2. Walk up from CWD
   const cwd = process.cwd();
-  const configFile = plt === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+  const configFile = (plt === 'codex' || plt === 'pi') ? 'AGENTS.md' : 'CLAUDE.md';
 
   const byConfig = walkUpFor(cwd, configFile, 'file');
   if (byConfig) return byConfig;
@@ -179,15 +183,17 @@ export function resolveProjectDir(platform) {
  * | claude   | .claude  |
  * | codex    | .codex   |
  * | cursor   | .cursor  |
+ * | pi       | .pi      |
  *
- * @param {"claude"|"codex"|"cursor"} [platform]
- * @returns {".claude"|".codex"|".cursor"}
+ * @param {"claude"|"codex"|"cursor"|"pi"} [platform]
+ * @returns {".claude"|".codex"|".cursor"|".pi"}
  */
 export function resolveStateDir(platform) {
   const plt = platform ?? detectPlatform();
   switch (plt) {
     case 'codex':  return '.codex';
     case 'cursor': return '.cursor';
+    case 'pi':     return '.pi';
     default:       return '.claude';
   }
 }
@@ -202,21 +208,22 @@ export function resolveStateDir(platform) {
  * | Platform | Result    |
  * |----------|-----------|
  * | codex    | AGENTS.md |
+ * | pi       | AGENTS.md |
  * | others   | CLAUDE.md |
  *
- * @param {"claude"|"codex"|"cursor"} [platform]
+ * @param {"claude"|"codex"|"cursor"|"pi"} [platform]
  * @returns {"CLAUDE.md"|"AGENTS.md"}
  */
 export function resolveConfigFile(platform) {
   const plt = platform ?? detectPlatform();
-  return plt === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+  return (plt === 'codex' || plt === 'pi') ? 'AGENTS.md' : 'CLAUDE.md';
 }
 
 // ---------------------------------------------------------------------------
 // Auto-initialise — compute all exported constants at module load
 // ---------------------------------------------------------------------------
 
-/** @type {"claude"|"codex"|"cursor"} */
+/** @type {"claude"|"codex"|"cursor"|"pi"} */
 export const SO_PLATFORM = detectPlatform();
 
 /** Absolute path to the session-orchestrator plugin directory (empty string if unresolvable) */

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -684,6 +684,36 @@ describe('readConfigFile', () => {
     // correctly resolves to the {default, deep} object form — not the scalar 6.
     expect(config['agents-per-wave']).toEqual({ default: 6, deep: 18 });
     expect(config.enforcement).toBe('warn');
+  });
+
+  it('prefers AGENTS.md when SO_PLATFORM is pi', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-pi-'));
+    try {
+      writeFileSync(join(tmpDir, 'CLAUDE.md'), '# Claude\n\n## Session Config\n\nwaves: 3\n', 'utf8');
+      writeFileSync(join(tmpDir, 'AGENTS.md'), '# Agents\n\n## Session Config\n\nwaves: 9\n', 'utf8');
+      vi.stubEnv('SO_PLATFORM', 'pi');
+
+      const content = await readConfigFile(tmpDir);
+      expect(content).toContain('waves: 9');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps CLAUDE.md precedence for non-Codex/Pi platforms', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-claude-'));
+    try {
+      writeFileSync(join(tmpDir, 'CLAUDE.md'), '# Claude\n\n## Session Config\n\nwaves: 3\n', 'utf8');
+      writeFileSync(join(tmpDir, 'AGENTS.md'), '# Agents\n\n## Session Config\n\nwaves: 9\n', 'utf8');
+      vi.stubEnv('SO_PLATFORM', 'claude');
+
+      const content = await readConfigFile(tmpDir);
+      expect(content).toContain('waves: 3');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('throws when neither CLAUDE.md nor AGENTS.md exists in the given directory', async () => {

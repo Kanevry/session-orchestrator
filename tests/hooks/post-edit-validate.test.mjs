@@ -14,7 +14,7 @@
  *   5. non-TS file — extension filter skips non-JS/TS files
  *   6. no-typecheck fallback chain — no commands found → status:skip
  *   7. empty stdin — null input → silent exit 0
- *   8. non-Edit/Write tool — Bash tool → silent exit 0
+ *   8. non-Edit/Write/MultiEdit tool — Bash tool → silent exit 0
  *   9. file_path missing — malformed input → silent exit 0
  *
  * Issues: #139 (hook implementation)
@@ -102,9 +102,9 @@ async function mkProject({ scope = null, claudeMdConfig = '' } = {}) {
 }
 
 /**
- * Build a PostToolUse JSON payload for Edit/Write.
+ * Build a PostToolUse JSON payload for Edit/Write/MultiEdit.
  * @param {string} filePath
- * @param {'Edit'|'Write'} [tool]
+ * @param {'Edit'|'Write'|'MultiEdit'} [tool]
  */
 function editPayload(filePath, tool = 'Edit') {
   return JSON.stringify({
@@ -179,10 +179,10 @@ describe('empty stdin', { timeout: 10000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 2: non-Edit/Write tool → silent exit 0
+// Case 2: non-Edit/Write/MultiEdit tool → silent exit 0
 // ---------------------------------------------------------------------------
 
-describe('tool filter — non-Edit/Write', { timeout: 10000 }, () => {
+describe('tool filter — non-Edit/Write/MultiEdit', { timeout: 10000 }, () => {
   it('exits 0 without any stderr output for Bash tool', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({
@@ -433,6 +433,32 @@ describe('Write tool triggers typecheck', { timeout: 15000 }, () => {
     const result = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'new-file.ts'), 'Write'),
+    });
+
+    expect(result.code).toBe(0);
+    const lines = result.stderr.split('\n').filter(l => l.trim());
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.check).toBe('typecheck');
+    expect(parsed.status).toBe('pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 11b: MultiEdit tool also triggers
+// ---------------------------------------------------------------------------
+
+describe('MultiEdit tool triggers typecheck', { timeout: 15000 }, () => {
+  it('emits JSONL on stderr when tool_name is MultiEdit', async () => {
+    const dir = await mkProjectTracked();
+    const scriptPath = await mkTypecheckScript(dir, 0);
+
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'edited-file.ts'), 'MultiEdit'),
     });
 
     expect(result.code).toBe(0);

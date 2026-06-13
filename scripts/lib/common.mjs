@@ -163,10 +163,10 @@ function _walkUpUntil(startDir, predicate) {
 
 /**
  * Walk up from `startDir` (defaults to process.cwd()) looking for CLAUDE.md,
- * .claude/, AGENTS.md, or .codex/ markers. Returns the found project root, or
+ * .claude/, AGENTS.md, .codex/, or .pi/ markers. Returns the found project root, or
  * `startDir` if nothing is found.
  *
- * Respects CLAUDE_PROJECT_DIR and CODEX_PROJECT_DIR environment variables as
+ * Respects CLAUDE_PROJECT_DIR, CODEX_PROJECT_DIR, and PI_PROJECT_DIR environment variables as
  * fast-paths (same semantics as common.sh find_project_root).
  *
  * Equivalent to find_project_root() in common.sh.
@@ -193,11 +193,20 @@ export function findProjectRoot(startDir) {
     }
   }
 
+  // Fast path: PI_PROJECT_DIR
+  const piDir = process.env.PI_PROJECT_DIR;
+  if (piDir) {
+    if (_isFileSync(path.join(piDir, 'AGENTS.md')) || _isDirSync(path.join(piDir, '.pi'))) {
+      return piDir;
+    }
+  }
+
   const found = _walkUpUntil(base, (dir) =>
     _isFileSync(path.join(dir, 'CLAUDE.md')) ||
     _isDirSync(path.join(dir, '.claude')) ||
     _isFileSync(path.join(dir, 'AGENTS.md')) ||
-    _isDirSync(path.join(dir, '.codex')),
+    _isDirSync(path.join(dir, '.codex')) ||
+    _isDirSync(path.join(dir, '.pi')),
   );
 
   return found ?? base;
@@ -213,8 +222,9 @@ export function findProjectRoot(startDir) {
  * Resolution order (stops at first success):
  *   1. CLAUDE_PLUGIN_ROOT env var
  *   2. CODEX_PLUGIN_ROOT  env var
- *   3. Walk up from import.meta.url of this file looking for plugin.json / skills/ / .codex-plugin/
- *   4. Walk up from process.cwd() looking for the same markers
+ *   3. PI_PLUGIN_ROOT     env var
+ *   4. Walk up from import.meta.url of this file looking for plugin.json / skills/ / .codex-plugin/
+ *   5. Walk up from process.cwd() looking for the same markers
  *
  * Equivalent to resolve_plugin_root() in common.sh, but throws instead of calling die()
  * so that callers in a non-process context (tests) can catch the error.
@@ -237,19 +247,23 @@ export function resolvePluginRoot(callerUrl) {
   const codexRoot = process.env.CODEX_PLUGIN_ROOT;
   if (codexRoot && _isDirSync(codexRoot)) return codexRoot;
 
-  // Level 3: walk up from caller / this file
+  // Level 3: PI_PLUGIN_ROOT
+  const piRoot = process.env.PI_PLUGIN_ROOT;
+  if (piRoot && _isDirSync(piRoot)) return piRoot;
+
+  // Level 4: walk up from caller / this file
   const startFromFile = callerUrl
     ? path.dirname(fileURLToPath(callerUrl))
     : path.dirname(fileURLToPath(import.meta.url));
   const byFile = _walkUpUntil(startFromFile, isPluginDir);
   if (byFile) return byFile;
 
-  // Level 4: walk up from cwd
+  // Level 5: walk up from cwd
   const byCwd = _walkUpUntil(process.cwd(), isPluginDir);
   if (byCwd) return byCwd;
 
   throw new Error(
-    'Could not locate plugin root. Set CLAUDE_PLUGIN_ROOT (or CODEX_PLUGIN_ROOT) to the plugin directory, ' +
+    'Could not locate plugin root. Set CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT, or PI_PLUGIN_ROOT to the plugin directory, ' +
     'or ensure plugin.json / skills/ exists in an ancestor of the cwd.',
   );
 }

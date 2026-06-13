@@ -103,6 +103,7 @@ export async function checkEnvironment() {
  * Find the wave-scope.json file for the given project root.
  *
  * Precedence (mirrors find_scope_file in hardening.sh):
+ *   <root>/.pi/wave-scope.json
  *   <root>/.cursor/wave-scope.json
  *   <root>/.codex/wave-scope.json
  *   <root>/.claude/wave-scope.json
@@ -114,7 +115,7 @@ export async function checkEnvironment() {
  * @returns {string|null}
  */
 export function findScopeFile(projectRoot) {
-  for (const dir of ['.cursor', '.codex', '.claude']) {
+  for (const dir of ['.pi', '.cursor', '.codex', '.claude']) {
     const candidate = path.join(projectRoot, dir, 'wave-scope.json');
     if (existsSync(candidate)) {
       return candidate;

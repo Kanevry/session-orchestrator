@@ -141,7 +141,7 @@ async function readSessionIdsFromHistory(repoRoot) {
 
 /**
  * Read the `session:` field from `<repoRoot>/.claude/STATE.md` (or `.codex`,
- * `.cursor` — `resolveStateMdPath` picks the first existing candidate).
+ * `.cursor`, `.pi` — `resolveStateMdPath` picks the active/existing candidate).
  *
  * Robustness contract (W1-D2 audit §3.2):
  *  - Missing STATE.md → returns null.

@@ -12,7 +12,7 @@
  *   G2 — non-empty command string (else → exit 0)
  *   G3 — regex match /\bnode\b.*\bmemory-propose\.mjs\b/i (no match → exit 0)
  *   G4 — resolve session_id (from stdin payload or .orchestrator/current-session.json)
- *   G5 — resolve wave (from .claude/wave-scope.json `wave` field, default 0)
+ *   G5 — resolve wave (from the active wave-scope.json `wave` field, default 0)
  *   G6 — redact argv: strip --insight/--subject/--evidence/--content/--reason values
  *   G7 — append event JSON line to .orchestrator/metrics/events.jsonl
  *   Always: exit 0 (never block)
@@ -26,6 +26,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { emitEvent } from '../scripts/lib/events.mjs';
+import { findScopeFile } from '../scripts/lib/hardening.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // exit 0 immediately when this hook is disabled via profile/env
@@ -131,15 +132,15 @@ async function resolveSessionId(input, projectDir) {
 }
 
 /**
- * Resolve the current wave number from .claude/wave-scope.json.
+ * Resolve the current wave number from the active wave-scope.json.
  * Returns 0 when the file is absent or unparseable.
  *
  * @param {string} projectDir
  * @returns {Promise<number>}
  */
 async function resolveWave(projectDir) {
-  const waveFile = path.join(projectDir, '.claude', 'wave-scope.json');
-  if (!existsSync(waveFile)) return 0;
+  const waveFile = findScopeFile(projectDir);
+  if (!waveFile || !existsSync(waveFile)) return 0;
   try {
     const raw = await readFile(waveFile, 'utf8');
     const data = JSON.parse(raw);

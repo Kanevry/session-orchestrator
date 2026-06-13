@@ -1,7 +1,7 @@
 /**
  * tests/hooks/enforce-scope.test.mjs
  *
- * Regression tests for hooks/enforce-scope.mjs — PreToolUse Edit/Write scope gate.
+ * Regression tests for hooks/enforce-scope.mjs — PreToolUse Edit/Write/MultiEdit scope gate.
  *
  * Strategy: spawn the hook as a subprocess, pipe JSON on stdin, assert exit code
  * and stdout/stderr for each behavioural case derived from the baseline spec
@@ -80,7 +80,7 @@ async function mkProjectTracked(scope) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a preToolUse JSON payload for Edit/Write
+// Helper: build a preToolUse JSON payload for Edit/Write/MultiEdit
 // ---------------------------------------------------------------------------
 
 function editPayload(filePath, tool = 'Edit') {
@@ -91,11 +91,11 @@ function editPayload(filePath, tool = 'Edit') {
 }
 
 // ---------------------------------------------------------------------------
-// Tool filter — non-Edit/Write tools are always allowed
+// Tool filter — non-Edit/Write/MultiEdit tools are always allowed
 // ---------------------------------------------------------------------------
 
 describe('tool filter', { timeout: 15000 }, () => {
-  it('exits 0 when tool_name is Bash (not Edit or Write)', async () => {
+  it('exits 0 when tool_name is Bash (not Edit, Write, or MultiEdit)', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -140,6 +140,18 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
     });
     expect(result.code).toBe(0);
   });
+
+  it('exits 0 when MultiEdit targets an allowed path', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts'), 'MultiEdit'),
+    });
+    expect(result.code).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -181,6 +193,19 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'README.md')),
     });
     expect(result.code).toBe(2);
+  });
+
+  it('exits 2 when MultiEdit targets an out-of-scope path', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts'), 'MultiEdit'),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
   });
 
   it('stdout JSON contains permissionDecision deny for empty allowedPaths', async () => {
@@ -384,6 +409,22 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       allowedPaths: ['src/'],
     });
     const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath),
+    });
+    expect(result.code).toBe(0);
+  });
+
+  it('allows .pi/STATE.md write when allowedPaths does not include it (strict)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const piDir = path.join(dir, '.pi');
+    await fs.mkdir(piDir, { recursive: true });
+    const statePath = path.join(piDir, 'STATE.md');
     await fs.writeFile(statePath, '---\nstatus: active\n---\n');
     const result = await runHook({
       projectDir: dir,

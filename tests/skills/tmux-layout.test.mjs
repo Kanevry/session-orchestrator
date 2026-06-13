@@ -255,7 +255,7 @@ describe('tmux-layout integration gaps (best-practice E2E coverage)', () => {
     });
     const json = JSON.parse(result.stdout.trim());
     // On Claude Code, resolveStateDir() returns '.claude'. Verify Pane 2 uses tail -F on it.
-    expect(json.oneliner).toMatch(/tail -F \.(claude|codex|cursor)\/STATE\.md/);
+    expect(json.oneliner).toMatch(/tail -F \.(claude|codex|cursor|pi)\/STATE\.md/);
   });
 
   it('shellQuote escapes single-quote injection in --session-name', () => {

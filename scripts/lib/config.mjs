@@ -69,7 +69,7 @@ export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
 
 /**
  * Read CLAUDE.md or AGENTS.md from the project root.
- * Precedence: if AGENTS.md exists AND env var SO_PLATFORM === "codex", prefer AGENTS.md.
+ * Precedence: if AGENTS.md exists AND env var SO_PLATFORM === "codex" or "pi", prefer AGENTS.md.
  * Otherwise CLAUDE.md. Throws if neither file found.
  * @param {string} projectRoot — absolute path to project root
  * @returns {Promise<string>} file contents as string (CRLF-tolerant)
@@ -78,10 +78,10 @@ export async function readConfigFile(projectRoot) {
   const claudeMd = join(projectRoot, 'CLAUDE.md');
   const agentsMd = join(projectRoot, 'AGENTS.md');
 
-  const isCodex = process.env.SO_PLATFORM === 'codex';
+  const prefersAgents = process.env.SO_PLATFORM === 'codex' || process.env.SO_PLATFORM === 'pi';
 
-  if (isCodex) {
-    // Prefer AGENTS.md for Codex platform
+  if (prefersAgents) {
+    // Prefer AGENTS.md for Codex/Pi platforms
     try {
       await access(agentsMd);
       return await readFile(agentsMd, 'utf8');

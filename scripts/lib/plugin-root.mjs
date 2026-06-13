@@ -1,5 +1,5 @@
 /**
- * plugin-root.mjs — Robust CLAUDE_PLUGIN_ROOT resolution with 4-level fallback.
+ * plugin-root.mjs — Robust plugin root resolution with layered fallback.
  *
  * Issue #212: manual installs may not have CLAUDE_PLUGIN_ROOT set. This module
  * provides a deterministic, testable resolution strategy so hook handlers and
@@ -8,10 +8,11 @@
  * Fallback order (stops at first success):
  *   1. CLAUDE_PLUGIN_ROOT  env var (Claude Code)
  *   2. CODEX_PLUGIN_ROOT   env var (Codex CLI)
- *   3. Walk up from import.meta.url looking for package.json whose name === "session-orchestrator"
- *   4. Walk up from process.cwd() looking for the same marker
+ *   3. PI_PLUGIN_ROOT      env var (Pi extension bridge)
+ *   4. Walk up from import.meta.url looking for package.json whose name === "session-orchestrator"
+ *   5. Walk up from process.cwd() looking for the same marker
  *
- * Throws PluginRootResolutionError when all four levels fail.
+ * Throws PluginRootResolutionError when all resolution levels fail.
  *
  * Backward compat: when CLAUDE_PLUGIN_ROOT is set it is returned immediately —
  * no filesystem walk is performed.
@@ -26,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 // ---------------------------------------------------------------------------
 
 /**
- * Thrown when all four resolution levels fail. Callers may inspect
+ * Thrown when all resolution levels fail. Callers may inspect
  * `error.triedPaths` to understand what was attempted.
  */
 export class PluginRootResolutionError extends Error {
@@ -110,12 +111,13 @@ function _walkUp(startDir) {
  * Fallback order:
  *   1. CLAUDE_PLUGIN_ROOT  env var — returned immediately when set (backward compat)
  *   2. CODEX_PLUGIN_ROOT   env var — returned immediately when set
- *   3. Walk up from import.meta.url (the location of this file) looking for a
+ *   3. PI_PLUGIN_ROOT      env var — returned immediately when set
+ *   4. Walk up from import.meta.url (the location of this file) looking for a
  *      package.json with name "session-orchestrator"
- *   4. Walk up from process.cwd() looking for the same marker
+ *   5. Walk up from process.cwd() looking for the same marker
  *
  * @returns {string} Absolute path to the plugin root
- * @throws {PluginRootResolutionError} When all four levels fail
+ * @throws {PluginRootResolutionError} When all resolution levels fail
  */
 export function resolvePluginRoot() {
   const tried = [];
@@ -138,20 +140,29 @@ export function resolvePluginRoot() {
     tried.push('CODEX_PLUGIN_ROOT (not set)');
   }
 
-  // Level 3: walk up from this file's location
+  // Level 3: PI_PLUGIN_ROOT
+  const piRoot = process.env.PI_PLUGIN_ROOT;
+  if (piRoot) {
+    if (_isDir(piRoot)) return piRoot;
+    tried.push(`PI_PLUGIN_ROOT=${piRoot} (not a directory)`);
+  } else {
+    tried.push('PI_PLUGIN_ROOT (not set)');
+  }
+
+  // Level 4: walk up from this file's location
   const thisDir = path.dirname(fileURLToPath(import.meta.url));
   const byImportMeta = _walkUp(thisDir);
   if (byImportMeta) return byImportMeta;
   tried.push(`walk from import.meta.url (${thisDir}) — no package.json{name:session-orchestrator} found`);
 
-  // Level 4: walk up from cwd
+  // Level 5: walk up from cwd
   const byCwd = _walkUp(process.cwd());
   if (byCwd) return byCwd;
   tried.push(`walk from cwd (${process.cwd()}) — no package.json{name:session-orchestrator} found`);
 
   throw new PluginRootResolutionError(
     'Could not resolve session-orchestrator plugin root. ' +
-    'Set CLAUDE_PLUGIN_ROOT (or CODEX_PLUGIN_ROOT) to the plugin directory, ' +
+    'Set CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT, or PI_PLUGIN_ROOT to the plugin directory, ' +
     'or ensure a package.json with name "session-orchestrator" exists in an ' +
     'ancestor of the cwd or this script. Attempted: ' + tried.join('; '),
     tried,

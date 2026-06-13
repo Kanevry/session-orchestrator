@@ -118,13 +118,13 @@ async function gitInfo(projectRoot) {
 // ---------------------------------------------------------------------------
 
 /**
- * Try to read the wave number from .claude/wave-scope.json (or .codex / .cursor).
+ * Try to read the wave number from .claude/wave-scope.json (or .codex / .cursor / .pi).
  * Returns 0 if no scope file is found or the file cannot be parsed.
  * @param {string} projectRoot
  * @returns {Promise<number>}
  */
 async function readWaveNumber(projectRoot) {
-  const dirs = ['.claude', '.codex', '.cursor'];
+  const dirs = ['.pi', '.claude', '.codex', '.cursor'];
   for (const dir of dirs) {
     const scopePath = path.join(projectRoot, dir, 'wave-scope.json');
     try {

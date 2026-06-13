@@ -17,12 +17,12 @@ export function runCategory5(root) {
 
   // c5.1 parse-config-fallback-chain — verify the plugin-root fallback chain is
   // wired somewhere in the resolution surface (scripts/lib/**/*.mjs + any
-  // hooks/*.json manifest). Relaxed from the original "all 3 in parse-config.mjs"
+  // hooks/*.json manifest). Relaxed from the original "all env vars in parse-config.mjs"
   // rule — plugins typically centralize platform resolution in a helper module
   // (platform.mjs in session-orchestrator) and branch by env var in per-platform
   // manifests (hooks.json, hooks-codex.json, hooks-cursor.json).
   {
-    const envVars = ['CLAUDE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CURSOR_RULES_DIR'];
+    const envVars = ['CLAUDE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CURSOR_RULES_DIR', 'PI_PLUGIN_ROOT'];
     const candidatePaths = [
       'scripts/parse-config.mjs',
       'scripts/lib/config.mjs',
@@ -49,7 +49,7 @@ export function runCategory5(root) {
     }
     const envVarsFound = envVars.filter((v) => foundIn[v]?.length);
     const relPath = 'scripts/lib/platform.mjs';
-    if (envVarsFound.length === 3) {
+    if (envVarsFound.length === envVars.length) {
       checks.push(pass('parse-config-fallback-chain', 3, 3, relPath,
         { envVarsFound, foundIn },
         'plugin-root env vars wired across resolution surface'));

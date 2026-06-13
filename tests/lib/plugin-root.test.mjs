@@ -2,14 +2,15 @@
  * tests/lib/plugin-root.test.mjs
  *
  * Unit tests for scripts/lib/plugin-root.mjs
- * Issue #212 — 4-level CLAUDE_PLUGIN_ROOT fallback
+ * Issue #212 — layered plugin root fallback
  *
  * Test IDs (AC 5):
  *   env-claude              — Level 1 fast path: CLAUDE_PLUGIN_ROOT set + dir exists
  *   env-codex               — Level 2 fast path: CODEX_PLUGIN_ROOT set + dir exists
- *   walk-from-import-meta   — Level 3: walk up from this file's location
- *   walk-from-cwd           — Level 4: walk up from cwd
- *   all-fail-throws         — all four levels fail → PluginRootResolutionError
+ *   env-pi                  — Level 3 fast path: PI_PLUGIN_ROOT set + dir exists
+ *   walk-from-import-meta   — Level 4: walk up from this file's location
+ *   walk-from-cwd           — Level 5: walk up from cwd
+ *   all-fail-throws         — all levels fail → PluginRootResolutionError
  *   env-precedence          — CLAUDE_PLUGIN_ROOT wins over CODEX_PLUGIN_ROOT
  */
 
@@ -66,6 +67,7 @@ describe('resolvePluginRoot — env-claude (Level 1)', () => {
     tmpDir = makeTmpPluginDir('session-orchestrator');
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', tmpDir);
     vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', '');
   });
 
   afterEach(() => {
@@ -93,6 +95,7 @@ describe('resolvePluginRoot — env-codex (Level 2)', () => {
     tmpDir = makeTmpPluginDir('session-orchestrator');
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
     vi.stubEnv('CODEX_PLUGIN_ROOT', tmpDir);
+    vi.stubEnv('PI_PLUGIN_ROOT', '');
   });
 
   afterEach(() => {
@@ -106,35 +109,62 @@ describe('resolvePluginRoot — env-codex (Level 2)', () => {
   });
 });
 
+describe('resolvePluginRoot — env-pi (Level 3)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpPluginDir('session-orchestrator');
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', tmpDir);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns PI_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT and CODEX_PLUGIN_ROOT are unset', () => {
+    const result = resolvePluginRoot();
+    expect(result).toBe(tmpDir);
+  });
+});
+
 describe('resolvePluginRoot — env-precedence', () => {
   let claudeDir;
   let codexDir;
+  let piDir;
 
   beforeEach(() => {
     claudeDir = makeTmpPluginDir('session-orchestrator');
     codexDir  = makeTmpPluginDir('session-orchestrator');
+    piDir     = makeTmpPluginDir('session-orchestrator');
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', claudeDir);
     vi.stubEnv('CODEX_PLUGIN_ROOT', codexDir);
+    vi.stubEnv('PI_PLUGIN_ROOT', piDir);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     rmSync(claudeDir, { recursive: true, force: true });
     rmSync(codexDir, { recursive: true, force: true });
+    rmSync(piDir, { recursive: true, force: true });
   });
 
-  it('returns CLAUDE_PLUGIN_ROOT over CODEX_PLUGIN_ROOT when both are set', () => {
+  it('returns CLAUDE_PLUGIN_ROOT over CODEX_PLUGIN_ROOT and PI_PLUGIN_ROOT when all are set', () => {
     const result = resolvePluginRoot();
     expect(result).toBe(claudeDir);
     expect(result).not.toBe(codexDir);
+    expect(result).not.toBe(piDir);
   });
 });
 
-describe('resolvePluginRoot — walk-from-import-meta (Level 3)', () => {
+describe('resolvePluginRoot — walk-from-import-meta (Level 4)', () => {
   beforeEach(() => {
-    // Clear both env vars so levels 1 + 2 are skipped
+    // Clear env vars so levels 1 + 2 + 3 are skipped
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
     vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', '');
   });
 
   afterEach(() => {
@@ -157,7 +187,7 @@ describe('resolvePluginRoot — walk-from-import-meta (Level 3)', () => {
   });
 });
 
-describe('resolvePluginRoot — walk-from-cwd (Level 4)', () => {
+describe('resolvePluginRoot — walk-from-cwd (Level 5)', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -174,6 +204,7 @@ describe('resolvePluginRoot — walk-from-cwd (Level 4)', () => {
     // runs from within the repo.
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
     vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', '');
   });
 
   afterEach(() => {
@@ -193,8 +224,8 @@ describe('resolvePluginRoot — walk-from-cwd (Level 4)', () => {
 });
 
 describe('resolvePluginRoot — all-fail-throws-named-error', () => {
-  // We need to test the throw path. The only way to make all 4 levels fail is:
-  // - env vars unset (levels 1+2 skip)
+  // We need to test the throw path. The only way to make all levels fail is:
+  // - env vars unset (levels 1+2+3 skip)
   // - import.meta.url walk must not find a matching package.json
   // - cwd walk must not find a matching package.json
   //
@@ -212,21 +243,24 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
     const err = new PluginRootResolutionError('failed', [
       'CLAUDE_PLUGIN_ROOT (not set)',
       'CODEX_PLUGIN_ROOT (not set)',
+      'PI_PLUGIN_ROOT (not set)',
       'walk from import.meta.url — not found',
       'walk from cwd — not found',
     ]);
     expect(err.name).toBe('PluginRootResolutionError');
-    expect(err.triedPaths).toHaveLength(4);
+    expect(err.triedPaths).toHaveLength(5);
     expect(err.triedPaths[0]).toContain('CLAUDE_PLUGIN_ROOT');
-    expect(err.triedPaths[3]).toContain('cwd');
+    expect(err.triedPaths[2]).toContain('PI_PLUGIN_ROOT');
+    expect(err.triedPaths[4]).toContain('cwd');
   });
 
   it('throws PluginRootResolutionError when env vars point to non-directories', () => {
     // Set both env vars to paths that definitely do not exist as directories
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/abcdef');
     vi.stubEnv('CODEX_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/ghijkl');
+    vi.stubEnv('PI_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/mnopqr');
 
-    // Levels 1+2 skip (paths not directories). Levels 3+4 will still find the
+    // Levels 1+2+3 skip (paths not directories). Levels 4+5 will still find the
     // real repo via walk. This proves the guard condition correctly skips bad paths
     // and falls through without erroring on them.
     // We can only truly get the throw if we run outside the repo — assert the type.
@@ -248,15 +282,16 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
     }
   });
 
-  it('error message mentions both env var names when all levels fail', () => {
+  it('error message mentions all env var names when all levels fail', () => {
     // Simulate the error message format
     const err = new PluginRootResolutionError(
       'Could not resolve session-orchestrator plugin root. ' +
-      'Set CLAUDE_PLUGIN_ROOT (or CODEX_PLUGIN_ROOT) to the plugin directory',
+      'Set CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT, or PI_PLUGIN_ROOT to the plugin directory',
       [],
     );
     expect(err.message).toContain('CLAUDE_PLUGIN_ROOT');
     expect(err.message).toContain('CODEX_PLUGIN_ROOT');
+    expect(err.message).toContain('PI_PLUGIN_ROOT');
     expect(err.message).toContain('session-orchestrator');
   });
 });

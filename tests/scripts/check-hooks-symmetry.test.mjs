@@ -100,6 +100,31 @@ function buildCursorHooks(events) {
   return { hooks };
 }
 
+/**
+ * Builds a minimal valid Pi hooks JSON object using Pi-native event names.
+ */
+function buildPiHooks(events) {
+  const hooks = {};
+  for (const [eventName, handler] of Object.entries(events)) {
+    hooks[eventName] = [
+      {
+        matcher: '*',
+        hooks: [
+          {
+            type: 'command',
+            command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"`,
+          },
+        ],
+      },
+    ];
+  }
+  return { hooks };
+}
+
+function writePiPackageJson(dir) {
+  writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', pi: {} }));
+}
+
 // ---------------------------------------------------------------------------
 // Real-plugin happy path
 // ---------------------------------------------------------------------------
@@ -322,6 +347,129 @@ describe('check-hooks-symmetry.mjs — cursor has UNDOCUMENTED extra event', () 
     const r = runValidator(dir);
     expect(r.stdout).toContain('UNDOCUMENTED extra');
     expect(r.stdout).toContain('WeirdCursorEvent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Check 3: pi documented native-event mappings
+// ---------------------------------------------------------------------------
+
+describe('check-hooks-symmetry.mjs — pi mapped events', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('exits 0 when Pi native events cover the mapped main events', () => {
+    dir = makeFixtureDir();
+    const handler = 'handler.mjs';
+    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
+    for (const required of [
+      'pre-bash-destructive-guard.mjs',
+      'enforce-commands.mjs',
+      'enforce-scope.mjs',
+      'config-protection.mjs',
+    ]) {
+      writeFileSync(path.join(dir, 'hooks', required), '// stub');
+    }
+
+    const both = buildClaudeHooks({
+      SessionStart: handler,
+      SessionEnd: handler,
+      PreToolUse: handler,
+      PostToolUse: handler,
+      Stop: handler,
+    });
+    const pi = {
+      hooks: {
+        session_start: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
+        session_shutdown: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
+        tool_call: [
+          {
+            matcher: 'bash',
+            hooks: [
+              { command: 'node "$PI_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs"' },
+              { command: 'node "$PI_PLUGIN_ROOT/hooks/enforce-commands.mjs"' },
+            ],
+          },
+          {
+            matcher: 'edit|write',
+            hooks: [
+              { command: 'node "$PI_PLUGIN_ROOT/hooks/enforce-scope.mjs"' },
+              { command: 'node "$PI_PLUGIN_ROOT/hooks/config-protection.mjs"' },
+            ],
+          },
+        ],
+        tool_result: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
+        agent_end: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
+      },
+    };
+    writeHooksJsons(dir, { claude: both, codex: both });
+    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
+
+    const r = runValidator(dir);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('hooks-pi.json covers mapped main events');
+  });
+
+  it('exits 1 when Pi is missing an undocumented main-event mapping', () => {
+    dir = makeFixtureDir();
+    const handler = 'handler.mjs';
+    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
+
+    const both = buildClaudeHooks({ PreToolUse: handler });
+    const pi = buildPiHooks({ session_start: handler });
+    writeHooksJsons(dir, { claude: both, codex: both });
+    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
+
+    const r = runValidator(dir);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('PreToolUse');
+  });
+
+  it('exits 1 when Pi has an undocumented native event', () => {
+    dir = makeFixtureDir();
+    const handler = 'handler.mjs';
+    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
+
+    const both = buildClaudeHooks({ SessionStart: handler });
+    const pi = buildPiHooks({ session_start: handler, strange_pi_event: handler });
+    writeHooksJsons(dir, { claude: both, codex: both });
+    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
+
+    const r = runValidator(dir);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('strange_pi_event');
+  });
+
+  it('exits 1 when a Pi package omits hooks-pi.json', () => {
+    dir = makeFixtureDir();
+    const handler = 'handler.mjs';
+    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
+    writePiPackageJson(dir);
+
+    const both = buildClaudeHooks({ SessionStart: handler });
+    writeHooksJsons(dir, { claude: both, codex: both });
+
+    const r = runValidator(dir);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('hooks-pi.json');
+  });
+
+  it('exits 1 when required Pi tool_call handlers are missing', () => {
+    dir = makeFixtureDir();
+    const handler = 'handler.mjs';
+    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
+
+    const both = buildClaudeHooks({ PreToolUse: handler });
+    const pi = buildPiHooks({ tool_call: handler });
+    writeHooksJsons(dir, { claude: both, codex: both });
+    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
+
+    const r = runValidator(dir);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('missing required tool_call handlers');
+    expect(r.stdout).toContain('bash');
+    expect(r.stdout).toContain('edit');
+    expect(r.stdout).toContain('write');
   });
 });
 

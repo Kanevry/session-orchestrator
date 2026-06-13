@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * enforce-scope.mjs — PreToolUse hook: block Edit/Write outside allowed wave paths.
+ * enforce-scope.mjs — PreToolUse hook: block Edit/Write/MultiEdit outside allowed wave paths.
  *
  * Replaces enforce-scope.sh (87-line Bash). Part of v3.0.0 Windows-native migration.
  * Issue: github.com/Kanevry/session-orchestrator/issues/137
  *
  * Decision flow (8 gates, early-exit):
- *   G1  tool filter — only Edit/Write are gated
+ *   G1  tool filter — only Edit/Write/MultiEdit are gated
  *   G2  file_path present + string
  *   G3  wave-scope.json exists
  *   G4  path-guard gate enabled
@@ -59,8 +59,8 @@ async function main() {
   const toolName = input.tool_name;
   const filePath = input?.tool_input?.file_path;
 
-  // Gate 1: only Edit and Write are path-gated
-  if (toolName !== 'Edit' && toolName !== 'Write') return emitAllow();
+  // Gate 1: only Edit, Write, and MultiEdit are path-gated
+  if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') return emitAllow();
 
   // Gate 2: file_path must be a non-empty string
   if (!filePath || typeof filePath !== 'string') return emitAllow();
@@ -201,6 +201,7 @@ const COORDINATOR_CARVEOUT_PATHS = Object.freeze([
   '.claude/STATE.md',
   '.codex/STATE.md',
   '.cursor/STATE.md',
+  '.pi/STATE.md',
 ]);
 
 /**

@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
+  resolveStateMdPath,
   touchUpdatedField,
   updateFrontmatterFields,
 } from '@lib/state-md/frontmatter-mutators.mjs';
@@ -19,6 +23,10 @@ custom-extension: keep-me
 `;
 
 const NO_FRONTMATTER = '# plain markdown without frontmatter\n';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ─── touchUpdatedField ───────────────────────────────────────────────────────
 
@@ -121,5 +129,34 @@ describe('updateFrontmatterFields', () => {
     const out = updateFrontmatterFields(BASE, {});
     const parsed = parseStateMd(out);
     expect(parsed.frontmatter).toEqual(parseStateMd(BASE).frontmatter);
+  });
+});
+
+// ─── resolveStateMdPath ─────────────────────────────────────────────────────
+
+describe('resolveStateMdPath', () => {
+  it('falls back to .pi/STATE.md when SO_PLATFORM is pi and no state file exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-path-'));
+    try {
+      vi.stubEnv('SO_PLATFORM', 'pi');
+      expect(resolveStateMdPath(root)).toBe(join(root, '.pi', 'STATE.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the active platform state file when multiple STATE.md files exist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-path-'));
+    try {
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      mkdirSync(join(root, '.pi'), { recursive: true });
+      writeFileSync(join(root, '.claude', 'STATE.md'), BASE, 'utf8');
+      writeFileSync(join(root, '.pi', 'STATE.md'), BASE, 'utf8');
+      vi.stubEnv('SO_PLATFORM', 'pi');
+
+      expect(resolveStateMdPath(root)).toBe(join(root, '.pi', 'STATE.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

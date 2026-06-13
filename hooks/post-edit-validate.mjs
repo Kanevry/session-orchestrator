@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * post-edit-validate.mjs — PostToolUse hook for incremental validation after Edit/Write.
+ * post-edit-validate.mjs — PostToolUse hook for incremental validation after Edit/Write/MultiEdit.
  *
  * Node.js port of hooks/post-edit-validate.sh. Part of v3.0.0 Windows-native migration.
  * Issue: github.com/Kanevry/session-orchestrator/issues/139
@@ -10,7 +10,7 @@
  *
  * Decision flow:
  *   G1  stdin null → silent exit 0
- *   G2  tool_name filter — only Edit/Write trigger typecheck
+ *   G2  tool_name filter — only Edit/Write/MultiEdit trigger typecheck
  *   G3  file_path present
  *   G4  file extension filter — only .ts|.tsx|.js|.jsx|.mjs|.cjs
  *   G5  gate check — wave-scope.json.gates['post-edit-validate'] === false → exit 0
@@ -175,8 +175,8 @@ async function main() {
   const toolName = input.tool_name;
   const filePath = input?.tool_input?.file_path;
 
-  // G2: only Edit and Write trigger typecheck
-  if (toolName !== 'Edit' && toolName !== 'Write') process.exit(0);
+  // G2: only Edit, Write, and MultiEdit trigger typecheck
+  if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') process.exit(0);
 
   // G3: file_path must be present
   if (!filePath || typeof filePath !== 'string') process.exit(0);

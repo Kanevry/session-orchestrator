@@ -172,6 +172,12 @@ describe('findScopeFile', () => {
     expect(result).toBe(path.join(tmpDir, '.cursor', 'wave-scope.json'));
   });
 
+  it('returns the absolute path to .pi/wave-scope.json when only that exists', () => {
+    writeScopeFile('.pi', { enforcement: 'strict' });
+    const result = findScopeFile(tmpDir);
+    expect(result).toBe(path.join(tmpDir, '.pi', 'wave-scope.json'));
+  });
+
   it('returns .codex path when both .codex and .claude exist (codex > claude precedence)', () => {
     writeScopeFile('.claude', { enforcement: 'warn' });
     writeScopeFile('.codex', { enforcement: 'strict' });
@@ -179,12 +185,21 @@ describe('findScopeFile', () => {
     expect(result).toBe(path.join(tmpDir, '.codex', 'wave-scope.json'));
   });
 
-  it('returns .cursor path when all three exist (.cursor > .codex > .claude precedence)', () => {
+  it('returns .cursor path when .cursor, .codex, and .claude exist (.cursor > .codex > .claude precedence)', () => {
     writeScopeFile('.claude', { enforcement: 'warn' });
     writeScopeFile('.codex', { enforcement: 'strict' });
     writeScopeFile('.cursor', { enforcement: 'off' });
     const result = findScopeFile(tmpDir);
     expect(result).toBe(path.join(tmpDir, '.cursor', 'wave-scope.json'));
+  });
+
+  it('returns .pi path when all four exist (.pi > .cursor > .codex > .claude precedence)', () => {
+    writeScopeFile('.claude', { enforcement: 'warn' });
+    writeScopeFile('.codex', { enforcement: 'strict' });
+    writeScopeFile('.cursor', { enforcement: 'off' });
+    writeScopeFile('.pi', { enforcement: 'strict' });
+    const result = findScopeFile(tmpDir);
+    expect(result).toBe(path.join(tmpDir, '.pi', 'wave-scope.json'));
   });
 
   it('returns an absolute path (not a relative path)', () => {
