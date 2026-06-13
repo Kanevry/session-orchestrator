@@ -163,8 +163,14 @@ describe('F3: AWS AKIA pattern (live shape, not canonical)', () => {
 describe('F4: Google AIzaSy pattern', () => {
   it('exits 1 when AIzaSy<33-chars> is found', () => {
     const root = makeTmpRepo((r) => {
-      // 33 chars after AIzaSy
-      writeTestFile(r, 'google.test.mjs', "const API_KEY = 'AIzaSyA1B2C3D4E5F6G7H8I9J0kLmNoPqRsTuVw';\n");
+      // Synthetic, non-functional Google-API-key-SHAPE (AIzaSy + 33 chars).
+      // Assembled from fragments so the contiguous literal never appears in this
+      // source file — GitHub secret-scanning flags a single bare `AIzaSy<33>`
+      // literal as a "publicly leaked secret" even though it is a fake test
+      // fixture (alert #5). The written fixture still carries the full shape at
+      // runtime, so the F4 detector is exercised exactly as before.
+      const fakeGoogleKey = 'AIza' + 'SyA1B2C3D4E5F6G7H8I9J0kLmNoPqRsTuVw';
+      writeTestFile(r, 'google.test.mjs', `const API_KEY = '${fakeGoogleKey}';\n`);
     });
     const result = runCheck(root);
     expect(result.status).toBe(1);
