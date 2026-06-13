@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-06-13
+
 ### Added
 
+- **Pi harness adapter — session-orchestrator runs under `pi` (earendil-works/pi) like Codex/Cursor** — closes #639 (MR !23, merged from `codex/pi-adapter-639`). New `pi/` prompt-wrapper surface (20 generated prompts via `scripts/generate-pi-prompts.mjs --check`), `scripts/lib/pi-hook-bridge.mjs` (Pi native-hook manifest bridge, 328 LOC), `scripts/pi-install.mjs` installer, `hooks/hooks-pi.json` manifest, and `docs/pi-setup.md`. Platform/config/state/scope resolution now recognise the `.pi` marker dir + `PI_*` env vars (`PI_PLUGIN_ROOT` / `PI_PROJECT_DIR`) across `platform.mjs`, `config.mjs`, `common.mjs`, `plugin-root.mjs`, and `state-md-peer-guard.mjs` — **additive and backward-compatible** (claude/codex/cursor behaviour unchanged). New `check-pi-package.mjs` + `check-pi-prompts.mjs` validate-plugin checks (138 checks total, 0 failures) plus extended hook-symmetry coverage. CI pipeline #5577 full 7-job suite green (test 257s, coverage 439s).
 - **Autonomy-Commands ADR + /loop-Anchoring + Owner-Leakage-Hardening** — closes #631, #633, #634; #632 repo-local part (deep session main-2026-06-10-deep-1, 5 waves / 16 agents + coordinator fold-ins).
   - **#633 Hebel 1 (ADR-0010)** — new `docs/adr/0010-native-autonomy-commands.md`: per-primitive verdicts for the native autonomy family verified against live docs on v2.1.170 (**/loop = Adopt** — `.claude/loop.md` IS the native customization seam; **/goal = Adapter** — adopt native per-turn continuation, keep judgment deterministic: the Haiku evaluator reads the transcript only and runs no tools, so it never replaces exit-code quality gates; **/batch = Stay** — GitHub-PR-shaped, no kill-switch/telemetry parity with `autopilot-multi`; **/background = Adapter** — gated on a detachment empirical test instead of pre-building autopilot Phase C-5). Closes the keystone gap next to ADR-0002/0003/0004.
   - **#633 Hebel 2 (LM rules)** — `.claude/rules/loop-and-monitor.md`: `/goal` completion-condition axis as the new first LM-001 branch (with an explicit "NOT: until CI goes green → Monitor" counter-example), new **LM-008 "Use /goal When …"** section, 2 new `/goal` anti-patterns (quality-gate misuse, unbounded goal), LM-005 "never reimplement /goal" bullet.
