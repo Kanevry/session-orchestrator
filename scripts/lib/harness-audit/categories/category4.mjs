@@ -21,6 +21,7 @@ export function runCategory4(root) {
       join(root, '.claude/STATE.md'),
       join(root, '.codex/STATE.md'),
       join(root, '.cursor/STATE.md'),
+      join(root, '.pi/STATE.md'),
     ];
     const found = candidates.find((p) => existsSync(p));
     const relPath = '.claude/STATE.md';

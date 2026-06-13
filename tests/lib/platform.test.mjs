@@ -140,6 +140,10 @@ describe('resolveStateDir', () => {
     expect(resolveStateDir('cursor')).toBe('.cursor');
   });
 
+  it('returns ".pi" for platform "pi"', () => {
+    expect(resolveStateDir('pi')).toBe('.pi');
+  });
+
   it('returns ".claude" for unknown platform (default case)', () => {
     expect(resolveStateDir('unknown')).toBe('.claude');
   });
@@ -160,6 +164,10 @@ describe('resolveConfigFile', () => {
 
   it('returns "CLAUDE.md" for platform "cursor"', () => {
     expect(resolveConfigFile('cursor')).toBe('CLAUDE.md');
+  });
+
+  it('returns "AGENTS.md" for platform "pi"', () => {
+    expect(resolveConfigFile('pi')).toBe('AGENTS.md');
   });
 });
 
@@ -200,7 +208,16 @@ describe('detectPlatform', () => {
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
     vi.stubEnv('CODEX_PLUGIN_ROOT', '');
     vi.stubEnv('CURSOR_RULES_DIR', '/some/cursor/path');
+    vi.stubEnv('PI_PLUGIN_ROOT', '');
     expect(detectPlatform()).toBe('cursor');
+  });
+
+  it('returns "pi" when PI_PLUGIN_ROOT is set and other env vars are unset', () => {
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('CURSOR_RULES_DIR', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', '/some/pi/path');
+    expect(detectPlatform()).toBe('pi');
   });
 
   it('CLAUDE_PLUGIN_ROOT takes precedence over CODEX_PLUGIN_ROOT', () => {
@@ -218,7 +235,7 @@ describe('detectPlatform', () => {
     // default is "claude". The test CWD is the repo root which has
     // a .claude-plugin dir — which would also return "claude".
     const result = detectPlatform();
-    expect(['claude', 'codex', 'cursor']).toContain(result);
+    expect(['claude', 'codex', 'cursor', 'pi']).toContain(result);
   });
 });
 
@@ -261,8 +278,8 @@ describe('resolvePluginRoot', () => {
 // ---------------------------------------------------------------------------
 
 describe('SO_PLATFORM', () => {
-  it('is one of "claude", "codex", or "cursor"', () => {
-    expect(['claude', 'codex', 'cursor']).toContain(SO_PLATFORM);
+  it('is one of "claude", "codex", "cursor", or "pi"', () => {
+    expect(['claude', 'codex', 'cursor', 'pi']).toContain(SO_PLATFORM);
   });
 });
 
@@ -295,6 +312,16 @@ describe('resolveProjectDir', () => {
     vi.stubEnv('CURSOR_PROJECT_DIR', '');
     const result = resolveProjectDir('codex');
     expect(result).toBe('/my/codex/project');
+    vi.unstubAllEnvs();
+  });
+
+  it('returns PI_PROJECT_DIR when higher-precedence project env vars are unset', () => {
+    vi.stubEnv('CLAUDE_PROJECT_DIR', '');
+    vi.stubEnv('CODEX_PROJECT_DIR', '');
+    vi.stubEnv('CURSOR_PROJECT_DIR', '');
+    vi.stubEnv('PI_PROJECT_DIR', '/my/pi/project');
+    const result = resolveProjectDir('pi');
+    expect(result).toBe('/my/pi/project');
     vi.unstubAllEnvs();
   });
 });

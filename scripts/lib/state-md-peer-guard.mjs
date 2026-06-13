@@ -28,21 +28,39 @@ import { parseStateMd } from './state-md.mjs';
 // Canonical STATE.md path candidates (same order as frontmatter-mutators.mjs)
 // ---------------------------------------------------------------------------
 
-const STATE_MD_CANDIDATES = ['.claude/STATE.md', '.codex/STATE.md', '.cursor/STATE.md'];
+const STATE_MD_CANDIDATES = ['.claude/STATE.md', '.codex/STATE.md', '.cursor/STATE.md', '.pi/STATE.md'];
+
+function preferredStateMdCandidate() {
+  switch (process.env.SO_PLATFORM) {
+    case 'codex': return '.codex/STATE.md';
+    case 'cursor': return '.cursor/STATE.md';
+    case 'pi': return '.pi/STATE.md';
+    default: return '.claude/STATE.md';
+  }
+}
+
+function orderedStateMdCandidates() {
+  const preferred = preferredStateMdCandidate();
+  return [
+    preferred,
+    ...STATE_MD_CANDIDATES.filter((candidate) => candidate !== preferred),
+  ];
+}
 
 /**
- * Resolve the first existing STATE.md path under repoRoot.
- * Falls back to `.claude/STATE.md` when none exist.
+ * Resolve the first existing STATE.md path under repoRoot, checking the active
+ * platform first. Falls back to the active platform path when none exist.
  *
  * @param {string} repoRoot
  * @returns {string}  Absolute path (may not exist on disk).
  */
 function _resolveStateMdPath(repoRoot) {
-  for (const candidate of STATE_MD_CANDIDATES) {
+  const candidates = orderedStateMdCandidates();
+  for (const candidate of candidates) {
     const abs = join(repoRoot, candidate);
     if (existsSync(abs)) return abs;
   }
-  return join(repoRoot, STATE_MD_CANDIDATES[0]);
+  return join(repoRoot, candidates[0]);
 }
 
 // ---------------------------------------------------------------------------

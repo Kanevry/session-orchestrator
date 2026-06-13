@@ -138,6 +138,12 @@ process.stdout.write('\n');
 if (runCheck('check-codex-plugin.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
+if (runCheck('check-pi-package.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
+if (runCheck('check-pi-prompts.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
 if (runCheck('check-session-plan-routing.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');

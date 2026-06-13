@@ -590,15 +590,16 @@ describe('category 4: Persistence Health', () => {
 // ---------------------------------------------------------------------------
 
 describe('category 5: Plugin-Root Resolution', () => {
-  it('passes when all 3 env vars are wired and doc files are present', () => {
+  it('passes when all 4 env vars are wired and doc files are present', () => {
     const root = tmp();
 
-    // Wire all 3 env vars in platform.mjs
+    // Wire all 4 env vars in platform.mjs
     write(root, 'scripts/lib/platform.mjs', [
       'export function detect() {',
       '  if (process.env.CLAUDE_PLUGIN_ROOT) return "claude";',
       '  if (process.env.CODEX_PLUGIN_ROOT) return "codex";',
       '  if (process.env.CURSOR_RULES_DIR) return "cursor";',
+      '  if (process.env.PI_PLUGIN_ROOT) return "pi";',
       '}',
     ].join('\n'));
 
@@ -625,7 +626,7 @@ describe('category 5: Plugin-Root Resolution', () => {
     expect(earned).toBeGreaterThanOrEqual(7);
   });
 
-  it('returns partial score when only 1 of 3 env vars is referenced', () => {
+  it('returns partial score when only 1 of 4 env vars is referenced', () => {
     const root = tmp();
 
     // Only CLAUDE_PLUGIN_ROOT referenced — missing CODEX and CURSOR

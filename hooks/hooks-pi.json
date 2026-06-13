@@ -1,0 +1,105 @@
+{
+  "_comment": "Pi extension bridge manifest. Event names are Pi-native; commands receive Claude/Codex-compatible hook JSON on stdin with PI_PLUGIN_ROOT set.",
+  "hooks": {
+    "session_start": [
+      {
+        "matcher": "startup|reload|new|resume|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/on-session-start.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "session_shutdown": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/on-session-end.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "tool_call": [
+      {
+        "matcher": "edit|write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/enforce-scope.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/config-protection.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/pre-bash-staging-fence.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/pre-bash-memory-propose-audit.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/enforce-commands.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "tool_result": [
+      {
+        "matcher": "edit|write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/post-edit-validate.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/loop-guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "agent_end": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PI_PLUGIN_ROOT/hooks/on-stop.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -21,12 +21,13 @@ export function runCategory1(root) {
       join(root, '.claude/STATE.md'),
       join(root, '.codex/STATE.md'),
       join(root, '.cursor/STATE.md'),
+      join(root, '.pi/STATE.md'),
     ];
     const found = candidates.find((p) => existsSync(p));
     if (!found) {
       checks.push(fail('state-md-present', 3, '.claude/STATE.md',
         { path: null, hasYaml: false, schemaVersion: null, sessionType: null },
-        'STATE.md not found in .claude/, .codex/, or .cursor/'));
+        'STATE.md not found in .claude/, .codex/, .cursor/, or .pi/'));
     } else {
       const text = safeRead(found);
       const size = text ? text.length : 0;

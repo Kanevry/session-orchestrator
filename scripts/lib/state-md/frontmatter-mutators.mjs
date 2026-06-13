@@ -75,24 +75,48 @@ const STATE_MD_CANDIDATES = [
   '.claude/STATE.md',
   '.codex/STATE.md',
   '.cursor/STATE.md',
+  '.pi/STATE.md',
 ];
+
+function preferredStateMdCandidate() {
+  const envStateDir = process.env.SO_STATE_DIR;
+  if (typeof envStateDir === 'string' && envStateDir.length > 0) {
+    return join(envStateDir, 'STATE.md');
+  }
+  switch (process.env.SO_PLATFORM) {
+    case 'codex': return '.codex/STATE.md';
+    case 'cursor': return '.cursor/STATE.md';
+    case 'pi': return '.pi/STATE.md';
+    default: return '.claude/STATE.md';
+  }
+}
+
+function orderedStateMdCandidates() {
+  const preferred = preferredStateMdCandidate();
+  return [
+    preferred,
+    ...STATE_MD_CANDIDATES.filter((candidate) => candidate !== preferred),
+  ];
+}
 
 /**
  * Resolve the active STATE.md path under a given repo root.
  *
- * Returns the first existing candidate; falls back to `.claude/STATE.md` when
- * none exist (matches the create-on-first-write semantics expected by callers).
+ * Returns the first existing candidate, checking the active platform first.
+ * Falls back to the active platform's state dir when none exist (matches the
+ * create-on-first-write semantics expected by callers).
  *
  * @param {string|undefined} repoRoot
  * @returns {string}  Absolute path to STATE.md.
  */
 export function resolveStateMdPath(repoRoot) {
   const root = repoRoot ?? process.cwd();
-  for (const candidate of STATE_MD_CANDIDATES) {
+  const candidates = orderedStateMdCandidates();
+  for (const candidate of candidates) {
     const abs = resolvePath(join(root, candidate));
     if (existsSync(abs)) return abs;
   }
-  return resolvePath(join(root, STATE_MD_CANDIDATES[0]));
+  return resolvePath(join(root, candidates[0]));
 }
 
 /**

@@ -154,12 +154,14 @@ describe('findProjectRoot', () => {
     // Clear env fast-paths to avoid interference
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.CODEX_PROJECT_DIR;
+    delete process.env.PI_PROJECT_DIR;
   });
 
   afterEach(async () => {
     await fs.rm(tmpBase, { recursive: true, force: true }).catch(() => {});
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.CODEX_PROJECT_DIR;
+    delete process.env.PI_PROJECT_DIR;
     vi.restoreAllMocks();
   });
 
@@ -184,6 +186,14 @@ describe('findProjectRoot', () => {
     const { findProjectRoot } = await import('@lib/common.mjs');
     await fs.writeFile(path.join(tmpBase, 'AGENTS.md'), '# test', 'utf8');
     expect(findProjectRoot(tmpBase)).toBe(tmpBase);
+  });
+
+  it('returns the directory containing .pi/ when found', async () => {
+    const { findProjectRoot } = await import('@lib/common.mjs');
+    await fs.mkdir(path.join(tmpBase, '.pi'), { recursive: true });
+    const sub = path.join(tmpBase, 'nested');
+    await fs.mkdir(sub, { recursive: true });
+    expect(findProjectRoot(sub)).toBe(tmpBase);
   });
 
   it('returns startDir when no markers are found', async () => {
@@ -223,6 +233,13 @@ describe('findProjectRoot', () => {
     expect(findProjectRoot('/tmp')).toBe(tmpBase);
   });
 
+  it('respects PI_PROJECT_DIR env var when it contains AGENTS.md', async () => {
+    const { findProjectRoot } = await import('@lib/common.mjs');
+    await fs.writeFile(path.join(tmpBase, 'AGENTS.md'), '# pi', 'utf8');
+    process.env.PI_PROJECT_DIR = tmpBase;
+    expect(findProjectRoot('/tmp')).toBe(tmpBase);
+  });
+
   it('returns an absolute path', async () => {
     const { findProjectRoot } = await import('@lib/common.mjs');
     const result = findProjectRoot(tmpBase);
@@ -242,12 +259,14 @@ describe('resolvePluginRoot', () => {
     await fs.mkdir(tmpBase, { recursive: true });
     delete process.env.CLAUDE_PLUGIN_ROOT;
     delete process.env.CODEX_PLUGIN_ROOT;
+    delete process.env.PI_PLUGIN_ROOT;
   });
 
   afterEach(async () => {
     await fs.rm(tmpBase, { recursive: true, force: true }).catch(() => {});
     delete process.env.CLAUDE_PLUGIN_ROOT;
     delete process.env.CODEX_PLUGIN_ROOT;
+    delete process.env.PI_PLUGIN_ROOT;
     vi.restoreAllMocks();
   });
 
@@ -260,6 +279,12 @@ describe('resolvePluginRoot', () => {
   it('returns CODEX_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT is absent', async () => {
     const { resolvePluginRoot } = await import('@lib/common.mjs');
     process.env.CODEX_PLUGIN_ROOT = tmpBase;
+    expect(resolvePluginRoot()).toBe(tmpBase);
+  });
+
+  it('returns PI_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT and CODEX_PLUGIN_ROOT are absent', async () => {
+    const { resolvePluginRoot } = await import('@lib/common.mjs');
+    process.env.PI_PLUGIN_ROOT = tmpBase;
     expect(resolvePluginRoot()).toBe(tmpBase);
   });
 

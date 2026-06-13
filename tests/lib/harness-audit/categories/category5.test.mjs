@@ -33,7 +33,7 @@ function scaffoldHappyPath(root) {
   writeFileSync(
     join(root, 'scripts/lib/platform.mjs'),
     '// platform resolution\n' +
-      "const root = process.env.CLAUDE_PLUGIN_ROOT || process.env.CODEX_PLUGIN_ROOT || process.env.CURSOR_RULES_DIR || '.';\n",
+      "const root = process.env.CLAUDE_PLUGIN_ROOT || process.env.CODEX_PLUGIN_ROOT || process.env.CURSOR_RULES_DIR || process.env.PI_PLUGIN_ROOT || '.';\n",
   );
 
   // c5.2 — hooks.json using env var prefix (no absolute paths)
@@ -97,7 +97,7 @@ describe('runCategory5', () => {
   // -------------------------------------------------------------------------
   // Failure case — env vars missing from all resolution surface files
   // -------------------------------------------------------------------------
-  it('fails parse-config-fallback-chain when none of the 3 env vars appear anywhere', () => {
+  it('fails parse-config-fallback-chain when none of the 4 env vars appear anywhere', () => {
     // Provide platform.mjs but with no env var references
     ensureDir(join(root, 'scripts/lib'));
     writeFileSync(join(root, 'scripts/lib/platform.mjs'), '// no env vars here\n');
@@ -121,7 +121,7 @@ describe('runCategory5', () => {
       'const a = process.env.CLAUDE_PLUGIN_ROOT;\n',
     );
 
-    // Two more via hooks JSON files
+    // Three more via hooks JSON files
     ensureDir(join(root, 'hooks'));
     writeFileSync(
       join(root, 'hooks/hooks-codex.json'),
@@ -130,6 +130,10 @@ describe('runCategory5', () => {
     writeFileSync(
       join(root, 'hooks/hooks-cursor.json'),
       JSON.stringify({ dir: '$CURSOR_RULES_DIR/hooks' }),
+    );
+    writeFileSync(
+      join(root, 'hooks/hooks-pi.json'),
+      JSON.stringify({ command: 'node $PI_PLUGIN_ROOT/hooks/pre.mjs' }),
     );
 
     // Satisfy remaining checks so we can isolate c5.1
@@ -151,7 +155,7 @@ describe('runCategory5', () => {
     const chain = checks.find((c) => c.check_id === 'parse-config-fallback-chain');
 
     expect(chain.status).toBe('pass');
-    expect(chain.evidence.envVarsFound).toHaveLength(3);
+    expect(chain.evidence.envVarsFound).toHaveLength(4);
   });
 
   // -------------------------------------------------------------------------
