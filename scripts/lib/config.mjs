@@ -59,6 +59,7 @@ import { _parseDialectic } from './config/dialectic.mjs';
 import { _parseMemory } from './config/memory.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
 import { _parseEvolve } from './config/evolve.mjs';
+import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -257,6 +258,9 @@ export function parseSessionConfig(mdContent) {
   // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
   const slopcheck = _parseSlopcheck(mdContent);
 
+  // skill-evolution: opt-in skill self-evolution autonomy block (OpenSpace C1 / issue #646)
+  const skillEvolution = _parseSkillEvolution(mdContent);
+
   // discovery-validator: parsed from full content (PSA-006 enforcement / issue #567)
   const discoveryValidator = _parseDiscoveryValidator(mdContent);
 
@@ -369,6 +373,7 @@ export function parseSessionConfig(mdContent) {
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'slopcheck': slopcheck,
+    'skill-evolution': skillEvolution,
     'discovery-validator': discoveryValidator,
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,

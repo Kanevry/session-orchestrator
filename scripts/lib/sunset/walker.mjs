@@ -20,8 +20,11 @@
  * Telemetry facts the walker is built to respect:
  *   - subagents.jsonl agent_type is reliable ONLY on event==="start"; all nulls
  *     are on "stop" events. The walker counts START events only.
- *   - NO skill-invocation and NO command-invocation telemetry exists. Skills and
- *     commands MUST be assessed via STATIC reference scanning, never telemetry.
+ *   - Skill-invocation telemetry NOW EXISTS in skill-invocations.jsonl (L1
+ *     telemetry, epic #645). Skills are assessed by real selection counts from
+ *     that file. Static reference scanning remains a SUPPLEMENTARY signal.
+ *   - NO command-invocation telemetry exists. Commands are assessed via static
+ *     reference scanning only.
  *
  * This module is pure-ish and side-effect free: it reads files but writes
  * none, holds no mutable runtime state, and exposes no concurrency surface.
@@ -37,6 +40,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { normalizeSkillInvocation } from '../skill-invocations-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Named threshold constants
@@ -202,6 +206,96 @@ export function readDispatchCounts(subagentsJsonlPath, { windowDays, now } = {})
 
   return {
     byAgent,
+    earliestTs: earliestMs === null ? null : new Date(earliestMs).toISOString(),
+    latestTs: latestMs === null ? null : new Date(latestMs).toISOString(),
+    coverageDays,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Skill-invocation telemetry (L1, epic #645)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read skill-selection counts from skill-invocations.jsonl.
+ *
+ * Mirrors `readDispatchCounts` style: synchronous, window-aware, never throws.
+ * Counts only `event === "selected"` records inside the window.
+ *
+ * Uses `normalizeSkillInvocation` from skill-invocations-schema.mjs for
+ * consistent field defaulting, keeping parity with the async reader the schema
+ * module also provides.
+ *
+ * @param {string} invocationsPath
+ * @param {{windowDays: number, now?: number}} opts
+ * @returns {{
+ *   bySkill: Map<string,{count:number,lastTs:string|null}>,
+ *   earliestTs: string|null,
+ *   latestTs: string|null,
+ *   coverageDays: number
+ * }}
+ */
+export function readSkillInvocationCounts(invocationsPath, { windowDays, now } = {}) {
+  const nowMs = typeof now === 'number' ? now : Date.now();
+  const windowStartMs = nowMs - (windowDays ?? DEFAULT_WINDOW_DAYS) * MS_PER_DAY;
+
+  /** @type {Map<string,{count:number,lastTs:string|null}>} */
+  const bySkill = new Map();
+  let earliestMs = null;
+  let latestMs = null;
+
+  if (!existsSync(invocationsPath)) {
+    return { bySkill, earliestTs: null, latestTs: null, coverageDays: 0 };
+  }
+
+  let raw;
+  try {
+    raw = readFileSync(invocationsPath, 'utf8');
+  } catch {
+    return { bySkill, earliestTs: null, latestTs: null, coverageDays: 0 };
+  }
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    let rec;
+    try {
+      rec = normalizeSkillInvocation(JSON.parse(trimmed));
+    } catch {
+      // Malformed line — skip, never throw.
+      continue;
+    }
+    if (!rec || typeof rec !== 'object') continue;
+    if (rec.event !== 'selected') continue;
+
+    const ts = typeof rec.timestamp === 'string' ? rec.timestamp : null;
+    const tsMs = ts ? Date.parse(ts) : NaN;
+
+    // Track coverage envelope from ALL selected events (regardless of window).
+    if (!Number.isNaN(tsMs)) {
+      if (earliestMs === null || tsMs < earliestMs) earliestMs = tsMs;
+      if (latestMs === null || tsMs > latestMs) latestMs = tsMs;
+    }
+
+    const skillName = typeof rec.skill === 'string' && rec.skill.trim() ? rec.skill.trim() : null;
+    if (!skillName) continue;
+
+    // Only count invocations inside the window for the per-skill tally.
+    if (!Number.isNaN(tsMs) && tsMs < windowStartMs) continue;
+
+    const cur = bySkill.get(skillName) ?? { count: 0, lastTs: null };
+    cur.count += 1;
+    if (ts && (cur.lastTs === null || Date.parse(ts) > Date.parse(cur.lastTs))) {
+      cur.lastTs = ts;
+    }
+    bySkill.set(skillName, cur);
+  }
+
+  const coverageDays =
+    earliestMs === null ? 0 : Math.max(0, (nowMs - earliestMs) / MS_PER_DAY);
+
+  return {
+    bySkill,
     earliestTs: earliestMs === null ? null : new Date(earliestMs).toISOString(),
     latestTs: latestMs === null ? null : new Date(latestMs).toISOString(),
     coverageDays,
@@ -599,7 +693,7 @@ export function classifyItem({
  * Run the full sunset walk across the plugin surface.
  *
  * @param {string} repoRoot
- * @param {{windowDays?:number, kind?:'skill'|'agent'|'command', now?:number, subagentsPath?:string}} [opts]
+ * @param {{windowDays?:number, kind?:'skill'|'agent'|'command', now?:number, subagentsPath?:string, invocationsPath?:string}} [opts]
  * @returns {{
  *   meta:{generatedAt:string,windowDays:number,coverageDays:number,lowConfidence:boolean,telemetrySources:object},
  *   summary:{active:number,investigate:number,demote:number,retire:number},
@@ -615,8 +709,13 @@ export function runSunsetWalk(repoRoot, opts = {}) {
     opts.subagentsPath ??
     path.join(repoRoot, '.orchestrator', 'metrics', 'subagents.jsonl');
 
+  const invocationsPath =
+    opts.invocationsPath ??
+    path.join(repoRoot, '.orchestrator', 'metrics', 'skill-invocations.jsonl');
+
   const surface = enumerateSurface(repoRoot);
   const dispatch = readDispatchCounts(subagentsPath, { windowDays, now: nowMs });
+  const skillInvocations = readSkillInvocationCounts(invocationsPath, { windowDays, now: nowMs });
   const linkage = commandSkillLinkage(repoRoot);
   const coverageDays = dispatch.coverageDays;
   const lowConfidence = coverageDays < windowDays;
@@ -630,11 +729,15 @@ export function runSunsetWalk(repoRoot, opts = {}) {
     for (const name of surface.skills) {
       const staticRefs = staticReferenceScan(repoRoot, { kind: 'skill', name });
       const invokedByCommands = linkage.skillToCommands.get(name) ?? [];
+      // Use real L1 selection counts (#645). Fall back to zero-count (NOT null)
+      // so the coverage guard treats skills with no invocations as "cold but
+      // possibly low-coverage" rather than "no telemetry at all".
+      const skillDispatch = skillInvocations.bySkill.get(name) ?? { count: 0, lastTs: null };
       items.push(
         classifyItem({
           kind: 'skill',
           name,
-          dispatch: null,
+          dispatch: skillDispatch,
           static: staticRefs,
           linkage: { invokedByCommands },
           windowDays,
@@ -698,7 +801,10 @@ export function runSunsetWalk(repoRoot, opts = {}) {
         subagentsJsonl: subagentsPath,
         earliestTs: dispatch.earliestTs,
         latestTs: dispatch.latestTs,
-        skillsAndCommands: 'static-analysis (no invocation telemetry exists)',
+        skillInvocationsJsonl: invocationsPath,
+        skillInvocationsEarliestTs: skillInvocations.earliestTs,
+        skillInvocationsLatestTs: skillInvocations.latestTs,
+        commandsAssessment: 'static-analysis only (no command-invocation telemetry)',
       },
     },
     summary,

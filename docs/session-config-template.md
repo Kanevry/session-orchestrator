@@ -776,3 +776,18 @@ agent-mapping:
 - [skills/_shared/config-reading.md](../skills/_shared/config-reading.md) — runtime parser used by every skill.
 - [docs/USER-GUIDE.md](./USER-GUIDE.md) — adopter walk-through with examples.
 - [docs/examples/](./examples/) — Session Config samples for Next.js, Express, Swift.
+
+## Skill Evolution
+
+> **Parity-exempt section.** This H2 is intentionally placed outside the `## Session Config` block so that the `claude-md-drift-check` Check-6 parity scanner (which extracts only column-0 keys inside the `## Session Config` block) does not flag repos that have not yet adopted this feature. Adding `skill-evolution:` as a column-0 key *inside* `## Session Config` would cause every repo running `drift-check.mode: hard` that lacks the key to hard-fail at session-end — portfolio-wide breakage. Issue #646.
+
+Opt-in configuration for the Skill Self-Evolution Foundation (Epic #643, Sub-issue #646). When `autonomy: advisory`, the `/evolve` skill surfaces a session-end summary of skill health signals (D-token rollup, telemetry gaps, A/B experiment deltas) for operator review — no automated edits. When `autonomy: autonomous-gated`, a deterministic evidence gate is checked first; only repairs that clear the gate AND belong to the repo's own local config artifacts (e.g., Session Config fields, local skill overrides) are applied automatically. **Plugin-level and remote skill repairs are always MR-only, regardless of autonomy setting.** The default is `off` — no behavior change for repos that omit this block.
+
+```yaml
+skill-evolution:
+  autonomy: off            # off | advisory | autonomous-gated — default off (opt-in)
+  evidence-floor: 0.5      # float 0.0..1.0 — min evidence before an autonomous-gated repair acts
+  judge: off               # opt-in session-end LLM-judge for A's L3 (advisory only); default off
+```
+
+Read by: `skills/evolve/SKILL.md` (skill-health summary), `scripts/lib/config/skill-evolution.mjs` (parser). PRD: `docs/prd/2026-06-14-skill-self-evolution-foundation.md`. Issue: #646.

@@ -88,4 +88,8 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'lease_acquired_at',
   'lease_ttl_seconds',
   'expected_cost_tier',
+  // Epic #644 — session-level token rollup fields (additive, v1-compatible).
+  'total_token_input',
+  'total_token_output',
+  'subagents_with_tokens',
 ]);

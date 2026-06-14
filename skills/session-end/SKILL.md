@@ -621,6 +621,8 @@ Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialecti
 
 Read `skills/session-end/session-metrics-write.md` for JSONL append, vault-mirror invocation, and behavior matrix.
 
+> **Token Rollup (#644):** Before emitting the JSONL record (step 2 of session-metrics-write.md), step 1a calls `rollupSessionTokens({ parentSessionId })` from `scripts/lib/session-token-rollup.mjs` and merges three optional fields onto the in-memory record: `total_token_input`, `total_token_output`, and `subagents_with_tokens` (coverage count). Null totals mean "no token data captured" — not zero cost. The rollup is non-blocking: a missing `subagents.jsonl` or all-null session still writes cleanly with null/0 values.
+
 ### 3.7a Compute and Write Recommendations (Epic #271 Phase A)
 
 > Gate: Only run if `persistence` is `true` in Session Config AND `<state-dir>/STATE.md` exists. Skip silently otherwise.

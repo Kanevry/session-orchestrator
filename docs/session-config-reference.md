@@ -973,6 +973,31 @@ Leave disabled (default) when:
 - `skills/wave-executor/wave-loop.md` § 3b — the wave-executor hook contract.
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema enforced before write.
 
+## Skill Evolution (#646)
+
+Opt-in configuration for the Skill Self-Evolution Foundation (Epic #643, Sub-issue #646). Controls whether `/evolve` surfaces skill health signals for operator review only (`advisory`) or additionally applies deterministic repairs to local config artifacts behind an evidence gate (`autonomous-gated`). The default is `off` — no behavior change for repos that omit this block.
+
+All fields live under a top-level `skill-evolution` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+skill-evolution:
+  autonomy: off            # off | advisory | autonomous-gated — default off (opt-in)
+  evidence-floor: 0.5      # float 0.0..1.0 — min evidence before autonomous-gated repair acts
+  judge: false             # opt-in session-end LLM-judge for advisory L3; default false
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `skill-evolution.autonomy` | string (`off` \| `advisory` \| `autonomous-gated`) | `off` | Master autonomy mode. `off`: feature inactive, no skill-health signals surfaced. `advisory`: `/evolve` surfaces a session-end skill-health summary (D-token rollup, telemetry gaps, A/B experiment deltas) for operator review — no automated edits. `autonomous-gated`: surfaces the advisory summary AND applies repairs that clear the `evidence-floor` gate to the repo's own local config artifacts (Session Config fields, local skill overrides). Plugin-level and remote skill repairs are always MR-only regardless of this setting. |
+| `skill-evolution.evidence-floor` | float | `0.5` | Minimum evidence score (0.0..1.0) required before an `autonomous-gated` repair is applied without operator confirmation. Repairs below the floor are surfaced as advisory suggestions only. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. Only evaluated when `autonomy: autonomous-gated`. |
+| `skill-evolution.judge` | boolean | `false` | When `true`, session-end dispatches an LLM judge to evaluate skill-health signals at advisory tier L3 (qualitative signal triage). Adds one subagent call per session-end when enabled. Advisory only — the judge output is surfaced for operator review and never directly triggers autonomous repairs. |
+
+**Used by:** `skills/evolve/SKILL.md` (skill-health summary step), `scripts/lib/config/skill-evolution.mjs` (parser).
+
+**Cross-reference:** PRD `docs/prd/2026-06-14-skill-self-evolution-foundation.md`, Epic #643, Sub-issue #646.
+
+**Parity note.** The `skill-evolution:` key is documented in `docs/session-config-template.md` as a **standalone `## Skill Evolution` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6. Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

@@ -135,8 +135,24 @@ describe('OPTIONAL_FIELDS', () => {
     expect(Object.isFrozen(OPTIONAL_FIELDS)).toBe(true);
   });
 
-  it('has exactly 6 fields', () => {
-    expect(OPTIONAL_FIELDS).toHaveLength(6);
+  it('has the expected optional fields (floor/ceiling — grows additively, see testing.md dynamic-count carve-out)', () => {
+    // Floor: 9 (current count after Epic #644 added 3 token-rollup fields).
+    // Ceiling: 30 (generous headroom for future additive extensions).
+    // Named-field assertions below pin the new fields without locking the count.
+    expect(OPTIONAL_FIELDS.length).toBeGreaterThanOrEqual(9);
+    expect(OPTIONAL_FIELDS.length).toBeLessThanOrEqual(30);
+  });
+
+  it('contains total_token_input (Epic #644)', () => {
+    expect(OPTIONAL_FIELDS).toContain('total_token_input');
+  });
+
+  it('contains total_token_output (Epic #644)', () => {
+    expect(OPTIONAL_FIELDS).toContain('total_token_output');
+  });
+
+  it('contains subagents_with_tokens (Epic #644)', () => {
+    expect(OPTIONAL_FIELDS).toContain('subagents_with_tokens');
   });
 
   it('contains agent_identity', () => {

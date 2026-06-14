@@ -316,6 +316,37 @@ function _validateOptionalFields(entry) {
       );
     }
   }
+
+  // Epic #644 — session-level token rollup fields (additive, v1-compatible).
+  // total_token_input / total_token_output: non-negative finite number or null.
+  // Number.isFinite rejects NaN/Infinity (mirrors lease_ttl_seconds above) — a typeof-only
+  // guard let NaN through because NaN < 0 is false (W4 session-review WARN, #644).
+  if (entry.total_token_input !== undefined && entry.total_token_input !== null) {
+    if (!Number.isFinite(entry.total_token_input) || entry.total_token_input < 0) {
+      throw new ValidationError(
+        `total_token_input must be a non-negative finite number or null, got: ${entry.total_token_input}`
+      );
+    }
+  }
+  if (entry.total_token_output !== undefined && entry.total_token_output !== null) {
+    if (!Number.isFinite(entry.total_token_output) || entry.total_token_output < 0) {
+      throw new ValidationError(
+        `total_token_output must be a non-negative finite number or null, got: ${entry.total_token_output}`
+      );
+    }
+  }
+  // subagents_with_tokens: non-negative integer (never null — it is always a count, defaulting to 0).
+  if (entry.subagents_with_tokens !== undefined && entry.subagents_with_tokens !== null) {
+    if (
+      typeof entry.subagents_with_tokens !== 'number' ||
+      !Number.isInteger(entry.subagents_with_tokens) ||
+      entry.subagents_with_tokens < 0
+    ) {
+      throw new ValidationError(
+        `subagents_with_tokens must be a non-negative integer, got: ${entry.subagents_with_tokens}`
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

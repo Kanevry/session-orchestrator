@@ -158,7 +158,46 @@ tool_session_metrics() {
     return
   fi
 
-  respond "$id" "$(text_content "$entries")"
+  # Derive a token summary from the most-recent record that carries token totals.
+  # Fields total_token_input / total_token_output / subagents_with_tokens are
+  # optional (null when no subagent token data was captured for that session).
+  # Low coverage (subagents_with_tokens == 0 while matched_records > 0) means
+  # the total is PARTIAL — do not read it as "free / zero cost".
+  local token_summary
+  # Use -Rrs (raw-input + slurp + raw-output) so jq receives the multi-line
+  # JSONL block as a single string, can split + parse each line independently,
+  # and outputs plain text (no surrounding JSON quotes on the result string).
+  # The plain -r flag alone does not work for multi-record JSONL piped as one
+  # string — it treats the entire input as a single JSON value.
+  token_summary=$(printf '%s' "$entries" | \
+    jq -Rrs '
+      # Parse each non-empty line as JSON; skip malformed lines.
+      [ split("\n")[] | select(length > 0) | (try fromjson catch null) | select(. != null) ]
+      | reverse
+      | ( map(select( (.total_token_input != null) or (.total_token_output != null) )) | first ) as $rec
+      | if $rec then
+          "tokens: \($rec.total_token_input // "?") in / \($rec.total_token_output // "?") out" +
+          " (coverage: \($rec.subagents_with_tokens // 0) subagents)" +
+          ( if ($rec.subagents_with_tokens // 0) == 0 then
+              " ⚠ partial — subagent token data missing; total is not a reliable cost estimate"
+            else "" end ) +
+          " [session: \($rec.session_id // "unknown")]"
+        else
+          "tokens: no token data in last 5 sessions (subagent telemetry not yet captured)"
+        end
+    ' 2>/dev/null) || token_summary=""
+
+  local output
+  if [[ -n "$token_summary" ]]; then
+    output="${entries}
+
+--- token summary ---
+${token_summary}"
+  else
+    output="$entries"
+  fi
+
+  respond "$id" "$(text_content "$output")"
 }
 
 # ---------------------------------------------------------------------------

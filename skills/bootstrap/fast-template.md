@@ -64,6 +64,8 @@ typecheck-command: <detect>
 lint-command: <detect>
 recent-commits: 20
 stale-branch-days: 7
+skill-evolution:
+  autonomy: off            # off | advisory | autonomous-gated — opt-in self-evolution (default off)
 EOF
 fi
 ```
