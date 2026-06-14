@@ -542,7 +542,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 - CLI: `scripts/memory-propose.mjs` (agents call this)
 - Hook: `hooks/pre-bash-memory-propose-audit.mjs` (audit trail)
 - Coordinator AUQ spec: `agents/memory-proposal-collector.md` (reference doc)
-- Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.7 Auto-Dialectic (#506)
+- Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.6 Skill-Applied Judge (#645 L3), 3.6.7 Auto-Dialectic (#506)
 - Issue: #501
 
 ### 3.6.5 Auto-Dream Dispatch (#502, F2.2)
@@ -576,6 +576,71 @@ After learnings are written (Phase 3.6), determine whether to emit a **manual-ca
 The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/.
 
 Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`).
+
+### 3.6.6 Skill-Applied Judge (#645, L3)
+
+> **Default OFF.** Skip this phase — with NO module import and NO sidecar created — unless BOTH gates pass (evaluated in this order):
+> 1. `config['skill-evolution'].judge !== true` → skip (the `judge:` key in the top-level `skill-evolution:` block; default `false`).
+> 2. `persistence === false` in Session Config → skip.
+>
+> When skipped, log `skill-judge: disabled (skill-evolution.judge=false)` (or `persistence=false`) and return. **This is the disabled-path guarantee:** with the judge off, only L1 (`skill-invocations.jsonl`, written by the PreToolUse hook) and L2 (`scripts/lib/skill-health/join.mjs`) records exist — no judgment, no error, zero L3 code executes. Do NOT import `scripts/lib/skill-judge.mjs` on the disabled path.
+
+After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), and when the judge is enabled, run a **bounded, read-only LLM-judge** over this session's selected skills to emit ADVISORY per-skill applied/completed judgments to `.orchestrator/metrics/skill-judgments.jsonl`.
+
+**The #614 distinction (the whole point of L3's Design A):** unlike the 3.6.5 / 3.6.7 nudge-only paths — which cannot dispatch a live subagent because the target read-only agents (`memory-cleanup`, `dialectic-deriver`) cannot write their own sidecars — L3 performs a **LIVE read-only dispatch**. This is #614-safe because the read-only `skill-applied-judge` agent **RETURNS JSON** and the **COORDINATOR writes the sidecar**, not the agent. A read-only agent that returns judgments is allowed; a read-only agent that must write a file is the #614 trap.
+
+**Advisory-only:** the judge output is written with `advisory: true` (schema-rejected otherwise) and **NEVER feeds an auto-action gate** — not a sunset decision, not a C2 repair (`scripts/lib/skill-evolution/*`), not a promotion. Per #645 R9(b) the C2 repair gate stays deterministic; L3 is a signal for humans/dashboards only.
+
+1. Read `config['skill-evolution'].judge` (default `false`), `config['skill-evolution']['judge-budget-tokens']` (default 8000), and `persistence`. Apply the two skip gates above.
+
+2. Determine the **judged set** — only THIS session's selected skills. Read `.orchestrator/metrics/skill-invocations.jsonl` and collect the distinct `skill` values whose `session_id` matches the current session id. If the judged set is empty, `runSkillJudge` returns `status: 'empty-input'` (no dispatch) — log and continue.
+
+3. Invoke `runSkillJudge` from `scripts/lib/skill-judge.mjs`, wiring the real dispatch via the DI seam:
+
+   ```javascript
+   import { runSkillJudge } from '${PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
+   import { appendSkillJudgment } from '${PLUGIN_ROOT}/scripts/lib/skill-judgments-schema.mjs';
+   import path from 'node:path';
+
+   const budgetTokens = config['skill-evolution']['judge-budget-tokens'] ?? 8000;
+   const result = await runSkillJudge({
+     // Claude Code path: wire the real read-only haiku subagent as dispatchAgent.
+     dispatchAgent: ({ model, prompt, maxTokens }) =>
+       Agent({ subagent_type: 'skill-applied-judge', model: 'haiku', prompt, max_tokens: maxTokens }),
+     repoRoot: process.cwd(),
+     sessionId,
+     transcriptTail,                 // recent session transcript excerpt (UNTRUSTED — fenced by the lib)
+     selectedSkills,                 // distinct skills from step 2
+     model: 'haiku',
+     budget: { input: budgetTokens, output: 4000 },
+   });
+   ```
+
+   - **Claude Code path:** `dispatchAgent` wraps the real `Agent({ subagent_type: 'skill-applied-judge', model: 'haiku', … })`. The agent is `sandbox-tier: read-only` and RETURNS one fenced ```json block — it never writes files.
+   - **Codex / Cursor path:** there is no subagent type. Wire `dispatchAgent` as a coordinator-inline call (the coordinator itself reasons over the prompt and returns `{ text }`), keeping the identical `runSkillJudge` signature. Same DI seam, no harness subagent.
+
+4. On `result.status === 'ok'`: the **COORDINATOR** writes each returned judgment to the sidecar. Stamp the per-record metadata (`timestamp`, `event: 'judged'`, `session_id`, `advisory: true`, `model`, `schema_version: 1`) and append:
+
+   ```javascript
+   const judgmentsPath = path.join(process.cwd(), '.orchestrator/metrics/skill-judgments.jsonl');
+   const nowIso = new Date().toISOString();
+   for (const j of result.judgments) {
+     await appendSkillJudgment(
+       { timestamp: nowIso, event: 'judged', skill: j.skill, session_id: sessionId,
+         applied: j.applied, completed: j.completed, confidence: j.confidence,
+         advisory: true, model: 'haiku' },
+       { path: judgmentsPath },
+     );
+   }
+   ```
+
+   `appendSkillJudgment` re-validates each record; `advisory !== true` is schema-rejected, so a tampered record can never be persisted.
+
+5. On `result.status === 'empty-input'` or `'budget-exceeded'`: log the status (e.g. `skill-judge: skipped (budget-exceeded used=N budget=M)`) and continue. No sidecar write on either non-ok status.
+
+6. **Failures are non-fatal.** Any error from the dispatch or write is logged to `.orchestrator/metrics/sweep.log` and the close continues — same posture as Phase 3.6.7. The judge is advisory; a failed judgment must never block session close.
+
+Cross-reference: PRD §A L3 acceptance criteria (#645, epic #643); `scripts/lib/skill-judge.mjs` API (`runSkillJudge`, `validateModel`, `estimateInputTokens`, `checkBudget`, `buildJudgePrompt`, `parseJudgeResponse`); `scripts/lib/skill-judgments-schema.mjs` (`appendSkillJudgment`, `readSkillJudgments`, `validateSkillJudgment`); agent `agents/skill-applied-judge.md`.
 
 ### 3.6.7 Auto-Dialectic Dispatch (#506, F2.5)
 
@@ -913,6 +978,7 @@ Present to the user:
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
 | (inline) Phase 3.6.3 | Memory-Proposals Collection — `collectProposals` + AUQ multiSelect + `writeApproved` + `clearProposalsJsonl` |
 | (inline) Phase 3.6.5 | Auto-Dream nudge — `shouldDispatchAutoDream` + manual-cadence nudge to run /memory-cleanup --dry-run next session (no live dispatch — #614) |
+| (inline) Phase 3.6.6 | Skill-Applied Judge (#645 L3) — default OFF; when `skill-evolution.judge: true`, `runSkillJudge` does a LIVE read-only haiku dispatch returning JSON; the COORDINATOR writes advisory judgments to `.orchestrator/metrics/skill-judgments.jsonl` (#614-safe: agent returns, coordinator writes) |
 | (inline) Phase 3.6.7 | Auto-Dialectic nudge — `shouldDispatchAutoDialectic` + manual-cadence nudge to run /evolve --dialectic next session + advances `.orchestrator/dialectic-last-run` (no live dispatch — #614) |
 | `session-metrics-write.md` | Phase 3.7 JSONL append, vault-mirror invocation, and behavior matrix |
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |

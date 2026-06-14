@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   readDispatchCounts,
+  readSkillJudgmentCounts,
   staticReferenceScan,
   commandSkillLinkage,
   classifyItem,
@@ -785,5 +786,200 @@ describe('staticReferenceScan — skill boilerplate + node_modules exclusion', (
     // The node_modules reference is invisible to the scanner → still cold.
     expect(result.nonBoilerplateRefs).toBe(0);
     expect(result.refFiles).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. readSkillJudgmentCounts (L3, epic #645) — window-aware tri-state aggregation.
+// ---------------------------------------------------------------------------
+
+/** Build a full, valid skill-judgment JSONL record (event:'judged'). */
+function judgmentLine({ skill, applied, completed, timestamp, confidence = 0.8 }) {
+  return JSON.stringify({
+    timestamp,
+    event: 'judged',
+    skill,
+    session_id: 'sess-x',
+    applied,
+    completed,
+    confidence,
+    advisory: true,
+    model: 'haiku',
+    schema_version: 1,
+  });
+}
+
+describe('readSkillJudgmentCounts', () => {
+  let dir;
+  let jsonlPath;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'sunset-judge-'));
+    jsonlPath = path.join(dir, 'skill-judgments.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns an empty bySkill map without throwing for a missing file', () => {
+    const result = readSkillJudgmentCounts(path.join(dir, 'nope.jsonl'), {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      now: NOW,
+    });
+    expect(result.bySkill.size).toBe(0);
+    expect(result.earliestTs).toBeNull();
+    expect(result.coverageDays).toBe(0);
+  });
+
+  it('aggregates tri-state tallies per skill for two in-window judged records', () => {
+    const lines = [
+      judgmentLine({
+        skill: 'discovery',
+        applied: 'yes',
+        completed: 'no',
+        timestamp: '2026-05-28T12:00:00.000Z',
+      }),
+      judgmentLine({
+        skill: 'discovery',
+        applied: 'no',
+        completed: 'unknown',
+        timestamp: '2026-05-29T12:00:00.000Z',
+      }),
+    ].join('\n');
+    writeFileSync(jsonlPath, lines + '\n', 'utf8');
+
+    const result = readSkillJudgmentCounts(jsonlPath, { windowDays: DEFAULT_WINDOW_DAYS, now: NOW });
+
+    expect(result.bySkill.get('discovery')).toEqual({
+      appliedYes: 1,
+      appliedNo: 1,
+      appliedUnknown: 0,
+      completedYes: 0,
+      completedNo: 1,
+      completedUnknown: 1,
+      total: 2,
+      lastTs: '2026-05-29T12:00:00.000Z',
+    });
+  });
+
+  it('excludes judged records that fall outside the window', () => {
+    const lines = [
+      // In window (NOW − 2026-05-28 = 2 days, window 5d).
+      judgmentLine({
+        skill: 'plan',
+        applied: 'yes',
+        completed: 'yes',
+        timestamp: '2026-05-28T12:00:00.000Z',
+      }),
+      // Out of window (NOW − 2026-04-01 ≈ 59 days > 5d window) — excluded from tally.
+      judgmentLine({
+        skill: 'plan',
+        applied: 'no',
+        completed: 'no',
+        timestamp: '2026-04-01T12:00:00.000Z',
+      }),
+    ].join('\n');
+    writeFileSync(jsonlPath, lines + '\n', 'utf8');
+
+    const result = readSkillJudgmentCounts(jsonlPath, { windowDays: 5, now: NOW });
+
+    expect(result.bySkill.get('plan')).toEqual({
+      appliedYes: 1,
+      appliedNo: 0,
+      appliedUnknown: 0,
+      completedYes: 1,
+      completedNo: 0,
+      completedUnknown: 0,
+      total: 1,
+      lastTs: '2026-05-28T12:00:00.000Z',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. applyJudgeAdvisory firewall (L3, epic #645) — exercised via classifyItem's
+//     `judge` parameter. ADVISORY ONLY: annotate + DOWNGRADE Active→Investigate;
+//     never escalate toward Retire/Demote; never promote upward.
+// ---------------------------------------------------------------------------
+
+describe('classifyItem — L3 judge advisory firewall', () => {
+  const noRefs = { strictRefs: 0, proseRefs: 0, nonBoilerplateRefs: 0, refFiles: [] };
+
+  it('downgrades an Active skill to Investigate on a strong applied=no judge signal', () => {
+    // Active deterministic verdict: skill invoked by a command.
+    const result = classifyItem({
+      kind: 'skill',
+      name: 'discovery',
+      dispatch: { count: 0, lastTs: null },
+      static: noRefs,
+      linkage: { invokedByCommands: ['cmd-x'] },
+      windowDays: DEFAULT_WINDOW_DAYS,
+      coverageDays: 120,
+      judge: {
+        appliedYes: 0,
+        appliedNo: 3,
+        appliedUnknown: 0,
+        completedYes: 0,
+        completedNo: 0,
+        completedUnknown: 3,
+        total: 3,
+        lastTs: '2026-05-29T12:00:00.000Z',
+      },
+    });
+
+    // DOWNGRADE, not Retire/Demote.
+    expect(result.verdict).toBe('Investigate');
+    expect(result.signals.judge.appliedNo).toBe(3);
+    expect(result.reasons.join(' ')).toContain('[advisory]');
+    expect(result.reasons.join(' ')).toContain('downgraded to Investigate');
+  });
+
+  it('produces a verdict byte-identical to the no-judge path when judge is null', () => {
+    const args = {
+      kind: 'skill',
+      name: 'discovery',
+      dispatch: { count: 0, lastTs: null },
+      static: noRefs,
+      linkage: { invokedByCommands: ['cmd-x'] },
+      windowDays: DEFAULT_WINDOW_DAYS,
+      coverageDays: 120,
+    };
+    const withNull = classifyItem({ ...args, judge: null });
+    const without = classifyItem({ ...args });
+
+    expect(withNull).toEqual(without);
+    // No advisory annotations leaked into the disabled path.
+    expect(withNull.reasons.some((r) => r.includes('[advisory]'))).toBe(false);
+    expect(withNull.verdict).toBe('Active');
+  });
+
+  it('NEVER escalates a cold Retire skill — judge data does not promote or escalate', () => {
+    // Deterministic Retire: 0 dispatch, 0 non-boilerplate refs, full coverage.
+    const result = classifyItem({
+      kind: 'skill',
+      name: 'ghost',
+      dispatch: { count: 0, lastTs: null },
+      static: noRefs,
+      linkage: { invokedByCommands: [] },
+      windowDays: 10,
+      coverageDays: 16,
+      // A judge with applied=yes signals (which, if it escalated, would NOT
+      // apply here anyway) — the firewall leaves Retire untouched regardless.
+      judge: {
+        appliedYes: 5,
+        appliedNo: 0,
+        appliedUnknown: 0,
+        completedYes: 5,
+        completedNo: 0,
+        completedUnknown: 0,
+        total: 5,
+        lastTs: '2026-05-29T12:00:00.000Z',
+      },
+    });
+
+    // Retire is deterministic-cold; the judge layer may annotate but never moves
+    // the verdict off Retire.
+    expect(result.verdict).toBe('Retire');
   });
 });

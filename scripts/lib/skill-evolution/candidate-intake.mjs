@@ -177,7 +177,16 @@ function driftErrorToCandidate(err, nowIso) {
   // Per-check proposed-change templates; command-count needs the actual count.
   let proposedChange;
   if (check === 'command-count') {
-    const claimed = err.extracted ?? '?';
+    // Prefer the STRUCTURED bare claimed number (checker.mjs:495 exposes
+    // `command_count: { actual, claimed }` where `claimed` is `parseInt(m[1])`).
+    // `err.extracted` is the FULL regex match (e.g. "8 commands"); using it here
+    // produced the malformed double-word `'8 commands commands'` that the engine
+    // whitelist regex (engine.mjs COMMAND_COUNT_SHAPE) correctly rejects — making
+    // autonomous-apply dead code for this shape (#651 FIX 1).
+    const claimed =
+      (err.command_count && typeof err.command_count === 'object' && err.command_count !== null
+        ? /** @type {Record<string, unknown>} */ (err.command_count).claimed
+        : undefined) ?? err.extracted ?? '?';
     const actual =
       err.command_count && typeof err.command_count === 'object' && err.command_count !== null
         ? /** @type {Record<string, unknown>} */ (err.command_count).actual ?? '?'

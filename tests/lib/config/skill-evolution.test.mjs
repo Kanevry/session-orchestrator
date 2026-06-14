@@ -29,6 +29,7 @@ const DEFAULTS = {
   autonomy: 'off',
   'evidence-floor': 0.5,
   judge: false,
+  'judge-budget-tokens': 8000,
 };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,7 @@ describe('_parseSkillEvolution — valid full block', () => {
       autonomy: 'autonomous-gated',
       'evidence-floor': 0.8,
       judge: true,
+      'judge-budget-tokens': 8000,
     });
   });
 });
@@ -247,6 +249,7 @@ describe('_parseSkillEvolution — inline comments, CRLF, and quoted values', ()
       autonomy: 'advisory',
       'evidence-floor': 0.6,
       judge: true,
+      'judge-budget-tokens': 8000,
     });
   });
 
@@ -324,6 +327,7 @@ describe('_parseSkillEvolution — block boundary detection', () => {
       autonomy: 'autonomous-gated',
       'evidence-floor': 0.95,
       judge: true,
+      'judge-budget-tokens': 8000,
     });
   });
 });
@@ -349,6 +353,7 @@ describe('parseSessionConfig integration — skill-evolution wiring', () => {
       autonomy: 'off',
       'evidence-floor': 0.5,
       judge: false,
+      'judge-budget-tokens': 8000,
     });
   });
 
@@ -372,6 +377,7 @@ describe('parseSessionConfig integration — skill-evolution wiring', () => {
       autonomy: 'autonomous-gated',
       'evidence-floor': 0.8,
       judge: true,
+      'judge-budget-tokens': 8000,
     });
   });
 
@@ -391,6 +397,7 @@ describe('parseSessionConfig integration — skill-evolution wiring', () => {
       autonomy: 'advisory',
       'evidence-floor': 0.5,
       judge: false,
+      'judge-budget-tokens': 8000,
     });
   });
 });

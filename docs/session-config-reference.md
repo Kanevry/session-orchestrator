@@ -984,15 +984,17 @@ skill-evolution:
   autonomy: off            # off | advisory | autonomous-gated — default off (opt-in)
   evidence-floor: 0.5      # float 0.0..1.0 — min evidence before autonomous-gated repair acts
   judge: false             # opt-in session-end LLM-judge for advisory L3; default false
+  judge-budget-tokens: 8000 # token budget for the L3 judge dispatch; default 8000
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `skill-evolution.autonomy` | string (`off` \| `advisory` \| `autonomous-gated`) | `off` | Master autonomy mode. `off`: feature inactive, no skill-health signals surfaced. `advisory`: `/evolve` surfaces a session-end skill-health summary (D-token rollup, telemetry gaps, A/B experiment deltas) for operator review — no automated edits. `autonomous-gated`: surfaces the advisory summary AND applies repairs that clear the `evidence-floor` gate to the repo's own local config artifacts (Session Config fields, local skill overrides). Plugin-level and remote skill repairs are always MR-only regardless of this setting. |
 | `skill-evolution.evidence-floor` | float | `0.5` | Minimum evidence score (0.0..1.0) required before an `autonomous-gated` repair is applied without operator confirmation. Repairs below the floor are surfaced as advisory suggestions only. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. Only evaluated when `autonomy: autonomous-gated`. |
-| `skill-evolution.judge` | boolean | `false` | When `true`, session-end dispatches an LLM judge to evaluate skill-health signals at advisory tier L3 (qualitative signal triage). Adds one subagent call per session-end when enabled. Advisory only — the judge output is surfaced for operator review and never directly triggers autonomous repairs. |
+| `skill-evolution.judge` | boolean | `false` | When `true`, session-end (Phase 3.6.6) dispatches a bounded **read-only** haiku LLM-judge that reads the transcript tail and emits advisory per-skill `applied`/`completed` judgments (L3). The judge RETURNS JSON; the coordinator writes the `.orchestrator/metrics/skill-judgments.jsonl` sidecar (#614-safe — the read-only agent never writes its own sidecar). Adds one subagent call per session-end when enabled. Advisory only — every judgment carries a schema-enforced `advisory: true` and provably cannot reach a C2 repair gate. |
+| `skill-evolution.judge-budget-tokens` | integer | `8000` | Token budget for the L3 judge dispatch (`runSkillJudge`). The budget gate fires BEFORE dispatch: if the built prompt's estimated input exceeds this, the judge is skipped (`status: budget-exceeded`) rather than truncated. Non-positive or non-integer values silently fall back to `8000`. Only evaluated when `judge: true`. |
 
-**Used by:** `skills/evolve/SKILL.md` (skill-health summary step), `scripts/lib/config/skill-evolution.mjs` (parser).
+**Used by:** `skills/evolve/SKILL.md` (skill-health summary step), `scripts/lib/config/skill-evolution.mjs` (parser), `scripts/lib/skill-judge.mjs` (L3 judge), `scripts/lib/skill-judgments-schema.mjs` (sidecar schema), `skills/session-end/SKILL.md` § Phase 3.6.6 (judge dispatch + coordinator-write).
 
 **Cross-reference:** PRD `docs/prd/2026-06-14-skill-self-evolution-foundation.md`, Epic #643, Sub-issue #646.
 

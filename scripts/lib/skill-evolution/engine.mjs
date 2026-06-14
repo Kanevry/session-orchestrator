@@ -49,6 +49,10 @@
  * Part of Epic #643 → issue #647 (C2 auto-repair engine).
  */
 
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+
 import { extractCandidates as realExtractCandidates } from './candidate-intake.mjs';
 import {
   mergeCandidates as realMergeCandidates,
@@ -146,42 +150,186 @@ function readSkillEvolutionConfig(config) {
 }
 
 /**
- * Default applyConfigRepair seam (CONSERVATIVE foundation-slice stub).
+ * The ONE supported autonomous-apply shape (Option A — re-derive from prose).
+ * Anchored to the `command-count` `proposed_change` template emitted by
+ * candidate-intake.mjs (`Update narrative '<N> commands' to actual <M>`).
+ * Both numbers are embedded in the prose string; capturing them avoids a
+ * candidate-schema change. Anything that does not match is OUT OF WHITELIST.
+ * @type {RegExp}
+ */
+const COMMAND_COUNT_SHAPE = /'(\d+)\s+commands'\s+to\s+actual\s+(\d+)/;
+
+/**
+ * The string a not-yet-applied unsupported shape returns as its `reason`. The
+ * engine narrowly matches `/unsupported-shape/` against this to re-route to the
+ * MR path (rather than silently stamping a candidate it cannot apply).
+ */
+const UNSUPPORTED_SHAPE_REASON = 'unsupported-shape — out of whitelist';
+
+/**
+ * Parse the whitelisted command-count shape out of a candidate's PROSE
+ * `proposed_change`. Returns the claimed (narrative) and actual (filesystem)
+ * counts, or `null` when the prose is not the supported shape.
+ * @param {RepairCandidate} candidate
+ * @returns {{ claimedN: number, actualM: number } | null}
+ */
+function parseCommandCountShape(candidate) {
+  const proposed =
+    candidate && typeof candidate.proposed_change === 'string' ? candidate.proposed_change : '';
+  const m = COMMAND_COUNT_SHAPE.exec(proposed);
+  if (!m) return null;
+  return { claimedN: Number(m[1]), actualM: Number(m[2]) };
+}
+
+/**
+ * Resolve a candidate's `target_path` against `repoRoot` with a fail-closed
+ * repo-escape guard (mirrors mr-opener.mjs Step 3 + blast-radius-classifier.mjs).
+ * Returns the absolute path when the target is genuinely inside the repo, or
+ * `null` when it escapes / is the root itself / inputs are unusable.
+ * @param {string} repoRoot
+ * @param {string} targetPath
+ * @returns {string|null}
+ */
+function resolveInsideRepo(repoRoot, targetPath) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+  if (typeof targetPath !== 'string' || targetPath.length === 0) return null;
+  const abs = path.resolve(repoRoot, targetPath);
+  const rel = path.relative(repoRoot, abs);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return abs;
+}
+
+/**
+ * Apply the command-count number swap to file content. Finds the FIRST narrative
+ * occurrence of `<claimedN>` immediately preceding a `commands` token (tolerating
+ * the `/commands` and `slash commands` narrative variants the drift-check matches
+ * via `/\b(\d+)\s+(?:\/)?commands?\b/`, and an optional wrapping single-quote),
+ * and replaces ONLY that leading number with `actualM`. Every other byte — and
+ * the `commands` token itself — is preserved verbatim.
  *
- * For the foundation slice the actual local-config file MUTATION stays behind
- * this seam: applying a learning's prose `proposed_change` to a config artifact
- * is delicate and out of scope for the GATING deliverable. The default logs the
- * intended change and returns `{ ok: true, applied: false, reason }` so the
- * matrix GATING is fully exercised end-to-end while the real file-write is
- * deferred. W4 / later slices inject a real mutator here.
+ * Returns the rewritten content, or `null` when no occurrence is found OR the
+ * narrative number already equals `actualM` (idempotent no-op).
+ * @param {string} content
+ * @param {number} claimedN
+ * @param {number} actualM
+ * @returns {string|null}
+ */
+function applyCommandCountSwap(content, claimedN, actualM) {
+  if (typeof content !== 'string' || content.length === 0) return null;
+  if (claimedN === actualM) return null; // already current — no-op
+  // Anchor on the claimed number followed by the (drift-check-shaped) commands
+  // token. \b before the number prevents matching a substring of a larger int
+  // (e.g. claimedN=8 must not match inside "18 commands"). The number group is
+  // the only segment we replace; the trailing token group is re-emitted as-is.
+  const swapRe = new RegExp(`\\b${claimedN}(\\s+(?:/|slash\\s+)?commands?\\b)`);
+  if (!swapRe.test(content)) return null; // claimed text not found — no-op
+  return content.replace(swapRe, `${actualM}$1`);
+}
+
+/**
+ * Default applyConfigRepair seam — the REAL autonomous mutator (issue #651).
+ *
+ * Implements the §C2-G2 contract for the whitelisted `command-count` drift
+ * shape ONLY. Every step is defense-in-depth + idempotent:
+ *   1. Repo-escape guard: resolve target inside `repoRoot`; escape ⇒ no-op.
+ *   2. Whitelist: parse the command-count shape from PROSE; miss ⇒
+ *      `unsupported-shape` (the engine re-routes that to an MR — never stamps).
+ *   3. Mutation: swap the ONE narrative number, atomically (tmp + rename),
+ *      content-level idempotent (already-current / text-absent ⇒ no write).
+ *
+ * NEVER throws — every error path degrades to `{ ok: true, applied: false }`.
+ * Does NOT stamp `processed_at`; the engine owns the G2 stamp.
  *
  * @param {RepairCandidate} candidate — the local-config candidate to apply.
+ * @param {string} [repoRoot] — repo root for path resolution (engine injects it).
  * @returns {Promise<{ ok: boolean, applied: boolean, reason?: string }>}
  */
-async function defaultApplyConfigRepair(candidate) {
-  return {
-    ok: true,
-    applied: false,
-    reason: `apply-seam stub — real mutation deferred for ${candidate?.target_path ?? 'unknown'}`,
-  };
+async function defaultApplyConfigRepair(candidate, repoRoot) {
+  // Step 1 — repo-escape guard (fail-closed; mirrors mr-opener.mjs L353-361).
+  const abs = resolveInsideRepo(repoRoot, candidate?.target_path);
+  if (abs === null) {
+    return { ok: true, applied: false, reason: 'target escapes repo' };
+  }
+
+  // Step 2 — whitelist gate. Only the command-count shape may auto-apply.
+  const parsed = parseCommandCountShape(candidate);
+  if (parsed === null) {
+    return { ok: true, applied: false, reason: UNSUPPORTED_SHAPE_REASON };
+  }
+  const { claimedN, actualM } = parsed;
+
+  // Step 3 — scoped, minimal, idempotent mutation (atomic write-back).
+  let content;
+  try {
+    content = readFileSync(abs, 'utf8');
+  } catch (err) {
+    return { ok: true, applied: false, reason: `read failed: ${err?.message ?? String(err)}` };
+  }
+
+  const next = applyCommandCountSwap(content, claimedN, actualM);
+  if (next === null || next === content) {
+    return { ok: true, applied: false, reason: 'already-current (no-op)' };
+  }
+
+  try {
+    const dir = path.dirname(abs);
+    const tmpFile = path.join(dir, `.${path.basename(abs)}.${randomBytes(6).toString('hex')}.tmp`);
+    writeFileSync(tmpFile, next, { encoding: 'utf8' });
+    renameSync(tmpFile, abs);
+  } catch (err) {
+    return { ok: true, applied: false, reason: `write failed: ${err?.message ?? String(err)}` };
+  }
+
+  return { ok: true, applied: true };
 }
 
 /**
  * Default buildDiff seam — derive a {@link RepairDiff} from a candidate for the
- * MR-opener. For prose targets the foundation slice ships NO synthesised content
- * (a hand-authored diff is out of scope), so the default carries only the
- * proposed change as `raw` context. The MR-opener degrades gracefully when
- * `content` is absent (it opens an MR describing the change without rewriting
- * the file). W4 / later slices inject a real differ.
+ * MR-opener (issue #651). For the whitelisted `command-count` shape on a config
+ * target it computes the FULL rewritten file content (same one-line swap as the
+ * apply seam) so the MR-opener can write the change; otherwise — unsupported
+ * prose shape, read error, or escape — it degrades to a `{ raw }`-only describe
+ * MR (the MR-opener opens a description-only MR when `content` is absent).
+ *
+ * Synchronous and NEVER throws.
  *
  * @param {RepairCandidate} candidate
+ * @param {string} [repoRoot] — repo root for path resolution (engine injects it).
  * @returns {{ content?: string, raw?: string }}
  */
-function defaultBuildDiff(candidate) {
-  const proposed = candidate && typeof candidate.proposed_change === 'string'
-    ? candidate.proposed_change
-    : '';
-  return { raw: proposed };
+function defaultBuildDiff(candidate, repoRoot) {
+  const proposed =
+    candidate && typeof candidate.proposed_change === 'string' ? candidate.proposed_change : '';
+
+  const abs = resolveInsideRepo(repoRoot, candidate?.target_path);
+  const parsed = parseCommandCountShape(candidate);
+  if (abs === null || parsed === null) {
+    return { raw: proposed };
+  }
+  const { claimedN, actualM } = parsed;
+
+  let content;
+  try {
+    content = readFileSync(abs, 'utf8');
+  } catch {
+    return { raw: proposed };
+  }
+
+  const next = applyCommandCountSwap(content, claimedN, actualM);
+  if (next === null || next === content) {
+    // Already current / claimed text absent → nothing to rewrite; describe only.
+    return { raw: proposed };
+  }
+
+  // Synthesise a minimal unified-diff preview of the one changed line. The
+  // describe path (`raw`) names the exact old/new narrative lines for the MR body.
+  const oldLine = `${claimedN} commands`;
+  const newLine = `${actualM} commands`;
+  const rel = path.relative(repoRoot, abs).split(path.sep).join('/');
+  return {
+    content: next,
+    raw: `--- a/${rel}\n+++ b/${rel}\n-${oldLine}\n+${newLine}\n`,
+  };
 }
 
 /**
@@ -287,13 +435,42 @@ async function decideAndAct({ candidate, repoRoot, se, dryRun, seams }) {
     }
     // Real autonomous apply: applyConfigRepair → markProcessed.
     try {
-      const applyResult = await seams.applyConfigRepair(candidate);
-      const stamp = seams.markProcessed({ id: candidateId, repoRoot });
+      const applyResult = await seams.applyConfigRepair(candidate, repoRoot);
       const applied = applyResult && applyResult.applied === true;
+      const applyReason = typeof applyResult?.reason === 'string' ? applyResult.reason : '';
+
+      // Re-route NARROWLY: only when the apply was declined because the shape is
+      // OUT OF WHITELIST do we open an MR (so the change is not silently
+      // stamped-and-dropped). Every OTHER non-applied reason that WON'T change on
+      // retry (already-current, target escapes repo) keeps the existing
+      // stamp-and-return behaviour — and existing engine.test.mjs mocks (generic
+      // results without an `unsupported-shape` reason) are unaffected.
+      if (!applied && /unsupported-shape/.test(applyReason)) {
+        return finishOpenMr({
+          candidate, candidateId, targetPath, targetType, repoRoot, dryRun, seams,
+          detail: `apply declined (${applyReason}) — routed to MR`,
+        });
+      }
+
+      // TRANSIENT I/O failure (read/write): do NOT stamp (so the drift retries on
+      // a future run once the FS issue clears) and do NOT count as an apply (so
+      // telemetry isn't inflated by a buried failure). Degrade to a `no-op` that
+      // surfaces the error reason. (#651 FIX 2 — silent-failure / telemetry-inflate)
+      if (!applied && /read failed|write failed/i.test(applyReason)) {
+        return {
+          candidateId,
+          targetPath,
+          targetType,
+          decision: 'no-op',
+          detail: `autonomous-apply aborted — ${applyReason} (not stamped; will retry)`,
+        };
+      }
+
+      const stamp = seams.markProcessed({ id: candidateId, repoRoot });
       const stampOk = stamp && stamp.ok === true;
       const detailParts = [
         `gate green + evidence ${candidate.evidence} ≥ ${floor}`,
-        applied ? 'applied' : `apply deferred (${applyResult?.reason ?? 'seam stub'})`,
+        applied ? 'applied' : `apply deferred (${applyReason || 'seam stub'})`,
         stampOk ? 'marked processed' : `markProcessed: ${stamp?.reason ?? 'unknown'}`,
       ];
       return {
@@ -345,7 +522,7 @@ function finishAdvisory({ candidateId, targetPath, targetType, detail }) {
 async function finishOpenMr({ candidate, candidateId, targetPath, targetType, repoRoot, dryRun, seams, detail }) {
   let diff;
   try {
-    diff = seams.buildDiff(candidate);
+    diff = seams.buildDiff(candidate, repoRoot);
   } catch (err) {
     return {
       candidateId, targetPath, targetType,
@@ -405,8 +582,8 @@ async function finishOpenMr({ candidate, candidateId, targetPath, targetType, re
  * @param {typeof realClassifyTarget} [opts.classifyTarget]
  * @param {typeof realRunConfigValidationGate} [opts.runConfigValidationGate]
  * @param {typeof realOpenRepairMr} [opts.openRepairMr]
- * @param {(candidate: RepairCandidate) => Promise<{ok:boolean, applied:boolean, reason?:string}>} [opts.applyConfigRepair]
- * @param {(candidate: RepairCandidate) => { content?: string, raw?: string }} [opts.buildDiff]
+ * @param {(candidate: RepairCandidate, repoRoot?: string) => Promise<{ok:boolean, applied:boolean, reason?:string}>} [opts.applyConfigRepair]
+ * @param {(candidate: RepairCandidate, repoRoot?: string) => { content?: string, raw?: string }} [opts.buildDiff]
  * @param {(level: string, msg: string) => void} [opts.log]
  * @returns {Promise<RepairEngineResult>}
  */

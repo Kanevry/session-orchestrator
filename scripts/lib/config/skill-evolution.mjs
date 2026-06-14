@@ -2,7 +2,7 @@
  * skill-evolution.mjs — Parser for the top-level `skill-evolution:` YAML block
  * (Epic #643 Skill Self-Evolution Foundation / issue #646 C1-config).
  *
- * Returns `{ autonomy, "evidence-floor", judge }`.
+ * Returns `{ autonomy, "evidence-floor", judge, "judge-budget-tokens" }`.
  * Tolerant parser: malformed values silently fall back to defaults.
  *
  * NOTE: `skill-evolution:` is a DISTINCT sibling block from the pre-existing
@@ -21,18 +21,20 @@ const ALLOWED_AUTONOMY = ['off', 'advisory', 'autonomous-gated'];
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
- *   autonomy:        'off'   (enum: off | advisory | autonomous-gated)
- *   evidence-floor:  0.5    (float in [0.0, 1.0])
- *   judge:           false  (boolean: on/true → true, else false)
+ *   autonomy:            'off'   (enum: off | advisory | autonomous-gated)
+ *   evidence-floor:      0.5    (float in [0.0, 1.0])
+ *   judge:               false  (boolean: on/true → true, else false)
+ *   judge-budget-tokens: 8000   (integer > 0 — L3 judge per-call input budget, #645)
  *
  * @param {string} content — full file contents
- * @returns {{ autonomy: string, "evidence-floor": number, judge: boolean }}
+ * @returns {{ autonomy: string, "evidence-floor": number, judge: boolean, "judge-budget-tokens": number }}
  */
 export function _parseSkillEvolution(content) {
   const defaults = {
     autonomy: 'off',
     'evidence-floor': 0.5,
     judge: false,
+    'judge-budget-tokens': 8000,
   };
 
   const lines = content.split(/\r?\n/);
@@ -54,6 +56,7 @@ export function _parseSkillEvolution(content) {
   let autonomy = 'off';
   let evidenceFloor = 0.5;
   let judge = false;
+  let judgeBudgetTokens = 8000;
 
   for (const rawLine of blockLines) {
     const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
@@ -87,6 +90,14 @@ export function _parseSkillEvolution(content) {
         judge = lower === 'on' || lower === 'true';
         break;
       }
+      case 'judge-budget-tokens': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (Number.isInteger(n) && n > 0) judgeBudgetTokens = n;
+          // else: silently fall back to default 8000
+        }
+        break;
+      }
     }
   }
 
@@ -94,5 +105,6 @@ export function _parseSkillEvolution(content) {
     autonomy,
     'evidence-floor': evidenceFloor,
     judge,
+    'judge-budget-tokens': judgeBudgetTokens,
   };
 }

@@ -41,6 +41,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { normalizeSkillInvocation } from '../skill-invocations-schema.mjs';
+import { normalizeSkillJudgment } from '../skill-judgments-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Named threshold constants
@@ -303,6 +304,123 @@ export function readSkillInvocationCounts(invocationsPath, { windowDays, now } =
 }
 
 // ---------------------------------------------------------------------------
+// Skill-judgment telemetry (L3, epic #645 — ADVISORY ONLY)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read skill-applied JUDGMENT counts from skill-judgments.jsonl (L3).
+ *
+ * Mirrors `readSkillInvocationCounts` style: synchronous, window-aware, never
+ * throws, existsSync-guarded. Counts only `event === "judged"` records inside
+ * the window and aggregates the tri-state applied/completed tallies per skill.
+ *
+ * Uses `normalizeSkillJudgment` from skill-judgments-schema.mjs for consistent
+ * field defaulting (advisory:true, session_id:null, schema_version).
+ *
+ * IMPORTANT (firewall): the data returned here is ADVISORY ONLY. The walker
+ * uses it to ANNOTATE a diagnosis or DOWNGRADE a verdict — never to escalate a
+ * skill toward Retire (see classifyItem #645 R9 advisory-only).
+ *
+ * @param {string} judgmentsPath
+ * @param {{windowDays: number, now?: number}} opts
+ * @returns {{
+ *   bySkill: Map<string,{
+ *     appliedYes:number, appliedNo:number, appliedUnknown:number,
+ *     completedYes:number, completedNo:number, completedUnknown:number,
+ *     total:number, lastTs:string|null
+ *   }>,
+ *   earliestTs: string|null,
+ *   latestTs: string|null,
+ *   coverageDays: number
+ * }}
+ */
+export function readSkillJudgmentCounts(judgmentsPath, { windowDays, now } = {}) {
+  const nowMs = typeof now === 'number' ? now : Date.now();
+  const windowStartMs = nowMs - (windowDays ?? DEFAULT_WINDOW_DAYS) * MS_PER_DAY;
+
+  /** @type {Map<string,{
+   *   appliedYes:number, appliedNo:number, appliedUnknown:number,
+   *   completedYes:number, completedNo:number, completedUnknown:number,
+   *   total:number, lastTs:string|null
+   * }>} */
+  const bySkill = new Map();
+  let earliestMs = null;
+  let latestMs = null;
+
+  if (!existsSync(judgmentsPath)) {
+    return { bySkill, earliestTs: null, latestTs: null, coverageDays: 0 };
+  }
+
+  let raw;
+  try {
+    raw = readFileSync(judgmentsPath, 'utf8');
+  } catch {
+    return { bySkill, earliestTs: null, latestTs: null, coverageDays: 0 };
+  }
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    let rec;
+    try {
+      rec = normalizeSkillJudgment(JSON.parse(trimmed));
+    } catch {
+      // Malformed line — skip, never throw.
+      continue;
+    }
+    if (!rec || typeof rec !== 'object') continue;
+    if (rec.event !== 'judged') continue;
+
+    const ts = typeof rec.timestamp === 'string' ? rec.timestamp : null;
+    const tsMs = ts ? Date.parse(ts) : NaN;
+
+    // Track coverage envelope from ALL judged events (regardless of window).
+    if (!Number.isNaN(tsMs)) {
+      if (earliestMs === null || tsMs < earliestMs) earliestMs = tsMs;
+      if (latestMs === null || tsMs > latestMs) latestMs = tsMs;
+    }
+
+    const skillName = typeof rec.skill === 'string' && rec.skill.trim() ? rec.skill.trim() : null;
+    if (!skillName) continue;
+
+    // Only count judgments inside the window for the per-skill tally.
+    if (!Number.isNaN(tsMs) && tsMs < windowStartMs) continue;
+
+    const cur = bySkill.get(skillName) ?? {
+      appliedYes: 0,
+      appliedNo: 0,
+      appliedUnknown: 0,
+      completedYes: 0,
+      completedNo: 0,
+      completedUnknown: 0,
+      total: 0,
+      lastTs: null,
+    };
+    cur.total += 1;
+    if (rec.applied === 'yes') cur.appliedYes += 1;
+    else if (rec.applied === 'no') cur.appliedNo += 1;
+    else cur.appliedUnknown += 1;
+    if (rec.completed === 'yes') cur.completedYes += 1;
+    else if (rec.completed === 'no') cur.completedNo += 1;
+    else cur.completedUnknown += 1;
+    if (ts && (cur.lastTs === null || Date.parse(ts) > Date.parse(cur.lastTs))) {
+      cur.lastTs = ts;
+    }
+    bySkill.set(skillName, cur);
+  }
+
+  const coverageDays =
+    earliestMs === null ? 0 : Math.max(0, (nowMs - earliestMs) / MS_PER_DAY);
+
+  return {
+    bySkill,
+    earliestTs: earliestMs === null ? null : new Date(earliestMs).toISOString(),
+    latestTs: latestMs === null ? null : new Date(latestMs).toISOString(),
+    coverageDays,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Static reference scanning
 // ---------------------------------------------------------------------------
 
@@ -518,6 +636,87 @@ export function commandSkillLinkage(repoRoot) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Strong-applied-no threshold: a skill selected but judged applied=no for at
+ * least this many judgments (and no applied=yes) is a strong "selected but not
+ * applied" advisory signal — enough to DOWNGRADE Active → Investigate.
+ */
+const STRONG_APPLIED_NO_FLOOR = 2;
+
+/**
+ * Apply the L3 judge advisory layer to an already-computed deterministic
+ * verdict. ADVISORY ONLY (#645 R9):
+ *   - ANNOTATE: append a diagnosis axis derived from applied/completed tallies.
+ *   - DOWNGRADE: Active → Investigate on a STRONG applied=no signal.
+ *   - It MUST NEVER escalate a verdict toward Retire/Demote, and MUST NEVER
+ *     promote a verdict upward (no Retire→Active). Judge data only softens.
+ *
+ * Clean-degrade contract: when `judge` is null/absent OR carries no judgments,
+ * the result is returned byte-for-byte unchanged.
+ *
+ * @param {{name:string,kind:string,verdict:string,score:number,reasons:string[],signals:object}} result
+ *   the deterministic verdict (mutated in place: reasons/signals only)
+ * @param {{appliedYes:number,appliedNo:number,appliedUnknown:number,completedYes:number,completedNo:number,completedUnknown:number,total:number,lastTs:string|null}|null} judge
+ * @returns {{name:string,kind:string,verdict:string,score:number,reasons:string[],signals:object}}
+ */
+function applyJudgeAdvisory(result, judge) {
+  // Disabled-path guarantee: null judge, or judge with zero recorded judgments,
+  // leaves the deterministic result completely untouched.
+  if (!judge || typeof judge !== 'object' || (judge.total ?? 0) <= 0) {
+    return result;
+  }
+
+  const appliedYes = judge.appliedYes ?? 0;
+  const appliedNo = judge.appliedNo ?? 0;
+  const completedNo = judge.completedNo ?? 0;
+  const total = judge.total ?? 0;
+
+  // Surface the raw judge tallies on signals for downstream consumers (always
+  // advisory — never read by the deterministic verdict gate above).
+  result.signals.judge = {
+    appliedYes,
+    appliedNo,
+    appliedUnknown: judge.appliedUnknown ?? 0,
+    completedYes: judge.completedYes ?? 0,
+    completedNo,
+    completedUnknown: judge.completedUnknown ?? 0,
+    total,
+    lastTs: judge.lastTs ?? null,
+  };
+
+  // Annotation axis 1: selected but applied=no → trigger description may be unclear.
+  const strongAppliedNo = appliedNo >= STRONG_APPLIED_NO_FLOOR && appliedYes === 0;
+  if (appliedNo > 0) {
+    result.reasons.push(
+      `[advisory] judged applied=no in ${appliedNo}/${total} judgment(s)` +
+        (appliedYes === 0
+          ? ' (selected but never applied → trigger description may be unclear)'
+          : ''),
+    );
+  }
+
+  // Annotation axis 2: applied but completed=no → instructions may be wrong.
+  if (appliedYes > 0 && completedNo > 0) {
+    result.reasons.push(
+      `[advisory] judged applied=yes but completed=no in ${completedNo}/${total} judgment(s) (instructions may be wrong)`,
+    );
+  }
+
+  // DOWNGRADE (never escalate): a strong "selected but not applied" signal
+  // softens an Active verdict to Investigate so an operator reviews the trigger.
+  // Firewall: we ONLY move Active → Investigate. We never touch Demote/Retire
+  // (those are deterministic-cold), and we never promote upward.
+  if (strongAppliedNo && result.verdict === 'Active') {
+    result.reasons.push(
+      `[advisory] strong applied=no signal (${appliedNo}/${total}, 0 applied=yes) → Active downgraded to Investigate for operator review`,
+    );
+    result.verdict = 'Investigate';
+    result.score = 2;
+  }
+
+  return result;
+}
+
+/**
  * Classify a single surface item into a 4-tier verdict.
  *
  * Verdict precedence (default-safe):
@@ -529,6 +728,13 @@ export function commandSkillLinkage(repoRoot) {
  *                   single cross-ref and no command linkage
  *   - Retire      — dispatch===0 AND nonBoilerplateRefs===0 AND coverage>=window
  *
+ * The optional `judge` (L3, epic #645) is ADVISORY ONLY. It is consumed AFTER
+ * the deterministic verdict is computed, and may only ANNOTATE the diagnosis or
+ * DOWNGRADE Active → Investigate on a strong applied=no signal. It can NEVER
+ * escalate a skill toward Retire/Demote nor promote it upward. When `judge` is
+ * null/absent the classification is byte-for-byte identical to the L1-only path
+ * (disabled-path guarantee).
+ *
  * @param {{
  *   kind:'skill'|'agent'|'command',
  *   name:string,
@@ -536,7 +742,8 @@ export function commandSkillLinkage(repoRoot) {
  *   static:{strictRefs:number,proseRefs:number,nonBoilerplateRefs:number,refFiles:string[]},
  *   linkage?:{invokedByCommands?:string[], invokesSkill?:string|null, invokedSkillExists?:boolean},
  *   windowDays:number,
- *   coverageDays:number
+ *   coverageDays:number,
+ *   judge?:{appliedYes:number,appliedNo:number,appliedUnknown:number,completedYes:number,completedNo:number,completedUnknown:number,total:number,lastTs:string|null}|null
  * }} args
  * @returns {{name:string,kind:string,verdict:string,score:number,reasons:string[],signals:object}}
  */
@@ -548,6 +755,7 @@ export function classifyItem({
   linkage,
   windowDays,
   coverageDays,
+  judge = null,
 }) {
   const reasons = [];
   const dispatchCount = dispatch?.count ?? 0;
@@ -585,7 +793,7 @@ export function classifyItem({
       reasons.push(
         `agent dispatched ${dispatchCount}× in window (>floor ${ACTIVE_DISPATCH_FLOOR})`,
       );
-      return { name, kind, verdict: 'Active', score: 0, reasons, signals };
+      return applyJudgeAdvisory({ name, kind, verdict: 'Active', score: 0, reasons, signals }, judge);
     }
     if (dispatchCount > 0 && dispatchCount <= DEMOTE_DISPATCH_CEILING) {
       reasons.push(
@@ -595,9 +803,9 @@ export function classifyItem({
         reasons.push(
           `low-confidence telemetry (coverage ${coverageDays.toFixed(1)}d < window ${windowDays}d) → Investigate`,
         );
-        return { name, kind, verdict: 'Investigate', score: 2, reasons, signals };
+        return applyJudgeAdvisory({ name, kind, verdict: 'Investigate', score: 2, reasons, signals }, judge);
       }
-      return { name, kind, verdict: 'Demote', score: 1, reasons, signals };
+      return applyJudgeAdvisory({ name, kind, verdict: 'Demote', score: 1, reasons, signals }, judge);
     }
     // dispatchCount === 0 falls through to the cold/Retire + ref checks below.
   }
@@ -617,7 +825,7 @@ export function classifyItem({
   // operator confirms whether the command (or its target skill) should go.
   if (kind === 'command' && invokesSkill && !invokedSkillExists) {
     reasons.push(`command invokes a skill not present on disk: ${invokesSkill}`);
-    return { name, kind, verdict: 'Investigate', score: 2, reasons, signals };
+    return applyJudgeAdvisory({ name, kind, verdict: 'Investigate', score: 2, reasons, signals }, judge);
   }
 
   let active = false;
@@ -639,7 +847,7 @@ export function classifyItem({
     );
   }
   if (active) {
-    return { name, kind, verdict: 'Active', score: 0, reasons, signals };
+    return applyJudgeAdvisory({ name, kind, verdict: 'Active', score: 0, reasons, signals }, judge);
   }
 
   // --- Retire (provably cold) — gated on full coverage -----------------------
@@ -651,12 +859,12 @@ export function classifyItem({
       reasons.push(
         `cold (0 dispatch, 0 non-boilerplate refs) BUT coverage ${coverageDays.toFixed(1)}d < window ${windowDays}d → downgraded to Investigate`,
       );
-      return { name, kind, verdict: 'Investigate', score: 2, reasons, signals };
+      return applyJudgeAdvisory({ name, kind, verdict: 'Investigate', score: 2, reasons, signals }, judge);
     }
     reasons.push(
       `0 dispatch AND 0 non-boilerplate refs AND coverage ${coverageDays.toFixed(1)}d >= window ${windowDays}d`,
     );
-    return { name, kind, verdict: 'Retire', score: 3, reasons, signals };
+    return applyJudgeAdvisory({ name, kind, verdict: 'Retire', score: 3, reasons, signals }, judge);
   }
 
   // --- Demote (near-zero) — skills & commands (agents handled above) ---------
@@ -675,14 +883,14 @@ export function classifyItem({
       reasons.push(
         `low-confidence telemetry (coverage ${coverageDays.toFixed(1)}d < window ${windowDays}d) → Investigate`,
       );
-      return { name, kind, verdict: 'Investigate', score: 2, reasons, signals };
+      return applyJudgeAdvisory({ name, kind, verdict: 'Investigate', score: 2, reasons, signals }, judge);
     }
-    return { name, kind, verdict: 'Demote', score: 1, reasons, signals };
+    return applyJudgeAdvisory({ name, kind, verdict: 'Demote', score: 1, reasons, signals }, judge);
   }
 
   // --- Investigate (default-safe fallthrough) --------------------------------
   reasons.push('conflicting or inconclusive signals → default-safe Investigate');
-  return { name, kind, verdict: 'Investigate', score: 2, reasons, signals };
+  return applyJudgeAdvisory({ name, kind, verdict: 'Investigate', score: 2, reasons, signals }, judge);
 }
 
 // ---------------------------------------------------------------------------
@@ -693,7 +901,7 @@ export function classifyItem({
  * Run the full sunset walk across the plugin surface.
  *
  * @param {string} repoRoot
- * @param {{windowDays?:number, kind?:'skill'|'agent'|'command', now?:number, subagentsPath?:string, invocationsPath?:string}} [opts]
+ * @param {{windowDays?:number, kind?:'skill'|'agent'|'command', now?:number, subagentsPath?:string, invocationsPath?:string, judgmentsPath?:string}} [opts]
  * @returns {{
  *   meta:{generatedAt:string,windowDays:number,coverageDays:number,lowConfidence:boolean,telemetrySources:object},
  *   summary:{active:number,investigate:number,demote:number,retire:number},
@@ -713,9 +921,17 @@ export function runSunsetWalk(repoRoot, opts = {}) {
     opts.invocationsPath ??
     path.join(repoRoot, '.orchestrator', 'metrics', 'skill-invocations.jsonl');
 
+  const judgmentsPath =
+    opts.judgmentsPath ??
+    path.join(repoRoot, '.orchestrator', 'metrics', 'skill-judgments.jsonl');
+
   const surface = enumerateSurface(repoRoot);
   const dispatch = readDispatchCounts(subagentsPath, { windowDays, now: nowMs });
   const skillInvocations = readSkillInvocationCounts(invocationsPath, { windowDays, now: nowMs });
+  // L3 advisory judge telemetry (#645). Clean-degrade: when the sidecar is
+  // absent (judge disabled) this returns an empty bySkill map and the skill
+  // classification below behaves byte-for-byte identically to the L1-only path.
+  const skillJudgments = readSkillJudgmentCounts(judgmentsPath, { windowDays, now: nowMs });
   const linkage = commandSkillLinkage(repoRoot);
   const coverageDays = dispatch.coverageDays;
   const lowConfidence = coverageDays < windowDays;
@@ -733,6 +949,9 @@ export function runSunsetWalk(repoRoot, opts = {}) {
       // so the coverage guard treats skills with no invocations as "cold but
       // possibly low-coverage" rather than "no telemetry at all".
       const skillDispatch = skillInvocations.bySkill.get(name) ?? { count: 0, lastTs: null };
+      // L3 advisory judge data (#645). null when no in-window judgment exists
+      // for this skill → classifyItem ignores it entirely (disabled-path parity).
+      const judge = skillJudgments.bySkill.get(name) ?? null;
       items.push(
         classifyItem({
           kind: 'skill',
@@ -742,6 +961,7 @@ export function runSunsetWalk(repoRoot, opts = {}) {
           linkage: { invokedByCommands },
           windowDays,
           coverageDays,
+          judge,
         }),
       );
     }
@@ -804,6 +1024,10 @@ export function runSunsetWalk(repoRoot, opts = {}) {
         skillInvocationsJsonl: invocationsPath,
         skillInvocationsEarliestTs: skillInvocations.earliestTs,
         skillInvocationsLatestTs: skillInvocations.latestTs,
+        skillJudgmentsJsonl: judgmentsPath,
+        skillJudgmentsEarliestTs: skillJudgments.earliestTs,
+        skillJudgmentsLatestTs: skillJudgments.latestTs,
+        skillJudgmentsAssessment: 'L3 advisory only — annotates/downgrades, never escalates toward Retire',
         commandsAssessment: 'static-analysis only (no command-invocation telemetry)',
       },
     },
