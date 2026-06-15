@@ -45,7 +45,7 @@ typecheck-command: npm run typecheck
 lint-command: npm run lint
 stale-branch-days: 7
 plugin-freshness-days: 30
-plan-baseline-path: ~/Projects/Bernhard/projects-baseline
+plan-baseline-path: ~/Projects/projects-baseline
 plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal
@@ -53,7 +53,7 @@ vcs: gitlab
 auto-skill-dispatch: false               # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/Bernhard/vault
+  vault-dir: ~/Projects/vault
   mode: warn               # strict | warn | off
 docs-orchestrator:
   enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
@@ -120,3 +120,12 @@ goal-integration:
 custom-phases: []                # #637 — repo-declared deterministic close/housekeeping phases (name/when/command/mode/review); empty = none. See docs/session-config-reference.md § Custom Phases
 evolve:
   extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources
+
+## Skill Evolution <!-- consistency:exempt:parity-exempt-skill-evolution-block -->
+
+> Opt-in self-evolution autonomy gate (Epic #643). A DISTINCT top-level block from the `evolve:` Session Config key above — `scripts/lib/config/skill-evolution.mjs` parses it independently of the `## Session Config` boundary. Lives outside `## Session Config` by design so `claude-md-drift-check` Check 6 (session-config-parity) does not flag it. Activated for this repo (#652) after the C2 engine (#647/#651) + the H1 evidence_kind guard (session-3) made autonomous-apply safe: the engine may auto-apply ONLY the `command-count` drift shape on the root instruction file, behind the quadruple gate (autonomy ∧ safe-posture ∧ gate-green ∧ evidence ≥ evidence-floor) AND only for `filesystem-fact`-sourced candidates. Plugin/local-skill/remote targets are ALWAYS MR-only.
+
+skill-evolution:
+  autonomy: autonomous-gated      # off | advisory | autonomous-gated — armed (#652)
+  evidence-floor: 0.5             # float 0.0..1.0 — min evidence before an autonomous-gated repair acts
+  judge: off                      # opt-in session-end LLM-judge (advisory only); default off

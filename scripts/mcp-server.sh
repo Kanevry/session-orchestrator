@@ -15,14 +15,20 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 respond() {
+  # $id is expected to be valid JSON already (a quoted string, a number, or the
+  # literal null — see the main loop's id extraction). Rebuild via jq so the id
+  # and result are re-encoded as valid JSON regardless of their original type.
   local id="$1" result="$2"
-  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+  jq -nc --argjson id "$id" --argjson result "$result" \
+    '{jsonrpc:"2.0",id:$id,result:$result}'
 }
 
 respond_error() {
+  # $id is valid JSON (quoted string / number / null). $code is numeric
+  # (--argjson); $msg is an arbitrary string (--arg, jq quotes + escapes it).
   local id="$1" code="$2" msg="$3"
-  printf '{"jsonrpc":"2.0","id":%s,"error":{"code":%s,"message":%s}}\n' \
-    "$id" "$code" "$(printf '%s' "$msg" | jq -Rs .)"
+  jq -nc --argjson id "$id" --argjson code "$code" --arg msg "$msg" \
+    '{jsonrpc:"2.0",id:$id,error:{code:$code,message:$msg}}'
 }
 
 text_content() {
@@ -208,7 +214,10 @@ while IFS= read -r line; do
   [[ -z "$line" ]] && continue
 
   method=$(printf '%s' "$line" | jq -r '.method // empty' 2>/dev/null) || continue
-  id=$(printf '%s' "$line" | jq -r '.id // empty' 2>/dev/null) || true
+  # Extract id as VALID JSON (never bare, never empty): a quoted string ("foo"),
+  # a number (5), or the literal null. -c keeps it compact so it can be fed
+  # straight back into jq via --argjson in respond()/respond_error().
+  id=$(printf '%s' "$line" | jq -c '.id // null' 2>/dev/null) || id=null
 
   case "$method" in
     initialize)
@@ -224,7 +233,9 @@ while IFS= read -r line; do
       handle_tools_call "$id" "$line"
       ;;
     *)
-      respond_error "${id:-null}" -32601 "Method not found: $method"
+      # $id is already valid JSON (literal null when the request omitted it),
+      # so no ${id:-null} fallback is needed.
+      respond_error "$id" -32601 "Method not found: $method"
       ;;
   esac
 done

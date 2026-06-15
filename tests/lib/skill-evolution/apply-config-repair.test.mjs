@@ -452,6 +452,68 @@ describe('engine control-flow (W3 fixes)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. Security H1 (session-3) — autonomous-apply is restricted to
+//     filesystem-fact candidates. A learning-sourced ('confidence') candidate
+//     whose prose matches the command-count whitelist shape MUST NOT auto-apply;
+//     it routes to the MR path and the target file is BYTE-FOR-BYTE unchanged.
+// ---------------------------------------------------------------------------
+describe('security H1: evidence_kind gate on autonomous-apply', () => {
+  // The exact attacker-influenceable prose shape — identical between both tests.
+  const SHARED_PROSE = "Update narrative '8 commands' to actual 30";
+
+  it('filesystem-fact candidate with valid command-count prose → autonomous-apply, file mutated 8→30', async () => {
+    const { repoRoot, file } = makeRepo('We expose 8 commands.\n');
+    const seams = applyPathSeams({
+      extractCandidates: vi.fn(() => [
+        commandCountCandidate({ evidence_kind: 'filesystem-fact', proposed_change: SHARED_PROSE }),
+      ]),
+    });
+
+    const result = await runRepairEngine(
+      { repoRoot, config: gatedConfig(), learnings: [{}] },
+      seams,
+    );
+
+    expect(result.outcomes[0].decision).toBe('autonomous-apply');
+    expect(result.summary.autonomousApplied).toBe(1);
+    expect(readFileSync(file, 'utf8')).toBe('We expose 30 commands.\n');
+  });
+
+  it('confidence candidate with the SAME prose → NOT applied, routed to MR, file byte-for-byte unchanged', async () => {
+    const ORIGINAL = 'We expose 8 commands.\n';
+    const { repoRoot, file } = makeRepo(ORIGINAL);
+
+    // Snapshot the file bytes BEFORE the run.
+    const before = readFileSync(file);
+
+    const seams = applyPathSeams({
+      extractCandidates: vi.fn(() => [
+        // Same prose as the filesystem-fact case above — only evidence_kind differs.
+        commandCountCandidate({ evidence_kind: 'confidence', proposed_change: SHARED_PROSE }),
+      ]),
+    });
+
+    const result = await runRepairEngine(
+      { repoRoot, config: gatedConfig(), learnings: [{}] },
+      seams,
+    );
+
+    // The engine declines the auto-apply (unsupported-shape) and re-routes to MR.
+    expect(result.outcomes[0].decision).toBe('open-mr');
+    expect(result.summary.autonomousApplied).toBe(0);
+    expect(result.outcomes[0].detail).toMatch(/unsupported-shape/);
+    expect(seams.openRepairMr).toHaveBeenCalledTimes(1);
+    expect(seams.markProcessed).not.toHaveBeenCalled();
+
+    // The target file is BYTE-FOR-BYTE unchanged — the attacker-influenceable
+    // 'confidence' prose drove no number-swap.
+    const after = readFileSync(file);
+    expect(after.equals(before)).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. defaultBuildDiff (real) — exercised through the MR fallback path.
 //    A real buildDiff is invoked by the engine's finishOpenMr when the candidate
 //    is routed to an MR. We assert its shape by capturing the `diff` arg the

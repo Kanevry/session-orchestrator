@@ -68,6 +68,12 @@ mkdir -p .orchestrator/metrics
 
 The sidecar is the durable record; the Markdown is the readable summary.
 
+**Skill Health (advisory)** — render a per-skill health advisory block into the report.
+- **Source:** per-skill verdicts come from `scoreSkillHealth()` in `scripts/lib/skill-health/score.mjs`, computed over the L2 join (`scripts/lib/skill-health/join.mjs`) plus any optional L3 judgments — the same telemetry the walker already surfaces on `item.signals.judge`. The mechanical/CI surface for this data is harness-audit `category9` ("Skill-Health Surfacing").
+- **Rendering:** add a `## Skill Health` section to the Markdown report. List each skill that has sufficient samples with its `verdict` (`insufficient signal` | `trigger description unclear` | `instructions wrong`) and its `diagnosis` string. Skills below the sample threshold (`MIN_SAMPLES_FOR_VERDICT`, ~20) are NOT scored per-skill — collapse them into a single line: "Insufficient signal (N skills)".
+- **Firewall (MANDATORY):** the health advisory NEVER edits any skill file and NEVER pushes a skill toward Retire or Demote on health data alone. It may only annotate the existing verdict, or trigger the existing Active→Investigate downgrade the walker already applies — never an escalation. This mirrors the walker's advisory-only judge firewall: annotate or downgrade-to-Investigate, never escalate toward Retire/Demote.
+- **Default-empty:** when telemetry is absent or insufficient (the common case today), render exactly "Skill Health: insufficient signal across all skills (no action)". This is a healthy state, not a finding — do not surface it as a candidate.
+
 ### Phase 5 — Cadence note (the SKILL writes last-run, NOT the walker)
 - Sunset review runs **quarterly**. The walker is stateless and writes no runtime file — recording the last-run timestamp is **this skill's** responsibility, so a session-start nudge can fire when a quarter has elapsed.
 - After writing the report, record the run time (e.g. into `.orchestrator/metrics/sunset-review-last-run.json` with an ISO timestamp). This keeps the walker free of mutable runtime state and concurrency surface.

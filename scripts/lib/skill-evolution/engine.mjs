@@ -232,9 +232,12 @@ function applyCommandCountSwap(content, claimedN, actualM) {
  * Implements the §C2-G2 contract for the whitelisted `command-count` drift
  * shape ONLY. Every step is defense-in-depth + idempotent:
  *   1. Repo-escape guard: resolve target inside `repoRoot`; escape ⇒ no-op.
- *   2. Whitelist: parse the command-count shape from PROSE; miss ⇒
+ *   2. Evidence-kind gate: only `filesystem-fact` (drift-check) candidates may
+ *      auto-apply; `confidence` (learning) candidates carry attacker-influenceable
+ *      prose and are routed to the MR path via `unsupported-shape`. (Security H1.)
+ *   3. Whitelist: parse the command-count shape from PROSE; miss ⇒
  *      `unsupported-shape` (the engine re-routes that to an MR — never stamps).
- *   3. Mutation: swap the ONE narrative number, atomically (tmp + rename),
+ *   4. Mutation: swap the ONE narrative number, atomically (tmp + rename),
  *      content-level idempotent (already-current / text-absent ⇒ no write).
  *
  * NEVER throws — every error path degrades to `{ ok: true, applied: false }`.
@@ -251,14 +254,21 @@ async function defaultApplyConfigRepair(candidate, repoRoot) {
     return { ok: true, applied: false, reason: 'target escapes repo' };
   }
 
-  // Step 2 — whitelist gate. Only the command-count shape may auto-apply.
+  // Step 2 — autonomous-apply is restricted to filesystem-fact candidates (drift-check origin).
+  // Learning-sourced candidates (evidence_kind: 'confidence') carry attacker-influenceable prose
+  // in proposed_change; route them to the MR path, never auto-apply. (Security review H1, session-3.)
+  if (candidate?.evidence_kind !== 'filesystem-fact') {
+    return { ok: true, applied: false, reason: UNSUPPORTED_SHAPE_REASON };
+  }
+
+  // Step 3 — whitelist gate. Only the command-count shape may auto-apply.
   const parsed = parseCommandCountShape(candidate);
   if (parsed === null) {
     return { ok: true, applied: false, reason: UNSUPPORTED_SHAPE_REASON };
   }
   const { claimedN, actualM } = parsed;
 
-  // Step 3 — scoped, minimal, idempotent mutation (atomic write-back).
+  // Step 4 — scoped, minimal, idempotent mutation (atomic write-back).
   let content;
   try {
     content = readFileSync(abs, 'utf8');

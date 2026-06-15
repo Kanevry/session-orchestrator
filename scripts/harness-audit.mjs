@@ -2,7 +2,7 @@
 /**
  * harness-audit.mjs — Deterministic harness-audit scorecard script.
  *
- * Runs 33 checks across 8 categories against a target repo. Emits a single
+ * Runs 36 checks across 9 categories against a target repo. Emits a single
  * JSON record to stdout (schema defined in issue #210) and appends the same
  * record (with session_id) to .orchestrator/metrics/audit.jsonl.
  * Writes a human-readable summary to stderr.
@@ -27,6 +27,7 @@ import {
   runCategory6,
   runCategory7,
   runCategory8,
+  runCategory9,
 } from './lib/harness-audit/categories.mjs';
 
 const RUBRIC_VERSION = '2026-06';
@@ -214,7 +215,7 @@ const gitMeta = getGitMeta(auditRoot);
 const harnessVersion = getHarnessVersion(auditRoot);
 const sessionId = getSessionId(auditRoot, gitMeta.branch);
 
-// Run all 8 categories
+// Run all 9 categories
 const categoryResults = [
   scoreCategory('Session Discipline',       10, runCategory1(auditRoot)),
   scoreCategory('Quality Gate Coverage',    10, runCategory2(auditRoot)),
@@ -227,6 +228,11 @@ const categoryResults = [
   // not runtime-correctness. Weight 10 is reserved for production-impacting cats
   // (Session Discipline / Quality Gate Coverage / Persistence Health / Policy Freshness).
   scoreCategory('Large-Codebase Readiness',  8, runCategory8(auditRoot)),
+  // Weight 8 mirrors cat 6/8: skill-health surfacing is an advisory-hygiene
+  // rubric, not runtime-correctness. No-adoption scores full points by design
+  // (absent telemetry/module are HEALTHY states), so this never penalizes a
+  // repo that has not opted into the #648 per-skill health pipeline.
+  scoreCategory('Skill-Health Surfacing',    8, runCategory9(auditRoot)),
 ];
 
 const durationMs = Date.now() - startMs;

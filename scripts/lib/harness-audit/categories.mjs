@@ -16,3 +16,4 @@ export { runCategory5 } from './categories/category5.mjs';
 export { runCategory6 } from './categories/category6.mjs';
 export { runCategory7 } from './categories/category7.mjs';
 export { runCategory8 } from './categories/category8.mjs';
+export { runCategory9 } from './categories/category9.mjs';
