@@ -366,7 +366,7 @@ Library-side hardening:
 - Issues closed by this session: #522 #523 #524 #525
 - Original epic PRD: this file (initial commit `6692fdd`)
 - Session metrics: `.orchestrator/metrics/sessions.jsonl` (entry lands at session-end)
-- Session decisions: vault-mirror to `~/Projects/Bernhard/vault/01-projects/session-orchestrator/decisions.md` (lands at session-end)
+- Session decisions: vault-mirror to `~/Projects/vault/01-projects/session-orchestrator/decisions.md` (lands at session-end)
 
 ## Follow-Up Closeout (deep-session 2026-05-23)
 

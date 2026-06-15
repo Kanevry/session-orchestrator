@@ -30,7 +30,13 @@ efficiency:
 hardware-sharing:
   enabled: false                    # opt-in only
   hash-salt: ""                     # required when enabled: true
+
+paths:                              # optional — host-local path overrides (#653)
+  vault-dir: ""                     # overrides Session Config vault-integration.vault-dir
+  baseline-path: ""                 # overrides Session Config plan-baseline-path
 ```
+
+The optional `paths:` section is consumed by `scripts/lib/config/host-paths.mjs` with precedence env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > owner.yaml `paths:` > committed Session Config default. It is absent-tolerant — legacy `owner.yaml` files without it still load.
 
 ## Template slots
 

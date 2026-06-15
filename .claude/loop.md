@@ -35,7 +35,7 @@ If on `main`: list any commits ahead of `origin/main` via `git log origin/main..
 ## 3. Vault-mirror backlog
 
 Resolve the vault directory from `CLAUDE.md` `## Session Config`
-`vault-integration.vault-dir` (the SSOT — currently `~/Projects/Bernhard/vault`;
+`vault-integration.vault-dir` (the SSOT — currently `~/Projects/vault`;
 expand `~` to `$HOME`). Run this check only if `vault-integration.enabled: true`.
 
 If that directory exists:

@@ -71,6 +71,32 @@ When `agent-mapping` is not present, session-plan falls back to auto-discovery (
 
 If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI, Pi), depending on which platform is active.
 
+## Host-Local Path Resolution (#653)
+
+A small set of path-valued Session Config keys are resolved **host-locally** rather than read straight from the committed `## Session Config` block. This keeps personal/machine-specific paths out of the public repo and lets the same checked-in config run unchanged across machines with different vault roots. Implementation: `scripts/lib/config/host-paths.mjs` (`loadHostPaths()`, `resolveHostPath(key, committedDefault, ctx)`), called from `config.mjs`.
+
+### Which keys resolve host-locally
+
+- **`vault-dir`** — applied to both `config['vault-integration']['vault-dir']` and `config['vault-sync']['vault-dir']`.
+- **`plan-baseline-path`** — applied to `config['plan-baseline-path']`.
+
+The values exposed on `$CONFIG` for these keys already reflect the resolved (host-local) result, so downstream skills read them normally without doing their own resolution.
+
+### Precedence chain (highest first)
+
+1. **Environment variable** — `SO_VAULT_DIR` (for `vault-dir`) / `SO_BASELINE_PATH` (for `plan-baseline-path`).
+2. **`owner.yaml` `paths:` section** — `~/.config/session-orchestrator/owner.yaml` → `paths.vault-dir` / `paths.baseline-path` (see `.claude/rules/owner-persona.md`).
+3. **Committed Session Config default** — the value in the `## Session Config` block of `CLAUDE.md` / `AGENTS.md`.
+
+### Empty-tier-falls-through
+
+An empty or whitespace-only value at any tier is treated as unset and falls through to the next tier down. When **all** tiers are unset, the resolved value is `null`/`undefined` — there is no error. In that state `vault-integration` silently degrades to off (the absent path is treated as "no vault configured"), so a host that never sets a vault path simply runs without vault integration.
+
+### Why
+
+- **Privacy-clean:** no personal home path (e.g. a vault root under the operator's home directory) is ever committed to the public repo.
+- **Machine-independent / multi-machine portability:** each host can point `vault-dir` / `plan-baseline-path` at its own root via env-var or `owner.yaml` without editing — and re-committing — the shared `## Session Config` block.
+
 ## Learning Expiry Semantics
 
 Learnings live exclusively in `.orchestrator/metrics/learnings.jsonl`. The pre-`2.0.0` location `<state-dir>/metrics/learnings.jsonl` is no longer read; consumers with leftover entries should run `scripts/migrate-legacy-learnings.sh` once.

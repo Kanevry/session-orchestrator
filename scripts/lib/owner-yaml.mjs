@@ -20,6 +20,9 @@
  *   hardware-sharing:
  *     enabled: boolean                           (required)
  *     hash-salt: string                          (required when enabled=true)
+ *   paths:                  (optional; host-local path overrides — #653)
+ *     vault-dir: string     ('' = no override; mirrors Session Config vault-integration.vault-dir)
+ *     baseline-path: string ('' = no override; maps to Session Config plan-baseline-path / projects-baseline)
  *
  * ── Exports ───────────────────────────────────────────────────────────────────
  *
@@ -82,6 +85,10 @@ export function getDefaults() {
     'hardware-sharing': {
       enabled: false,
       'hash-salt': '',
+    },
+    paths: {
+      'vault-dir': '',
+      'baseline-path': '',
     },
   };
 }
@@ -174,6 +181,21 @@ export function validateOwnerConfig(obj) {
       typeof hw['hash-salt'] !== 'string'
     ) {
       errors.push('hardware-sharing.hash-salt must be a string');
+    }
+  }
+
+  // ── paths (optional; host-local path overrides — #653) ───────────────────────
+  const paths = obj.paths;
+  if (paths !== undefined && paths !== null) {
+    if (!isPlainObject(paths)) {
+      errors.push('paths must be an object when present');
+    } else {
+      for (const key of ['vault-dir', 'baseline-path']) {
+        const v = paths[key];
+        if (v !== undefined && v !== null && typeof v !== 'string') {
+          errors.push(`paths.${key} must be a string`);
+        }
+      }
     }
   }
 

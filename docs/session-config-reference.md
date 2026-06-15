@@ -311,9 +311,11 @@ All fields live under a top-level `vault-integration` object in your Session Con
 ```yaml
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/Bernhard/vault
+  vault-dir: ~/Projects/vault
   mode: warn
 ```
+
+> **Host-local override (#653).** `vault-dir` (and `plan-baseline-path`) resolve host-locally with precedence: env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > `owner.yaml` `paths:` section (`vault-dir` / `baseline-path`) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolver: `scripts/lib/config/host-paths.mjs`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

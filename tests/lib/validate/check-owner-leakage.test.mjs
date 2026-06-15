@@ -725,3 +725,119 @@ describe('fold-in: Candidate-F word-boundary intent pins (W4 qa)', () => {
     expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P10: personal-name segment in a Projects path (#653)
+//
+// Finding-1 (HIGH): the original P10 `~/Projects/<Name>/` form REQUIRED a
+// trailing slash, so a bare `~/Projects/Bernhard` (end-of-line, before `&&`)
+// slipped through — the exact blindspot P1 was already patched for.
+// Finding-3 (defense-in-depth): the original P10 matched only the ~/-prefixed
+// form, so an absolute-home leak (`/Users/alice/Projects/Bernhard/vault` or
+// `/home/ci/Projects/Bernhard`) slipped both P1 and P10.
+//
+// These tests assert real scanner behavior (status + FAIL/P10 marker), not the
+// regex in isolation — per .claude/rules/testing.md (no test-the-mock).
+// ---------------------------------------------------------------------------
+
+describe('P10: ~/Projects/<PersonalName> leak (#653)', () => {
+  it('exits 1 on ~/Projects/Bernhard/vault (trailing-slash form, base case)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'config.yaml'), 'vault-dir: ~/Projects/Bernhard/vault\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P10');
+  });
+
+  it('exits 1 on a BARE ~/Projects/Bernhard at end-of-line (Finding-1 regression guard)', () => {
+    // Mutation guard: restoring the OLD `~/Projects/Bernhard/` form (mandatory
+    // trailing slash) would NOT match this bare end-of-line ref → this test fails.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'plan-baseline-path: ~/Projects/Bernhard\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P10');
+  });
+
+  it('exits 1 on absolute /Users/<user>/Projects/Bernhard/x (Finding-3 defense-in-depth)', () => {
+    // A non-owner home (alice) — slips both P1 (bernhardg-anchored) and the old
+    // tilde-only P10. The absolute-home alternation catches it.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'ci.sh'), 'cp /Users/someone/Projects/Bernhard/data ./out\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P10');
+  });
+
+  it('exits 1 on absolute /home/<user>/Projects/Bernhard (Linux home, no trailing slash)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'ci.yml'), 'workdir: /home/ci/Projects/Bernhard\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P10');
+  });
+
+  it('exits 0 when ~/Projects/Bernhard lives inside a P10_ALLOWLIST file (allowlist works)', () => {
+    // scripts/migrate-vault-paths.mjs is a one-shot-migration source whose whole
+    // job is to reference the legacy ~/Projects/Bernhard path — it is allowlisted.
+    const root = makeTmpRepo((r) => {
+      mkdirSync(join(r, 'scripts'), { recursive: true });
+      writeFileSync(
+        join(r, 'scripts', 'migrate-vault-paths.mjs'),
+        "const LEGACY = '~/Projects/Bernhard/vault';\nexport default LEGACY;\n",
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('still flags ~/Projects/Bernhard at a non-allowlisted path (allowlist is path-scoped)', () => {
+    const root = makeTmpRepo((r) => {
+      // Same content as the allowlist fixture, different path → must NOT be excluded
+      writeFileSync(join(r, 'somewhere-else.mjs'), "const LEGACY = '~/Projects/Bernhard/vault';\n");
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('P10');
+  });
+
+  it('exits 0 on ~/Projects/vault (no personal name — false-positive guard)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'clean.yaml'), 'vault-dir: ~/Projects/vault\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('exits 0 on ~/Projects/Bernhardt/ (name starts with denylisted name but continues — false-positive guard)', () => {
+    // The 't' continuation means no word boundary after "Bernhard" and no slash
+    // immediately after it → no match. Proves the denylist does not over-match
+    // names that merely begin with a denylisted name.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'clean.md'), 'path: ~/Projects/Bernhardt/app\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('exits 0 on ~/Projects/MyApp/ (legit capitalized project dir — false-positive guard)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'clean.md'), 'cd ~/Projects/MyApp/src\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});

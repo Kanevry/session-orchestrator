@@ -45,7 +45,7 @@ typecheck-command: npm run typecheck
 lint-command: npm run lint
 stale-branch-days: 7
 plugin-freshness-days: 30
-plan-baseline-path: ~/Projects/projects-baseline
+plan-baseline-path: ~/Projects/projects-baseline   # host-local override: SO_BASELINE_PATH > owner.yaml paths.baseline-path > this default (#653)
 plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal
@@ -53,7 +53,7 @@ vcs: gitlab
 auto-skill-dispatch: false               # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/vault
+  vault-dir: ~/Projects/vault    # host-local override: SO_VAULT_DIR > owner.yaml paths.vault-dir > this default (#653)
   mode: warn               # strict | warn | off
 docs-orchestrator:
   enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available

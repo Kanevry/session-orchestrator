@@ -364,7 +364,7 @@ filed as individual issues by W5-F4.
 - Prior epic PRD (gsd patterns): `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md`
 - Architectural rule governing Pattern B: `.claude/rules/prompt-caching.md` §3
 - Session metrics: `.orchestrator/metrics/sessions.jsonl` (entry appended at session-end)
-- Session decisions: vault-mirror to `~/Projects/Bernhard/vault/01-projects/session-orchestrator/decisions.md`
+- Session decisions: vault-mirror to `~/Projects/vault/01-projects/session-orchestrator/decisions.md`
 - Key source files:
   - `scripts/dialectic-deriver.mjs` (564 lines)
   - `scripts/lib/auto-dialectic.mjs` (382 lines)

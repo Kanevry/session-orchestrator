@@ -181,7 +181,7 @@ Auto-sync that writes learnings + session summaries into a Meta-Vault after each
 ```yaml
 vault-integration:
   enabled: false                       # opt-in
-  vault-dir: ~/Projects/Bernhard/vault  # absolute path to vault repo
+  vault-dir: ~/Projects/vault          # absolute path to vault repo
   mode: warn                           # warn | strict | off
   gitlab-groups:                       # optional — for /plan retro vault-backfill sub-mode
     - infrastructure
@@ -189,6 +189,8 @@ vault-integration:
 ```
 
 Read by: `scripts/vault-mirror.mjs`, `scripts/vault-backfill.mjs`, `skills/session-end/session-metrics-write.md`, `skills/evolve/SKILL.md`, `skills/plan/mode-retro.md`.
+
+> **Host-local override (#653).** `vault-dir` (and `plan-baseline-path`) resolve host-locally with precedence: env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > `owner.yaml` `paths:` section (`vault-dir` / `baseline-path`) > the committed default shown above. This keeps maintainer-specific absolute paths out of version control. Resolver: `scripts/lib/config/host-paths.mjs`.
 
 ## Vault Mirror Quality
 
@@ -600,7 +602,7 @@ vault-sync:
 # Vault integration
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/Bernhard/vault
+  vault-dir: ~/Projects/vault
   mode: warn
   gitlab-groups: []
 

@@ -60,6 +60,7 @@ import { _parseMemory } from './config/memory.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
 import { _parseEvolve } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
+import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -119,6 +120,12 @@ export function parseSessionConfig(mdContent) {
   const sectionLines = _extractConfigSection(mdContent);
   const kv = _parseKV(sectionLines);
 
+  // Host-local path resolution context (issue #653): env-var > owner.yaml paths[key] >
+  // committed default. Loaded once so vault-dir + baseline-path resolve without
+  // re-reading disk. Applied AFTER sub-parsers run (see vault-integration/vault-sync
+  // overrides below) to keep the parsers pure for claude-md-drift-check's raw-value parity.
+  const hostCtx = loadHostPaths();
+
   // String fields
   const vcs = _coerceString(kv, 'vcs', undefined);
   const gitlabHost = _coerceString(kv, 'gitlab-host', undefined);
@@ -130,7 +137,11 @@ export function parseSessionConfig(mdContent) {
   const lintCommand = _coerceString(kv, 'lint-command', 'pnpm lint');
   const baselineRef = _coerceString(kv, 'baseline-ref', undefined);
   const baselineProjectId = _coerceString(kv, 'baseline-project-id', undefined);
-  const planBaselinePath = _coerceString(kv, 'plan-baseline-path', undefined);
+  const planBaselinePath = resolveHostPath(
+    'baseline-path',
+    _coerceString(kv, 'plan-baseline-path', undefined),
+    hostCtx
+  );
   const planDefaultVisibility = _coerceString(kv, 'plan-default-visibility', 'internal');
   const planPrdLocation = _coerceString(kv, 'plan-prd-location', 'docs/prd/');
   const planRetroLocation = _coerceString(kv, 'plan-retro-location', 'docs/retro/');
@@ -222,12 +233,17 @@ export function parseSessionConfig(mdContent) {
   // pre-#593 KV-name collision where `enabled:` was shared with 15+ other
   // blocks like docs-orchestrator/vault-staleness/slopcheck).
   const vaultIntegration = _parseVaultIntegration(mdContent);
+  // Host-local override (issue #653) — applied here, NOT inside _parseVaultIntegration,
+  // so claude-md-drift-check (which calls the parser directly) keeps seeing raw values.
+  vaultIntegration['vault-dir'] = resolveHostPath('vault-dir', vaultIntegration['vault-dir'], hostCtx);
 
   // resource-thresholds sub-keys (v3.1.0 env-aware — issue #166)
   const resourceThresholds = _parseResourceThresholds(kv);
 
   // vault-sync: parsed from full content (can live outside Session Config)
   const vaultSync = _parseVaultSync(mdContent);
+  // Host-local override (issue #653) — same host source as vault-integration above.
+  vaultSync['vault-dir'] = resolveHostPath('vault-dir', vaultSync['vault-dir'], hostCtx);
 
   // drift-check: parsed from full content (standalone top-level block)
   const driftCheck = _parseDriftCheck(mdContent);

@@ -6,7 +6,7 @@
  *
  * Usage: check-owner-leakage.mjs <plugin-root>
  *
- * Forbidden patterns (P1–P7):
+ * Forbidden patterns (P1–P10):
  *   P1  /\/Users\/bernhardg[a-z.]*(\/|\b)/  — personal home path (issue #631)
  *   P2  /\bgitlab\.gotzendorfer\.at\b/  — private GitLab host
  *   P3  /\bevents\.gotzendorfer\.at\b/  — private events domain
@@ -19,6 +19,8 @@
  *       matched (only literal 4-octet IPs), so SSRF-range docs stay clean.
  *   P9  /-Users-bernhardg[a-z.]*-/  — dash-encoded personal home path
  *       (Claude Code projects-dir encoding of /Users/bernhardg.; issue #634)
+ *   P10 /~\/Projects\/<PersonalName>\//  — personal-name segment in a ~/Projects/ path
+ *       (name-denylist driven; see PERSONAL_NAMES constant below; issue #653)
  *
  * Exclusions (line-scoped, never whole-file):
  *   1. Lines with office@gotzendorfer.at or security@gotzendorfer.at
@@ -122,6 +124,40 @@ const P8_ALLOWLIST = new Set(['tests/scripts/export-hw-learnings.test.mjs']);
  * Same sensitivity class as P1 but invisible to the slash-form regex (issue #634).
  */
 const P9 = /-Users-bernhardg[a-z.]*-/;
+
+/** P10: personal-name owner segment in a ~/Projects/<Name>/ path (#653).
+ *  Name-denylist driven (CLOSED list, audit-reviewed) — mirrors PRIVATE_SLUGS (P6).
+ *  A generic ~/Projects/[A-Z][a-z]+/ would false-positive on legit capitalized
+ *  project dirs (~/Projects/MyApp/), so we match only known personal names.
+ *
+ *  Matches the tilde form (`~/Projects/Bernhard`) OR an absolute home form
+ *  (`/Users/<user>/Projects/Bernhard`, `/home/<user>/Projects/Bernhard`), then a
+ *  trailing-slash OR word boundary. The slash-OR-word-boundary alternation is the
+ *  Finding-1 fix for the original `…/<Name>/` form, which REQUIRED a slash after the
+ *  name and so let a bare `~/Projects/Bernhard` (end-of-line, before `&&`) pass
+ *  undetected — the same blindspot P1 was patched for (see P1 doc above). The
+ *  absolute-home alternation is the Finding-3 defense-in-depth: a leak in a
+ *  non-owner home (`/Users/alice/Projects/Bernhard/vault`) slipped both P1 and the
+ *  old tilde-only P10. The trailing word boundary keeps the false-positive profile
+ *  tight: `~/Projects/Bernhardt/` (denylisted name + a continuation letter) does
+ *  NOT match, so names that merely START with a denylisted name are not flagged. */
+const PERSONAL_NAMES = ['Bernhard'];
+const P10_PATTERNS = PERSONAL_NAMES.map(
+  (name) => new RegExp(`(?:~|/Users/[^/]+|/home/[^/]+)/Projects/${escapeRegex(name)}(\\/|\\b)`),
+);
+
+/** P10 allowlist: files where ~/Projects/Bernhard is a deliberate test subject
+ *  (migration/drift fixtures) or a legitimate one-shot-migration source/target. */
+const P10_ALLOWLIST = new Set([
+  'tests/scripts/vault-consolidate.test.mjs',
+  'tests/scripts/migrate-vault-paths.test.mjs',
+  'tests/lib/migrate-vault-paths-pure.test.mjs',
+  'tests/lib/cli-flags.test.mjs',
+  'tests/lib/config/vault-integration.test.mjs',
+  'tests/skills/claude-md-drift-check/checker.test.mjs',
+  'scripts/migrate-vault-paths.mjs',
+  'scripts/vault-consolidate.mjs',
+]);
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -380,6 +416,16 @@ for (const filePath of scanFiles) {
     // P9: dash-encoded home path (Claude Code projects-dir encoding) — #634
     if (P9.test(line)) {
       violations.push({ relPath, lineNum, pattern: 'P9 (dash-encoded home path)', lineContent: line.trim() });
+    }
+
+    // P10: personal-name segment in a ~/Projects/<name>/ path (allowlisted migration fixtures exempt) — #653
+    if (!P10_ALLOWLIST.has(relPath)) {
+      for (const re of P10_PATTERNS) {
+        if (re.test(line)) {
+          violations.push({ relPath, lineNum, pattern: 'P10 (~/Projects/<name>/ personal segment)', lineContent: line.trim() });
+          break;
+        }
+      }
     }
   });
 }

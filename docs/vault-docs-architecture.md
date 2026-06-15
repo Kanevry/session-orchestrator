@@ -18,7 +18,7 @@ the layer:
 - **Cross-session memory loss.** A session ends, the chat closes, the next
   session starts cold. Without a structured place to land decisions, status
   changes, and learnings, every session re-discovers context. The Meta-Vault
-  (`~/Projects/Bernhard/vault`) is that place. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
+  (`~/Projects/vault`) is that place. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
   Section 1 ("Why" — 14 active projects, daily multi-session workflow).
 - **Audience-specific documentation rotting in parallel.** READMEs,
   `CLAUDE.md`, and Vault narratives drift independently because nothing
@@ -82,7 +82,7 @@ Data flow within a single `/session feature → /go → /close` cycle:
 └──────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌──────────────────────────────────────────────────────────────────┐
-│  Meta-Vault (~/Projects/Bernhard/vault)                          │
+│  Meta-Vault (~/Projects/vault)                                   │
 │   01-projects/<slug>/  ← context.md / decisions.md / people.md   │
 │                          (docs-writer, Vault audience)           │
 │   01-projects/<slug>/  ← _overview.md (vault-mirror, no humans)  │
@@ -265,7 +265,7 @@ maintenance load. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
 **Explicit non-goals** — these are not on the roadmap:
 
 - **Team-Vault sharing.** Today single-user-local under
-  `~/Projects/Bernhard/vault`. Team sharing requires its own infra (sync, permissions,
+  `~/Projects/vault`. Team sharing requires its own infra (sync, permissions,
   conflict resolution) and is a separate epic.
 - **Two-way sync (Vault → Repo).** Today one-way (Repo → Vault via
   `.vault.yaml` + Clank). Reversal would break the ownership model.

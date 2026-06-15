@@ -265,6 +265,45 @@ describe('validateOwnerConfig — hash-salt required when enabled=true', () => {
 });
 
 // ---------------------------------------------------------------------------
+// paths: section (#653) — host-local path overrides
+// ---------------------------------------------------------------------------
+
+describe('paths: section (#653)', () => {
+  it('getDefaults().paths equals empty-override defaults', () => {
+    expect(getDefaults().paths).toEqual({ 'vault-dir': '', 'baseline-path': '' });
+  });
+
+  it('accepts a config with a valid paths object', () => {
+    const cfg = validConfig({ paths: { 'vault-dir': '/v', 'baseline-path': '/b' } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('accepts a legacy config WITHOUT a paths key (absent-tolerant back-compat)', () => {
+    const cfg = validConfig();
+    expect(cfg.paths).toBeUndefined();
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('rejects paths as a string (not an object)', () => {
+    const cfg = validConfig({ paths: 'oops' });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('paths must be an object when present');
+  });
+
+  it('rejects a non-string paths.vault-dir member', () => {
+    const cfg = validConfig({ paths: { 'vault-dir': 42 } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('paths.vault-dir must be a string');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // loadOwnerConfig
 // ---------------------------------------------------------------------------
 
