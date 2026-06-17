@@ -389,6 +389,15 @@ For contributor-facing architecture, hook authoring, and the `zx`-vs-stdlib heur
 
 [GitHub Discussions](https://github.com/Kanevry/session-orchestrator/discussions) are open for questions, ideas, and show-and-tell. For bug reports and feature requests, use [Issues](https://github.com/Kanevry/session-orchestrator/issues). We follow [Conventional Commits](https://www.conventionalcommits.org/) — see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
+## Learn the method behind it
+
+This plugin is a methodology turned into code. If you want the reasoning behind it — why execution runs in waves, why every wave ends at a verification gate, how to make an autonomous loop that actually finishes — those playbooks are taught hands-on at **[agenticbuilders.at](https://agenticbuilders.at)**:
+
+- **[Multi-Agent Orchestration](https://agenticbuilders.at/orchestrierung)** — leading several agents in coordinated waves instead of one long chat: when parallelism is worth it, how to brief subagents cleanly, and how to turn real failures into firm gates.
+- **[Loop Engineering](https://agenticbuilders.at/loop-engineering)** — designing autonomous loops that finish verifiably: done-conditions, deterministic verification gates, and kill-switches.
+
+The plugin is free and MIT. The courses are for going deeper, not a requirement for using it.
+
 ## Links
 
 - [Homepage](https://gotzendorfer.at/en/session-orchestrator)
