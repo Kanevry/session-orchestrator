@@ -8,10 +8,10 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 36 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 16 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`) |
-| `agents/` | 11 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
-| `hooks/` | Hook event matchers + handlers (11 matcher entries / 11 handler files) |
+| `skills/` | 40 user-facing skills (+ `_shared/` internal) |
+| `commands/` | 20 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`) |
+| `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
+| `hooks/` | Hook event matchers + handlers (14 matcher entries / 19 handler files, 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (13 rules) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
@@ -27,10 +27,10 @@
 
 ## Inventory (canonical)
 
-- **Skills:** 36 user-facing skills (`skills/` has 37 dirs but `_shared/` is internal docs, not a skill)
-- **Commands:** 16 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`)
-- **Agents:** 11 (`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`)
-- **Hook event matchers / handlers:** 11 matcher entries / 11 handler files. 9 distinct events: SessionStart, PreToolUse (×2: Edit\|Write + Bash), PostToolUse, Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
+- **Skills:** 40 user-facing skills (`skills/` has 41 dirs but `_shared/` is internal docs, not a skill)
+- **Commands:** 20 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`)
+- **Agents:** 14 (`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`)
+- **Hook event matchers / handlers:** 14 matcher entries / 19 handler files. 10 distinct events: SessionStart, SessionEnd, PreToolUse (×2: Edit\|Write + Bash), PostToolUse, Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
 
 ## Key Skills (frequently referenced)
 
@@ -57,6 +57,7 @@
 | Event | Matcher | Handler file(s) |
 |-------|---------|-----------------|
 | SessionStart | `startup\|clear\|compact` | `hooks/on-session-start.mjs` |
+| SessionEnd | `""` | `hooks/on-session-end.mjs` |
 | PreToolUse | `Edit\|Write` | `hooks/enforce-scope.mjs` |
 | PreToolUse | `Bash` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/enforce-commands.mjs` |
 | PostToolUse | `Edit\|Write` | `hooks/post-edit-validate.mjs` |
@@ -67,3 +68,5 @@
 | PostToolBatch | `""` | `hooks/operator-steer.mjs` |
 | SubagentStart | `""` | `hooks/subagent-telemetry.mjs` |
 | CwdChanged | `""` | `hooks/cwd-change-restore.mjs` |
+
+> Table shows the primary matcher→handler mapping. The full manifest is **14 matcher entries / 19 handler files** across these 10 events — see `hooks/hooks.json` (SSOT).

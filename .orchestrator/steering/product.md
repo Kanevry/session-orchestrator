@@ -6,12 +6,21 @@
 
 ## Mission
 
-Session Orchestrator is a project-instruction file plugin for Claude Code, Codex CLI, and Cursor IDE.
-It provides structured session lifecycle management: planning, wave execution, VCS integration,
-quality gates, vault mirroring, and autopilot walk-away mode.
+Session Orchestrator is a project-instruction file plugin for Claude Code, Codex CLI, Cursor IDE, and Pi.
+It is **loop engineering** for software work: the operator designs the loop — research → plan → execute in
+waves → close — and the plugin runs it with the durable surface that keeps a long agent run honest:
+structured session lifecycle, parallel wave execution, inter-wave quality gates, VCS integration,
+cross-session memory + vault mirroring, and autopilot walk-away mode.
 
-The plugin ships as a Claude Code plugin (`.claude-plugin/`) and a Codex plugin (`.codex-plugin/`),
-activated via `CLAUDE.md` (Claude Code / Cursor) or `AGENTS.md` (Codex CLI).
+As native agent harnesses absorb raw parallelism (Dynamic Workflows, nested subagents) and research
+fan-out (`/deep-research`), the plugin's durable moat is the surface they do not yet cover: mechanical
+guards (destructive-command, scope, config-protection, owner-privacy), session/learning telemetry,
+skill self-evolution, host-local public-repo-safe shared memory, parallel-*operator*-session safety, and
+multi-harness portability across Claude Code / Codex CLI / Cursor IDE / Pi.
+
+The plugin ships as a Claude Code plugin (`.claude-plugin/`), a Codex plugin (`.codex-plugin/`), and a
+Pi package (`package.json` `pi` manifest), activated via `CLAUDE.md` (Claude Code / Cursor) or
+`AGENTS.md` (Codex CLI / Pi).
 
 ## Target Users
 

@@ -2,13 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-3.9.0-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-8856%20passing-brightgreen.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-9303%20passing-brightgreen.svg)](#development)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
 [![Pi](https://img.shields.io/badge/Pi-Package-orange.svg)](https://pi.dev/docs/latest)
 
-Turn ad-hoc Claude Code sessions into a repeatable loop with verification gates. Session Orchestrator adds a structured `research → plan → execute in waves → close` cycle on top of your existing agent — across Claude Code, Codex CLI, Cursor IDE, and Pi. Inter-wave reviews catch regressions before they ship; carryover issues mean nothing slips through.
+Turn ad-hoc Claude Code sessions into a repeatable loop with verification gates — **loop engineering** for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent across Claude Code, Codex CLI, Cursor IDE, and Pi, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean nothing slips through.
 
 Community plugin (MIT, not affiliated with Anthropic) for solo devs and small teams using Claude Code, Codex CLI, Cursor, or Pi.
 
@@ -113,9 +113,9 @@ There is no commercial support contract or guaranteed response time; maintenance
 
 - **40 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, harness/repo audits, tmux visualization, and more
 - **20 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
-- **13 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, …)
+- **14 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, skill-applied-judge, …)
 - **10 hook event types** (handlers under `hooks/`) enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
-- **8856 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 138/138, typecheck OK, lint 0
+- **9303 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 140/140, typecheck OK, lint 0
 
 ## Lifecycle at a glance
 
@@ -210,7 +210,7 @@ flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
     COORD -->|reads| SK[Skills<br/>40 user-facing]
     COORD -->|invokes| CMD[Commands<br/>20 slash-cmds]
-    COORD -->|dispatches| AG[Agents<br/>13 typed sub-agents]
+    COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
     AG -.-> W3[security-reviewer]
@@ -225,7 +225,7 @@ flowchart LR
 
 **Commands (20).** `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`.
 
-**Agents (13 typed sub-agents).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`.
+**Agents (14 typed sub-agents).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`.
 
 **Hook event types (10).** `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
 
@@ -237,7 +237,7 @@ flowchart LR
 
 **Pi.** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, and `scripts/pi-install.mjs`.
 
-**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 8856+ tests.
+**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 9303+ tests.
 
 ### `/harness-audit` — Anthropic large-codebase rubric
 
@@ -270,7 +270,7 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE + Pi (4) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
 | VCS integration | GitLab-first with GitHub mirror (auto-detected); 10 hook event types + 20 commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries in `.orchestrator/metrics/learnings.jsonl`; surfaced at session-start; opt-in `/evolve` review | Session archival to `docs/maestro/` without explicit learning extraction |
-| Specialist agents | 13 typed agents (code-implementer, security-reviewer, test-writer, qa-strategist, dialectic-deriver, memory-proposal-collector, etc.) | 39 specialist agents across design/impl/review/debugging/security/compliance |
+| Specialist agents | 14 typed agents (code-implementer, security-reviewer, test-writer, qa-strategist, dialectic-deriver, memory-proposal-collector, skill-applied-judge, etc.) | 39 specialist agents across design/impl/review/debugging/security/compliance |
 
 We see the two plugins as complementary rather than competing: session-orchestrator focuses on a single wave-based lifecycle with VCS+learning integration, while maestro-orchestrate optimises for multi-runtime parallel specialist delivery.
 
@@ -344,7 +344,7 @@ Clone, install, verify in three commands:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git && cd session-orchestrator
 npm install
-npm test        # vitest, 8856 tests
+npm test        # vitest, 9303 tests
 ```
 
 Additional scripts:

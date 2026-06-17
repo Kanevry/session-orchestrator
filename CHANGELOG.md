@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Doc-sync + loop-engineering positioning** — corrected verified surface counts that had drifted across README and the session-injected steering docs, and reframed positioning around the now-named "loop engineering" discipline (Steinberger/Cherny, June 2026). Counts verified this session: README test badge 8856 → **9303** (`npm test`: 9303 passed / 12 skipped / 0 failed across 433 files, exit 0), sub-agents 13 → **14** (added `skill-applied-judge`), validate-plugin 138 → **140**. `.orchestrator/steering/structure.md` refreshed: skills 36 → **40**, commands 16 → **20**, agents 11 → **14**, hooks "11 matcher / 11 handler / 9 events" → **14 matcher / 19 handler / 10 events** (added the `SessionEnd` → `hooks/on-session-end.mjs` row + a manifest-SSOT note). `.orchestrator/steering/product.md` mission re-centered on the durable moat (mechanical guards, telemetry, skill self-evolution, host-local public-repo-safe shared memory, parallel-operator-session safety, multi-harness portability) as native harnesses absorb raw parallelism / research fan-out, and corrected to include the Pi harness. Output of the cross-repo + external-discourse audit session (2026-06-17).
+
 ## [3.9.0] - 2026-06-13
 
 ### Added
