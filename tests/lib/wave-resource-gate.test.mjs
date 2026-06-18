@@ -50,6 +50,18 @@ function makeOverride(overrides = {}) {
   };
 }
 
+// macOS-style override: low free RAM but a real (high) available figure. The
+// gate must judge thresholds on `ramAvailableGb`, not the misleading free value.
+function makeMacOverride(overrides = {}) {
+  return {
+    ramFreeGb: 0.3,        // os.freemem() on Apple Silicon — Pages-free only
+    ramAvailableGb: 80,    // free + reclaimable (vm_stat) — the real headroom
+    cpuLoadPct: 30,
+    concurrentSessions: 1,
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // evaluateWaveResourceGate
 // ---------------------------------------------------------------------------
@@ -193,6 +205,62 @@ describe('evaluateWaveResourceGate', () => {
     expect(result.measurements).toEqual({});
   });
 
+  // -------------------------------------------------------------------------
+  // macOS available-RAM gating (#667)
+  // -------------------------------------------------------------------------
+
+  test('macOS: low free (0.3GB) but high available (80GB) → proceed, NOT coordinator-direct', async () => {
+    // Reproduces the issue's false RAM-critical: free 0.3GB < critical 2GB, but
+    // available 80GB is healthy. The gate must NOT escalate to coordinator-direct.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 80 }),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
+    expect(result.measurements.ramAvailableGb).toBe(80);
+  });
+
+  test('macOS: low free but available below critical → coordinator-direct (real pressure)', async () => {
+    // Genuinely low available (1.5GB < critical 2GB) → escalate, label "RAM available".
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 1.5 }),
+    });
+    expect(result.decision).toBe('coordinator-direct');
+    expect(result.agents).toBe(0);
+    expect(result.reasons.some((r) => r.includes('RAM available 1.5GB'))).toBe(true);
+  });
+
+  test('macOS: low free but available below min (above critical) → reduce', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Polish',
+      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 3.0 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3); // floor(6/2)
+    expect(result.reasons.some((r) => r.includes('RAM available 3GB'))).toBe(true);
+  });
+
+  test('Linux: ramAvailableGb absent → gate falls back to free RAM (label "RAM free")', async () => {
+    // No ramAvailableGb in override → free 1.5GB < critical → coordinator-direct.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 4,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ ramFreeGb: 1.5 }), // no ramAvailableGb key
+    });
+    expect(result.decision).toBe('coordinator-direct');
+    expect(result.agents).toBe(0);
+    expect(result.reasons.some((r) => r.includes('RAM free 1.5GB'))).toBe(true);
+  });
+
   test('config without resource-thresholds → proceed with "missing" reason (defensive)', async () => {
     const config = { 'resource-awareness': true }; // no resource-thresholds key
     const result = await evaluateWaveResourceGate({
@@ -225,5 +293,28 @@ describe('formatGateReport', () => {
     expect(report.includes('\n')).toBe(true);
     expect(report).toContain('reduce');
     expect(report).toContain('RAM free');
+  });
+
+  test('macOS: shows available-RAM in the banner when ramAvailableGb is present (#667)', () => {
+    const result = {
+      decision: 'proceed',
+      agents: 6,
+      reasons: ['all thresholds within bounds'],
+      measurements: { ramFreeGb: 0.3, ramAvailableGb: 80, cpuLoadPct: 30, concurrentSessions: 1 },
+    };
+    const report = formatGateReport(result);
+    expect(report).toContain('RAM 80GB avail');
+    expect(report).not.toContain('0.3GB free');
+  });
+
+  test('falls back to free-RAM banner when ramAvailableGb is null', () => {
+    const result = {
+      decision: 'proceed',
+      agents: 4,
+      reasons: ['all thresholds within bounds'],
+      measurements: { ramFreeGb: 8, ramAvailableGb: null, cpuLoadPct: 30, concurrentSessions: 1 },
+    };
+    const report = formatGateReport(result);
+    expect(report).toContain('RAM 8GB free');
   });
 });

@@ -20,7 +20,7 @@ import { probe } from './resource-probe.mjs';
  * "proceed" decision.
  *
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
- * @returns {Promise<{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number} | {probeFailed: true}>}
+ * @returns {Promise<{ramFreeGb: number, ramAvailableGb: number|null, cpuLoadPct: number, concurrentSessions: number} | {probeFailed: true}>}
  */
 async function extractMeasurements(opts) {
   const { probeOverride } = opts;
@@ -28,6 +28,8 @@ async function extractMeasurements(opts) {
   if (probeOverride !== undefined && probeOverride !== null) {
     return {
       ramFreeGb: probeOverride.ramFreeGb,
+      // Tests may supply ramAvailableGb to exercise the macOS path; absent → null.
+      ramAvailableGb: probeOverride.ramAvailableGb ?? null,
       cpuLoadPct: probeOverride.cpuLoadPct,
       concurrentSessions: probeOverride.concurrentSessions,
     };
@@ -41,6 +43,9 @@ async function extractMeasurements(opts) {
   }
   return {
     ramFreeGb: snapshot.ram_free_gb,
+    // macOS: free + reclaimable (vm_stat). null on Linux/Windows where
+    // os.freemem() is already accurate. (#667)
+    ramAvailableGb: snapshot.ram_available_gb ?? null,
     cpuLoadPct: snapshot.cpu_load_pct,
     // concurrent sessions: number of claude processes found by the probe.
     concurrentSessions: snapshot.claude_processes_count ?? 0,
@@ -57,8 +62,18 @@ async function extractMeasurements(opts) {
  */
 function applyDecisionRules(measurements, opts) {
   const { config, plannedAgents } = opts;
-  const { ramFreeGb, cpuLoadPct, concurrentSessions } = measurements;
+  const { ramFreeGb, ramAvailableGb, cpuLoadPct, concurrentSessions } = measurements;
   const T = config['resource-thresholds'];
+
+  // macOS fix (#667): os.freemem() reports only `Pages free`, which reads
+  // sub-1 GB even on a 128 GB host with 80+ GB reclaimable cache — a false
+  // RAM-critical that forced spurious coordinator-direct fallbacks. When the
+  // probe supplied a numeric `ramAvailableGb` (free + reclaimable, via vm_stat),
+  // judge RAM thresholds on AVAILABLE; otherwise fall back to FREE (Linux/Win,
+  // where os.freemem() is already accurate).
+  const hasAvailable = ramAvailableGb !== null && ramAvailableGb !== undefined;
+  const effectiveRamGb = hasAvailable ? ramAvailableGb : ramFreeGb;
+  const ramLabel = hasAvailable ? 'RAM available' : 'RAM free';
 
   // Rule 3: resource-thresholds missing → degrade to proceed (defensive).
   // Handles legacy pre-#166 configs and test fixtures that omit the key.
@@ -73,24 +88,24 @@ function applyDecisionRules(measurements, opts) {
   }
 
   // Rule 4: RAM below critical → coordinator-direct.
-  if (ramFreeGb < T['ram-free-critical-gb']) {
+  if (effectiveRamGb < T['ram-free-critical-gb']) {
     return {
       decision: 'coordinator-direct',
       agents: 0,
       reasons: [
-        `RAM free ${ramFreeGb}GB < critical ${T['ram-free-critical-gb']}GB — escalating to coordinator-direct`,
+        `${ramLabel} ${effectiveRamGb}GB < critical ${T['ram-free-critical-gb']}GB — escalating to coordinator-direct`,
       ],
       measurements,
     };
   }
 
   // Rule 5: RAM below min (but above critical) → reduce.
-  if (ramFreeGb < T['ram-free-min-gb']) {
+  if (effectiveRamGb < T['ram-free-min-gb']) {
     return {
       decision: 'reduce',
       agents: Math.max(1, Math.floor(plannedAgents / 2)),
       reasons: [
-        `RAM free ${ramFreeGb}GB < min ${T['ram-free-min-gb']}GB — reducing agent count`,
+        `${ramLabel} ${effectiveRamGb}GB < min ${T['ram-free-min-gb']}GB — reducing agent count`,
       ],
       measurements,
     };
@@ -174,9 +189,15 @@ export function formatGateReport(result) {
   const { decision, agents, reasons, measurements } = result;
   const lines = reasons.map((r) => `  - ${r}`);
   const m = measurements;
+  // Prefer the macOS available-RAM figure in the banner when present (#667):
+  // "RAM free" alone is misleading on Darwin (Pages-free underreports).
+  const hasAvailable = m.ramAvailableGb !== null && m.ramAvailableGb !== undefined;
+  const ramStr = hasAvailable
+    ? `RAM ${m.ramAvailableGb}GB avail`
+    : `RAM ${m.ramFreeGb ?? '?'}GB free`;
   const measStr =
     Object.keys(m).length > 0
-      ? ` (RAM ${m.ramFreeGb ?? '?'}GB free, CPU ${m.cpuLoadPct ?? '?'}%, sessions ${m.concurrentSessions ?? '?'})`
+      ? ` (${ramStr}, CPU ${m.cpuLoadPct ?? '?'}%, sessions ${m.concurrentSessions ?? '?'})`
       : '';
   lines.push(`Decision: ${decision} — agents: ${agents}${measStr}`);
   return lines.join('\n');

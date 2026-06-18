@@ -272,6 +272,72 @@ describe('evaluate() — macOS pressure-first override', () => {
 });
 
 // ---------------------------------------------------------------------------
+// macOS available-RAM override (#667 — judge criticality on AVAILABLE not FREE)
+// ---------------------------------------------------------------------------
+
+describe('evaluate() — macOS available-RAM (#667)', () => {
+  // On macOS, os.freemem() (ram_free_gb) reflects only `Pages free` and reads
+  // sub-1 GB while the host has tens of GB reclaimable. When the probe supplies
+  // ram_available_gb (free + reclaimable from vm_stat), criticality is judged
+  // on AVAILABLE. To isolate this signal from the memory_pressure suppression,
+  // these fixtures set memory_pressure_pct_free below the healthy boundary.
+  const LOW_FREE_BASE = {
+    ...HEALTHY_SNAPSHOT,
+    ram_free_gb: 0.3,                 // would be critical on FREE alone (< 2 GB)
+    ram_used_pct: 99,
+    memory_pressure_pct_free: 20,     // < 30 → NOT pressure-healthy; isolates available signal
+  };
+
+  it('judges GREEN when free is critically low but available RAM is ample', () => {
+    // free 0.3 GB (looks critical) but available 80 GB → no RAM verdict-bump.
+    // memory_pressure 20% normally adds a warn, so assert the RAM signal itself
+    // did not fire critical and no RAM reason is present.
+    const snap = { ...LOW_FREE_BASE, ram_available_gb: 80, memory_pressure_pct_free: null };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('does NOT bump to critical on low free when available RAM is high (pressure unhealthy)', () => {
+    // memory_pressure 20% is unhealthy → the RAM branch runs, but available 80 GB
+    // keeps RAM green; only the memory_pressure-range signal adds a warn.
+    const snap = { ...LOW_FREE_BASE, ram_available_gb: 80 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('warn'); // from memory_pressure 20% in 15..30 range
+    expect(result.reasons.some((r) => r.includes('RAM available') && r.includes('critical'))).toBe(false);
+    expect(result.reasons.some((r) => r.includes('20% in warn range'))).toBe(true);
+  });
+
+  it('judges CRITICAL when available RAM is genuinely low (cap=0)', () => {
+    // free 0.3 GB AND available 1.0 GB (< critical 2 GB) → real RAM critical.
+    const snap = { ...LOW_FREE_BASE, ram_available_gb: 1.0 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+    expect(result.reasons.some((r) => r.includes('RAM available 1.0 GB below critical threshold 2 GB'))).toBe(true);
+  });
+
+  it('judges WARN when available RAM is below min but above critical (cap=2)', () => {
+    // available 3.0 GB: above critical (2), below min (4) → warn.
+    const snap = { ...LOW_FREE_BASE, ram_available_gb: 3.0 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('warn');
+    expect(result.recommended_agents_per_wave_cap).toBe(2);
+    expect(result.reasons.some((r) => r.includes('RAM available 3.0 GB below threshold 4 GB'))).toBe(true);
+  });
+
+  it('falls back to FREE when ram_available_gb is null (Linux path unchanged)', () => {
+    // No ram_available_gb → use ram_free_gb (0.3 GB) → critical, with "RAM free" label.
+    const snap = { ...LOW_FREE_BASE, ram_available_gb: null };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+    expect(result.reasons.some((r) => r.includes('RAM free 0.3 GB below critical threshold 2 GB'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Multi-signal combining (bumpVerdict / cap interactions)
 // ---------------------------------------------------------------------------
 
@@ -341,6 +407,34 @@ describe('evaluate() — zombie signal', () => {
     const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
     expect(result.verdict).toBe('degraded');
     expect(result.reasons.some((r) => r.includes('zombie'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary pin: exact-zero ram_available_gb with null memory_pressure (#667)
+// ---------------------------------------------------------------------------
+//
+// The !==null guard treats 0 as a present value (genuinely-zero RAM), while
+// null signals "field unavailable". This test pins that exact-0 is critical —
+// parsers return null on measurement failure, never 0, so 0 means truly-zero
+// RAM. If the guard ever changes to falsy-check (!ram_available_gb), 0 would
+// be treated as "unavailable" and silently fall back to ram_free_gb. This
+// assertion would fail loudly before that regression could ship.
+
+describe('evaluate() — exact-zero ram_available_gb boundary pin (#667)', () => {
+  it('returns critical when ram_available_gb=0 and memory_pressure_pct_free=null (genuinely-zero RAM)', () => {
+    // ram_available_gb=0 means truly zero reclaimable RAM: 0 < ramCrit(2) → critical.
+    // memory_pressure_pct_free=null means signal unavailable — no suppression.
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      ram_available_gb: 0,
+      memory_pressure_pct_free: null,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+    // Reason must reference the available label, not the free label
+    expect(result.reasons.some((r) => r.includes('RAM available 0.0 GB below critical threshold 2 GB'))).toBe(true);
   });
 });
 

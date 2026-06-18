@@ -17,6 +17,7 @@ import {
   countZombieProcesses,
   parseSwapUsageOutput,
   parseMemoryPressureOutput,
+  parseVmStatAvailableGb,
 } from './parsers.mjs';
 
 // ---------------------------------------------------------------------------
@@ -277,4 +278,23 @@ export async function memoryPressurePctFree() {
 
   const output = await runCommand('memory_pressure', []);
   return parseMemoryPressureOutput(output);
+}
+
+/**
+ * Probe macOS AVAILABLE RAM (free + reclaimable) via `vm_stat`.
+ *
+ * On macOS, `os.freemem()` reflects only `Pages free` and routinely reads
+ * sub-1 GB even when 100+ GB is reclaimable cache. This derives the real
+ * headroom from vm_stat (see parseVmStatAvailableGb for the page-class formula).
+ *
+ * Darwin-only — returns null on Linux/Windows/unknown (those platforms already
+ * surface an accurate `os.freemem()`, so no override is needed) or on
+ * spawn/parse failure.
+ * @returns {Promise<number|null>} available GB rounded to 1 decimal, or null
+ */
+export async function ramAvailableGb() {
+  if (process.platform !== 'darwin') return null;
+
+  const output = await runCommand('vm_stat', []);
+  return parseVmStatAvailableGb(output);
 }

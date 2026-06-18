@@ -21,6 +21,7 @@
  *     zombie_processes_count: 1 | null,
  *     swap_used_mb: 512 | null,
  *     memory_pressure_pct_free: 42 | null,
+ *     ram_available_gb: 82.5 | null,   // macOS: free + reclaimable (vm_stat); null elsewhere (#667)
  *     probe_duration_ms: 45,
  *   }
  *
@@ -36,14 +37,14 @@
  *   - scripts/lib/resource-probe/evaluate.mjs     — verdict + threshold logic
  */
 
-import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctFree } from './resource-probe/probe-platform.mjs';
+import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctFree, ramAvailableGb } from './resource-probe/probe-platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve public API for all existing callers
 // ---------------------------------------------------------------------------
 
 export { evaluate } from './resource-probe/evaluate.mjs';
-export { parseEtimeToMinutes, countZombieProcesses, countProcessMatches, parseSwapUsageOutput, parseMemoryPressureOutput } from './resource-probe/parsers.mjs';
+export { parseEtimeToMinutes, countZombieProcesses, countProcessMatches, parseSwapUsageOutput, parseMemoryPressureOutput, parseVmStatAvailableGb } from './resource-probe/parsers.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API — probe()
@@ -69,10 +70,12 @@ export async function probe(opts = {}) {
 
   let swap_used_mb = null;
   let memory_pressure_pct_free = null;
+  let ram_available_gb = null;
   if (!opts.skipExtendedSignals) {
-    [swap_used_mb, memory_pressure_pct_free] = await Promise.all([
+    [swap_used_mb, memory_pressure_pct_free, ram_available_gb] = await Promise.all([
       swapUsedMb(),
       memoryPressurePctFree(),
+      ramAvailableGb(),
     ]);
   }
 
@@ -84,6 +87,9 @@ export async function probe(opts = {}) {
     ...procs,
     swap_used_mb,
     memory_pressure_pct_free,
+    // macOS-only numeric available-RAM (free + reclaimable) from vm_stat; null
+    // on Linux/Windows/unknown where os.freemem() is already accurate (#667).
+    ram_available_gb,
     probe_duration_ms: duration,
   };
 }

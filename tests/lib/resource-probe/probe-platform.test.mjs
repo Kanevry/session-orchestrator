@@ -27,6 +27,7 @@ import {
   processCounts,
   swapUsedMb,
   memoryPressurePctFree,
+  ramAvailableGb,
   runCommand,
 } from '@lib/resource-probe/probe-platform.mjs';
 
@@ -224,6 +225,25 @@ describe('memoryPressurePctFree()', () => {
     const result = await memoryPressurePctFree();
     const isValid = (v) => v === null || (typeof v === 'number' && v >= 0 && v <= 100);
     expect(isValid(result)).toBe(true);
+  }, 5000);
+});
+
+// ---------------------------------------------------------------------------
+// ramAvailableGb() — platform guard (#667)
+// ---------------------------------------------------------------------------
+
+describe('ramAvailableGb()', () => {
+  it('returns null on non-darwin platforms and a non-negative number on darwin', async () => {
+    const result = await ramAvailableGb();
+    const isValid = (v) => v === null || (typeof v === 'number' && v >= 0);
+    expect(isValid(result)).toBe(true);
+    // On darwin the live vm_stat should yield a positive available figure.
+    if (process.platform === 'darwin') {
+      expect(typeof result).toBe('number');
+      expect(result).toBeGreaterThan(0);
+    } else {
+      expect(result).toBe(null);
+    }
   }, 5000);
 });
 

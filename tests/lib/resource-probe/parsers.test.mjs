@@ -21,6 +21,7 @@ import {
   countProcessMatches,
   parseSwapUsageOutput,
   parseMemoryPressureOutput,
+  parseVmStatAvailableGb,
 } from '@lib/resource-probe/parsers.mjs';
 
 // ---------------------------------------------------------------------------
@@ -276,5 +277,118 @@ describe('parseMemoryPressureOutput', () => {
 
   it('returns null for an empty string', () => {
     expect(parseMemoryPressureOutput('')).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseVmStatAvailableGb (#667 — macOS available = free + reclaimable)
+// ---------------------------------------------------------------------------
+
+describe('parseVmStatAvailableGb', () => {
+  // Fixture with a 4096-byte page size and round page counts so the expected
+  // GB total is a clean, hand-verifiable literal:
+  //   free       262144 pages × 4096 = 1.0 GB
+  //   inactive   524288 pages × 4096 = 2.0 GB
+  //   speculative 131072 pages × 4096 = 0.5 GB
+  //   purgeable  262144 pages × 4096 = 1.0 GB
+  //   → available = 4.5 GB
+  const LOW_FREE_HIGH_RECLAIM = [
+    'Mach Virtual Memory Statistics: (page size of 4096 bytes)',
+    'Pages free:                                  262144.',
+    'Pages active:                               1000000.',
+    'Pages inactive:                              524288.',
+    'Pages speculative:                           131072.',
+    'Pages throttled:                                  0.',
+    'Pages wired down:                            500000.',
+    'Pages purgeable:                             262144.',
+    'File-backed pages:                           300000.',
+  ].join('\n');
+
+  it('computes available = free + inactive + speculative + purgeable in GB', () => {
+    // 4.5 GB available even though free alone is only 1.0 GB.
+    expect(parseVmStatAvailableGb(LOW_FREE_HIGH_RECLAIM)).toBe(4.5);
+  });
+
+  it('does NOT add File-backed pages (avoids double-counting the inactive queue)', () => {
+    // File-backed = 300000 pages (~1.14 GB) is present in the fixture; if it were
+    // added the result would be > 4.5. Asserting exactly 4.5 proves it is excluded.
+    expect(parseVmStatAvailableGb(LOW_FREE_HIGH_RECLAIM)).toBe(4.5);
+  });
+
+  it('reports a genuinely low available figure when reclaimable pages are tiny', () => {
+    // free 8192 (0.03 GB) + inactive 16384 (0.06 GB), no speculative/purgeable
+    // → 0.09375 GB rounds to 0.1 GB — below any sane critical threshold.
+    const lowAvail = [
+      'Mach Virtual Memory Statistics: (page size of 4096 bytes)',
+      'Pages free:                                    8192.',
+      'Pages inactive:                               16384.',
+      'Pages active:                               4000000.',
+      'Pages wired down:                           3000000.',
+    ].join('\n');
+    expect(parseVmStatAvailableGb(lowAvail)).toBe(0.1);
+  });
+
+  it('treats absent speculative/purgeable as 0 (still parses free + inactive)', () => {
+    const noSpecPurge = [
+      'Mach Virtual Memory Statistics: (page size of 4096 bytes)',
+      'Pages free:                                  262144.',
+      'Pages inactive:                              524288.',
+    ].join('\n');
+    // 1.0 + 2.0 = 3.0 GB
+    expect(parseVmStatAvailableGb(noSpecPurge)).toBe(3);
+  });
+
+  it('honours a 16384-byte page size from the header (Apple Silicon)', () => {
+    // Apple Silicon reports 16 KB pages. free 10794 + inactive 1889115 +
+    // speculative 6985 + purgeable 2 = 1906896 pages × 16384 = 29.1 GB.
+    const appleSilicon = [
+      'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+      'Pages free:                                    10794.',
+      'Pages active:                                1896886.',
+      'Pages inactive:                              1889115.',
+      'Pages speculative:                              6985.',
+      'Pages purgeable:                                   2.',
+    ].join('\n');
+    expect(parseVmStatAvailableGb(appleSilicon)).toBe(29.1);
+  });
+
+  it('returns null when the page-size header is missing', () => {
+    const noHeader = [
+      'Pages free:                                  262144.',
+      'Pages inactive:                              524288.',
+    ].join('\n');
+    expect(parseVmStatAvailableGb(noHeader)).toBe(null);
+  });
+
+  it('returns null when Pages free is missing (unrecognisable output)', () => {
+    const noFree = [
+      'Mach Virtual Memory Statistics: (page size of 4096 bytes)',
+      'Pages inactive:                              524288.',
+    ].join('\n');
+    expect(parseVmStatAvailableGb(noFree)).toBe(null);
+  });
+
+  it('returns null when Pages inactive is missing (unrecognisable output)', () => {
+    const noInactive = [
+      'Mach Virtual Memory Statistics: (page size of 4096 bytes)',
+      'Pages free:                                  262144.',
+    ].join('\n');
+    expect(parseVmStatAvailableGb(noInactive)).toBe(null);
+  });
+
+  it('returns null for garbage output', () => {
+    expect(parseVmStatAvailableGb('totally unrelated text')).toBe(null);
+  });
+
+  it('returns null for null input', () => {
+    expect(parseVmStatAvailableGb(null)).toBe(null);
+  });
+
+  it('returns null for undefined input', () => {
+    expect(parseVmStatAvailableGb(undefined)).toBe(null);
+  });
+
+  it('returns null for an empty string', () => {
+    expect(parseVmStatAvailableGb('')).toBe(null);
   });
 });

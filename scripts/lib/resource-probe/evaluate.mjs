@@ -54,7 +54,7 @@ export function evaluate(snapshot, thresholds) {
   let verdict = 'green';
   let cap = null;
 
-  const { ram_free_gb, cpu_load_pct, claude_processes_count, memory_pressure_pct_free } = snapshot;
+  const { ram_free_gb, cpu_load_pct, claude_processes_count, memory_pressure_pct_free, ram_available_gb } = snapshot;
   const {
     'ram-free-min-gb': ramMin,
     'ram-free-critical-gb': ramCrit,
@@ -63,23 +63,31 @@ export function evaluate(snapshot, thresholds) {
   } = thresholds;
 
   // On macOS, `os.freemem()` reports only `Pages free` (excludes `inactive`),
-  // so `ram_free_gb` regularly reads sub-1 GB even when the system has 10+ GB
-  // reclaimable. When `memory_pressure` reports the system is healthy, the
-  // free-RAM-only signal is unreliable and we let pressure speak for itself.
+  // so `ram_free_gb` regularly reads sub-1 GB even when the system has 80+ GB
+  // reclaimable. The robust fix (#667): when `ram_available_gb` (free +
+  // inactive + speculative + purgeable, derived from vm_stat) is present, judge
+  // RAM-criticality on AVAILABLE rather than FREE. The `memory_pressure`
+  // healthy-suppression below is retained as a secondary guard for the case
+  // where vm_stat is unavailable but memory_pressure still reports.
+  const hasAvailable =
+    ram_available_gb !== null && ram_available_gb !== undefined;
+  const effectiveRamGb = hasAvailable ? ram_available_gb : ram_free_gb;
+  const ramLabel = hasAvailable ? 'RAM available' : 'RAM free';
+
   const macosPressureHealthy =
     memory_pressure_pct_free !== null &&
     memory_pressure_pct_free !== undefined &&
     memory_pressure_pct_free >= MACOS_HEALTHY_PRESSURE_PCT;
 
   if (!macosPressureHealthy) {
-    if (ram_free_gb < ramCrit) {
+    if (effectiveRamGb < ramCrit) {
       verdict = 'critical';
       cap = 0;
-      reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below critical threshold ${ramCrit} GB — recommend coordinator-direct (0 agents).`);
-    } else if (ram_free_gb < ramMin) {
+      reasons.push(`${ramLabel} ${effectiveRamGb.toFixed(1)} GB below critical threshold ${ramCrit} GB — recommend coordinator-direct (0 agents).`);
+    } else if (effectiveRamGb < ramMin) {
       if (verdict === 'green') verdict = 'warn';
       cap = cap === null ? 2 : Math.min(cap, 2);
-      reasons.push(`RAM free ${ram_free_gb.toFixed(1)} GB below threshold ${ramMin} GB — capping agents-per-wave at 2.`);
+      reasons.push(`${ramLabel} ${effectiveRamGb.toFixed(1)} GB below threshold ${ramMin} GB — capping agents-per-wave at 2.`);
     }
   } else {
     reasons.push(`macOS memory_pressure healthy (${memory_pressure_pct_free}% free ≥ ${MACOS_HEALTHY_PRESSURE_PCT}%) — free-RAM signal suppressed (Pages-free underreports on Darwin).`);
