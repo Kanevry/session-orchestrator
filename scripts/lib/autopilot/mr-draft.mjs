@@ -130,7 +130,15 @@ export async function checkExistingMR(opts) {
       'json',
     ];
     const { stdout } = await execFile('glab', args, { shell: false, timeout: 5_000 });
-    const mrs = JSON.parse(stdout);
+    let mrs;
+    try {
+      mrs = JSON.parse(stdout);
+    } catch {
+      throw new MrDraftError(
+        `glab output could not be parsed as JSON (stdout: ${stdout.slice(0, 120)})`,
+        'EXEC_FAILURE',
+      );
+    }
     const existing = mrs[0];
     return {
       hasMR: !!existing,
@@ -142,7 +150,15 @@ export async function checkExistingMR(opts) {
   if (vcs === 'gh') {
     const args = ['pr', 'list', '--head', branchName, '--state', 'open', '--json', 'number,url'];
     const { stdout } = await execFile('gh', args, { shell: false, timeout: 5_000 });
-    const prs = JSON.parse(stdout);
+    let prs;
+    try {
+      prs = JSON.parse(stdout);
+    } catch {
+      throw new MrDraftError(
+        `gh output could not be parsed as JSON (stdout: ${stdout.slice(0, 120)})`,
+        'EXEC_FAILURE',
+      );
+    }
     const existing = prs[0];
     return {
       hasMR: !!existing,
@@ -155,6 +171,136 @@ export async function checkExistingMR(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Evidence block (issue #669 — downstream-human-review legibility)
+// ---------------------------------------------------------------------------
+// arXiv 2604.16754: reviewing an agent PR takes +441% longer because the
+// reasoning is discarded at diff-time. Attaching a structured evidence block —
+// decision-trace, fresh gate exit-codes, changed-files, carryover — makes the
+// agent's work legible so a human reviews faster.
+//
+// Default-ON; opt-OUT via the SO_MR_EVIDENCE env-var (mirrors the
+// SO_VAULT_DIR / SO_BASELINE_PATH host-local env-override idiom). When
+// SO_MR_EVIDENCE === 'off' the block is omitted entirely.
+
+/**
+ * Render a single markdown line, falling back to a literal "n/a" when the
+ * value is missing/blank. Keeps the block markdown-safe and graceful.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function evidenceValueOr(value) {
+  if (value === null || value === undefined) return 'n/a';
+  const s = String(value).trim();
+  return s.length === 0 ? 'n/a' : s;
+}
+
+/**
+ * Render the quality-gate sub-section: one row per gate with its exit code and
+ * (optional) count summary. A missing gate renders as "n/a".
+ * @param {object} [gates] - { test?, typecheck?, lint? } each { exitCode?, summary? }
+ * @returns {string[]}
+ */
+function renderGateRows(gates) {
+  const g = gates && typeof gates === 'object' ? gates : {};
+  const row = (label, gate) => {
+    if (!gate || typeof gate !== 'object') return `| ${label} | n/a | n/a |`;
+    const exit =
+      gate.exitCode === null || gate.exitCode === undefined
+        ? 'n/a'
+        : String(gate.exitCode);
+    const summary = evidenceValueOr(gate.summary);
+    return `| ${label} | ${exit} | ${summary} |`;
+  };
+  return [
+    '| Gate | Exit code | Summary |',
+    '| --- | --- | --- |',
+    row('test', g.test),
+    row('typecheck', g.typecheck),
+    row('lint', g.lint),
+  ];
+}
+
+/**
+ * Build the structured `## Evidence` block (collapsible <details>) from the
+ * OPTIONAL evidence fields on the draft context. Every sub-section degrades to
+ * "n/a" when its source field is absent — so existing callers
+ * (worktree-pipeline.mjs, skill-evolution/mr-opener.mjs) that pass none of
+ * these fields keep working and simply render an all-"n/a" block.
+ *
+ * @param {object} ctx
+ * @param {Array<{wave?: string|number, summary?: string}>|string} [ctx.waveSummary]
+ *   Per-wave decision trace. Array of {wave, summary} rows, or a pre-rendered string.
+ * @param {{test?: object, typecheck?: object, lint?: object}} [ctx.gateResults]
+ *   Quality-gate outcomes; each gate is {exitCode, summary}.
+ * @param {string[]|string} [ctx.changedFiles]
+ *   Changed-files list (array of paths or a pre-rendered string).
+ * @param {Array<{ref?: string, note?: string}>|string} [ctx.carryover]
+ *   Carryover items (array of {ref, note} or a pre-rendered string).
+ * @returns {string[]} markdown lines (empty array when no block should render)
+ */
+export function buildEvidenceBlock(ctx = {}) {
+  const { waveSummary, gateResults, changedFiles, carryover } = ctx;
+
+  // --- Decision-trace / per-wave summary ---
+  const waveLines = [];
+  if (typeof waveSummary === 'string' && waveSummary.trim().length > 0) {
+    waveLines.push(waveSummary.trim());
+  } else if (Array.isArray(waveSummary) && waveSummary.length > 0) {
+    for (const w of waveSummary) {
+      const label = evidenceValueOr(w?.wave);
+      const summary = evidenceValueOr(w?.summary);
+      waveLines.push(`- **${label}:** ${summary}`);
+    }
+  } else {
+    waveLines.push('n/a');
+  }
+
+  // --- Changed-files summary ---
+  const fileLines = [];
+  if (typeof changedFiles === 'string' && changedFiles.trim().length > 0) {
+    fileLines.push(changedFiles.trim());
+  } else if (Array.isArray(changedFiles) && changedFiles.length > 0) {
+    fileLines.push(`${changedFiles.length} file(s) changed:`);
+    for (const f of changedFiles) fileLines.push(`- \`${evidenceValueOr(f)}\``);
+  } else {
+    fileLines.push('n/a');
+  }
+
+  // --- Carryover ---
+  const carryLines = [];
+  if (typeof carryover === 'string' && carryover.trim().length > 0) {
+    carryLines.push(carryover.trim());
+  } else if (Array.isArray(carryover) && carryover.length > 0) {
+    for (const c of carryover) {
+      const ref = evidenceValueOr(c?.ref);
+      const note = evidenceValueOr(c?.note);
+      carryLines.push(`- ${ref} — ${note}`);
+    }
+  } else {
+    carryLines.push('n/a');
+  }
+
+  return [
+    '## Evidence',
+    '<details><summary>Decision-trace + verification evidence (for downstream human review)</summary>',
+    '',
+    '### Decision trace (per wave)',
+    ...waveLines,
+    '',
+    '### Quality gates',
+    ...renderGateRows(gateResults),
+    '',
+    '### Changed files',
+    ...fileLines,
+    '',
+    '### Carryover',
+    ...carryLines,
+    '',
+    '</details>',
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Build MR body
 // ---------------------------------------------------------------------------
 
@@ -163,11 +309,21 @@ export async function checkExistingMR(opts) {
  * Title is trimmed to ≤200 chars with '…' suffix if truncated.
  * Description is capped at 10000 chars.
  *
+ * An additive `## Evidence` block (decision-trace, gate exit-codes,
+ * changed-files, carryover) is appended by default for downstream-human-review
+ * legibility (issue #669). Opt out by setting the SO_MR_EVIDENCE env-var to
+ * 'off'. The evidence fields on `ctx` are all OPTIONAL — absent fields render
+ * as "n/a", so existing callers that pass none of them keep working.
+ *
  * @param {object} ctx
  * @param {string} ctx.issueTitle
  * @param {number} ctx.issueIid
  * @param {string} ctx.parentRunId
  * @param {string} ctx.worktreePath
+ * @param {Array|string} [ctx.waveSummary]   - optional per-wave decision trace
+ * @param {object} [ctx.gateResults]         - optional { test, typecheck, lint } gate outcomes
+ * @param {string[]|string} [ctx.changedFiles] - optional changed-files summary
+ * @param {Array|string} [ctx.carryover]     - optional carryover items
  * @returns {{title: string, description: string}}
  */
 export function buildMrBody(ctx) {
@@ -177,7 +333,7 @@ export function buildMrBody(ctx) {
   const title =
     rawTitle.length > 200 ? rawTitle.slice(0, 199) + '…' : rawTitle;
 
-  const description = [
+  const lines = [
     '## Autopilot Draft',
     '',
     `**Issue:** #${issueIid}`,
@@ -192,10 +348,20 @@ export function buildMrBody(ctx) {
     '### Code Review',
     '- [ ] Architecture review',
     '- [ ] Security review',
+  ];
+
+  // Evidence block — default ON, opt OUT via SO_MR_EVIDENCE=off (issue #669).
+  if (process.env.SO_MR_EVIDENCE !== 'off') {
+    lines.push('', ...buildEvidenceBlock(ctx));
+  }
+
+  lines.push(
     '',
     '---',
     `*Generated by session-orchestrator autopilot on ${new Date().toISOString()}*`,
-  ].join('\n');
+  );
+
+  const description = lines.join('\n');
 
   // Cap description at 10000 chars (issue titles fit easily; guard for adversarial input)
   const cappedDescription =

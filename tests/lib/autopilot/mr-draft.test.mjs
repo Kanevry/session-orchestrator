@@ -13,12 +13,13 @@
  *     collision skip, ENOENT handling, execFile called with shell:false
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import {
   MrDraftError,
   validateMrInputs,
   checkExistingMR,
   buildMrBody,
+  buildEvidenceBlock,
   maybeCreateDraftMR,
 } from '@lib/autopilot/mr-draft.mjs';
 
@@ -260,6 +261,166 @@ describe('buildMrBody', () => {
     });
     // Title was truncated — last character must be the ellipsis
     expect(title[title.length - 1]).toBe('…');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildEvidenceBlock — sub-section rendering (issue #669)
+// ---------------------------------------------------------------------------
+
+describe('buildEvidenceBlock — sub-section rendering', () => {
+  it('renders the ## Evidence header and a collapsible <details> wrapper', () => {
+    const md = buildEvidenceBlock({}).join('\n');
+    expect(md).toContain('## Evidence');
+    expect(md).toContain('<details>');
+    expect(md).toContain('</details>');
+  });
+
+  it('renders all four sub-section headers', () => {
+    const md = buildEvidenceBlock({}).join('\n');
+    expect(md).toContain('### Decision trace (per wave)');
+    expect(md).toContain('### Quality gates');
+    expect(md).toContain('### Changed files');
+    expect(md).toContain('### Carryover');
+  });
+
+  it('renders per-wave decision trace from a {wave, summary} array', () => {
+    const md = buildEvidenceBlock({
+      waveSummary: [
+        { wave: 'W1', summary: 'Discovery: mapped 4 callers' },
+        { wave: 'W2', summary: 'Impl: added evidence block' },
+      ],
+    }).join('\n');
+    expect(md).toContain('- **W1:** Discovery: mapped 4 callers');
+    expect(md).toContain('- **W2:** Impl: added evidence block');
+  });
+
+  it('renders quality-gate exit codes and summaries in a table row', () => {
+    const md = buildEvidenceBlock({
+      gateResults: {
+        test: { exitCode: 0, summary: '9303 passed / 0 failed' },
+        typecheck: { exitCode: 0, summary: '0 errors' },
+        lint: { exitCode: 1, summary: '2 warnings' },
+      },
+    }).join('\n');
+    expect(md).toContain('| test | 0 | 9303 passed / 0 failed |');
+    expect(md).toContain('| typecheck | 0 | 0 errors |');
+    expect(md).toContain('| lint | 1 | 2 warnings |');
+  });
+
+  it('renders a non-zero gate exit code (e.g. 1) — not coerced to n/a', () => {
+    const md = buildEvidenceBlock({
+      gateResults: { test: { exitCode: 1, summary: '5 failed' } },
+    }).join('\n');
+    expect(md).toContain('| test | 1 | 5 failed |');
+  });
+
+  it('renders changed-files as a count line plus backticked paths', () => {
+    const md = buildEvidenceBlock({
+      changedFiles: ['scripts/lib/autopilot/mr-draft.mjs', 'tests/lib/autopilot/mr-draft.test.mjs'],
+    }).join('\n');
+    expect(md).toContain('2 file(s) changed:');
+    expect(md).toContain('- `scripts/lib/autopilot/mr-draft.mjs`');
+    expect(md).toContain('- `tests/lib/autopilot/mr-draft.test.mjs`');
+  });
+
+  it('renders carryover items from a {ref, note} array', () => {
+    const md = buildEvidenceBlock({
+      carryover: [{ ref: '#670', note: 'follow-up: vault naming' }],
+    }).join('\n');
+    expect(md).toContain('- #670 — follow-up: vault naming');
+  });
+
+  it('renders "n/a" for every sub-section when no evidence fields are supplied', () => {
+    const lines = buildEvidenceBlock({});
+    // Each of the four sub-sections must contribute an "n/a" placeholder.
+    const naCount = lines.filter((l) => l === 'n/a').length;
+    expect(naCount).toBe(3); // wave, changed-files, carryover (gates render as table rows)
+    // Gates table renders n/a exit codes when no gateResults passed.
+    const md = lines.join('\n');
+    expect(md).toContain('| test | n/a | n/a |');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildMrBody — evidence block default-ON + SO_MR_EVIDENCE opt-out (issue #669)
+// ---------------------------------------------------------------------------
+
+describe('buildMrBody — evidence block (default ON, SO_MR_EVIDENCE opt-out)', () => {
+  let savedEnv;
+
+  beforeEach(() => {
+    savedEnv = process.env.SO_MR_EVIDENCE;
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env.SO_MR_EVIDENCE;
+    } else {
+      process.env.SO_MR_EVIDENCE = savedEnv;
+    }
+  });
+
+  it('includes the ## Evidence block by default (env unset)', () => {
+    delete process.env.SO_MR_EVIDENCE;
+    const { description } = buildMrBody({
+      issueTitle: 'Add evidence block',
+      issueIid: 669,
+      parentRunId: 'run-1',
+      worktreePath: '/tmp/wt',
+    });
+    expect(description).toContain('## Evidence');
+    expect(description).toContain('### Quality gates');
+  });
+
+  it('renders supplied gate exit codes inside the MR body by default', () => {
+    delete process.env.SO_MR_EVIDENCE;
+    const { description } = buildMrBody({
+      issueTitle: 'Add evidence block',
+      issueIid: 669,
+      parentRunId: 'run-1',
+      worktreePath: '/tmp/wt',
+      gateResults: { test: { exitCode: 0, summary: '12 passed' } },
+    });
+    expect(description).toContain('| test | 0 | 12 passed |');
+  });
+
+  it('OMITS the ## Evidence block when SO_MR_EVIDENCE=off', () => {
+    process.env.SO_MR_EVIDENCE = 'off';
+    const { description } = buildMrBody({
+      issueTitle: 'Add evidence block',
+      issueIid: 669,
+      parentRunId: 'run-1',
+      worktreePath: '/tmp/wt',
+      gateResults: { test: { exitCode: 0, summary: '12 passed' } },
+    });
+    expect(description).not.toContain('## Evidence');
+    expect(description).not.toContain('### Quality gates');
+  });
+
+  it('keeps the Autopilot Draft section regardless of the opt-out', () => {
+    process.env.SO_MR_EVIDENCE = 'off';
+    const { description } = buildMrBody({
+      issueTitle: 'Add evidence block',
+      issueIid: 669,
+      parentRunId: 'run-1',
+      worktreePath: '/tmp/wt',
+    });
+    expect(description).toContain('## Autopilot Draft');
+    expect(description).toContain('### Code Review');
+  });
+
+  it('includes an all-"n/a" evidence block for legacy callers that pass no evidence fields', () => {
+    delete process.env.SO_MR_EVIDENCE;
+    // Mirrors mr-opener.mjs / worktree-pipeline.mjs call shape (no evidence fields).
+    const { description } = buildMrBody({
+      issueTitle: 'Legacy caller',
+      issueIid: 1,
+      parentRunId: 'p-1',
+      worktreePath: '/w',
+    });
+    expect(description).toContain('## Evidence');
+    expect(description).toContain('| test | n/a | n/a |');
   });
 });
 
@@ -536,6 +697,69 @@ describe('maybeCreateDraftMR — error handling (never throws upward)', () => {
 
     expect(result.created).toBe(false);
     expect(typeof result.error).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkExistingMR — JSON.parse safety (#669 hardening)
+// ---------------------------------------------------------------------------
+//
+// glab/gh can prepend a warning line to JSON output when credentials are
+// degraded. A raw JSON.parse throws SyntaxError in that case. The fix wraps
+// the parse in try/catch and re-throws as a typed MrDraftError(EXEC_FAILURE).
+
+describe('checkExistingMR — JSON.parse safety (#669)', () => {
+  it('throws MrDraftError(EXEC_FAILURE) when glab stdout is warning-prefixed non-JSON', async () => {
+    // Simulates: glab mr list prepends a warning line before the JSON payload
+    const mockExec = vi.fn().mockResolvedValue({
+      stdout: 'WARNING: token expiring soon\n[{"iid":1,"web_url":"http://example.com"}]',
+      stderr: '',
+    });
+    let caught;
+    try {
+      await checkExistingMR({ vcs: 'glab', branchName: 'feat-x', execFile: mockExec });
+    } catch (err) {
+      caught = err;
+    }
+    // Must be a typed MrDraftError, not a raw SyntaxError
+    expect(caught).toBeInstanceOf(MrDraftError);
+    expect(caught.code).toBe('EXEC_FAILURE');
+  });
+
+  it('throws MrDraftError(EXEC_FAILURE) when glab stdout is plain garbage', async () => {
+    const mockExec = vi.fn().mockResolvedValue({
+      stdout: 'fatal: not logged in\nPlease run glab auth login',
+      stderr: '',
+    });
+    let caught;
+    try {
+      await checkExistingMR({ vcs: 'glab', branchName: 'feat-x', execFile: mockExec });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MrDraftError);
+    expect(caught.code).toBe('EXEC_FAILURE');
+  });
+
+  it('throws MrDraftError(EXEC_FAILURE) when gh stdout is warning-prefixed non-JSON', async () => {
+    const mockExec = vi.fn().mockResolvedValue({
+      stdout: 'WARNING: gh update available\n[{"number":5,"url":"http://example.com/5"}]',
+      stderr: '',
+    });
+    let caught;
+    try {
+      await checkExistingMR({ vcs: 'gh', branchName: 'feat-y', execFile: mockExec });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MrDraftError);
+    expect(caught.code).toBe('EXEC_FAILURE');
+  });
+
+  it('does NOT throw MrDraftError on valid JSON (regression: guard must not break happy path)', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    const result = await checkExistingMR({ vcs: 'glab', branchName: 'feat-z', execFile: mockExec });
+    expect(result.hasMR).toBe(false);
   });
 });
 
