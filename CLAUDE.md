@@ -9,6 +9,13 @@
 > - **Always-on + path-scoped rules** → [`.claude/rules/`](./.claude/rules/)
 > - **Session narrative & decisions log** → [[01-projects/session-orchestrator/decisions]] in the Meta-Vault
 
+## Current State <!-- consistency:exempt:lean-root-pointer-section -->
+
+State-free by design (see the **Live state is not in this file** gotcha below). The live version, test/coverage counts, backlog, and component inventory live in their SSOTs — never inline here, because they drift faster than this file is edited:
+- **Version + test/coverage** → README badges
+- **Per-session metrics & history** → [`.orchestrator/metrics/sessions.jsonl`](./.orchestrator/metrics/sessions.jsonl)
+- **Session narrative & decisions** → [[01-projects/session-orchestrator/decisions]] (Meta-Vault)
+
 ## Critical Gotchas <!-- consistency:exempt:lean-root-pointer-section -->
 
 These are the non-obvious, mistake-causing facts that must load every session. Everything else is delegated above.
