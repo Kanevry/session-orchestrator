@@ -27,6 +27,7 @@ import { die, requireJq } from './lib/common.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const VALIDATE_DIR = path.join(SCRIPT_DIR, 'lib', 'validate');
+const DRIFT_CHECKER = path.join(SCRIPT_DIR, '..', 'skills', 'claude-md-drift-check', 'checker.mjs');
 
 // Require jq (same gate as validate-plugin.sh's require_jq)
 try {
@@ -93,6 +94,87 @@ function runCheck(script) {
   return result.status ?? 1;
 }
 
+/**
+ * Run the surface-count drift family (issue #663) from the claude-md-drift-check
+ * checker over the doc surfaces that carry artifact counts (README.md +
+ * .orchestrator/steering/structure.md). The checker emits JSON; this adapter
+ * translates surface-count drift into validate-plugin's line vocabulary.
+ *
+ * The family covers: command / skill / agent / hook-event / hook-matcher / test
+ * counts. The checker runs in `warn` mode (it never exits non-zero on drift);
+ * THIS adapter decides the gate. Drift is reported as a `WARN:` line that does
+ * NOT increment the failure tally — surface-count drift in docs is advisory at
+ * the validate-plugin gate (it would otherwise red the whole build on a single
+ * stale prose number that any contributor can land). The hard-fail contract
+ * lives in the checker itself (`--mode hard` → exit 1), exercised by the
+ * regression suite. A genuine infra/parse failure of the checker DOES fail.
+ *
+ * @returns {number} 0 always for drift (advisory); 1 only on checker infra/parse failure.
+ */
+function runDriftCheck() {
+  console.log('--- Check: surface-count drift (command/skill/agent/hook/test) ---');
+  const result = spawnSync(
+    'node',
+    [
+      DRIFT_CHECKER,
+      '--mode', 'warn',
+      '--include-path', 'README.md',
+      '--include-path', '.orchestrator/steering/structure.md',
+      '--skip-path-resolver',
+      '--skip-project-count',
+      '--skip-issue-refs',
+      '--skip-session-files',
+      '--skip-session-config-parity',
+      '--skip-vault-dir-parity',
+    ],
+    {
+      cwd: PLUGIN_ROOT,
+      env: { ...process.env, VAULT_DIR: PLUGIN_ROOT },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+
+  // Infra failure (exit 2) — surface the stderr and count one fail.
+  if (result.status === 2) {
+    console.log(`  FAIL: drift checker infra-error: ${(result.stderr || '').trim()}`);
+    totalFail += 1;
+    return 1;
+  }
+
+  let parsed;
+  try {
+    const line = (result.stdout || '').trim().split('\n').find((l) => l.startsWith('{'));
+    parsed = JSON.parse(line);
+  } catch {
+    console.log('  FAIL: drift checker produced no parseable JSON output');
+    totalFail += 1;
+    return 1;
+  }
+
+  // Only surface-count-family errors are relevant here (other checks are skipped).
+  const SURFACE_IDS = new Set([
+    'command-count', 'skill-count', 'agent-count',
+    'hook-event-count', 'hook-matcher-count', 'test-count',
+  ]);
+  const driftErrors = (parsed.errors || []).filter((e) => SURFACE_IDS.has(e.check));
+  const ranSurfaces = (parsed.checks_run || []).filter((c) => SURFACE_IDS.has(c));
+
+  if (driftErrors.length === 0) {
+    console.log(`  PASS: surface counts in sync (${ranSurfaces.length} surface(s) checked: ${ranSurfaces.join(', ') || 'none claimed'})`);
+    totalPass += 1;
+    return 0;
+  }
+
+  // Advisory: report drift as WARN lines (do NOT increment the failure tally).
+  console.log(`  PASS: surface-count drift check ran (${ranSurfaces.length} surface(s) checked)`);
+  totalPass += 1;
+  for (const e of driftErrors) {
+    console.log(`  WARN: [${e.check}] ${e.file}:${e.line} — ${e.message}`);
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Run all checks — same order as validate-plugin.sh
 // plugin.json checks are prerequisite; abort early if they fail.
@@ -121,6 +203,9 @@ if (runCheck('check-agents.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-commands.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
+if (runDriftCheck() !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-hooks-symmetry.mjs') !== 0) checkFailed = 1;

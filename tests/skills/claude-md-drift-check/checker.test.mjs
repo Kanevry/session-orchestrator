@@ -343,6 +343,55 @@ describe('check 7: vault-dir-parity', () => {
   });
 });
 
+describe('check 5: surface-count family (command/skill/agent/hook/test)', () => {
+  // Full per-surface coverage lives in count-drift.test.mjs. These cases assert
+  // the family integrates with the shared checker plumbing: checks_run wiring,
+  // the back-compat result.command_count field, and the --skip-* flags. They
+  // are EXACT-count drift checks (no floor/ceiling — that is the whole point).
+
+  it('flags a drifted command-count claim and preserves result.command_count', () => {
+    mkdirSync(join(vault, 'commands'), { recursive: true });
+    writeFileSync(join(vault, 'commands/a.md'), '# a\n');
+    writeFileSync(join(vault, 'commands/b.md'), '# b\n');
+    writeFileSync(join(vault, 'CLAUDE.md'), 'We ship 5 commands today.\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'command-count');
+    expect(errs.length).toBe(1);
+    expect(errs[0].message).toBe('Narrative claims 5 commands but actual on-disk count is 2');
+    expect(errs[0].command_count).toEqual({ actual: 2, claimed: 5 });
+    expect(j.command_count).toEqual({ actual: 2 });
+    expect(j.checks_run).toContain('command-count');
+  });
+
+  it('flags a drifted skill-count claim against actual skills/*/SKILL.md', () => {
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      mkdirSync(join(vault, 'skills', name), { recursive: true });
+      writeFileSync(join(vault, 'skills', name, 'SKILL.md'), '# s\n');
+    }
+    writeFileSync(join(vault, 'CLAUDE.md'), 'There are 5 skills here.\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'skill-count');
+    expect(errs.length).toBe(1);
+    expect(errs[0].message).toBe('Narrative claims 5 skills but actual on-disk count is 3');
+    expect(j.checks_run).toContain('skill-count');
+  });
+
+  it('--skip-surface-count removes every surface from checks_run', () => {
+    mkdirSync(join(vault, 'commands'), { recursive: true });
+    writeFileSync(join(vault, 'commands/a.md'), '# a\n');
+    mkdirSync(join(vault, 'skills', 'one'), { recursive: true });
+    writeFileSync(join(vault, 'skills', 'one', 'SKILL.md'), '# s\n');
+    writeFileSync(join(vault, 'CLAUDE.md'), '99 commands and 99 skills.\n');
+    const r = runChecker(vault, ['--skip-surface-count', '--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    expect(j.checks_run).not.toContain('command-count');
+    expect(j.checks_run).not.toContain('skill-count');
+    expect(j.errors.filter((e) => /-count$/.test(e.check)).length).toBe(0);
+  });
+});
+
 describe('include-paths globbing', () => {
   it('scans _meta/**/*.md files by default', () => {
     mkdirSync(join(vault, '_meta/sub'), { recursive: true });

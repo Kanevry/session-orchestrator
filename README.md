@@ -197,8 +197,8 @@ For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous rele
 | Area | Features adopted | Issue |
 |---|---|---|
 | Hooks & telemetry | `experimental.monitors` plugin manifest; `hookSpecificOutput.additionalContext` on 3 PostToolUse hooks; `terminalSequence` (OSC 9 + OSC 777); `worktree.bgIsolation: "none"` | #427, #428, #429, #431 |
-| Commands & skills | `disable-model-invocation: true` on 12 USER-ONLY commands; skill descriptions ≤ 1024 chars + trigger phrases verified across 36/36 | #430, #432 |
-| Routing | `model:` frontmatter routing on 36 SKILL.md (opus / sonnet / haiku / inherit); `Skill(name:*)` permission wildcards on 5 worker agents | #434, #435 |
+| Commands & skills | `disable-model-invocation: true` on 12 USER-ONLY commands; skill descriptions ≤ 1024 chars + trigger phrases verified across 40/40 | #430, #432 |
+| Routing | `model:` frontmatter routing on 40 SKILL.md (opus / sonnet / haiku / inherit); `Skill(name:*)` permission wildcards on 5 worker agents | #434, #435 |
 | Validation | `$schema` validation (schemastore.org) on both manifests + CI gate | #433 |
 
 Full table and follow-ups in `CLAUDE.md` (or `AGENTS.md` on Codex CLI / Pi) and CHANGELOG.md.
