@@ -383,6 +383,53 @@ Also read `<state-dir>/STATUS.md` if it exists for additional project-level cont
 2. If '.orchestrator/metrics/sessions.jsonl' exists, count lines to determine number of previous sessions. If not found, check `<state-dir>/metrics/sessions.jsonl` as a platform-specific legacy fallback.
 3. Store the count for display in Phase 7 — this feeds the Historical Trends section
 
+## Phase 1.7: Vault Live-Status Board (#674)
+
+> Skip this phase silently when `vault-integration.enabled` is not `true` in Session Config. Use the same `jq -r` idiom Phase 2.7 uses (`echo "$CONFIG" | jq -r '."vault-integration".enabled // false'`). When the value is anything other than `true`, do nothing and proceed to Phase 2 — no banner, no warning.
+
+When active, this phase marks THIS repo as live on the cross-repo vault board (`<vault-dir>/01-projects/_active-sessions.md`) so an operator scanning the vault can see, at a glance, which repos have a session in flight. Epic #673 / PRD §FA-1.
+
+### Config check
+
+```bash
+VAULT_ENABLED=$(echo "$CONFIG" | jq -r '."vault-integration".enabled // false')
+if [ "$VAULT_ENABLED" != "true" ]; then
+  exit 0  # silent no-op — vault integration disabled
+fi
+```
+
+### Dispatch
+
+Call the convenience entry point `mirrorBoard` from `scripts/lib/vault-status/board-writer.mjs`, naming THIS repo's row `in-progress`:
+
+```js
+import { mirrorBoard } from 'scripts/lib/vault-status/board-writer.mjs';
+
+await mirrorBoard({
+  repoRoot: process.cwd(),
+  explicitStatus: 'in-progress',
+});
+```
+
+> **Call-site contract:** OMIT `repos` for the single-repo case. `mirrorBoard` then builds the descriptor `[{ repoRoot, status: explicitStatus }]` itself. Do NOT pass `repos: [process.cwd()]` — `collectRows` requires `{ repoRoot }` object descriptors and silently skips bare path strings (`board-writer.mjs` `collectRows` guard), which would write a board with no row for this repo. Pass `repos` only as an array of `{ repoRoot }` objects when sweeping multiple repos.
+
+This single call does two things:
+
+1. **Sets THIS repo's board row to `in-progress`** with the current semantic-session-id, branch, mode, and heartbeat (read off this repo's `session.lock` v2 lease + the host-wide registry — both already written by Phase 1.2's `acquire()`).
+2. **Re-derives THIS repo's status from its live lease**, so a stale lease left by a prior crashed session in this same repo renders as `force-closed` (heartbeat older than the v2 ttl, default 4h — `DEFAULT_TTL_HOURS` in `scripts/lib/session-lock.mjs`, evaluated via `isLockLive`) and is **never silently dropped** — its fields are read straight off the dead lock. Other repos' prior rows are preserved unchanged via the idempotent merge. **Cross-repo sweep** (re-deriving *every* repo's dead-lease → `force-closed` from any session-start) requires the candidate-repo enumeration delivered in P2 (#676); until then the board reflects each repo's status as of that repo's own most recent session-start/-end.
+
+`mirrorBoard` itself re-reads Session Config, resolves the host-local vault-dir, and **silently no-ops** (returning `{ action: 'skipped-vault-disabled' }`) when `vault-integration.enabled` is not `true`, the vault-dir is absent, the vault resolves outside `$HOME`, or the config is unreadable. The Bash gate above is the fast-path skip; this internal guard is the defense-in-depth backstop — both agree on the same condition.
+
+### Safety invariants
+
+- **Generator-marked + idempotent.** The board carries the `_generator: session-orchestrator-active-sessions@1` frontmatter sentinel; repeated writes that produce identical content are no-ops, so re-running this phase never churns the file.
+- **Host-local + git-ignorable.** The board lives under the operator's vault tree (under `$HOME`), never inside any repo — it is never committed.
+- **NEVER touches the sven-owned `_overview.md`.** The writer hard-refuses any path whose basename is `_overview.md` (returns `{ action: 'skipped-handwritten' }`), and only ever overwrites files it owns (frontmatter `_generator` matches the marker). The handwritten overview is structurally safe.
+
+### Non-blocking behavior
+
+This is **best-effort**, exactly like the Phase 4 banners: a board-write failure (I/O error, thrown exception, malformed lease) MUST NOT halt session-start. Wrap the `mirrorBoard` call so any error is swallowed and logged as a single WARN line, then continue to Phase 2. Session-start is never blocked by a vault-board failure.
+
 ## Phase 2: Git Analysis (parallel)
 
 Run these checks as ONE parallel Bash block — background the independent git ops with `&` and `wait`:
@@ -850,6 +897,7 @@ After user alignment:
 |------|---------|
 | `soul.md` | Identity and communication principles |
 | (inline) Phase 1.2 | Session Lock Acquire — `acquire()` call, active/stale/cross-host AUQ flows, `forceAcquire()` on user consent, deviation note wiring |
+| (inline) Phase 1.7 | Vault Live-Status Board (#674) — `mirrorBoard()` from `scripts/lib/vault-status/board-writer.mjs`; gated on `vault-integration.enabled: true`; marks this repo `in-progress` + runs the lease staleness sweep (`force-closed`); generator-marked + idempotent; never touches `_overview.md`; non-blocking |
 | `presentation-format.md` | Phase 8 output templates and AskUserQuestion examples |
 | `phase-2-5-docs-planning.md` | Phase 2.5 full procedural body — docs-orchestrator config, audience detection, AUQ confirmation, result block emission, non-overlap rules |
 | (inline) Phase 2.6 | Steering docs gate + load — reads `.orchestrator/steering/{product,tech,structure}.md`; silent no-op when directory absent |
