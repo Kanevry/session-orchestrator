@@ -18,9 +18,6 @@
  * Split into per-section parsers: issue #284.
  */
 
-import { readFile, access } from 'node:fs/promises';
-import { join } from 'node:path';
-
 // Per-section parsers and coercers
 import {
   _getVal,
@@ -58,56 +55,28 @@ import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
 import { _parseMemory } from './config/memory.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
-import { _parseEvolve } from './config/evolve.mjs';
+import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
 
+// readConfigFile lives in the dependency-free leaf config/io.mjs so that
+// config/cross-repo.mjs (and other parsers) can import it without forming a
+// cycle back through config.mjs (issue #664). Re-exported here unchanged for
+// back-compat — every existing `import { readConfigFile } from '.../config.mjs'`
+// caller keeps working.
+//
+// ORCHESTRATOR-LEVEL CALLERS ONLY — config sub-parsers MUST import from
+// ./config/io.mjs directly to avoid re-forming the import cycle that #664
+// broke. Any *.mjs under scripts/lib/config/ that imports from '../config.mjs'
+// is a cycle regression (see tests/lib/config/cycle-guard.test.mjs).
+export { readConfigFile } from './config/io.mjs';
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/**
- * Read CLAUDE.md or AGENTS.md from the project root.
- * Precedence: if AGENTS.md exists AND env var SO_PLATFORM === "codex" or "pi", prefer AGENTS.md.
- * Otherwise CLAUDE.md. Throws if neither file found.
- * @param {string} projectRoot — absolute path to project root
- * @returns {Promise<string>} file contents as string (CRLF-tolerant)
- */
-export async function readConfigFile(projectRoot) {
-  const claudeMd = join(projectRoot, 'CLAUDE.md');
-  const agentsMd = join(projectRoot, 'AGENTS.md');
-
-  const prefersAgents = process.env.SO_PLATFORM === 'codex' || process.env.SO_PLATFORM === 'pi';
-
-  if (prefersAgents) {
-    // Prefer AGENTS.md for Codex/Pi platforms
-    try {
-      await access(agentsMd);
-      return await readFile(agentsMd, 'utf8');
-    } catch {
-      // Fall through to CLAUDE.md
-    }
-  }
-
-  try {
-    await access(claudeMd);
-    return await readFile(claudeMd, 'utf8');
-  } catch {
-    // Try AGENTS.md as fallback (non-Codex)
-  }
-
-  try {
-    await access(agentsMd);
-    return await readFile(agentsMd, 'utf8');
-  } catch {
-    // Neither found
-  }
-
-  throw new Error(`config.mjs: neither CLAUDE.md nor AGENTS.md found in '${projectRoot}'`);
-}
 
 /**
  * Parse ## Session Config block from markdown content.
@@ -321,6 +290,16 @@ export function parseSessionConfig(mdContent) {
   // mirroring the cross-repo.projects precedent). Defaults to []. (#638)
   const evolveExtraSources = _parseEvolve(mdContent);
 
+  // evolve.decay: memory time-decay tuning nested UNDER the `evolve:` block (#670).
+  // Adds a recency factor to learning surfacing — stale high-confidence learnings
+  // decay (multiplicative half-life blend, with a catastrophic-loss floor) so they
+  // no longer crowd out fresh signal. Conservative defaults (90-day half-life, 0.1
+  // floor, enabled) make the change degrade gently. Consumed by surfaceTopN's
+  // `opts.decay`. Nested (not a new top-level key) so claude-md-drift-check Check 6
+  // parity is unaffected. Returned as 'evolve.decay' (dotted, mirroring
+  // 'evolve.extra-sources').
+  const evolveDecay = _parseEvolveDecay(mdContent);
+
   // persona-gate-wave: opt-in mid-wave persona-panel hook (#458). Returns null when absent.
   const personaGateWave = _parsePersonaGateWave(mdContent);
   if (personaGateWave !== null && personaGateWave.enabled === true && personaGateWave.mode === 'off') {
@@ -406,6 +385,7 @@ export function parseSessionConfig(mdContent) {
     'persona-gate-wave': personaGateWave,
     'custom-phases': customPhases,
     'evolve.extra-sources': evolveExtraSources,
+    'evolve.decay': evolveDecay,
   };
 }
 

@@ -10,17 +10,15 @@
  * supported by the KV regex. Scans for a `cross-repo:` block and then reads `projects:`.
  */
 
-// NOTE on the cycle (W4-Q3 HIGH-1): config.mjs imports `_parseCrossRepo` from this
-// module; this module imports `readConfigFile` (a leaf utility) from config.mjs.
-// We deliberately do NOT import `parseSessionConfig` here — calling it from
-// `getCrossRepoProjects` would re-run `_parseCrossRepo` (double-parse) AND tighten
-// the cycle to top-level bindings. By calling `_parseCrossRepo` directly on the
-// raw content we keep the cycle at a single readConfigFile edge (lazy, function-body)
-// and parse exactly once. `readConfigFile` is a pure FS utility with no module-load
-// side-effects on config.mjs's exports, so the cycle is degenerate.
+// `readConfigFile` is imported from the dependency-free leaf config/io.mjs (a
+// sibling), NOT from config.mjs. This avoids the former length-2 cycle
+// config.mjs ⇄ config/cross-repo.mjs (config.mjs imports `_parseCrossRepo` from
+// here). We deliberately do NOT import `parseSessionConfig` — calling it from
+// `getCrossRepoProjects` would re-run `_parseCrossRepo` (double-parse). By calling
+// `_parseCrossRepo` directly on the raw content we parse exactly once. (issue #664)
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readConfigFile } from '../config.mjs';
+import { readConfigFile } from './io.mjs';
 
 /**
  * Resolve the cross-repo confinement root. Defaults to ~/Projects.

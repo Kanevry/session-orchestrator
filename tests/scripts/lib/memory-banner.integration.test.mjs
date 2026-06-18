@@ -528,4 +528,88 @@ describe('memory-banner integration (#505)', () => {
       expect(inputs.stats.sessionsEver).toBe(0);
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Group IX (#670) — evolve.decay knob threads END-TO-END through the banner
+  //
+  // Proves the documented `decay-enabled` / `decay-half-life-days` knobs (parsed
+  // as `config['evolve.decay']` in kebab-case) actually re-rank the banner's
+  // learnings. Before this wiring, the knobs were a silent no-op: surfaceTopN
+  // never received opts.decay from this caller. The fixtures use a STALE
+  // high-confidence entry vs a FRESH mid-confidence entry so the decay flip is
+  // observable in the rendered banner order.
+  // ───────────────────────────────────────────────────────────────────────
+
+  describe('Group IX: config evolve.decay re-ranks the banner (#670)', () => {
+    // Two learnings: stale 0.9 (Jan 2026) vs fresh 0.6 (Jan 2027). With decay
+    // ON (defaults, 90-day half-life) the fresh-mid entry decays-wins; with
+    // decay OFF the stale-high entry wins on raw confidence. now = 2027-01-01.
+    function writeStaleVsFresh() {
+      writeLearningsJsonl(tmpRepo, [
+        {
+          id: 'stale-high',
+          type: 'pattern',
+          subject: 'stale-high-conf',
+          confidence: 0.9,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 'fresh-mid',
+          type: 'gotcha',
+          subject: 'fresh-mid-conf',
+          confidence: 0.6,
+          created_at: '2027-01-01T00:00:00Z',
+        },
+      ]);
+      writeSessionsJsonl(tmpRepo, [
+        { session_id: 's-1', started_at: '2026-12-01T00:00:00Z' },
+      ]);
+    }
+
+    const NOW = new Date('2027-01-01T00:00:00Z');
+
+    it('default decay (no evolve.decay block) ranks fresh-mid ABOVE stale-high', async () => {
+      writeStaleVsFresh();
+
+      const banner = await renderMemoryBanner({
+        repoRoot: tmpRepo,
+        memoryDir: tmpMemoryDir,
+        config: { persistence: true }, // no evolve.decay → DECAY_DEFAULTS apply
+        now: NOW,
+      });
+
+      expect(banner).toBe(
+        [
+          '📚 Loaded from memory',
+          '  • fresh-mid-conf (0.6, gotcha)',
+          '  • stale-high-conf (0.9, pattern)',
+          '0 memory files · 1 sessions ever · last cleanup: never',
+        ].join('\n'),
+      );
+    });
+
+    it('decay-enabled: false (kebab config) restores pure-confidence order — stale-high ABOVE fresh-mid', async () => {
+      writeStaleVsFresh();
+
+      const banner = await renderMemoryBanner({
+        repoRoot: tmpRepo,
+        memoryDir: tmpMemoryDir,
+        config: {
+          persistence: true,
+          // Exact shape produced by _parseEvolveDecay for `decay-enabled: false`.
+          'evolve.decay': { enabled: false, 'half-life-days': 90, 'floor-factor': 0.1 },
+        },
+        now: NOW,
+      });
+
+      expect(banner).toBe(
+        [
+          '📚 Loaded from memory',
+          '  • stale-high-conf (0.9, pattern)',
+          '  • fresh-mid-conf (0.6, gotcha)',
+          '0 memory files · 1 sessions ever · last cleanup: never',
+        ].join('\n'),
+      );
+    });
+  });
 });

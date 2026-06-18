@@ -16,6 +16,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readConfigFile, parseSessionConfig, getConfigValue, _coerceCollisionRisk } from '@lib/config.mjs';
+// Same primitive imported from the dependency-free leaf — issue #664 extracted
+// readConfigFile here to break the config.mjs ⇄ config/cross-repo.mjs cycle. The
+// config.mjs export above is now a back-compat re-export of this leaf.
+import { readConfigFile as readConfigFileFromLeaf } from '@lib/config/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -724,6 +728,49 @@ describe('readConfigFile', () => {
   it('error from missing files mentions the projectRoot path', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
     await expect(readConfigFile(tmpDir)).rejects.toThrow(tmpDir);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readConfigFile leaf-extraction back-compat (issue #664)
+//
+// readConfigFile was extracted into the dependency-free leaf config/io.mjs to
+// break the config.mjs ⇄ config/cross-repo.mjs cycle. The config.mjs export is
+// now a re-export. These tests assert behavioural identity between the two
+// import paths so the public API of config.mjs stays stable.
+// ---------------------------------------------------------------------------
+
+describe('readConfigFile leaf back-compat (#664)', () => {
+  it('config.mjs re-exports the SAME function object as config/io.mjs', () => {
+    expect(readConfigFile).toBe(readConfigFileFromLeaf);
+  });
+
+  it('leaf import reads CLAUDE.md identically to the config.mjs re-export', async () => {
+    const viaConfig = await readConfigFile(WORKTREE_ROOT);
+    const viaLeaf = await readConfigFileFromLeaf(WORKTREE_ROOT);
+    expect(viaLeaf).toBe(viaConfig);
+    expect(viaLeaf).toContain('## Session Config');
+  });
+
+  it('leaf import throws the same way when neither file exists', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'config-leaf-test-'));
+    await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(/CLAUDE\.md|AGENTS\.md/);
+    await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(tmpDir);
+  });
+
+  it('leaf import honours SO_PLATFORM=pi AGENTS.md precedence', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'config-leaf-pi-'));
+    try {
+      writeFileSync(join(tmpDir, 'CLAUDE.md'), '# Claude\n\nwaves: 3\n', 'utf8');
+      writeFileSync(join(tmpDir, 'AGENTS.md'), '# Agents\n\nwaves: 9\n', 'utf8');
+      vi.stubEnv('SO_PLATFORM', 'pi');
+
+      const content = await readConfigFileFromLeaf(tmpDir);
+      expect(content).toContain('waves: 9');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

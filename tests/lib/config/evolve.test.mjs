@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { _parseEvolve, EVOLVE_EXTRA_SOURCE_DEFAULTS } from '@lib/config/evolve.mjs';
+import {
+  _parseEvolve,
+  _parseEvolveDecay,
+  EVOLVE_EXTRA_SOURCE_DEFAULTS,
+  EVOLVE_DECAY_DEFAULTS,
+} from '@lib/config/evolve.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
 
 // A reusable well-formed entry block.
@@ -272,6 +277,136 @@ describe('_parseEvolve — schema-gate drops', () => {
 // ---------------------------------------------------------------------------
 // parseSessionConfig integration — the dotted 'evolve.extra-sources' key
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// _parseEvolveDecay — memory time-decay tuning (#670)
+// ---------------------------------------------------------------------------
+
+describe('_parseEvolveDecay — defaults', () => {
+  it('returns conservative defaults when the evolve: block is absent', () => {
+    expect(_parseEvolveDecay('')).toEqual({
+      enabled: true,
+      'half-life-days': 90,
+      'floor-factor': 0.1,
+    });
+  });
+
+  it('returns defaults when evolve: exists but carries no decay keys', () => {
+    const content = ['evolve:', '  extra-sources:', '    - path: x.json', ''].join('\n');
+    expect(_parseEvolveDecay(content)).toEqual({
+      enabled: true,
+      'half-life-days': 90,
+      'floor-factor': 0.1,
+    });
+  });
+
+  it('exposes the same defaults via EVOLVE_DECAY_DEFAULTS', () => {
+    expect(EVOLVE_DECAY_DEFAULTS).toEqual({
+      enabled: true,
+      'half-life-days': 90,
+      'floor-factor': 0.1,
+    });
+  });
+});
+
+describe('_parseEvolveDecay — overrides', () => {
+  it('parses all three decay keys nested under evolve:', () => {
+    const content = [
+      'evolve:',
+      '  decay-enabled: false',
+      '  decay-half-life-days: 30',
+      '  decay-floor-factor: 0.25',
+      '',
+    ].join('\n');
+    expect(_parseEvolveDecay(content)).toEqual({
+      enabled: false,
+      'half-life-days': 30,
+      'floor-factor': 0.25,
+    });
+  });
+
+  it('parses decay keys as siblings of extra-sources in the same block', () => {
+    const content = [
+      'evolve:',
+      '  extra-sources:',
+      '    - path: report.json',
+      '      kind: regression-flags',
+      '      learning-type: domain-regression',
+      '  decay-half-life-days: 45',
+      '',
+    ].join('\n');
+    expect(_parseEvolveDecay(content)).toEqual({
+      enabled: true,
+      'half-life-days': 45,
+      'floor-factor': 0.1,
+    });
+  });
+
+  it('falls back to the default half-life on a non-numeric value', () => {
+    const content = ['evolve:', '  decay-half-life-days: soon', ''].join('\n');
+    expect(_parseEvolveDecay(content)['half-life-days']).toBe(90);
+  });
+
+  it('rejects a zero or negative half-life and keeps the default', () => {
+    const content = ['evolve:', '  decay-half-life-days: 0', ''].join('\n');
+    expect(_parseEvolveDecay(content)['half-life-days']).toBe(90);
+  });
+
+  it('rejects a floor-factor outside [0,1] and keeps the default', () => {
+    const content = ['evolve:', '  decay-floor-factor: 1.5', ''].join('\n');
+    expect(_parseEvolveDecay(content)['floor-factor']).toBe(0.1);
+  });
+
+  it('keeps the default enabled flag on an unrecognised boolean value', () => {
+    const content = ['evolve:', '  decay-enabled: maybe', ''].join('\n');
+    expect(_parseEvolveDecay(content).enabled).toBe(true);
+  });
+
+  it('stops scanning decay keys at the next top-level key', () => {
+    const content = [
+      'evolve:',
+      '  decay-enabled: false',
+      'persistence: true',
+      '  decay-half-life-days: 5',
+      '',
+    ].join('\n');
+    // The decay-half-life-days line is OUTSIDE the evolve: block — must be ignored.
+    expect(_parseEvolveDecay(content)).toEqual({
+      enabled: false,
+      'half-life-days': 90,
+      'floor-factor': 0.1,
+    });
+  });
+});
+
+describe("parseSessionConfig — 'evolve.decay' key (#670)", () => {
+  it('defaults to the conservative decay defaults when evolve: is absent', () => {
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    expect(config['evolve.decay']).toEqual({
+      enabled: true,
+      'half-life-days': 90,
+      'floor-factor': 0.1,
+    });
+  });
+
+  it('parses decay overrides through the top-level reader', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'evolve:',
+      '  decay-enabled: true',
+      '  decay-half-life-days: 60',
+      '  decay-floor-factor: 0.2',
+      '',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['evolve.decay']).toEqual({
+      enabled: true,
+      'half-life-days': 60,
+      'floor-factor': 0.2,
+    });
+  });
+});
 
 describe("parseSessionConfig — 'evolve.extra-sources' key (#638)", () => {
   it('defaults to [] when the evolve: block is absent', () => {

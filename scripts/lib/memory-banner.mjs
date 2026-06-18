@@ -26,7 +26,7 @@ import path from 'node:path';
 import { resolveMemoryDir } from './memory-paths.mjs';
 import { readDreamSignals } from './auto-dream.mjs';
 import { readPeerCards } from './peer-cards/reader.mjs';
-import { surfaceTopN } from './learnings/surface.mjs';
+import { surfaceTopN, decayOptsFromConfig } from './learnings/surface.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -311,6 +311,10 @@ async function countMemoryFiles(dir) {
  * @param {string} [args.memoryDir] — defaults to `resolveMemoryDir()`
  * @param {string} [args.learningsPath] — defaults to `<repoRoot>/.orchestrator/metrics/learnings.jsonl`
  * @param {Date}   [args.now] — injectable clock for tests
+ * @param {{enabled?: boolean, 'half-life-days'?: number, 'floor-factor'?: number}} [args.evolveDecay]
+ *   — the kebab-case `evolve.decay` Session Config block (#670). Bridged to the
+ *   camelCase `surfaceTopN` `opts.decay` shape via `decayOptsFromConfig`. Absent
+ *   → DECAY_DEFAULTS apply (conservative 90-day half-life, enabled).
  * @returns {Promise<{
  *   topLearnings: Array<{subject:string, confidence:number, type:string}>,
  *   stats: {memoryFiles:number, sessionsEver:number, daysSinceCleanup:number|null}|null,
@@ -318,7 +322,7 @@ async function countMemoryFiles(dir) {
  *   fresh: boolean,
  * }>}
  */
-export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now } = {}) {
+export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now, evolveDecay } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new TypeError('readBannerInputs: repoRoot is required (absolute path)');
   }
@@ -333,7 +337,12 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
   // --- Top learnings ---------------------------------------------------------
   let topLearnings = [];
   try {
-    const surfaced = await surfaceTopN(learningsFile, 5, { now: clock });
+    const surfaced = await surfaceTopN(learningsFile, 5, {
+      now: clock,
+      // Thread the documented decay knobs (#670) — without this, decay-enabled /
+      // decay-half-life-days are parsed but never applied to the banner ranking.
+      decay: decayOptsFromConfig(evolveDecay),
+    });
     if (Array.isArray(surfaced)) {
       topLearnings = surfaced
         .filter((e) => e && typeof e === 'object')
@@ -457,6 +466,13 @@ export async function renderMemoryBanner(opts = {}) {
     return '';
   }
 
-  const inputs = await readBannerInputs({ repoRoot, memoryDir, now });
+  const inputs = await readBannerInputs({
+    repoRoot,
+    memoryDir,
+    now,
+    // `config['evolve.decay']` is the kebab-case block from _parseEvolveDecay;
+    // readBannerInputs bridges it to surfaceTopN's camelCase opts.decay (#670).
+    evolveDecay: config && config['evolve.decay'],
+  });
   return _formatBanner(inputs);
 }

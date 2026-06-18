@@ -38,9 +38,17 @@ vi.mock('@lib/auto-dream.mjs', () => ({
 vi.mock('@lib/peer-cards/reader.mjs', () => ({
   readPeerCards: vi.fn(async () => ({ user: null, agent: null })),
 }));
-vi.mock('@lib/learnings/surface.mjs', () => ({
-  surfaceTopN: vi.fn(async () => []),
-}));
+// Only `surfaceTopN` is replaced with a stub; `decayOptsFromConfig` keeps its
+// real (pure) implementation so the readBannerInputs → bridge path is intact
+// (#670). Without re-exporting it, the import in memory-banner.mjs resolves to
+// undefined and the call throws, silently emptying topLearnings.
+vi.mock('@lib/learnings/surface.mjs', async (importActual) => {
+  const actual = await importActual();
+  return {
+    ...actual,
+    surfaceTopN: vi.fn(async () => []),
+  };
+});
 
 import {
   _truncateLine,

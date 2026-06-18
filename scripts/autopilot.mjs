@@ -42,7 +42,7 @@ import {
   KILL_SWITCHES,
 } from './lib/autopilot.mjs';
 import { buildLiveSignals } from './lib/build-live-signals.mjs';
-import { surfaceTopN } from './lib/learnings/surface.mjs';
+import { surfaceTopN, decayOptsFromConfig } from './lib/learnings/surface.mjs';
 import { selectMode } from './lib/mode-selector.mjs';
 import { probe, evaluate } from './lib/resource-probe.mjs';
 import { detectPeers } from './lib/session-registry.mjs';
@@ -71,13 +71,43 @@ const flagsForParse = argv.filter(
 const { maxSessions, maxHours, confidenceThreshold, dryRun } = parseFlags(flagsForParse);
 
 // ---------------------------------------------------------------------------
+// Session Config (parsed once, shared by thresholds + decay readers)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse Session Config once by spawning `node scripts/parse-config.mjs`.
+ * Returns the parsed config object, or `null` if the spawn fails / yields
+ * no usable stdout. Callers fall back to their own defaults on `null`.
+ *
+ * @returns {object|null}
+ */
+function loadConfig() {
+  try {
+    const scriptPath = resolve(
+      new URL('.', import.meta.url).pathname,
+      'parse-config.mjs'
+    );
+    const result = spawnSync(
+      process.execPath,
+      [scriptPath],
+      { encoding: 'utf8', timeout: 10_000 }
+    );
+    if (result.status !== 0 || !result.stdout) return null;
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+const config = loadConfig();
+
+// ---------------------------------------------------------------------------
 // Resource-thresholds from Session Config
 // ---------------------------------------------------------------------------
 
 /**
- * Read the `resource-thresholds` block from Session Config by spawning
- * `node scripts/parse-config.mjs` as a subprocess. Falls back to the
- * resource-probe defaults if the field is absent or the spawn fails.
+ * Read the `resource-thresholds` block from the parsed Session Config. Falls
+ * back to the resource-probe defaults if the field is absent or config is null.
  *
  * @returns {object} thresholds object consumable by evaluate()
  */
@@ -90,28 +120,11 @@ function loadResourceThresholds() {
     'concurrent-sessions-warn': 3,
   };
 
-  try {
-    const scriptPath = resolve(
-      new URL('.', import.meta.url).pathname,
-      'parse-config.mjs'
-    );
-    const result = spawnSync(
-      process.execPath,
-      [scriptPath],
-      { encoding: 'utf8', timeout: 10_000 }
-    );
-    if (result.status !== 0 || !result.stdout) {
-      return DEFAULTS;
-    }
-    const config = JSON.parse(result.stdout);
-    const rt = config['resource-thresholds'];
-    if (rt && typeof rt === 'object') {
-      return { ...DEFAULTS, ...rt };
-    }
-    return DEFAULTS;
-  } catch {
-    return DEFAULTS;
+  const rt = config && config['resource-thresholds'];
+  if (rt && typeof rt === 'object') {
+    return { ...DEFAULTS, ...rt };
   }
+  return DEFAULTS;
 }
 
 const thresholds = loadResourceThresholds();
@@ -122,12 +135,16 @@ const thresholds = loadResourceThresholds();
 //
 // Delegates to scripts/lib/learnings/surface.mjs (`surfaceTopN`). Same filter
 // semantics as the original inline implementation: confidence > 0.3 AND
-// (no expires_at OR expires_at > now), sorted by confidence DESC, then
-// created_at DESC, then sliced to n=15. Errors are swallowed (returns []).
+// (no expires_at OR expires_at > now), sorted by effectiveScore DESC (#670
+// time-decay), then created_at DESC, then sliced to n=15. The `evolve.decay`
+// Session Config block is threaded through `decayOptsFromConfig` so the
+// documented decay knobs (decay-enabled / decay-half-life-days /
+// decay-floor-factor) actually take effect here (#670). Errors swallowed → [].
 
 const surfacedLearnings = await surfaceTopN(
   resolve('.orchestrator/metrics/learnings.jsonl'),
-  15
+  15,
+  { decay: decayOptsFromConfig(config && config['evolve.decay']) }
 );
 
 // ---------------------------------------------------------------------------

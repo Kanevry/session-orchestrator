@@ -7,9 +7,13 @@
  * learning candidates — it NEVER runs the measurement itself (read-only contract).
  *
  * Exports:
- *   _parseEvolve(content) — PURE, no side effects beyond a stderr WARN when an
- *                           entry is dropped for failing schema validation.
- *                           Returns [] when the block is absent/empty.
+ *   _parseEvolve(content)      — PURE, no side effects beyond a stderr WARN when an
+ *                                entry is dropped for failing schema validation.
+ *                                Returns [] when the block is absent/empty.
+ *   _parseEvolveDecay(content) — PURE memory time-decay tuning parser (#670).
+ *                                Returns `{ enabled, half-life-days, floor-factor }`
+ *                                with conservative defaults; malformed values
+ *                                silently fall back to the default (tolerant).
  *
  * Block shape:
  *   evolve:
@@ -17,6 +21,9 @@
  *       - path: eval/learn/reports/latest.json   # required; SAFE_PATH_RE-validated
  *         kind: regression-flags                  # enum: regression-flags (only value)
  *         learning-type: domain-regression        # enum: domain-regression (only value)
+ *     decay-enabled: true                          # #670 — gate the recency factor
+ *     decay-half-life-days: 90                      # #670 — half-life (conservative)
+ *     decay-floor-factor: 0.1                       # #670 — catastrophic-loss floor
  *
  * Modelled on cross-repo.mjs (column-0 block scan + nested list + per-entry
  * SAFE_PATH_RE validation, drop-with-warn) and custom-phases.mjs (nested record
@@ -205,4 +212,95 @@ function _validateRecord(raw) {
   }
 
   return { path, kind, 'learning-type': learningType };
+}
+
+// ---------------------------------------------------------------------------
+// Memory time-decay tuning (#670)
+// ---------------------------------------------------------------------------
+
+/**
+ * Conservative decay defaults — nested UNDER the existing `evolve:` block so they
+ * do NOT add a new top-level Session Config key (claude-md-drift-check Check 6
+ * parity is unaffected). Floor means nothing vanishes; long half-life means decay
+ * is a tiebreaker, not a cliff. See #670.
+ */
+export const EVOLVE_DECAY_DEFAULTS = Object.freeze({
+  enabled: true,
+  'half-life-days': 90,
+  'floor-factor': 0.1,
+});
+
+/**
+ * Parse the memory time-decay tuning keys nested under the `evolve:` block.
+ *
+ * Scans the same column-0 `evolve:` block as `_parseEvolve` but reads three flat
+ * sub-keys (siblings of `extra-sources:`):
+ *   - `decay-enabled`        (boolean; default true)
+ *   - `decay-half-life-days` (positive number; default 90)
+ *   - `decay-floor-factor`   (float in [0,1]; default 0.1)
+ *
+ * Tolerant: malformed/out-of-range values silently fall back to the default
+ * (mirrors auto-dream.mjs). Returns the defaults when the block is absent.
+ *
+ * @param {string} content — full CLAUDE.md / AGENTS.md file content
+ * @returns {{enabled: boolean, 'half-life-days': number, 'floor-factor': number}}
+ */
+export function _parseEvolveDecay(content) {
+  const result = {
+    enabled: EVOLVE_DECAY_DEFAULTS.enabled,
+    'half-life-days': EVOLVE_DECAY_DEFAULTS['half-life-days'],
+    'floor-factor': EVOLVE_DECAY_DEFAULTS['floor-factor'],
+  };
+
+  const lines = content.split(/\r?\n/);
+  let inEvolve = false;
+  const blockLines = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!inEvolve) {
+      if (/^evolve:\s*$/.test(line)) inEvolve = true;
+      continue;
+    }
+    // Terminate at the first non-indented, non-empty line (next top-level key).
+    if (line.length > 0 && !/^\s/.test(line)) break;
+    blockLines.push(line);
+  }
+
+  if (blockLines.length === 0) return result;
+
+  for (const rawLine of blockLines) {
+    const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
+    if (!clean.trim()) continue;
+
+    // Flat `  key: value` sub-key (skip list-item dash lines under extra-sources:).
+    const kvMatch = clean.match(/^\s+([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)$/);
+    if (!kvMatch) continue;
+
+    const key = kvMatch[1];
+    let v = kvMatch[2].trim();
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+
+    if (key === 'decay-enabled') {
+      const lower = v.toLowerCase();
+      if (lower === 'true') result.enabled = true;
+      else if (lower === 'false') result.enabled = false;
+      // any other value → keep default (tolerant)
+    } else if (key === 'decay-half-life-days') {
+      // Positive number; reject 0/negative/non-numeric → keep default.
+      if (/^\d+(\.\d+)?$/.test(v)) {
+        const f = parseFloat(v);
+        if (Number.isFinite(f) && f > 0) result['half-life-days'] = f;
+      }
+    } else if (key === 'decay-floor-factor') {
+      // Float in [0,1] → keep default otherwise.
+      if (/^\d+(\.\d+)?$/.test(v)) {
+        const f = parseFloat(v);
+        if (Number.isFinite(f) && f >= 0 && f <= 1) result['floor-factor'] = f;
+      }
+    }
+  }
+
+  return result;
 }
