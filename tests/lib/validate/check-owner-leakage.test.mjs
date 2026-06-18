@@ -32,6 +32,10 @@ import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+// #661: the scanner now exports its canonicalization helpers; the script is
+// import-guarded (the top-level scan + process.exit only run when invoked as the
+// CLI entry point), so importing these does NOT trigger a scan.
+import { canonicalizeLine, matchOwnerPath } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -684,7 +688,9 @@ describe('fold-in: P9 dash-encoded home path (#634)', () => {
     const result = runCheck(root);
     expect(result.status).toBe(1);
     expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
-    expect(result.stdout).toContain('P9 (dash-encoded home path)');
+    // #661: the dash-form is now caught by the canonical CP1 rule (it collapses
+    // to /Users/bernhardg…), not a dedicated P9 regex. The label reflects that.
+    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
   });
 
   it('exits 0 on a dash-encoded path of a different user', () => {
@@ -839,5 +845,334 @@ describe('P10: ~/Projects/<PersonalName> leak (#653)', () => {
     const result = runCheck(root);
     expect(result.status).toBe(0);
     expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+// ===========================================================================
+// #661: Canonicalization-before-matching — regression CORPUS
+//
+// The one-encoding-at-a-time regex treadmill (P1 slash-form #631, P9
+// dash-encoded #634, …) is replaced by a single canonicalization step. These
+// tests pin two contracts:
+//   A. matchOwnerPath() / canonicalizeLine() unit behavior — every historical
+//      evasion variant AND a panel of NOVEL encodings all canonicalize to the
+//      same /Users/bernhardg… form and are DETECTED; the lookalike negatives
+//      and the case-sensitivity contract are NOT flagged.
+//   B. End-to-end: a synthesized novel encoding planted in a tracked file is
+//      caught by the CLI (acceptance criterion: "new encodings cannot silently
+//      pass").
+//
+// Per .claude/rules/testing.md: expected booleans are hardcoded literals (not
+// computed), each test has ≥1 meaningful assertion, behavior is tested (the
+// detector's verdict) not implementation, and both happy + error/edge cases
+// are covered.
+// ===========================================================================
+
+describe('#661 corpus A: matchOwnerPath — historical + novel encodings DETECTED', () => {
+  // Each row: [label, input line]. Every one MUST be detected as a leak.
+  // Hardcoded expectation: matchOwnerPath() returns a non-null label string.
+  const DETECTED = [
+    ['P1 plain slash-form', '/Users/bernhardg/secret/config.txt'],
+    ['P1 trailing-dot', 'home: /Users/bernhardg.'],
+    ['P1 bare no-dot at EOL (#631)', 'USER_HOME=/Users/bernhardg'],
+    ['P1 before " && ls" (#631)', 'cd /Users/bernhardg. && ls'],
+    ['P1 inside JSON quotes', '{"home": "/Users/bernhardg."}'],
+    ['P1 hyphen-suffixed', 'path: /Users/bernhardg-backup/x'],
+    ['P1 full legacy username', 'Path: /Users/bernhardgoetzendorfer/projects/'],
+    ['P9 dash-encoded projects-dir (#634)', 'See -Users-bernhardg--Projects-x/memory/foo.md'],
+    ['P9 dash-encoded bare', 'dir=-Users-bernhardg'],
+    ['NOVEL url-percent encoded', 'p=%2FUsers%2Fbernhardg%2Fsecret'],
+    ['NOVEL url-percent uppercase hex', 'p=%2fUsers%2fbernhardg'],
+    ['NOVEL double-percent encoded', 'p=%252FUsers%252Fbernhardg'],
+    ['NOVEL backslash separators', String.raw`p=\Users\bernhardg\secret`],
+    ['NOVEL homoglyph division-slash (∕)', 'p=∕Users∕bernhardg∕secret'],
+    ['NOVEL homoglyph fullwidth-slash (／)', 'p=／Users／bernhardg'],
+    ['NOVEL html numeric entity (&#47;)', 'p=&#47;Users&#47;bernhardg'],
+    ['NOVEL html hex entity (&#x2F;)', 'p=&#x2F;Users&#x2F;bernhardg'],
+    ['NOVEL html named entity (&sol;)', 'p=&sol;Users&sol;bernhardg'],
+  ];
+
+  for (const [label, line] of DETECTED) {
+    it(`DETECTS: ${label}`, () => {
+      // Hardcoded literal expectation — a leak must be reported (truthy label).
+      expect(matchOwnerPath(line)).toBe('CP1 (personal home path — canonicalized)');
+    });
+  }
+});
+
+describe('#661 corpus A: matchOwnerPath — benign + lookalike NOT flagged', () => {
+  // Each MUST be clean. Hardcoded expectation: matchOwnerPath() returns null.
+  const CLEAN = [
+    ['near-miss diverges before g (bernhardo)', '/Users/bernhardo-other/'],
+    ['near-miss uppercase continuation (bernhardgXfoo)', '/Users/bernhardgXfoo'],
+    ['near-miss digit continuation (bernhardg9)', '/Users/bernhardg9/proj'],
+    ['near-miss underscore continuation (bernhardg_home)', '/Users/bernhardg_home'],
+    ['case-sensitivity contract: lowercase /users', 'see /users/bernhardg. for config'],
+    ['other-user dash-encoded (alice)', '-Users-alice--Projects-x/memory/foo.md'],
+    ['self-doc: quotes old P1 regex', 'P1 regex `/\\/Users\\/bernhardg[a-z.]*(\\/|\\b)/` is tight'],
+    ['self-doc: quotes P9 dash regex', 'added P9 `/-Users-bernhardg[a-z.]*-/`'],
+    ['benign capitalized project dir', '~/Projects/MyApp/src'],
+    ['benign clean url', 'API_URL=https://api.example.com'],
+    ['empty string', ''],
+  ];
+
+  for (const [label, line] of CLEAN) {
+    it(`CLEAN: ${label}`, () => {
+      // Hardcoded literal expectation — no leak reported.
+      expect(matchOwnerPath(line)).toBe(null);
+    });
+  }
+});
+
+describe('#661 corpus A: canonicalizeLine — separator normalization (case preserved)', () => {
+  it('collapses url-percent slashes to /Users/bernhardg (capital U preserved)', () => {
+    expect(canonicalizeLine('%2FUsers%2Fbernhardg')).toContain('/Users/bernhardg');
+  });
+
+  it('collapses backslash separators to forward slashes', () => {
+    expect(canonicalizeLine(String.raw`\Users\bernhardg`)).toContain('/Users/bernhardg');
+  });
+
+  it('collapses dash-encoded projects-dir to /Users/bernhardg', () => {
+    expect(canonicalizeLine('-Users-bernhardg--Projects-x')).toContain('/Users/bernhardg');
+  });
+
+  it('collapses homoglyph division-slash (∕) to ASCII /', () => {
+    expect(canonicalizeLine('∕Users∕bernhardg')).toContain('/Users/bernhardg');
+  });
+
+  it('decodes html numeric entity &#47; to /', () => {
+    expect(canonicalizeLine('&#47;Users&#47;bernhardg')).toContain('/Users/bernhardg');
+  });
+
+  it('PRESERVES letter case (lowercase /users stays lowercase)', () => {
+    // Case-sensitivity contract: a lowercased path must not be upper-cased into
+    // a false /Users match. Hardcoded: the output must NOT contain capital-U form.
+    expect(canonicalizeLine('/users/bernhardg.')).not.toContain('/Users/bernhardg');
+  });
+
+  it('PRESERVES uppercase username continuation (bernhardgX stays X)', () => {
+    // /Users/bernhardgXfoo must keep the capital X so [a-z.]* stops at it.
+    expect(canonicalizeLine('/Users/bernhardgXfoo')).toContain('bernhardgX');
+  });
+});
+
+describe('#661 corpus B: end-to-end — novel encoding planted in a tracked file is caught', () => {
+  it('exits 1 on a url-percent-encoded home path in a tracked .md file', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'config path: %2FUsers%2Fbernhardg%2Fsecret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
+  });
+
+  it('exits 1 on a backslash-separated home path (Windows-style spelling)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.txt'), String.raw`p=\Users\bernhardg\config` + '\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 1 on a homoglyph-slash home path (unicode evasion)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'p=∕Users∕bernhardg∕secret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 1 on an html-entity-encoded home path', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'p=&#47;Users&#47;bernhardg\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('exits 0 on a benign file that merely contains hyphenated words (no false-positive)', () => {
+    // The dash→slash canonicalization is over-broad by design; this pins that it
+    // does NOT manufacture a /Users/bernhardg hit out of ordinary hyphenated prose.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'clean.md'), 'See multi-story autopilot and cross-repo audit notes.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+});
+
+// ===========================================================================
+// #661 security follow-up — HIGH/MED false-negative fixes (security-reviewer)
+//
+// Finding 1 (HIGH): capitalized username `/Users/Bernhardg.` evaded — the
+//   username segment was matched case-SENSITIVELY. On case-insensitive APFS it
+//   is a real operator path. Now matched case-INSENSITIVELY via a per-letter
+//   token, while the HOST stays case-sensitive (`/Users`, not `/users`) and the
+//   CONTINUATION class stays lowercase-only (so an uppercase-letter continuation
+//   marks a DIFFERENT user and is NOT flagged).
+// Finding 2 (MED): a real path on a line that also QUOTED the scanner regex was
+//   suppressed wholesale. Now only the quoted regex TOKEN is blanked; the real
+//   path on the same line is re-scanned and caught.
+// Finding 3 (MED): zero-width / format chars spliced into the username
+//   (`/Users/bern<U+200B>hardg`) evaded. Now stripped from the canonical form.
+// Findings 4+5 (LOW): percent/entity/unicode-escape decoders now decode the
+//   LETTERS of `Users`/`bernhardg` (not only separators), and the decode
+//   pipeline loops to a FIXPOINT so a nested encoding (`%2555` → `%55` → `U`)
+//   is caught.
+//
+// Per .claude/rules/testing.md: hardcoded literal expecteds, behavior-focused
+// (the detector's verdict via matchOwnerPath / the CLI), ≥1 meaningful
+// assertion, both DETECTED and CLEAN (boundary) cases pinned.
+// ===========================================================================
+
+describe('#661 follow-up: Finding 1 — case-insensitive username, narrow boundaries', () => {
+  // The four operator-verified boundary cases, pinned as explicit assertions.
+  it('DETECTS capitalized username /Users/Bernhardg./Projects/secret (Finding 1 fix)', () => {
+    expect(matchOwnerPath('/Users/Bernhardg./Projects/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS lowercase control /Users/bernhardg/secret (no regression)', () => {
+    expect(matchOwnerPath('/Users/bernhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('CLEAN on lowercase host /users/bernhardg/x (host stays case-SENSITIVE)', () => {
+    // Mutation guard: adding the /i flag (instead of a per-letter username token)
+    // would loosen the host anchor and make this match → this test fails.
+    expect(matchOwnerPath('/users/bernhardg/x')).toBe(null);
+  });
+
+  it('CLEAN on uppercase continuation /Users/bernhardgXfoo (different user)', () => {
+    // The continuation class [a-z.]* must stay lowercase-only so an uppercase
+    // letter continuing the segment (= different user) stops the match.
+    expect(matchOwnerPath('/Users/bernhardgXfoo')).toBe(null);
+  });
+
+  it('DETECTS legacy lowercase continuation /Users/bernhardgoetzendorfer/ (no regression)', () => {
+    expect(matchOwnerPath('/Users/bernhardgoetzendorfer/')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('exits 1 end-to-end on a capitalized-username leak in a tracked file', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'home: /Users/Bernhardg./Projects/secret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
+  });
+});
+
+describe('#661 follow-up: Finding 2 — regex-quote blanks only the token, not the line', () => {
+  it('DETECTS a real path on a line that ALSO quotes the scanner regex (residue re-scan)', () => {
+    // The real `/Users/bernhardg/Projects/secret` shares the line with a quoted
+    // regex `/Users/bernhardg[a-z.]*`. Before the fix the whole line was
+    // suppressed; now only the `…bernhardg[` token is blanked and the real path
+    // is caught.
+    expect(
+      matchOwnerPath('Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)'),
+    ).toBe('CP1 (personal home path — canonicalized)');
+  });
+
+  it('CLEAN on a line that ONLY quotes the old P1 regex (self-doc, no real path)', () => {
+    expect(matchOwnerPath('P1 regex `/\\/Users\\/bernhardg[a-z.]*(\\/|\\b)/` is tight')).toBe(null);
+  });
+
+  it('CLEAN on a line that ONLY quotes the P9 dash regex (self-doc)', () => {
+    expect(matchOwnerPath('added P9 `/-Users-bernhardg[a-z.]*-/`')).toBe(null);
+  });
+
+  it('exits 1 end-to-end when a real leak shares a line with a quoted regex', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(
+        join(r, 'doc.md'),
+        'Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)\n',
+      );
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+});
+
+describe('#661 follow-up: Finding 3 — zero-width / format chars stripped', () => {
+  it('DETECTS a zero-width space spliced into the username (/Users/bern\\u200bhardg)', () => {
+    // The \u200b escape produces the same ZWSP code point a real evasion would
+    // splice in — kept as an escape (not a literal glyph) to keep source ASCII.
+    expect(matchOwnerPath('/Users/bern\u200bhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS a soft-hyphen spliced into the username (/Users/bern\\u00adhardg)', () => {
+    expect(matchOwnerPath('/Users/bern\u00adhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS a tab spliced into the username (/Users/bern\\thardg)', () => {
+    expect(matchOwnerPath('/Users/bern\thardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('exits 1 end-to-end on a zero-width-spliced home path in a tracked file', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'p: /Users/bern\u200bhardg/secret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+});
+
+describe('#661 follow-up: Findings 4+5 — letter-decoding + fixpoint loop', () => {
+  it('DETECTS percent-encoded LETTERS of the path (/%55sers/%62ernhardg — Finding 4)', () => {
+    expect(matchOwnerPath('/%55sers/%62ernhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS a decimal HTML entity for a LETTER (/&#85;sers/bernhardg — Finding 4)', () => {
+    expect(matchOwnerPath('/&#85;sers/bernhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS a hex HTML entity for a LETTER (/&#x55;sers/bernhardg — Finding 4)', () => {
+    expect(matchOwnerPath('/&#x55;sers/bernhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('DETECTS a NESTED double-percent letter encoding (%2555 → %55 → U — Finding 5 fixpoint)', () => {
+    expect(matchOwnerPath('/%2555sers/%2562ernhardg/secret')).toBe(
+      'CP1 (personal home path — canonicalized)',
+    );
+  });
+
+  it('exits 1 end-to-end on a percent-letter-encoded home path in a tracked file', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'leak.md'), 'p: /%55sers/%62ernhardg/secret\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+  });
+
+  it('CLEAN on ordinary text with an unrelated percent escape (no false-positive)', () => {
+    // %20 → space; this must NOT manufacture a /Users/bernhardg hit.
+    expect(matchOwnerPath('cache%20dir is fine')).toBe(null);
   });
 });

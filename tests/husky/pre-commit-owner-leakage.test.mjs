@@ -112,6 +112,39 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       expect(result.status).toBe(0);
     });
 
+    it('blocks commit when a NOVEL-encoded home path is staged (#661 canonicalization)', () => {
+      // The scanner now canonicalizes encodings before matching, so a home path
+      // re-spelled with url-percent separators — which the old slash-form regex
+      // would have MISSED — is caught end-to-end through the git hook.
+      writeFileSync(join(tmpDir, 'enc.md'), 'leak: %2FUsers%2Fbernhardg%2Fsecret\n');
+      execFileSync('git', ['-C', tmpDir, 'add', 'enc.md']);
+      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'encoded leak'], { encoding: 'utf8' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
+    });
+
+    it('blocks commit when a CAPITALIZED-username home path is staged (#661 Finding 1 HIGH)', () => {
+      // /Users/Bernhardg. is a real operator path on case-insensitive APFS. The
+      // username segment is now matched case-INSENSITIVELY, so the capitalized
+      // form — which the old case-sensitive regex MISSED (exploitable false
+      // negative) — is blocked end-to-end through the git hook.
+      writeFileSync(join(tmpDir, 'cap.md'), 'home: /Users/Bernhardg./Projects/secret\n');
+      execFileSync('git', ['-C', tmpDir, 'add', 'cap.md']);
+      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'capitalized leak'], { encoding: 'utf8' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
+    });
+
+    it('blocks commit when a zero-width-spliced home path is staged (#661 Finding 3)', () => {
+      // A zero-width space wedged into the username breaks a contiguous-literal
+      // match; the scanner now strips format chars from the canonical form.
+      writeFileSync(join(tmpDir, 'zw.md'), 'p: /Users/bern\u200bhardg/secret\n');
+      execFileSync('git', ['-C', tmpDir, 'add', 'zw.md']);
+      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'zero-width leak'], { encoding: 'utf8' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
+    });
+
     it('catches the tracked-after-add false-pass class (#494 root cause)', () => {
       // The exact regression: file is untracked, gets `git add`-ed, then commit
       // is attempted. Before #494 a manual local scan (running before the add)
