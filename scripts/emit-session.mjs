@@ -25,6 +25,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { appendJsonl } from './lib/common.mjs';
 import {
   validateSession,
@@ -33,6 +34,46 @@ import {
   clampTimestampsMonotonic,
   aliasLegacyEndedAt,
 } from './lib/session-schema.mjs';
+
+/**
+ * Serialize `validated` to a single JSONL line and prove it round-trips:
+ * the line MUST be JSON-parseable AND the parsed-back object MUST still pass
+ * `validateSession`. This is the pre-write self-validation seam (#662) that
+ * mirrors the `appendLearning` guard — it catches non-serializable values
+ * (`undefined`, `NaN`, `Infinity`, `BigInt`, circular refs) that
+ * `JSON.stringify` silently drops or that produce a line which won't parse
+ * back to the same schema-valid shape.
+ *
+ * Throws ValidationError (consumed by the caller as a validation failure,
+ * exit 1). Does not write — the caller appends only after this returns.
+ *
+ * @param {object} validated — already validated session entry
+ * @returns {string} the verified JSONL line (newline-terminated)
+ * @throws {ValidationError} when the serialized line does not round-trip
+ */
+export function serializeSessionLineChecked(validated) {
+  let line;
+  try {
+    line = JSON.stringify(validated);
+  } catch (err) {
+    throw new ValidationError(`session is not JSON-serializable: ${err.message}`);
+  }
+  if (typeof line !== 'string' || line.length === 0) {
+    throw new ValidationError('session serialized to an empty line');
+  }
+  let reparsed;
+  try {
+    reparsed = JSON.parse(line);
+  } catch (err) {
+    throw new ValidationError(
+      `serialized session line does not parse back as JSON: ${err.message}`
+    );
+  }
+  // Re-validate the round-tripped shape — catches required fields that were
+  // present as `undefined`/`NaN` before stringify but vanished after.
+  validateSession(reparsed);
+  return line + '\n';
+}
 
 function parseArgs(argv) {
   const args = { file: '.orchestrator/metrics/sessions.jsonl', entry: null };
@@ -118,6 +159,25 @@ async function main() {
     throw err;
   }
 
+  // Pre-write round-trip self-validation (#662): prove the line this writer is
+  // about to append parses back AND re-validates BEFORE it reaches disk. The
+  // append path (appendJsonl) does the same JSON.stringify, so a record that
+  // stringifies "fine" but round-trips to a schema-invalid shape (NaN/undefined
+  // required field silently dropped by JSON.stringify) would otherwise corrupt
+  // sessions.jsonl and only surface on the NEXT session's read. Treated as a
+  // validation failure (exit 1); file is left untouched.
+  try {
+    serializeSessionLineChecked(validated);
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      process.stderr.write(
+        `emit-session: pre-write round-trip validation failed: ${err.message}\n`
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+
   try {
     await appendJsonl(args.file, validated);
   } catch (err) {
@@ -134,7 +194,16 @@ async function main() {
   process.stdout.write(JSON.stringify(summary) + '\n');
 }
 
-main().catch((err) => {
-  process.stderr.write(`emit-session: unexpected error: ${err?.stack ?? err}\n`);
-  process.exit(2);
-});
+// Only run the CLI when invoked directly (`node scripts/emit-session.mjs ...`),
+// not when imported as a module (e.g. by tests that exercise the exported
+// serializeSessionLineChecked seam — #662). Without this guard, importing the
+// module would block on stdin / exit the test process.
+const _isDirectRun =
+  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (_isDirectRun) {
+  main().catch((err) => {
+    process.stderr.write(`emit-session: unexpected error: ${err?.stack ?? err}\n`);
+    process.exit(2);
+  });
+}

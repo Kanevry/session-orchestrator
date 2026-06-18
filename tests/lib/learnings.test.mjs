@@ -376,6 +376,53 @@ describe('appendLearning', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// appendLearning — pre-write round-trip self-validation seam (#662)
+// ---------------------------------------------------------------------------
+//
+// The seam serializes the validated entry to a JSONL line, JSON.parses it back,
+// and re-validates the round-tripped shape BEFORE any append touches disk. This
+// catches non-serializable values (undefined / NaN / circular refs) that
+// JSON.stringify silently drops — a line that stringifies "fine" but parses
+// back missing a required field would otherwise corrupt the file and only
+// surface on the NEXT session's read (learning #5, conf 1.0).
+
+describe('appendLearning — pre-write round-trip self-validation (#662)', () => {
+  it('happy path: appends a valid entry that round-trips intact', async () => {
+    const path = join(tmp, 'learnings.jsonl');
+    await appendLearning(path, LEGACY());
+    expect(existsSync(path)).toBe(true);
+    const written = JSON.parse(readFileSync(path, 'utf8').trim());
+    expect(written.id).toBe('test-id-1');
+    expect(written.subject).toBe('test-subject');
+    expect(written.insight).toBe('test insight text');
+    expect(written.evidence).toBe('test evidence text');
+  });
+
+  it('error path: REJECTS an entry whose required field is undefined (dropped by JSON.stringify)', async () => {
+    // `subject: undefined` passes the `field in entry` check in validateLearning
+    // (the key IS present), but JSON.stringify omits undefined-valued keys, so
+    // the round-tripped object is genuinely missing `subject`. The round-trip
+    // seam catches this; plain validateLearning does not.
+    const path = join(tmp, 'learnings.jsonl');
+    const bad = { ...LEGACY(), subject: undefined };
+    await expect(appendLearning(path, bad)).rejects.toThrow(ValidationError);
+    await expect(appendLearning(path, bad)).rejects.toThrow(/subject/);
+  });
+
+  it('error path: a rejected entry leaves the file untouched', async () => {
+    const path = join(tmp, 'learnings.jsonl');
+    // Seed one valid line, then attempt a round-trip-failing append.
+    await appendLearning(path, LEGACY());
+    const before = readFileSync(path, 'utf8');
+    const bad = { ...LEGACY(), id: 'test-id-2', insight: undefined };
+    await expect(appendLearning(path, bad)).rejects.toThrow(ValidationError);
+    const after = readFileSync(path, 'utf8');
+    expect(after).toBe(before);
+    expect(after.trim().split('\n')).toHaveLength(1);
+  });
+});
+
 describe('rewriteLearnings', () => {
   it('atomically replaces the file with the provided entries', async () => {
     const path = join(tmp, 'learnings.jsonl');
@@ -400,6 +447,83 @@ describe('rewriteLearnings', () => {
     const { entries: after } = await readLearnings(path);
     expect(after.length).toBe(1);
     expect(after[0].id).toBe('test-id-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewriteLearnings — pre-write round-trip self-validation seam (#662)
+//
+// The bulk-write path (used by prune/decay/mass-emit) MUST route through the
+// same checked serializer as appendLearning so NaN/undefined fields cannot
+// silently become null in the file. Atomicity: all entries are validated via
+// the checked serializer FIRST; if any entry fails, no write occurs.
+// ---------------------------------------------------------------------------
+
+describe('rewriteLearnings — pre-write round-trip self-validation (#662)', () => {
+  it('happy path: all valid entries are written correctly and returned', async () => {
+    const filePath = join(tmp, 'rw-happy.jsonl');
+    const result = await rewriteLearnings(filePath, [
+      { ...LEGACY(), id: 'bulk-1' },
+      { ...LEGACY(), id: 'bulk-2', confidence: 0.9 },
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe('bulk-1');
+    expect(result[1].confidence).toBe(0.9);
+    const content = readFileSync(filePath, 'utf8');
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]).id).toBe('bulk-1');
+    expect(JSON.parse(lines[1]).id).toBe('bulk-2');
+  });
+
+  it('THROWS ValidationError when any entry has confidence: NaN and leaves the file unchanged', async () => {
+    const filePath = join(tmp, 'rw-nan.jsonl');
+    // Seed the file with one valid line so we can assert it is preserved
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+    const before = readFileSync(filePath, 'utf8');
+
+    const entriesToWrite = [
+      { ...LEGACY(), id: 'bulk-a' },
+      { ...LEGACY(), id: 'bulk-b', confidence: NaN },
+      { ...LEGACY(), id: 'bulk-c' },
+    ];
+    await expect(rewriteLearnings(filePath, entriesToWrite)).rejects.toThrow(ValidationError);
+
+    // File must be unchanged — atomicity guarantee
+    const after = readFileSync(filePath, 'utf8');
+    expect(after).toBe(before);
+    const { entries } = await readLearnings(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].id).toBe('test-id-1');
+  });
+
+  it('throws ValidationError when any entry has an undefined required field (dropped by JSON.stringify)', async () => {
+    const filePath = join(tmp, 'rw-undefined.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+    const before = readFileSync(filePath, 'utf8');
+
+    const entriesToWrite = [
+      { ...LEGACY(), id: 'bulk-ok' },
+      { ...LEGACY(), id: 'bulk-bad', insight: undefined }, // undefined dropped by JSON.stringify
+    ];
+    await expect(rewriteLearnings(filePath, entriesToWrite)).rejects.toThrow(ValidationError);
+
+    const after = readFileSync(filePath, 'utf8');
+    expect(after).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression pin: appendLearning confidence:NaN guard (#662, single-write path)
+// Confirms the existing guard is intact and has not regressed.
+// ---------------------------------------------------------------------------
+
+describe('appendLearning — regression pin: confidence:NaN is rejected (#662)', () => {
+  it('THROWS ValidationError and leaves file untouched when confidence is NaN', async () => {
+    const filePath = join(tmp, 'append-nan.jsonl');
+    const bad = { ...LEGACY(), confidence: NaN };
+    await expect(appendLearning(filePath, bad)).rejects.toThrow(ValidationError);
+    expect(existsSync(filePath)).toBe(false);
   });
 });
 

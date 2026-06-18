@@ -13,6 +13,8 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { serializeSessionLineChecked } from '../../scripts/emit-session.mjs';
+import { validateSession, ValidationError } from '../../scripts/lib/session-schema.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'emit-session.mjs');
@@ -257,5 +259,60 @@ describe('emit-session.mjs CLI — #321 pre-validation repair', () => {
     expect(written._clamped).toBeUndefined();
     expect(written._completed_at_conflict).toBeUndefined();
     expect(written._original_completed_at).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #662 — pre-write round-trip self-validation seam (serializeSessionLineChecked)
+// ---------------------------------------------------------------------------
+
+describe('emit-session.mjs — serializeSessionLineChecked (#662 round-trip seam)', () => {
+  it('accepts a valid session and returns a newline-terminated JSONL line that round-trips', () => {
+    const validated = validateSession(validEntry());
+    const line = serializeSessionLineChecked(validated);
+    expect(line.endsWith('\n')).toBe(true);
+    const reparsed = JSON.parse(line);
+    expect(reparsed.session_id).toBe('main-2026-04-24-1600');
+    expect(reparsed.total_agents).toBe(3);
+    expect(reparsed.agent_summary).toEqual({ complete: 3, partial: 0, failed: 0, spiral: 0 });
+  });
+
+  it('REJECTS a record whose required field is undefined (silently dropped by JSON.stringify)', () => {
+    // total_agents: undefined survives validateSession-by-construction here
+    // (we hand-build the post-validate object), but JSON.stringify drops the
+    // key, so the round-tripped object is missing a required field. The seam
+    // catches this BEFORE any append.
+    const broken = { ...validateSession(validEntry()), total_agents: undefined };
+    expect(() => serializeSessionLineChecked(broken)).toThrow(ValidationError);
+    expect(() => serializeSessionLineChecked(broken)).toThrow(/total_agents/);
+  });
+
+  it('REJECTS a non-serializable record (circular reference)', () => {
+    const broken = { ...validateSession(validEntry()) };
+    broken.self = broken; // circular — JSON.stringify throws TypeError
+    expect(() => serializeSessionLineChecked(broken)).toThrow(ValidationError);
+    expect(() => serializeSessionLineChecked(broken)).toThrow(/not JSON-serializable/);
+  });
+});
+
+describe('emit-session.mjs CLI — #662 round-trip seam (end-to-end, file untouched on reject)', () => {
+  let tmp;
+  let targetFile;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'emit-session-662-'));
+    targetFile = join(tmp, 'sessions.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('accepts a valid entry end-to-end (exit 0, line appended)', () => {
+    const entry = validEntry({ session_id: 'rt-ok' });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written.session_id).toBe('rt-ok');
   });
 });

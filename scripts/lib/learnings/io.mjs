@@ -13,7 +13,56 @@ import {
   normalizeLearning,
   CURRENT_SCHEMA_VERSION,
   deriveExpiresAt,
+  ValidationError,
 } from './schema.mjs';
+
+// ---------------------------------------------------------------------------
+// Pre-write self-validation seam (issue #662)
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialize `validated` to a single JSONL line and prove it round-trips:
+ * the line MUST be JSON-parseable AND the parsed-back object MUST still pass
+ * `validateLearning`. This closes the gap where `JSON.stringify` silently
+ * drops or coerces non-serializable values (`undefined`, `NaN`, `Infinity`,
+ * `BigInt`, circular refs) — a line that stringifies "fine" but parses back
+ * to a schema-invalid shape would otherwise corrupt the file and only surface
+ * on the NEXT session's read (learning #5,
+ * `metrics-jsonl-schema-strict-needs-self-validation`, conf 1.0).
+ *
+ * Throws ValidationError (matching the existing writer error style) BEFORE any
+ * append touches disk, so a bad write can never reach the file.
+ *
+ * @param {object} validated — already validated+normalized learning entry
+ * @returns {string} the verified JSONL line (newline-terminated)
+ * @throws {ValidationError} when the serialized line does not round-trip
+ */
+function serializeLearningLineChecked(validated) {
+  let line;
+  try {
+    line = JSON.stringify(validated);
+  } catch (err) {
+    // Circular refs / BigInt make JSON.stringify itself throw a TypeError.
+    throw new ValidationError(
+      `learning is not JSON-serializable: ${err.message}`
+    );
+  }
+  if (typeof line !== 'string' || line.length === 0) {
+    throw new ValidationError('learning serialized to an empty line');
+  }
+  let reparsed;
+  try {
+    reparsed = JSON.parse(line);
+  } catch (err) {
+    throw new ValidationError(
+      `serialized learning line does not parse back as JSON: ${err.message}`
+    );
+  }
+  // Re-validate the round-tripped shape — catches required fields that were
+  // present as `undefined`/`NaN` before stringify but vanished after.
+  validateLearning(reparsed);
+  return line + '\n';
+}
 
 // ---------------------------------------------------------------------------
 // Read
@@ -88,7 +137,10 @@ export async function appendLearning(filePath, entry) {
     schema_version: entry?.schema_version ?? CURRENT_SCHEMA_VERSION,
   };
   const validated = validateLearning(stamped);
-  const line = JSON.stringify(validated) + '\n';
+  // Pre-write round-trip self-validation (#662): prove the serialized line
+  // parses back AND re-validates before any append touches disk. Throws
+  // ValidationError on a non-round-tripping record — file is left untouched.
+  const line = serializeLearningLineChecked(validated);
   await mkdir(path.dirname(filePath), { recursive: true });
   const { appendFile } = await import('node:fs/promises');
   await appendFile(filePath, line, 'utf8');
@@ -111,7 +163,12 @@ export async function rewriteLearnings(filePath, entries) {
       schema_version: e?.schema_version ?? CURRENT_SCHEMA_VERSION,
     })
   );
-  const body = validated.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  // Pre-write round-trip self-validation (#662): serialize ALL entries through
+  // the checked serializer before touching disk — a single bad entry throws
+  // ValidationError and the file is left untouched (atomicity preserved because
+  // we validate the full batch first, then write once).
+  const lines = validated.map((e) => serializeLearningLineChecked(e));
+  const body = lines.join('');
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, body, 'utf8');
