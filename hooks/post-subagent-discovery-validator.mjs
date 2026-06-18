@@ -312,11 +312,21 @@ async function main() {
     });
   }
 
-  process.stderr.write(
+  const warnText =
     `⚠ PSA-006: ${violations.length} distributional claim(s) from agent "${agent}" ` +
     `lack an adjacent grep/rg/find transcript (non-blocking). ` +
-    `See .claude/rules/parallel-sessions.md § PSA-006.\n`
-  );
+    `See .claude/rules/parallel-sessions.md § PSA-006.`;
+  process.stderr.write(warnText + '\n');
+
+  // v2.1.163+ additionalContext: feed the warning back to the coordinator turn
+  // so the finding is visible inline, not just in stderr + events.jsonl.
+  // Non-blocking — exit 0 always. Decision:"block" must never be set here.
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SubagentStop',
+      additionalContext: warnText,
+    },
+  }));
 }
 
 // Exit 0 always — informational hook must never block Claude (#567 v1).

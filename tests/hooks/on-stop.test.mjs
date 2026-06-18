@@ -744,6 +744,129 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// 15. SubagentStop stdout shape — additionalContext slot (#666, v2.1.163+)
+//
+// handleSubagentStop currently returns null (no inline warning), so stdout
+// MUST be empty for SubagentStop events — the hookSpecificOutput slot is
+// live but only fires when the handler returns a non-null string.
+// Stop events MUST still emit the terminalSequence JSON on stdout.
+// ---------------------------------------------------------------------------
+
+describe('SubagentStop stdout — additionalContext slot (#666)', { timeout: 15000 }, () => {
+  it('SubagentStop path emits NO stdout (additionalContext is null — no inline warning yet)', async () => {
+    const dir = await track(await mkGitDir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'code-implementer' }),
+    });
+    expect(result.code).toBe(0);
+    // handleSubagentStop returns null → no hookSpecificOutput JSON written
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('Stop path still emits terminalSequence JSON on stdout', async () => {
+    const dir = await track(await mkGitDir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: 'ts-test' }),
+    });
+    expect(result.code).toBe(0);
+    const out = JSON.parse(result.stdout);
+    // terminalSequence is present and non-empty
+    expect(typeof out.terminalSequence).toBe('string');
+    expect(out.terminalSequence.length).toBeGreaterThan(0);
+  });
+
+  it('SubagentStop path does NOT emit terminalSequence (session-stop-only field)', async () => {
+    const dir = await track(await mkGitDir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'test-writer' }),
+    });
+    expect(result.code).toBe(0);
+    // Either empty stdout or, if ever extended, hookSpecificOutput — never terminalSequence
+    if (result.stdout.trim()) {
+      const out = JSON.parse(result.stdout);
+      expect(out.terminalSequence).toBeUndefined();
+    } else {
+      expect(result.stdout.trim()).toBe('');
+    }
+  });
+
+  it('events.jsonl still written on SubagentStop (additive — stdout change does not break events)', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'qa-strategist' }),
+    });
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.agent.stopped');
+    expect(record.agent).toBe('qa-strategist');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. terminalSequence guaranteed even when handleStop() side-effect throws (#666 F2)
+// ---------------------------------------------------------------------------
+//
+// The #666 change moved process.stdout.write(buildTerminalSequenceJson()) OUT of
+// .finally() to AFTER await handleStop(). Now if handleStop() throws (e.g.
+// emitEvent's fs.appendFile on a full/read-only disk), the terminalSequence is
+// lost. The fix wraps the Stop branch in try/finally so terminalSequence is
+// always emitted for Stop, never for SubagentStop.
+
+describe('terminalSequence guaranteed on handleStop() throw (#666 F2)', { timeout: 15000 }, () => {
+  it('emits terminalSequence to stdout even when events.jsonl dir is not writable (handleStop throws)', async () => {
+    if (process.platform === 'win32') return; // chmod semantics differ on Windows
+    const dir = await track(await mkTmpDir());
+    // Place a FILE at the path where emitEvent expects a DIRECTORY, so
+    // fs.appendFile (or mkdir) inside emitEvent will throw ENOTDIR.
+    const orchDir = path.join(dir, '.orchestrator', 'metrics');
+    await fs.mkdir(path.dirname(orchDir), { recursive: true });
+    // Write a file at the position that should be a directory — causes ENOTDIR
+    await fs.writeFile(orchDir, 'i-am-a-file-not-a-dir');
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: 'ts-throw-test' }),
+    });
+    // Exit code must stay 0 (informational hook never blocks)
+    expect(result.code).toBe(0);
+    // terminalSequence MUST appear on stdout despite the throw
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      // stdout was not valid JSON — the terminalSequence was not emitted
+      expect(result.stdout, 'expected terminalSequence JSON on stdout').toMatch(/terminalSequence/);
+      return;
+    }
+    expect(typeof parsed.terminalSequence).toBe('string');
+    expect(parsed.terminalSequence.length).toBeGreaterThan(0);
+  });
+
+  it('SubagentStop never emits terminalSequence even when events.jsonl dir is not writable', async () => {
+    if (process.platform === 'win32') return;
+    const dir = await track(await mkTmpDir());
+    const orchDir = path.join(dir, '.orchestrator', 'metrics');
+    await fs.mkdir(path.dirname(orchDir), { recursive: true });
+    await fs.writeFile(orchDir, 'i-am-a-file-not-a-dir');
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'code-implementer' }),
+    });
+    expect(result.code).toBe(0);
+    if (result.stdout.trim()) {
+      const out = JSON.parse(result.stdout);
+      expect(out.terminalSequence).toBeUndefined();
+    } else {
+      expect(result.stdout.trim()).toBe('');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 14. Session lock heartbeat-refresh on Stop (Epic #583 W5-F1c — replaces W3-P3 release)
 // ---------------------------------------------------------------------------
 //

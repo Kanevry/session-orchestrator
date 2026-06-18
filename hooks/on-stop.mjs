@@ -219,11 +219,16 @@ async function handleStop(input) {
 
 /**
  * Handle a SubagentStop event. Extracts agent name, emits orchestrator.agent.stopped.
+ * Returns an optional additionalContext string (v2.1.163+) to feed back to the
+ * coordinator turn. Currently always returns null (no inline warning from this
+ * handler) — the slot is reserved for future SubagentStop feedback.
  * @param {object|null} input
+ * @returns {Promise<string|null>} additionalContext or null
  */
 async function handleSubagentStop(input) {
   const agent = input?.agent_type ?? 'unknown';
   await emitEvent('orchestrator.agent.stopped', { agent });
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,9 +240,32 @@ async function main() {
   const eventType = discriminate(input);
 
   if (eventType === 'subagent_stop') {
-    await handleSubagentStop(input);
+    const additionalContext = await handleSubagentStop(input);
+    // v2.1.163+: emit hookSpecificOutput for SubagentStop path.
+    // If handleSubagentStop returns a non-empty context string, feed it back
+    // to the coordinator turn. Currently returns null (no inline warning from
+    // this handler), but the slot is live for future SubagentStop feedback.
+    // terminalSequence is a Stop-only field — not emitted for SubagentStop.
+    if (typeof additionalContext === 'string' && additionalContext.length > 0) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStop',
+          additionalContext,
+        },
+      }));
+    }
   } else {
-    await handleStop(input);
+    // terminalSequence must be emitted even when handleStop() throws (e.g.
+    // emitEvent's fs.appendFile fails on a full / read-only disk). Wrap the
+    // Stop branch in try/finally so the desktop notification is always sent.
+    // SubagentStop is intentionally outside this block — it must never emit
+    // terminalSequence.
+    try {
+      await handleStop(input);
+    } finally {
+      // terminalSequence is only meaningful for Stop (session-level) events.
+      process.stdout.write(buildTerminalSequenceJson());
+    }
   }
 }
 
@@ -263,7 +291,4 @@ function buildTerminalSequenceJson() {
 // Exit 0 always — informational hook must never block Claude.
 main()
   .catch(() => {})
-  .finally(() => {
-    process.stdout.write(buildTerminalSequenceJson());
-    process.exit(0);
-  });
+  .finally(() => process.exit(0));

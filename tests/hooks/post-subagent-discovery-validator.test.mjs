@@ -348,6 +348,83 @@ describe('post-subagent-discovery-validator hook', () => {
   });
 
   // -------------------------------------------------------------------------
+  // (c) additionalContext feed-back (#666 — v2.1.163+)
+  //
+  // On a violation the hook MUST emit hookSpecificOutput.additionalContext to
+  // stdout so the warning is fed back to the coordinator turn inline.
+  // On a clean path (no violation) stdout must be empty.
+  // -------------------------------------------------------------------------
+
+  it('ENABLED + violation → stdout has hookSpecificOutput.hookEventName="SubagentStop" and non-empty additionalContext', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    // events.jsonl write still happens (additive — not replaced by additionalContext)
+    expect(readEvents()).toHaveLength(1);
+    // stdout carries the hookSpecificOutput JSON
+    const out = JSON.parse(result.stdout);
+    expect(out.hookSpecificOutput.hookEventName).toBe('SubagentStop');
+    expect(typeof out.hookSpecificOutput.additionalContext).toBe('string');
+    expect(out.hookSpecificOutput.additionalContext.length).toBeGreaterThan(0);
+    // must not set decision:"block" (non-blocking always)
+    expect(out.decision).toBeUndefined();
+  });
+
+  it('ENABLED + violation → additionalContext mentions PSA-006 and the agent name', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['no remaining references to the old API.']);
+
+    const result = runHook(stopPayload(transcript, { agent_type: 'my-discovery-agent' }));
+
+    expect(result.status).toBe(0);
+    const out = JSON.parse(result.stdout);
+    expect(out.hookSpecificOutput.additionalContext).toContain('PSA-006');
+    expect(out.hookSpecificOutput.additionalContext).toContain('my-discovery-agent');
+  });
+
+  it('ENABLED + NO violation (adjacent grep block present) → stdout is empty (no additionalContext)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        '```bash',
+        'grep -rn "canonicalizeRoot" hooks/ scripts/',
+        '```',
+        '4 of 4 callers use canonicalizeRoot.',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('DISABLED → stdout is empty (no additionalContext)', () => {
+    writeClaudeMd(CLAUDE_MD_DISABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper.']);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('ENABLED + violation → additionalContext kept under 10k chars (well within limit)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep.']);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const out = JSON.parse(result.stdout);
+    expect(out.hookSpecificOutput.additionalContext.length).toBeLessThan(10_000);
+  });
+
+  // -------------------------------------------------------------------------
   // (b) TAIL_RECORDS=8 boundary: 10 assistant records — a bare claim in
   // record #1 (outside the last-8 window → NOT scanned) and a bare claim in
   // the last record (in-window → flagged). Only the in-window claim appears
