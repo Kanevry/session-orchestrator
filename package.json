@@ -43,6 +43,9 @@
     "prettier": "^3.0.0",
     "vitest": "^4.1.5"
   },
+  "overrides": {
+    "vite": "^8.0.16"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
