@@ -29,20 +29,36 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
+// Per-spawn watchdog ceiling: above the real runtime (5s barrier + acquire),
+// below the per-test vitest timeout of 30000ms. If a child overruns this — e.g.
+// a still-spinning orphan under CPU starvation — Node SIGTERMs it so the
+// fork-pool worker is never pinned alive past the test boundary.
+const CHILD_SPAWN_TIMEOUT_MS = 25000;
+
 // ---------------------------------------------------------------------------
 // Per-test isolated tmp root
 // ---------------------------------------------------------------------------
 
 let repoRoot;
+// Track every spawned child so afterEach can SIGKILL any survivor (defensive
+// insurance against an orphaned worker keeping the vitest forks pool alive).
+let spawnedChildren = [];
 
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'session-lock-xproc-'));
+  spawnedChildren = [];
   // NOTE: .orchestrator/ is created by the worker's acquire() itself — we do
   // NOT pre-create the session.lock, so every child races the fresh create.
   mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
 });
 
 afterEach(() => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -53,10 +69,17 @@ afterEach(() => {
 /**
  * Spawn a child Node process and wait for it to exit. Returns the exit code,
  * stdout (the acquire() JSON result), and stderr output.
+ *
+ * A per-spawn `timeout` makes Node SIGTERM a child that overruns the watchdog
+ * ceiling, and every child is tracked so afterEach can SIGKILL any survivor.
  */
 function runChild(scriptPath, args = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [scriptPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('node', [scriptPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
+    });
+    spawnedChildren.push(child);
     let stderr = '';
     let stdout = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
@@ -88,10 +111,17 @@ const repoRoot = ${JSON.stringify(repoRoot)};
 const barrierPath = ${JSON.stringify(barrierPath)};
 const sessionId = ${JSON.stringify(sessionId)};
 
-// Busy-wait on the barrier so siblings align their acquire() calls tightly.
+// Wait on the barrier so siblings align their acquire() calls tightly. We poll
+// with a short async sleep BETWEEN checks rather than a synchronous spin loop:
+// a busy-wait pins a CPU core (the worst pattern under CPU starvation, where it
+// can orphan a still-spinning child past the test deadline and keep the vitest
+// forks-pool worker alive). The yielding poll preserves the SAME 5000ms deadline
+// semantics — the child still proceeds the moment the barrier appears, and still
+// gives up at the deadline — while releasing the core between checks.
 const deadline = Date.now() + 5000;
-while (!existsSync(barrierPath)) {
-  if (Date.now() > deadline) break;
+const POLL_MS = 5;
+while (!existsSync(barrierPath) && Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, POLL_MS));
 }
 
 const result = acquire({ sessionId, mode: 'deep', repoRoot });

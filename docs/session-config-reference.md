@@ -748,6 +748,25 @@ The banner renders with one of the following shapes:
 - **Archival:** `skills/session-start/SKILL.md` § Idle Reset rule 6 (removes fields from frontmatter, prepends readable block to `## Previous Session`).
 - **Future consumer:** Phase B Mode-Selector skill (planned in Epic #271) will read these fields as the primary input for autonomous mode selection.
 
+## Frontend-Slop Hook (#684)
+
+Opt-in configuration for the frontend-slop detector hook. When enabled, the `PostToolUse` hook runs the deterministic frontend-slop detector (`scripts/lib/frontend-detect/detect.mjs`) on a UI file right after it is edited and surfaces findings as a `hookSpecificOutput.additionalContext` roll-up. **Warn-only / non-blocking** — it never blocks an edit. The Hook Runtime Profile Control gate (below) also applies, so the hook can be silenced via the standard profile env-vars even when `enabled: true`. Default OFF — opt-in by design (unlike `loop-guard`, which defaults on). Epic #684 P1.
+
+All fields live under a top-level `frontend-slop-hook` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`):
+
+```yaml
+frontend-slop-hook:
+  enabled: false           # opt-in; PostToolUse warn-only / non-blocking
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `frontend-slop-hook.enabled` | boolean | `false` | Master toggle for the frontend-slop PostToolUse hook. Only an explicit `enabled: true` enables it; any other value (or an absent block) resolves to disabled. When `true`, the hook fires after `Edit`/`Write`/`MultiEdit` on UI files, runs the deterministic detector, and emits findings as `additionalContext` (warn-only, never blocks). Profile-gate also applies. Issue #684. |
+
+**Used by:** `hooks/post-tooluse-frontend-slop.mjs` (parser/loader: `scripts/lib/config/frontend-slop-hook.mjs`).
+
+**Cross-reference:** detector rule markers (`<!-- rule:<id> -->`) live in `.claude/rules/frontend.md` (Absolute Bans / Motion / Layout sections). Mirrors the opt-in / default-on contrast against `loop-guard`.
+
 ## Hook Runtime Profile Control (#211)
 
 Control which hooks run at runtime via environment variables — no settings-file edits required.

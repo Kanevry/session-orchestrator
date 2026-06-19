@@ -109,6 +109,8 @@ verification-auto-fix:
   max-retries: 2                 # bounded retries
 discovery-validator:
   enabled: false                 # PSA-006 (#567) — opt-in distributional-claim grep-verification enforcement (SubagentStop hook, non-blocking)
+frontend-slop-hook:
+  enabled: false                 # #684 — PostToolUse frontend-slop detector after UI-file edits (warn-only, non-blocking, opt-in); profile-gate also applies
 loop-guard:
   enabled: true                  # ecc-analysis (#619) — PostToolUse runaway tool-loop detector (warn-only, non-blocking); profile-gate also applies
   threshold: 3                   # identical (tool+argsHash) calls within window before a loop-warning fires

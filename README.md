@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-3.9.0-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-9882%20passing-brightgreen.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-9996%20passing-brightgreen.svg)](#development)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
@@ -115,7 +115,7 @@ There is no commercial support contract or guaranteed response time; maintenance
 - **21 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
 - **14 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, skill-applied-judge, …)
 - **10 hook event types** (handlers under `hooks/`) enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
-- **9882 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 141/141, typecheck OK, lint 0
+- **9996 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 141/141, typecheck OK, lint 0
 
 ## Lifecycle at a glance
 
@@ -180,7 +180,7 @@ The system is markdown-driven config plus a thin Node runtime. Skills, commands,
 
 ## What's new (v3.7.0 → v3.9.0)
 
-Test suite grew to **9882 passing** on every commit. Zero breaking changes — every release is additive and backward-compatible (claude/codex/cursor/pi behaviour unchanged across each bump). Headlines:
+Test suite grew to **9996 passing** on every commit. Zero breaking changes — every release is additive and backward-compatible (claude/codex/cursor/pi behaviour unchanged across each bump). Headlines:
 
 - **Pi harness adapter (v3.9.0, #639)** — Session Orchestrator now runs under [earendil-works/pi](https://pi.dev) like Codex and Cursor: `pi/` prompt-wrapper surface, a Pi native-hook bridge, `scripts/pi-install.mjs`, and `hooks/hooks-pi.json`. Platform/config/state resolution recognise the `.pi` marker dir + `PI_*` env vars — additive, no change to the other three runtimes.
 - **Cross-repo vault-status board + free-repo dispatcher (Epic #673, on `main`)** — a live `_active-sessions.md` board in your vault shows which repos have a session in flight; `/dispatcher` enumerates candidate repos below a confinement root, ranks the FREE ones by backlog × staleness × readiness, recommends one, and claims its lease atomically. Dispatcher-autonomy is config-gated and **fail-closed / off by default** (a suitability verdict must pass before any autonomous launch).
@@ -190,6 +190,8 @@ Test suite grew to **9882 passing** on every commit. Zero breaking changes — e
 - **GitHub public-safety + green CI (v3.8.0)** — restored a clean public mirror: dropped the never-green `windows-latest` leg (the orchestrator is POSIX-first), extended the owner-leakage scanner (full RFC1918 detection + dash-encoded-path P9), and removed committed session-exhaust artifacts.
 - **agent-status side-channel + sunset-review (v3.9.0, #565, #444)** — a lean per-agent status push helper (cross-process-race-tested) and a read-only surface walker that classifies the skill/agent/command inventory into Active / Investigate / Demote / Retire.
 - **Host-local privacy-clean paths (#653)** — vault-dir and baseline-path now resolve `env > owner.yaml > committed default`, so a machine can point the plugin at host-local paths without ever committing a personal home path.
+- **CI vitest suite sharded 3-way (on `main`)** — the GitLab `test` job now runs as 3 parallel `--shard` legs (per-shard JSON, `--min-tests` floor) to fix a shared-runner hang, plus an additive `--log` in-flight diagnostic on the fail-closed `assert-vitest-green.mjs` verifier and watchdog hardening (per-spawn timeout + teardown SIGKILL; one busy-wait→async-poll) across 6 cross-process integration child-spawn helpers.
+- **Frontend-slop detection hook (Epic #684 P1, on `main`)** — a new opt-in `PostToolUse` hook flags AI frontend slop after UI-file edits (default-off, warn-only, non-blocking, profile-gated — mirrors `loop-guard`), backed by `<!-- rule:<id> -->` markers in `.claude/rules/frontend.md` (Absolute Bans / Motion / Layout) and the `frontend-slop-hook:` Session Config key.
 
 For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous releases: v3.7.0 (2026-05-23), v3.6.0 (2026-05-14), v3.5.0 (2026-05-09), v3.4.0 (2026-05-08).
 
@@ -197,7 +199,7 @@ For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous rele
 
 | Area | Features adopted | Issue |
 |---|---|---|
-| Hooks & telemetry | `experimental.monitors` plugin manifest; `hookSpecificOutput.additionalContext` on 3 PostToolUse hooks; `terminalSequence` (OSC 9 + OSC 777); `worktree.bgIsolation: "none"` | #427, #428, #429, #431 |
+| Hooks & telemetry | `experimental.monitors` plugin manifest; `hookSpecificOutput.additionalContext` on 4 PostToolUse hooks; `terminalSequence` (OSC 9 + OSC 777); `worktree.bgIsolation: "none"` | #427, #428, #429, #431 |
 | Commands & skills | `disable-model-invocation: true` on 12 USER-ONLY commands; skill descriptions ≤ 1024 chars + trigger phrases verified across 41/41 | #430, #432 |
 | Routing | `model:` frontmatter routing on 41 SKILL.md (opus / sonnet / haiku / inherit); `Skill(name:*)` permission wildcards on 5 worker agents | #434, #435 |
 | Validation | `$schema` validation (schemastore.org) on both manifests + CI gate | #433 |
@@ -228,7 +230,7 @@ flowchart LR
 
 **Agents (14 typed sub-agents).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`.
 
-**Hook event types (10).** `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
+**Hook event types (10).** `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation + opt-in frontend-slop detection + loop-guard), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record). Plus the Clank Event Bus integration in `hooks/_lib/events.mjs`.
 
 **Output Styles.** 3 (`session-report`, `wave-summary`, `finding-report`) for consistent reporting.
 
@@ -238,7 +240,7 @@ flowchart LR
 
 **Pi.** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, and `scripts/pi-install.mjs`.
 
-**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 9882+ tests.
+**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 10008+ tests.
 
 ### `/harness-audit` — Anthropic large-codebase rubric
 
@@ -345,7 +347,7 @@ Clone, install, verify in three commands:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git && cd session-orchestrator
 npm install
-npm test        # vitest, 9882 tests
+npm test        # vitest, 10008 tests
 ```
 
 Additional scripts:

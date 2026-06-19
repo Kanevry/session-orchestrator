@@ -170,7 +170,8 @@ test:
   <<: *node-setup
   stage: test
   interruptible: true
-  timeout: 25m   # headroom over the inner 1320s vitest cap on a contended shared Mac runner
+  parallel: 3    # 3 shards — GitLab injects CI_NODE_INDEX (1-based) + CI_NODE_TOTAL=3
+  timeout: 15m   # per-shard ceiling over the inner 660s per-shard vitest cap
   script:
     # Pass/fail is read from vitest's machine-readable JSON result via a
     # FAIL-CLOSED verifier — never by grepping stdout markers. The old
@@ -181,27 +182,35 @@ test:
     # failures with `×`). Same silent-regression class as the 8-pipeline incident
     # (CLAUDE.md Critical Gotchas). See scripts/ci/assert-vitest-green.mjs.
     #
+    # SHARDED (3 shards × 660s): on the shared Mac shell-executor the full
+    # ~9951-test suite runs ~31s locally but up to ~1122s (36×) under CPU
+    # contention — a single job's inner `timeout` killed vitest before it wrote
+    # the onFinished JSON, so the verifier (correctly) failed CLOSED on the
+    # missing file even though the code was green locally. The prescribed fix
+    # (testing.md § Shared-Hardware Runner Contention) is to SHARD the suite,
+    # NOT to widen the timeout blindly: `parallel: 3` splits the ~450 files into
+    # three independent ~150-file shards via vitest's `--shard=i/n`, each on its
+    # own runner. Each shard self-verifies its own JSON with a per-shard floor.
+    #
     # The JSON file is written by vitest at onFinished — after all tests run but
-    # before the legacy vitest-2.1.9 tinypool exit-hang (#268, fixed on vitest 4):
+    # before any tinypool exit-hang (legacy vitest-2.1.9 #268; fixed on vitest 4):
     #   - real failures            → JSON success:false  → verifier exits 1
     #   - run truncated/killed      → JSON absent/partial → verifier fails CLOSED
     #   - post-completion exit-hang → JSON success:true   → verifier passes (the
     #                                 hung non-zero exit is swallowed by `|| true`)
-    # The inner `timeout` must EXCEED the true suite runtime so vitest reaches
-    # onFinished and writes the JSON; it exists only to kill a post-completion
-    # tinypool exit-hang fast enough for the verifier step to still read the
-    # (already-written) JSON. On the shared Mac shell-executor the 9882-test
-    # suite runs far slower than locally under CPU contention (testing.md
-    # documents an 18.7-min run) — pipeline #5830's 600s cap truncated a
-    # cleanly-passing run, so the verifier (correctly) failed CLOSED on the
-    # missing JSON. 1320s (22m) sits under the 25m job ceiling with headroom.
-    # If a run genuinely exceeds 1320s the verifier fails closed — that is the
-    # honest signal to shard the suite / use a dedicated runner, not to widen
-    # blindly (testing.md § Shared-Hardware Runner Contention).
-    - 'rm -f /tmp/vitest-result.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 1320s npm test -- --reporter=default --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.log || true'
-    - 'tail -40 /tmp/vitest.log'
-    - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result.json'
+    # The inner per-shard `timeout` (660s) must EXCEED a single shard's true
+    # runtime so vitest reaches onFinished and writes the JSON. The per-shard
+    # files are suffixed with $CI_NODE_INDEX so parallel shards reusing the same
+    # shell-executor host cannot clobber one another's result/log.
+    #
+    # Per-shard floor --min-tests=1500: ~9951/3 ≈ 3317 real tests per shard, so
+    # 1500 still clears the genuine subset while catching a truncated/empty shard.
+    # On a hang the verifier is passed --log so it names the test files that were
+    # in-flight at the kill (self-diagnosing) instead of a bare ENOENT.
+    - 'rm -f /tmp/vitest-result-$CI_NODE_INDEX.json'   # stale-file guard on reused shell-executor hosts
+    - 'timeout --preserve-status 660s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
+    - 'tail -40 /tmp/vitest-$CI_NODE_INDEX.log'
+    - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result-$CI_NODE_INDEX.json --min-tests=1500 --log=/tmp/vitest-$CI_NODE_INDEX.log'
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

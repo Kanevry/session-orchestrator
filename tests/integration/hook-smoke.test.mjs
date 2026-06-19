@@ -32,6 +32,15 @@ const HOOKS = {
   postEdit:     path.join(REPO_ROOT, 'hooks', 'post-edit-validate.mjs'),
 };
 
+// Per-spawn watchdog ceiling: above the real hook runtime, below the per-test
+// vitest timeout (20000ms here). Node SIGTERMs any hook subprocess that
+// overruns so the fork-pool worker is never pinned alive past the test
+// boundary by an orphan under CPU starvation.
+const CHILD_SPAWN_TIMEOUT_MS = 17000;
+
+// Track every spawned child so afterEach can SIGKILL any survivor.
+let spawnedChildren = [];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -39,6 +48,9 @@ const HOOKS = {
 /**
  * Spawn a hook as a subprocess, optionally piping stdin JSON.
  * Returns { code, stdout, stderr }.
+ *
+ * A per-spawn `timeout` makes Node SIGTERM a child that overruns the watchdog
+ * ceiling, and every child is tracked so afterEach can SIGKILL any survivor.
  */
 async function runHook({ hookPath, projectDir, pluginRoot, stdin, extraEnv = {} }) {
   return new Promise((resolve) => {
@@ -55,7 +67,9 @@ async function runHook({ hookPath, projectDir, pluginRoot, stdin, extraEnv = {} 
     const child = spawn(process.execPath, [hookPath], {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
     });
+    spawnedChildren.push(child);
 
     let stdout = '';
     let stderr = '';
@@ -102,6 +116,7 @@ beforeEach(async () => {
   const registryTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-smoke-registry-'));
   process.env.SO_SESSION_REGISTRY_DIR = registryTmp;
   tmpDirs.push(registryTmp);
+  spawnedChildren = [];
 });
 
 async function mkTempProject() {
@@ -117,6 +132,12 @@ async function mkTempProject() {
 }
 
 afterEach(async () => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
   else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
   for (const d of tmpDirs.splice(0)) {

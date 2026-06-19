@@ -711,6 +711,10 @@ events-rotation:
 express-path:
   enabled: true
 
+# Frontend-slop PostToolUse hook (#684) — opt-in, warn-only, non-blocking
+frontend-slop-hook:
+  enabled: false           # PostToolUse frontend-slop detector after UI-file edits; profile-gate also gates it
+
 # Runaway tool-loop guard (ecc-analysis / #619)
 loop-guard:
   enabled: true            # PostToolUse warn-only loop detector; profile-gate also gates it

@@ -32,12 +32,22 @@
 //   writes a complete file, so it fails closed. Both behaviours are correct.
 //
 // USAGE:
-//   node scripts/ci/assert-vitest-green.mjs <result.json> [--min-tests=N]
+//   node scripts/ci/assert-vitest-green.mjs <result.json> [--min-tests=N] [--log=<path>]
 //   Exit 0 → suite is verifiably green. Exit 1 → fail (with a [ci] reason line).
 //
 // The caller MUST `rm -f` the result file before the vitest run so a stale
 // file from a prior run on a reused shell-executor host cannot be mistaken for
 // the current run's result.
+//
+// SELF-DIAGNOSING HANGS (--log):
+//   When the result JSON is missing/unreadable — the runner-contention hang case
+//   where vitest is killed before writing onFinished — an optional `--log=<path>`
+//   pointing at the captured `--reporter=default` stdout lets the verifier name
+//   the test files that were IN-FLIGHT at the kill (started with `❯ <file>` but
+//   never reached a `✓`/`×` completion marker). This turns a bare ENOENT into an
+//   actionable "these N files were running when the run died" hint. Purely
+//   additive: absent `--log` (or an unreadable/uninformative log) falls back to
+//   the existing bare message and the exit-code contract is unchanged.
 
 import { readFileSync } from 'node:fs';
 
@@ -120,21 +130,91 @@ export function assertVitestGreenFile(path, opts = {}) {
   return verifyVitestResult(parsed, opts);
 }
 
+/**
+ * Parse a captured vitest `--reporter=default` log and return the test files
+ * that STARTED (`❯ <file>`) but never reached a per-file completion marker
+ * (`✓ <file>` / `× <file>`). On a clean run every started file completes, so
+ * this set is empty. On a contention kill it is the "in-flight at kill" set —
+ * the files that were still running when the runner timed vitest out.
+ *
+ * Pure function — never throws. Returns [] when the text is empty or no
+ * in-flight files are detectable.
+ *
+ * Marker glyphs (vitest default reporter, --no-color):
+ *   ✓ U+2713  per-file PASS completion
+ *   × U+00D7  per-file FAIL completion
+ *   ❯ U+276F  per-file in-progress / queued
+ *
+ * @param {string} logText - raw captured reporter stdout
+ * @returns {string[]} sorted list of in-flight test file paths (deduped)
+ */
+export function inFlightFilesFromLog(logText) {
+  if (typeof logText !== 'string' || logText.length === 0) return [];
+
+  const started = new Set();
+  const completed = new Set();
+
+  // Lead glyph, optional indentation, then the file path up to a trailing
+  // " (N tests…" annotation or end-of-line. The default reporter emits the
+  // file path as the first token after the status glyph.
+  const STARTED = /[❯>]\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\b/;
+  const COMPLETED = /[✓×✗]\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\b/;
+
+  // Defense-in-depth (security-review Q2 NICE): the captured path is later
+  // printed to stderr in a CI log pane. `\S+` admits control/ESC bytes, so
+  // strip C0 + DEL before they reach the terminal — a malicious vitest log
+  // line cannot smuggle terminal-escape sequences through the hint.
+  // eslint-disable-next-line no-control-regex -- intentional: neutralizing C0 + DEL is the whole point
+  const stripCtrl = (s) => s.replace(/[\u0000-\u001f\u007f]/g, '?');
+
+  for (const line of logText.split('\n')) {
+    const c = COMPLETED.exec(line);
+    if (c) {
+      completed.add(stripCtrl(c[1]));
+      continue;
+    }
+    const s = STARTED.exec(line);
+    if (s) started.add(stripCtrl(s[1]));
+  }
+
+  const inFlight = [...started].filter((f) => !completed.has(f));
+  return inFlight.sort();
+}
+
+/**
+ * Read a log file and extract the in-flight set. Fail-soft: a missing or
+ * unreadable log yields [] (the caller falls back to the bare message).
+ * @param {string} path
+ * @returns {string[]}
+ */
+export function inFlightFilesFromLogFile(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return [];
+  }
+  return inFlightFilesFromLog(raw);
+}
+
 function parseArgs(argv) {
   const positional = [];
   let minTests = DEFAULT_MIN_TESTS;
+  let logPath = null;
   for (const arg of argv) {
     const m = /^--min-tests=(\d+)$/.exec(arg);
+    const l = /^--log=(.+)$/.exec(arg);
     if (m) minTests = Number(m[1]);
+    else if (l) logPath = l[1];
     else positional.push(arg);
   }
-  return { path: positional[0], minTests };
+  return { path: positional[0], minTests, logPath };
 }
 
 // CLI entry — only when run directly, not when imported by tests.
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
-  const { path, minTests } = parseArgs(process.argv.slice(2));
+  const { path, minTests, logPath } = parseArgs(process.argv.slice(2));
   if (!path) {
     console.error('[ci] assert-vitest-green: missing <result.json> argument — failing closed');
     process.exit(1);
@@ -150,5 +230,18 @@ if (isMain) {
     process.exit(0);
   }
   console.error(`[ci] ✗ FAIL-CLOSED: ${reason}`);
+  // Self-diagnosing hint: the result JSON could not be READ (the hang case
+  // where vitest was killed before writing it). When a --log is supplied,
+  // surface the test files that were in-flight at the kill. This is purely an
+  // enriched stderr message — the exit-1 contract is unchanged.
+  if (logPath && reason.startsWith('cannot read result file')) {
+    const inFlight = inFlightFilesFromLogFile(logPath);
+    if (inFlight.length > 0) {
+      console.error(
+        `[ci] hint: ${inFlight.length} test file(s) in-flight when killed ` +
+          `(likely hang/slowdown): ${inFlight.join(', ')}`,
+      );
+    }
+  }
   process.exit(1);
 }

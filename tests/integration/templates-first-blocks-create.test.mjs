@@ -33,6 +33,15 @@ import os from 'node:os';
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-bash-templates-first.mjs');
 
+// Per-spawn watchdog ceiling: above the real hook runtime, below the per-test
+// vitest timeout (20000ms here). Node SIGTERMs any hook subprocess that
+// overruns so the fork-pool worker is never pinned alive past the test
+// boundary by an orphan under CPU starvation.
+const CHILD_SPAWN_TIMEOUT_MS = 17000;
+
+// Track every spawned child so afterEach can SIGKILL any survivor.
+let spawnedChildren = [];
+
 /**
  * Minimal canonical policy — mirrors what Agent A plants at
  * .orchestrator/policy/templates-policy.json.
@@ -74,6 +83,9 @@ const CANONICAL_POLICY = {
 /**
  * Spawn the hook subprocess and return { code, stdout, stderr }.
  * Mirrors the exact runtime invocation Claude Code uses.
+ *
+ * A per-spawn `timeout` makes Node SIGTERM a child that overruns the watchdog
+ * ceiling, and every child is tracked so afterEach can SIGKILL any survivor.
  */
 async function runHook({ projectDir, stdin, extraEnv = {} }) {
   return new Promise((resolve) => {
@@ -87,7 +99,9 @@ async function runHook({ projectDir, stdin, extraEnv = {} }) {
         ...extraEnv,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
     });
+    spawnedChildren.push(child);
 
     let stdout = '';
     let stderr = '';
@@ -205,6 +219,12 @@ async function mkRepo({
 const tmpDirs = [];
 
 afterEach(async () => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   for (const d of tmpDirs.splice(0)) {
     await fs.rm(d, { recursive: true, force: true });
   }

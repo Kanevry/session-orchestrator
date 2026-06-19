@@ -24,6 +24,12 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const HOOK_SESSION_START = path.join(REPO_ROOT, 'hooks', 'on-session-start.mjs');
 const HOOK_STOP = path.join(REPO_ROOT, 'hooks', 'on-stop.mjs');
 
+// Per-spawn watchdog ceiling: above the real hook runtime, below the per-test
+// vitest timeout (15000ms here). Node SIGTERMs any hook subprocess that
+// overruns so the fork-pool worker is never pinned alive past the test
+// boundary by an orphan under CPU starvation.
+const CHILD_SPAWN_TIMEOUT_MS = 12000;
+
 // ---------------------------------------------------------------------------
 // Per-test state
 // ---------------------------------------------------------------------------
@@ -31,15 +37,24 @@ const HOOK_STOP = path.join(REPO_ROOT, 'hooks', 'on-stop.mjs');
 const tmpDirs = [];
 let origRegistryDir;
 let registryDir;
+// Track every spawned child so afterEach can SIGKILL any survivor.
+let spawnedChildren = [];
 
 beforeEach(async () => {
   origRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
   registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'multi-reg-test-'));
   process.env.SO_SESSION_REGISTRY_DIR = registryDir;
   tmpDirs.push(registryDir);
+  spawnedChildren = [];
 });
 
 afterEach(async () => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
   else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
   for (const d of tmpDirs.splice(0)) {
@@ -84,7 +99,9 @@ async function runSessionStart({ projectDir, registryDir: regDir, stdin = null }
     const child = spawn(process.execPath, [HOOK_SESSION_START], {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
     });
+    spawnedChildren.push(child);
 
     let stdout = '';
     let stderr = '';
@@ -119,7 +136,9 @@ async function runStop({ projectDir, registryDir: regDir, stdin = null }) {
     const child = spawn(process.execPath, [HOOK_STOP], {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
     });
+    spawnedChildren.push(child);
 
     let stdout = '';
     let stderr = '';

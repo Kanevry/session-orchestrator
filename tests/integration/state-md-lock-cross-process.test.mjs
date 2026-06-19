@@ -23,20 +23,35 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
+// Per-spawn watchdog ceiling: above the real runtime (5×30ms serialised
+// increments + spawn overhead), below the per-test vitest timeout of 30000ms.
+// Node SIGTERMs any child that overruns so the fork-pool worker is never pinned
+// alive past the test boundary by an orphan under CPU starvation.
+const CHILD_SPAWN_TIMEOUT_MS = 25000;
+
 // ---------------------------------------------------------------------------
 // Per-test isolated tmp root
 // ---------------------------------------------------------------------------
 
 let repoRoot;
 let workerPath;
+// Track every spawned child so afterEach can SIGKILL any survivor.
+let spawnedChildren = [];
 
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'state-lock-xproc-'));
+  spawnedChildren = [];
   mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
   workerPath = join(repoRoot, 'worker.mjs');
 });
 
 afterEach(() => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -47,10 +62,17 @@ afterEach(() => {
 /**
  * Spawn a child Node process and wait for it to exit. Returns the exit code
  * and stderr output.
+ *
+ * A per-spawn `timeout` makes Node SIGTERM a child that overruns the watchdog
+ * ceiling, and every child is tracked so afterEach can SIGKILL any survivor.
  */
 function runChild(scriptPath, args = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [scriptPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('node', [scriptPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
+    });
+    spawnedChildren.push(child);
     let stderr = '';
     let stdout = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });

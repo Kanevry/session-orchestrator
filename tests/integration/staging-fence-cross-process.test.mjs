@@ -54,8 +54,20 @@ let repoRoot;
 const PROJECT_ROOT = process.cwd();
 const HOOK_PATH = join(PROJECT_ROOT, 'hooks', 'wave-scope-commit-guard.mjs');
 
+// Per-spawn watchdog ceiling: above the real guard runtime, below the per-test
+// vitest timeout (20000ms here). Node SIGTERMs any guard subprocess that
+// overruns so the fork-pool worker is never pinned alive past the test
+// boundary by an orphan under CPU starvation. (The synchronous spawnSync e2e
+// test below cannot orphan a fork worker — it blocks until exit — so it is
+// intentionally left without per-spawn tracking.)
+const CHILD_SPAWN_TIMEOUT_MS = 17000;
+
+// Track every spawned (async) child so afterEach can SIGKILL any survivor.
+let spawnedChildren = [];
+
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'staging-fence-xproc-'));
+  spawnedChildren = [];
   execSync('git init -q', { cwd: repoRoot });
   execSync('git config user.email test@example.com', { cwd: repoRoot });
   execSync('git config user.name "Test"', { cwd: repoRoot });
@@ -63,6 +75,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const child of spawnedChildren) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+  spawnedChildren = [];
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -73,13 +91,18 @@ afterEach(() => {
 /**
  * Spawn the wave-scope-commit-guard hook as a child Node process and wait
  * for it to exit. Returns { code, stdout, stderr }.
+ *
+ * A per-spawn `timeout` makes Node SIGTERM a child that overruns the watchdog
+ * ceiling, and every child is tracked so afterEach can SIGKILL any survivor.
  */
 function runHook(cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [HOOK_PATH], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: CHILD_SPAWN_TIMEOUT_MS,
     });
+    spawnedChildren.push(child);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c) => { stdout += c.toString(); });

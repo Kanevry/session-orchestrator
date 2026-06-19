@@ -28,6 +28,8 @@ globs:
 - Never use `!important`. If needed, refactor the specificity instead.
 - Dark mode: use the `dark:` Tailwind variant. Never hardcode `#000` / `#fff` — use semantic tokens.
 - Responsive design: mobile-first. Base styles target mobile, `md:` and `lg:` progressively enhance.
+<!-- rule:pure-black-ink -->
+- Never pure black text (`color:#000` / `black` / `rgb(0,0,0)`). Tint toward the brand hue (very dark, slightly-hued ink) — pure black reads harsh on screen.
 
 ## Accessibility
 
@@ -57,6 +59,29 @@ globs:
 - Passing raw `any` typed props — always declare typed interfaces.
 - Nesting Server and Client Components incorrectly — read the Next.js docs on composition patterns.
 - `dangerouslySetInnerHTML` without DOMPurify sanitization.
+
+## Absolute Bans
+
+<!-- rule:gradient-text -->
+- Never gradient text (`background-clip:text` + gradient, or Tailwind `bg-clip-text`). Decorative, never meaningful — use a solid color; carry emphasis with weight/size.
+<!-- rule:side-stripe-border -->
+- Never a side-stripe accent border (colored `border-left/right` ≥ 2px, incl. `border-l-4`). Use full borders, a background tint, a leading icon/number, or nothing.
+<!-- rule:overused-font -->
+- Avoid overused primary fonts (Inter / Roboto / Arial / Helvetica as the FIRST family). Pick a font with a point of view; keep these only as deeper fallbacks. (also referenced by development.md)
+<!-- rule:ai-purple-gradient -->
+- No purple/indigo "AI" gradient (purple→blue ramp or two-purple gradient) — the single most recognizable AI tell. If purple is genuinely the brand, keep it flat; else pick a committed strategy. (fpRisk: high — brand-purple is the honest exception.)
+
+## Motion
+
+<!-- rule:bounce-easing -->
+- No bounce/elastic/overshoot easing (`bounce`/`elastic`/`spring` keywords, or `cubic-bezier` with a control point > 1 or < 0). Ease out with exponential curves (ease-out-quart/quint/expo).
+<!-- rule:layout-property-transition -->
+- Don't animate layout properties (`width`/`height`/`top`/`margin`/`padding` in a `transition`). Animate `transform`/`opacity` instead — layout animation thrashes the main thread.
+
+## Layout
+
+<!-- rule:arbitrary-z-index -->
+- No arbitrary z-index (`z-index: 999 / 9999`). Build a semantic z-index scale (dropdown → sticky → modal → toast → tooltip); never magic numbers.
 
 ## See Also
 development.md · security.md · security-web.md · testing.md · backend.md · backend-data.md · mvp-scope.md · parallel-sessions.md
