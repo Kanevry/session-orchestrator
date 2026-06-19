@@ -172,28 +172,27 @@ test:
   interruptible: true
   timeout: 15m
   script:
-    # Run vitest with a hard timeout and detect success via output marker.
-    # Root cause of #268: vitest 2.1.9 + tinypool sometimes hangs at worker
-    # exit AFTER all tests have passed (confirmed via trace inspection) —
-    # process exit code stays non-zero, CI job hits its 15m timeout. Fix:
-    # bound the runtime to 180s (tests finish locally in 5-10s; 180s gives
-    # CI runner headroom), then check the captured output for the vitest
-    # success marker. If the marker appears, exit 0 regardless of vitest's
-    # own exit code. If tests actually failed, the marker won't appear and
-    # the job fails as expected.
-    # Force non-TTY output with plain reporter, strip ANSI codes, then count
-    # per-file pass/fail markers. Decouples CI green signal from vitest's
-    # exit sequence which hangs intermittently even after all tests pass.
-    - 'timeout --preserve-status 240s npm test -- --reporter=verbose --no-color 2>&1 | tee /tmp/vitest.raw.log || true'
-    - 'sed -r "s/\x1b\[[0-9;]*[mK]//g" /tmp/vitest.raw.log > /tmp/vitest.log || cp /tmp/vitest.raw.log /tmp/vitest.log'
-    - 'tail -80 /tmp/vitest.log'
-    # Match per-file ✓/✗ lines regardless of remaining ANSI artifacts.
-    # Patterns stay intentionally permissive to survive reporter churn.
-    - 'PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/vitest.log 2>/dev/null || true)'
-    - 'FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/vitest.log 2>/dev/null || true)'
-    - 'echo "[ci] test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"'
-    - 'test "${FAIL_COUNT:-0}" = "0"'
-    - 'test "${PASS_COUNT:-0}" -ge "20"'
+    # Pass/fail is read from vitest's machine-readable JSON result via a
+    # FAIL-CLOSED verifier — never by grepping stdout markers. The old
+    # grep-the-markers heuristic shipped a 12-failure suite as GREEN: under
+    # runner contention the suite ran 257s > the 240s `timeout` cap, vitest was
+    # killed BEFORE printing its failure-summary block, `|| true` swallowed the
+    # kill, and the `FAIL`/`✗` grep matched nothing (the verbose reporter marks
+    # failures with `×`). Same silent-regression class as the 8-pipeline incident
+    # (CLAUDE.md Critical Gotchas). See scripts/ci/assert-vitest-green.mjs.
+    #
+    # The JSON file is written by vitest at onFinished — after all tests run but
+    # before the legacy vitest-2.1.9 tinypool exit-hang (#268, fixed on vitest 4):
+    #   - real failures            → JSON success:false  → verifier exits 1
+    #   - run truncated/killed      → JSON absent/partial → verifier fails CLOSED
+    #   - post-completion exit-hang → JSON success:true   → verifier passes (the
+    #                                 hung non-zero exit is swallowed by `|| true`)
+    # The 600s `timeout` is generous headroom over the real ~260s runtime (the
+    # outer job `timeout: 15m` is the backstop), NOT a correctness lever.
+    - 'rm -f /tmp/vitest-result.json'   # stale-file guard on reused shell-executor hosts
+    - 'timeout --preserve-status 600s npm test -- --reporter=default --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.log || true'
+    - 'tail -40 /tmp/vitest.log'
+    - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result.json'
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -214,22 +213,19 @@ coverage:
   needs:
     - test
   script:
-    # Same wrapper pattern as `test` job to work around #268 vitest-tinypool
-    # exit-hang. Coverage takes longer than plain tests (instrumentation
-    # overhead), so timeout is 420s instead of 240s. Coverage artifacts are
-    # written to disk BY vitest before the hang (v8 provider streams), so
-    # the cobertura report remains valid even if we kill the process.
-    - 'timeout --preserve-status 420s npm run test:coverage -- --reporter=verbose --no-color 2>&1 | tee /tmp/cov.raw.log || true'
-    - 'sed -r "s/\x1b\[[0-9;]*[mK]//g" /tmp/cov.raw.log > /tmp/cov.log || cp /tmp/cov.raw.log /tmp/cov.log'
-    - 'tail -100 /tmp/cov.log'
-    - 'PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/cov.log 2>/dev/null || true)'
-    - 'FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/cov.log 2>/dev/null || true)'
-    - 'echo "[ci] coverage: test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"'
-    - 'test "${FAIL_COUNT:-0}" = "0"'
-    - 'test "${PASS_COUNT:-0}" -ge "20"'
-    # Verify coverage artifact was actually written before the hang.
+    # Same fail-closed JSON verifier as the `test` job (see its comment +
+    # scripts/ci/assert-vitest-green.mjs). Coverage takes longer than plain
+    # tests (instrumentation overhead), so the headroom `timeout` is 900s; the
+    # outer job `timeout: 15m` is the backstop. The cobertura artifact + the
+    # threshold-breach grep below are SEPARATE gates from test-green: the JSON
+    # `success` field reflects test pass/fail, not the coverage threshold.
+    - 'rm -f /tmp/cov-result.json'   # stale-file guard on reused shell-executor hosts
+    - 'timeout --preserve-status 900s npm run test:coverage -- --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
+    - 'tail -60 /tmp/cov.log'
+    - 'node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json'
+    # Verify the cobertura artifact was actually written.
     - 'test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"'
-    # If vitest exited with threshold failure, it prints "ERROR: Coverage ...":
+    # Threshold gate: vitest prints "Coverage for X (n%) does not meet … below".
     - '! grep -q "Coverage for .* .* below" /tmp/cov.log'
   coverage: '/^Lines\s+:\s+\d+(?:\.\d+)?%/'
   artifacts:

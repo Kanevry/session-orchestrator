@@ -144,7 +144,7 @@ describe('isDispatcherAutonomyBlockPresent — deliberate edge cases', () => {
   });
 
   it('treats a BOM glued immediately before the header as ABSENT (^ needs column 0)', () => {
-    expect(isDispatcherAutonomyBlockPresent('﻿dispatcher-autonomy:\n  autonomy: off\n')).toBe(false);
+    expect(isDispatcherAutonomyBlockPresent('\uFEFFdispatcher-autonomy:\n  autonomy: off\n')).toBe(false);
   });
 
   it('treats a header with a malformed (garbage) body as PRESENT', () => {
@@ -152,7 +152,7 @@ describe('isDispatcherAutonomyBlockPresent — deliberate edge cases', () => {
   });
 
   it('treats a BOM at file start with the header on a later line as PRESENT', () => {
-    expect(isDispatcherAutonomyBlockPresent('﻿# Title\n\ndispatcher-autonomy:\n  autonomy: off\n')).toBe(true);
+    expect(isDispatcherAutonomyBlockPresent('\uFEFF# Title\n\ndispatcher-autonomy:\n  autonomy: off\n')).toBe(true);
   });
 });
 
