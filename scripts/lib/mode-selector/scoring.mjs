@@ -12,6 +12,33 @@ import { ALL_MODES, TIER_MODE_MAP } from './constants.mjs';
 import { computeContextPressure } from './context-pressure.mjs';
 
 // ---------------------------------------------------------------------------
+// Non-execution (read-only precursor) modes — PRD §2 Out-of-Scope (line 56),
+// §4 line 244, P2.4 (issue #678).
+//
+// `discovery` (routes to /discovery) and `plan-retro` (routes to /plan) are
+// READ-ONLY precursors. The dispatcher MENU routes to them and the
+// recommendation engine may SUGGEST them, but they must NEVER become a
+// scoring-promoted execution-wave `mode` (the primary that session-start /
+// wave-executor would RUN as a build-and-commit wave).
+//
+// Exported so the mode-selector guardrail (global-max swap) and the dispatcher
+// suggestion surface (recommendations-v0.mjs) share a single source of truth.
+// ---------------------------------------------------------------------------
+
+/** @type {ReadonlySet<string>} */
+export const NON_EXECUTION_MODES = Object.freeze(new Set(['discovery', 'plan-retro']));
+
+/**
+ * True when `mode` is a read-only precursor (discovery / plan-retro) that must
+ * never be scoring-promoted into the primary executed `mode`.
+ * @param {unknown} mode
+ * @returns {boolean}
+ */
+export function isNonExecutionMode(mode) {
+  return typeof mode === 'string' && NON_EXECUTION_MODES.has(mode);
+}
+
+// ---------------------------------------------------------------------------
 // Inlined helpers (clamp, round2, safeArray, safeBootstrapLock)
 // ---------------------------------------------------------------------------
 

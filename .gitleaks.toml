@@ -253,6 +253,10 @@ regex = '''(?:hvs\.|s\.)[A-Za-z0-9]{24,}'''
 severity = "CRITICAL"
 tags = ["vault", "secrets"]
 
+  [rules.allowlist]
+  description = "FP: JS member access like deps.validatePathInsideProject reads as the legacy Vault s.<token> format (s. + 24+ alnum). validatePathInsideProject is a published path-utils function name, never a secret."
+  regexes = ['''validatePathInsideProject''']
+
 # Twilio API Key
 [[rules]]
 id = "baseline-twilio-api-key"

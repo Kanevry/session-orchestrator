@@ -21,8 +21,12 @@ describe('generate-pi-prompts.mjs', () => {
       timeout: 10_000,
     });
 
+    // Drift-proof: tie the expected count to the actual number of command files
+    // rather than a hard-pinned literal (testing.md § Dynamic Artifact Counts —
+    // Floor/Ceiling Carve-Out). The count grows whenever a command is added.
+    const commandCount = readdirSync(path.join(REPO_ROOT, 'commands')).filter((name) => name.endsWith('.md')).length;
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('pi prompts: 20 file(s) up to date');
+    expect(result.stdout).toContain(`pi prompts: ${commandCount} file(s) up to date`);
   });
 
   it('generates one Pi prompt per command file', () => {

@@ -11,7 +11,7 @@
 
 import { isValidMode } from './recommendations-v0.mjs';
 import { DEFAULT_MODE } from './mode-selector/constants.mjs';
-import { computeDelta, round2 } from './mode-selector/scoring.mjs';
+import { computeDelta, round2, isNonExecutionMode } from './mode-selector/scoring.mjs';
 import { buildAlternatives } from './mode-selector/alternatives.mjs';
 import { buildPassthroughRationale } from './mode-selector/rationale.mjs';
 import { computeContextPressure } from './mode-selector/context-pressure.mjs';
@@ -113,10 +113,21 @@ export function selectMode(signals) {
     // alternative outranks the passthrough primary (strict greater-than to
     // preserve passthrough preference on ties), promote it and demote the
     // original primary into alternatives, re-sort, slice to top-3.
-    if (alternatives.length > 0 && alternatives[0].confidence > confidence) {
-      const promoted = alternatives[0];
+    //
+    // NON-EXECUTION GUARDRAIL (#678, PRD §2 line 56 / §4 line 244): read-only
+    // precursor modes (discovery / plan-retro) must NEVER be scoring-promoted
+    // into the primary executed `mode`. They stay surfaceable as SUGGESTIONS in
+    // the alternatives[] list, but the swap candidate is the highest-confidence
+    // EXECUTABLE alternative only. This is guard (b): exclude precursors from
+    // the global-max promotion (the alternatives list itself is unchanged).
+    const promotable = alternatives.find((a) => !isNonExecutionMode(a.mode));
+    if (promotable !== undefined && promotable.confidence > confidence) {
+      const promoted = promotable;
       const demoted = { mode: m, confidence };
-      const reranked = [demoted, ...alternatives.slice(1)]
+      // Remove the promoted alternative by reference (it may not be at index 0
+      // once precursors are skipped), then fold the demoted primary back in.
+      // Precursor alternatives are retained here so they remain SUGGESTIONS.
+      const reranked = [demoted, ...alternatives.filter((a) => a !== promoted)]
         .filter((e) => e.confidence >= 0.1)
         .sort((a, b) => b.confidence - a.confidence)
         .slice(0, 3);

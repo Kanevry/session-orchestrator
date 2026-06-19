@@ -70,3 +70,87 @@ export function computeV0Recommendation({
 export function isValidMode(mode) {
   return typeof mode === 'string' && VALID_MODES.has(mode);
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher precursor SUGGESTIONS (#678, PRD §2 P2.4 / line 56, §4 line 244)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only precursor modes the dispatcher MENU may route to (`/discovery`,
+ * `/plan`). These are SUGGESTIONS only — never execution-wave modes. The
+ * non-execution guardrail lives in mode-selector.mjs (global-max swap excludes
+ * these from primary-mode promotion); this set is the source of truth for what
+ * the dispatcher is allowed to offer as a precursor.
+ * @type {ReadonlyArray<string>}
+ */
+export const PRECURSOR_MODES = Object.freeze(['discovery', 'plan-retro']);
+
+/**
+ * True when `mode` is a read-only precursor (discovery / plan-retro). Mirrors
+ * `isNonExecutionMode` in mode-selector/scoring.mjs but kept local so the
+ * dispatcher can import suggestion logic without pulling in the scoring graph.
+ * @param {unknown} mode
+ * @returns {boolean}
+ */
+export function isPrecursorMode(mode) {
+  return typeof mode === 'string' && PRECURSOR_MODES.includes(mode);
+}
+
+/**
+ * Suggest read-only precursor session-types for the dispatcher menu (#678).
+ *
+ * Pure, deterministic, additive. NEVER returns an execution mode — only the
+ * read-only precursors (`discovery` → /discovery, `plan-retro` → /plan). The
+ * dispatcher presents these as optional routes in its owner-confirmation AUQ;
+ * they are suggestions, not the executed primary `mode`.
+ *
+ * Heuristic (both independent — a session may justify both):
+ *   - `plan-retro` when there is real carry-forward to plan/retrospect:
+ *       completion_rate < 0.5  OR  carryover_ratio ≥ 0.3.
+ *   - `discovery` when context/understanding is thin and exploration helps:
+ *       no recent sessions (cold start)  OR  an explicit `discoveryHint`.
+ *
+ * @param {object|null|undefined} signals
+ * @param {number} [signals.completionRate]
+ * @param {number} [signals.carryoverRatio]
+ * @param {Array<unknown>} [signals.recentSessions]
+ * @param {boolean} [signals.discoveryHint] — explicit "explore first" hint.
+ * @returns {Array<{mode: string, route: string, rationale: string}>}
+ *   0–2 entries; deterministic order (plan-retro before discovery when both).
+ */
+export function suggestPrecursors(signals) {
+  if (signals === null || typeof signals !== 'object') {
+    return [];
+  }
+
+  const completionRate =
+    typeof signals.completionRate === 'number' && !Number.isNaN(signals.completionRate)
+      ? signals.completionRate
+      : null;
+  const carryoverRatio =
+    typeof signals.carryoverRatio === 'number' && !Number.isNaN(signals.carryoverRatio)
+      ? signals.carryoverRatio
+      : null;
+  const recentSessions = Array.isArray(signals.recentSessions) ? signals.recentSessions : [];
+
+  /** @type {Array<{mode: string, route: string, rationale: string}>} */
+  const suggestions = [];
+
+  if ((completionRate !== null && completionRate < 0.5) || (carryoverRatio !== null && carryoverRatio >= 0.3)) {
+    suggestions.push({
+      mode: 'plan-retro',
+      route: '/plan',
+      rationale: 'low completion / carryover → plan-retro precursor',
+    });
+  }
+
+  if (recentSessions.length === 0 || signals.discoveryHint === true) {
+    suggestions.push({
+      mode: 'discovery',
+      route: '/discovery',
+      rationale: 'cold start / explore-first hint → discovery precursor',
+    });
+  }
+
+  return suggestions;
+}
