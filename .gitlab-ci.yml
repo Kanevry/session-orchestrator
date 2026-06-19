@@ -170,7 +170,7 @@ test:
   <<: *node-setup
   stage: test
   interruptible: true
-  timeout: 15m
+  timeout: 25m   # headroom over the inner 1320s vitest cap on a contended shared Mac runner
   script:
     # Pass/fail is read from vitest's machine-readable JSON result via a
     # FAIL-CLOSED verifier — never by grepping stdout markers. The old
@@ -187,10 +187,19 @@ test:
     #   - run truncated/killed      → JSON absent/partial → verifier fails CLOSED
     #   - post-completion exit-hang → JSON success:true   → verifier passes (the
     #                                 hung non-zero exit is swallowed by `|| true`)
-    # The 600s `timeout` is generous headroom over the real ~260s runtime (the
-    # outer job `timeout: 15m` is the backstop), NOT a correctness lever.
+    # The inner `timeout` must EXCEED the true suite runtime so vitest reaches
+    # onFinished and writes the JSON; it exists only to kill a post-completion
+    # tinypool exit-hang fast enough for the verifier step to still read the
+    # (already-written) JSON. On the shared Mac shell-executor the 9882-test
+    # suite runs far slower than locally under CPU contention (testing.md
+    # documents an 18.7-min run) — pipeline #5830's 600s cap truncated a
+    # cleanly-passing run, so the verifier (correctly) failed CLOSED on the
+    # missing JSON. 1320s (22m) sits under the 25m job ceiling with headroom.
+    # If a run genuinely exceeds 1320s the verifier fails closed — that is the
+    # honest signal to shard the suite / use a dedicated runner, not to widen
+    # blindly (testing.md § Shared-Hardware Runner Contention).
     - 'rm -f /tmp/vitest-result.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 600s npm test -- --reporter=default --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.log || true'
+    - 'timeout --preserve-status 1320s npm test -- --reporter=default --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.log || true'
     - 'tail -40 /tmp/vitest.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result.json'
   rules:
@@ -209,18 +218,20 @@ coverage:
   <<: *node-setup
   stage: coverage
   interruptible: true
-  timeout: 15m
+  timeout: 30m   # headroom over the inner 1500s cov cap (instrumentation is slower than plain test)
   needs:
     - test
   script:
     # Same fail-closed JSON verifier as the `test` job (see its comment +
     # scripts/ci/assert-vitest-green.mjs). Coverage takes longer than plain
-    # tests (instrumentation overhead), so the headroom `timeout` is 900s; the
-    # outer job `timeout: 15m` is the backstop. The cobertura artifact + the
-    # threshold-breach grep below are SEPARATE gates from test-green: the JSON
-    # `success` field reflects test pass/fail, not the coverage threshold.
+    # tests (instrumentation overhead), so the inner cap is 1500s (25m) under
+    # the 30m job ceiling — the cap must EXCEED the true instrumented runtime so
+    # vitest writes the JSON before any tinypool exit-hang is killed. The
+    # cobertura artifact + the threshold-breach grep below are SEPARATE gates
+    # from test-green: the JSON `success` field reflects test pass/fail, not the
+    # coverage threshold.
     - 'rm -f /tmp/cov-result.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 900s npm run test:coverage -- --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
+    - 'timeout --preserve-status 1500s npm run test:coverage -- --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
     - 'tail -60 /tmp/cov.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json'
     # Verify the cobertura artifact was actually written.
