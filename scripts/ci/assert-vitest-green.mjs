@@ -16,7 +16,7 @@
 //        `✗` (U+2717) regex never matched.
 //   Net effect: a 12-failure suite shipped green (commit c6e34e1 / pipeline
 //   #5828). This is the same class as the documented 8-pipeline silent
-//   regression (CLAUDE.md Critical Gotchas).
+//   regression (CLAUDE.md / AGENTS.md Critical Gotchas).
 //
 // THE FIX:
 //   vitest's `--reporter=json --outputFile=<path>` writes a machine-readable
