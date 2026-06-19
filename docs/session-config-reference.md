@@ -1002,6 +1002,31 @@ skill-evolution:
 
 **Parity note.** The `skill-evolution:` key is documented in `docs/session-config-template.md` as a **standalone `## Skill Evolution` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6. Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
 
+## Dispatcher Autonomy (#679)
+
+Opt-in configuration for the cross-repo free-repo dispatcher autonomy gate (Epic #673, Sub-issue #679). Controls whether the `/dispatcher` flow runs in advisory mode (surfaces ranked candidates for operator review only) or applies dispatch decisions behind a confidence gate. The default is `off` — fail-closed, no behavior change for repos that omit this block.
+
+All fields live under a top-level `dispatcher-autonomy` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+dispatcher-autonomy:
+  autonomy: off            # off | advisory | autonomous-gated — default off (fail-closed)
+  confidence-floor: 0.5    # float 0.0..1.0 — min confidence before an autonomous-gated dispatch acts
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dispatcher-autonomy.autonomy` | string (`off` \| `advisory` \| `autonomous-gated`) | `off` | Master autonomy mode. `off`: dispatcher inactive, no cross-repo candidate routing. `advisory`: the dispatcher surfaces ranked free-repo candidates for operator review — no automated dispatch. `autonomous-gated`: surfaces the advisory ranking AND routes dispatches that clear the `confidence-floor` gate. Fail-closed: any invalid/empty value resolves to `off`. |
+| `dispatcher-autonomy.confidence-floor` | float | `0.5` | Minimum confidence score (0.0..1.0) required before an `autonomous-gated` dispatch is routed without operator confirmation. Candidates below the floor are surfaced as advisory suggestions only. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. Only evaluated when `autonomy: autonomous-gated`. |
+
+**Used by:** `scripts/lib/config/dispatcher-autonomy.mjs` (parser + `resolveDispatcherAutonomy` resolver), `skills/dispatcher/SKILL.md` (cross-repo dispatch flow).
+
+**Host-local override (#653 pattern).** The effective `autonomy` enum is resolved at config-load time with precedence (highest first): `SO_DISPATCHER_AUTONOMY` env-var > `owner.yaml` `dispatcher.autonomy` (host-local, never committed) > committed `dispatcher-autonomy.autonomy` > `off`. An invalid/empty value at any tier falls through to the next tier — mirroring the `vault-dir` / `baseline-path` host-path resolution layer (`scripts/lib/config/host-paths.mjs`). This keeps a per-host autonomy posture out of the committed Session Config. The pure parser keeps the raw committed value for `claude-md-drift-check` raw-value parity; only the final `loadConfig()` object carries the resolved enum.
+
+**Cross-reference:** PRD `docs/prd/2026-06-18-cross-repo-vault-status-autopilot-dispatcher.md`, Epic #673, Sub-issue #679.
+
+**Parity note.** The `dispatcher-autonomy:` key is documented in `docs/session-config-template.md` as a **standalone `## Dispatcher Autonomy` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6 (session-config-parity). Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
+
 ## Defaults
 
 If no `## Session Config` section exists in the platform config host file (`CLAUDE.md` or `AGENTS.md`), skills use: `feature` type, 6 agents, 5 waves, and field-specific defaults listed above.

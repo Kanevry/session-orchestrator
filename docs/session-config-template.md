@@ -793,3 +793,17 @@ skill-evolution:
 ```
 
 Read by: `skills/evolve/SKILL.md` (skill-health summary), `scripts/lib/config/skill-evolution.mjs` (parser). PRD: `docs/prd/2026-06-14-skill-self-evolution-foundation.md`. Issue: #646.
+
+## Dispatcher Autonomy
+
+> **Parity-exempt section.** This H2 is intentionally placed outside the `## Session Config` block so that the `claude-md-drift-check` Check-6 parity scanner (which extracts only column-0 keys inside the `## Session Config` block) does not flag repos that have not yet adopted this feature. Adding `dispatcher-autonomy:` as a column-0 key *inside* `## Session Config` would cause every repo running `drift-check.mode: hard` that lacks the key to hard-fail at session-end — portfolio-wide breakage. Issue #679.
+
+Opt-in configuration for the cross-repo free-repo dispatcher autonomy gate (Epic #673, Sub-issue #679). When `autonomy: advisory`, the `/dispatcher` flow surfaces ranked free-repo candidates for operator review — no automated dispatch. When `autonomy: autonomous-gated`, a deterministic confidence gate is checked first; only dispatches that clear the `confidence-floor` are routed automatically. The default is `off` — fail-closed, no behavior change for repos that omit this block. The effective `autonomy` resolves with host-local precedence `SO_DISPATCHER_AUTONOMY` env > `owner.yaml` `dispatcher.autonomy` > committed > `off` (#653 pattern).
+
+```yaml
+dispatcher-autonomy:
+  autonomy: off            # off | advisory | autonomous-gated — default off (fail-closed)
+  confidence-floor: 0.5    # float 0.0..1.0
+```
+
+Read by: `scripts/lib/config/dispatcher-autonomy.mjs` (parser + resolver), `skills/dispatcher/SKILL.md` (cross-repo dispatch flow). PRD: `docs/prd/2026-06-18-cross-repo-vault-status-autopilot-dispatcher.md`. Issue: #679.

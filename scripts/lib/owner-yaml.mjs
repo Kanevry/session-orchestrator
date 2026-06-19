@@ -23,6 +23,9 @@
  *   paths:                  (optional; host-local path overrides — #653)
  *     vault-dir: string     ('' = no override; mirrors Session Config vault-integration.vault-dir)
  *     baseline-path: string ('' = no override; maps to Session Config plan-baseline-path / projects-baseline)
+ *   dispatcher:             (optional; host-local cross-repo dispatcher autonomy override — #679)
+ *     autonomy: string      ('' = no override; resolver enum off | advisory | autonomous-gated;
+ *                            precedence env SO_DISPATCHER_AUTONOMY > this > committed > off)
  *
  * ── Exports ───────────────────────────────────────────────────────────────────
  *
@@ -89,6 +92,9 @@ export function getDefaults() {
     paths: {
       'vault-dir': '',
       'baseline-path': '',
+    },
+    dispatcher: {
+      autonomy: '',
     },
   };
 }
@@ -196,6 +202,24 @@ export function validateOwnerConfig(obj) {
           errors.push(`paths.${key} must be a string`);
         }
       }
+    }
+  }
+
+  // ── dispatcher (optional; host-local dispatcher autonomy override — #679) ─────
+  // Loose validation only (mirrors `paths`): the resolver enum-validates the
+  // value (resolveDispatcherAutonomy in config/dispatcher-autonomy.mjs), so an
+  // invalid string here falls through to the next precedence tier rather than
+  // failing the whole owner.yaml load.
+  const dispatcher = obj.dispatcher;
+  if (dispatcher !== undefined && dispatcher !== null) {
+    if (!isPlainObject(dispatcher)) {
+      errors.push('dispatcher must be an object when present');
+    } else if (
+      dispatcher.autonomy !== undefined &&
+      dispatcher.autonomy !== null &&
+      typeof dispatcher.autonomy !== 'string'
+    ) {
+      errors.push('dispatcher.autonomy must be a string');
     }
   }
 

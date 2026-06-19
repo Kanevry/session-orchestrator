@@ -57,6 +57,7 @@ import { _parseMemory } from './config/memory.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
 import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
+import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
 import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
@@ -246,6 +247,17 @@ export function parseSessionConfig(mdContent) {
   // skill-evolution: opt-in skill self-evolution autonomy block (OpenSpace C1 / issue #646)
   const skillEvolution = _parseSkillEvolution(mdContent);
 
+  // dispatcher-autonomy: opt-in cross-repo dispatcher autonomy block (Epic #673 / issue #679).
+  // Parser stays pure (raw committed value) for claude-md-drift-check raw-value parity;
+  // the host-local override (env > owner.yaml > committed > off) is overlaid onto the
+  // FINAL object only — mirroring the vault-dir resolveHostPath pattern above. Reuses the
+  // already-loaded hostCtx.ownerConfig so owner.yaml is not read twice.
+  const dispatcherAutonomy = _parseDispatcherAutonomy(mdContent);
+  dispatcherAutonomy.autonomy = resolveDispatcherAutonomy({
+    committed: dispatcherAutonomy.autonomy,
+    ownerConfig: hostCtx.ownerConfig,
+  });
+
   // discovery-validator: parsed from full content (PSA-006 enforcement / issue #567)
   const discoveryValidator = _parseDiscoveryValidator(mdContent);
 
@@ -369,6 +381,7 @@ export function parseSessionConfig(mdContent) {
     'state-md-lock': stateMdLock,
     'slopcheck': slopcheck,
     'skill-evolution': skillEvolution,
+    'dispatcher-autonomy': dispatcherAutonomy,
     'discovery-validator': discoveryValidator,
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
