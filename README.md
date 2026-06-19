@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-3.9.0-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-9303%20passing-brightgreen.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-9882%20passing-brightgreen.svg)](#development)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://developers.openai.com/codex/)
 [![Cursor IDE](https://img.shields.io/badge/Cursor_IDE-Compatible-blue.svg)](https://cursor.com)
@@ -115,7 +115,7 @@ There is no commercial support contract or guaranteed response time; maintenance
 - **21 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/test`, `/brainstorm`, `/debug`, `/persona-panel`, `/memory-cleanup`, …)
 - **14 typed sub-agents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, dialectic-deriver, memory-proposal-collector, skill-applied-judge, …)
 - **10 hook event types** (handlers under `hooks/`) enforcing scope, blocking destructive commands, gating templates-first, auditing memory proposals, capturing telemetry
-- **9303 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 140/140, typecheck OK, lint 0
+- **9882 vitest tests** passing on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md)), validate-plugin 141/141, typecheck OK, lint 0
 
 ## Lifecycle at a glance
 
@@ -178,19 +178,20 @@ The system is markdown-driven config plus a thin Node runtime. Skills, commands,
 
 **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your git remote. Full lifecycle for both: issue management, MR/PR tracking, pipeline status, label taxonomy, milestone queries.
 
-## What's new since v3.6.0
+## What's new (v3.7.0 → v3.9.0)
 
-Eighteen sessions across 9 days (2026-05-15 → 2026-05-23). Tests grew from **5001 → 7360** (+2359). Zero breaking changes, zero CI regressions. Headlines:
+Test suite grew to **9882 passing** on every commit. Zero breaking changes — every release is additive and backward-compatible (claude/codex/cursor/pi behaviour unchanged across each bump). Headlines:
 
-- **F2 Memory & Personas cluster** — Agent-writable `memory.propose` CLI with session-end AUQ collector (#501), startup memory banner showing surfaced learnings + peer-card excerpts (#505), `USER.md` + `AGENT.md` per-repo behavioural identity ([peer cards](https://github.com/Kanevry/session-orchestrator/issues/503)), and a haiku-cheap `dialectic-deriver` agent that derives card updates from session history (#506).
-- **gsd Pattern Adoption Epic #517** — four mechanical hardening patterns: STATE.md cross-process write-lock (#518), `pre-bash-templates-first` PreToolUse hook with `/templates-ack` bypass (#519), Slopcheck against LLM-hallucinated package names (#520), bounded auto-fix loop with diagnostics-bundle (#521).
-- **Persona-Panel Foundation** — parallel multi-persona review skill + `/persona-panel` command + 4 reusable persona templates (buyer / expert / compliance / custom). Three reconciliation modes: voting-quorum, hard-gate-threshold, coordinator-summary.
-- **Anthropic + Superpowers ecosystem** — `/brainstorm` (Socratic design dialogue), `/debug` (4-phase Iron-Law root-cause), `write-executable-plan` skill, two new always-on rules (`verification-before-completion`, `receiving-review`), `operator-steer` mid-wave-guidance hook, in-process MCP docs, OTel `gen_ai.*` aliases on subagents.jsonl, security-reviewer FP-reduction 35→15%.
-- **harness-audit + repo-audit + portfolio** — `/harness-audit` (Anthropic 8-category large-codebase rubric), `/repo-audit` (9-category baseline compliance), `/portfolio` (cross-repo health from vault `01-projects/`).
-- **`/memory-cleanup`** — Manual Dream-equivalent memory consolidation skill ported from personal user-config into the plugin so all users get it.
-- **Privacy-first pre-commit hook (#494)** — `.husky/pre-commit` invokes the same owner-leakage scanner CI uses, closing the `git add <leak> && git commit` gap. Regression test asserts the hook contains the scanner invocation; E2E tests plant leaks in tmp git repos and assert commits are blocked.
+- **Pi harness adapter (v3.9.0, #639)** — Session Orchestrator now runs under [earendil-works/pi](https://pi.dev) like Codex and Cursor: `pi/` prompt-wrapper surface, a Pi native-hook bridge, `scripts/pi-install.mjs`, and `hooks/hooks-pi.json`. Platform/config/state resolution recognise the `.pi` marker dir + `PI_*` env vars — additive, no change to the other three runtimes.
+- **Cross-repo vault-status board + free-repo dispatcher (Epic #673, on `main`)** — a live `_active-sessions.md` board in your vault shows which repos have a session in flight; `/dispatcher` enumerates candidate repos below a confinement root, ranks the FREE ones by backlog × staleness × readiness, recommends one, and claims its lease atomically. Dispatcher-autonomy is config-gated and **fail-closed / off by default** (a suitability verdict must pass before any autonomous launch).
+- **Skill-evolution autonomy (Epic #643)** — opt-in self-evolution gate: the engine may auto-apply only the `command-count` drift shape on the root instruction file, behind a quadruple gate (autonomy ∧ safe-posture ∧ gate-green ∧ evidence-floor). Plugin / local-skill / remote targets are always MR-only.
+- **Parallel-session detection hardening (Epic #583, v3.8.0)** — mechanical `session.lock` acquisition on every `SessionStart`, heartbeat-based liveness (replacing fragile PID-liveness), semantic session ids (`<branch>-<date>-<mode>-<n>`), and a STATE.md peer-guard — so two concurrent sessions in one repo can no longer stomp each other's wave state.
+- **Native-autonomy ADR-0010 + `/loop` anchoring (v3.9.0, #633)** — per-primitive verdicts for Claude Code's autonomy family (`/loop` = Adopt, `/goal` = Adapter, `/batch` = Stay, `/background` = Adapter), a vendorable `templates/_shared/loop.md` baseline, and the always-on `loop-and-monitor.md` routing rule.
+- **GitHub public-safety + green CI (v3.8.0)** — restored a clean public mirror: dropped the never-green `windows-latest` leg (the orchestrator is POSIX-first), extended the owner-leakage scanner (full RFC1918 detection + dash-encoded-path P9), and removed committed session-exhaust artifacts.
+- **agent-status side-channel + sunset-review (v3.9.0, #565, #444)** — a lean per-agent status push helper (cross-process-race-tested) and a read-only surface walker that classifies the skill/agent/command inventory into Active / Investigate / Demote / Retire.
+- **Host-local privacy-clean paths (#653)** — vault-dir and baseline-path now resolve `env > owner.yaml > committed default`, so a machine can point the plugin at host-local paths without ever committing a personal home path.
 
-For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous releases: v3.6.0 (2026-05-14), v3.5.0 (2026-05-09), v3.4.0 (2026-05-08), v3.3.0 (2026-04-30).
+For the full version history see [CHANGELOG.md](CHANGELOG.md). For previous releases: v3.7.0 (2026-05-23), v3.6.0 (2026-05-14), v3.5.0 (2026-05-09), v3.4.0 (2026-05-08).
 
 ### Claude Code 2.1.x adoption matrix (condensed)
 
@@ -208,8 +209,8 @@ Full table and follow-ups in `CLAUDE.md` (or `AGENTS.md` on Codex CLI / Pi) and 
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>40 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>20 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>41 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>21 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -221,9 +222,9 @@ flowchart LR
 
 ## Components
 
-**Skills (40 user-facing).** Lifecycle: `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`. Authoring: `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`. Planning & discovery: `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`. Architecture: `architecture`, `domain-model`, `ubiquitous-language`. Cross-session: `evolve`, `convergence-monitoring`, `memory-cleanup`, `sunset-review`. Vault & docs: `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`. Ecosystem: `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`. Testing: `test-runner`, `playwright-driver`, `peekaboo-driver`. Content review: `persona-panel`. Visualization: `tmux-layout` (opt-in, operator side-channel — ADR-0007).
+**Skills (41 user-facing).** Lifecycle: `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`. Authoring: `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`. Planning & discovery: `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`. Architecture: `architecture`, `domain-model`, `ubiquitous-language`. Cross-session: `evolve`, `convergence-monitoring`, `memory-cleanup`, `sunset-review`. Vault & docs: `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`. Ecosystem: `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`. Testing: `test-runner`, `playwright-driver`, `peekaboo-driver`. Content review: `persona-panel`. Visualization: `tmux-layout` (opt-in, operator side-channel — ADR-0007).
 
-**Commands (20).** `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`.
+**Commands (21).** `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`.
 
 **Agents (14 typed sub-agents).** `code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`.
 
@@ -237,7 +238,7 @@ flowchart LR
 
 **Pi.** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, and `scripts/pi-install.mjs`.
 
-**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 9303+ tests.
+**Scripts.** Deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, autopilot-multi) plus migration helpers (`vault-consolidate.mjs` — vault folding [#499](https://github.com/Kanevry/session-orchestrator/issues/499); `migrate-vault-paths.mjs` — username-drift path repair [#499]; `migrate-cold-start-seed.mjs` — seeds welcome-banner markers in dormant repos [#507](https://github.com/Kanevry/session-orchestrator/issues/507)) plus shared lib (`scripts/lib/*.mjs`) plus a vitest suite of 9882+ tests.
 
 ### `/harness-audit` — Anthropic large-codebase rubric
 
@@ -344,7 +345,7 @@ Clone, install, verify in three commands:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git && cd session-orchestrator
 npm install
-npm test        # vitest, 9303 tests
+npm test        # vitest, 9882 tests
 ```
 
 Additional scripts:
@@ -407,7 +408,7 @@ The plugin is free and MIT. The courses are for going deeper, not a requirement 
 
 For the live runtime SSOT, see [`CLAUDE.md`](./CLAUDE.md):
 
-- `## Current State` block (active epic, test count, backlog snapshot, recent sessions)
+- `## Current State` block — state-free by design: pointers to the live SSOTs (README badges for version + test/coverage, `.orchestrator/metrics/sessions.jsonl` for per-session metrics, the vault decisions log for narrative) rather than inline numbers that drift
 - `## Session Config` block (read at runtime by `skills/_shared/config-reading.md`)
 
 On Codex CLI the same file is `AGENTS.md`. Resolution rule: [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md).
