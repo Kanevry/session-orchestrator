@@ -353,6 +353,53 @@ if (probe.status === 'pending') {
 
 **RE-TRIGGER:** `/bootstrap --owner-reset` sets `force: true` in `runOwnerInterview`, archives the existing yaml to `owner.yaml.bak-<timestamp>`, and re-runs the 5 questions.
 
+## Phase 3.5.1: Dispatcher-Autonomy Capture (one-time, per-repo)
+
+> Closes session-orchestrator issue #681 (Epic #673 P3 — one-time per-repo dispatcher-autonomy capture). Cross-reference `.claude/rules/ask-via-tool.md` (AUQ via tool, not prose).
+
+**WHEN:** Runs after Phase 3.5 (Owner Persona Interview) and after the tier template has scaffolded `CLAUDE.md` (Phase 3 / Phase 3.3). A new project's CLAUDE.md never contains the committed `dispatcher-autonomy:` block, so bootstrap **always asks** — the presence guard below is belt-and-suspenders for re-runs.
+
+**WHY (one-time guard):** The committed `## Dispatcher Autonomy` block is the never-re-ask marker. Detect "block absent" via `isDispatcherAutonomyBlockPresent($CLAUDE_MD_CONTENT)` — a raw `/^dispatcher-autonomy:\s*$/m` presence check on the file content. Do NOT use the resolved autonomy value from `$CONFIG` (it returns `'off'` for BOTH "absent" AND "present-with-off" and cannot distinguish first-run from a deliberate `off`).
+
+> **The guard is gated purely on committed-block PRESENCE, never on the resolved value.** A machine whose effective autonomy differs from the committed default — because `SO_DISPATCHER_AUTONOMY` or `owner.yaml` `dispatcher.autonomy` overrides it — STILL counts as "captured" the moment the committed block exists, and is never re-asked. Conversely a host with `owner.yaml` `dispatcher.autonomy` set but NO committed block is still asked once: a host-local override does NOT satisfy the migration guard; only the committed CLAUDE.md / AGENTS.md block does. Even a header-present-but-body-malformed block counts as PRESENT (a malformed block is the operator's to fix, not a re-prompt trigger).
+
+**WHAT:** The coordinator dispatches ONE `AskUserQuestion` using the definition from `scripts/lib/config/dispatcher-autonomy-capture.mjs`:
+
+- **Dispatcher autonomy** — `off` (Recommended, fail-closed) | `advisory` | `autonomous-gated`
+
+On **any** answer (including `off`) the committed block is written, presented, and never re-asked. The writer persists ONLY the committed default — host-local overrides (`SO_DISPATCHER_AUTONOMY` env, `owner.yaml` `dispatcher.autonomy`) stay host-local and NEVER land in CLAUDE.md.
+
+> **Capture writes the committed default; the runtime value flows through `resolveDispatcherAutonomy`.** This phase only persists the operator's one-time choice as the committed baseline. The EFFECTIVE autonomy at run time is resolved separately by `resolveDispatcherAutonomy()` in `scripts/lib/config/dispatcher-autonomy.mjs` with host-local precedence `SO_DISPATCHER_AUTONOMY` env > `owner.yaml` `dispatcher.autonomy` > committed > `off` (#653 pattern). Capture never reads or writes those override tiers — it writes the committed tier only.
+
+**AUQ (mandatory — use the tool, not prose):** On Claude Code / Cursor IDE, dispatch this via the **`AskUserQuestion` tool** per `.claude/rules/ask-via-tool.md` (AUQ-001) — never an inline markdown "choose 1/2/3" list. Option 1 (`off`) is the recommended, fail-closed default. Only Codex CLI (no `AskUserQuestion`) falls back to a numbered-list prose prompt (AUQ-004 exception 1).
+
+**HOW (coordinator steps):**
+
+```js
+import {
+  getDispatcherAutonomyQuestion,
+  isDispatcherAutonomyBlockPresent,
+  writeDispatcherAutonomyBlock,
+} from '$PLUGIN_ROOT/scripts/lib/config/dispatcher-autonomy-capture.mjs';
+import { readFileSync } from 'node:fs';
+
+const claudeMdPath = `${REPO_ROOT}/CLAUDE.md`;
+const content = readFileSync(claudeMdPath, 'utf8');
+if (!isDispatcherAutonomyBlockPresent(content)) {
+  const q = getDispatcherAutonomyQuestion(); // option 1 = 'off' (Recommended, fail-closed)
+  // Claude Code / Cursor: dispatch AskUserQuestion([q]) (the TOOL — AUQ-001); collect the
+  //   selected label (the `autonomy` enum). Never an inline numbered-list prose question here.
+  // Codex CLI fallback only (no AskUserQuestion — AUQ-004 exception 1): print q.question +
+  //   numbered q.options list, read the operator's pick, map it to the option label.
+  const autonomy = /* selected option label: 'off' | 'advisory' | 'autonomous-gated' */;
+  const result = writeDispatcherAutonomyBlock({ claudeMdPath, autonomy });
+  // result: { written: true, path } on first write; { written: false, reason: 'already-present' }
+  //   on no-op (block — even a malformed one — already present; defensive double-write guard).
+}
+```
+
+**WHERE:** Appended as a standalone `## Dispatcher Autonomy` H2 in the repo's committed `CLAUDE.md` (NOT a key inside `## Session Config` — the standalone-H2 placement keeps `claude-md-drift-check` Check-6 parity green).
+
 ## Phase 3.6: (Optional) Rules-Fetch Bridge
 
 > Closes session-orchestrator issue #110.

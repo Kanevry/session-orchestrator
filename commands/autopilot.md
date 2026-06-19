@@ -13,6 +13,25 @@ You are entering autonomous session-orchestration mode. The user has invoked `/a
 
 Production `sessionRunner` callers MUST persist `args.autopilotRunId` into the per-iteration `sessions.jsonl` record (additive optional field, schema_version 1 compatible). Manual sessions write `null` or omit the field — readers treat both identically.
 
+## Verdict-Gated Launch (dispatcher handoff — #682)
+
+When the cross-repo dispatcher (`/dispatcher`) routes into an autopilot launch, a
+**pre-loop suitability verdict** decides whether the launch proceeds WITHOUT per-selection
+confirmation. The dispatcher launches autonomously ONLY when the effective dispatcher
+autonomy is `autonomous-gated` AND the verdict is green (`suitable === true`); in EVERY
+other case it informs the operator (rationale + warnings) and asks before launch
+(fail-closed — see `skills/dispatcher/SKILL.md § Phase 1.5`). This is **opt-in by design**:
+the autonomy dial defaults to `off`, and a direct `/autopilot` invocation is always
+operator-initiated.
+
+The verdict gate is a PRE-LAUNCH decision computed once at the handoff via
+`computeSuitabilityVerdict(...)` (`scripts/lib/autonomy/suitability.mjs`) over the effective
+dial from `resolveDispatcherAutonomy(...)` (`scripts/lib/config/dispatcher-autonomy.mjs`).
+It does NOT add or modify any of the 10 per-iteration kill-switches — those are reused
+unchanged once the loop is running. The verdict's kill-switch-rate gate reads this repo's
+recent run history via `readRecentAutopilotRuns(...)`
+(`scripts/lib/autopilot/recent-runs.mjs`).
+
 ## Argument Parsing
 
 Parse `$ARGUMENTS` for these flags. Unrecognized flags are ignored. Out-of-range values silently clamp to bounds.

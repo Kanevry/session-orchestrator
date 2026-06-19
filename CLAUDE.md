@@ -136,3 +136,11 @@ skill-evolution:
   autonomy: autonomous-gated      # off | advisory | autonomous-gated — armed (#652)
   evidence-floor: 0.5             # float 0.0..1.0 — min evidence before an autonomous-gated repair acts
   judge: off                      # opt-in session-end LLM-judge (advisory only); default off
+
+## Dispatcher Autonomy <!-- consistency:exempt:parity-exempt-dispatcher-autonomy-block -->
+
+> **Parity-exempt section** (Epic #673, #679). Intentionally OUTSIDE `## Session Config` so `claude-md-drift-check` Check-6 (session-config-parity) does not flag repos that have not adopted this feature — `scripts/lib/config/dispatcher-autonomy.mjs` parses it independently of the `## Session Config` boundary. This committed block is the one-time capture of #681 (dogfooded here); its PRESENCE is the never-re-ask marker, so session-start Phase 1.1's migration trigger will not re-prompt. The value is `off` — fail-closed, no behaviour change, identical to this repo's de-facto state before adoption. The effective autonomy resolves host-locally `SO_DISPATCHER_AUTONOMY` env > `owner.yaml` `dispatcher.autonomy` > committed > `off` (#653 pattern), so a machine may opt this repo into `advisory`/`autonomous-gated` without editing this block.
+
+dispatcher-autonomy:
+  autonomy: off            # off | advisory | autonomous-gated — default off (fail-closed)
+  confidence-floor: 0.5    # float 0.0..1.0
