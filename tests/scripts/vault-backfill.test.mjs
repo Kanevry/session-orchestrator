@@ -30,6 +30,8 @@ import { tmpdir, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { isRoot } from '../_helpers/perms.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -353,7 +355,8 @@ describe('headless --yes all-skip mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('write failure handling', () => {
-  it.skipIf(process.platform === 'win32')(
+  // skipIf root/perms-not-enforced: chmod-readonly cannot force a write failure when the process bypasses permission bits (CI runs as root)
+  it.skipIf(process.platform === 'win32' || isRoot)(
     '--apply to read-only out-dir → exit 2 with write-failed action',
     () => {
       setupTemplateDir(tmpBase);

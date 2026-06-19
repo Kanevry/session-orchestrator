@@ -30,6 +30,8 @@ import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { isRoot } from '../../_helpers/perms.mjs';
+
 import { runRepairEngine } from '@lib/skill-evolution/engine.mjs';
 import { extractCandidates } from '@lib/skill-evolution/candidate-intake.mjs';
 
@@ -400,7 +402,8 @@ describe('engine control-flow (W3 fixes)', () => {
     expect(seams.markProcessed).not.toHaveBeenCalled();
   });
 
-  it('transient write failure (read-only target) → no-op, NOT stamped, NOT counted as applied (re-tryable)', async () => {
+  // skipIf root/perms-not-enforced: chmod-readonly cannot force a write failure when the process bypasses permission bits (CI runs as root)
+  it.skipIf(isRoot)('transient write failure (read-only target) → no-op, NOT stamped, NOT counted as applied (re-tryable)', async () => {
     // Make the CLAUDE.md unwritable so the atomic rename onto it fails. We keep
     // the FILE readable (the swap is computed) but the DIRECTORY read-only so
     // the tmp-file write / rename fails → reason 'write failed' → W3 FIX2 no-op.

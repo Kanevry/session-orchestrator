@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { isRoot } from '../_helpers/perms.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -611,7 +612,11 @@ describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () =>
       await fs.chmod(activeDir, 0o755);
       const logPath = path.join(badRegistryDir, 'sweep.log');
       const exists = await fs.access(logPath).then(() => true).catch(() => false);
-      if (exists) {
+      // skipIf root: under root the 0o555 dir does not block deregisterSelf, so it
+      // succeeds and emits no deregister-failed breadcrumb. The hook-still-exits-0
+      // contract above still runs under root; only this perm-dependent breadcrumb
+      // assertion is gated. (CI runs as root.)
+      if (exists && !isRoot) {
         const raw = await fs.readFile(logPath, 'utf8');
         const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const failed = entries.find((e) => e.event === 'deregister-failed');

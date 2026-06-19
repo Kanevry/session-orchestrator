@@ -39,6 +39,8 @@ import {
 } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
+
+import { isRoot } from '../_helpers/perms.mjs';
 import {
   acquireStateLock,
   releaseStateLock,
@@ -425,7 +427,8 @@ describe('withStateMdLock — Group D: structured error codes', () => {
     expect(disk.holder).toBe('blocker');
   });
 
-  it('throws with err.code === "STATE_LOCK_FS_ERROR" when the .orchestrator/ dir is not writable', async () => {
+  // skipIf root/perms-not-enforced: chmod-readonly cannot force a write failure when the process bypasses permission bits (CI runs as root)
+  it.skipIf(isRoot)('throws with err.code === "STATE_LOCK_FS_ERROR" when the .orchestrator/ dir is not writable', async () => {
     const orchDir = join(repoRoot, '.orchestrator');
     // Make the dir un-writable so the lock file cannot be created.
     chmodSync(orchDir, 0o444);

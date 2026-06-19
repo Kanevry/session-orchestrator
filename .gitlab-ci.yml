@@ -170,8 +170,8 @@ test:
   <<: *node-setup
   stage: test
   interruptible: true
-  parallel: 3    # 3 shards — GitLab injects CI_NODE_INDEX (1-based) + CI_NODE_TOTAL=3
-  timeout: 15m   # per-shard ceiling over the inner 660s per-shard vitest cap
+  parallel: 4    # 4 shards — GitLab injects CI_NODE_INDEX (1-based) + CI_NODE_TOTAL=4
+  timeout: 20m   # per-shard ceiling over the inner 900s per-shard vitest cap
   script:
     # Pass/fail is read from vitest's machine-readable JSON result via a
     # FAIL-CLOSED verifier — never by grepping stdout markers. The old
@@ -182,33 +182,38 @@ test:
     # failures with `×`). Same silent-regression class as the 8-pipeline incident
     # (CLAUDE.md Critical Gotchas). See scripts/ci/assert-vitest-green.mjs.
     #
-    # SHARDED (3 shards × 660s): on the shared Mac shell-executor the full
-    # ~9951-test suite runs ~31s locally but up to ~1122s (36×) under CPU
-    # contention — a single job's inner `timeout` killed vitest before it wrote
-    # the onFinished JSON, so the verifier (correctly) failed CLOSED on the
-    # missing file even though the code was green locally. The prescribed fix
-    # (testing.md § Shared-Hardware Runner Contention) is to SHARD the suite,
-    # NOT to widen the timeout blindly: `parallel: 3` splits the ~450 files into
-    # three independent ~150-file shards via vitest's `--shard=i/n`, each on its
-    # own runner. Each shard self-verifies its own JSON with a per-shard floor.
+    # SHARDED (4 shards × 900s) on the Hetzner Linux autoscaler (tags: hetzner-auto,
+    # Docker node:24 — runs as ROOT). The full ~10008-test suite is slow on a small
+    # autoscaled instance; a single un-sharded job's inner `timeout` killed vitest
+    # before it wrote the onFinished JSON, so the verifier (correctly) failed CLOSED
+    # on the missing file even though the code was green locally. The fix is to SHARD
+    # the suite, NOT to widen blindly: `parallel: 4` splits the ~450 files into four
+    # independent shards via vitest's `--shard=i/n`, each on its own autoscaled runner.
+    # Each shard self-verifies its own JSON with a per-shard floor.
     #
-    # The JSON file is written by vitest at onFinished — after all tests run but
-    # before any tinypool exit-hang (legacy vitest-2.1.9 #268; fixed on vitest 4):
+    # Cap history: pipeline #5844 ran 3 shards × 660s — shard 2/3 took 675s > 660s
+    # (uneven file-weight: vitest --shard splits by file COUNT, not duration, so one
+    # shard collected the heavy cross-process/lock/backfill files) → killed → ENOENT.
+    # Fix: 4 shards (smaller per-shard weight) + a 900s inner cap (headroom over the
+    # observed 675s). NOTE the runner runs as ROOT, so chmod-readonly-to-force-a-write-
+    # failure tests are guarded with skipIf(isRoot) (tests/_helpers/perms.mjs) — root
+    # bypasses permission bits, which previously surfaced as real shard failures.
+    #
+    # The JSON file is written by vitest at onFinished — after all tests run:
     #   - real failures            → JSON success:false  → verifier exits 1
     #   - run truncated/killed      → JSON absent/partial → verifier fails CLOSED
     #   - post-completion exit-hang → JSON success:true   → verifier passes (the
     #                                 hung non-zero exit is swallowed by `|| true`)
-    # The inner per-shard `timeout` (660s) must EXCEED a single shard's true
-    # runtime so vitest reaches onFinished and writes the JSON. The per-shard
-    # files are suffixed with $CI_NODE_INDEX so parallel shards reusing the same
-    # shell-executor host cannot clobber one another's result/log.
+    # The inner per-shard `timeout` (900s) must EXCEED a single shard's true runtime
+    # so vitest reaches onFinished and writes the JSON. Per-shard result/log files are
+    # suffixed with $CI_NODE_INDEX so concurrent shards never clobber one another.
     #
-    # Per-shard floor --min-tests=1500: ~9951/3 ≈ 3317 real tests per shard, so
-    # 1500 still clears the genuine subset while catching a truncated/empty shard.
-    # On a hang the verifier is passed --log so it names the test files that were
-    # in-flight at the kill (self-diagnosing) instead of a bare ENOENT.
+    # Per-shard floor --min-tests=1500: ~10008/4 ≈ 2502 real tests per shard, so 1500
+    # still clears the genuine subset while catching a truncated/empty shard. On a hang
+    # the verifier is passed --log so it names the test files that were in-flight at the
+    # kill (self-diagnosing) instead of a bare ENOENT.
     - 'rm -f /tmp/vitest-result-$CI_NODE_INDEX.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 660s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
+    - 'timeout --preserve-status 900s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
     - 'tail -40 /tmp/vitest-$CI_NODE_INDEX.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result-$CI_NODE_INDEX.json --min-tests=1500 --log=/tmp/vitest-$CI_NODE_INDEX.log'
   rules:
