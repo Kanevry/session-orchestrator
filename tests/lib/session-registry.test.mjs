@@ -3,6 +3,7 @@ import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir } from 'node:fs/
 import path from 'node:path';
 import os from 'node:os';
 
+import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 import {
   registryBaseDir,
   activeDir,
@@ -289,9 +290,14 @@ describe('session-registry', () => {
     it('is non-throwing even when the log path is unwritable', () => {
       if (process.platform === 'win32') return;
       const origEnvVal = process.env.SO_SESSION_REGISTRY_DIR;
-      // /proc/nonexistent-so-test-dir cannot be created — mkdir will fail,
-      // appendFileSync will also fail, but logSweepEvent must swallow both.
-      process.env.SO_SESSION_REGISTRY_DIR = '/proc/nonexistent-so-test-dir';
+      // A path under /dev/null (a char device) makes mkdir fail FAST with
+      // ENOTDIR for both root and non-root; logSweepEvent must swallow both the
+      // mkdir + the appendFileSync failure. Do NOT use a '/proc/nonexistent-…'
+      // path here: as root (CI runs as uid 0) mkdirSync({recursive}) into procfs
+      // HANGS the event loop synchronously — an un-interruptible stall that no
+      // testTimeout can catch (it stalled an entire CI shard for >18 min). See
+      // tests/_helpers/unwritable-path.mjs and #685.
+      process.env.SO_SESSION_REGISTRY_DIR = unwritablePath('so-registry-test-dir');
       try {
         expect(() => {
           logSweepEvent({ event: 'register-failed', session_id: 'x', error: 'boom' });
