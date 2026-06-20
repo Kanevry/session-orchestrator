@@ -767,6 +767,31 @@ frontend-slop-hook:
 
 **Cross-reference:** detector rule markers (`<!-- rule:<id> -->`) live in `.claude/rules/frontend.md` (Absolute Bans / Motion / Layout sections). Mirrors the opt-in / default-on contrast against `loop-guard`.
 
+## Instruction Budget (#687)
+
+Always-on directive-budget banner. At session-start Phase 4 the probe (`scripts/lib/instruction-budget-guard.mjs`, `checkInstructionBudget`) sums the structural directives (bullets, ordered items, headings ≥ depth 2 — fenced code and YAML frontmatter excluded) across the always-on `.claude/rules/*.md` files (membership delegated to `rule-loader.mjs`; glob-scoped rules excluded) and renders a **warn-only / non-blocking** banner when the total **exceeds** `ceiling`. It is a *growth-ratchet*: the current baseline (~457 structural directives across 11 always-on rules) sits under the default ceiling of `480`, so the banner is silent today and only fires when NEW always-on directives push the count over the ceiling — "mechanism over discipline". Default ON (this is a guard, not an opt-in feature) — set `enabled: false` or `mode: off` to silence it.
+
+All fields live under a top-level `instruction-budget` object inside the `## Session Config` block of your host file (`CLAUDE.md` or `AGENTS.md`):
+
+```yaml
+instruction-budget:
+  enabled: true            # default on (growth-ratchet guard)
+  ceiling: 480             # structural-directive ceiling
+  mode: warn               # warn (surface banner) | off (silent no-op)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `instruction-budget.enabled` | boolean | `true` | Master toggle. `false` → the Phase 4 probe returns `null` (no banner). Default on because this is a structural-drift guard, not an opt-in feature. Issue #687. |
+| `instruction-budget.ceiling` | integer | `480` | Structural-directive ceiling. The banner fires only when the always-on count **strictly exceeds** this. The default `480` is an operator-chosen ratchet just above the ~457 baseline, leaving headroom for normal edits while catching unchecked growth. A config value `≤ 0` falls back to the default. |
+| `instruction-budget.mode` | `warn` \| `off` | `warn` | `warn` surfaces the banner alongside the other Phase 4 banners; `off` is a silent no-op (equivalent to `enabled: false`). Any value other than `off` resolves to `warn`. |
+
+**Behaviour on config-load failure:** if no instruction file is found (or it is unreadable), the probe falls back to `{ enabled: true, ceiling: 480, mode: warn }` and still computes — graceful, like the other session-start probes. The wrapper never throws.
+
+**Why a ratchet, not in-repo glob-respecting injection:** the Claude Code harness injects ALL `.claude/rules/*.md` into the coordinator context regardless of each rule's `globs:` frontmatter (`rule-loader.mjs` governs only the PER-WAVE surface). The repo cannot make the harness respect `globs:` for coordinator injection — see `docs/research/2026-06-20-687-instruction-budget-mechanism.md`. The directive-budget ratchet is therefore the one in-repo, mechanism-over-discipline lever; physically trimming/merging rule files is tracked separately in #688.
+
+**Used by:** session-start Phase 4 (`skills/session-start/SKILL.md`). Probe: `scripts/lib/instruction-budget-guard.mjs`.
+
 ## Hook Runtime Profile Control (#211)
 
 Control which hooks run at runtime via environment variables — no settings-file edits required.

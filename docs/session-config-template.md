@@ -721,6 +721,12 @@ loop-guard:
   threshold: 3             # identical (tool+argsHash) calls within window before warn
   window: 5                # ring-buffer size
 
+# Always-on instruction-budget guard (#687) — session-start Phase 4, warn-only, growth-ratchet
+instruction-budget:
+  enabled: true            # always-on directive-budget banner; off-by-config silences it
+  ceiling: 480             # structural-directive ceiling (baseline ~457; ratchet guards growth)
+  mode: warn               # warn (surface banner) | off (silent no-op)
+
 # Config-protection guard (ecc-analysis / #622)
 config-protection:
   enabled: true            # PreToolUse: warn on gate-weakening Edit/Write

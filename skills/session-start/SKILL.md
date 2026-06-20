@@ -683,7 +683,9 @@ Group issues by:
 
    Cross-reference: `.claude/rules/loop-and-monitor.md` (when to use `/loop` vs Monitor vs Routines) and issue #633.
 
-   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install), skip silently.
+   Additionally, invoke the instruction-budget probe (`scripts/lib/instruction-budget-guard.mjs`) via `checkInstructionBudget({ repoRoot })`. The helper returns `null` (silent no-op) when the always-on directive count is at or under the configured ceiling, or on any read failure. When a non-null result is returned (`{ severity: 'warn', message }`), render `result.message` alongside the other banners. Non-blocking. Cross-reference: `docs/audit/2026-06-20-instruction-budget-audit.md` and issue #687.
+
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 

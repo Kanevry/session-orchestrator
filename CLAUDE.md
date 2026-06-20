@@ -115,6 +115,10 @@ loop-guard:
   enabled: true                  # ecc-analysis (#619) — PostToolUse runaway tool-loop detector (warn-only, non-blocking); profile-gate also applies
   threshold: 3                   # identical (tool+argsHash) calls within window before a loop-warning fires
   window: 5                      # ring-buffer size (recent tool calls tracked per session)
+instruction-budget:
+  enabled: true                  # #687 — session-start Phase 4 always-on directive-budget banner (warn-only, non-blocking, growth-ratchet)
+  ceiling: 480                   # structural-directive ceiling; banner fires when always-on count exceeds this (baseline ~457; ratchet guards against growth)
+  mode: warn                     # warn (surface banner) | off (silent no-op)
 config-protection:
   enabled: true                  # ecc-analysis (#622) — PreToolUse guard: warn when an Edit/Write LOOSENS a quality gate (eslint/vitest/tsconfig/gitleaks/...)
   mode: warn                     # warn (stderr + event, exit 0) | strict (block loosening edits, exit 2)

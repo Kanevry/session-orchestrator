@@ -2,6 +2,29 @@
 
 Multiple Claude Code sessions may be active in the same working directory simultaneously. Another agent may be editing files, creating commits, or running builds right now. Treat the repo as a shared workspace, not a private sandbox.
 
+## PSA Scope Axes — Operator-Session vs In-Run
+
+PSA rules span two distinct axes. Naming them keeps the durable moat clear when
+native multi-agent primitives (the experimental `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`)
+overlap parts of this surface.
+
+- **Operator-session axis (the durable moat):** independent parallel operator /
+  Claude sessions in the **same working copy**. PSA-001..004, plus the per-repo
+  session lock (`scripts/lib/session-lock.mjs` `acquire()` / `session.lock`,
+  heartbeat-liveness schema v2), guard this domain. **Agent Teams structurally
+  cannot enter it** — Teams is per-process / in-run only ("one team per
+  session"), NOT per-repo. Its graduation to native affects **only the in-run
+  multi-agent coordination slice**, never the operator-session slice.
+- **In-run axis:** multiple agents coordinated inside a single session/run. Even
+  here our own machinery remains necessary because Agent Teams provides **no
+  automatic isolation**: file-scope deconfliction (`skills/session-plan/SKILL.md` —
+  "verify that NO two agents in the same wave modify the same file") plus
+  `withStateMdLock` STATE.md serialization still do the work Teams does not.
+
+PSA-005 spans **both** axes; only its session-lock half is purely
+operator-scoped. PSA-006 is **orthogonal** to both (Discovery grep-discipline).
+See ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped).
+
 ## Decision Tree — What To Do When You Detect Parallel Signals
 
 ```
@@ -32,6 +55,8 @@ Did I detect any parallel-session signal?
 
 ## PSA-001 — Aware (Passive Detection, No Pause)
 
+*Axis: operator-session safety — the durable moat Agent Teams structurally cannot enter (per-process / in-run only).*
+
 Detect and note parallel-session signals without interrupting your work. Continue normally when the signal does not overlap your owned files.
 
 **Signals to recognise:**
@@ -49,6 +74,8 @@ Detect and note parallel-session signals without interrupting your work. Continu
 ---
 
 ## PSA-002 — Pause (Active Conflict, Stop and Ask)
+
+*Axis: operator-session safety — the durable moat Agent Teams structurally cannot enter (per-process / in-run only).*
 
 When a parallel-session signal **directly overlaps your owned scope**, stop the current action and ask the user before proceeding.
 
@@ -71,6 +98,8 @@ When a parallel-session signal **directly overlaps your owned scope**, stop the 
 
 ## PSA-003 — Destructive Action Safeguards (Never Destroy What You Didn't Create)
 
+*Axis: operator-session safety — the durable moat Agent Teams structurally cannot enter (per-process / in-run only).*
+
 These commands require explicit user confirmation even in normal operation. When parallel work is suspected, they are **forbidden** without user approval:
 - **`git reset` (any form)** — destroys staged or committed work that may belong to another session.
 - **`git checkout -- <file>`** — discards uncommitted changes another session is actively building.
@@ -83,6 +112,8 @@ These commands require explicit user confirmation even in normal operation. When
 Before running any of the above, ask: "Did I create this file/commit/change? If not, it is not mine to touch."
 
 ## PSA-004 — Commit Discipline (Isolate Your Changes)
+
+*Axis: operator-session safety — the durable moat Agent Teams structurally cannot enter (per-process / in-run only).*
 
 - **Stage files individually** (`git add <file>`) rather than `git add .` or `git add -A`, which may sweep in another session's work.
 - **Review `git diff --cached` before committing** to verify every staged change is yours.
@@ -111,7 +142,17 @@ See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Iss
 
 **Epic #583 mechanical extension.** Since Epic #583, `session.lock` acquisition is also wired mechanically via `hooks/_lib/lock-bootstrap.mjs` (`bootstrapLock()`) invoked from `on-session-start.mjs` on every `SessionStart`. This closes the complementary gap in session-lock wiring: previously, `session.lock` was only written when the coordinator-LLM executed Phase 1.2 prose — a Disziplin-statt-Mechanik risk identical to the STATE.md write-race. Lock schema v2 also replaces PID-liveness with heartbeat-based liveness (`last_heartbeat` field), and surfaces `semantic_session_id` alongside the UUID `session_id` on Claude Code. See `skills/_shared/state-ownership.md § Session Lock Schema` for the full v2 field contract.
 
+**Scope axis.** PSA-005 spans **both** axes (see § PSA Scope Axes). Its
+**session-lock half** (`acquire()` / `session.lock`) is purely operator-scoped —
+"this repo working copy is occupied by an active session". Its **STATE.md
+write-lock half** (`withStateMdLock`) also protects **in-run** wave-executor
+checkpoints (session-start, inter-wave, session-end). Agent Teams' native
+graduation touches only the in-run half and provides no automatic STATE.md
+serialization, so this lock remains necessary on that axis too.
+
 ## PSA-006 — Discovery Grep-Verification (#555 FL-2)
+
+*Axis: orthogonal — Discovery grep-verification discipline, unrelated to operator-session vs in-run isolation (and unaffected by Agent Teams).*
 
 Discovery agents and W1 explorers MUST verify any distributional claim — "100% of callers opt-in", "N of M sites use pattern X", "no remaining references to Y", "all instances replaced", etc. — with an EXECUTED `grep` or `rg` invocation. The Discovery output MUST quote:
 
@@ -149,4 +190,4 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency)
+development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · docs/research/2026-06-20-native-overlap-verdicts.md § PSA re-scope
