@@ -1,3 +1,9 @@
+---
+globs:
+  - "**/lib/ai/**"
+  - "**/lib/llm/**"
+  - "**/providers/**"
+---
 # Prompt Caching Rules (Path-scoped — repos using `@anthropic-ai/sdk` or `@ai-sdk/anthropic`)
 
 > Path-scoped — applies anywhere a project imports `@anthropic-ai/sdk` or uses the `@ai-sdk/anthropic` provider. Out of scope: `session-orchestrator` itself (no SDK use; `backend.md` § "AI Provider Abstraction" already forbids direct SDK imports in business logic, and the orchestrator runs inside Claude Code's harness which manages caching at the platform layer).
