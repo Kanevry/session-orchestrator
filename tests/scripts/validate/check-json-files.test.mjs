@@ -5,7 +5,7 @@
  * Spawns the script as a child process and verifies exit codes + output shape.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,19 +33,22 @@ function makeFixture() {
 // ---------------------------------------------------------------------------
 
 describe('check-json-files.mjs — smoke against current repo', () => {
+  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
+  let r;
+  beforeAll(() => {
+    r = run(PLUGIN_REPO);
+  });
+
   it('exits 0 against the current plugin repo', () => {
-    const r = run(PLUGIN_REPO);
     expect(r.status).toBe(0);
   });
 
   it('emits 2 PASS lines (hooks + mcpServers)', () => {
-    const r = run(PLUGIN_REPO);
     expect(r.stdout).toContain('  PASS: hooks file is valid JSON');
     expect(r.stdout).toContain('  PASS: mcpServers file is valid JSON');
   });
 
   it('reports "Results: 2 passed, 0 failed"', () => {
-    const r = run(PLUGIN_REPO);
     expect(r.stdout).toContain('Results: 2 passed, 0 failed');
   });
 });

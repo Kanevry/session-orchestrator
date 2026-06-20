@@ -10,7 +10,7 @@
  *   - Fixture: mismatched declared vs tools → FAIL
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -232,13 +232,17 @@ describe('validateTierConsistency', () => {
 // ---------------------------------------------------------------------------
 
 describe('check-agents Check 8 — production agents', () => {
+  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
+  let r;
+  beforeAll(() => {
+    r = runCheckAgents(PLUGIN_REPO);
+  });
+
   it('exits 0 for the real plugin repo (all production agents have valid sandbox-tier)', () => {
-    const r = runCheckAgents(PLUGIN_REPO);
     expect(r.status).toBe(0);
   });
 
   it('emits ≥8 PASS lines for Check 8 (one per agent — floor/ceiling per test-quality.md dynamic-artifact-count carve-out)', () => {
-    const r = runCheckAgents(PLUGIN_REPO);
     const check8Pass = r.stdout
       .split('\n')
       .filter((l) => l.startsWith('  PASS:') && l.includes('sandbox-tier OK'));
@@ -247,7 +251,6 @@ describe('check-agents Check 8 — production agents', () => {
   });
 
   it('emits no FAIL lines for Check 8 in the real repo', () => {
-    const r = runCheckAgents(PLUGIN_REPO);
     const failLines = r.stdout
       .split('\n')
       .filter((l) => l.startsWith('  FAIL:') && l.includes('sandbox-tier'));

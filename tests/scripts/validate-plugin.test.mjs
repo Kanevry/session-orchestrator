@@ -9,7 +9,7 @@
  * git server dependency beyond the local repo.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -41,19 +41,23 @@ function run(args = []) {
 // ---------------------------------------------------------------------------
 
 describe('validate-plugin.mjs — current repo plugin', () => {
+  // Spawn once per describe — the heavy validator forks ~21 grandchild
+  // processes; re-spawning per it() flakes under loaded-runner contention.
+  let r;
+  beforeAll(() => {
+    r = run([REPO_ROOT]);
+  });
+
   it('exits 0 when run against the current repo plugin', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
   });
 
   it('reports "Results:" summary line on stdout', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('Results:');
   });
 
   it('reports at least 18 passed checks', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     // "Results: 19 passed, 0 failed" — extract the number
     const match = r.stdout.match(/Results:\s+(\d+)\s+passed/);
@@ -63,7 +67,6 @@ describe('validate-plugin.mjs — current repo plugin', () => {
   });
 
   it('reports 0 failed checks', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     const match = r.stdout.match(/(\d+)\s+failed/);
     expect(match).not.toBeNull();
@@ -72,14 +75,12 @@ describe('validate-plugin.mjs — current repo plugin', () => {
   });
 
   it('passes check-plugin-json gate (plugin.json exists and valid)', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('PASS: plugin.json exists');
     expect(r.stdout).toContain('PASS: plugin.json is valid JSON');
   });
 
   it('output includes PASS lines for agent frontmatter', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('PASS:');
     // At least one agent frontmatter pass line
@@ -87,7 +88,6 @@ describe('validate-plugin.mjs — current repo plugin', () => {
   });
 
   it('emits a closing separator line (=== block)', () => {
-    const r = run([REPO_ROOT]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('===========================================');
   });
@@ -207,13 +207,17 @@ describe('validate-plugin.mjs — invalid plugin.json', () => {
 // ---------------------------------------------------------------------------
 
 describe('validate-plugin.mjs — nonexistent plugin root', () => {
+  // Spawn once per describe — both it()s use identical args.
+  let r;
+  beforeAll(() => {
+    r = run(['/nonexistent/path/to/plugin']);
+  });
+
   it('exits 1 when the plugin-root path does not exist', () => {
-    const r = run(['/nonexistent/path/to/plugin']);
     expect(r.status).toBe(1);
   });
 
   it('reports FAIL: plugin.json not found for a nonexistent root', () => {
-    const r = run(['/nonexistent/path/to/plugin']);
     expect(r.status).toBe(1);
     expect(r.stdout).toContain('FAIL: plugin.json not found');
   });
@@ -237,28 +241,29 @@ function runComposerIconCheck(pluginRoot) {
 }
 
 describe('check-codex-plugin.mjs — composerIcon passes on real repo', () => {
+  // Spawn once per describe — all five it()s use identical args (REPO_ROOT).
+  let r;
+  beforeAll(() => {
+    r = runComposerIconCheck(REPO_ROOT);
+  });
+
   it('exits 0 against the current repo (icon file exists and is valid SVG)', () => {
-    const r = runComposerIconCheck(REPO_ROOT);
     expect(r.status).toBe(0);
   });
 
   it('emits PASS for composerIcon field present', () => {
-    const r = runComposerIconCheck(REPO_ROOT);
     expect(r.stdout).toContain('PASS: interface.composerIcon field is present');
   });
 
   it('emits PASS for composerIcon file exists', () => {
-    const r = runComposerIconCheck(REPO_ROOT);
     expect(r.stdout).toContain('PASS: composerIcon file exists at');
   });
 
   it('emits PASS for valid XML/SVG root', () => {
-    const r = runComposerIconCheck(REPO_ROOT);
     expect(r.stdout).toContain('PASS: composerIcon file is valid XML/SVG');
   });
 
   it('reports 3 passed, 0 failed', () => {
-    const r = runComposerIconCheck(REPO_ROOT);
     expect(r.stdout).toContain('3 passed, 0 failed');
   });
 });

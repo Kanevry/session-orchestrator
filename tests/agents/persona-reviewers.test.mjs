@@ -14,7 +14,7 @@
  *   - skills/wave-executor/wave-loop.md documents the wave-reviewer dispatch step
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -115,22 +115,23 @@ describe('#339 — agent YAML frontmatter structure', () => {
 // ─── Test 6: validate-plugin.mjs reports 0 failed ────────────────────────────
 
 describe('#339 — validate-plugin.mjs passes with all 3 agents present', () => {
-  it('exits 0 and reports 0 failed when run against the current repo', () => {
-    const result = spawnSync('node', ['scripts/validate-plugin.mjs', REPO_ROOT], {
+  // Spawn once per describe — validate-plugin.mjs forks ~21 grandchild
+  // processes; re-spawning per it() flakes under loaded-runner contention.
+  let result;
+  beforeAll(() => {
+    result = spawnSync('node', ['scripts/validate-plugin.mjs', REPO_ROOT], {
       encoding: 'utf8',
       cwd: REPO_ROOT,
       timeout: 30_000,
     });
+  });
+
+  it('exits 0 and reports 0 failed when run against the current repo', () => {
     expect(result.status, `validate-plugin.mjs exited ${result.status}; stderr: ${result.stderr}`).toBe(0);
     expect(result.stdout).toContain('0 failed');
   });
 
   it('validate-plugin.mjs stdout contains Results: summary line', () => {
-    const result = spawnSync('node', ['scripts/validate-plugin.mjs', REPO_ROOT], {
-      encoding: 'utf8',
-      cwd: REPO_ROOT,
-      timeout: 30_000,
-    });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Results:');
   });

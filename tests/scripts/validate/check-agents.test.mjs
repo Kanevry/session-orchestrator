@@ -5,7 +5,7 @@
  * Spawns the script as a child process and verifies exit codes + output shape.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,19 +50,22 @@ tools: Read, Edit, Write
 // ---------------------------------------------------------------------------
 
 describe('check-agents.mjs — smoke against current repo', () => {
+  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
+  let r;
+  beforeAll(() => {
+    r = run(PLUGIN_REPO);
+  });
+
   it('exits 0 against the current plugin repo', () => {
-    const r = run(PLUGIN_REPO);
     expect(r.status).toBe(0);
   });
 
   it('emits at least 7 PASS lines (one per agent .md file)', () => {
-    const r = run(PLUGIN_REPO);
     const passLines = r.stdout.split('\n').filter((l) => l.startsWith('  PASS:'));
     expect(passLines.length).toBeGreaterThanOrEqual(7);
   });
 
   it('reports 0 failed checks', () => {
-    const r = run(PLUGIN_REPO);
     const match = r.stdout.match(/Results:\s+\d+\s+passed,\s+(\d+)\s+failed/);
     expect(match).not.toBeNull();
     expect(parseInt(match[1], 10)).toBe(0);

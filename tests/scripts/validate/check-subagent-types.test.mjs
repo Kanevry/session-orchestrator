@@ -8,7 +8,7 @@
  * exercises the exported collector directly.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,13 +48,17 @@ function writeAgent(dir, name) {
 // ---------------------------------------------------------------------------
 
 describe('check-subagent-types.mjs — smoke against current repo', () => {
+  // Spawn once per describe — both it()s use identical args (PLUGIN_REPO).
+  let r;
+  beforeAll(() => {
+    r = run(PLUGIN_REPO);
+  });
+
   it('exits 0 against the current plugin repo', () => {
-    const r = run(PLUGIN_REPO);
     expect(r.status).toBe(0);
   });
 
   it('reports zero failures and surfaces a resolving PASS line', () => {
-    const r = run(PLUGIN_REPO);
     // Count is intentionally not pinned (the referenced-agent set grows); assert
     // a known-good resolution + absence of any FAIL instead.
     expect(r.stdout).toContain('PASS: session-orchestrator:session-reviewer → agents/session-reviewer.md');
