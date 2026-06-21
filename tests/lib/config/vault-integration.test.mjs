@@ -28,6 +28,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -36,6 +37,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -44,6 +46,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -53,6 +56,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
+        'vault-name': null,
       });
     });
   });
@@ -132,6 +136,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'strict',
+        'vault-name': null,
       });
     });
 
@@ -142,6 +147,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/v',
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -152,6 +158,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/v',
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -162,6 +169,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/v',
         mode: 'strict',
+        'vault-name': null,
       });
     });
   });
@@ -239,6 +247,46 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/Projects/Bernhard/vault',
         mode: 'warn',
+        'vault-name': null,
+      });
+    });
+  });
+
+  // vault-name sub-key (#660 namespace)
+  describe('block form — vault-name', () => {
+    it('parses vault-name when present', () => {
+      const content = `vault-integration:\n  enabled: true\n  vault-name: my-project\n`;
+      expect(_parseVaultIntegration(content)['vault-name']).toBe('my-project');
+    });
+
+    it('returns null for vault-name when key is absent', () => {
+      const content = `vault-integration:\n  enabled: true\n  vault-dir: ~/v\n`;
+      expect(_parseVaultIntegration(content)['vault-name']).toBeNull();
+    });
+
+    it('returns null for vault-name: null', () => {
+      const content = `vault-integration:\n  vault-name: null\n`;
+      expect(_parseVaultIntegration(content)['vault-name']).toBeNull();
+    });
+
+    it('returns null for vault-name: none', () => {
+      const content = `vault-integration:\n  vault-name: none\n`;
+      expect(_parseVaultIntegration(content)['vault-name']).toBeNull();
+    });
+
+    it('returns null for empty vault-name value', () => {
+      const content = `vault-integration:\n  vault-name: \n`;
+      expect(_parseVaultIntegration(content)['vault-name']).toBeNull();
+    });
+
+    it('parses vault-name alongside all three other fields', () => {
+      const content =
+        `vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: warn\n  vault-name: acme-corp\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/v',
+        mode: 'warn',
+        'vault-name': 'acme-corp',
       });
     });
   });
@@ -251,6 +299,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'warn',
+        'vault-name': null,
       });
     });
 
@@ -260,6 +309,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/A',
         mode: 'strict',
+        'vault-name': null,
       });
     });
 
@@ -277,6 +327,7 @@ describe('_parseVaultIntegration', () => {
         enabled: true,
         'vault-dir': '~/A',
         mode: 'strict',
+        'vault-name': null,
       });
     });
 
@@ -286,6 +337,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': '~/v',
         mode: 'off',
+        'vault-name': null,
       });
     });
 
@@ -310,6 +362,7 @@ describe('_parseVaultIntegration', () => {
         enabled: false,
         'vault-dir': null,
         mode: 'warn',
+        'vault-name': null,
       });
     });
   });

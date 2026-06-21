@@ -104,12 +104,14 @@
      # site is a read-only consumer.
      VM_QUALITY_NARRATIVE=$(echo "$CONFIG" | jq -r '."vault-mirror".quality."min-narrative-chars" // 400')
      VM_QUALITY_CONFIDENCE=$(echo "$CONFIG" | jq -r '."vault-mirror".quality."min-confidence" // 0.5')
+     VM_VAULT_NAME=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-name" // empty')
 
      VM_OUTPUT=$(node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
        --vault-dir "$VM_DIR" \
        --source .orchestrator/metrics/sessions.jsonl \
        --kind session \
        --session-id "$SESSION_ID" \
+       ${VM_VAULT_NAME:+--vault-name "$VM_VAULT_NAME"} \
        --quality-min-narrative-chars "$VM_QUALITY_NARRATIVE" \
        --quality-min-confidence "$VM_QUALITY_CONFIDENCE" 2>&1)
      VM_EXIT=$?

@@ -313,6 +313,7 @@ vault-integration:
   enabled: true
   vault-dir: ~/Projects/vault
   mode: warn
+  vault-name:                # optional (#660) — per-project vault namespace override
 ```
 
 > **Host-local override (#653).** `vault-dir` (and `plan-baseline-path`) resolve host-locally with precedence: env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > `owner.yaml` `paths:` section (`vault-dir` / `baseline-path`) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolver: `scripts/lib/config/host-paths.mjs`.
@@ -322,6 +323,7 @@ vault-integration:
 | `vault-integration.enabled` | boolean | `false` | If true, session-end and evolve skills invoke `vault-mirror.mjs` to sync learnings and sessions into the vault. When false (or missing), mirroring is skipped silently. |
 | `vault-integration.vault-dir` | string or null | `null` | Absolute path to the vault repository. Falls back to `$VAULT_DIR` env variable if not set. Required when `enabled` is true. |
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
+| `vault-integration.vault-name` | string or null | `null` | Optional override for the per-project vault namespace segment (#660). When set (or via CLI `--vault-name`), vault writes go to `40-learnings/<vault-name>/` and `50-sessions/<vault-name>/`, sanitised to a kebab slug. When null/absent, the namespace is derived from the git origin via `deriveRepo()`. Owner-privacy leaks (personal home path / private slug / personal name) are redacted to `redacted-repo`. NOT a filesystem path → NOT host-path-resolved. Resolver: `scripts/lib/vault-mirror/namespace.mjs` (`resolveRepoNamespace`). |
 | `vault-integration.gitlab-groups` | string[] or null | `null` | List of GitLab group paths to scan for repos missing `.vault.yaml`. Consumed by `scripts/vault-backfill.mjs` (via `readVaultIntegrationConfig()`) and the `/plan retro` vault-backfill sub-mode (`skills/plan/mode-retro.md` Phase 1.6 Step 1). When null/unset, the backfill CLI exits with a "no groups configured" notice. |
 
 ### Environment override: `VAULT_MIRROR_CANONICAL_SUFFIX`

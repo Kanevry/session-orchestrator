@@ -10,6 +10,7 @@ import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
+import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
 import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
 
@@ -156,10 +157,32 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     return;
   }
 
-  const targetDir = join(resolve(vaultDir), '40-learnings');
+  // #660: namespace new writes under a per-repo subdirectory.
+  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  const targetDir = join(resolve(vaultDir), '40-learnings', repoNs);
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   let targetPath = join(targetDir, `${slug}.md`);
+
+  // #660 IDEMPOTENCY DUAL-PROBE: before treating the namespaced path as absent,
+  // also check the legacy flat path. If a note with the same slug already exists
+  // in the flat layout (pre-namespace migration), treat it as existing to avoid
+  // duplicating the note. The deferred-migration decision means we only skip;
+  // we do NOT move the flat note into the namespaced dir here.
+  const legacyFlatPath = join(resolve(vaultDir), '40-learnings', `${slug}.md`);
+  if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
+    const legacyContent = readFileSync(legacyFlatPath, 'utf8');
+    const legacyFm = parseFrontmatter(legacyContent);
+    // Only skip if the flat note is ours (has our generator marker and matching id).
+    if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === slug) {
+      const entryUpdated = toDate(dateSource);
+      if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
+        emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: slug, vaultDir });
+        return;
+      }
+      // Updated date would advance — fall through to write into the namespaced path.
+    }
+  }
 
   if (existsSync(targetPath)) {
     const existingContent = readFileSync(targetPath, 'utf8');
@@ -298,7 +321,12 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     return;
   }
 
-  const targetDir = join(resolve(vaultDir), '50-sessions');
+  // #660: namespace new writes under a per-repo subdirectory.
+  // repoNs uses the sanitised, leak-guarded segment from namespace.mjs.
+  // Keep the existing `repo` value (deriveRepo()) for frontmatter unchanged —
+  // repoNs is ONLY used for the write path, not for the rendered content.
+  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  const targetDir = join(resolve(vaultDir), '50-sessions', repoNs);
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   // Canonical filename pattern (issue #343): `<session_id>.md` where session_id
@@ -307,6 +335,23 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // → uuid fallback). Historical filename inconsistencies in 50-sessions/ are
   // pre-existing on-disk artefacts and are NOT retroactively renamed here.
   const targetPath = join(targetDir, `${session_id}.md`);
+
+  // #660 IDEMPOTENCY DUAL-PROBE: check the legacy flat path before treating
+  // the namespaced path as absent. If a session note already exists flat
+  // (pre-namespace migration), skip creating a duplicate.
+  const legacyFlatPath = join(resolve(vaultDir), '50-sessions', `${session_id}.md`);
+  if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
+    const legacyContent = readFileSync(legacyFlatPath, 'utf8');
+    const legacyFm = parseFrontmatter(legacyContent);
+    if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === session_id) {
+      const entryUpdated = toDate(entry.completed_at);
+      if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
+        emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: session_id, vaultDir });
+        return;
+      }
+      // Updated date would advance — fall through to write into the namespaced path.
+    }
+  }
 
   if (existsSync(targetPath)) {
     const existingContent = readFileSync(targetPath, 'utf8');

@@ -771,14 +771,42 @@ function main() {
       }
 
       if (!args.skipSessionFiles) {
-        const sessionRegex = /50-sessions\/(\d{4}-\d{2}-\d{2}-[a-z0-9-]+)\.md/g;
+        // Dual-read: tolerate both flat legacy `50-sessions/<id>.md` AND
+        // per-repo namespaced `50-sessions/<repo>/<id>.md` (Issue #660).
+        const sessionRegex = /50-sessions\/(?:([a-z0-9][a-z0-9-]*)\/)?(\d{4}-\d{2}-\d{2}-[a-z0-9-]+)\.md/g;
         let m;
         while ((m = sessionRegex.exec(line)) !== null) {
-          const sessPath = join(vaultDir, '50-sessions', `${m[1]}.md`);
-          if (!existsSync(sessPath)) {
+          const repo = m[1]; // optional repo segment (undefined if flat reference)
+          const id = m[2];   // session date-slug
+          let found = false;
+          if (repo !== undefined) {
+            // Namespaced reference: only check the specific namespaced path.
+            found = existsSync(join(vaultDir, '50-sessions', repo, `${id}.md`));
+          } else {
+            // Flat reference: accept if the flat path exists OR if ANY per-repo
+            // subfolder contains a file with the same id (migration tolerance).
+            const flatPath = join(vaultDir, '50-sessions', `${id}.md`);
+            if (existsSync(flatPath)) {
+              found = true;
+            } else {
+              // Scan one level of subdirectories under 50-sessions/ for <id>.md.
+              const sessionsDir = join(vaultDir, '50-sessions');
+              try {
+                const subdirs = readdirSync(sessionsDir, { withFileTypes: true })
+                  .filter((e) => e.isDirectory())
+                  .map((e) => e.name);
+                found = subdirs.some((sub) =>
+                  existsSync(join(sessionsDir, sub, `${id}.md`))
+                );
+              } catch {
+                // sessionsDir does not exist or is unreadable — found stays false.
+              }
+            }
+          }
+          if (!found) {
             errors.push({
               check: 'session-file-existence', file: rel, line: lineNum,
-              message: `Referenced session file does not exist: 50-sessions/${m[1]}.md`,
+              message: `Referenced session file does not exist: ${m[0]}`,
               extracted: m[0],
             });
           }

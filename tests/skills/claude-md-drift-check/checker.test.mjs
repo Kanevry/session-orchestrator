@@ -225,6 +225,41 @@ describe('check 4: session-file-existence', () => {
     expect(j.checks_run).not.toContain('session-file-existence');
     expect(j.errors.filter((e) => e.check === 'session-file-existence').length).toBe(0);
   });
+
+  // Issue #660 dual-read: flat reference tolerated when note migrated to per-repo subfolder.
+  it('accepts flat reference when note exists under per-repo subfolder (migration)', () => {
+    mkdirSync(join(vault, '50-sessions', 'my-repo'), { recursive: true });
+    writeFileSync(join(vault, '50-sessions', 'my-repo', '2026-04-19-feat.md'), '# session\n');
+    // CLAUDE.md still uses the OLD flat reference style
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      'See [[50-sessions/2026-04-19-feat.md]] for details.\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'session-file-existence');
+    expect(errs.length).toBe(0);
+  });
+
+  it('accepts namespaced reference when note exists at per-repo path', () => {
+    mkdirSync(join(vault, '50-sessions', 'my-repo'), { recursive: true });
+    writeFileSync(join(vault, '50-sessions', 'my-repo', '2026-04-19-feat.md'), '# session\n');
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      'See [[50-sessions/my-repo/2026-04-19-feat.md]] for details.\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'session-file-existence');
+    expect(errs.length).toBe(0);
+  });
+
+  it('flags namespaced reference when note is genuinely missing', () => {
+    mkdirSync(join(vault, '50-sessions', 'my-repo'), { recursive: true });
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      'See [[50-sessions/my-repo/2026-04-19-feat.md]] for details.\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'session-file-existence');
+    expect(errs.length).toBe(1);
+    expect(errs[0].extracted).toBe('50-sessions/my-repo/2026-04-19-feat.md');
+  });
 });
 
 describe('check 7: vault-dir-parity', () => {

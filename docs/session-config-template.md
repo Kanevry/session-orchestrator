@@ -183,6 +183,7 @@ vault-integration:
   enabled: false                       # opt-in
   vault-dir: ~/Projects/vault          # absolute path to vault repo
   mode: warn                           # warn | strict | off
+  vault-name:                          # optional (#660) — overrides git-derived repo slug for per-project vault namespacing; null/absent → deriveRepo()
   gitlab-groups:                       # optional — for /plan retro vault-backfill sub-mode
     - infrastructure
     - clients
@@ -626,6 +627,7 @@ vault-integration:
   enabled: true
   vault-dir: ~/Projects/vault
   mode: warn
+  vault-name:                          # optional (#660) — per-project vault namespace override; null/absent → deriveRepo()
   gitlab-groups: []
 
 # Vault mirror quality thresholds

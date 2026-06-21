@@ -58,6 +58,7 @@ import { pathToFileURL } from 'node:url';
 import { processLearning, processSession } from './lib/vault-mirror/process.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
+import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -140,6 +141,7 @@ if (_isDirectInvocation) {
       source: null,
       kind: null,
       'session-id': null,
+      'vault-name': null,
       'quality-min-narrative-chars': null,
       'quality-min-confidence': null,
     },
@@ -174,6 +176,10 @@ if (flagValues.help === true) {
       '  --force                               Re-render existing notes even when updated would not advance.',
       '                                        NOTE: --force does NOT bypass the quality gate (PRD F1.2).',
       '  --session-id <id>                     Opt-in: also auto-commit mirror artifacts on success.',
+      '  --vault-name <name>                   Override the repo-derived namespace segment in the vault.',
+      '                                        When set, mirrors write under <vault-name>/ instead of the',
+      '                                        git-derived repo identifier. Maps to vault-integration.vault-name',
+      '                                        in Session Config. Sanitised to a lowercase kebab slug.',
       '  --quality-min-narrative-chars <int>   Sessions: minimum rendered-narrative length (default 400).',
       '                                        Entries below the threshold emit "skipped-quality-low".',
       '  --quality-min-confidence <float>      Learnings: minimum confidence threshold (default 0.5).',
@@ -194,6 +200,7 @@ const strictSchema = flagValues['strict-schema'] === true;
 const noCommit = flagValues['no-commit'] === true;
 const force = flagValues.force === true;
 const sessionIdArg = flagValues['session-id'];
+const vaultName = flagValues['vault-name'] ?? null;
 
 // Quality-gate thresholds (PRD F1.2). Parse as numbers; reject malformed input
 // loudly so CI cannot accidentally pass a string ("400px") and silently fall
@@ -318,6 +325,7 @@ async function main() {
     dryRun,
     kind,
     force,
+    vaultName,
     qualityMinNarrativeChars,
     qualityMinConfidence,
   };
@@ -374,7 +382,7 @@ async function main() {
   // Opt-in: triggers only when --session-id is provided. Callers (session-end, evolve)
   // pass it explicitly; bare invocations stay quiet to preserve legacy behaviour.
   if (!dryRun && !noCommit && sessionIdArg) {
-    autoCommitVaultMirror(resolve(vaultDir), sessionIdArg);
+    autoCommitVaultMirror(resolve(vaultDir), sessionIdArg, resolveRepoNamespace({ vaultName }));
   }
 }
 

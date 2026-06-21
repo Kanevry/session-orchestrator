@@ -498,6 +498,7 @@ describe('parseSessionConfig', () => {
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'warn',
+        'vault-name': null,
       });
     });
 

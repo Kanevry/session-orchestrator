@@ -101,16 +101,16 @@ describe('vault-mirror CLI', () => {
   it('happy-path create: session entry produces created action and writes file', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_SESSION);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault']);
 
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
     expect(line.kind).toBe('session');
     expect(line.id).toBe('session-2026-04-13');
-    expect(forwardSlashes(line.path)).toBe('50-sessions/session-2026-04-13.md');
+    expect(forwardSlashes(line.path)).toBe('50-sessions/test-vault/session-2026-04-13.md');
 
-    const filePath = join(vaultDir, '50-sessions', 'session-2026-04-13.md');
+    const filePath = join(vaultDir, '50-sessions', 'test-vault', 'session-2026-04-13.md');
     const content = readFileSync(filePath, 'utf8');
     expect(content).toContain('_generator: session-orchestrator-vault-mirror@1');
     expect(content).toContain('type: session');
@@ -141,11 +141,11 @@ describe('vault-mirror CLI', () => {
   it('learning v1: emits source_session as quoted wikilink in frontmatter', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
     const md = readFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       'utf8',
     );
     expect(md).toMatch(/^source_session: "\[\[session-2026-04-13\]\]"$/m);
@@ -154,11 +154,11 @@ describe('vault-mirror CLI', () => {
   it('learning v1: emits source_session as wikilink in body line', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
     const md = readFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       'utf8',
     );
     expect(md).toContain('**Source session:** [[session-2026-04-13]]');
@@ -179,11 +179,11 @@ describe('vault-mirror CLI', () => {
     });
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
     const md = readFileSync(
-      join(vaultDir, '40-learnings', 'wikilink-sanitise-probe.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'wikilink-sanitise-probe.md'),
       'utf8',
     );
     expect(md).toMatch(/^source_session: "\[\[object\]\]"$/m);
@@ -215,7 +215,8 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
-    const learningsDir = join(vaultDir, '40-learnings');
+    // File must be in the namespace subdir for the guard to match
+    const learningsDir = join(vaultDir, '40-learnings', 'test-vault');
     mkdirSync(learningsDir, { recursive: true });
     const targetFile = join(learningsDir, 'cross-repo-deep-session.md');
     const handWrittenContent = [
@@ -233,7 +234,7 @@ describe('vault-mirror CLI', () => {
     ].join('\n');
     writeFileSync(targetFile, handWrittenContent, 'utf8');
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-handwritten');
     expect(readFileSync(targetFile, 'utf8')).toBe(handWrittenContent);
@@ -405,12 +406,12 @@ describe('vault-mirror CLI', () => {
   it('happy-path create: learning entry produces created action at 40-learnings path', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
-    expect(forwardSlashes(line.path)).toBe('40-learnings/cross-repo-deep-session.md');
+    expect(forwardSlashes(line.path)).toBe('40-learnings/test-vault/cross-repo-deep-session.md');
   });
 
   // ── Hand-written protection (additional coverage) ─────────────────────────
@@ -419,9 +420,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       [
         '---',
         'id: cross-repo-deep-session',
@@ -438,16 +439,16 @@ describe('vault-mirror CLI', () => {
       'utf8',
     );
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
   });
 
   it('hand-written protection: file body still contains sentinel text after run', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const targetFile = join(vaultDir, '40-learnings', 'cross-repo-deep-session.md');
+    const targetFile = join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md');
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
       targetFile,
       [
@@ -466,7 +467,7 @@ describe('vault-mirror CLI', () => {
       'utf8',
     );
 
-    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(readFileSync(targetFile, 'utf8')).toContain('HAND WRITTEN DO NOT TOUCH');
   });
@@ -474,9 +475,9 @@ describe('vault-mirror CLI', () => {
   it('hand-written protection: original content preserved byte-for-byte', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const targetFile = join(vaultDir, '40-learnings', 'cross-repo-deep-session.md');
+    const targetFile = join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md');
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     const originalContent = [
       '---',
       'id: cross-repo-deep-session',
@@ -492,7 +493,7 @@ describe('vault-mirror CLI', () => {
     ].join('\n');
     writeFileSync(targetFile, originalContent, 'utf8');
 
-    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(readFileSync(targetFile, 'utf8')).toBe(originalContent);
   });
@@ -503,9 +504,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       [
         '---',
         'id: unrelated-learning-id',
@@ -523,18 +524,18 @@ describe('vault-mirror CLI', () => {
       'utf8',
     );
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'))).toBe(true);
-    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
   });
 
   it('collision disambiguation: original file is unchanged after run', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
-    const origFile = join(vaultDir, '40-learnings', 'cross-repo-deep-session.md');
+    const origFile = join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md');
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     const origContent = [
       '---',
       'id: unrelated-learning-id',
@@ -551,7 +552,7 @@ describe('vault-mirror CLI', () => {
     ].join('\n');
     writeFileSync(origFile, origContent, 'utf8');
 
-    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(readFileSync(origFile, 'utf8')).toBe(origContent);
   });
@@ -560,9 +561,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       [
         '---',
         'id: unrelated-learning-id',
@@ -580,7 +581,7 @@ describe('vault-mirror CLI', () => {
       'utf8',
     );
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-collision-resolved');
   });
@@ -590,9 +591,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       [
         '---',
         'id: unrelated-learning-id',
@@ -610,9 +611,9 @@ describe('vault-mirror CLI', () => {
       'utf8',
     );
 
-    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
-    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
   });
 
   // ── Malformed JSONL → exit 1 ──────────────────────────────────────────────
@@ -690,9 +691,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo.md'))).toBe(true);
   });
 
   it('slug: invalid slug (all special chars) falls back to learning-<first8-uuid>', () => {
@@ -711,9 +712,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'learning-a1b2c3d4.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'learning-a1b2c3d4.md'))).toBe(true);
   });
 
   it('slug: dots and underscores in subject are replaced with hyphens', () => {
@@ -732,9 +733,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'use-strict-mode.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'use-strict-mode.md'))).toBe(true);
   });
 
   it('slug: spaces in subject are stripped (not converted to hyphens)', () => {
@@ -753,9 +754,9 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'helloworld.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'helloworld.md'))).toBe(true);
   });
 
   // ── source_session sanitisation (regression: corrupted "[object" upstream) ──
@@ -780,11 +781,11 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
     const md = readFileSync(
-      join(vaultDir, '40-learnings', 'broken-source-session-recovery.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'broken-source-session-recovery.md'),
       'utf8',
     );
     // Tags line must be valid YAML: no '[' or ']' inside source/ segment
@@ -809,11 +810,11 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
     const md = readFileSync(
-      join(vaultDir, '40-learnings', 'empty-source-session-recovery.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'empty-source-session-recovery.md'),
       'utf8',
     );
     expect(md).toMatch(/^tags: \[learning\/architectural, status\/draft, source\/unknown\]$/m);
@@ -894,10 +895,10 @@ describe('vault-mirror CLI', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
 
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
     // Use readdirSync to check actual on-disk casing (existsSync is case-insensitive on macOS APFS)
-    const files = readdirSync(join(vaultDir, '50-sessions'));
+    const files = readdirSync(join(vaultDir, '50-sessions', 'test-vault'));
     expect(files).toContain('a1b2c3d4-0001-4000-8000-000000000001.md');
     expect(files).not.toContain('A1B2C3D4-0001-4000-8000-000000000001.md');
   });
@@ -941,14 +942,14 @@ describe('vault-mirror CLI', () => {
   it('v2 learning: created action with slug derived from id', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING_V2);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
-    expect(forwardSlashes(line.path)).toBe('40-learnings/s69-compose-pids-cross-validation.md');
+    expect(forwardSlashes(line.path)).toBe('40-learnings/test-vault/s69-compose-pids-cross-validation.md');
 
-    const content = readFileSync(join(vaultDir, '40-learnings', 's69-compose-pids-cross-validation.md'), 'utf8');
+    const content = readFileSync(join(vaultDir, '40-learnings', 'test-vault', 's69-compose-pids-cross-validation.md'), 'utf8');
     expect(content).toContain('_generator: session-orchestrator-vault-mirror@1');
     expect(content).toContain('type: learning');
     expect(content).toContain('docker-compose v2 cross-validates');
@@ -968,14 +969,14 @@ describe('vault-mirror CLI', () => {
   it('mixed v1+v2 learnings in same JSONL: both create, no crash (regression guard)', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING + '\n' + VALID_LEARNING_V2);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
     expect(result.status).toBe(0);
     const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
     expect(lines).toHaveLength(2);
     expect(lines.every((l) => l.action === 'created')).toBe(true);
-    expect(existsSync(join(vaultDir, '40-learnings', 'cross-repo-deep-session.md'))).toBe(true);
-    expect(existsSync(join(vaultDir, '40-learnings', 's69-compose-pids-cross-validation.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 's69-compose-pids-cross-validation.md'))).toBe(true);
   });
 
   it('v2 learning missing required field "scope": skipped-invalid (no crash)', () => {
@@ -1027,14 +1028,14 @@ describe('vault-mirror CLI', () => {
   it('v2 session: created action with content derived from waves/files_changed', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_SESSION_V2);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault']);
 
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
-    expect(forwardSlashes(line.path)).toBe('50-sessions/main-2026-04-19-0608.md');
+    expect(forwardSlashes(line.path)).toBe('50-sessions/test-vault/main-2026-04-19-0608.md');
 
-    const content = readFileSync(join(vaultDir, '50-sessions', 'main-2026-04-19-0608.md'), 'utf8');
+    const content = readFileSync(join(vaultDir, '50-sessions', 'test-vault', 'main-2026-04-19-0608.md'), 'utf8');
     expect(content).toContain('Agents:** 9'); // sum of 4 + 5
     expect(content).toContain('Files changed:** 7');
     expect(content).toContain('Branch:** main');
@@ -1062,12 +1063,12 @@ describe('vault-mirror CLI', () => {
     });
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
-    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
     const line = JSON.parse(result.stdout.trim());
     expect(line.action).toBe('created');
     // Last path segment of the slashy id is what subjectToSlug picks up
-    expect(forwardSlashes(line.path)).toBe('50-sessions/opus-4-7-phase-2-2026-04-17-0800.md');
+    expect(forwardSlashes(line.path)).toBe('50-sessions/test-vault/opus-4-7-phase-2-2026-04-17-0800.md');
   });
 
   it('mixed v1+v2 sessions in same JSONL: both create, no skipped-invalid', () => {
@@ -1155,17 +1156,19 @@ describe('vault-mirror auto-commit (#31)', () => {
     expect(cached.stdout.trim()).toBe('');
   });
 
-  it('mismatch: handwritten file in 40-learnings/ unstages and skips commit', () => {
+  it('mismatch: handwritten file in namespace dir unstages and skips commit', () => {
     const vaultDir = tmp();
     gitInit(vaultDir);
-    // Plant a non-mirror file in 40-learnings/
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
-    writeFileSync(join(vaultDir, '40-learnings', 'handwritten.md'), '---\ntitle: by hand\n---\n\nNo generator marker here.\n', 'utf8');
+    // Plant a non-mirror file inside the same namespace subdir the mirror writes to.
+    // The staging-guard works at namespace-scope so a handwritten file within the
+    // namespace triggers the safety skip, preserving the PSA-003 intent.
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
+    writeFileSync(join(vaultDir, '40-learnings', 'test-vault', 'handwritten.md'), '---\ntitle: by hand\n---\n\nNo generator marker here.\n', 'utf8');
 
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
     const result = runMirror([
       '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
-      '--session-id', 'mismatch-session',
+      '--vault-name', 'test-vault', '--session-id', 'mismatch-session',
     ]);
 
     expect(result.status).toBe(0);
@@ -1173,7 +1176,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     const skip = actions.find((a) => a.action === 'auto-commit-skipped');
     expect(skip).toBeDefined();
     expect(skip.reason).toBe('non-mirror-staged-changes');
-    expect(skip.offenders).toEqual(expect.arrayContaining([forwardSlashes('40-learnings/handwritten.md')]));
+    expect(skip.offenders).toEqual(expect.arrayContaining([forwardSlashes('40-learnings/test-vault/handwritten.md')]));
 
     // No new commit: only init
     expect(gitLog(vaultDir)).toHaveLength(1);
@@ -1181,7 +1184,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only'], { encoding: 'utf8' });
     expect(cached.stdout.trim()).toBe('');
     // Handwritten file still on disk, untouched
-    expect(existsSync(join(vaultDir, '40-learnings', 'handwritten.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'handwritten.md'))).toBe(true);
   });
 
   it('idempotent no-op: empty input produces no commit and no-staged-changes action', () => {
@@ -1255,16 +1258,17 @@ describe('vault-mirror auto-commit (#31)', () => {
   it('backlog catchup: 2 pre-existing untracked mirror files plus 1 new file all commit together', () => {
     const vaultDir = tmp();
     gitInit(vaultDir);
-    // Plant 2 pre-existing generator-tagged untracked files
-    mkdirSync(join(vaultDir, '40-learnings'), { recursive: true });
+    // Plant 2 pre-existing generator-tagged untracked files under the SAME namespace
+    // so same-repo backlog and the new write land in the same commit.
+    mkdirSync(join(vaultDir, '40-learnings', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '40-learnings', 'old-1.md'),
+      join(vaultDir, '40-learnings', 'test-vault', 'old-1.md'),
       `---\n_generator: ${'session-orchestrator-vault-mirror@1'}\nid: old-1\n---\n\nOld backlog 1.\n`,
       'utf8',
     );
-    mkdirSync(join(vaultDir, '50-sessions'), { recursive: true });
+    mkdirSync(join(vaultDir, '50-sessions', 'test-vault'), { recursive: true });
     writeFileSync(
-      join(vaultDir, '50-sessions', 'old-2.md'),
+      join(vaultDir, '50-sessions', 'test-vault', 'old-2.md'),
       `---\n_generator: ${'session-orchestrator-vault-mirror@1'}\nid: old-2\n---\n\nOld backlog 2.\n`,
       'utf8',
     );
@@ -1272,7 +1276,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
     const result = runMirror([
       '--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning',
-      '--session-id', 'catchup-session',
+      '--vault-name', 'test-vault', '--session-id', 'catchup-session',
     ]);
 
     expect(result.status).toBe(0);

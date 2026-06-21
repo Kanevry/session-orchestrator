@@ -53,7 +53,7 @@ One JSON line is written to stdout for each non-empty JSONL entry processed. Exi
 ### Output line shape
 
 ```json
-{"action":"created","path":"50-sessions/session-2026-04-13.md","kind":"session","id":"session-2026-04-13"}
+{"action":"created","path":"50-sessions/session-orchestrator/session-2026-04-13.md","kind":"session","id":"session-2026-04-13"}
 ```
 
 `path` is relative to `--vault-dir`.
@@ -70,14 +70,16 @@ One JSON line is written to stdout for each non-empty JSONL entry processed. Exi
 
 | Kind | Target |
 |---|---|
-| `session` | `<vault-dir>/50-sessions/<session-id>.md` |
-| `learning` | `<vault-dir>/40-learnings/<slug>.md` |
+| `session` | `<vault-dir>/50-sessions/<repo>/<session-id>.md` |
+| `learning` | `<vault-dir>/40-learnings/<repo>/<slug>.md` |
 
 Subdirectories are created automatically with `mkdirSync({ recursive: true })` when writing (not in `--dry-run` mode).
 
 The numeric prefix (`50-sessions/`, `40-learnings/`) follows the vault folder ordering convention so that sessions and learnings appear in the correct position in the vault tree relative to other note types.
 
-**Path contract note:** Issue #187 proposed `<vault>/05-orchestrator/<repo>/` as the target layout. The shipped implementation uses numeric-prefix paths for vault ordering. If you need the issue-text path, file a new issue — do NOT silently change the script.
+**Per-project namespacing (#660).** New writes are namespaced under a per-repo subdirectory `<repo>/`, so a single shared vault can hold notes from multiple projects without cross-repo slug/id collisions. `<repo>` is resolved by `resolveRepoNamespace()` (`scripts/lib/vault-mirror/namespace.mjs`): the optional `vault-integration.vault-name` Session Config key (CLI: `--vault-name`) when set, else the git-origin repo slug via `deriveRepo()`, sanitised to a single kebab segment. Owner-privacy leaks (personal home path / private project slug / personal name) are redacted to `redacted-repo` before any write. The legacy **flat** layout (`40-learnings/<slug>.md`) is still read — the writer dual-probes the flat path so a pre-existing flat note is never duplicated; a one-time relocation of the historical flat corpus is tracked as a follow-up.
+
+**Path contract note:** Issue #187 shipped the flat numeric-prefix layout (deferring the per-`<repo>` subfolder it sketched). Issue #660 adds that per-repo subfolder for write-isolation (above) while keeping the numeric-prefix ordering. If you need a different layout, file a new issue — do NOT silently change the script.
 
 ## Idempotency
 
@@ -93,7 +95,7 @@ The generator marker value is `session-orchestrator-vault-mirror@1` and appears 
 
 ## Auto-Commit Phase
 
-After a successful mirror pass, `scripts/lib/vault-mirror/auto-commit.mjs` (`autoCommitVaultMirror`) optionally commits the freshly-written mirror artifacts in `40-learnings/` and `50-sessions/` as a single `chore(vault): mirror …` commit. It runs unattended at session-end Phase 3.7 / evolve Phase 3.5. The phase is fail-safe: it never throws, emits one JSON action line on stdout, and aborts (unstaging everything) if any staged path is **not** a generator-stamped mirror artifact.
+After a successful mirror pass, `scripts/lib/vault-mirror/auto-commit.mjs` (`autoCommitVaultMirror(vaultDirPath, sessionId, repo)`) optionally commits the freshly-written mirror artifacts in `40-learnings/` and `50-sessions/` as a single `chore(vault): mirror …` commit. It runs unattended at session-end Phase 3.7 / evolve Phase 3.5. The phase is fail-safe: it never throws, emits one JSON action line on stdout, and aborts (unstaging everything) if any staged path is **not** a generator-stamped mirror artifact. When the optional `repo` namespace is passed (#660), staging is scoped to `40-learnings/<repo>` + `50-sessions/<repo>` and the phase additionally aborts with reason `cross-repo-staged-changes` if any staged file belongs to a different repo's namespace — so one project's mirror run can never commit another project's notes. Omitting `repo` preserves the legacy whole-directory behaviour.
 
 ### Pre-commit hook bypass (`--no-verify`)
 

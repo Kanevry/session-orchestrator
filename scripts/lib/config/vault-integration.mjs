@@ -52,12 +52,13 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  *   enabled:    false
  *   vault-dir:  null
  *   mode:       "warn" (invalid values silently fall back to "warn")
+ *   vault-name: null   (absent = downstream callers use deriveRepo() default)
  *
  * @param {string} content — full file contents
- * @returns {{enabled: boolean, "vault-dir": string|null, mode: string}}
+ * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null}}
  */
 export function _parseVaultIntegration(content) {
-  const defaults = { enabled: false, 'vault-dir': null, mode: 'warn' };
+  const defaults = { enabled: false, 'vault-dir': null, mode: 'warn', 'vault-name': null };
   if (typeof content !== 'string' || content === '') return defaults;
 
   const lines = content.split(/\r?\n/);
@@ -91,6 +92,7 @@ export function _parseVaultIntegration(content) {
   let enabled = false;
   let vaultDir = null;
   let mode = 'warn';
+  let vaultName = null;
 
   for (const rawLine of blockLines) {
     const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
@@ -121,10 +123,14 @@ export function _parseVaultIntegration(content) {
         if (MODE_ALLOWED.includes(v.toLowerCase())) mode = v.toLowerCase();
         else mode = 'warn'; // silent fallback (parity with pre-#593 behaviour)
         break;
+      case 'vault-name':
+        if (v === '' || v === 'none' || v === 'null') vaultName = null;
+        else vaultName = v;
+        break;
     }
   }
 
-  return { enabled, 'vault-dir': vaultDir, mode };
+  return { enabled, 'vault-dir': vaultDir, mode, 'vault-name': vaultName };
 }
 
 /**
@@ -156,7 +162,12 @@ function _parseInlineObject(raw) {
       : vaultDirRaw;
   const modeRaw = kv.get('mode') ?? 'warn';
   const mode = MODE_ALLOWED.includes(modeRaw.toLowerCase()) ? modeRaw.toLowerCase() : 'warn';
-  return { enabled, 'vault-dir': vaultDir, mode };
+  const vaultNameRaw = kv.get('vault-name');
+  const vaultName =
+    vaultNameRaw === undefined || vaultNameRaw === '' || vaultNameRaw === 'none' || vaultNameRaw === 'null'
+      ? null
+      : vaultNameRaw;
+  return { enabled, 'vault-dir': vaultDir, mode, 'vault-name': vaultName };
 }
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
@@ -32,17 +32,37 @@ function git(vaultDirPath, gitArgs) {
  *
  * Behaviour:
  *   1. `git add 40-learnings/ 50-sessions/` (only paths that exist).
+ *      When `repo` is provided: scoped to `40-learnings/<repo>` and `50-sessions/<repo>`.
  *   2. Enumerate staged paths; per-file frontmatter check for the generator marker.
  *   3. All-mirror staged set → commit as `chore(vault): mirror <session-id> — N learnings + M sessions`.
  *   4. Mismatch (any non-mirror staged path) → unstage all, log warn, no commit.
  *   5. Empty staged set → idempotent no-op.
+ *   6. When `repo` is provided: any staged file belonging to a different repo namespace
+ *      → unstage all, log warn, emit `cross-repo-staged-changes`, no commit.
+ *
+ * @param {string} vaultDirPath - Absolute path to the vault git repo root.
+ * @param {string} sessionId - Session identifier used in the commit subject.
+ * @param {string|undefined|null} repo - Sanitised single-segment namespace (e.g. "session-orchestrator").
+ *   When omitted/null, behaves exactly as the pre-namespace version (whole-dir staging, no cross-repo check).
  *
  * Emits one JSON action line on stdout describing the outcome.
  * Never throws — callers continue regardless of commit outcome.
  */
-export function autoCommitVaultMirror(vaultDirPath, sessionId) {
-  const existingDirs = MIRROR_DIRS.filter((d) => existsSync(resolve(vaultDirPath, d)));
-  if (existingDirs.length === 0) {
+export function autoCommitVaultMirror(vaultDirPath, sessionId, repo) {
+  // Determine staging targets: whole dirs (legacy) or per-repo subfolders (namespaced).
+  const useNamespace = typeof repo === 'string' && repo.length > 0;
+
+  let stagingTargets;
+  if (useNamespace) {
+    // Stage only the per-repo subfolders; filter to those that exist.
+    const candidates = MIRROR_DIRS.map((d) => `${d}/${repo}`);
+    stagingTargets = candidates.filter((p) => existsSync(resolve(vaultDirPath, p)));
+  } else {
+    // Legacy: stage entire mirror dirs that exist.
+    stagingTargets = MIRROR_DIRS.filter((d) => existsSync(resolve(vaultDirPath, d)));
+  }
+
+  if (stagingTargets.length === 0) {
     process.stdout.write(
       JSON.stringify({ action: 'auto-commit-skipped', reason: 'no-mirror-dirs' }) + '\n',
     );
@@ -57,7 +77,7 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId) {
     return;
   }
 
-  const addResult = git(vaultDirPath, ['add', '--', ...existingDirs]);
+  const addResult = git(vaultDirPath, ['add', '--', ...stagingTargets]);
   if (addResult.status !== 0) {
     process.stderr.write(`vault-mirror: auto-commit git-add failed: ${addResult.stderr}\n`);
     process.stdout.write(
@@ -66,7 +86,7 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId) {
     return;
   }
 
-  const diff = git(vaultDirPath, ['diff', '--cached', '--name-only', '--', ...existingDirs]);
+  const diff = git(vaultDirPath, ['diff', '--cached', '--name-only', '--', ...stagingTargets]);
   if (diff.status !== 0) {
     process.stderr.write(`vault-mirror: auto-commit git-diff failed: ${diff.stderr}\n`);
     process.stdout.write(
@@ -85,20 +105,39 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId) {
   }
 
   const offenders = [];
+  const outOfNamespace = [];
   let learningsCount = 0;
   let sessionsCount = 0;
+  const vaultRootAbs = resolve(vaultDirPath);
   for (const rel of stagedPaths) {
     const abs = resolve(vaultDirPath, rel);
+    // Containment guard (#660 Q3-LOW-2): a staged path that resolves outside the
+    // vault dir (e.g. a crafted `..` entry in the index) is treated as a non-mirror
+    // offender — never read by isMirrorArtifact, never committed.
+    if (!abs.startsWith(vaultRootAbs + sep)) {
+      offenders.push(rel);
+      continue;
+    }
     if (!isMirrorArtifact(abs)) {
       offenders.push(rel);
       continue;
+    }
+    // Cross-repo isolation check (only when repo is provided).
+    if (useNamespace) {
+      // Extract the second path segment: `<mirrorDir>/<seg>/...`
+      const parts = rel.split('/');
+      const seg = parts[1]; // undefined for shallow paths; those pass through unguarded
+      if (seg !== undefined && seg !== repo) {
+        outOfNamespace.push(rel);
+        continue;
+      }
     }
     if (rel.startsWith('40-learnings/')) learningsCount++;
     else if (rel.startsWith('50-sessions/')) sessionsCount++;
   }
 
   if (offenders.length > 0) {
-    git(vaultDirPath, ['restore', '--staged', '--', ...existingDirs]);
+    git(vaultDirPath, ['restore', '--staged', '--', ...stagingTargets]);
     process.stderr.write(
       `vault-mirror: auto-commit skipped — ${offenders.length} non-mirror staged file(s): ${offenders.slice(0, 3).join(', ')}${offenders.length > 3 ? ', …' : ''}\n`,
     );
@@ -107,6 +146,23 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId) {
         action: 'auto-commit-skipped',
         reason: 'non-mirror-staged-changes',
         offenders,
+      }) + '\n',
+    );
+    return;
+  }
+
+  if (outOfNamespace.length > 0) {
+    // Derive the foreign repo segments for the warning message (don't echo file contents).
+    const foreignSegs = [...new Set(outOfNamespace.map((rel) => rel.split('/')[1]).filter(Boolean))];
+    git(vaultDirPath, ['restore', '--staged', '--', ...stagingTargets]);
+    process.stderr.write(
+      `vault-mirror: auto-commit skipped — ${outOfNamespace.length} file(s) belong to foreign repo namespace(s): ${foreignSegs.join(', ')}\n`,
+    );
+    process.stdout.write(
+      JSON.stringify({
+        action: 'auto-commit-skipped',
+        reason: 'cross-repo-staged-changes',
+        foreignRepos: foreignSegs,
       }) + '\n',
     );
     return;

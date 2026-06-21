@@ -631,6 +631,11 @@ const SELF_EXCLUSIONS = new Set([
   // #634: encoding-contract fixtures (`-Users-bernhardg-` expected-value literals
   // are load-bearing for the resolveMemoryDir() assertions; P9 would self-flag them)
   'tests/lib/memory-paths.test.mjs',
+  // #660: owner-leakage redaction-test fixtures — namespace.test.mjs feeds the real
+  // CP1/CP6/CP10 leak literals into resolveRepoNamespace to prove they redact to
+  // 'redacted-repo'; the assertion literals are fixtures, not leaks (same class as
+  // check-owner-leakage.test.mjs above).
+  'tests/lib/vault-mirror/namespace.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
@@ -736,6 +741,52 @@ if (violations.length === 0) {
 console.log('');
 console.log(`Results: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
+// Exported helper for in-process leak detection (Issue #660 namespace guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Test whether a single value (a repo identifier or sanitised slug segment)
+ * matches any owner-privacy leakage pattern.
+ *
+ * Runs the canonical CP1 check (via canonicalizeLine + CP1_CANON) and the
+ * word-boundary CP6 (private project slugs) and CP10 (personal name in a
+ * Projects path) checks against the raw value. Returns the matched pattern id
+ * string or null when clean.
+ *
+ * This is the single source of truth for in-process leak detection — do NOT
+ * reimplement these pattern checks outside this module. The `namespace.mjs`
+ * resolver uses this to guard vault path segments before any filesystem write.
+ *
+ * @param {string} value — raw repo identifier or sanitised slug to test.
+ * @returns {'CP1'|'CP6'|'CP10'|null}
+ */
+export function isOwnerLeakySegment(value) {
+  if (typeof value !== 'string' || !value) return null;
+
+  // CP1: personal home path — canonicalize then match.
+  const ownerPathMatch = matchOwnerPath(value);
+  if (ownerPathMatch !== null) return 'CP1';
+
+  // CP1 (bare): the personal-username token standing alone — e.g. the macOS login
+  // name surfacing via deriveRepo()'s basename(process.cwd()) fallback when cwd is
+  // the home directory. CP1_CANON only fires with a `/Users/` prefix, so the bare
+  // segment would otherwise slip through into a committed vault path (#660 Q3-LOW-1).
+  if (/^[bB][eE][rR][nN][hH][aA][rR][dD][gG][a-z]*$/.test(value)) return 'CP1';
+
+  // CP6: private project slugs (word-boundary, case-insensitive).
+  for (const re of CP6_PATTERNS) {
+    if (re.test(value)) return 'CP6';
+  }
+
+  // CP10: personal name in a ~/Projects/<name>/ path.
+  for (const re of CP10_PATTERNS) {
+    if (re.test(value)) return 'CP10';
+  }
+
+  return null;
 }
 
 // Run the scan only when invoked directly as a CLI (#661).
