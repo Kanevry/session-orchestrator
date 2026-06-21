@@ -36,7 +36,8 @@ This repo uses Anthropic's additive instruction-file layering pattern: this root
 | `CLAUDE.md` / `AGENTS.md` (root) | This file — pointers + critical gotchas + Session Config | every session |
 | [`agents/AGENTS.md`](./agents/AGENTS.md) | Sub-agent authoring spec + local validation commands | when working under `agents/` |
 | [`.orchestrator/steering/{product,tech,structure}.md`](./.orchestrator/steering/) | Stable project context | session-start Phase 2.6 |
-| [`.claude/rules/*.md`](./.claude/rules/) | Always-on + glob-scoped engineering rules | per-wave via `rule-loader.mjs` |
+| [`.claude/rules/*.md`](./.claude/rules/) | Always-on + glob-scoped (+ mode/host-class/expiry-gated) engineering rules | per-wave via `rule-loader.mjs` (wired #336/#694) |
+| [`docs/rule-authoring.md`](./docs/rule-authoring.md) | Canonical authoring spec for `.claude/rules/*.md` frontmatter (conditional loading: globs/mode/host-class/expiry; never-always-on for `auto-generated`) | reference (read when authoring a rule) |
 
 > **Opt-in visualization:** **`/tmux-layout`** renders a 4-pane operator side-channel (STATE.md tail, CI-watch, events.jsonl) in a second terminal — see [ADR-0007](docs/adr/0007-tmux-visualization-substrate.md). Coordinator chat stays in your original terminal (AUQ-001). PSA-003-compliant (`--force` required to replace an existing layout).
 

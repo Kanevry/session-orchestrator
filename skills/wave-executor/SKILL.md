@@ -245,7 +245,7 @@ Each agent prompt MUST include:
 1. **Clear scope boundary**: "You are working on [X]. Do NOT modify files outside [paths]."
 2. **Full context**: file paths, current code structure, issue description. If a bite-sized executable plan exists at `docs/plans/<feature>.md` for the wave's tasks (see `skills/write-executable-plan/SKILL.md`), include the path in each agent's prompt and instruct the agent to follow the plan's 5-step structure verbatim.
 3. **Acceptance criteria**: measurable definition of done
-4. **Rule references**: "Follow patterns in <state-dir>/rules/[relevant].md"
+4. **Rule references**: the wave's applicable rules are injected automatically as the `<APPLICABLE-RULES>` block produced by `scripts/print-applicable-rules.mjs` (see `wave-loop.md` § "Pre-Dispatch: Glob-Scoped Rule Injection (#336/#694)"). The block is computed once per wave from the wave's `allowedPaths` and prepended to every agent prompt — do not hand-copy rule paths into the prompt.
 5. **Testing expectation**: "Write tests for your changes" or "Run existing tests"
 6. **Commit instruction**: "Do NOT commit. The coordinator handles commits."
 7. **Turn limit**: Include the maxTurns instruction from `circuit-breaker.md`

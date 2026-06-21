@@ -148,7 +148,7 @@ For each agent in this wave:
       - What to do (specific, measurable)
       - Which files to read/modify (exact paths)
       - Acceptance criteria (how to verify done)
-      - Relevant patterns from <state-dir>/rules/
+      - Relevant patterns — injected automatically as the <APPLICABLE-RULES> block (see Pre-Dispatch: Glob-Scoped Rule Injection below)
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
       >",
@@ -273,6 +273,34 @@ Before constructing each agent's prompt, decide if the schema snippet must be in
 Performance note: `readVaultSchema()` caches by file mtime, so repeated calls within a wave are free. The schema read happens at most once per wave-executor run.
 
 Behaviour change: agents writing vault notes now receive the canonical schema enums + per-type examples directly in their prompt context. This eliminates the agent-guessing failure class documented in #328.
+
+#### Pre-Dispatch: Glob-Scoped Rule Injection (#336/#694)
+
+After `wave-scope.json` is written for this wave and before assembling the `Agent()` prompt, inject the wave's applicable rule set into each dispatched agent's prompt. This wires the `loadApplicableRules()` loader (`scripts/lib/rule-loader.mjs`) — dormant since #336 — into the live per-wave prompt assembly via the thin CLI `scripts/print-applicable-rules.mjs`.
+
+**Gate:** runs when `.claude/rules/` exists. When it does not, the CLI prints nothing and exits 0 — zero behaviour change. This step never blocks dispatch: any non-zero exit or empty output means "inject nothing, continue" (same best-effort framing as Pre-Dispatch Grounding Injection above).
+
+**Per-wave scoping (not per-agent):** the rule set is computed ONCE per wave from the wave's `allowedPaths` union (the same `wave-scope.json` source used elsewhere), not per agent. The CLI resolves `scopePaths` from `allowedPaths`, `mode` from the `session-type:` frontmatter in `.claude/STATE.md`, and `hostClass` from `.orchestrator/host.json` — all overridable, all degrading to "no gating" when unreadable.
+
+**Invocation:** once per wave, run from the repo root and capture stdout as `$RULES_BLOCK`:
+
+    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" 2>/dev/null)"
+
+Use `--wave-scope <path>` only if `wave-scope.json` is not at the default `.claude/wave-scope.json`. The CLI returns:
+- a Markdown block (header `## Applicable Rules (scoped to this wave)` + each matching rule's raw content, separated by `---`) when one or more rules apply, OR
+- empty output (exit 0) when no rules match — in which case prepend nothing.
+
+**Prompt assembly:** when `$RULES_BLOCK` is non-empty, prepend it to EACH agent's prompt in this wave under a clear separator:
+
+    <APPLICABLE-RULES>
+    $RULES_BLOCK
+    </APPLICABLE-RULES>
+
+    <original prompt>
+
+When `$RULES_BLOCK` is empty (no `.claude/rules/`, no matching rules, or any CLI failure), dispatch the agent unchanged. Because the block is computed once per wave, the same `$RULES_BLOCK` is reused for every agent dispatched in this wave — narrow waves (e.g. only `scripts/**` or only `tests/**` files) receive a smaller rule set, which is the #336 token-reduction payoff.
+
+This replaces the older prose slot "Relevant patterns from `<state-dir>/rules/`" in the `Agent()` template above: the `<APPLICABLE-RULES>` block IS that injection, now mechanically scoped to the wave instead of left to the coordinator's judgement.
 
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 

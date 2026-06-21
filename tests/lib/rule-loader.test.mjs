@@ -320,3 +320,386 @@ describe('non-.md files in rulesDir', () => {
     expect(results).toHaveLength(1);
   });
 });
+
+// ===========================================================================
+// #694 — Activation foundation: expiry / mode / host-class gating + meta
+// ===========================================================================
+
+// A fixed clock so expiry tests are deterministic. 2026-06-01T00:00:00Z.
+const FIXED_NOW = Date.parse('2026-06-01T00:00:00Z');
+
+// ---------------------------------------------------------------------------
+// Expiry gating
+// ---------------------------------------------------------------------------
+
+describe('expiry gating (#694)', () => {
+  it('excludes an always-on rule whose expires-at is before now', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'expired.md',
+      '---\nexpires-at: 2026-01-01\n---\n\n# Expired Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], now: FIXED_NOW });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a rule whose expires-at is after now', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'fresh.md',
+      '---\nexpires-at: 2026-12-31\n---\n\n# Fresh Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], now: FIXED_NOW });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].expiresAt).toBe('2026-12-31');
+  });
+
+  it('keeps a rule with a malformed expires-at (fail-open)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'bad-expiry.md',
+      '---\nexpires-at: not-a-date\n---\n\n# Bad Expiry Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], now: FIXED_NOW });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].expiresAt).toBe('not-a-date');
+  });
+
+  it('writes a stderr WARN naming the expired rule path', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'expired.md', '---\nexpires-at: 2025-01-01\n---\n\n# Expired\n');
+
+    const captured = [];
+    const original = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      captured.push(String(chunk));
+      return true;
+    };
+    try {
+      loadApplicableRules({ rulesDir: dir, scopePaths: [], now: FIXED_NOW });
+    } finally {
+      process.stderr.write = original;
+    }
+
+    const joined = captured.join('');
+    expect(joined).toContain('expired.md');
+    expect(joined).toContain('expired');
+  });
+
+  it('excludes a glob-matched rule that is also expired', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'scoped-expired.md',
+      '---\nglobs:\n  - src/**\nexpires-at: 2026-01-01\n---\n\n# Scoped Expired\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: ['src/index.ts'],
+      now: FIXED_NOW,
+    });
+
+    expect(results).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mode gating
+// ---------------------------------------------------------------------------
+
+describe('mode gating (#694)', () => {
+  it('includes a mode-tagged rule when the mode param matches', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'deep-only.md', '---\nmode: deep\n---\n\n# Deep Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], mode: 'deep' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].mode).toBe('deep');
+  });
+
+  it('excludes a mode-tagged rule when the mode param differs', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'deep-only.md', '---\nmode: deep\n---\n\n# Deep Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], mode: 'feature' });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a mode-tagged rule when the mode param is null (no filtering)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'deep-only.md', '---\nmode: deep\n---\n\n# Deep Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], mode: null });
+
+    expect(results).toHaveLength(1);
+  });
+
+  it('includes a rule with no mode key regardless of the mode param', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'no-mode.md', '# No Mode Key\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], mode: 'feature' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-class gating
+// ---------------------------------------------------------------------------
+
+describe('host-class gating (#694)', () => {
+  it('includes a host-class-tagged rule when hostClass matches', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'ci-only.md', '---\nhost-class: ci\n---\n\n# CI Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], hostClass: 'ci' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].hostClass).toBe('ci');
+  });
+
+  it('excludes a host-class-tagged rule when hostClass differs', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'ci-only.md', '---\nhost-class: ci\n---\n\n# CI Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], hostClass: 'local' });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a host-class-tagged rule when hostClass is null (no filtering)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'ci-only.md', '---\nhost-class: ci\n---\n\n# CI Only\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], hostClass: null });
+
+    expect(results).toHaveLength(1);
+  });
+
+  it('includes a rule with no host-class key regardless of the hostClass param', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'no-host.md', '# No Host Class Key\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], hostClass: 'ci' });
+
+    expect(results).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Combined gating — must pass ALL active gates
+// ---------------------------------------------------------------------------
+
+describe('combined gating (#694)', () => {
+  it('excludes when mode matches but host-class differs', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'multi-gate.md',
+      '---\nmode: deep\nhost-class: ci\n---\n\n# Multi Gate\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: [],
+      mode: 'deep',
+      hostClass: 'local',
+    });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes when both mode and host-class match', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'multi-gate.md',
+      '---\nmode: deep\nhost-class: ci\n---\n\n# Multi Gate\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: [],
+      mode: 'deep',
+      hostClass: 'ci',
+    });
+
+    expect(results).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Meta surfacing + type coercion
+// ---------------------------------------------------------------------------
+
+describe('frontmatter meta surfacing (#694)', () => {
+  it('surfaces all new scalar keys with correct types and camelCase names', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'full-meta.md',
+      [
+        '---',
+        'description: A fully specified rule',
+        'mode: deep',
+        'host-class: ci',
+        'alwaysApply: true',
+        'expires-at: 2026-12-31',
+        'learning-key: my-learning-123',
+        'auto-generated: false',
+        'confidence: 0.85',
+        '---',
+        '',
+        '# Full Meta Rule',
+        '',
+      ].join('\n'),
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: [],
+      mode: 'deep',
+      hostClass: 'ci',
+      now: FIXED_NOW,
+    });
+
+    expect(results).toHaveLength(1);
+    const entry = results[0];
+    expect(entry.description).toBe('A fully specified rule');
+    expect(entry.mode).toBe('deep');
+    expect(entry.hostClass).toBe('ci');
+    expect(entry.alwaysApply).toBe(true);
+    expect(entry.expiresAt).toBe('2026-12-31');
+    expect(entry.learningKey).toBe('my-learning-123');
+    expect(entry.autoGenerated).toBe(false);
+    expect(entry.confidence).toBe(0.85);
+  });
+
+  it('coerces alwaysApply to a real boolean, not the string "true"', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'bool.md', '---\nalwaysApply: true\n---\n\n# Bool\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results[0].alwaysApply).toBe(true);
+    expect(typeof results[0].alwaysApply).toBe('boolean');
+  });
+
+  it('coerces confidence to a real number, not the string "0.5"', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'conf.md', '---\nconfidence: 0.5\n---\n\n# Conf\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results[0].confidence).toBe(0.5);
+    expect(typeof results[0].confidence).toBe('number');
+  });
+
+  it('omits all meta keys for a no-frontmatter rule', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'bare.md', '# Bare Rule\n\nNo frontmatter at all.\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    const entry = results[0];
+    expect(Object.keys(entry).sort()).toEqual(['alwaysOn', 'content', 'matchedGlobs', 'path']);
+    expect(entry.description).toBeUndefined();
+    expect(entry.mode).toBeUndefined();
+    expect(entry.hostClass).toBeUndefined();
+    expect(entry.confidence).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unknown-key tolerance
+// ---------------------------------------------------------------------------
+
+describe('unknown frontmatter keys (#694)', () => {
+  it('loads a glob rule with an unknown key without throwing', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'unknown-key.md',
+      '---\nglobs:\n  - src/**\nfoo: bar\n---\n\n# Unknown Key Rule\n',
+    );
+
+    let results;
+    expect(() => {
+      results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/x.ts'] });
+    }).not.toThrow();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].matchedGlobs).toContain('src/**');
+    expect(results[0].foo).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Byte-for-byte always-on content guarantee
+// ---------------------------------------------------------------------------
+
+describe('always-on content fidelity (#694)', () => {
+  it('returns content byte-identical to the file written', () => {
+    const dir = makeTmpRulesDir();
+    const exact = '# Exact Content\n\nLine two with trailing spaces.   \nLine three.\n';
+    writeRule(dir, 'exact.md', exact);
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results[0].content).toBe(exact);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #687 backward-compat contract: empty scope + no gating
+// ---------------------------------------------------------------------------
+
+describe('#687 always-on contract (empty scope, no gating)', () => {
+  it('returns an unexpired no-globs rule as alwaysOn with identical content', () => {
+    const dir = makeTmpRulesDir();
+    const content = '# Always Loaded\n\nApplies every wave.\n';
+    writeRule(dir, 'always.md', content);
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: [],
+      mode: null,
+      hostClass: null,
+      now: FIXED_NOW,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].content).toBe(content);
+  });
+
+  it('excludes a glob-only rule when the scope is empty', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'scoped.md', '---\nglobs:\n  - src/**\n---\n\n# Scoped\n');
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: [],
+      mode: null,
+      hostClass: null,
+      now: FIXED_NOW,
+    });
+
+    expect(results).toHaveLength(0);
+  });
+});

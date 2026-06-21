@@ -10,6 +10,11 @@
 > `*.md` definitions in this directory must follow. The plugin validator
 > (`scripts/lib/validate/check-agents.mjs`) excludes `AGENTS.md` / `CLAUDE.md`
 > from agent-frontmatter validation by name.
+>
+> Sibling spec: for `.claude/rules/*.md` frontmatter (conditional loading via
+> globs/mode/host-class/expiry, plus the never-always-on invariant for
+> auto-generated rules), see the canonical authoring spec
+> [`docs/rule-authoring.md`](../docs/rule-authoring.md).
 
 ## Local Validation Commands
 
