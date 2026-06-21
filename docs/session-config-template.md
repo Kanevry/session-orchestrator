@@ -348,6 +348,28 @@ Security: `path` rejects shell metacharacters; confinement at the read sink is t
 
 Read by: `scripts/lib/config/evolve.mjs` (parser), `skills/evolve/SKILL.md` Step 3.1b (read + emit).
 
+## Reconcile Engine (#696 / #697)
+
+Opt-in config foundation for the FA3 (#696) advisory rule-proposal delivery at session-end Phase 3.6.8. When `enabled: true`, the session-end coordinator reads learning candidates from the reconcile engine (FA2 — `scripts/lib/reconcile/`) and surfaces approved rule proposals via `AskUserQuestion`. Rules are **never auto-applied** — every write is operator-AUQ-gated. The `mode: warn` default means proposals are surfaced as advisory banners; `mode: off` silences them entirely. The `rule-expiry-days` key defaults to `null` so the engine falls back to per-type TTL (default 60d in `emitter.mjs`); a non-null committed default would force flat expiry and change FA2 behaviour.
+
+```yaml
+reconcile:
+  enabled: false                 # opt-in; FA3 reads this to gate session-end Phase 3.6.8
+  mode: warn                     # off | warn — advisory only; rules NEVER auto-applied (#696)
+  targets: [repo-local]          # where approved rules are written; repo-local = .claude/rules/ in v1
+  rule-expiry-days: null         # null = per-type TTL (default 60d); set positive integer for flat override (#697)
+  confidence-floor: 0.5          # float 0.0..1.0 — min learning confidence for rule proposal eligibility
+```
+
+Field semantics:
+- **`enabled`** — master toggle. `false` (default) means session-end Phase 3.6.8 is a no-op.
+- **`mode`** — `warn` surfaces proposals as an advisory AUQ at session-end; `off` silences all output. No `strict` mode — rules are never auto-applied in v1.
+- **`targets`** — list of write locations for approved rules. `repo-local` writes to `.claude/rules/` in the current repo.
+- **`rule-expiry-days`** — `null` (default) lets the reconcile engine use per-type TTL (fragile-pattern=30d, anti-pattern=90d, etc.). Set a positive integer to override all types with a flat expiry window.
+- **`confidence-floor`** — learnings below this confidence level are not eligible for rule proposals. Default 0.5 matches `memory.proposals.confidence-floor`.
+
+Read by: `scripts/lib/config/reconcile.mjs` (parser), `skills/session-end/SKILL.md` Phase 3.6.8 (FA3 delivery). FA2 engine: `scripts/lib/reconcile/`.
+
 ## Discovery-Validator (PSA-006 Enforcement)
 
 Opt-in, non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only (exit 0 always) — a blocking hard-gate is reserved for a future iteration. When disabled (default), the hook exits immediately with zero overhead. Issue #567.
@@ -665,6 +687,14 @@ evolve:
     - path: eval/learn/reports/latest.json   # required; SAFE path to a sidecar JSON
       kind: regression-flags                  # enum: regression-flags (only value)
       learning-type: domain-regression        # enum: domain-regression (only value)
+
+# Reconcile engine — FA3 advisory rule-proposal delivery (#696 / #697)
+reconcile:
+  enabled: false                 # opt-in; FA3 reads this to gate session-end Phase 3.6.8
+  mode: warn                     # off | warn — advisory only; rules NEVER auto-applied
+  targets: [repo-local]          # rule-write location; repo-local = .claude/rules/ in v1
+  rule-expiry-days: null         # null = per-type TTL (default 60d); set integer to override
+  confidence-floor: 0.5          # float 0.0..1.0 — min confidence for rule proposal eligibility
 
 # Discovery-validator — PSA-006 enforcement (#567)
 discovery-validator:

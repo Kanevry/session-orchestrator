@@ -1,6 +1,6 @@
 ---
 name: claude-md-drift-check
-description: Use when detecting drift between CLAUDE.md (or AGENTS.md, the Codex CLI alias) / _meta narrative and live repository state. Seven checks: absolute-path resolution, 01-projects/ count claims, issue-reference freshness (closed refs in forward-looking sections), session-file existence, command-count sync (claimed "N commands" vs actual commands/*.md), session-config-parity (top-level keys diffed against docs/session-config-template.md), and vault-dir-parity (CLAUDE.md vs AGENTS.md agreement on vault-integration.vault-dir). Invoked as an opt-in session-end phase; mirrors vault-sync's lean JSON+exit-code contract.
+description: Use when detecting drift between CLAUDE.md (or AGENTS.md, the Codex CLI alias) / _meta narrative and live repository state. Eight checks: absolute-path resolution, 01-projects/ count claims, issue-reference freshness (closed refs in forward-looking sections), session-file existence, command-count sync (claimed "N commands" vs actual commands/*.md), session-config-parity (top-level keys diffed against docs/session-config-template.md), vault-dir-parity (CLAUDE.md vs AGENTS.md agreement on vault-integration.vault-dir), and generated-rule-staleness (WARN-only: auto-generated rules whose learning-key is absent or expired in learnings.jsonl). Invoked as an opt-in session-end phase; mirrors vault-sync's lean JSON+exit-code contract.
 model: haiku
 ---
 
@@ -32,6 +32,7 @@ PHASE 1 IMPLEMENTED (2026-04-19). Session-end opt-in quality gate. Upstream of `
 | 5 | `command-count` | "N commands" / "N /commands" claims in prose | compare to `ls commands/*.md \| wc -l`; skipped if no `commands/` dir |
 | 6 | `session-config-parity` | Top-level keys under `## Session Config` in `CLAUDE.md` / `AGENTS.md` | diff against `docs/session-config-template.md`; missing keys flagged as errors |
 | 7 | `vault-dir-parity` | `vault-integration.vault-dir` in BOTH `CLAUDE.md` AND `AGENTS.md` | reuse `_parseVaultIntegration`; flag when the two files disagree |
+| 8 | `generated-rule-staleness` *(WARN only)* | `.claude/rules/*.md` with `auto-generated: true` frontmatter | extract `learning-key`; WARN when the key is absent from `.orchestrator/metrics/learnings.jsonl` or its learning's `expires_at` is in the past; skipped silently when no auto-generated rules exist |
 
 Check 3 deliberately scopes to forward-looking sections. Mentions inside "Recently Closed", "Decisions", "Archive", etc. describe history and must not be flagged.
 
@@ -94,7 +95,7 @@ Environment:
   "resolved_path": "<absolute path to CLAUDE.md or AGENTS.md, or null>",
   "resolved_kind": "claude|agents|null",
   "files_scanned": N,
-  "checks_run": ["path-resolver", "project-count-sync", "issue-reference-freshness", "session-file-existence", "command-count", "session-config-parity", "vault-dir-parity"],
+  "checks_run": ["path-resolver", "project-count-sync", "issue-reference-freshness", "session-file-existence", "command-count", "session-config-parity", "vault-dir-parity", "generated-rule-staleness"],
   "checks_skipped": ["<name>: <reason>"],
   "errors": [
     { "check": "<name>", "file": "<relative path>", "line": N, "message": "<human>", "extracted": "<raw text>" }
@@ -134,6 +135,7 @@ drift-check:
   check-command-count: true
   check-session-config-parity: true
   check-vault-dir-parity: true
+  check-generated-rule-staleness: true
 ```
 
 When `drift-check.enabled` is `false` or the block is absent, the session-end phase is a no-op.

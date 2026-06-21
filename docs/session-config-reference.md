@@ -674,6 +674,44 @@ evolve:
 
 Read by: `scripts/lib/config/evolve.mjs` (parser), `skills/evolve/SKILL.md` Step 3.1b (read + emit).
 
+## Reconcile (#693 / #696 / #697)
+
+Opt-in configuration for the learning→conditional-rule reconciliation engine (Epic #693). When enabled, the reconciliation engine runs at session-end Phase 3.6.8 and proposes new `.claude/rules/` entries derived from accumulated learnings. The proposal is always operator-AUQ-gated — rules are **never** auto-applied. FA3 (#696) delivers proposals via `AskUserQuestion`; FA4 (#697) adds the guardrail config block documented here. When `enabled: false` (the default), Phase 3.6.8 is a silent no-op and the engine never runs.
+
+All fields live under a top-level `reconcile` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+reconcile:
+  enabled: false           # opt-in; Phase 3.6.8 is a no-op when false
+  mode: warn               # warn | off
+  targets: [repo-local]    # where approved rules are written
+  rule-expiry-days: null   # null = per-type TTL (default 60d via deriveExpiresAt)
+  confidence-floor: 0.5    # min learning confidence before a learning is eligible
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `reconcile.enabled` | boolean | `false` | Master toggle. When `false`, session-end Phase 3.6.8 is a silent no-op — the reconciliation engine never runs. When `true`, the engine evaluates learnings that meet `confidence-floor` and presents rule proposals to the operator via `AskUserQuestion`. Rules are never written without explicit operator approval. Epic #693 FA3 (#696). |
+| `reconcile.mode` | string (`warn` \| `off`) | `warn` | Advisory posture. `warn`: proposals surface in the session-end AUQ and the operator may accept or reject each one; accepted proposals are written to `targets`. `off`: advisory surface is suppressed entirely (equivalent to `enabled: false` for the AUQ step, but Phase 3.6.8 may still emit metrics). In both modes, rules are **never** auto-applied — every write is operator-AUQ-gated. |
+| `reconcile.targets` | string[] | `["repo-local"]` | Where approved rules are written. `repo-local` (v1) maps to `.claude/rules/` in the current repository. This is the rule-write location — it is NOT issue-state or label sync. Future values may include `baseline` (global baseline rules) or `global` (cross-repo). |
+| `reconcile.rule-expiry-days` | integer \| null | `null` | Optional override for the TTL stamped into each generated rule's `expires-at` frontmatter. **Default is `null`** — when null or absent, the engine uses per-type TTL (`deriveExpiresAt`, default 60 days). Setting this to a positive integer N forces a flat N-day expiry for all proposals in this repo, overriding per-type TTL. CRITICAL: the default must remain `null` to preserve per-type TTL behaviour; a non-null committed default would silently force flat expiry. |
+| `reconcile.confidence-floor` | float | `0.5` | Minimum learning confidence (0.0..1.0) required before a learning is eligible for a rule proposal. Learnings with `confidence < confidence-floor` are skipped by the engine. Bounds: `0.0 ≤ value ≤ 1.0`; out-of-range values silently fall back to `0.5`. Set to `0.0` to surface proposals for all learnings regardless of confidence. |
+
+### Never-always-on invariant
+
+Generated rules carry a `globs:` frontmatter key (path-scoped conditional loading) and are **never** emitted with `always-on: true`. The engine throws if a proposal would produce an always-on rule — this is an FA3 invariant enforced in `scripts/lib/reconcile/emitter.mjs`. Background: always-on rules accumulate in the coordinator context regardless of path scope and count toward the instruction-budget ceiling (`instruction-budget.ceiling`, issue #687 / see [Instruction Budget](#instruction-budget-687) above). Allowing the reconciler to generate always-on rules would be a vector for unchecked instruction-budget growth.
+
+### Cross-references
+
+- Engine: `scripts/lib/reconcile/` (eligibility, emitter, renderer, idempotency, engine)
+- Session-end Phase 3.6.8: `skills/session-end/SKILL.md` — gated on `reconcile.enabled: true`
+- Resolver: `scripts/lib/config/reconcile.mjs`
+- `/reconcile` command: `skills/reconcile/SKILL.md` (on-demand invocation)
+- Epic #693 (reconciliation engine umbrella), FA3 #696 (advisory delivery), FA4 #697 (guardrails + this config block)
+- Instruction-budget guard: [Instruction Budget](#instruction-budget-687) (`instruction-budget.ceiling`, issue #687) — the never-always-on invariant protects this ceiling from reconciler-driven growth
+
+**Used by:** `scripts/lib/config/reconcile.mjs` (parser), `scripts/lib/reconcile/engine.mjs` (engine), `skills/session-end/SKILL.md` Phase 3.6.8.
+
 ## STATE.md Schema §Recommendations (v1.1)
 
 > Added by Epic #271 Phase A (issues #272–#275). **Additive** — `schema-version` remains `1`. Absence of all 5 fields is a valid `schema-version: 1` STATE.md meaning "no recommendation available" (pre-v1.1 compatibility). Readers MUST treat missing fields identically to explicit nulls.

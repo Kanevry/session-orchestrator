@@ -156,7 +156,7 @@ const SCALAR_META_KEYS = new Set([
  * @param {string} contents - raw file contents
  * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
  */
-function parseGlobsFrontmatter(contents) {
+export function parseGlobsFrontmatter(contents) {
   const match = FRONTMATTER_RE.exec(contents);
   if (!match) return { globs: null, meta: {} };
 

@@ -54,6 +54,7 @@ import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
 import { _parseMemory } from './config/memory.mjs';
+import { _parseReconcile } from './config/reconcile.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
 import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
@@ -273,6 +274,10 @@ export function parseSessionConfig(mdContent) {
   // memory: parsed from full content (issue #505 — banner opt-out)
   const memory = _parseMemory(mdContent);
 
+  // reconcile: parsed from full content (FA4 #697 — config foundation for
+  // FA3 #696 advisory rule-proposal delivery at session-end Phase 3.6.8).
+  const reconcile = _parseReconcile(mdContent);
+
   // test: parsed from full content (standalone top-level block, /test epic #378)
   const testConfig = _parseTest(mdContent);
 
@@ -387,6 +392,7 @@ export function parseSessionConfig(mdContent) {
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,
     'memory': memory,
+    'reconcile': reconcile,
     'vault-sync': vaultSync,
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,
