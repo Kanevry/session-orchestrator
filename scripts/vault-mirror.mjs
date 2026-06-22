@@ -59,6 +59,8 @@ import { processLearning, processSession } from './lib/vault-mirror/process.mjs'
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
+import { resolveCanonicalSuffixes } from './lib/named-vault-resolver.mjs';
+import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -80,7 +82,9 @@ export function _resolveCanonicalSuffix(envValue) {
   return envValue && envValue.trim() ? envValue.trim() : '/agents/vault';
 }
 
-const CANONICAL_VAULT_SUFFIX = _resolveCanonicalSuffix(
+// Kept for documentation; the guard now uses resolveCanonicalSuffixes() which
+// generalises this to N suffixes. The `_` prefix satisfies the no-unused-vars rule.
+const _CANONICAL_VAULT_SUFFIX = _resolveCanonicalSuffix(
   process.env.VAULT_MIRROR_CANONICAL_SUFFIX,
 );
 
@@ -292,11 +296,15 @@ async function main() {
     const res = spawnSync('git', ['-C', resolve(vaultDir), 'remote', 'get-url', 'origin'], {
       encoding: 'utf8',
     });
-    const ok = res.status === 0 && _normalizeRemote(res.stdout).endsWith(CANONICAL_VAULT_SUFFIX);
+    const canonicalSuffixes = resolveCanonicalSuffixes({
+      ownerConfig: loadOwnerConfig().config,
+      env: process.env,
+    });
+    const ok = res.status === 0 && canonicalSuffixes.some((s) => _normalizeRemote(res.stdout).endsWith(s));
     if (!ok) {
       const got = res.status === 0 ? res.stdout.trim() : 'no git origin';
       process.stderr.write(
-        `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin .../agents/vault; got ${got})\n`,
+        `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin ending in one of: ${canonicalSuffixes.join(', ')}; got ${got})\n`,
       );
       process.exit(2);
     }

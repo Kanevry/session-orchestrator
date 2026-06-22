@@ -223,6 +223,47 @@ export function validateOwnerConfig(obj) {
     }
   }
 
+  // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────
+  // Drop-and-WARN on malformed entries is handled by parseNamedVaults() in
+  // named-vault-resolver.mjs. Here we only validate the container shape to
+  // prevent clearly invalid config from passing silently.
+  // Absent or null → backward-compat no-op (no validation errors).
+  const vaults = obj.vaults;
+  if (vaults !== undefined && vaults !== null) {
+    if (!Array.isArray(vaults)) {
+      errors.push('vaults must be an array when present');
+    } else {
+      for (let i = 0; i < vaults.length; i++) {
+        const entry = vaults[i];
+        if (entry === null || entry === undefined) {
+          errors.push(`vaults[${i}] must not be null`);
+          continue;
+        }
+        if (!isPlainObject(entry)) {
+          errors.push(`vaults[${i}] must be an object`);
+          continue;
+        }
+        // Required string fields: name, suffix, root
+        for (const field of ['name', 'suffix', 'root']) {
+          if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
+            errors.push(`vaults[${i}].${field} must be a non-empty string`);
+          }
+        }
+        // Optional match sub-object
+        if (entry.match !== undefined && entry.match !== null) {
+          if (!isPlainObject(entry.match)) {
+            errors.push(`vaults[${i}].match must be an object when present`);
+          } else if (
+            entry.match['org-prefix'] !== undefined &&
+            typeof entry.match['org-prefix'] !== 'string'
+          ) {
+            errors.push(`vaults[${i}].match.org-prefix must be a string`);
+          }
+        }
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 

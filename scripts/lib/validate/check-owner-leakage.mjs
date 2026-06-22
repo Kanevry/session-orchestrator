@@ -636,6 +636,12 @@ const SELF_EXCLUSIONS = new Set([
   // 'redacted-repo'; the assertion literals are fixtures, not leaks (same class as
   // check-owner-leakage.test.mjs above).
   'tests/lib/vault-mirror/namespace.test.mjs',
+  // #700: vault-relocation classifier redaction-test fixtures — both files feed the
+  // real CP6 private slugs (BuchhaltGenie / aiat-pmo-module) into the classifier to
+  // prove they redact to 'redacted-repo'; assertion literals are fixtures, not leaks
+  // (same class as namespace.test.mjs above).
+  'tests/lib/vault-relocation-rules.test.mjs',
+  'tests/scripts/relocate-vault-corpus.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');

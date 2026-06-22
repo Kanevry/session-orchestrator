@@ -34,9 +34,18 @@ hardware-sharing:
 paths:                              # optional — host-local path overrides (#653)
   vault-dir: ""                     # overrides Session Config vault-integration.vault-dir
   baseline-path: ""                 # overrides Session Config plan-baseline-path
+
+vaults:                             # optional — named vault list for multi-vault routing (#700)
+  - name: "personal"                # unique identifier used by --vault-name / vault-integration.vault-name
+    suffix: "/agents/vault"         # canonical suffix for the N-root guard (mirrors VAULT_MIRROR_CANONICAL_SUFFIX)
+    root: "~/Projects/vault"        # absolute or ~-prefixed path to this vault's git repo root
+    match:
+      org-prefix: "my-org"          # org/repo prefix used for walk-up routing; absent → no auto-match
 ```
 
 The optional `paths:` section is consumed by `scripts/lib/config/host-paths.mjs` with precedence env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > owner.yaml `paths:` > committed Session Config default. It is absent-tolerant — legacy `owner.yaml` files without it still load.
+
+The optional `vaults:` list is consumed by `scripts/lib/named-vault-resolver.mjs` (`parseNamedVaults()`). When absent (or an empty list), all vault-mirror operations degrade gracefully to byte-identical single-vault behaviour — no config change is required for existing setups. When present, the list enables walk-up named-vault resolution: vault-mirror selects the vault whose `match.org-prefix` matches the current repo's git remote slug (first-match-wins). Each entry requires `name`, `suffix`, and `root`; `match` is optional. The `name` value maps to the `--vault-name` CLI flag and `vault-integration.vault-name` Session Config key. Never commit `vaults:` to a repo — it is host-local personal configuration.
 
 ## Template slots
 
