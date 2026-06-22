@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Shipped (v1 — #694/#695/#693 closed 2026-06-22)
 **Appetite:** Epic — phased; v1 ≤ 2 weeks (Medium), v2/v3 each ≤ 2 weeks
 **Parent Project:** session-orchestrator (self-evolution surface)
 
