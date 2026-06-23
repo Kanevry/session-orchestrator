@@ -373,6 +373,144 @@ describe('applyPendingDream', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #699 — memory_cleanup_at stamp makes lastCleanupAt advance + cadence resets
+// ---------------------------------------------------------------------------
+
+describe('readDreamSignals — #699: memory_cleanup_at stamp advances lastCleanupAt', () => {
+  it('latest memory_cleanup_at becomes lastCleanupAt and sessions after it count from zero', async () => {
+    // Scenario: 4 sessions before cleanup, then cleanup stamps memory_cleanup_at,
+    // then 2 sessions after. sessionsSinceCleanup must be 2 (not 6 or 3).
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      sessions: [
+        { started_at: '2026-06-01T08:00:00Z' },
+        { started_at: '2026-06-02T08:00:00Z' },
+        { started_at: '2026-06-03T08:00:00Z' },
+        { started_at: '2026-06-04T08:00:00Z' },
+        // The cleanup session: started AFTER the four above, carries the stamp.
+        {
+          started_at: '2026-06-05T08:00:00Z',
+          completed_at: '2026-06-05T08:30:00Z',
+          memory_cleanup_at: '2026-06-05T08:30:00Z',
+        },
+        // Two sessions after cleanup — only these should be counted.
+        { started_at: '2026-06-06T09:00:00Z' },
+        { started_at: '2026-06-07T09:00:00Z' },
+      ],
+    });
+    const signals = await readDreamSignals({ repoRoot, memoryDir });
+    expect(signals.lastCleanupAt).toBe('2026-06-05T08:30:00Z');
+    expect(signals.sessionsSinceCleanup).toBe(2);
+  });
+
+  it('when the most recent session carries memory_cleanup_at, sessionsSinceCleanup is 0', async () => {
+    // Scenario matching a healthy no-op cleanup on the last session: cadence resets to 0.
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      sessions: [
+        { started_at: '2026-06-10T08:00:00Z' },
+        { started_at: '2026-06-11T08:00:00Z' },
+        // Most recent session runs cleanup (even no-op) and stamps.
+        {
+          started_at: '2026-06-12T08:00:00Z',
+          completed_at: '2026-06-12T08:45:00Z',
+          memory_cleanup_at: '2026-06-12T08:45:00Z',
+        },
+      ],
+    });
+    const signals = await readDreamSignals({ repoRoot, memoryDir });
+    expect(signals.lastCleanupAt).toBe('2026-06-12T08:45:00Z');
+    expect(signals.sessionsSinceCleanup).toBe(0);
+  });
+
+  it('picks the MAXIMUM memory_cleanup_at across multiple stamped entries', async () => {
+    // Two entries carry memory_cleanup_at; the later one wins.
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      sessions: [
+        {
+          started_at: '2026-06-01T08:00:00Z',
+          memory_cleanup_at: '2026-06-01T08:30:00Z',
+        },
+        { started_at: '2026-06-02T09:00:00Z' },
+        {
+          started_at: '2026-06-03T08:00:00Z',
+          memory_cleanup_at: '2026-06-03T08:45:00Z',
+        },
+        // One session after the latest cleanup.
+        { started_at: '2026-06-04T10:00:00Z' },
+      ],
+    });
+    const signals = await readDreamSignals({ repoRoot, memoryDir });
+    expect(signals.lastCleanupAt).toBe('2026-06-03T08:45:00Z');
+    expect(signals.sessionsSinceCleanup).toBe(1);
+  });
+});
+
+describe('shouldDispatchAutoDream — #699: cadence does NOT trigger after recent cleanup', () => {
+  it('does NOT trigger on cadence when sessionsSinceCleanup is below threshold (recent no-op stamp)', async () => {
+    // After a no-op cleanup stamps memory_cleanup_at, only 2 sessions have passed.
+    // With threshold=5, cadence must NOT fire.
+    const result = await shouldDispatchAutoDream({
+      repoRoot: '/x',
+      memoryDir: '/x',
+      threshold: 5,
+      softLimit: 180,
+      signals: {
+        memoryLines: 10,
+        sessionsSinceCleanup: 2,
+        lastCleanupAt: '2026-06-12T08:45:00Z',
+      },
+    });
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toMatch(/under-thresholds/);
+  });
+
+  it('still triggers on cadence when sessionsSinceCleanup reaches threshold despite a prior stamp', async () => {
+    // 5 sessions have passed since the stamped cleanup: threshold met → trigger.
+    const result = await shouldDispatchAutoDream({
+      repoRoot: '/x',
+      memoryDir: '/x',
+      threshold: 5,
+      softLimit: 180,
+      signals: {
+        memoryLines: 10,
+        sessionsSinceCleanup: 5,
+        lastCleanupAt: '2026-06-05T08:30:00Z',
+      },
+    });
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toMatch(/cadence-threshold-met/);
+  });
+
+  it('full disk roundtrip: sessions.jsonl with memory_cleanup_at stamp → shouldDispatchAutoDream does not trigger', async () => {
+    // This is the end-to-end regression test for #699:
+    // Before the fix, a no-op cleanup left lastCleanupAt=null → sessionsSinceCleanup
+    // counted ALL entries → false cadence trigger. With the stamp, it resets.
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      memoryLines: 10, // well below softLimit=180
+      sessions: [
+        { started_at: '2026-06-08T08:00:00Z' },
+        { started_at: '2026-06-09T08:00:00Z' },
+        {
+          started_at: '2026-06-10T08:00:00Z',
+          completed_at: '2026-06-10T08:30:00Z',
+          memory_cleanup_at: '2026-06-10T08:30:00Z', // stamp from no-op cleanup
+        },
+        { started_at: '2026-06-11T09:00:00Z' },
+      ],
+    });
+    const result = await shouldDispatchAutoDream({
+      repoRoot,
+      memoryDir,
+      threshold: 5,
+      softLimit: 180,
+    });
+    // Only 1 session after the cleanup: 1 < 5 → must NOT trigger.
+    expect(result.trigger).toBe(false);
+    expect(result.signals.sessionsSinceCleanup).toBe(1);
+    expect(result.signals.lastCleanupAt).toBe('2026-06-10T08:30:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Indirect coverage of internal helpers via applyPendingDream
 // ---------------------------------------------------------------------------
 

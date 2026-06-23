@@ -10,7 +10,7 @@
  * ~/.config/session-orchestrator/.
  */
 
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -319,12 +319,21 @@ describe('concurrent session-start calls', { timeout: 15000 }, () => {
       runSessionStart({ projectDir: dirC }),
     ]);
 
-    const entries = await readRegistry(registryDir);
-
-    // Exactly 3 entries, all with distinct session_ids
-    expect(entries).toHaveLength(3);
-    const ids = new Set(entries.map((e) => e.session_id));
-    expect(ids.size).toBe(3);
+    // Under CPU contention (coverage job, v8 instrumentation) the heartbeat
+    // file flush may land on disk milliseconds after the subprocess exits.
+    // vi.waitFor polls until all 3 distinct entries are visible, then exits
+    // immediately — it does NOT widen testTimeout and still fails hard if
+    // fewer than 3 distinct heartbeats are ever written (throws on timeout).
+    await vi.waitFor(
+      async () => {
+        const entries = await readRegistry(registryDir);
+        // Exactly 3 entries, all with distinct session_ids
+        expect(entries).toHaveLength(3);
+        const ids = new Set(entries.map((e) => e.session_id));
+        expect(ids.size).toBe(3);
+      },
+      { timeout: 500, interval: 50 },
+    );
   });
 });
 

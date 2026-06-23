@@ -16,6 +16,68 @@ import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, genera
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
+// ── Content diff helper ───────────────────────────────────────────────────────
+
+/**
+ * Extract canonical comparable fields from a rendered learning note string.
+ *
+ * We compare only the fields that represent meaningful SSOT content changes —
+ * not created/updated dates or frontmatter ordering, which differ on every
+ * render without signalling a content change.
+ *
+ * Comparable fields:
+ *   - status (frontmatter line `status: <value>`)
+ *   - expires (frontmatter line `expires: <value>`, v1 only; absent in v2)
+ *   - confidence (body bullet `- **Confidence:** <value>`)
+ *   - insight body (text after `## Insight\n\n` heading, trimmed)
+ *
+ * @param {string} noteContent — rendered markdown string
+ * @returns {{ status: string, expires: string, confidence: string, insight: string }}
+ */
+function extractLearningCanonicalFields(noteContent) {
+  const status = (noteContent.match(/^status:\s*(.+)$/m) || [])[1]?.trim() ?? '';
+  const expires = (noteContent.match(/^expires:\s*(.+)$/m) || [])[1]?.trim() ?? '';
+  const confidence = (noteContent.match(/^- \*\*Confidence:\*\*\s*(.+)$/m) || [])[1]?.trim() ?? '';
+  // Extract insight body: everything after `## Insight\n\n` until the next `##` or end-of-string
+  const insightMatch = noteContent.match(/^## Insight\n\n([\s\S]*?)(?=\n## |\s*$)/m);
+  const insight = insightMatch ? insightMatch[1].trim() : '';
+  return { status, expires, confidence, insight };
+}
+
+/**
+ * Return true when the existing vault note content and the freshly-rendered
+ * candidate share identical canonical fields (i.e. no meaningful update needed).
+ *
+ * A true result means → emit skipped-noop.
+ * A false result means → the SSOT changed; write the new content.
+ *
+ * Comparison semantics: a field that is ABSENT in the existing note (empty
+ * string from extractLearningCanonicalFields) is treated as matching any
+ * rendered value for that field. This preserves backward compatibility with
+ * notes written by older generator versions that may not have emitted every
+ * field. Only when an existing field is NON-EMPTY and differs from the
+ * rendered candidate do we conclude the SSOT has changed and an update is needed.
+ *
+ * @param {string} existingContent — content read from the vault note on disk
+ * @param {string} renderedContent — freshly generated note from the renderer
+ * @returns {boolean}
+ */
+function learningContentMatches(existingContent, renderedContent) {
+  const existing = extractLearningCanonicalFields(existingContent);
+  const rendered = extractLearningCanonicalFields(renderedContent);
+  // For each field: if the existing value is absent (empty string), it cannot
+  // signal a mismatch — it means the old note didn't track that field. Only
+  // non-empty existing values are compared against the rendered candidate.
+  const fieldMatches = (existingVal, renderedVal) =>
+    existingVal === '' || existingVal === renderedVal;
+  return (
+    fieldMatches(existing.status, rendered.status) &&
+    fieldMatches(existing.expires, rendered.expires) &&
+    fieldMatches(existing.confidence, rendered.confidence) &&
+    fieldMatches(existing.insight, rendered.insight)
+  );
+}
+
 // ── repo derivation ───────────────────────────────────────────────────────────
 
 let _cachedRepo = null;
@@ -177,10 +239,16 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === slug) {
       const entryUpdated = toDate(dateSource);
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
-        emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: slug, vaultDir });
-        return;
+        // Date has not advanced — but content may have changed (confidence, insight, etc.).
+        // Render the candidate and compare canonical fields before deciding to skip.
+        const candidateContent = generator(entry, slug);
+        if (learningContentMatches(legacyContent, candidateContent)) {
+          emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: slug, vaultDir });
+          return;
+        }
+        // Content differs — fall through to write into the namespaced path.
       }
-      // Updated date would advance — fall through to write into the namespaced path.
+      // Updated date would advance or content changed — fall through to write into the namespaced path.
     }
   }
 
@@ -217,11 +285,15 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
           emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
           return;
         }
-        // Check updated advancement
+        // Check updated advancement; if date has not advanced, also diff content.
         const entryUpdated = toDate(dateSource);
         if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
-          emitAction({ action: 'skipped-noop', path: targetPath, kind, id: disambigSlug, vaultDir });
-          return;
+          const candidateContent = generator(entry, slug);
+          if (learningContentMatches(disambigContent, candidateContent)) {
+            emitAction({ action: 'skipped-noop', path: targetPath, kind, id: disambigSlug, vaultDir });
+            return;
+          }
+          // Content differs — fall through to write.
         }
       }
 
@@ -231,11 +303,17 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       return;
     }
 
-    // Same id: check if updated would advance (unless --force overrides)
+    // Same id: check if updated would advance (unless --force overrides).
+    // Even when the date has not advanced, content may have changed (confidence,
+    // insight, expires_at, etc.) — compare canonical fields before skipping.
     const entryUpdated = toDate(dateSource);
     if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-      emitAction({ action: 'skipped-noop', path: targetPath, kind, id: slug, vaultDir });
-      return;
+      const candidateContent = generator(entry, slug);
+      if (learningContentMatches(existingContent, candidateContent)) {
+        emitAction({ action: 'skipped-noop', path: targetPath, kind, id: slug, vaultDir });
+        return;
+      }
+      // Content differs — fall through to overwrite (same path as date-advance branch).
     }
 
     // Overwrite with advanced updated date (or forced re-render)

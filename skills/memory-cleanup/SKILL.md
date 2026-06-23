@@ -288,6 +288,18 @@ After completing all four phases, report:
 - Stale entries pruned (count + categories).
 - Any issues that need manual attention (e.g. ambiguous facts that need user input — surface via `AskUserQuestion` rather than guessing).
 
+### Session-End Signal: "cleanup ran this session" (#699)
+
+**A completed cleanup — including a healthy no-op where MEMORY.md was already healthy and no files were mutated — counts as a cleanup run.** The session-end skill MUST stamp `memory_cleanup_at` on the session record whenever `/memory-cleanup` ran in THIS session, regardless of outcome (dry-run, apply-pending, or no-op).
+
+This advances the auto-dream cadence marker (`readDreamSignals` → `lastCleanupAt` in `scripts/lib/auto-dream.mjs`) so `shouldDispatchAutoDream` does not fire a false nudge on the next session.
+
+**Signalling contract (coordinator responsibility at session-end Phase 3.7):**
+- Set `ranMemoryCleanupThisSession = true` when `/memory-cleanup` ran this session in ANY mode or with ANY outcome.
+- Pass this flag to `stampMemoryCleanup()` from `scripts/lib/memory-cleanup-stamp.mjs` before emitting the session record (see `skills/session-end/session-metrics-write.md` § 1-pre).
+- Do NOT distinguish between "applied changes" and "healthy no-op" — both count.
+- Do NOT set `memory_cleanup_at` to `null`; simply omit the field when cleanup did not run.
+
 ## Anti-Patterns
 
 - **Don't rewrite memory you don't understand.** If a fact's provenance is unclear, leave it and flag it in the output instead of deleting.

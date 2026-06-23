@@ -868,3 +868,316 @@ describe('processSession slug-length cap (#635)', () => {
     expect(lines[0].id.length).toBeLessThanOrEqual(240);
   });
 });
+
+// ── #698 content-diff (detect-and-rewrite vs skipped-noop) ───────────────────
+//
+// These tests exercise the new learningContentMatches() path inside processLearning:
+// when the file's `updated` date does NOT advance, the engine renders a candidate
+// and compares canonical fields. If any differ → `updated`; if all match → `skipped-noop`.
+//
+// Falsification guarantee for the POSITIVE test (#698-positive-detect-rewrite):
+//   If the content-diff fix were reverted (i.e., the engine went straight to
+//   `skipped-noop` whenever updated does not advance — the pre-#698 behavior),
+//   that test would assert `updated` but receive `skipped-noop`, and would FAIL.
+
+describe('processLearning #698 content-diff: detect-and-rewrite vs skipped-noop', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+  let _mkdirSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    _mkdirSyncSpy = vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function getProcessLearning() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processLearning;
+  }
+
+  // Entry with confidence=0.9, insight='Prefer explicit contracts', created_at='2026-04-13T10:00:00Z'
+  // → updated date derived from created_at → '2026-04-13'
+  // The existing note on disk will report updated: 2026-04-13 (same date, does NOT advance).
+  const ENTRY_V1 = {
+    id: 'a1b2c3d4-0001-4000-8000-000000000001',
+    type: 'architectural',
+    subject: 'explicit-contracts',
+    insight: 'Prefer explicit contracts',
+    evidence: 'Three modules broke',
+    confidence: 0.9,
+    source_session: 'session-2026-04-13',
+    created_at: '2026-04-13T10:00:00Z',
+  };
+
+  // A generator-owned note where confidence bullet says 0.7 (stale) while entry has 0.9.
+  // status: draft (confidence<=0.8 → draft in the renderer) also differs from verified.
+  // updated: 2026-04-13 = same as entry's derived date → date does NOT advance.
+  const EXISTING_NOTE_CONFIDENCE_MISMATCH =
+    '---\n' +
+    'id: explicit-contracts\n' +
+    'type: learning\n' +
+    'title: Prefer explicit contracts\n' +
+    'status: draft\n' +
+    'created: 2026-04-13\n' +
+    'updated: 2026-04-13\n' +
+    'tags: [learning-architectural, status-draft, source-session-2026-04-13]\n' +
+    'source_session: "[[session-2026-04-13]]"\n' +
+    '_generator: session-orchestrator-vault-mirror@1\n' +
+    '---\n' +
+    '\n' +
+    '# Prefer explicit contracts\n' +
+    '\n' +
+    '- **Type:** architectural\n' +
+    '- **Confidence:** 0.7\n' +
+    '- **Source session:** [[session-2026-04-13]]\n' +
+    '\n' +
+    '## Insight\n' +
+    '\n' +
+    'Prefer explicit contracts\n' +
+    '\n' +
+    '## Evidence\n' +
+    '\n' +
+    'Three modules broke\n';
+
+  // A generator-owned note whose canonical fields EXACTLY match what the renderer
+  // would produce for ENTRY_V1: confidence=0.9, status=verified, same insight body.
+  // updated: 2026-04-13 = same as entry → date does NOT advance.
+  const EXISTING_NOTE_IDENTICAL =
+    '---\n' +
+    'id: explicit-contracts\n' +
+    'type: learning\n' +
+    'title: Prefer explicit contracts\n' +
+    'status: verified\n' +
+    'created: 2026-04-13\n' +
+    'updated: 2026-04-13\n' +
+    'tags: [learning-architectural, status-verified, source-session-2026-04-13]\n' +
+    'source_session: "[[session-2026-04-13]]"\n' +
+    '_generator: session-orchestrator-vault-mirror@1\n' +
+    '---\n' +
+    '\n' +
+    '# Prefer explicit contracts\n' +
+    '\n' +
+    '- **Type:** architectural\n' +
+    '- **Confidence:** 0.9\n' +
+    '- **Source session:** [[session-2026-04-13]]\n' +
+    '\n' +
+    '## Insight\n' +
+    '\n' +
+    'Prefer explicit contracts\n' +
+    '\n' +
+    '## Evidence\n' +
+    '\n' +
+    'Three modules broke\n';
+
+  it('#698-positive: existing note with stale confidence (0.7) emits updated, NOT skipped-noop', async () => {
+    // The existing note has updated=2026-04-13 matching entry's created_at → date does NOT advance.
+    // BUT confidence bullet is 0.7 vs entry's 0.9 → content-diff detects change → emits updated.
+    //
+    // Falsification: revert the content-diff fix → engine always emits skipped-noop when
+    // date does not advance → this test fails (received 'skipped-noop', expected 'updated').
+    //
+    // existsSync call order in processLearning:
+    //   call 1: existsSync(targetPath) at line 235 → true  (namespaced file exists)
+    //   call 2: existsSync(legacyFlatPath) at line 235 — NOT reached because call 1 is true
+    //   call 3: existsSync(targetPath) at line 255 → true  (same check, same result)
+    existsSyncSpy.mockReturnValue(true);  // all existsSync calls return true
+    readFileSyncSpy.mockReturnValue(EXISTING_NOTE_CONFIDENCE_MISMATCH);
+    const processLearning = await getProcessLearning();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(ENTRY_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('updated');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+  });
+
+  it('#698-negative: existing note with identical canonical fields emits skipped-noop (no churn)', async () => {
+    // Updated date same as entry, all canonical fields match (confidence=0.9, status=verified,
+    // insight='Prefer explicit contracts') → learningContentMatches returns true → skipped-noop.
+    //
+    // existsSync call order:
+    //   call 1: existsSync(targetPath) at line 235 → true (namespaced file exists)
+    //   call 3: existsSync(targetPath) at line 255 → true (same path, same mock)
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(EXISTING_NOTE_IDENTICAL);
+    const processLearning = await getProcessLearning();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(ENTRY_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-noop');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('#698-invariant-create: file absent still emits created (content-diff path not reached)', async () => {
+    // Both existsSync calls return false → falls through to create path.
+    // The content-diff code is never entered. Guard against regression in create path.
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(ENTRY_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+  });
+
+  it('#698-invariant-handwritten: no _generator marker still emits skipped-handwritten', async () => {
+    // Even with the content-diff logic active, hand-authored notes must still be refused.
+    //
+    // existsSync call order:
+    //   call 1: existsSync(targetPath) at line 235 → true (namespaced file exists, skip dual-probe)
+    //   call 3: existsSync(targetPath) at line 255 → true
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(
+      '---\nid: explicit-contracts\ntitle: My Manual Note\n---\n\nHand written content.\n'
+    );
+    const processLearning = await getProcessLearning();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(ENTRY_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-handwritten');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── #701.1 dual-probe date-advance fall-through ───────────────────────────────
+//
+// The #701.1 branch: a legacy flat note exists, the namespaced target is absent,
+// the legacy note is generator-owned with a matching id, AND the entry's `updated`
+// date ADVANCES past the legacy note's `updated`. In this case the code must NOT
+// emit skipped-noop — it should fall through and write to the NAMESPACED path
+// (not back to the legacy flat path).
+//
+// The complementary "date does not advance + content matches → skipped-noop" branch
+// is covered by the existing test at line ~253.
+
+describe('processLearning #701.1 dual-probe date-advance fall-through', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+  let _mkdirSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    _mkdirSyncSpy = vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function getProcessLearning() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processLearning;
+  }
+
+  it('date advances past legacy flat note → does NOT emit skipped-noop; writes to namespaced path', async () => {
+    // Setup:
+    //   - Entry's created_at is '2026-05-01T10:00:00Z' → updated derived to '2026-05-01'.
+    //   - Legacy flat note has updated: 2026-04-13 (OLDER → date ADVANCES).
+    //   - Namespaced targetPath (/vault/40-learnings/r/explicit-contracts.md) is ABSENT.
+    //   - legacyFlatPath (/vault/40-learnings/explicit-contracts.md) EXISTS
+    //     with a generator-owned note whose id matches the slug.
+    //
+    // The dual-probe block: legacyFm['updated'] ('2026-04-13') < entryUpdated ('2026-05-01')
+    // → does NOT enter the skipped-noop branch → falls through to write into namespaced path.
+    //
+    // Git mock: 'git@x:o/r.git' → repo='o/r' → repoNs='r'
+    // so namespaced targetPath = /vault/40-learnings/r/explicit-contracts.md
+    //    legacyFlatPath        = /vault/40-learnings/explicit-contracts.md
+    //
+    // existsSync call order in processLearning (post #660 dual-probe logic):
+    //   1st: targetPath (namespaced)  → false
+    //   2nd: legacyFlatPath (flat)    → true
+    //   3rd: targetPath again in the second block → false (→ create)
+    const LEGACY_FLAT_NOTE =
+      '---\n' +
+      'id: explicit-contracts\n' +
+      'type: learning\n' +
+      'title: Prefer explicit contracts\n' +
+      'status: verified\n' +
+      'created: 2026-04-13\n' +
+      'updated: 2026-04-13\n' +
+      'tags: [learning-architectural, status-verified, source-session-2026-04-13]\n' +
+      'source_session: "[[session-2026-04-13]]"\n' +
+      '_generator: session-orchestrator-vault-mirror@1\n' +
+      '---\n' +
+      '\n' +
+      '# Prefer explicit contracts\n' +
+      '\n' +
+      '- **Type:** architectural\n' +
+      '- **Confidence:** 0.9\n' +
+      '- **Source session:** [[session-2026-04-13]]\n' +
+      '\n' +
+      '## Insight\n' +
+      '\n' +
+      'Prefer explicit contracts\n' +
+      '\n' +
+      '## Evidence\n' +
+      '\n' +
+      'Three modules broke\n';
+
+    existsSyncSpy
+      .mockReturnValueOnce(false)   // 1st: targetPath (namespaced) → absent
+      .mockReturnValueOnce(true)    // 2nd: legacyFlatPath → exists
+      .mockReturnValueOnce(false);  // 3rd: targetPath in second block → absent → create
+    readFileSyncSpy.mockReturnValue(LEGACY_FLAT_NOTE);
+
+    const processLearning = await getProcessLearning();
+
+    const entry = {
+      id: 'a1b2c3d4-0001-4000-8000-000000000001',
+      type: 'architectural',
+      subject: 'explicit-contracts',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Three modules broke',
+      confidence: 0.9,
+      source_session: 'session-2026-04-13',
+      created_at: '2026-05-01T10:00:00Z',  // ADVANCES past legacy '2026-04-13'
+    };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    // Must NOT be skipped-noop — the date advanced.
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).not.toBe('skipped-noop');
+
+    // Write must target the NAMESPACED path (contains '/r/'), not the legacy flat path.
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    const writtenPath = writeFileSyncSpy.mock.calls[0][0];
+    expect(writtenPath).toContain('/40-learnings/r/');
+    expect(writtenPath).not.toBe('/vault/40-learnings/explicit-contracts.md');
+  });
+});

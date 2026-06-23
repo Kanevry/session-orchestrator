@@ -19,6 +19,22 @@
 
 1. Ensure `.orchestrator/metrics/` directory exists: `mkdir -p .orchestrator/metrics`
 
+1-pre. **`memory_cleanup_at` always-stamp (#699)** — Before emitting the record, if `/memory-cleanup` ran THIS session in any mode (dry-run, apply-pending, OR healthy no-op), stamp `memory_cleanup_at = completed_at` on the record using `stampMemoryCleanup()` from `scripts/lib/memory-cleanup-stamp.mjs`:
+
+   ```js
+   import { stampMemoryCleanup } from '../../scripts/lib/memory-cleanup-stamp.mjs';
+
+   // ranCleanup: true when /memory-cleanup ran this session (ANY outcome)
+   metricsEntry = stampMemoryCleanup(metricsEntry, {
+     ranCleanup: ranMemoryCleanupThisSession, // boolean
+     completedAt: metricsEntry.completed_at,
+   });
+   ```
+
+   **Contract:** A no-op run (MEMORY.md already healthy, no files mutated) is still a cleanup — `memory_cleanup_at` MUST be stamped. This advances `readDreamSignals` → `lastCleanupAt` in `auto-dream.mjs` so `shouldDispatchAutoDream` does not fire a false nudge. When `/memory-cleanup` did not run, omit the field entirely (do NOT set null). The helper is no-throw and pure — it returns the record unchanged on bad inputs.
+
+   > **#701.2 DOC NOTE — `completed_at >= started_at` guard:** This invariant is enforced mechanically by `scripts/emit-session.mjs`. The writer applies `clampTimestampsMonotonic()` (from `scripts/lib/session-schema/timestamps.mjs`) before `validateSession()`, clamping any inversion of `completed_at < started_at` to `started_at` and recording forensics in `_clamped: true` / `_original_completed_at`. Previously-inverted entries (e.g. `main-2026-06-21-session-4`) are already corrected. **No per-session coordinator action is needed** — the writer enforces the invariant at write time. Do not add defensive clamping logic here; the canonical guard lives in `emit-session.mjs`.
+
 1a. **Token Rollup (#644)** — before emitting the JSONL record, aggregate token usage from `subagents.jsonl` and merge the three token fields onto the in-memory `$METRICS_ENTRY` JSON object. The join key is the session's UUID (`session_id` / `parent_session_id` on subagents.jsonl — the UUID form, not the semantic slug).
 
    **Semantics:** `null` totals mean "no token data was captured for this session" — this is NOT the same as zero cost. Do NOT coerce null to 0 when displaying or summing across sessions.

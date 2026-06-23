@@ -178,6 +178,9 @@ async function main() {
     throw err;
   }
 
+  // validateSession returns `{ ...entry, schema_version }` — the spread preserves
+  // ALL additive fields, including `memory_cleanup_at` (#699) and `autopilot_run_id`
+  // (#300). No field stripping occurs here; additive v1-compatible fields pass through.
   try {
     await appendJsonl(args.file, validated);
   } catch (err) {

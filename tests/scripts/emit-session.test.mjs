@@ -178,6 +178,8 @@ describe('emit-session.mjs CLI — #321 pre-validation repair', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  // #701.2 — completed_at < started_at inversion guard: clampTimestampsMonotonic sets
+  // _clamped:true + _original_completed_at, and clamps completed_at to started_at.
   it('clamps inversion: exits 0 (clamped, not error) and writes appended record', () => {
     const entry = validEntry({
       session_id: 'inv-clamp-1',

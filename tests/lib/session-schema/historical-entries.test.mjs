@@ -16,6 +16,8 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { validateSession, ValidationError } from '@lib/session-schema/validator.mjs';
 import { aliasLegacyEndedAt } from '@lib/session-schema/aliases.mjs';
@@ -136,6 +138,102 @@ describe('historical sessions.jsonl entries — additive contract (ADR-364 DoD-1
       }
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// #701.3 — Committed fixture: deterministic CI coverage for the
+// historical-entries contract. These entries are version-controlled so the
+// validator contract is exercised unconditionally in CI (unlike the live
+// sessions.jsonl which is gitignored and absent on CI runners).
+//
+// Fixture: tests/lib/session-schema/fixtures/sample-sessions.jsonl
+// Entries:
+//   sess-canonical-001 — happy-path schema_version=1 canonical entry
+//   sess-clamped-002   — entry with _clamped + _original_completed_at forensics
+//   sess-legacy-003    — old-shape (agents_dispatched / waves_completed) that
+//                        exercises the migrateEntry path
+// ---------------------------------------------------------------------------
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const fixturePath = resolve(__dirname, 'fixtures/sample-sessions.jsonl');
+const fixtureLines = readFileSync(fixturePath, 'utf8').split('\n').filter(Boolean);
+
+describe('#701.3 committed fixture — deterministic CI coverage (never skipped)', () => {
+  it('all committed fixture entries pass aliasLegacyEndedAt + migrateEntry + validateSession', () => {
+    // This test MUST run unconditionally — it uses a committed fixture file,
+    // not the gitignored sessions.jsonl. If any entry fails validation the
+    // fixture itself must be fixed to match the real contract.
+    expect(fixtureLines.length).toBeGreaterThanOrEqual(3);
+
+    const failures = [];
+    fixtureLines.forEach((line, idx) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch (err) {
+        failures.push(`fixture line ${idx + 1}: JSON parse failed — ${err.message}`);
+        return;
+      }
+      try {
+        const withEndedAt = aliasLegacyEndedAt(parsed);
+        const migrated = migrateEntry(withEndedAt);
+        validateSession(migrated);
+      } catch (err) {
+        failures.push(
+          `fixture line ${idx + 1} (session_id=${parsed.session_id ?? '?'}): ${err.message}`
+        );
+      }
+    });
+
+    if (failures.length > 0) {
+      throw new Error(
+        `${failures.length}/${fixtureLines.length} fixture entries failed validation:\n${failures.join('\n')}`
+      );
+    }
+  });
+
+  it('committed fixture contains a clamped entry (_clamped: true, completed_at >= started_at after clamp)', () => {
+    // Exercises the monotonicity-guard forensics path (issue #701.2 read-side CI guard).
+    // The clamped entry must have _clamped:true AND completed_at must equal started_at
+    // (the clamp sets completed_at = started_at when an inversion is detected).
+    const clampedLine = fixtureLines.find((line) => {
+      try {
+        return JSON.parse(line)._clamped === true;
+      } catch {
+        return false;
+      }
+    });
+    expect(clampedLine).toBeDefined();
+
+    const entry = JSON.parse(clampedLine);
+    expect(entry._clamped).toBe(true);
+    expect(typeof entry._original_completed_at).toBe('string');
+    // Post-clamp: completed_at must be >= started_at (monotonicity upheld)
+    expect(Date.parse(entry.completed_at)).toBeGreaterThanOrEqual(Date.parse(entry.started_at));
+    // The original value that caused the inversion must be strictly earlier
+    expect(Date.parse(entry._original_completed_at)).toBeLessThan(Date.parse(entry.started_at));
+  });
+
+  it('committed fixture contains a legacy-shape entry that requires migrateEntry to become valid', () => {
+    // Exercises the migrateEntry path: old-shape entries lack agent_summary and waves[],
+    // so validateSession rejects them before migration but accepts them after.
+    const legacyLine = fixtureLines.find((line) => {
+      try {
+        const obj = JSON.parse(line);
+        return !('agent_summary' in obj) && !Array.isArray(obj.waves);
+      } catch {
+        return false;
+      }
+    });
+    expect(legacyLine).toBeDefined();
+
+    const raw = JSON.parse(legacyLine);
+    // Verify the RAW entry fails validateSession (it is not yet canonical)
+    expect(() => validateSession(raw)).toThrow(ValidationError);
+    // Verify that after migrateEntry it passes validateSession
+    const migrated = migrateEntry(aliasLegacyEndedAt(raw));
+    expect(() => validateSession(migrated)).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
