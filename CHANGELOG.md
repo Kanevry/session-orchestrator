@@ -7,9 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-06-23
+
+Additive, backward-compatible release. Headline: a **cross-repo dispatcher** that picks
+the next-best repo to work on, a **learning → rule reconciliation engine** that turns
+session signals into reviewable `.claude/rules/` proposals, and the foundation +
+activation of **skill self-evolution**. Every new behaviour is opt-in and off by default;
+existing sessions are unaffected. CI green across the full suite on every commit.
+
+### Added
+
+- **Cross-repo Dispatcher — Epic #673** (closes #674, #675, #676, #677, #678, #679, #680, #681, #682). A new `/dispatcher` command (+ `dispatcher` skill) that enumerates the repos you are *not* currently working on, resolves free/busy from each repo's `session.lock` lease, ranks the free ones by **backlog priority × staleness × readiness**, recommends the single best one via `AskUserQuestion`, atomically claims its lease so two sessions can't collide, and routes you to the chosen entry command.
+  - **#674/#675 — cross-repo session board + durable narrative mirror:** a `_active-sessions.md` vault board plus durable session-narrative mirroring so the dispatcher and the operator share one view of what's running where.
+  - **#679/#680 — suitability verdict engine:** a new `dispatcher-autonomy` config block and a fail-closed suitability check that must pass before any autonomous launch.
+  - **#681/#682 — autonomy wired end-to-end:** one-time capture of the committed autonomy posture + verdict-gated launch. Autonomous launch is **opt-in and off by default** (`dispatcher-autonomy.autonomy: off`); the effective dial resolves host-locally (`SO_DISPATCHER_AUTONOMY` env > `owner.yaml` > committed > `off`).
+- **Learning → Rule Reconciliation Engine — Epic #693** (closes #694, #695). A new `/reconcile` command (+ `reconcile` skill) that converts confidence-scored session learnings into **conditional `.claude/rules/` proposals** — every write is operator-AUQ-gated and rules are never auto-applied.
+  - **#694 — rule-loader activation:** wired the previously-dormant per-wave rule-loader and conditional rule frontmatter (glob / mode / host-class / expiry gating), so `.claude/rules/*.md` can load conditionally instead of always-on.
+  - **#695 — reconciliation engine (FA2):** the learning → conditional-rule proposal pipeline.
+  - **FA3/FA4 — advisory delivery + guardrails:** session-end advisory rule-proposal delivery (gated on a new `reconcile:` config block, default off), a `check-rules.mjs` CI guard (never-always-on firewall for generated rules), and a per-type rule-expiry TTL (`rule-expiry-days: null` → per-type default).
+- **Skill Self-Evolution — Epic #643** (closes #643, #645, #647, #651). Foundation + activation of the self-evolution surface: token rollup, a `skill-evolution` config block, and L1/L2 telemetry; a **C2 tiered auto-repair engine** that gates auto-apply per artifact type; the C2 real apply-path plus an opt-in L3 session-end LLM judge (advisory only); and a closeout pass adding per-skill health, an MCP fix, and security hardening. Autonomous-apply is armed only for the safest drift shape (root-instruction command-count, filesystem-fact-sourced) behind a quadruple gate; plugin/local/remote targets are always MR-only. New `skill-applied-judge` agent.
+- **Per-project Vault namespacing + relocation — #660, #700.** Per-project vault namespacing with a commit-isolation guard (#660), plus a phase-2 relocation engine and **walk-up named-vault resolution** (#700): vault-mirror can now route to the vault whose `match.org-prefix` matches the current repo's remote slug, configured via an optional `vaults:` list in `owner.yaml`. Absent config degrades byte-identically to single-vault behaviour.
+- **Instruction-budget guard — #687.** An always-on session-start directive-budget banner (warn-only, growth-ratchet) that fires when the always-on structural-directive count exceeds a ceiling — a guard against silent instruction-file bloat. Paired with a PSA operator-session re-scope (#689) clarifying the operator-session vs in-run axes.
+- **Frontend-slop detector — #684.** An impeccable-inspired deterministic frontend-slop detector and an opt-in `PostToolUse` hook (default off, warn-only, profile-gated) that flags templated-default UI tells after UI-file edits, plus the `frontend.md` design-ban rule markers it enforces.
+- **Optional User-Story intent layer in `/plan` — Epic #654.** An opt-in user-story intent layer for the `/plan` flow.
+- **Host-local, privacy-clean path resolution — #653.** `vault-dir` and `baseline-path` now resolve host-locally (env > `owner.yaml` `paths:` > committed default), so a machine can point at its own paths without committing personal locations to the repo.
+- **gitlab-ops MR/PR evidence block — #669** and **SubagentStop feed-back-and-continue — #666** (additional context fed back to the coordinator on subagent stop).
+- **6-surface drift detection — #663.** `claude-md-drift-check` extended to detect count drift across six surfaces.
+- **LSP-posture rule** — new `.claude/rules/lsp.md` documenting the deliberate no-LSP-MCP navigation posture (ripgrep + steering map), so the absence reads as intentional.
+
 ### Changed
 
-- **Doc-sync + loop-engineering positioning** — corrected verified surface counts that had drifted across README and the session-injected steering docs, and reframed positioning around the now-named "loop engineering" discipline (Steinberger/Cherny, June 2026). Counts verified this session: README test badge 8856 → **9303** (`npm test`: 9303 passed / 12 skipped / 0 failed across 433 files, exit 0), sub-agents 13 → **14** (added `skill-applied-judge`), validate-plugin 138 → **140**. `.orchestrator/steering/structure.md` refreshed: skills 36 → **40**, commands 16 → **20**, agents 11 → **14**, hooks "11 matcher / 11 handler / 9 events" → **14 matcher / 19 handler / 10 events** (added the `SessionEnd` → `hooks/on-session-end.mjs` row + a manifest-SSOT note). `.orchestrator/steering/product.md` mission re-centered on the durable moat (mechanical guards, telemetry, skill self-evolution, host-local public-repo-safe shared memory, parallel-operator-session safety, multi-harness portability) as native harnesses absorb raw parallelism / research fan-out, and corrected to include the Pi harness. Output of the cross-repo + external-discourse audit session (2026-06-17).
+- **Config-cycle break + memory time-decay — #664, #670.** Refactored to break a config-module dependency cycle and wired memory time-decay into recall.
+- **Doc-sync + loop-engineering positioning.** Corrected verified surface counts that had drifted across README and the session-injected steering docs, and reframed positioning around the "loop engineering" discipline. `.orchestrator/steering/{structure,product}.md` refreshed (skills/commands/agents/hooks inventory + mission re-centered on the durable moat: mechanical guards, telemetry, skill self-evolution, public-repo-safe shared memory, parallel-operator-session safety, multi-harness portability).
+- **Native-overlap ADR refresh + prompt-caching rule demoted** to path-scoped (the orchestrator itself uses no LLM SDK).
+- **README slimmed** to a leaner public landing page with private-tracker references removed.
+
+### Fixed
+
+- **Security — owner-leakage scanner canonicalize-before-match (#661)** and a scanner-safe Google-API-key test fixture (secret-scanning #5).
+- **Metrics — pre-write JSONL round-trip self-validation + repair (#662)**, so a malformed metrics line is caught and repaired before it lands.
+- **resource-probe — judge macOS RAM-criticality on *available*, not *free* (#667)**, fixing spurious resource-overload trips on healthy machines.
+- **CI green-baseline restoration (#685, #686).** Sharded the vitest suite for the root Hetzner autoscaler; guarded chmod-as-root tests; replaced a root-only `/proc` `mkdirSync` that hung a shard with a uid-uniform unwritable-path helper; closed a CI false-green blind-spot in the fail-closed verifier; widened per-shard timeouts with headroom; hardened a multi-session-registry concurrency test and excluded the coverage lane double-count.
+- **Reliability sweep** — CI-flake poll, vault-mirror drift correction, memory-cleanup stamp, and metrics hygiene.
+- **deps** — `vite` overridden to `^8.0.16` (resolves a Dependabot HIGH advisory); `vitest` bumped to `^4.1.0` in the `claude-md-drift-check` skill.
 
 ## [3.9.0] - 2026-06-13
 

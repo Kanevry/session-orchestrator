@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.9.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.10.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Turn ad-hoc agent sessions into a repeatable loop with verification gates — **loop engineering** for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean nothing slips through.
@@ -131,15 +131,15 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.9.0)
+## Recent highlights (v3.10.0)
 
-Every release is additive and backward-compatible. Highlights of the recent line:
+Every release is additive and backward-compatible. Highlights of the v3.10.0 line:
 
-- **Pi runtime support** — Session Orchestrator now runs under [earendil-works/pi](https://pi.dev) like Codex and Cursor: same skills, commands, and hooks, with state under `.pi/`.
 - **Cross-repo dispatcher** — `/dispatcher` ranks the repos you're *not* currently working on by backlog × staleness × readiness and points you at the next-best one, claiming its lease so two sessions don't collide. Autonomous launch is opt-in and **off by default** (a suitability check must pass first).
-- **Parallel-session hardening** — two concurrent sessions in one repo can no longer stomp each other's wave state (mechanical session lock + heartbeat liveness).
-- **Native `/loop` adoption** — a vendorable loop baseline plus an always-on routing rule for when to reach for `/loop` vs. Monitor vs. scheduled tasks.
-- **Desktop notifications** — a session-finish notification across iTerm2, Windows Terminal, WezTerm, Ghostty, Warp, and more.
+- **Learning → rule reconciliation** — `/reconcile` turns confidence-scored session learnings into reviewable `.claude/rules/` proposals. Nothing is auto-applied; every rule write is yours to approve.
+- **Skill self-evolution** — the orchestrator can measure drift in its own skills and, opt-in, repair the safest cases behind a strict multi-gate. Everything riskier is surfaced as a reviewable change, never applied silently.
+- **Named multi-vault routing** — point different repos at different knowledge vaults via a host-local `owner.yaml`; with no config it behaves exactly as before.
+- **Instruction-budget guard** — a warn-only session-start banner that catches silent growth of always-on instructions before it bloats your context window.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
