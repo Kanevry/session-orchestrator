@@ -245,7 +245,12 @@ coverage:
     # from test-green: the JSON `success` field reflects test pass/fail, not the
     # coverage threshold.
     - 'rm -f /tmp/cov-result.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 1500s npm run test:coverage -- --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
+    # --exclude excludes the heavy 3-subprocess integration test from the v8-instrumented
+    # coverage lane ONLY (it still runs in the `test:` shards). Per #691 durable fix: it flakes
+    # only under v8 coverage instrumentation (contention-fragile in the slowest lane) and its
+    # coverage is redundant — 128 unit tests cover the same hook/registry lines.
+    # #686 item 1 (shard re-eval) deferred — see issue; no functional shard change here.
+    - 'timeout --preserve-status 1500s npm run test:coverage -- --exclude "tests/integration/multi-session-registry.test.mjs" --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
     - 'tail -60 /tmp/cov.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json'
     # Verify the cobertura artifact was actually written.

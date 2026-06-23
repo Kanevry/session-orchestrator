@@ -132,21 +132,41 @@ export function assertVitestGreenFile(path, opts = {}) {
 
 /**
  * Parse a captured vitest `--reporter=default` log and return the test files
- * that STARTED (`❯ <file>`) but never reached a per-file completion marker
- * (`✓ <file>` / `× <file>`). On a clean run every started file completes, so
- * this set is empty. On a contention kill it is the "in-flight at kill" set —
- * the files that were still running when the runner timed vitest out.
+ * that bear a `❯ <file>` lead glyph but never reached a per-file completion
+ * marker (`✓ <file>` / `× <file>`). The intent is to surface the "in-flight at
+ * kill" set — the files that were still running when the runner timed vitest
+ * out — so a hang dump names the likely culprit.
+ *
+ * BEST-EFFORT — DOES NOT reliably mark in-progress files in CI. This is a known
+ * limitation, not a bug:
+ *   - The `❯ U+276F` glyph denotes "in-progress/queued" only on an INTERACTIVE
+ *     TTY, where vitest live-updates the running-file list in place.
+ *   - In non-TTY CI (`--reporter=default --no-color`, no live rewrite), `❯`
+ *     instead marks FAILED files in the FINAL summary block — NOT in-progress.
+ *     There is no per-file "started" line emitted mid-flight to key off.
+ *   - Consequence: on a TRUE mid-flight hang (vitest killed before it writes the
+ *     summary), there is often no `❯` line at all, so this hint returns [] —
+ *     empty exactly when it would be most useful, and potentially misleading
+ *     (matching a failed-summary file) when the run did reach the summary.
+ *
+ * A robust in-flight signal would need `--reporter=verbose` per-file START
+ * lines (which DO emit mid-flight). Wiring that in is deferred to a follow-up:
+ * it needs a captured real CI log to pin the exact start-line token format
+ * before changing the regex. THIS FUNCTION'S PARSE LOGIC IS UNCHANGED — the
+ * correction here is documentation-only.
  *
  * Pure function — never throws. Returns [] when the text is empty or no
- * in-flight files are detectable.
+ * matching files are detectable.
  *
  * Marker glyphs (vitest default reporter, --no-color):
  *   ✓ U+2713  per-file PASS completion
  *   × U+00D7  per-file FAIL completion
- *   ❯ U+276F  per-file in-progress / queued
+ *   ❯ U+276F  in-progress/queued on a TTY; FAILED-in-summary in non-TTY CI
+ *             (see the BEST-EFFORT caveat above — the non-TTY meaning is why
+ *              this hint can be empty/misleading on a real hang)
  *
  * @param {string} logText - raw captured reporter stdout
- * @returns {string[]} sorted list of in-flight test file paths (deduped)
+ * @returns {string[]} sorted list of candidate test file paths (deduped)
  */
 export function inFlightFilesFromLog(logText) {
   if (typeof logText !== 'string' || logText.length === 0) return [];

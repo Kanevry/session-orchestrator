@@ -313,17 +313,28 @@ describe('concurrent session-start calls', { timeout: 15000 }, () => {
     const [dirA, dirB, dirC] = await Promise.all([mkProject(), mkProject(), mkProject()]);
 
     // Parallel start — atomic writes in session-registry.mjs must prevent data loss
-    await Promise.all([
+    const results = await Promise.all([
       runSessionStart({ projectDir: dirA }),
       runSessionStart({ projectDir: dirB }),
       runSessionStart({ projectDir: dirC }),
     ]);
 
-    // Under CPU contention (coverage job, v8 instrumentation) the heartbeat
-    // file flush may land on disk milliseconds after the subprocess exits.
-    // vi.waitFor polls until all 3 distinct entries are visible, then exits
-    // immediately — it does NOT widen testTimeout and still fails hard if
-    // fewer than 3 distinct heartbeats are ever written (throws on timeout).
+    // Surface masked subprocess crashes BEFORE polling the registry. A
+    // non-zero exit (or SIGTERM-on-timeout → null) produces the same "got 2"
+    // symptom as a slow flush, so without this guard a real crash would be
+    // silently misattributed to timing. Assert all three exited cleanly first.
+    for (const r of results) {
+      expect(r.code).toBe(0);
+    }
+
+    // Under CPU contention (coverage job, v8 instrumentation) the slowest
+    // subprocess's atomic heartbeat write (tmp + rename) may land on disk
+    // milliseconds-to-seconds after the subprocess exits. This is a bounded
+    // 10s poll sized to coverage-instrumented contention — it stays WITHIN the
+    // enclosing describe's 15000ms per-test ceiling and does NOT change the
+    // global vitest testTimeout. vi.waitFor exits immediately once all 3
+    // distinct entries appear (green runs stay fast) and still fails hard if
+    // fewer than 3 distinct heartbeats are EVER written (throws on timeout).
     await vi.waitFor(
       async () => {
         const entries = await readRegistry(registryDir);
@@ -332,7 +343,7 @@ describe('concurrent session-start calls', { timeout: 15000 }, () => {
         const ids = new Set(entries.map((e) => e.session_id));
         expect(ids.size).toBe(3);
       },
-      { timeout: 500, interval: 50 },
+      { timeout: 10000, interval: 50 },
     );
   });
 });

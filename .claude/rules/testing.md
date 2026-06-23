@@ -97,31 +97,34 @@ globs:
 - Coverage regex: `/All files[^|]*\|[^|]*\s+([\d\.]+)/` extracts percentage for MR badges.
 - Failed tests block merge. No exceptions.
 
-### Shared-Hardware Runner Contention (Mac shell executors)
+### Shard-Time Contention & Root-as-uid-0 Hazards (Hetzner Linux Docker autoscaler)
 
-Shell-executor runners that share a host with an active Claude Code session can be CPU-starved when concurrent Claude processes climb past ~10. Symptom: vitest tests that pass locally in <2min hit `testTimeout` (default `10_000`) on the runner. **This is an operator/concurrency issue, not a test or code regression.** Do not treat it as a flaky-test problem and do not widen timeouts globally to paper over it.
+Since the 2026-05-20 cutover, CI runs on the Hetzner Linux Docker autoscaler — an ephemeral, autoscaled `node:24` container that runs as **root (uid 0)**, tagged `[linux, hetzner-auto]`. There is no co-resident Claude Code session to count: each pipeline gets a fresh container. Symptom of contention: a shard's wall-time approaches or exceeds its inner `timeout` cap, vitest is killed before it writes the `onFinished` result JSON, and the fail-closed verifier (`scripts/ci/assert-vitest-green.mjs`) reports `ENOENT` on the missing result file. **This is an operator/concurrency/capacity issue, not a test or code regression.** Do not treat it as a flaky-test problem and do not widen the GLOBAL `testTimeout` default to paper over it.
 
-- **Cautionary tale:** Pipeline #3940 (2026-05-14 deep-1) failed with 7 `testTimeout` fails after 34m total (test job 18.7min, gitleaks 7m58s) on the GitLab Mac runner. Same commit, same tests passed locally in <2min (4897p/11s). Local re-run of the 7 failing tests: 90/90 green. Resource probe at session-start showed 14 Claude processes — well above the `concurrent-sessions-warn=5` threshold.
-- **Diagnostic signal:** if local `npm test` is green and CI fails only with `testTimeout` (not assertion failures), check the host's Claude-process count before re-running:
-  ```bash
-  pgrep -fc 'claude' # count of active Claude processes on this host
-  ```
-  A count ≥10 against a shared shell-executor runner is the smoking gun.
+- **Diagnostic signal:** if local `npm test` is green and a CI shard fails closed with a missing-result-file (`ENOENT`) or a killed-mid-flight error (not assertion failures), the shard ran out of wall-time under its inner `timeout` cap. Diagnose from the job log, not from a process count:
+  - The `test:` job dumps a `tail -40` of the captured reporter log on failure — read it to see which files were still running at the kill.
+  - The `--log=<path>` in-flight hint (`scripts/ci/assert-vitest-green.mjs` `inFlightFilesFromLog`) is BEST-EFFORT: in non-TTY CI the `❯` glyph marks failed-in-summary files, not in-progress, so the hint can be empty exactly on a true mid-flight hang. Treat a populated hint as a lead, an empty hint as "inconclusive — read the `tail -40` dump".
+  - Compare the failing shard's runtime against the other shards: a single shard far over the others points at a slow/hung file, not whole-runner starvation.
 
 **Mitigations, in order of effort:**
 
-1. **Avoid concurrent sessions during CI runs (primary).** Do not start a new Claude Code session in this repo while a CI pipeline is in flight on the same host. The session-start resource-probe banner (threshold `concurrent-sessions-warn=5`) is the active signal — treat it as load-shedding guidance, not a passive note.
-2. **Raise the per-test vitest timeout only when contention is expected:**
+1. **Re-shard or raise the per-shard INNER cap with headroom (primary).** Rebalance `--shard` so no shard's worst-case runtime crowds its inner `timeout` cap, or raise that per-shard cap to sit comfortably above the observed worst-shard runtime. This is a targeted, per-shard adjustment — **NOT** a blind global timeout widen.
+2. **Raise the per-test vitest timeout only when contention is genuinely expected:**
    ```ts
-   // vitest.config.ts — ceiling for a contended Mac runner
+   // vitest.config.ts — runner-neutral ceiling for a contended runner
    export default defineConfig({ test: { testTimeout: 30_000 } });
    ```
-   Trade-off: real hangs take longer to surface. Do not push past `30_000` as a default.
-3. **Offload heavy CI to a dedicated runner** when the pattern becomes recurring — the resource probe is the trigger, not a single failed pipeline.
+   Trade-off: real hangs take longer to surface. Do not push past `30_000` as a default — this caveat is durable and runner-neutral (it held on the Mac executor and holds on the Hetzner autoscaler).
+3. **Escalate autoscaler capacity** (more/larger instances, higher concurrency) when the pattern recurs across pipelines — a single over-cap shard is a re-shard problem; a recurring fleet-wide pattern is a capacity problem.
 
-What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen timeout values on quiet runners to "stabilise" — that masks real perf regressions where they should be loudest.
+**Root-as-uid-0 test hazards (incident #685).** The autoscaler runs as root, which changes how filesystem-failure tests behave versus a developer's non-root box:
 
-Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-claude-load` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9). `/evolve` rotates the rule if the signal stops applying.
+- **chmod-based EACCES is bypassed under root.** A test that asserts a write FAILS into a `chmod 0o500` directory passes locally (non-root) but fails on CI (root ignores the permission bits). Guard such tests with `it.skipIf(isRoot)` (or the empirical `permsEnforced()` probe) from `tests/_helpers/perms.mjs`.
+- **procfs / phantom-directory paths can HANG a sync syscall as root.** `mkdirSync('/proc/nonexistent', { recursive: true })` fails fast with EACCES for non-root but HANGS the event loop synchronously as root — no `testTimeout` can interrupt a blocked sync syscall, so the whole shard stalls until the outer CI cap kills it (the #685 root cause: one such test stalled a shard >18 min → fail-closed → red pipeline). For any "writes will fail here" path, use `unwritablePath()` from `tests/_helpers/unwritable-path.mjs` — it returns `/dev/null/<sub>`, which yields a fast, uniform ENOTDIR for every uid (root and non-root alike).
+
+What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen the global timeout to "stabilise" — that masks real perf regressions where they should be loudest. (The `.skipIf(isRoot)` guard above is the opposite case — a documented, root-specific carve-out, not a stabilise-the-flake hack.)
+
+Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-claude-load` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9) — **SUPERSEDED by the Hetzner Linux autoscaler reality** (Mac-historical; the shared-host `pgrep claude` signal no longer applies on the ephemeral root container). Flagged for `/evolve` rotation; kept as a historical pointer until rotated. (Footnote: the original Mac cautionary tale was pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old shared GitLab Mac runner.)
 
 ## E2E Best Practices
 - Use data-testid attributes for stable selectors.
