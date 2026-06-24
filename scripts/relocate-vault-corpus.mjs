@@ -8,14 +8,19 @@
  *
  * Usage:
  *   node scripts/relocate-vault-corpus.mjs --vault-dir <path> [--dry-run|--apply]
- *     [--derivable-only] [--rollback <manifest>] [--learnings-only|--sessions-only]
- *     [--json] [--help]
+ *     [--derivable-only] [--with-backfill] [--repos-root <dir>]
+ *     [--rollback <manifest>] [--learnings-only|--sessions-only] [--json] [--help]
  *
  * Flags:
  *   --vault-dir DIR       Path to the vault git repo root (REQUIRED — no default for safety)
  *   --dry-run             Preview plan, write nothing (DEFAULT; mutex with --apply)
  *   --apply               Move files via git mv and write reverse-manifest (mutex with --dry-run)
  *   --derivable-only      Only move files where confident===true; skip _unsorted/redacted-repo/unknown-repo
+ *   --with-backfill       Cross-repo session→repo backfill (Issue #700): read each repo's
+ *                         sessions.jsonl under --repos-root to attribute historical sessions
+ *                         (and, transitively, their learnings) that carry no in-file repo signal.
+ *   --repos-root DIR      Parent dir holding sibling repos to scan for sessions.jsonl
+ *                         (default: parent of --vault-dir). Only used with --with-backfill.
  *   --rollback MANIFEST   Reverse a previous --apply run given its manifest JSON path
  *   --learnings-only      Scope to 40-learnings/ only
  *   --sessions-only       Scope to 50-sessions/ only
@@ -48,6 +53,7 @@ import {
   isAlreadyNamespaced,
   _setResolverForTest,
 } from './lib/vault-relocation-rules.mjs';
+import { buildBackfillIndex, parseSessionId } from './lib/vault-repo-backfill.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 
 // ---------------------------------------------------------------------------
@@ -75,11 +81,13 @@ function parseArgs(argv) {
         'dry-run': false,
         json: false,
         'derivable-only': false,
+        'with-backfill': false,
         'learnings-only': false,
         'sessions-only': false,
       },
       knownString: {
         'vault-dir': null,
+        'repos-root': null,
         rollback: null,
       },
     });
@@ -112,6 +120,8 @@ function parseArgs(argv) {
     apply: applyFlag,
     json: values.json === true,
     derivableOnly: values['derivable-only'] === true,
+    withBackfill: values['with-backfill'] === true,
+    reposRoot: values['repos-root'] ?? null,
     rollback: values.rollback ?? null,
     vaultDir: values['vault-dir'] ?? null,
     learningsOnly: values['learnings-only'] === true,
@@ -122,8 +132,8 @@ function parseArgs(argv) {
 function printHelp() {
   process.stdout.write(
     `Usage: ${SCRIPT_NAME}.mjs --vault-dir <path> [--dry-run|--apply]
-  [--derivable-only] [--rollback <manifest>] [--learnings-only|--sessions-only]
-  [--json] [--help]
+  [--derivable-only] [--with-backfill] [--repos-root <dir>]
+  [--rollback <manifest>] [--learnings-only|--sessions-only] [--json] [--help]
 
 Moves flat markdown files from 40-learnings/ and 50-sessions/ roots in a vault
 git repo into per-repo namespace subdirectories.
@@ -143,6 +153,15 @@ FILTERS:
   --derivable-only        Only move files where confident===true; skip _unsorted/redacted-repo/unknown-repo
   --learnings-only        Scope to 40-learnings/ only
   --sessions-only         Scope to 50-sessions/ only
+
+BACKFILL (Issue #700 — cross-repo session→repo attribution):
+  --with-backfill         Read each sibling repo's sessions.jsonl to attribute
+                          historical sessions (and transitively their learnings)
+                          that carry NO in-file repo signal. Default OFF — when
+                          absent, no sessions.jsonl is read and output is
+                          byte-identical to the non-backfill run.
+  --repos-root DIR        Parent dir holding sibling repos to scan
+                          (default: parent of --vault-dir). Only used with --with-backfill.
 
 OUTPUT:
   --json                  Emit JSONL records on stdout (one per file)
@@ -205,6 +224,262 @@ function enumerateFlatFiles(dir) {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-repo sessions.jsonl indices (CLI-side IO — only built under --with-backfill)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the authoritative cross-repo backfill indices by scanning each sibling
+ * repo's `.orchestrator/metrics/sessions.jsonl` under reposRoot.
+ *
+ *   sidIndex: Map<session_id, Set<repoSlug>>
+ *   bdIndex:  Map<`${branch}|${date}`, Set<repoSlug>>
+ *
+ * Immediate subdirectories of reposRoot are enumerated; `Archiv` and any
+ * dot-prefixed name are excluded. Malformed JSONL lines are skipped (never throw
+ * the whole run). The repo identity stored in the indices is the repo's CANONICAL
+ * slug derived from its git origin remote (`repoCanonicalSlug`), NOT the directory
+ * basename — so a backfilled session lands in the SAME `<repo>/` namespace as that
+ * repo's own native vault-mirror writes (which use `deriveRepo()` off the same
+ * remote). Using the basename would split e.g. `AcmeWidgetV2/` → `acmewidgetv2`
+ * while `repo:`-carrying notes use the canonical `acme-widget-v2`. Leak-guarding
+ * still happens later in the pure backfill module.
+ *
+ * @param {string} reposRoot - absolute path to the parent dir of sibling repos
+ * @returns {{ sidIndex: Map<string, Set<string>>, bdIndex: Map<string, Set<string>>, reposScanned: number }}
+ */
+function repoCanonicalSlug(reposRoot, name) {
+  // Derive the repo's canonical namespace identity from its git origin remote so
+  // it matches the slug `deriveRepo()` would produce for that repo's own writes.
+  // Falls back to the directory basename when there is no readable remote.
+  try {
+    const res = spawnSync('git', ['-C', path.join(reposRoot, name), 'config', '--get', 'remote.origin.url'], {
+      encoding: 'utf8',
+    });
+    const url = (res.stdout || '').trim();
+    if (res.status === 0 && url) {
+      const seg = url.replace(/\.git$/, '').split(/[/:]/).filter(Boolean).pop();
+      if (seg) return seg;
+    }
+  } catch {
+    // fall through to basename
+  }
+  return name;
+}
+
+async function buildCrossRepoIndices(reposRoot) {
+  const sidIndex = new Map();
+  const bdIndex = new Map();
+  let reposScanned = 0;
+
+  if (!existsSync(reposRoot)) {
+    process.stderr.write(`${SCRIPT_NAME}: WARN: --repos-root not found: ${reposRoot} — backfill indices empty\n`);
+    return { sidIndex, bdIndex, reposScanned };
+  }
+
+  let entries;
+  try {
+    entries = await fs.readdir(reposRoot, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`${SCRIPT_NAME}: WARN: could not read --repos-root ${reposRoot}: ${err.message} — backfill indices empty\n`);
+    return { sidIndex, bdIndex, reposScanned };
+  }
+
+  for (const dirent of entries) {
+    if (!dirent.isDirectory()) continue;
+    const name = dirent.name;
+    if (name === 'Archiv' || name.startsWith('.')) continue;
+
+    const jsonlPath = path.join(reposRoot, name, '.orchestrator', 'metrics', 'sessions.jsonl');
+    if (!existsSync(jsonlPath)) continue;
+
+    let content;
+    try {
+      content = await fs.readFile(jsonlPath, 'utf8');
+    } catch (err) {
+      process.stderr.write(`${SCRIPT_NAME}: WARN: skipping ${name}/sessions.jsonl (read error: ${err.message})\n`);
+      continue;
+    }
+
+    reposScanned++;
+
+    // Canonical namespace identity from the git remote (NOT the basename) so a
+    // backfilled session shares the folder with that repo's own native writes.
+    const repoId = repoCanonicalSlug(reposRoot, name);
+
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        // Malformed JSONL line — skip and continue (never abort the whole run).
+        continue;
+      }
+      if (!record || typeof record !== 'object') continue;
+
+      const sessionId = typeof record.session_id === 'string' ? record.session_id.trim() : '';
+      if (!sessionId) continue;
+
+      // sid index — the authoritative join (HIGH tier in the backfill module)
+      addToSetIndex(sidIndex, sessionId, repoId);
+
+      // branch/date index — the MEDIUM-tier fallback
+      const parsed = parseSessionId(sessionId);
+      const branch =
+        (typeof record.branch === 'string' && record.branch.trim()) || (parsed ? parsed.branch : null);
+      const date =
+        (parsed ? parsed.date : null) ||
+        (typeof record.started_at === 'string' ? record.started_at.slice(0, 10) : null);
+
+      // Skip records where no (branch,date) signal can be derived — the bdIndex
+      // key requires both. A bare date with no branch is not a usable key.
+      if (branch && date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        addToSetIndex(bdIndex, `${branch}|${date}`, repoId);
+      }
+    }
+  }
+
+  return { sidIndex, bdIndex, reposScanned };
+}
+
+/**
+ * Learn an authoritative `repoIdentity → canonicalNamespace` map from the vault's
+ * OWN `repo:`-carrying session notes. A repo dir without a readable git remote
+ * (so `repoCanonicalSlug` fell back to its CamelCase basename, e.g. `AcmeWidgetV2`
+ * → `acmewidgetv2`) cannot derive the hyphenated canonical slug (`acme-widget-v2`)
+ * from its name alone. But if that dir's `sessions.jsonl` contains the id of a vault
+ * session that DOES carry a `repo:` field, that session's resolved namespace is the
+ * ground-truth canonical for the dir — so backfilled repo-less sessions in the same
+ * dir land in the SAME `<repo>/` folder instead of a split CamelCase variant.
+ *
+ * Only UNANIMOUS mappings are learned; an identity whose `repo:`-carrying sessions
+ * disagree on the namespace is left unmapped (ambiguous → no remap).
+ *
+ * @param {{ sidIndex: Map<string, Set<string>>, parsedVaultSessions: Array<{id:string, frontmatter:object}> }} args
+ * @returns {Map<string, string>} identity → canonical namespace
+ */
+function learnCanonicalMap({ sidIndex, parsedVaultSessions }) {
+  // Strip case + every separator so two slug FORMS of the SAME repo compare equal:
+  // 'AcmeWidgetV2' → 'acmewidgetv2' === 'acme-widget-v2' → 'acmewidgetv2'.
+  const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const votes = new Map(); // identity → Map<canonicalNs, count>
+  for (const { id, frontmatter } of parsedVaultSessions) {
+    if (!id || !frontmatter || !frontmatter.repo) continue;
+    const { namespace } = namespaceForSession(frontmatter); // repo: → canonical
+    if (!isConfident(namespace)) continue; // skip _unsorted/redacted-repo/unknown-repo
+    const identities = sidIndex.get(id);
+    if (!identities) continue;
+    // Only an UNAMBIGUOUS repo: note teaches: if its id appears in >1 repo's jsonl,
+    // it would mis-teach every other identity its own namespace (collision pollution).
+    if (identities.size !== 1) continue;
+    for (const identity of identities) {
+      if (identity === namespace) continue; // already canonical — nothing to learn
+      // GUARD against coincidental session-id collisions: session_ids are NOT globally
+      // unique, so a size-1 match can still be the WRONG repo (a different repo that
+      // happens to share the id string). Only learn when identity and namespace are
+      // the same repo in a different slug FORM (CamelCase basename vs hyphenated slug).
+      if (normalize(identity) !== normalize(namespace)) continue;
+      let m = votes.get(identity);
+      if (!m) {
+        m = new Map();
+        votes.set(identity, m);
+      }
+      m.set(namespace, (m.get(namespace) || 0) + 1);
+    }
+  }
+  const learned = new Map();
+  for (const [identity, m] of votes) {
+    if (m.size === 1) learned.set(identity, [...m.keys()][0]); // unanimous only
+  }
+  return learned;
+}
+
+/**
+ * Rewrite the cross-repo index identities through the learned canonical map (and
+ * dedup the resulting sets — two raw dirs that canonicalise to the same repo are
+ * one repo). No-op when `learned` is empty (e.g. no `--with-backfill`, or a fixture
+ * with no `repo:`-carrying sessions), preserving byte-identical behaviour.
+ */
+function remapIndices({ sidIndex, bdIndex }, learned) {
+  if (learned.size === 0) return { sidIndex, bdIndex };
+  const remapSet = (set) => {
+    const out = new Set();
+    for (const member of set) out.add(learned.get(member) ?? member);
+    return out;
+  };
+  const sid2 = new Map();
+  for (const [k, set] of sidIndex) sid2.set(k, remapSet(set));
+  const bd2 = new Map();
+  for (const [k, set] of bdIndex) bd2.set(k, remapSet(set));
+  return { sidIndex: sid2, bdIndex: bd2 };
+}
+
+/**
+ * Append a value to a Set under a key in a Map<string, Set<string>>, creating the
+ * Set on first insert.
+ *
+ * @param {Map<string, Set<string>>} map
+ * @param {string} key
+ * @param {string} value
+ */
+function addToSetIndex(map, key, value) {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(value);
+}
+
+/**
+ * Parse every vault session note (flat + already-namespaced) into the
+ * `{ id, frontmatter }` shape that buildBackfillIndex consumes. Reuses the same
+ * recursive find pass that buildSessionRepoIndex uses, so session files are read
+ * once per concern (this pass is only run under --with-backfill).
+ *
+ * @param {string} sessionsDir - absolute path to 50-sessions/
+ * @returns {Promise<Array<{ id: string, frontmatter: object }>>}
+ */
+async function collectParsedVaultSessions(sessionsDir) {
+  const out = [];
+  if (!existsSync(sessionsDir)) return out;
+
+  const result = spawnSync(
+    'find',
+    [sessionsDir, '-type', 'f', '-name', '*.md'],
+    { encoding: 'utf8' },
+  );
+  if (result.error || result.status !== 0) {
+    process.stderr.write(`${SCRIPT_NAME}: WARN: could not scan sessions for backfill: ${result.stderr || result.error?.message || 'unknown'}\n`);
+    return out;
+  }
+
+  const files = result.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  for (const filePath of files) {
+    let content;
+    try {
+      content = await fs.readFile(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+    const frontmatter = parseRelocationFrontmatter(content);
+    // Prefer the frontmatter id; fall back to the basename (the session id by convention).
+    const id =
+      (typeof frontmatter.id === 'string' && frontmatter.id.trim()) ||
+      path.basename(filePath).replace(/\.md$/, '');
+    if (id) out.push({ id, frontmatter });
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Session→repo index builder
 // ---------------------------------------------------------------------------
 
@@ -215,10 +490,17 @@ function enumerateFlatFiles(dir) {
  * The index is passed to namespaceForLearning so it can resolve
  * source_session links to their owning namespace.
  *
+ * When a backfillIndex is supplied (--with-backfill, Issue #700), it is forwarded
+ * to namespaceForSession so backfilled sessions (no in-file repo signal) resolve
+ * to a confident namespace and land in THIS index — which transitively lifts their
+ * learnings via namespaceForLearning's source_session resolution.
+ *
  * @param {string} sessionsDir - absolute path to 50-sessions/
+ * @param {{ backfillIndex?: Map<string, { repo: string, confidence: string, source: string }> }} [opts]
  * @returns {Map<string, string>} sessionId → namespace
  */
-async function buildSessionRepoIndex(sessionsDir) {
+async function buildSessionRepoIndex(sessionsDir, opts = {}) {
+  const { backfillIndex } = opts;
   const index = new Map();
   if (!existsSync(sessionsDir)) return index;
 
@@ -251,8 +533,11 @@ async function buildSessionRepoIndex(sessionsDir) {
 
     const frontmatter = parseRelocationFrontmatter(content);
     const basename = path.basename(filePath);
-    // namespaceForSession returns { namespace, source }
-    const { namespace } = namespaceForSession(frontmatter);
+    // namespaceForSession returns { namespace, source }. Forwarding backfillIndex
+    // (undefined when --with-backfill is absent → inert) lets backfilled sessions
+    // resolve to a confident namespace and land in this index, which transitively
+    // lifts their learnings via namespaceForLearning's source_session resolution.
+    const { namespace } = namespaceForSession(frontmatter, { backfillIndex });
     if (namespace && namespace !== '_unsorted' && namespace !== 'redacted-repo' && namespace !== 'unknown-repo') {
       // Derive sessionId from basename (strip .md)
       const sessionId = basename.replace(/\.md$/, '');
@@ -274,9 +559,10 @@ async function buildSessionRepoIndex(sessionsDir) {
  * @param {string} opts.filePath - absolute path
  * @param {string} opts.corpusRoot - absolute path to 40-learnings/ or 50-sessions/
  * @param {Map<string, string>} opts.sessionRepoIndex
+ * @param {Map<string, { repo: string, confidence: string, source: string }>} [opts.backfillIndex]
  * @returns {{ from: string, to: string, namespace: string, source: string, confident: boolean }}
  */
-async function classifyFile({ filePath, corpusRoot, sessionRepoIndex }) {
+async function classifyFile({ filePath, corpusRoot, sessionRepoIndex, backfillIndex }) {
   const basename = path.basename(filePath);
 
   let content;
@@ -295,8 +581,9 @@ async function classifyFile({ filePath, corpusRoot, sessionRepoIndex }) {
 
   const frontmatter = parseRelocationFrontmatter(content);
 
-  // classifyOwner dispatches on frontmatter.type — handles both sessions and learnings
-  const classifyResult = classifyOwner({ frontmatter, sessionRepoIndex });
+  // classifyOwner dispatches on frontmatter.type — handles both sessions and learnings.
+  // backfillIndex is undefined unless --with-backfill is set → inert in the default path.
+  const classifyResult = classifyOwner({ frontmatter, sessionRepoIndex, backfillIndex });
 
   const { namespace, source, confident } = classifyResult;
 
@@ -571,8 +858,32 @@ async function main() {
   const learningsDir = path.join(vaultDir, LEARNINGS_SUBDIR);
   const sessionsDir = path.join(vaultDir, SESSIONS_SUBDIR);
 
+  // ── Step 0: Build the cross-repo backfill index (--with-backfill only) ─────
+  // When --with-backfill is ABSENT, NO sessions.jsonl is read and backfillIndex
+  // stays undefined → every downstream consumer is inert → byte-identical default.
+  let backfillIndex; // undefined unless --with-backfill
+  if (opts.withBackfill) {
+    const reposRoot = opts.reposRoot
+      ? path.resolve(opts.reposRoot)
+      : path.dirname(vaultDir);
+    const rawIndices = await buildCrossRepoIndices(reposRoot);
+    const parsedVaultSessions = await collectParsedVaultSessions(sessionsDir);
+    // Canonicalise repo identities against the vault's own repo:-ground-truth so a
+    // remote-less dir (CamelCase basename) shares the folder with its repo: notes.
+    const learned = learnCanonicalMap({ sidIndex: rawIndices.sidIndex, parsedVaultSessions });
+    const { sidIndex, bdIndex } = remapIndices(rawIndices, learned);
+    backfillIndex = buildBackfillIndex(parsedVaultSessions, { sidIndex, bdIndex });
+    process.stderr.write(
+      `${SCRIPT_NAME}: backfill: scanned ${rawIndices.reposScanned} repos under ${reposRoot} ` +
+      `(${sidIndex.size} sids, ${bdIndex.size} branch|date keys, ${learned.size} canonical-learned) → ` +
+      `${backfillIndex.size} sessions attributed from ${parsedVaultSessions.length} vault sessions\n`,
+    );
+  }
+
   // ── Step 1: Build session→repo index (single pass over ALL session files) ──
-  const sessionRepoIndex = await buildSessionRepoIndex(sessionsDir);
+  // Forwarding backfillIndex lets backfilled sessions land in this index, which
+  // transitively lifts their learnings via source_session resolution.
+  const sessionRepoIndex = await buildSessionRepoIndex(sessionsDir, { backfillIndex });
 
   // ── Step 2: Enumerate flat files (maxdepth 1 only) ───────────────────────
   const scopeSessions = !opts.learningsOnly;
@@ -590,6 +901,7 @@ async function main() {
       filePath,
       corpusRoot: sessionsDir,
       sessionRepoIndex,
+      backfillIndex,
     });
     plan.push({ ...entry, corpusRoot: sessionsDir });
   }
@@ -599,8 +911,37 @@ async function main() {
       filePath,
       corpusRoot: learningsDir,
       sessionRepoIndex,
+      backfillIndex,
     });
     plan.push({ ...entry, corpusRoot: learningsDir });
+  }
+
+  // ── Step 3.5: Pre-flight intra-batch dest-uniqueness detection ────────────
+  // W1-D3 safety gap: computeDest is purely structural, so two distinct source
+  // files with the same basename + namespace map to the SAME `to`. The runtime
+  // existsSync guard only catches collisions against files that ALREADY exist —
+  // it cannot see same-batch collisions in --dry-run (nothing has moved yet), so
+  // dry-run under-counts. Group move-ELIGIBLE entries by `to`; any `to` reached
+  // by ≥2 distinct `from` is an intra-batch collision. This surfaces them up-front.
+  const destGroups = new Map(); // to → Set<from>
+  for (const entry of plan) {
+    if (entry.error || !entry.to) continue;
+    const relToCorpus = path.relative(entry.corpusRoot, entry.from);
+    if (isAlreadyNamespaced(relToCorpus)) continue;
+    // Mirror the --derivable-only skip: non-confident entries don't reach the move
+    // stage in that mode, so they cannot collide there either.
+    if (opts.derivableOnly && !isConfident(entry.namespace)) continue;
+    let set = destGroups.get(entry.to);
+    if (!set) {
+      set = new Set();
+      destGroups.set(entry.to, set);
+    }
+    set.add(entry.from);
+  }
+  /** @type {Set<string>} colliding `to` paths (≥2 distinct sources) */
+  const collidingDests = new Set();
+  for (const [to, froms] of destGroups) {
+    if (froms.size >= 2) collidingDests.add(to);
   }
 
   // ── Step 4: Apply mode decision, emit records ─────────────────────────────
@@ -610,8 +951,24 @@ async function main() {
     fallbackBucket: 0,
     skippedNonConfident: 0,
     destCollisions: 0,
+    intraBatchCollisions: collidingDests.size,
     ioErrors: 0,
   };
+
+  // Surface each intra-batch-colliding dest as an emit record (one per colliding
+  // `to`, listing the count of competing sources) so --dry-run is honest about them.
+  for (const to of collidingDests) {
+    emit(opts.json, {
+      action: 'intra-batch-collision',
+      from: null,
+      to,
+      namespace: null,
+      source: 'pre-flight',
+      confident: null,
+      reason: `intra-batch-collision: ${destGroups.get(to).size} sources map to this dest`,
+      collidingSources: [...destGroups.get(to)],
+    });
+  }
 
   /** @type {Array<{from:string,to:string,namespace:string,source:string}>} */
   const appliedMoves = [];
@@ -768,11 +1125,20 @@ async function main() {
   // ── Summary ───────────────────────────────────────────────────────────────
   const modeLabel = opts.apply ? 'applied' : 'dry-run';
   const derivableLabel = opts.derivableOnly ? ' [derivable-only]' : '';
+  // The intra-batch segment is appended only when collisions exist OR backfill is
+  // active. This preserves byte-identical summary output for the legacy default
+  // path (no --with-backfill, no intra-batch collisions), while making the new
+  // signal visible exactly when it carries information.
+  const intraBatchSegment =
+    collidingDests.size > 0 || opts.withBackfill
+      ? `${summary.intraBatchCollisions} intra-batch-collisions, `
+      : '';
   process.stderr.write(
     `${SCRIPT_NAME}: ${summary.moved} ${opts.apply ? 'moved' : 'would-move'}, ` +
     `${summary.skippedAlreadyNamespaced} already-namespaced, ` +
     `${summary.skippedNonConfident} non-confident skipped, ` +
     `${summary.destCollisions} dest-collisions, ` +
+    intraBatchSegment +
     `${summary.ioErrors} I/O errors` +
     ` [${modeLabel}${derivableLabel}]\n`,
   );

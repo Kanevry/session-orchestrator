@@ -322,6 +322,90 @@ describe('degenerate path-only values fall through (Q3 LOW — never CWD-derive)
 });
 
 // ---------------------------------------------------------------------------
+// namespaceForSession — backfill index (Issue #700 W1-D5)
+// ---------------------------------------------------------------------------
+
+describe('namespaceForSession — backfill index', () => {
+  it('matches the backfill index when no in-file repo/tag signal is present', () => {
+    // No repo:, no project/ tag — the backfillIndex entry supplies the namespace.
+    // The matched repo is returned verbatim (already leak-guarded), so the
+    // resolver must NOT be called on this path.
+    _setResolverForTest(throwingResolver);
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: 'session-orchestrator', confidence: 'HIGH', source: 'sid-authoritative' }],
+    ]);
+    const result = namespaceForSession({ id: 'main-2026-06-21-s1' }, { backfillIndex });
+    expect(result.namespace).toBe('session-orchestrator');
+    expect(result.source).toBe('backfill');
+  });
+
+  it('lets frontmatter.repo WIN over the backfill index', () => {
+    _setResolverForTest(mappingResolver);
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: 'foo-repo', confidence: 'HIGH', source: 'sid-authoritative' }],
+    ]);
+    const result = namespaceForSession(
+      { id: 'main-2026-06-21-s1', repo: 'infrastructure/session-orchestrator' },
+      { backfillIndex },
+    );
+    expect(result.namespace).toBe('session-orchestrator');
+    expect(result.source).toBe('repo');
+  });
+
+  it('lets a project/<slug> tag WIN over the backfill index', () => {
+    _setResolverForTest(identityResolver);
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: 'foo-repo', confidence: 'HIGH', source: 'sid-authoritative' }],
+    ]);
+    const result = namespaceForSession(
+      { id: 'main-2026-06-21-s1', tags: ['project/my-slug'] },
+      { backfillIndex },
+    );
+    expect(result.namespace).toBe('my-slug');
+    expect(result.source).toBe('project-tag');
+  });
+
+  it('falls through to _unsorted when the backfill entry confidence is SKIP', () => {
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: null, confidence: 'SKIP', source: 'id-collision' }],
+    ]);
+    const result = namespaceForSession({ id: 'main-2026-06-21-s1' }, { backfillIndex });
+    expect(result.namespace).toBe('_unsorted');
+    expect(result.source).toBe('fallback');
+  });
+
+  it('falls through to _unsorted when the id is absent from the backfill index', () => {
+    const backfillIndex = new Map([
+      ['some-other-id', { repo: 'foo-repo', confidence: 'HIGH', source: 'sid-authoritative' }],
+    ]);
+    const result = namespaceForSession({ id: 'main-2026-06-21-s1' }, { backfillIndex });
+    expect(result.namespace).toBe('_unsorted');
+    expect(result.source).toBe('fallback');
+  });
+
+  it('is backward-compatible: a 1-arg call behaves identically to pre-change', () => {
+    const result = namespaceForSession({ id: 'main-2026-06-21-s1' });
+    expect(result.namespace).toBe('_unsorted');
+    expect(result.source).toBe('fallback');
+  });
+
+  it('forwards the backfill index through classifyOwner for a type:session note', () => {
+    _setResolverForTest(throwingResolver);
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: 'session-orchestrator', confidence: 'MEDIUM', source: 'branchdate-unique' }],
+    ]);
+    const result = classifyOwner({
+      frontmatter: { type: 'session', id: 'main-2026-06-21-s1' },
+      sessionRepoIndex: new Map(),
+      backfillIndex,
+    });
+    expect(result.namespace).toBe('session-orchestrator');
+    expect(result.source).toBe('backfill');
+    expect(result.confident).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // namespaceForLearning
 // ---------------------------------------------------------------------------
 

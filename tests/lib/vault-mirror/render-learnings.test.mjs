@@ -371,6 +371,25 @@ describe('normalizeLearningEntry (#635 producer-alias normalization)', () => {
   });
 });
 
+// ── bare-name wikilink invariant (Issue #700 W1-D4 regression guard) ──────────
+
+describe('generateLearningNote bare-name wikilink invariant (#700 W1-D4)', () => {
+  it('emits a bare-name source_session wikilink with NO folder prefix (survives folder relocation)', () => {
+    // Obsidian resolves wikilinks by basename, so the source_session edge must
+    // stay bare `[[id]]` — never `[[50-sessions/id]]` or `[[<repo>/id]]`. A future
+    // change that path-qualifies the link would silently break on folder move.
+    const out = generateLearningNote(makeV1Entry({ source_session: 'main-2026-04-13-session-1' }), 'my-slug');
+    // Bare-name link present in both the frontmatter property and the body bullet.
+    expect(out).toContain('source_session: "[[main-2026-04-13-session-1]]"');
+    expect(out).toContain('**Source session:** [[main-2026-04-13-session-1]]');
+    // No wikilink in the whole note carries a folder separator.
+    const wikilinks = out.match(/\[\[[^\]]*\]\]/g) ?? [];
+    expect(wikilinks).toEqual(['[[main-2026-04-13-session-1]]', '[[main-2026-04-13-session-1]]']);
+    expect(out).not.toContain('[[40-learnings/');
+    expect(out).not.toContain('[[50-sessions/');
+  });
+});
+
 describe('normalizeLearningEntry evidence empty-string fold (#635 review)', () => {
   it('treats evidence:"" as missing and applies the alias fallback', () => {
     const e = normalizeLearningEntry({

@@ -122,6 +122,72 @@ function createFixtureVault() {
 }
 
 /**
+ * Build a fixture for the --with-backfill cross-repo attribution path (#700).
+ *
+ * Lays out:
+ *   <root>/vault/50-sessions/<sid>.md        — type:session, NO repo: → backfill candidate.
+ *                                              frontmatter id == basename == a session_id
+ *                                              listed in the sibling repo's sessions.jsonl.
+ *   <root>/vault/40-learnings/bf-learn.md    — type:learning, source_session:"[[<sid>]]"
+ *                                              → transitively lifts to the repo namespace.
+ *   <root>/repos/<repoName>/.orchestrator/metrics/sessions.jsonl
+ *                                            — authoritative sid→repo join (HIGH tier).
+ *
+ * The vault is git-init'd + committed so a hypothetical --apply could git mv; these
+ * tests are dry-run only, but a clean tracked tree lets us assert nothing moved.
+ *
+ * The repos-root is a SIBLING of the vault (root/repos vs root/vault), so callers
+ * must pass --repos-root explicitly unless they intentionally exercise the default.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoName='acme-app'] - sibling repo dir name (→ namespace slug)
+ * @param {string} [opts.sid='feat-thing-2026-04-19-1515'] - session id == file basename
+ * @param {string} [opts.branch='feat-thing'] - branch recorded in sessions.jsonl
+ * @param {string} [opts.malformedJsonlLine] - if set, prepended as a bad line before the valid one
+ * @returns {{ root: string, vault: string, repos: string, sid: string, repoName: string }}
+ */
+function createBackfillFixture(opts = {}) {
+  const {
+    repoName = 'acme-app',
+    sid = 'feat-thing-2026-04-19-1515',
+    branch = 'feat-thing',
+    malformedJsonlLine = null,
+  } = opts;
+
+  const root = mkTmp('rvt-bf-');
+  const vault = join(root, 'vault');
+  const repos = join(root, 'repos');
+
+  // repo:-less session note whose id == basename == the sessions.jsonl session_id
+  writeFile(vault, `50-sessions/${sid}.md`,
+    `---\ntype: session\nid: ${sid}\n---\n# bf session\n`);
+
+  // learning whose source_session points at that session's BASENAME (the index key)
+  writeFile(vault, '40-learnings/bf-learn.md',
+    `---\ntype: learning\nsource_session: "[[${sid}]]"\n---\n# bf learning\n`);
+
+  // sibling repo carrying the authoritative session_id in its metrics jsonl
+  const validLine = JSON.stringify({
+    session_id: sid,
+    branch,
+    started_at: '2026-04-19T15:15:00Z',
+  });
+  const jsonlBody = malformedJsonlLine
+    ? `${malformedJsonlLine}\n${validLine}\n`
+    : `${validLine}\n`;
+  writeFile(repos, `${repoName}/.orchestrator/metrics/sessions.jsonl`, jsonlBody);
+
+  // Git init + commit the vault so the tracked tree is clean (dry-run must not dirty it)
+  spawnSync('git', ['init', vault], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'commit', '-m', 'init backfill fixture'], { encoding: 'utf8' });
+
+  return { root, vault, repos, sid, repoName };
+}
+
+/**
  * Run the relocate-vault-corpus.mjs script.
  * @param {string[]} args
  * @param {{ timeout?: number }} [opts]
@@ -633,5 +699,312 @@ describe('relocate-vault-corpus — --vault-dir required', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('vault-dir');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 11: --with-backfill — cross-repo session→repo attribution (#700)
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — --with-backfill (#700)', () => {
+  it('attributes a repo:-less session to the repo namespace via authoritative sid-join (HIGH)', { timeout: 20_000 }, () => {
+    const { vault, repos, sid } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find(
+      (r) => r.action === 'would-move' && r.from.endsWith(`/${sid}.md`),
+    );
+    expect(sessionPlan).toBeDefined();
+    expect(sessionPlan.to).toBe(join(vault, '50-sessions', 'acme-app', `${sid}.md`));
+    expect(sessionPlan.namespace).toBe('acme-app');
+    expect(sessionPlan.source).toBe('backfill');
+    expect(sessionPlan.confident).toBe(true);
+  });
+
+  it('transitively lifts the linked learning into the same repo namespace', { timeout: 20_000 }, () => {
+    const { vault, repos } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const learnPlan = records.find(
+      (r) => r.action === 'would-move' && r.from.endsWith('/bf-learn.md'),
+    );
+    expect(learnPlan).toBeDefined();
+    expect(learnPlan.to).toBe(join(vault, '40-learnings', 'acme-app', 'bf-learn.md'));
+    expect(learnPlan.namespace).toBe('acme-app');
+    expect(learnPlan.source).toBe('transitive');
+    expect(learnPlan.confident).toBe(true);
+  });
+
+  it('does not move any file in dry-run — flat originals remain on disk', { timeout: 20_000 }, () => {
+    const { vault, repos, sid } = createBackfillFixture();
+
+    runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    // Flat originals untouched; namespaced dests never created
+    expect(existsSync(join(vault, '50-sessions', `${sid}.md`))).toBe(true);
+    expect(existsSync(join(vault, '40-learnings', 'bf-learn.md'))).toBe(true);
+    expect(existsSync(join(vault, '50-sessions', 'acme-app', `${sid}.md`))).toBe(false);
+    expect(existsSync(join(vault, '40-learnings', 'acme-app', 'bf-learn.md'))).toBe(false);
+    expect(findManifests(vault)).toHaveLength(0);
+
+    // The tracked vault tree must stay clean (dry-run wrote nothing)
+    const status = spawnSync('git', ['-C', vault, 'status', '--porcelain'], { encoding: 'utf8' });
+    expect(status.stdout.trim()).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 11b: canonical-learning — a remote-less repo dir whose CamelCase basename
+// slugifies differently from its hyphenated canonical namespace must NOT split.
+// The CLI learns `dir → canonical` from the vault's own repo:-carrying notes.
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — --with-backfill canonical-learning (#700)', () => {
+  it('backfills a repo:-less session into the canonical slug learned from a repo: note (not the CamelCase basename)', { timeout: 20_000 }, () => {
+    const root = mkTmp('rvt-canon-');
+    const vault = join(root, 'vault');
+    const repos = join(root, 'repos');
+    // The repo dir is CamelCase with NO git remote → repoCanonicalSlug falls back to
+    // 'FooBar' → resolveRepoNamespace → 'foobar'. But the canonical (from repo:) is 'foo-bar'.
+    const srcSid = 'canon-src-2026-04-19-1515';   // a repo:-carrying ground-truth note
+    const bareSid = 'canon-bare-2026-04-19-1616';  // the repo:-less backfill candidate
+
+    // Ground-truth repo: note → resolves to canonical 'foo-bar'
+    writeFile(vault, `50-sessions/${srcSid}.md`,
+      `---\ntype: session\nid: ${srcSid}\nrepo: org/foo-bar\n---\n# canon src\n`);
+    // repo:-less note in the SAME remote-less dir → should learn 'foo-bar', not 'foobar'
+    writeFile(vault, `50-sessions/${bareSid}.md`,
+      `---\ntype: session\nid: ${bareSid}\n---\n# canon bare\n`);
+
+    const jsonl =
+      JSON.stringify({ session_id: srcSid, branch: 'canon-src', started_at: '2026-04-19T15:15:00Z' }) + '\n' +
+      JSON.stringify({ session_id: bareSid, branch: 'canon-bare', started_at: '2026-04-19T16:16:00Z' }) + '\n';
+    writeFile(repos, `FooBar/.orchestrator/metrics/sessions.jsonl`, jsonl);
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const barePlan = records.find((r) => r.action === 'would-move' && r.from.endsWith(`/${bareSid}.md`));
+    expect(barePlan).toBeDefined();
+    // The load-bearing assertion: canonical 'foo-bar', NOT the CamelCase-basename 'foobar'.
+    expect(barePlan.namespace).toBe('foo-bar');
+    expect(barePlan.to).toBe(join(vault, '50-sessions', 'foo-bar', `${bareSid}.md`));
+    expect(barePlan.source).toBe('backfill');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 12: byte-identical default — without --with-backfill, no attribution
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — backfill gate (default off)', () => {
+  it('leaves the repo:-less session in _unsorted (non-confident) without --with-backfill', { timeout: 20_000 }, () => {
+    const { vault, repos, sid } = createBackfillFixture();
+
+    // Same fixture, same repos-root, but the --with-backfill flag is ABSENT
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find((r) => r.from.endsWith(`/${sid}.md`));
+    expect(sessionPlan).toBeDefined();
+    expect(sessionPlan.namespace).toBe('_unsorted');
+    expect(sessionPlan.source).toBe('fallback');
+    expect(sessionPlan.confident).toBe(false);
+  });
+
+  it('leaves the linked learning in _unsorted (non-confident) without --with-backfill', { timeout: 20_000 }, () => {
+    const { vault, repos } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const learnPlan = records.find((r) => r.from.endsWith('/bf-learn.md'));
+    expect(learnPlan).toBeDefined();
+    expect(learnPlan.namespace).toBe('_unsorted');
+    expect(learnPlan.source).toBe('fallback');
+    expect(learnPlan.confident).toBe(false);
+  });
+
+  it('reads no sessions.jsonl without the flag — neither session nor learning is confident', { timeout: 20_000 }, () => {
+    const { vault, repos } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--derivable-only', '--apply', '--json']);
+
+    expect(result.status).toBe(0);
+
+    // Under --derivable-only, non-confident files are skipped: nothing moves.
+    const records = parseJsonl(result.stdout);
+    const moved = records.filter((r) => r.action === 'moved');
+    expect(moved).toHaveLength(0);
+    expect(result.stderr).toContain('0 moved');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 13: --repos-root defaulting — parent of --vault-dir
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — --repos-root defaulting', () => {
+  it('defaults repos-root to the parent of --vault-dir (vault nested under repos-root)', { timeout: 20_000 }, () => {
+    // Place the vault INSIDE the repos-root so the default (parent dir) finds the sibling repo.
+    const reposRoot = mkTmp('rvt-default-root-');
+    const vault = join(reposRoot, 'vault');
+    const sid = 'feat-thing-2026-04-19-1515';
+
+    writeFile(vault, `50-sessions/${sid}.md`,
+      `---\ntype: session\nid: ${sid}\n---\n# s\n`);
+    writeFile(reposRoot, `acme-app/.orchestrator/metrics/sessions.jsonl`,
+      `${JSON.stringify({ session_id: sid, branch: 'feat-thing', started_at: '2026-04-19T15:15:00Z' })}\n`);
+
+    spawnSync('git', ['init', vault], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'commit', '-m', 'init'], { encoding: 'utf8' });
+
+    // NO --repos-root flag → default = parent of vault = reposRoot, which holds acme-app
+    const result = runScript(['--vault-dir', vault, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find((r) => r.from.endsWith(`/${sid}.md`));
+    expect(sessionPlan).toBeDefined();
+    expect(sessionPlan.namespace).toBe('acme-app');
+    expect(sessionPlan.source).toBe('backfill');
+  });
+
+  it('honours an explicit --repos-root distinct from the default', { timeout: 20_000 }, () => {
+    // Sibling layout (root/vault vs root/repos): the default (root) holds NO repo,
+    // so attribution only succeeds when --repos-root explicitly points at root/repos.
+    const { vault, repos, sid } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find((r) => r.from.endsWith(`/${sid}.md`));
+    expect(sessionPlan.namespace).toBe('acme-app');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 14: Archiv exclusion — Archiv/ under repos-root is never scanned
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — Archiv exclusion', () => {
+  it('does not scan an Archiv/ repo dir — a session matching only there stays _unsorted', { timeout: 20_000 }, () => {
+    const root = mkTmp('rvt-archiv-');
+    const vault = join(root, 'vault');
+    const repos = join(root, 'repos');
+    const sid = 'feat-thing-2026-04-19-1515';
+
+    // Session whose sid is ONLY present in Archiv's sessions.jsonl
+    writeFile(vault, `50-sessions/${sid}.md`,
+      `---\ntype: session\nid: ${sid}\n---\n# s\n`);
+    writeFile(repos, `Archiv/.orchestrator/metrics/sessions.jsonl`,
+      `${JSON.stringify({ session_id: sid, branch: 'feat-thing', started_at: '2026-04-19T15:15:00Z' })}\n`);
+    // A non-Archiv repo exists but does NOT carry this sid
+    writeFile(repos, `other-repo/.orchestrator/metrics/sessions.jsonl`,
+      `${JSON.stringify({ session_id: 'unrelated-2026-01-01-0000', branch: 'main', started_at: '2026-01-01T00:00:00Z' })}\n`);
+
+    spawnSync('git', ['init', vault], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', vault, 'commit', '-m', 'init'], { encoding: 'utf8' });
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find((r) => r.from.endsWith(`/${sid}.md`));
+    expect(sessionPlan).toBeDefined();
+    // Archiv was skipped → no sid match → falls back to _unsorted (NOT 'archiv')
+    expect(sessionPlan.namespace).toBe('_unsorted');
+    expect(sessionPlan.source).toBe('fallback');
+
+    // Backfill scan reports exactly 1 repo (other-repo), proving Archiv was excluded
+    expect(result.stderr).toMatch(/backfill: scanned 1 repos/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 15: intra-batch collision detector — counter surfaced in summary
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — intra-batch collision detector', () => {
+  it('reports 0 intra-batch-collisions on a clean backfill fixture', { timeout: 20_000 }, () => {
+    const { vault, repos } = createBackfillFixture();
+
+    // --with-backfill forces the intra-batch segment into the summary even at 0.
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('0 intra-batch-collisions');
+  });
+
+  it('emits no intra-batch-collision records when no two sources share a destination', { timeout: 20_000 }, () => {
+    const { vault, repos } = createBackfillFixture();
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const collisions = records.filter((r) => r.action === 'intra-batch-collision');
+    expect(collisions).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 16: --help lists both new backfill flags
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — --help backfill flags', () => {
+  it('lists --with-backfill and --repos-root in the help output', { timeout: 20_000 }, () => {
+    const result = runScript(['--help']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--with-backfill');
+    expect(result.stdout).toContain('--repos-root');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 17: malformed JSONL tolerance — bad line skipped, valid line still wins
+// ---------------------------------------------------------------------------
+
+describe('relocate-vault-corpus — malformed JSONL tolerance', () => {
+  it('skips a malformed sessions.jsonl line and still attributes via the valid line', { timeout: 20_000 }, () => {
+    const { vault, repos, sid } = createBackfillFixture({
+      malformedJsonlLine: 'this is not json {{{ broken',
+    });
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+
+    // Run must not throw — exit 0, attribution succeeds from the valid second line
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sessionPlan = records.find((r) => r.from.endsWith(`/${sid}.md`));
+    expect(sessionPlan).toBeDefined();
+    expect(sessionPlan.namespace).toBe('acme-app');
+    expect(sessionPlan.source).toBe('backfill');
   });
 });

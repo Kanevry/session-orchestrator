@@ -349,12 +349,22 @@ function projectTag(tags) {
  * Priority:
  *   1. repo: frontmatter field  → resolveRepoNamespace({ vaultName: lastPathSegment(repo) })
  *   2. project/<slug> tag       → resolveRepoNamespace({ vaultName: slug })
- *   3. fallback                 → '_unsorted'
+ *   3. backfill index match     → entry.repo (ALREADY leak-guarded by backfill module)
+ *   4. fallback                 → '_unsorted'
+ *
+ * The optional backfill index (W1-D5, Issue #700) supplies a repo for historical
+ * sessions whose frontmatter carries NO in-file repo signal. Its entries are
+ * ALREADY leak-guarded by the backfill module, so the matched repo is returned
+ * verbatim — it MUST NOT be re-resolved through _resolveNamespace (re-resolving a
+ * pre-guarded value risks a CWD-derive on a slug that no longer round-trips).
+ * Backward-compat: `opts` defaults to `{}`, so all existing 1-arg call-sites are
+ * unaffected and the branch is inert unless a backfillIndex is explicitly passed.
  *
  * @param {object} frontmatter
- * @returns {{ namespace: string, source: 'repo' | 'project-tag' | 'fallback' }}
+ * @param {{ backfillIndex?: Map<string, { repo: string, confidence: string, source: string }> }} [opts]
+ * @returns {{ namespace: string, source: 'repo' | 'project-tag' | 'backfill' | 'fallback' }}
  */
-export function namespaceForSession(frontmatter) {
+export function namespaceForSession(frontmatter, opts = {}) {
   const repo = frontmatter.repo;
   if (repo && typeof repo === 'string' && repo.trim()) {
     const seg = lastPathSegment(repo.trim());
@@ -373,6 +383,18 @@ export function namespaceForSession(frontmatter) {
     if (seg) {
       const namespace = _resolveNamespace({ vaultName: seg });
       return { namespace, source: 'project-tag' };
+    }
+  }
+
+  // Backfill index — consulted ONLY when the in-file signals above are absent.
+  // The matched entry's repo is already leak-guarded by the backfill module, so
+  // it is returned as-is (no _resolveNamespace re-resolution). A 'SKIP' confidence
+  // means the backfill module could not confidently attribute a repo — fall through.
+  const backfillIndex = opts.backfillIndex;
+  if (backfillIndex && frontmatter.id) {
+    const entry = backfillIndex.get(frontmatter.id);
+    if (entry && entry.confidence !== 'SKIP') {
+      return { namespace: entry.repo, source: 'backfill' };
     }
   }
 
@@ -449,15 +471,19 @@ export function namespaceForLearning(frontmatter, sessionRepoIndex) {
  *
  * Dispatches on frontmatter.type ('session' | 'learning').
  *
- * @param {{ frontmatter: object, sessionRepoIndex: Map<string, string> }} opts
+ * The optional backfillIndex (Issue #700) is forwarded to namespaceForSession so
+ * historical sessions with no in-file repo signal can still be attributed. It is
+ * absent-tolerant: when omitted, classification is byte-identical to prior behaviour.
+ *
+ * @param {{ frontmatter: object, sessionRepoIndex: Map<string, string>, backfillIndex?: Map<string, { repo: string, confidence: string, source: string }> }} opts
  * @returns {{ namespace: string, source: string, confident: boolean }}
  */
-export function classifyOwner({ frontmatter, sessionRepoIndex }) {
+export function classifyOwner({ frontmatter, sessionRepoIndex, backfillIndex }) {
   const type = String(frontmatter.type ?? '').trim().toLowerCase();
 
   let result;
   if (type === 'session') {
-    result = namespaceForSession(frontmatter);
+    result = namespaceForSession(frontmatter, { backfillIndex });
   } else if (type === 'learning') {
     result = namespaceForLearning(frontmatter, sessionRepoIndex);
   } else {
