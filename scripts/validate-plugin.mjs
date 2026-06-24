@@ -241,19 +241,13 @@ process.stdout.write('\n');
 if (runCheck('check-owner-leakage.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-subagent-types.mjs') !== 0) checkFailed = 1;
-
-process.stdout.write('\n');
-if (runCheck('check-rules-references.mjs') !== 0) checkFailed = 1;
-
-process.stdout.write('\n');
 if (runCheck('check-rules.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-baseline-fetch-bridge.mjs') !== 0) checkFailed = 1;
+if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
-if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
+if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 
 // ---------------------------------------------------------------------------
 // Summary

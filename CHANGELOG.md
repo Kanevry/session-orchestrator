@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Generalized dead-bridge / dormant-seam validator — #671** (consolidates the 3 point-guards). A new `scripts/lib/validate/check-dead-bridge.mjs` (with pure `dead-bridge-detectors.mjs` + `dead-bridge-corpus.mjs`) subsumes the three standalone dead-bridge guards — `check-subagent-types.mjs` (#614), `check-rules-references.mjs` (#445), `check-baseline-fetch-bridge.mjs` (#618) — behind one rule engine, and **retires** all three. Class-(a) **dangling-reference** detection reproduces every old guard's behaviour verbatim (subsumption proven by a corpus equivalence test: each old guard's positive/negative case is an anchor); a NEW class-(b) **bridge-balance** detector flags set-but-never-read / read-but-never-set against a *declared* producer/consumer registry (registry-bounded → zero false positives, so the new gate keeps CI green). Wired into `validate-plugin.mjs`; the sunset-walker boilerplate-site exemption was repointed from the retired guard to the new validator files. 37 new tests; full gate green.
+
 ## [3.10.0] - 2026-06-23
 
 Additive, backward-compatible release. Headline: a **cross-repo dispatcher** that picks

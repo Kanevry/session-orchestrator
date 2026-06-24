@@ -325,9 +325,9 @@ describe('staticReferenceScan — boilerplate exclusion (agents)', () => {
       `{ "session-orchestrator:${name}": 1 }`,
       'utf8',
     );
-    // routing validator
+    // routing validator (dead-bridge validator subsumed check-subagent-types per #671)
     writeFileSync(
-      path.join(root, 'scripts', 'lib', 'validate', 'check-subagent-types.mjs'),
+      path.join(root, 'scripts', 'lib', 'validate', 'dead-bridge-detectors.mjs'),
       `const x = 'session-orchestrator:${name}';`,
       'utf8',
     );

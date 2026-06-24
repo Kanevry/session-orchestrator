@@ -475,7 +475,10 @@ function isBoilerplateSite(relPath, kind, name) {
     if (relPath === `agents/schemas/${name}.schema.json`) return true;
     // Routing-table / validator boilerplate.
     if (relPath === 'agents/schemas/routing-table.json') return true;
-    if (relPath.startsWith('scripts/lib/validate/check-subagent-types')) return true;
+    // The dead-bridge validator (subsumed check-subagent-types per #671) carries
+    // agent names in its corpus/detector fixtures — exempt it as a validator site.
+    if (relPath.startsWith('scripts/lib/validate/dead-bridge')) return true;
+    if (relPath.startsWith('scripts/lib/validate/check-dead-bridge')) return true;
     if (relPath.startsWith('scripts/lib/validate/check-agents')) return true;
     return false;
   }
