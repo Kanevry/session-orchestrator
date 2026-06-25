@@ -17,7 +17,8 @@ describe('verification-before-completion.md — VBC rule structure (#38)', () =>
   });
 
   it('title line is correct — starts with # Verification Before Completion (Always-on)', () => {
-    const firstLine = content.split('\n')[0];
+    // Strip an optional leading YAML frontmatter block (tier: key added #692) before the title check.
+    const firstLine = content.replace(/^---\n[\s\S]*?\n---\n+/, '').split('\n')[0];
     expect(firstLine).toBe('# Verification Before Completion (Always-on)');
   });
 

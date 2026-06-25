@@ -1,3 +1,7 @@
+---
+tier: coordinator-only
+---
+
 # Loop & Monitor Routing (Always-on)
 
 `/goal`, `/loop`, `Monitor`, and `Routines` / Desktop scheduled tasks share
@@ -5,11 +9,6 @@ the "recurring, polling-style, or keep-going-until-done work" slot but are
 **not interchangeable**. Picking the wrong primitive wastes tokens, masks
 failures, or loses durability. This rule encodes the routing decision once so
 future sessions do not re-derive it.
-
-Anthropic's own `/loop` documentation (https://code.claude.com/docs/en/scheduled-tasks) is explicit:
-> *"When you ask for a dynamic /loop schedule, Claude may use the Monitor
-> tool directly. Monitor … avoids polling altogether and is often more
-> token-efficient and responsive than re-running a prompt on an interval."*
 
 ## LM-001: Decision Tree — Pick the Primitive First
 
@@ -123,55 +122,22 @@ conversation cannot coordinate without drowning its own context: a codebase-
 wide audit, a 500-file migration, a multi-angle cross-checked research sweep.
 Claude plans the work once, codifies it as a **rerunnable script**, fans out
 **dozens-to-hundreds of subagents**, and returns only the final result to the
-main context — the per-agent chatter never lands in your window. The bundled
-`/deep-research` is the canonical example workflow.
+main context. The bundled `/deep-research` is the canonical example.
 
-Anthropic's own Workflows documentation is explicit about the niche:
-> *"Workflows are best for tasks that fan out across many independent units of
-> work — a codebase-wide migration, a large audit — where the number of
-> subagents exceeds what a single conversation can track. Claude saves the plan
-> as a reusable workflow you can rerun."*
+Constraints (cite https://code.claude.com/docs/en/workflows):
 
-Constraints (cite https://code.claude.com/docs/en/workflows and
-https://code.claude.com/docs/en/tools-reference#workflow-tool):
+- **Caps:** **16 concurrent** / **1000 total** agents per run — agent-count bounds, not stop-conditions.
+- **Kill-switch:** `disableWorkflows` (settings) or `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env).
+- **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
+- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins).
+- **Trigger:** `/effort ultracode` is the on-ramp for dynamic Workflows.
 
-- **Caps:** **16 concurrent** agents / **1000 total** agents per run. These are
-  agent-count bounds — a runaway-protection ceiling, NOT a stop-condition
-  surface (see the wave-executor contrast below).
-- **Kill-switch:** disable per-session with `disableWorkflows` (settings) or
-  globally with `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env). One switch, off/on —
-  not the repo's ten kill-switches.
-- **Provider availability:** runs on Bedrock/Vertex/Foundry **as well as**
-  Anthropic-auth — *unlike* Monitor (Anthropic-only, LM-002) and Channels
-  (Anthropic-only, LM-002a). If you are on a non-Anthropic provider, Workflows
-  is reachable where Monitor/Channels are not.
-- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/`
-  (user; project wins) — the same project-over-user precedence as `/loop`'s
-  `.claude/loop.md`.
-- **Trigger:** the `ultracode` planning intensity (`/effort ultracode`) is the
-  on-ramp Anthropic documents for letting Claude reach for a dynamic Workflow.
-
-**Workflows vs the repo's own wave-executor + `autopilot-multi` (open question,
-NOT decided here).** Workflows overlaps `skills/wave-executor/` (parallel
-subagent fan-out) and `commands/autopilot-multi.md` (N parallel issue pipelines
-in worktrees) — but its native caps (16/1000 agents) are **agent-count bounds,
-not the repo's ten kill-switches** (SPIRAL, FAILED-wave, carryover, max-hours,
-max-sessions, resource-overload, token-budget, stall-timeout, low-confidence,
-user-abort — `scripts/lib/autopilot/kill-switches.mjs`), and it ships no
-`autopilot.jsonl`-equivalent telemetry. This is the **same Stay-vs-Adapter
-tension ADR-0010 resolved for `/batch`** (native decomposition we already have,
-minus the guard+telemetry surface). The Adopt/Adapter/Stay verdict for dynamic
-Workflows vs wave-executor is an **open follow-up** logged in ADR-0010 — do not
-swap wave-executor for a bare Workflow on the assumption the caps substitute for
-the kill-switches; they do not.
+**Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`), and Workflows ships no `autopilot.jsonl`-equivalent telemetry. The Adopt/Adapter/Stay verdict is an open follow-up in `docs/adr/0010-native-autonomy-commands.md` — do not swap wave-executor for a bare Workflow on the assumption the caps substitute for the kill-switches.
 
 **Never reimplement a one-shot fan-out as `/loop`.** A `/loop` body re-runs a
 single coordinator prompt on an interval; it has no native fan-out, no agent-
-count cap, and no rerunnable-script artifact. Hand-rolling a Workflow-shaped
-fan-out as a `/loop` (or as a hand-managed swarm of `Task` calls in one
-conversation) re-creates the context-drowning problem Workflows exists to solve.
-If the work is genuinely one-shot fan-out, use the `Workflow` tool; `/loop` is
-for the periodic, in-session axis below.
+count cap, and no rerunnable-script artifact. If the work is genuinely one-shot
+fan-out, use the `Workflow` tool; `/loop` is for the periodic, in-session axis below.
 
 ## LM-003: Use `/loop` When …
 
@@ -247,33 +213,15 @@ it as you would any coordinator action:
 
 ## LM-007: Anti-Patterns
 
-- Fixed `/loop 5m …` to babysit a CI run — replace with Monitor on
-  `glab ci status` or `gh pr checks --watch`.
-- `/loop 1d …` for a daily note — use Routines or Desktop tasks; `/loop`
-  will not survive the night.
-- Monitor filter that greps only the success marker — a crashed process
-  produces nothing the filter sees, and silence reads identically to
-  success.
-- `/loop` that wraps `/autopilot` — duplicates the loop semantics and
-  hides the kill-switches.
-- Cadence at `300s` — prompt cache is dropped without buying a longer
-  wait. Pick `270s` or `1200s+`.
-- Using `/goal` as a quality gate — the evaluator reads the transcript
-  only and runs no tools, so a goal "tests pass" is satisfied the moment
-  Claude *claims* tests pass, not when `npm test` actually exits 0. Pair
-  `/goal` with a deterministic exit-code gate (see LM-008).
-- Setting an unbounded `/goal` with no turn/time-bound clause — without
-  an explicit "or stop after N turns" / "or stop after M minutes" the
-  loop can churn indefinitely on a condition it cannot satisfy. Always
-  embed a bound.
-- Hand-rolling a one-shot fan-out (codebase-wide audit, large migration) as
-  a `/loop` body or a swarm of `Task` calls in one conversation — use the
-  `Workflow` tool, which caps agent count (16/1000) and saves a rerunnable
-  script. The hand-rolled version drowns the main context. See LM-002b.
-- Swapping wave-executor for a bare Workflow on the assumption its 16/1000
-  caps substitute for the repo's ten kill-switches — they are agent-count
-  bounds, not a stop-condition surface. The Adopt/Adapter/Stay verdict is an
-  open ADR-0010 follow-up; do not pre-decide it. See LM-002b.
+- Fixed `/loop 5m …` to babysit a CI run — use Monitor on `glab ci status` or `gh pr checks --watch` instead (LM-002).
+- `/loop 1d …` for a daily note — use Routines or Desktop tasks; `/loop` dies with the session (LM-004).
+- Monitor filter matching only the success marker — silence from a crash is indistinguishable from success (LM-002 coverage rule).
+- `/loop` wrapping `/autopilot` — duplicates loop semantics and hides the kill-switches (LM-005).
+- Cadence at `300s` — cache miss without buying a longer wait; pick `270s` or `1200s+` (LM-003).
+- Using `/goal` as a quality gate — the evaluator reads the transcript only; pair `/goal` with a deterministic exit-code gate (LM-008).
+- Unbounded `/goal` with no turn/time-bound clause — always embed "or stop after N turns / M minutes" (LM-008).
+- Hand-rolling a one-shot fan-out as a `/loop` body — use the `Workflow` tool (LM-002b).
+- Swapping wave-executor for a bare Workflow assuming its 16/1000 caps replace the ten kill-switches — they don't; verdict open in ADR-0010 (LM-002b).
 
 ## LM-008: Use `/goal` When …
 

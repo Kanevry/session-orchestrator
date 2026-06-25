@@ -284,9 +284,9 @@ After `wave-scope.json` is written for this wave and before assembling the `Agen
 
 **Invocation:** once per wave, run from the repo root and capture stdout as `$RULES_BLOCK`:
 
-    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" 2>/dev/null)"
+    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave 2>/dev/null)"
 
-Use `--wave-scope <path>` only if `wave-scope.json` is not at the default `.claude/wave-scope.json`. The CLI returns:
+`--context wave` (issue #692) excludes `tier: coordinator-only` rules (owner-persona, lsp, mvp-scope, loop-and-monitor) from the wave-agent prompt — those are operator/coordinator-context rules a wave implementation agent does not need. `tier: always` and `tier: wave-only` rules are unaffected; omitting the flag (or passing `--context coordinator`) disables wave-tier exclusion. Use `--wave-scope <path>` only if `wave-scope.json` is not at the default `.claude/wave-scope.json`. The CLI returns:
 - a Markdown block (header `## Applicable Rules (scoped to this wave)` + each matching rule's raw content, separated by `---`) when one or more rules apply, OR
 - empty output (exit 0) when no rules match — in which case prepend nothing.
 

@@ -7,6 +7,7 @@ globs:
   - migrations/**
   - src/lib/redis/**
   - src/lib/queue/**
+tier: wave-only
 ---
 # Backend Data Rules (Path-scoped)
 

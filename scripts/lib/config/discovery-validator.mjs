@@ -2,7 +2,7 @@
  * discovery-validator.mjs — Parser for the top-level `discovery-validator:`
  * YAML block (PSA-006 mechanical enforcement / issue #567).
  *
- * Drives the opt-in non-blocking SubagentStop hook that flags distributional
+ * Drives the non-blocking SubagentStop hook that flags distributional
  * claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of")
  * in a subagent's transcript tail that lack an adjacent fenced grep/rg/find
  * transcript. v1 is log+warn only (events.jsonl + stderr WARN); exit 2
@@ -19,14 +19,14 @@
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
- *   enabled: false (opt-in)
+ *   enabled: true
  *
  * @param {string} content — full file contents
  * @returns {{ enabled: boolean }}
  */
 export function _parseDiscoveryValidator(content) {
   const defaults = {
-    enabled: false,
+    enabled: true,
   };
 
   const lines = content.split(/\r?\n/);
@@ -61,7 +61,7 @@ export function _parseDiscoveryValidator(content) {
 
     switch (k) {
       case 'enabled':
-        // Default is false → only flip to true on explicit "true"
+        // Only literal "true" (case-insensitive) flips enabled; any other value → false
         dvEnabled = v.toLowerCase() === 'true';
         break;
     }

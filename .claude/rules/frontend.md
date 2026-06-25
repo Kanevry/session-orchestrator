@@ -4,6 +4,7 @@ globs:
   - src/**/*.css
   - src/**/*.module.css
   - "**/components/**/*.{ts,tsx}"
+tier: wave-only
 ---
 # Frontend Rules (Path-scoped)
 

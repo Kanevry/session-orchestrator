@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Verification Before Completion (Always-on)
 
 Evidence before assertions. If you have not run the verification command in this message, you cannot claim it passes. This rule exists because the most expensive failure class in our history is the silent regression that ships behind a "should work" claim — see CLAUDE.md narrative entries 2026-05-09 deep-3 → deep-1 (8-pipeline silent regression), 2026-04-30 → 2026-05-01 (inter-wave lint regressions caught retroactively).

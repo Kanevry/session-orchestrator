@@ -17,7 +17,8 @@ describe('receiving-review.md — RCR rule structure (#40)', () => {
   });
 
   it('title line is correct — starts with # Receiving Code Review (Always-on)', () => {
-    const firstLine = content.split('\n')[0];
+    // Strip an optional leading YAML frontmatter block (tier: key added #692) before the title check.
+    const firstLine = content.replace(/^---\n[\s\S]*?\n---\n+/, '').split('\n')[0];
     expect(firstLine).toBe('# Receiving Code Review (Always-on)');
   });
 

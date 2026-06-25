@@ -110,7 +110,7 @@ verification-auto-fix:
   enabled: false                 # PRD gsd Pattern 4 (#521) — opt-in auto-fix retry loop after Quality-Gate fail
   max-retries: 2                 # bounded retries
 discovery-validator:
-  enabled: false                 # PSA-006 (#567) — opt-in distributional-claim grep-verification enforcement (SubagentStop hook, non-blocking)
+  enabled: true                  # PSA-006 (#567) — distributional-claim grep-verification enforcement (SubagentStop hook, log+warn-only, exit-0-always, non-blocking)
 frontend-slop-hook:
   enabled: false                 # #684 — PostToolUse frontend-slop detector after UI-file edits (warn-only, non-blocking, opt-in); profile-gate also applies
 loop-guard:

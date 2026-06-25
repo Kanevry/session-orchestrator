@@ -5,6 +5,7 @@ globs:
   - next.config.*
   - src/lib/csp*
   - src/lib/cors*
+tier: wave-only
 ---
 
 # Security — Web & API (Path-scoped)

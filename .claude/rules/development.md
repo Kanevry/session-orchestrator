@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Development Rules (Always-on)
 
 ## TypeScript Discipline
@@ -31,29 +35,17 @@ This quirk bit several consumer repos before it was codified — the baseline ma
 - pnpm is the standard package manager for all JS/TS projects.
 - Always use `pnpm` commands, never `npm` or `yarn`.
 - Lock files (`pnpm-lock.yaml`) must be committed.
-- Run `pnpm audit --prod` regularly. Fix critical/high vulnerabilities immediately.
+- CI enforces `pnpm audit --prod --audit-level=high`. Fix critical/high vulnerabilities immediately.
 
 ## Git Conventions
-- Conventional Commits: `type(scope): description`
-- Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `perf`, `security`
-- Scope: module/feature name (e.g., `auth`, `invoices`, `ci`, `deploy`)
-- Subject: imperative mood, sentence-case, no period, max 120 chars
-- Body: explain WHY, not WHAT (the diff shows what)
-- Breaking changes: `feat!:` or `BREAKING CHANGE:` in footer
+Enforced by commitlint (see `.commitlintrc` / repo commitlint config). Quick ref: `type(scope): description`; `BREAKING CHANGE:` footer for majors.
 
 ## Code Style
-- ESLint v9 flat config (`eslint.config.mjs`). Never disable rules globally.
-- Prettier handles formatting. No manual formatting discussions.
-- `no-console`: error (except warn/error) — prevents PII leakage in production.
-- File naming: kebab-case for files, PascalCase for React components and classes.
-- One component per file. Co-locate tests (`*.test.ts` next to source).
+Enforced by ESLint flat config (`eslint.config.mjs`) + Prettier. Notable behavioural rule: `no-console` error (except warn/error) — prevents PII leakage in production.
 
 ## Dependencies
-- Prefer established, maintained packages. Check npm download trends + last publish date.
-- No packages with <1000 weekly downloads unless absolutely necessary.
-- Pin exact versions for critical deps (database drivers, auth, crypto).
-- Semver ranges (`^`) for non-critical deps.
-- Run `pnpm outdated` monthly. Update in batches, test after each batch.
+- Prefer established, maintained packages. No packages with <1000 weekly downloads unless justified.
+- Pin exact versions for critical deps (database drivers, auth, crypto). Semver ranges (`^`) for non-critical.
 
 ## Error Handling
 - Never expose internal error messages to users (SEC-009).
@@ -79,10 +71,7 @@ This quirk bit several consumer repos before it was codified — the baseline ma
 - **Pre-release**: use `1.2.0-beta.1` for cross-repo validation before major bumps. Tag as `beta`, never as `latest`.
 - **Deprecation**: add `@deprecated` JSDoc + `console.warn` on first call. Keep deprecated API for at least one minor cycle (min 4 weeks). Remove in next major.
 - **Breaking changes**: `BREAKING CHANGE:` in commit footer, `major` changeset type, CHANGELOG "Migration" subsection with before/after code diff, `MIGRATION-vN.md` in package dir.
-- **Changesets**: run `pnpm changeset` after every substantive change, before opening MR. One changeset per logical change. `patch` for fixes, `minor` for features, `major` for breaks.
-- **Publishing checklist**: `pnpm test` -> `pnpm typecheck` -> `pnpm build` -> `pnpm changeset version` -> review diffs -> commit as `chore(release): version packages` -> `pnpm changeset publish` -> `git tag` + push.
-- **Access control**: all packages publish `access: restricted` to GitLab Package Registry (project 52). Never publish to public npm.
-- **No manual version edits**: `package.json` versions managed exclusively by `pnpm changeset version`.
+- **Changesets + publishing**: tool-driven via `pnpm changeset`. Access control: all packages publish `access: restricted` to GitLab Package Registry (project 52). Never publish to public npm. `package.json` versions managed exclusively by `pnpm changeset version`.
 
 ## See Also
 security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md

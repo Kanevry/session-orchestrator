@@ -1,86 +1,24 @@
+---
+tier: coordinator-only
+---
+
 # Owner Persona Layer (Always-on)
 
 ## Why
 
 Every repo session runs with the same AI but a different project context. The Owner Persona Layer adds a per-user (not per-project) tonality and efficiency dial that propagates across all repos on the same host. A single `owner.yaml` on disk lets the operator configure language, tone, and verbosity once — and every session picks it up automatically at start, without baking any personal data into version-controlled files.
 
-## owner.yaml location & schema
+## Configuration
 
-```
-~/.config/session-orchestrator/owner.yaml
-```
+**File:** `~/.config/session-orchestrator/owner.yaml` — per-user, per-machine, never inside any repo, never committed.
 
-This path is per-user, per-machine. It is **never** inside any repo and **never** committed. Implementation: `scripts/lib/owner-yaml.mjs` (`OWNER_YAML_PATH` constant, `loadOwnerConfig`, `writeOwnerConfig`).
+**Schema + defaults:** `scripts/lib/owner-yaml.mjs` (`OWNER_YAML_PATH` constant, `loadOwnerConfig`, `writeOwnerConfig`, `getDefaults()`).
 
-Minimal schema (schema-version: 1):
+**Template slot resolution** (4 slots injected into `skills/_shared/soul.md` at session-start): `scripts/lib/soul-resolve.mjs`. Slots are resolved in-memory each session from the current `owner.yaml` — never persisted.
 
-```yaml
-owner:
-  name: "Ada Lovelace"              # required, non-empty
-  language: en                      # de | en
+**First-run interview:** runs once per host via `/bootstrap` (implementation: `scripts/lib/owner-interview.mjs`) when `owner.yaml` does not exist. Covers name, language, tone style, output level, and preamble verbosity.
 
-tone:
-  style: neutral                    # direct | neutral | friendly
-  tonality: ""                      # optional free text
-
-efficiency:
-  output-level: full                # lite | full | ultra
-  preamble: minimal                 # minimal | verbose
-
-hardware-sharing:
-  enabled: false                    # opt-in only
-  hash-salt: ""                     # required when enabled: true
-
-paths:                              # optional — host-local path overrides (#653)
-  vault-dir: ""                     # overrides Session Config vault-integration.vault-dir
-  baseline-path: ""                 # overrides Session Config plan-baseline-path
-
-vaults:                             # optional — named vault list for multi-vault routing (#700)
-  - name: "personal"                # unique identifier used by --vault-name / vault-integration.vault-name
-    suffix: "/agents/vault"         # canonical suffix for the N-root guard (mirrors VAULT_MIRROR_CANONICAL_SUFFIX)
-    root: "~/Projects/vault"        # absolute or ~-prefixed path to this vault's git repo root
-    match:
-      org-prefix: "my-org"          # org/repo prefix used for walk-up routing; absent → no auto-match
-```
-
-The optional `paths:` section is consumed by `scripts/lib/config/host-paths.mjs` with precedence env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > owner.yaml `paths:` > committed Session Config default. It is absent-tolerant — legacy `owner.yaml` files without it still load.
-
-The optional `vaults:` list is consumed by `scripts/lib/named-vault-resolver.mjs` (`parseNamedVaults()`). When absent (or an empty list), all vault-mirror operations degrade gracefully to byte-identical single-vault behaviour — no config change is required for existing setups. When present, the list enables walk-up named-vault resolution: vault-mirror selects the vault whose `match.org-prefix` matches the current repo's git remote slug (first-match-wins). Each entry requires `name`, `suffix`, and `root`; `match` is optional. The `name` value maps to the `--vault-name` CLI flag and `vault-integration.vault-name` Session Config key. Never commit `vaults:` to a repo — it is host-local personal configuration.
-
-## Template slots
-
-Four slots are injected into `skills/_shared/soul.md` at session-start runtime by `scripts/lib/soul-resolve.mjs`. They are never persisted — each session resolves them fresh from the current `owner.yaml` on disk:
-
-| Slot | Source field | Values |
-|---|---|---|
-| `{{owner.language}}` | `owner.language` | `de` / `en` |
-| `{{tone.style}}` | `tone.style` | `direct` / `neutral` / `friendly` |
-| `{{efficiency.output-level}}` | `efficiency.output-level` | `lite` / `full` / `ultra` |
-| `{{efficiency.preamble}}` | `efficiency.preamble` | `minimal` / `verbose` |
-
-Slots are resolved left-to-right; unknown keys fall back to the defaults defined in `getDefaults()` in `scripts/lib/owner-yaml.mjs`.
-
-## First-run interview
-
-When `owner.yaml` does not exist, bootstrap runs a 5-question `AskUserQuestion`-driven interview (implementation: `scripts/lib/owner-interview.mjs`) to populate the file. The interview runs **once per host** and covers:
-
-1. Preferred name (maps to `owner.name`)
-2. Preferred language — `de` or `en` (maps to `owner.language`)
-3. Tone style — `direct` / `neutral` / `friendly` (maps to `tone.style`)
-4. Output level — `lite` / `full` / `ultra` (maps to `efficiency.output-level`)
-5. Preamble verbosity — `minimal` / `verbose` (maps to `efficiency.preamble`)
-
-After the interview, bootstrap writes `owner.yaml` via `writeOwnerConfig()` and appends the path to `~/.gitignore` as a safety net.
-
-## Re-trigger
-
-To update persona settings or rotate after a machine transfer:
-
-```
-/bootstrap --owner-reset
-```
-
-This archives the existing `owner.yaml` (timestamped backup in the same directory) and re-runs the 5-question interview from scratch. All 4 template slots pick up the new values at the next session-start.
+**Reset / re-trigger:** `/bootstrap --owner-reset` — archives the existing file and re-runs the interview.
 
 ## Privacy guarantee
 

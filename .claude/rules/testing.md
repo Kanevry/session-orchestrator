@@ -7,6 +7,7 @@ globs:
   - vitest.config.*
   - playwright.config.*
   - "**/WalkAITalkieTests/**"
+tier: wave-only
 ---
 
 # Testing Rules (Path-scoped)

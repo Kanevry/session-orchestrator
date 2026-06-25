@@ -62,6 +62,11 @@ Options:
                         .claude/STATE.md; unreadable -> no mode gating).
   --host-class <c>      Override host class (default: host_class from
                         .orchestrator/host.json; unreadable -> no gating).
+  --context <c>         Caller context for tier gating: 'wave' | 'coordinator'.
+                        When absent (default), tier gating is disabled and all
+                        rules are included regardless of their tier: frontmatter.
+                        Pass --context wave to exclude coordinator-only rules;
+                        pass --context coordinator to exclude wave-only rules.
   --json                Emit { count, rules:[{path,alwaysOn,matchedGlobs}] }
                         instead of the Markdown block.
   --help, -h            Show this help and exit 0.
@@ -101,6 +106,7 @@ try {
       'wave-scope':  { type: 'string' },
       mode:          { type: 'string' },
       'host-class':  { type: 'string' },
+      context:       { type: 'string' },
       json:          { type: 'boolean', default: false },
     },
     strict: true,
@@ -197,12 +203,22 @@ const hostClass =
     : readHostClass(hostJsonPath); // null on any I/O or parse error
 
 // ---------------------------------------------------------------------------
+// context ← --context override | null (default = no tier gating)
+// ---------------------------------------------------------------------------
+//
+// CRITICAL: when --context is NOT passed, context remains null and tier gating
+// is fully disabled — existing behaviour is preserved, existing tests stay green.
+
+/** @type {string|null} */
+const context = opts.context !== undefined && opts.context !== '' ? opts.context : null;
+
+// ---------------------------------------------------------------------------
 // Load + emit
 // ---------------------------------------------------------------------------
 
 let rules;
 try {
-  rules = loadApplicableRules({ rulesDir, scopePaths, mode, hostClass });
+  rules = loadApplicableRules({ rulesDir, scopePaths, mode, hostClass, context });
 } catch (err) {
   fail(`Rule loading failed: ${err.message}`, 2);
 }

@@ -3,8 +3,8 @@
  * scripts/lib/config/discovery-validator.mjs (PSA-006 / issue #567).
  *
  * Tolerant parser for the top-level `discovery-validator:` YAML block.
- * Default OFF (opt-in). Only literal `true` (case-insensitive, after quote
- * unwrap and inline-comment strip) flips `enabled` to true.
+ * Default ON (enabled: true). Only literal `true` (case-insensitive, after quote
+ * unwrap and inline-comment strip) keeps `enabled` true; any other explicit value → false.
  *
  * Covers TASK A (#581 Item 1, 16 unit cases) + TASK B (#581 Item 2,
  * 2 integration cases through parseSessionConfig).
@@ -17,14 +17,14 @@ import { describe, it, expect } from 'vitest';
 import { _parseDiscoveryValidator } from '@lib/config/discovery-validator.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
 
-const DEFAULTS = { enabled: false };
+const DEFAULTS = { enabled: true };
 
 // ---------------------------------------------------------------------------
 // TASK A — _parseDiscoveryValidator unit tests
 // ---------------------------------------------------------------------------
 
 describe('_parseDiscoveryValidator — defaults', () => {
-  it('returns { enabled: false } when the discovery-validator block is absent', () => {
+  it('returns { enabled: true } when the discovery-validator block is absent', () => {
     const content = [
       'persistence: true',
       'enforcement: warn',
@@ -34,7 +34,7 @@ describe('_parseDiscoveryValidator — defaults', () => {
     expect(_parseDiscoveryValidator(content)).toEqual(DEFAULTS);
   });
 
-  it('returns { enabled: false } for empty content', () => {
+  it('returns { enabled: true } for empty content', () => {
     expect(_parseDiscoveryValidator('')).toEqual(DEFAULTS);
   });
 });
@@ -142,13 +142,14 @@ describe('_parseDiscoveryValidator — block-boundary detection', () => {
   it('ignores an enabled: line that appears AFTER a sibling top-level key (outside the block)', () => {
     // After `persistence:` the parser is no longer inside the discovery-validator
     // block, so the bare top-level `enabled: true` (no parent) must NOT flip the flag.
+    // The block is empty → defaults returned ({ enabled: true }).
     const content = [
       'discovery-validator:',
       'persistence: true',
       'enabled: true',
       '',
     ].join('\n');
-    expect(_parseDiscoveryValidator(content)).toEqual({ enabled: false });
+    expect(_parseDiscoveryValidator(content)).toEqual({ enabled: true });
   });
 
   it('tolerates blank lines inside the block', () => {
@@ -175,13 +176,13 @@ describe('_parseDiscoveryValidator — malformed / unknown', () => {
   it('ignores a non-indented "discovery-validator:" with trailing junk on the same line', () => {
     // The block-open regex requires `discovery-validator:` followed only by
     // optional whitespace. Anything after the colon → not recognised as a block
-    // open → defaults returned.
+    // open → defaults returned (enabled: true).
     const content = [
       'discovery-validator: junk',
       '  enabled: true',
       '',
     ].join('\n');
-    expect(_parseDiscoveryValidator(content)).toEqual({ enabled: false });
+    expect(_parseDiscoveryValidator(content)).toEqual({ enabled: true });
   });
 });
 
@@ -222,7 +223,7 @@ describe('parseSessionConfig integration', () => {
     expect(result['discovery-validator']).toEqual({ enabled: true });
   });
 
-  it('parseSessionConfig returns discovery-validator: { enabled: false } when the block is absent', () => {
+  it('parseSessionConfig returns discovery-validator: { enabled: true } when the block is absent', () => {
     const content = [
       '# Project',
       '',
@@ -232,6 +233,6 @@ describe('parseSessionConfig integration', () => {
       '',
     ].join('\n');
     const result = parseSessionConfig(content);
-    expect(result['discovery-validator']).toEqual({ enabled: false });
+    expect(result['discovery-validator']).toEqual({ enabled: true });
   });
 });

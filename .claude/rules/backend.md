@@ -5,6 +5,7 @@ globs:
   - src/lib/api/**
   - src/routes/**
   - src/app/api/**
+tier: wave-only
 ---
 # Backend Rules (Path-scoped)
 

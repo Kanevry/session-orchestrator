@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Ask Via Tool (Always-on)
 
 Whenever the coordinator (you — the top-level session agent) needs a user decision, a preference, a routing choice, or confirmation, present it via the **`AskUserQuestion` tool**. Inline markdown-list "choose 1/2/3" questions in chat prose are **not acceptable** in the established session flow — the user reliably misses them because the chat stream is dense and the questions are visually indistinguishable from narration.

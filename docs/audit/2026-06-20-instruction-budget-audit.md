@@ -245,3 +245,32 @@ W3 can act on rows 1–5 with confidence and defer/discuss the MED and RISKY row
 Spot-checks performed against `scripts/lib/rule-loader.mjs`,
 `.claude/rules/prompt-caching.md` (L1/L3), `.claude/rules/lsp.md`, and
 `wc -l .claude/rules/*.md`.*
+
+---
+
+## Follow-up: #688 trim batch executed (2026-06-25)
+
+The W3 trims this audit ranked (rows 1–7) were executed under #688, plus the
+SEC-020 fold recommended in row 6:
+
+- **Trimmed** (kept always-on, shortened in place): `lsp.md`, `owner-persona.md`,
+  `development.md`, `quality-gates-autofix.md`, `loop-and-monitor.md`.
+- **SEC-020 fold:** the SEC-020 supply-chain cross-reference content from
+  `quality-gates-autofix.md` was folded into `security.md` (row 6's MERGE form).
+
+**Measured effect.** The always-on directive count moved from **460 → 425**,
+measured via `computeInstructionBudget` against the configured ceiling of
+**480**. The post-trim surface (425) sits below the ceiling.
+
+**#692 tier-frontmatter was budget-neutral.** The `tier:` load-context key
+added under #692 (Follow-up 2 of this audit — "Tier rules by load-context")
+does **not** move the directive count: the instruction-budget guard skips
+frontmatter, so tagging a rule with `tier:` adds zero directives. The guard
+count above (460 → 425) reflects the content trims only; the tier rollout is
+orthogonal to it.
+
+**RISKY-KEEP files untouched by content trim.** The behaviour-critical rules
+flagged RISKY in the ranked list — `ask-via-tool.md`,
+`verification-before-completion.md`, `parallel-sessions.md`, `security.md`,
+`receiving-review.md` — received **only** the new `tier:` key (all `tier:
+always`); no content was trimmed from them, per the audit's KEEP verdict.

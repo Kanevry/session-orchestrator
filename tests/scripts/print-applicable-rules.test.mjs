@@ -171,6 +171,148 @@ describe('--mode override', () => {
 });
 
 // ---------------------------------------------------------------------------
+// --context tier gating (issue #692)
+// ---------------------------------------------------------------------------
+
+describe('--context wave tier gating', () => {
+  // A dedicated repo with three always-on rules covering all tier variants:
+  //   coordinator-only.md  → tier: coordinator-only  (must be EXCLUDED for wave context)
+  //   wave-only.md         → tier: wave-only          (must be INCLUDED for wave context)
+  //   always-tier.md       → tier: always             (must be INCLUDED for wave context)
+  let contextRepo;
+
+  beforeAll(() => {
+    contextRepo = mkdtempSync(join(tmpdir(), 'print-rules-ctx-'));
+    const rules = join(contextRepo, '.claude', 'rules');
+    mkdirSync(rules, { recursive: true });
+    mkdirSync(join(contextRepo, '.orchestrator'), { recursive: true });
+
+    writeFileSync(
+      join(rules, 'coordinator-only.md'),
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only Rule\n',
+    );
+    writeFileSync(
+      join(rules, 'wave-only.md'),
+      '---\ntier: wave-only\n---\n\n# Wave Only Rule\n',
+    );
+    writeFileSync(
+      join(rules, 'always-tier.md'),
+      '---\ntier: always\n---\n\n# Always Tier Rule\n',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(contextRepo, { recursive: true, force: true });
+  });
+
+  it('excludes tier:coordinator-only rule when --context wave is passed', () => {
+    const res = spawnSync('node', [CLI, '--json', '--context', 'wave'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: contextRepo },
+    });
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    const paths = parsed.rules.map((r) => r.path);
+    expect(paths.some((p) => p.endsWith('coordinator-only.md'))).toBe(false);
+  });
+
+  it('includes tier:wave-only and tier:always rules when --context wave is passed', () => {
+    const res = spawnSync('node', [CLI, '--json', '--context', 'wave'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: contextRepo },
+    });
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed.count).toBe(2);
+    const paths = parsed.rules.map((r) => r.path);
+    expect(paths.some((p) => p.endsWith('wave-only.md'))).toBe(true);
+    expect(paths.some((p) => p.endsWith('always-tier.md'))).toBe(true);
+  });
+});
+
+describe('--context coordinator tier gating', () => {
+  // Same fixture shape, driven with --context coordinator.
+  //   wave-only.md         → tier: wave-only          (must be EXCLUDED for coordinator context)
+  //   coordinator-only.md  → tier: coordinator-only  (must be INCLUDED for coordinator context)
+  //   always-tier.md       → tier: always             (must be INCLUDED for coordinator context)
+  let contextRepo;
+
+  beforeAll(() => {
+    contextRepo = mkdtempSync(join(tmpdir(), 'print-rules-ctx-coord-'));
+    const rules = join(contextRepo, '.claude', 'rules');
+    mkdirSync(rules, { recursive: true });
+    mkdirSync(join(contextRepo, '.orchestrator'), { recursive: true });
+
+    writeFileSync(
+      join(rules, 'coordinator-only.md'),
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only Rule\n',
+    );
+    writeFileSync(
+      join(rules, 'wave-only.md'),
+      '---\ntier: wave-only\n---\n\n# Wave Only Rule\n',
+    );
+    writeFileSync(
+      join(rules, 'always-tier.md'),
+      '---\ntier: always\n---\n\n# Always Tier Rule\n',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(contextRepo, { recursive: true, force: true });
+  });
+
+  it('excludes tier:wave-only rule when --context coordinator is passed', () => {
+    const res = spawnSync('node', [CLI, '--json', '--context', 'coordinator'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: contextRepo },
+    });
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    const paths = parsed.rules.map((r) => r.path);
+    expect(paths.some((p) => p.endsWith('wave-only.md'))).toBe(false);
+  });
+
+  it('includes tier:coordinator-only and tier:always rules when --context coordinator is passed', () => {
+    const res = spawnSync('node', [CLI, '--json', '--context', 'coordinator'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: contextRepo },
+    });
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed.count).toBe(2);
+    const paths = parsed.rules.map((r) => r.path);
+    expect(paths.some((p) => p.endsWith('coordinator-only.md'))).toBe(true);
+    expect(paths.some((p) => p.endsWith('always-tier.md'))).toBe(true);
+  });
+});
+
+describe('no --context flag (backward-compat: tier gating disabled)', () => {
+  it('includes tier:coordinator-only rule when no --context flag is supplied', () => {
+    // Uses an inline temp repo to avoid coupling to the shared fixture counts.
+    const bcRepo = mkdtempSync(join(tmpdir(), 'print-rules-ctx-bc-'));
+    const rules = join(bcRepo, '.claude', 'rules');
+    mkdirSync(rules, { recursive: true });
+    mkdirSync(join(bcRepo, '.orchestrator'), { recursive: true });
+
+    writeFileSync(
+      join(rules, 'coordinator-only.md'),
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only Rule\n',
+    );
+
+    const res = spawnSync('node', [CLI, '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: bcRepo },
+    });
+    rmSync(bcRepo, { recursive: true, force: true });
+
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed.count).toBe(1);
+    expect(parsed.rules[0].path).toContain('coordinator-only.md');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error path — bad --wave-scope
 // ---------------------------------------------------------------------------
 

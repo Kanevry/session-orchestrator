@@ -8,6 +8,7 @@ globs:
   - packages/*/bin/**
   - tools/**
   - "*.sh"
+tier: wave-only
 ---
 
 # CLI Design Rules

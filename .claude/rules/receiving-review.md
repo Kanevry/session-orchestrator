@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Receiving Code Review (Always-on)
 
 How the coordinator (and any agent receiving review output) handles feedback. The default failure mode in our history is performative agreement — the agent says "great point, I'll implement it" before verifying the feedback is even correct, and ends up half-implementing a wrong suggestion. This rule prevents that.

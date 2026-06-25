@@ -3,6 +3,7 @@ globs:
   - "**/*.swift"
   - "**/Package.swift"
   - "**/*.xcodeproj/**"
+tier: wave-only
 ---
 # Swift Rules (Path-scoped)
 

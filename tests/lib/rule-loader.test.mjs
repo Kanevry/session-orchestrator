@@ -703,3 +703,281 @@ describe('#687 always-on contract (empty scope, no gating)', () => {
     expect(results).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// #692 — Tier gating: context param + tier frontmatter key
+// ===========================================================================
+
+describe('tier frontmatter key parsing (#692)', () => {
+  it('surfaces tier on the entry as a string when frontmatter declares tier: coordinator-only', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'coord-only.md',
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('coordinator-only');
+  });
+
+  it('surfaces tier: wave-only on the entry', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-only.md',
+      '---\ntier: wave-only\n---\n\n# Wave Only Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('wave-only');
+  });
+
+  it('surfaces tier: always on the entry', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'always-tier.md',
+      '---\ntier: always\n---\n\n# Always Tier Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('always');
+  });
+
+  it('does not set tier on the entry when no tier key is present in frontmatter', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'no-tier.md', '---\nmode: deep\n---\n\n# No Tier\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBeUndefined();
+  });
+});
+
+describe('context: wave tier gating (#692)', () => {
+  it('excludes a tier: coordinator-only rule when context is wave', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'coord-only.md',
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'wave' });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a tier: always rule when context is wave', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'always-tier.md',
+      '---\ntier: always\n---\n\n# Always Tier\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'wave' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('always');
+  });
+
+  it('includes a tier: wave-only rule when context is wave', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-only.md',
+      '---\ntier: wave-only\n---\n\n# Wave Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'wave' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('wave-only');
+  });
+});
+
+describe('context: coordinator tier gating (#692)', () => {
+  it('excludes a tier: wave-only rule when context is coordinator', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-only.md',
+      '---\ntier: wave-only\n---\n\n# Wave Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'coordinator' });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a tier: coordinator-only rule when context is coordinator', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'coord-only.md',
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'coordinator' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('coordinator-only');
+  });
+
+  it('includes a tier: always rule when context is coordinator', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'always-tier.md',
+      '---\ntier: always\n---\n\n# Always Tier\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'coordinator' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('always');
+  });
+});
+
+describe('context: null tier gating backward-compat (#692)', () => {
+  it('includes a tier: coordinator-only rule when context is null', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'coord-only.md',
+      '---\ntier: coordinator-only\n---\n\n# Coordinator Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: null });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('coordinator-only');
+  });
+
+  it('includes a tier: wave-only rule when context is null', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-only.md',
+      '---\ntier: wave-only\n---\n\n# Wave Only\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: null });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('wave-only');
+  });
+
+  it('includes a tier: always rule when context is null', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'always-tier.md',
+      '---\ntier: always\n---\n\n# Always Tier\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: null });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('always');
+  });
+
+  it('includes all tier values when context is omitted (defaults to null)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'a.md', '---\ntier: coordinator-only\n---\n\n# A\n');
+    writeRule(dir, 'b.md', '---\ntier: wave-only\n---\n\n# B\n');
+    writeRule(dir, 'c.md', '---\ntier: always\n---\n\n# C\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(3);
+  });
+});
+
+describe('no tier key backward-compat (#692)', () => {
+  it('includes a rule with no tier key when context is wave', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'no-tier.md', '# No Tier Frontmatter At All\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'wave' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].tier).toBeUndefined();
+  });
+
+  it('includes a rule with no tier key when context is coordinator', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'no-tier.md', '# No Tier Frontmatter At All\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [], context: 'coordinator' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].tier).toBeUndefined();
+  });
+});
+
+describe('tier gate composes with glob matching (#692)', () => {
+  it('excludes a tier: wave-only glob-matched rule when context is coordinator (tier gate wins over glob match)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-glob.md',
+      '---\ntier: wave-only\nglobs:\n  - src/**\n---\n\n# Wave Only Glob Rule\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: ['src/index.ts'],
+      context: 'coordinator',
+    });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes a tier: wave-only glob-matched rule when context is wave and glob matches', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-glob.md',
+      '---\ntier: wave-only\nglobs:\n  - src/**\n---\n\n# Wave Only Glob Rule\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: ['src/index.ts'],
+      context: 'wave',
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tier).toBe('wave-only');
+    expect(results[0].matchedGlobs).toContain('src/**');
+  });
+
+  it('excludes a tier: wave-only glob rule when context is coordinator even though glob would match', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'wave-glob.md',
+      '---\ntier: wave-only\nglobs:\n  - src/**\n---\n\n# Wave Only Glob Rule\n',
+    );
+
+    const results = loadApplicableRules({
+      rulesDir: dir,
+      scopePaths: ['src/lib/util.ts'],
+      context: 'coordinator',
+    });
+
+    expect(results).toHaveLength(0);
+  });
+});

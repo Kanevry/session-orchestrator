@@ -3,6 +3,7 @@ globs:
   - "**/lib/ai/**"
   - "**/lib/llm/**"
   - "**/providers/**"
+tier: wave-only
 ---
 # Prompt Caching Rules (Path-scoped — repos using `@anthropic-ai/sdk` or `@ai-sdk/anthropic`)
 

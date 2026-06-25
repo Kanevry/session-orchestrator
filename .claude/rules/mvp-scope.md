@@ -1,3 +1,7 @@
+---
+tier: coordinator-only
+---
+
 # MVP Scope & Appetite Rules (Always-on)
 
 ## Appetite System (Shape Up)

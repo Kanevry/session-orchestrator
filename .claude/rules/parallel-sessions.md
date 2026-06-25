@@ -1,3 +1,7 @@
+---
+tier: always
+---
+
 # Parallel Session Awareness (Always-on)
 
 Multiple Claude Code sessions may be active in the same working directory simultaneously. Another agent may be editing files, creating commits, or running builds right now. Treat the repo as a shared workspace, not a private sandbox.
