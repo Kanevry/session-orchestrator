@@ -5,7 +5,7 @@
  * Both functions write to the vault dir and emit JSON action lines to stdout.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -15,6 +15,55 @@ import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, gen
 import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
+
+// ── Session-note existence index (Issue #704) ─────────────────────────────────
+
+/**
+ * Module-level cache: resolved vaultDir path → Set of known session basenames
+ * (without the `.md` extension). Built once per unique vaultDir per process.
+ *
+ * @type {Map<string, Set<string>>}
+ */
+const _sessionNoteSets = new Map();
+
+/**
+ * Recursively walk `<vaultDir>/50-sessions/` and collect every `.md` basename
+ * (without extension) into a Set. Returns an EMPTY Set (never throws) when the
+ * directory is absent or unreadable — callers treat an empty Set as "no predicate
+ * available", falling back to format-validation in resolveSourceSessionLink.
+ *
+ * Read-only: never creates directories, safe in dryRun mode.
+ *
+ * @param {string} vaultDir — absolute path to the vault root
+ * @returns {Set<string>}
+ */
+function getSessionNoteSet(vaultDir) {
+  const resolvedVault = resolve(vaultDir);
+  if (_sessionNoteSets.has(resolvedVault)) return _sessionNoteSets.get(resolvedVault);
+
+  const knownSessions = new Set();
+  const sessionsDir = join(resolvedVault, '50-sessions');
+
+  function walk(dir) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // dir absent or inaccessible — skip silently
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        walk(join(dir, entry.name));
+      } else if (entry.name.endsWith('.md')) {
+        knownSessions.add(entry.name.slice(0, -3)); // basename without .md
+      }
+    }
+  }
+
+  walk(sessionsDir);
+  _sessionNoteSets.set(resolvedVault, knownSessions);
+  return knownSessions;
+}
 
 // ── Content diff helper ───────────────────────────────────────────────────────
 
@@ -41,7 +90,12 @@ function extractLearningCanonicalFields(noteContent) {
   // Extract insight body: everything after `## Insight\n\n` until the next `##` or end-of-string
   const insightMatch = noteContent.match(/^## Insight\n\n([\s\S]*?)(?=\n## |\s*$)/m);
   const insight = insightMatch ? insightMatch[1].trim() : '';
-  return { status, expires, confidence, insight };
+  // #704: track the frontmatter source_session so a normal re-mirror repairs
+  // historical dangling-link notes (e.g. `source_session: "[[unknown]]"`) once
+  // the renderer emits the corrected plain-text/resolvable form — otherwise the
+  // content-diff would treat the stale note as a no-op and never heal it.
+  const source_session = (noteContent.match(/^source_session:\s*(.+)$/m) || [])[1]?.trim() ?? '';
+  return { status, expires, confidence, insight, source_session };
 }
 
 /**
@@ -74,7 +128,8 @@ function learningContentMatches(existingContent, renderedContent) {
     fieldMatches(existing.status, rendered.status) &&
     fieldMatches(existing.expires, rendered.expires) &&
     fieldMatches(existing.confidence, rendered.confidence) &&
-    fieldMatches(existing.insight, rendered.insight)
+    fieldMatches(existing.insight, rendered.insight) &&
+    fieldMatches(existing.source_session, rendered.source_session)
   );
 }
 
@@ -203,6 +258,16 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   const generator = schema === 'v2' ? generateLearningNoteV2 : generateLearningNote;
   const dateSource = schema === 'v2' ? entry.first_seen : entry.created_at;
 
+  // #704: Build a noteExists predicate from the vault's 50-sessions index so that
+  // resolveSourceSessionLink can use EXISTENCE-based resolution instead of strict
+  // format-validation. The index is built once per vaultDir (cached in
+  // _sessionNoteSets). When the 50-sessions dir is absent/empty, the Set is empty
+  // and we pass NO predicate — resolveSourceSessionLink falls back to format
+  // validation (never worse than Wave 2 behaviour).
+  const _knownSessions = getSessionNoteSet(vaultDir);
+  const _noteExists = _knownSessions.size > 0 ? (s) => _knownSessions.has(s) : undefined;
+  const generatorOpts = _noteExists ? { noteExists: _noteExists } : {};
+
   // Quality gate (PRD F1.2): skip learnings with confidence below threshold.
   // Runs BEFORE the --force branch so --force does NOT bypass the quality filter.
   // Missing/non-numeric confidence is treated as 1.0 (legacy entries pass).
@@ -241,7 +306,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         // Date has not advanced — but content may have changed (confidence, insight, etc.).
         // Render the candidate and compare canonical fields before deciding to skip.
-        const candidateContent = generator(entry, slug);
+        const candidateContent = generator(entry, slug, generatorOpts);
         if (learningContentMatches(legacyContent, candidateContent)) {
           emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: slug, vaultDir });
           return;
@@ -288,7 +353,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         // Check updated advancement; if date has not advanced, also diff content.
         const entryUpdated = toDate(dateSource);
         if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
-          const candidateContent = generator(entry, slug);
+          const candidateContent = generator(entry, slug, generatorOpts);
           if (learningContentMatches(disambigContent, candidateContent)) {
             emitAction({ action: 'skipped-noop', path: targetPath, kind, id: disambigSlug, vaultDir });
             return;
@@ -297,7 +362,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         }
       }
 
-      const content = generator(entry, slug);
+      const content = generator(entry, slug, generatorOpts);
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
       emitAction({ action: 'skipped-collision-resolved', path: targetPath, kind, id: slug, vaultDir });
       return;
@@ -308,7 +373,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // insight, expires_at, etc.) — compare canonical fields before skipping.
     const entryUpdated = toDate(dateSource);
     if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-      const candidateContent = generator(entry, slug);
+      const candidateContent = generator(entry, slug, generatorOpts);
       if (learningContentMatches(existingContent, candidateContent)) {
         emitAction({ action: 'skipped-noop', path: targetPath, kind, id: slug, vaultDir });
         return;
@@ -317,14 +382,14 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     }
 
     // Overwrite with advanced updated date (or forced re-render)
-    const content = generator(entry, slug);
+    const content = generator(entry, slug, generatorOpts);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
     emitAction({ action: 'updated', path: targetPath, kind, id: slug, vaultDir });
     return;
   }
 
   // File does not exist — create
-  const content = generator(entry, slug);
+  const content = generator(entry, slug, generatorOpts);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
   emitAction({ action: 'created', path: targetPath, kind, id: slug, vaultDir });
 }

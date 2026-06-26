@@ -407,3 +407,84 @@ describe('normalizeLearningEntry evidence empty-string fold (#635 review)', () =
     expect(e.evidence).toBe('(none recorded)');
   });
 });
+
+// ── existence-vs-format coverage (Issue #704, Task 3) ────────────────────────
+//
+// Three cases proving note-level link/plain behavior controlled by noteExists.
+
+describe('generateLearningNote existence-vs-format coverage (Issue #704 Task 3)', () => {
+  it('noteExists: () => false overrides format validity — emits plain text for a valid semantic id', () => {
+    // 'main-2026-06-11-deep-1' would produce a link via format fallback alone.
+    // Supplying noteExists=false makes existence authoritative → plain text.
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-06-11-deep-1' }),
+      'my-slug',
+      { noteExists: () => false },
+    );
+    const links = out.match(/\[\[[^\]]+\]\]/g) ?? [];
+    expect(links).toHaveLength(0);
+    expect(out).not.toContain('[[main-2026-06-11-deep-1]]');
+    expect(out).toContain('source_session: main-2026-06-11-deep-1');
+  });
+
+  it('noteExists: () => true upgrades a legacy HHmm id to a wikilink', () => {
+    // 'main-2026-04-23-1255' has no numeric mode-counter and returns null from
+    // parseSessionId → no link via format fallback. noteExists=true overrides:
+    // existence wins and the link IS emitted.
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-04-23-1255' }),
+      'my-slug',
+      { noteExists: () => true },
+    );
+    expect(out).toContain('source_session: "[[main-2026-04-23-1255]]"');
+    expect(out).toContain('**Source session:** [[main-2026-04-23-1255]]');
+  });
+
+  it('2-arg generateLearningNote(entry, slug) still works — format fallback resolves semantic ids (back-compat)', () => {
+    // Omitting opts entirely should not throw and should still produce a link
+    // for a session id that matches the semantic format.
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-06-11-deep-1' }),
+      'my-slug',
+    );
+    expect(out).toContain('source_session: "[[main-2026-06-11-deep-1]]"');
+    expect(out).toContain('**Source session:** [[main-2026-06-11-deep-1]]');
+  });
+});
+
+// ── bare-link lockdown guard (Issue #704, Task 2) ─────────────────────────────
+//
+// Asserts the canonical bare-basename link form so a future change that
+// emits path-qualified [[folder/slug]] links fails this suite immediately.
+
+describe('generateLearningNote bare-link lockdown guard (Issue #704 Task 2)', () => {
+  it('emitted wikilinks match /^\\[\\[[^/\\]]+\\]\\]$/ — bare basename, no / inside brackets', () => {
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-06-11-deep-1' }),
+      'my-slug',
+    );
+    // Two occurrences expected: one in YAML frontmatter, one in the body bullet.
+    const links = out.match(/\[\[[^\]]+\]\]/g) ?? [];
+    expect(links).toHaveLength(2);
+    // /^\[\[[^/\]]+\]\]$/ ensures no / inside the brackets — a path-qualified
+    // link like [[50-sessions/main-2026-06-11-deep-1]] would fail this match.
+    expect(links[0]).toMatch(/^\[\[[^/\]]+\]\]$/);
+    expect(links[1]).toMatch(/^\[\[[^/\]]+\]\]$/);
+  });
+
+  it('never emits [[50-sessions/...]] path-qualified links for a resolvable session', () => {
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-06-11-deep-1' }),
+      'my-slug',
+    );
+    expect(out).not.toContain('[[50-sessions/');
+  });
+
+  it('never emits [[01-projects/...]] path-qualified links for a resolvable session', () => {
+    const out = generateLearningNote(
+      makeV1Entry({ source_session: 'main-2026-06-11-deep-1' }),
+      'my-slug',
+    );
+    expect(out).not.toContain('[[01-projects/');
+  });
+});

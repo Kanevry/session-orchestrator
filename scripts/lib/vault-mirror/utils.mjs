@@ -3,8 +3,11 @@
  *
  * Exports: subjectToSlug, isValidSlug, uuidPrefix8, toDate,
  *          truncateAtWord, yamlQuoteIfNeeded, parseFrontmatter,
- *          slugifyTagSegment, buildTag, slugifyIdSafe, TAG_MAX_LENGTH
+ *          slugifyTagSegment, buildTag, slugifyIdSafe, TAG_MAX_LENGTH,
+ *          resolveSourceSessionLink
  */
+
+import { parseSessionId } from '../session-id.mjs';
 
 /**
  * Convert a subject string to a kebab slug.
@@ -137,6 +140,43 @@ export function yamlQuoteIfNeeded(value) {
     return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   return value;
+}
+
+// ── Source-session link resolver (Issue #704) ─────────────────────────────────
+
+/**
+ * Decide whether a learning's source_session should be emitted as an Obsidian
+ * wiki-link or as plain text.
+ *
+ * When `opts.noteExists` is provided (a function `(slug: string) => boolean`),
+ * the decision is EXISTENCE-based: the target slug is looked up in the caller's
+ * known-sessions Set built from the real vault's 50-sessions directory. This is
+ * the authoritative path used by process.mjs and eliminates false-negatives for
+ * legacy/HHmm session IDs whose vault notes exist but don't match the strict
+ * semantic regex (e.g. `main-2026-04-23-1255`, `main-2026-05-25-deep`).
+ *
+ * Without the predicate (unit-test / vault-less run), the function falls back to
+ * strict format-validity (semantic `<branch>-<YYYY-MM-DD>-<mode>-<N>` or UUID-v4)
+ * — identical to the Wave-2 behaviour, never worse.
+ *
+ * @param {unknown} source_session
+ * @param {{ noteExists?: (slug: string) => boolean }} [opts]
+ * @returns {{ isLink: boolean, target: string }}
+ */
+export function resolveSourceSessionLink(source_session, opts = {}) {
+  const raw = source_session === null || source_session === undefined ? '' : String(source_session).trim();
+  if (!raw || raw === 'unknown') return { isLink: false, target: raw || 'unknown' };
+  // Provenance tags like "agent-proposed@wave-1" are never session notes.
+  if (/@/.test(raw)) return { isLink: false, target: raw };
+  const slug = subjectToSlug(raw) || raw;
+  if (typeof opts.noteExists === 'function') {
+    // EXISTENCE-based (authoritative when a predicate is supplied).
+    return opts.noteExists(slug) ? { isLink: true, target: slug } : { isLink: false, target: raw };
+  }
+  // Fallback (no predicate, e.g. unit tests / no vault): strict format validity.
+  const parsed = parseSessionId(raw);
+  const ok = parsed !== null && (parsed.format === 'semantic' || parsed.format === 'uuid');
+  return ok ? { isLink: true, target: slug } : { isLink: false, target: raw };
 }
 
 // ── Frontmatter parser (minimal — only reads the opening --- block) ───────────

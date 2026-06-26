@@ -964,7 +964,11 @@ describe('processLearning #698 content-diff: detect-and-rewrite vs skipped-noop'
     'created: 2026-04-13\n' +
     'updated: 2026-04-13\n' +
     'tags: [learning-architectural, status-verified, source-session-2026-04-13]\n' +
-    'source_session: "[[session-2026-04-13]]"\n' +
+    // #704: source_session is now a canonical content-diff field. ENTRY_V1's
+    // 'session-2026-04-13' is NOT a resolvable session id, so the renderer emits
+    // plain text (no [[wikilink]]). This fixture represents a note already in the
+    // repaired plain form → a re-mirror is a true no-op → skipped-noop.
+    'source_session: session-2026-04-13\n' +
     '_generator: session-orchestrator-vault-mirror@1\n' +
     '---\n' +
     '\n' +
@@ -972,7 +976,7 @@ describe('processLearning #698 content-diff: detect-and-rewrite vs skipped-noop'
     '\n' +
     '- **Type:** architectural\n' +
     '- **Confidence:** 0.9\n' +
-    '- **Source session:** [[session-2026-04-13]]\n' +
+    '- **Source session:** session-2026-04-13\n' +
     '\n' +
     '## Insight\n' +
     '\n' +
@@ -1024,6 +1028,28 @@ describe('processLearning #698 content-diff: detect-and-rewrite vs skipped-noop'
     expect(lines).toHaveLength(1);
     expect(lines[0].action).toBe('skipped-noop');
     expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('#704: existing note with stale dangling [[wikilink]] source_session self-heals (emits updated, not skipped-noop)', async () => {
+    // A historical note still carries the OLD dangling form `source_session: "[[session-2026-04-13]]"`.
+    // ENTRY_V1's 'session-2026-04-13' is unresolvable → the renderer now emits plain text. Because #704
+    // added source_session to the canonical content-diff (learningContentMatches), the stale wikilink is
+    // detected and the note is re-rendered (repaired) on a NORMAL mirror run — no --force needed.
+    // Falsification: drop source_session from learningContentMatches → received 'skipped-noop', this fails.
+    const EXISTING_NOTE_DANGLING = EXISTING_NOTE_IDENTICAL
+      .replace('source_session: session-2026-04-13', 'source_session: "[[session-2026-04-13]]"')
+      .replace('- **Source session:** session-2026-04-13', '- **Source session:** [[session-2026-04-13]]');
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(EXISTING_NOTE_DANGLING);
+    const processLearning = await getProcessLearning();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(ENTRY_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false })
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('updated');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
   });
 
   it('#698-invariant-create: file absent still emits created (content-diff path not reached)', async () => {

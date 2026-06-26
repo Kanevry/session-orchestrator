@@ -13,6 +13,7 @@ import {
   truncateAtWord,
   yamlQuoteIfNeeded,
   parseFrontmatter,
+  resolveSourceSessionLink,
 } from '@lib/vault-mirror/utils.mjs';
 
 // ── subjectToSlug ─────────────────────────────────────────────────────────────
@@ -249,5 +250,96 @@ describe('parseFrontmatter', () => {
     const fm = parseFrontmatter(content);
     expect(fm).not.toBeNull();
     expect(fm['_generator']).toBe('session-orchestrator-vault-mirror@1');
+  });
+});
+
+// ── resolveSourceSessionLink (#704) ──────────────────────────────────────────
+
+describe('resolveSourceSessionLink', () => {
+  // ── Reject cases — isLink: false with sentinel target ────────────────────
+
+  it('returns isLink: false with target "unknown" for empty string input', () => {
+    expect(resolveSourceSessionLink('')).toEqual({ isLink: false, target: 'unknown' });
+  });
+
+  it('returns isLink: false with target "unknown" for null input', () => {
+    expect(resolveSourceSessionLink(null)).toEqual({ isLink: false, target: 'unknown' });
+  });
+
+  it('returns isLink: false with target "unknown" for undefined input', () => {
+    expect(resolveSourceSessionLink(undefined)).toEqual({ isLink: false, target: 'unknown' });
+  });
+
+  it('returns isLink: false with target "unknown" for the literal string "unknown"', () => {
+    expect(resolveSourceSessionLink('unknown')).toEqual({ isLink: false, target: 'unknown' });
+  });
+
+  it('returns isLink: false for provenance tag containing @ (agent-proposed@wave-1)', () => {
+    expect(resolveSourceSessionLink('agent-proposed@wave-1')).toEqual({
+      isLink: false,
+      target: 'agent-proposed@wave-1',
+    });
+  });
+
+  // ── Existence path (noteExists predicate — authoritative) ─────────────────
+
+  it('existence path: returns isLink: true when noteExists predicate returns true', () => {
+    // The predicate is authoritative: it can validate legacy HHmm ids that do not
+    // match SEMANTIC_ID_RE (e.g. 'main-2026-04-23-1255'). When the vault note exists,
+    // isLink is true regardless of format.
+    expect(resolveSourceSessionLink('main-2026-04-23-1255', { noteExists: () => true })).toEqual({
+      isLink: true,
+      target: 'main-2026-04-23-1255',
+    });
+  });
+
+  it('existence path: returns isLink: false when noteExists predicate returns false', () => {
+    // Same HHmm id, but vault note does not exist → plain text, no wikilink.
+    expect(resolveSourceSessionLink('main-2026-04-23-1255', { noteExists: () => false })).toEqual({
+      isLink: false,
+      target: 'main-2026-04-23-1255',
+    });
+  });
+
+  // ── Format fallback (no predicate — strict SEMANTIC_ID_RE / UUID-v4) ──────
+
+  it('format fallback: returns isLink: true for semantic session ID main-2026-06-11-deep-1', () => {
+    // Matches SEMANTIC_ID_RE: branch=main, date=2026-06-11, mode=deep, n=1
+    expect(resolveSourceSessionLink('main-2026-06-11-deep-1')).toEqual({
+      isLink: true,
+      target: 'main-2026-06-11-deep-1',
+    });
+  });
+
+  it('format fallback: returns isLink: false for mode-only id lacking counter (develop-2026-04-09-evolve)', () => {
+    // 'develop-2026-04-09-evolve' has no trailing -<n> counter → does not match SEMANTIC_ID_RE
+    expect(resolveSourceSessionLink('develop-2026-04-09-evolve')).toEqual({
+      isLink: false,
+      target: 'develop-2026-04-09-evolve',
+    });
+  });
+
+  it('format fallback: returns isLink: false for legacy HHmm id (main-2026-04-23-1255) without predicate', () => {
+    // 'main-2026-04-23-1255': SEMANTIC_ID_RE requires a [a-z-]+ mode between date and counter,
+    // but '1255' starts with a digit — no match. This documents why the noteExists
+    // existence predicate is required when the vault note may exist for legacy ids.
+    expect(resolveSourceSessionLink('main-2026-04-23-1255')).toEqual({
+      isLink: false,
+      target: 'main-2026-04-23-1255',
+    });
+  });
+
+  // ── target field contract ─────────────────────────────────────────────────
+
+  it('target field is the raw input value when isLink is false, not the slugified version', () => {
+    // resolveSourceSessionLink uses subjectToSlug('[object') = 'object' for the slug,
+    // but the target must be the RAW value '[object', not 'object'.
+    const result = resolveSourceSessionLink('[object');
+    expect(result.isLink).toBe(false);
+    expect(result.target).toBe('[object');
+  });
+
+  it('target field is "unknown" for empty string (never an empty string or a bracketed value)', () => {
+    expect(resolveSourceSessionLink('').target).toBe('unknown');
   });
 });

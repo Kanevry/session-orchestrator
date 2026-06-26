@@ -4,7 +4,7 @@
  * Exports: detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2
  */
 
-import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, isValidSlug, buildTag } from './utils.mjs';
+import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -77,7 +77,7 @@ export function normalizeLearningEntry(entry) {
   return e;
 }
 
-export function generateLearningNote(entry, slug) {
+export function generateLearningNote(entry, slug, opts = {}) {
   const REQUIRED_LEARNING_FIELDS = ['id', 'type', 'subject', 'insight', 'evidence', 'confidence', 'source_session', 'created_at'];
   for (const field of REQUIRED_LEARNING_FIELDS) {
     if (entry[field] === null || entry[field] === undefined) {
@@ -105,13 +105,15 @@ export function generateLearningNote(entry, slug) {
   // Check if expires has a value; it's optional in schema
   const expiresLine = expires ? `expires: ${expires}\n` : '';
 
-  // source_session emitted as Obsidian wikilink so the learning becomes a
-  // graph edge to its 50-sessions/<id>.md note (Properties/Links docs:
-  // wikilinks in YAML list/text properties must be quoted). Use the
-  // already-sanitised sourceTag as link target so YAML stays valid even
-  // when upstream source_session is corrupted (e.g. "[object").
-  const sourceSessionLink = `"[[${sourceTag}]]"`;
-  const sourceSessionBodyLink = `[[${sourceTag}]]`;
+  // source_session is emitted as an Obsidian wikilink ONLY when source_session
+  // resolves to a real, mirror-able session id (semantic or UUID-v4). Anything
+  // else — 'unknown', legacy timestamp ids without a trailing counter, provenance
+  // tags, etc. — is emitted as plain text to prevent dangling [[unknown]] /
+  // [[malformed]] links in the vault (Issue #704 bugs A + B). Tags are fed by
+  // sourceTag (L102 above) which is independent of this link decision.
+  const { isLink: _srcIsLink, target: _srcTarget } = resolveSourceSessionLink(source_session, { noteExists: opts.noteExists });
+  const sourceSessionLink = _srcIsLink ? `"[[${_srcTarget}]]"` : yamlQuoteIfNeeded(_srcTarget);
+  const sourceSessionBodyLink = _srcIsLink ? `[[${_srcTarget}]]` : _srcTarget;
 
   return `---
 id: ${slug}

@@ -139,8 +139,23 @@ describe('vault-mirror CLI', () => {
   // to its source session.
 
   it('learning v1: emits source_session as quoted wikilink in frontmatter', () => {
+    // #704 — fixture uses a SEMANTIC source_session so resolveSourceSessionLink emits a wikilink.
+    // The old fixture had 'session-2026-04-13' which doesn't match SEMANTIC_ID_RE → isLink: false;
+    // the old assertion expected [[session-2026-04-13]] which encoded the dangling-link bug.
+    // See .claude/rules/testing.md § "Security tests must not encode the vulnerability".
+    const entry = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-000000000001',
+      type: 'architectural',
+      subject: 'cross-repo-deep-session',
+      insight: 'Prefer explicit contracts over implicit coupling',
+      evidence: 'Three modules broke when shared util changed without notice',
+      confidence: 0.9,
+      source_session: 'main-2026-04-13-deep-1',
+      created_at: '2026-04-13T10:00:00Z',
+      expires_at: '2027-04-13T10:00:00Z',
+    });
     const vaultDir = tmp();
-    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const sourceFile = writeJsonl(vaultDir, entry);
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
@@ -148,12 +163,25 @@ describe('vault-mirror CLI', () => {
       join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       'utf8',
     );
-    expect(md).toMatch(/^source_session: "\[\[session-2026-04-13\]\]"$/m);
+    expect(md).toMatch(/^source_session: "\[\[main-2026-04-13-deep-1\]\]"$/m);
   });
 
   it('learning v1: emits source_session as wikilink in body line', () => {
+    // #704 — fixture uses a SEMANTIC source_session so resolveSourceSessionLink emits a wikilink.
+    // See .claude/rules/testing.md § "Security tests must not encode the vulnerability".
+    const entry = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-000000000001',
+      type: 'architectural',
+      subject: 'cross-repo-deep-session',
+      insight: 'Prefer explicit contracts over implicit coupling',
+      evidence: 'Three modules broke when shared util changed without notice',
+      confidence: 0.9,
+      source_session: 'main-2026-04-13-deep-1',
+      created_at: '2026-04-13T10:00:00Z',
+      expires_at: '2027-04-13T10:00:00Z',
+    });
     const vaultDir = tmp();
-    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const sourceFile = writeJsonl(vaultDir, entry);
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
 
@@ -161,12 +189,15 @@ describe('vault-mirror CLI', () => {
       join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'),
       'utf8',
     );
-    expect(md).toContain('**Source session:** [[session-2026-04-13]]');
+    expect(md).toContain('**Source session:** [[main-2026-04-13-deep-1]]');
   });
 
-  it('learning v1: source_session wikilink uses sanitised slug for corrupted upstream values', () => {
-    // Mirror of the existing `[object` regression: link target must use the
-    // sanitised sourceTag (`object`) so YAML and wikilink syntax stay valid.
+  it('learning v1: corrupted source_session is emitted as plain text, never a dangling wikilink', () => {
+    // #704 — INVERTED from the old bug-encoding test that asserted `[[object]]` as expected output.
+    // The corrected contract: a corrupted/unresolvable source_session MUST NOT produce any [[wikilink]].
+    // The old assertion `expect(md).toMatch(/^source_session: "\[\[object\]\]"$/m)` literally
+    // encoded the dangling-link bug as expected behavior.
+    // See .claude/rules/testing.md § "Security tests must not encode the vulnerability".
     const entry = JSON.stringify({
       id: 'a1b2c3d4-0001-4000-8000-00000000aaaa',
       type: 'architectural',
@@ -186,8 +217,10 @@ describe('vault-mirror CLI', () => {
       join(vaultDir, '40-learnings', 'test-vault', 'wikilink-sanitise-probe.md'),
       'utf8',
     );
-    expect(md).toMatch(/^source_session: "\[\[object\]\]"$/m);
-    expect(md).not.toContain('[[[object');
+    // Corrupted source_session MUST NOT produce any wikilink — would create dangling [[object]] in vault
+    expect(md).not.toContain('[[');
+    // The source_session field must appear in frontmatter as plain YAML text
+    expect(md).toMatch(/^source_session: /m);
   });
 
   // ── --force re-render flag (one-shot upgrade path for legacy notes) ───────
@@ -1315,6 +1348,7 @@ import {
   generateSessionNote,
   generateSessionNoteV2,
 } from '@lib/vault-mirror/render-sessions.mjs';
+import { generateLearningNote } from '@lib/vault-mirror/render-learnings.mjs';
 
 const V1_ENTRY = () => ({
   session_id: 'session-2026-04-13',
@@ -1480,5 +1514,32 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
     expect(r3).toBe('cached/repo');
     expect(mockExec).toHaveBeenCalledTimes(1);
     vi.doUnmock('node:child_process');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #704 — regression guard: corrupted/unresolvable source_session never produces [[wikilink]]
+// ---------------------------------------------------------------------------
+
+describe('regression #704 — source_session [[wikilink]] guard', () => {
+  it('regression #704: a corrupted/unresolvable source_session never produces a [[wikilink]]', () => {
+    // Guard against reintroduction of the dangling-link bug (Issue #704).
+    // If resolveSourceSessionLink is changed to emit isLink:true for '[object', this test goes RED.
+    // Name is greppable: `grep -r "regression #704" tests/` finds this guard.
+    // See .claude/rules/testing.md § "Security tests must not encode the vulnerability".
+    const md = generateLearningNote(
+      {
+        id: 'regression-704-guard',
+        type: 'architectural',
+        subject: 'regression-704-guard',
+        insight: 'Regression guard for issue 704 — no dangling wikilinks from corrupted ids',
+        evidence: 'Direct unit probe against generateLearningNote',
+        confidence: 0.5,
+        source_session: '[object',
+        created_at: '2026-04-23T18:19:24Z',
+      },
+      'regression-704-guard',
+    );
+    expect(md).not.toContain('[[');
   });
 });
