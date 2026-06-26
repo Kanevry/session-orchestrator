@@ -141,6 +141,9 @@ CSRF, rate limiting, CSP, and transport security. Core security rules are in `se
 - Log every 429 with endpoint, key, window, limit. Alert when a key hits limit > 5 times in 10 minutes.
 - If Redis store is unavailable, fail open with warning log — but alert immediately.
 
+### Bounded Exception — localhost-only single-process MVP endpoints
+The "Upstash Redis, no exceptions" mandate above scopes to **public / production** API surfaces. It is NOT a contradiction to use a lighter limiter for a localhost-only daemon or MVP endpoint running in a **single process**: a ~10-line inline `Map<ip, { count, resetAt }>` fixed-window limiter is sufficient and preferable to pulling in `@upstash/ratelimit` + a Redis dependency. Reset-on-restart is acceptable at MVP scope (the daemon is a long-running, user-scoped service). Keep `@upstash/ratelimit` available for the eventual distributed upgrade, but do not wire it until the endpoint is genuinely multi-process or public-facing. Still return 429 + `Retry-After` on window exhaustion, and add a regression test that exercises the exhaustion path. Promote to Upstash the moment the endpoint leaves localhost or spans processes.
+
 ### Rate Limiting Matrix
 
 | Endpoint Type | Window | Strategy | Anon | Auth | Premium |

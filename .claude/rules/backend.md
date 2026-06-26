@@ -25,6 +25,8 @@ All API responses and server action returns MUST use the canonical envelope from
 - **Standard codes:** `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500). Do not invent new codes without documenting.
 - Never return raw error objects or `error.message` to client (SEC-009). Map to standard code + user-friendly message.
 - `details` field: only for validation errors (Zod issues array). Never include stack traces.
+- **Error construction (SEC-009 defense-in-depth):** when throwing a typed error, keep `message` static/user-facing and move raw upstream content (DB `error.message`, dependency output) into a structured `details` field for server-side logging — never interpolate it into the message string. The wrapper strips `details` from the client envelope, so a sanitizer bypass still cannot leak it into user-facing text.
+- **MCP tools mirror SEC-009.** New MCP tools MUST sanitize errors like server actions: structured `console.error({ error_class, error_message })` server-side + a static, caller-safe return message. Even AUTHENTICATED callers must never receive raw DB error strings (table/column names, PG codes).
 - Import: `import { ApiErrorSchema, apiSuccess } from '@your-org/zod-schemas'`
 
 ### SaaS Response Envelope (internal vs SaaS)
@@ -102,6 +104,7 @@ Any hit inside a function that is then passed through `withAuth(...)` / `withTen
 - Use for webhooks, external API endpoints, cron jobs only.
 - Server Actions preferred over API routes for internal mutations.
 - Validate webhook signatures (HMAC, timing-safe comparison).
+- A webhook endpoint's `api_version` cannot be updated in place — recreating the endpoint mints a NEW signing secret and breaks the deployed secret env until it is updated too. Treat secret-rotation + env-update as a single coordinated go-live step, never a mid-session mutation. (Enabling a disabled endpoint IS a safe in-place update.)
 - Rate limit all public endpoints.
 
 ## Express Services

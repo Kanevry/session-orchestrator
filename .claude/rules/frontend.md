@@ -15,6 +15,7 @@ tier: wave-only
 - File naming: PascalCase for component files (`UserCard.tsx`), kebab-case for utility files (`format-date.ts`).
 - One component per file. Export named, not default, unless the file is a Next.js page/layout.
 - Never import server-only modules (`fs`, `crypto`, `database`) in client components.
+- `next.config` `redirects()` with identical `source` and `destination` does NOT short-circuit — it emits a real 307 and loops to `ERR_TOO_MANY_REDIRECTS`. Exclude the matched path with a negative-lookahead in `source` (e.g. `/admin/:path((?!auth(?:/.*)?$).*)`), and validate every rule with `path-to-regexp` (Next.js' own routing lib) before shipping.
 
 ## Component Design
 
@@ -22,6 +23,7 @@ tier: wave-only
 - Keep components small and focused. If a component renders more than ~150 lines, extract sub-components.
 - Separate data-fetching from presentation: fetch in Server Components or custom hooks, render in presentation components.
 - Avoid `useEffect` for data fetching — use Server Components or SWR/React Query.
+- Shared/reusable components MUST explicitly accept and forward `data-testid` (and spread rest props) to their root element. A closed prop list silently drops it — the testid never reaches the DOM, yet mock-based unit tests stay green over a broken product (test-the-mock; see `testing.md`).
 
 ## Styling
 
@@ -54,12 +56,19 @@ tier: wave-only
 - Show field-level validation errors inline. Never show raw Zod error strings to users.
 - Disable the submit button while `isPending` to prevent double-submission.
 
+## Next.js Server Actions
+
+- After a `useActionState` action, do NOT call `router.refresh()` — it REPLAYS the action (duplicate DB writes + a re-fired success effect that bounces the redirect). The action's `revalidatePath` already handles freshness; guard the success effect with a `useRef` idempotency flag.
+- Never call `router.push()` INSIDE `startTransition` — `isPending` stays true until navigation AND all server revalidations settle, so the submit button hangs under load. Capture a success flag inside the transition, then navigate from a SEPARATE `useEffect` guarded by a `hasNavigatedRef`.
+- These bugs surface only in live (local-Docker) E2E — unit tests and static review pass them green. Smoke the create/edit flow against a running server before claiming done.
+
 ## Anti-Patterns
 
 - `useEffect` for business logic — move to event handlers or server actions.
 - Passing raw `any` typed props — always declare typed interfaces.
 - Nesting Server and Client Components incorrectly — read the Next.js docs on composition patterns.
 - `dangerouslySetInnerHTML` without DOMPurify sanitization.
+- `eslint-disable-next-line react-hooks/exhaustive-deps` — under the React Compiler it triggers a `react-compiler/react-compiler` warning that blocks commits at `max-warnings 0`. Restructure (drop the `useEffect`, or include all deps) instead of disabling.
 
 ## Absolute Bans
 

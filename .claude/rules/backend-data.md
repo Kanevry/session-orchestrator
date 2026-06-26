@@ -26,6 +26,7 @@ tier: wave-only
 - Use PostgreSQL `ON DELETE CASCADE` on foreign keys referencing `auth.users`. For complex cases, create a `delete_user_data(user_id uuid)` RPC function that handles all tables in the correct order.
 - Audit trail retention: anonymize PII fields (`SET name = NULL, email = NULL`) or replace with a one-way hash rather than hard-deleting rows required for compliance.
 - Define retention periods per table: invoices/receipts 7 years (AT BAO tax law), access logs 90 days, session data 30 days, marketing consent until withdrawal.
+- Immutable-retention regimes (AT BAO §132): corrective fixes MUST INSERT a new row with `effective_from = fix-date` — never UPDATE historical rows. Read semantics: highest `effective_from <= query_date` wins.
 - Soft-delete users first (`deleted_at` + anonymize PII), then hard-delete after retention period expires via a scheduled cleanup job.
 - Cache invalidation: on deletion, purge all cache keys for the user (`v1:user:{id}`, related entities).
 - Test cascade deletion in integration tests: insert a full user graph, call `delete_user_data()`, assert zero rows with that `user_id` across all PII-bearing tables.
@@ -38,6 +39,17 @@ tier: wave-only
 - Lock-safe: avoid `ALTER TABLE ... ADD COLUMN ... DEFAULT` on large tables (takes ACCESS EXCLUSIVE lock in older PG). Use backfill instead.
 - Test migrations against a local Supabase instance (`supabase start`, `supabase db reset`) before pushing to staging/production.
 - One logical change per migration file. Never combine unrelated schema changes.
+- Migration ordering: production Supabase tracks creation order in `supabase_migrations.schema_migrations`; a naive `*.sql` glob lex-sorts by filename. A back-dated date prefix (seq `020` dated earlier than the dependency at seq `017`) runs out of dependency order and fails on the missing column. Sort by the 6-digit sequence, or drop the date prefix entirely (sequence-only naming).
+- Glob recursively: `for f in supabase/migrations/*.sql` is non-recursive — nested files (rsync without trailing slash, `migrations/migrations/`) are silently skipped and old ones re-run with no error and no log. Use `find supabase/migrations -name "*.sql" | sort`, plus a post-deploy `ls … | wc -l` local-vs-staging sanity check.
+- History drift: migrations applied via the SQL Editor do NOT update `supabase_migrations.schema_migrations`, so the next `supabase db push` re-applies them. Run `supabase migration repair --status applied <version> --linked` for each untracked migration first; always dry-run/compare the expected list (`supabase migration list --linked`) before pushing.
+- Seed files must be explicitly listed in `supabase/config.toml [db.seed] sql_paths` — a missing file is a silent skip, not a loud error. Verify each new seed actually ran by checking its `RAISE NOTICE` output in `db:reset`.
+- SQLite→Postgres trajectory (typical v1→v2): add a ~100-LOC lint banning SQLite-dialect tokens (`PRAGMA`, `AUTOINCREMENT`, `WITHOUT ROWID`, `ROWID`, `BLOB`, `DATETIME`) in migration SQL and wire it fail-fast into the lint gate from day 1 — a SQLite-only test suite will NOT catch dialect lock-in (e.g. a duplicate `CREATE TABLE schema_migrations`).
+- Single-row config/toggle tables: enforce row-count=1 at the DB layer with a boolean singleton PK + `ON CONFLICT DO NOTHING` seed — idempotent migration:
+```sql
+singleton_id boolean PRIMARY KEY DEFAULT true,
+CONSTRAINT one_row CHECK (singleton_id = true)
+-- seed: INSERT ... ON CONFLICT DO NOTHING
+```
 
 ## RLS Performance (MUST)
 
@@ -48,6 +60,7 @@ Supabase RLS policies can degrade query performance 10-100x without these optimi
 - **Specify `TO authenticated`:** Always specify the target role to stop execution early for unauthenticated users.
 - **Avoid joins in policies:** Use `IN` or `ANY` subqueries instead of join chains.
 - **Never use `user_metadata`:** Users can modify `raw_user_meta_data` client-side. Use `raw_app_meta_data` (server-only) instead.
+- **`service_role` bypasses RLS — policies become dead code:** an admin/`service_role` client bypasses RLS entirely, so RLS INSERT/UPDATE policies on server-written tables never evaluate; superuser/`psql` probes prove nothing. Verify policies under `SET LOCAL ROLE authenticated` + `request.jwt.claims`, or route writes through the session client if RLS must enforce. When a migration `REVOKE`s table privileges, audit every `SECURITY INVOKER` function that writes there.
 
 ## View Security (MUST)
 
@@ -61,6 +74,14 @@ CREATE VIEW my_view WITH (security_invoker = true) AS SELECT * FROM protected_ta
 ```
 - This applies to ALL views exposed via Supabase client queries.
 - For materialized views, RLS does not apply — use explicit `WHERE` clauses and restrict access via `GRANT`.
+- **`SECURITY DEFINER` functions run as the OWNER, not the caller:** `current_user` is fixed to the function owner, so a `current_user`-based allowlist bypass is internally inconsistent (owner-in-list → always bypasses, the allowlist is useless; owner-not-in-list → never bypasses by role). For caller-aware logic use `SECURITY INVOKER`, `session_user`, or a hybrid (`current_user = session_user AND …`). A txn-local GUC gate is the safe escape hatch for immutability triggers while RLS stays the primary barrier.
+
+## PostgREST & Supabase Operational Gotchas
+
+- **Reload the PostgREST schema cache after DDL:** after `ALTER TABLE ADD COLUMN` or a new RPC, PostgREST keeps a STALE schema cache → silent `PGRST204` for the new column for hours. Reload by sending `SIGUSR1` to the rest container (`docker kill --signal=SIGUSR1 <supabase_rest_*>`); `NOTIFY pgrst` alone is NOT sufficient. Apply atomically with the migration and confirm the column landed in prod with `psql \d`.
+- **PostgREST silently caps at 1000 rows:** any Supabase query without `.range()` returns at most 1000 rows → skewed aggregations (the "everything is exactly 1000" tell). Always paginate full-dataset queries in scripts and tools.
+- **`pg` (node) returns `numeric`/`bigint`/`interval`/`time` as JS STRINGS** (precision preservation): at Zod boundaries use `z.coerce.number()`, never `z.number()` — the latter passes lint/typecheck but throws only in prod (e.g. when a SECURITY DEFINER RPC's numeric score hits the validator). Catch it with an integration smoke test, not unit mocks.
+- **Validate enum/CHECK-column INSERTs against REAL Postgres:** unit mocks accept any string, so they cannot prove a ternary mapping (e.g. `disposition → report|enforce`) is load-bearing. Run the INSERT through actual Postgres (`docker exec … psql`) — right-sized vs a full-app E2E when the changed flow is DB-level.
 
 ## Caching
 - Upstash Redis for distributed caching and rate limiting.
@@ -159,6 +180,7 @@ async function updateUser(id: string, data: Partial<User>): Promise<void> {
 - Connection pooling: use Supabase's pgbouncer (port 6543) for serverless/edge functions. Direct connections (port 5432) for long-lived backend services.
 - Avoid `SELECT *` in production queries. Always specify needed columns with `.select('col1, col2')`.
 - Pagination: use cursor-based pagination (keyset) for large datasets. Offset-based pagination degrades at high offsets.
+- Keyset over OFFSET when the dataset is MUTATED inside the paging loop (dedup, enrichment, cleanup): page on an immutable PK (`WHERE r.id > p_cursor_id`), never OFFSET — mutating WHERE-filter writes break the stable physical row order OFFSET depends on, silently skipping or re-visiting rows.
 - Batch operations: use `.upsert()` or `.insert()` with arrays instead of individual inserts in loops.
 
 ## See Also

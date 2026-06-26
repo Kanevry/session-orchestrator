@@ -26,6 +26,15 @@ tier: wave-only
 - Mock external services, never real APIs in unit tests.
 - Use `vi.mock()` for module mocking, `vi.spyOn()` for partial mocking.
 
+### Vitest Mocking Gotchas
+
+- **`clearMocks` / `mockReset` / `restoreMocks: true` reset `vi.mock()` factory impls before EVERY test** — impls baked into the factory survive only test 1, after which `new Service()` returns `undefined` ("X is not a function"). Declare bare auto-mocks and re-apply implementations in `beforeEach` AFTER the reset. This is the superset rule for the two lines below.
+- **`vi.clearAllMocks()` in `beforeEach` wipes module-level `vi.mock()` implementations** (e.g. `requireAuth`) → "Cannot read properties of undefined" on the next test. Re-establish defaults INSIDE `beforeEach` AFTER the clear, via a `setupDefaultMocks()` helper. (Qualifies "Reset mocks in `beforeEach`" below — the bare reset, taken literally, CAUSES this bug.)
+- **`vi.fn().mockImplementation(() => obj)` fails when the SUT does `new ClassName()`.** Use an inline `class { method = mockFn }` so each instance gets its own bound function.
+- **A `vi.mock` factory cannot close over a top-level `const`** (ReferenceError: cannot access before initialization). Wrap shared mock state in `vi.hoisted({...})` to share it with the hoisted factory body.
+- **`vi.spyOn` on ESM named exports fails** with "Cannot redefine property" (e.g. `import * as fs from 'node:fs'`). Inject the failure through the real dependency instead (e.g. `chmodSync(dir, 0o555)`). Qualifies "`vi.spyOn()` for partial mocking" above.
+- **Centralizing `process.env` reads behind a `@/lib/env` Zod export breaks `vi.stubEnv()`-only tests** — the module caches at load and Zod runs on `.parse()`, so `stubEnv` alone won't re-evaluate. Add `vi.resetModules()` in `beforeEach` + a dynamic `import` AFTER `stubEnv`. (Zod also rejects empty-string URLs that nullish-coalescing previously accepted.)
+
 ## Integration Test Patterns
 - Use `supertest` for HTTP endpoint testing in Express services.
 - Test the full middleware chain: auth → validation → handler → response.
@@ -43,7 +52,7 @@ tier: wave-only
 - Mock the auth boundary at module level: `vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }))`.
 - Default mock return: `{ user: { id: 'test-user-id', email: 'test@example.com' }, businessId: 'test-biz-id', supabase: createMockSupabase() }`.
 - Test unauthenticated: `vi.mocked(requireAuth).mockRejectedValue(new Error('Unauthorized'))`.
-- Reset mocks in `beforeEach` to prevent state leakage.
+- Reset mocks in `beforeEach` to prevent state leakage — but re-establish module-level `vi.mock()` defaults AFTER the reset (see "Vitest Mocking Gotchas"), or the next test hits "Cannot read properties of undefined".
 
 ### Testing Response Envelopes
 - Server actions return `{ success: true, data }` or `{ success: false, error }`.
@@ -96,6 +105,8 @@ tier: wave-only
 - Test results reported as JUnit XML for GitLab integration (`--reporter=junit --outputFile=junit.xml`).
 - Coverage reported as Cobertura XML for GitLab MR diff annotations (`vitest.config.base.ts` configures `reporter: ['text', 'cobertura']`).
 - Coverage regex: `/All files[^|]*\|[^|]*\s+([\d\.]+)/` extracts percentage for MR badges.
+- **With `projects: [...]` in `vitest.config`, a bare `vitest run` (no `--project`) runs ALL projects**, ignoring per-project include/exclude tuning. Always pin `test:*` scripts to `--project <name>` and verify via the actual script, not just `vitest list`.
+- **A config with `bail: N` reports only the first ~N failures** — CI may show "Failed 4" when the true count is 10+. Cross-verify a suspiciously-low CI failure count against a full local `vitest run`.
 - Failed tests block merge. No exceptions.
 
 ### Shard-Time Contention & Root-as-uid-0 Hazards (Hetzner Linux Docker autoscaler)
@@ -141,6 +152,16 @@ Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-
 - Override per-test for known slow operations: `test.slow()` doubles all timeouts.
 - Never increase global timeouts to fix flaky tests — fix the root cause.
 
+### Playwright Selector & Config Gotchas
+- **`isVisible()` is synchronous and SILENTLY IGNORES its `{ timeout }` option** — it checks immediately, never waits. When you need to wait, use `locator.waitFor({ state: 'visible', timeout }).then(() => true).catch(() => false)`.
+- **`page.locator('text=A, text=B')` is ONE literal text search, not an OR.** Use `page.getByText(/A|B/i)` or `.or()` chaining for alternation.
+- **A new spec without `testIgnore` on the default browser projects runs once PER browser (N×).** For self-authenticating journey specs, use a dedicated project + a `testMatch` regex (e.g. `/user-journeys\/journey-\d+-.*\.spec\.ts$/`) paired with a matching `testIgnore` on every default browser project.
+- **A transient dual-render of a shared `data-testid` during hydration trips Playwright strict-mode.** `.first()` is the correct fix when the component ultimately renders once. DISCRIMINATOR: transient hydration dual-render → `.first()` OK; a PERSISTENT duplicate element → fix the source, don't mask it.
+
+### Next.js Dev-Server Hydration Races (E2E)
+- **Next dev/RSC can RESET controlled form values shortly after Playwright fills them during cold-start.** Use form-scoped `data-testid` selectors and verify/re-fill controlled values before submit — never a single `fill()` on a generic `input[name=…]`.
+- **When a Server Action persists but its RSC client redirect aborts under next-dev (ECONNRESET), make a DB poll the HARD success signal:** `expect.poll` on row-count > a pre-submit marker, then assert a persisted invariant. Keep `page.waitForURL` SOFT in `try/catch` with a `testInfo.annotations` note on timeout.
+
 ## Async & Timeout Patterns
 - **WARNING:** Fake timers leak between tests if not restored. A leaked fake timer can cause unrelated tests to hang or timeout. Always restore in `afterEach`.
 - Use `vi.useFakeTimers()` for time-dependent tests. Always call `vi.useRealTimers()` in `afterEach`.
@@ -154,6 +175,8 @@ Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-
 - Async `beforeEach`: keep setup fast (< 100ms). Move slow setup to `beforeAll`.
 - Test async error propagation: `await expect(asyncFn()).rejects.toThrow(AppError)`.
 - For streams/iterators: collect chunks, assert on final result: `const chunks = []; for await (const c of stream) chunks.push(c);`.
+- When using `Promise.race` to time out an async op, call `timer.unref()` on the `setTimeout` handle so the process exits naturally if the real promise resolves first — avoids open-handle warnings and a spurious timeout-length delay when the slow path is never taken.
+- **A spawned test child that spins on a synchronous busy-wait barrier pins a CPU core** and, under runner starvation, outlives `testTimeout` and hangs the vitest forks-pool worker. Poll with an async yield (`await new Promise(r => setTimeout(r, pollMs))`) on the same deadline, give each spawn a per-spawn timeout BELOW `testTimeout`, and track + SIGKILL survivors in `afterEach`.
 
 ## Coverage Enforcement
 - Coverage thresholds enforced in `vitest.config.ts`:
@@ -391,6 +414,14 @@ test("createInvoice returns VALIDATION_ERROR on bad input", async () => {
 ```
 
 See `backend.md` BE-012 for the wrapper contract the test must verify against.
+
+### Negative-Assertion Fake-Regression Check
+
+For any "X is NOT present" assertion (drift guard, absence check), run a fake-regression in the quality gate: temporarily reintroduce X, confirm the test goes RED, then revert to green. A green test alone NEVER proves the guard bites — only a red-on-drift observation does. Critical for drift guards added in the SAME session that fixes the drift.
+
+### Security Tests Must Not Encode the Vulnerability
+
+A security test that asserts a permissive/success outcome for clearly-malicious input ENCODES the vulnerability as expected behaviour — fixing the bug then requires flipping the assertion. Grep security tests for `toBe(true)` near malicious / invalid / no-cookie setups (e.g. a CSRF test asserting `success: true` for a malicious-origin request that carries no CSRF cookie).
 
 ### When NOT to Write Tests
 

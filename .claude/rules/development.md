@@ -52,6 +52,8 @@ Enforced by ESLint flat config (`eslint.config.mjs`) + Prettier. Notable behavio
 - Use typed error classes. No generic `throw new Error("something went wrong")`.
 - Log errors with structured data (correlation IDs, user context minus PII).
 - Validate at boundaries, trust internally.
+- **Env-var fallback whitespace trap:** `process.env.X || fallback` falls back only on *falsy* values — a whitespace-only value (`'   '`) is truthy and short-circuits the OR, returning the spaces verbatim. For string/path-valued env vars use `(process.env.X || '').trim() || fallback`.
+- **Env-var wiring (dead env / three wirings):** an env var set in ops (docker-compose / deploy `.env`) but never read in `src/` is a **dead env** — ops thinks it active, code ignores it (hardcoded default wins); grep `src/` for every ops-set var, where 0 matches = wiring never finished. Conversely a new `process.env.X` read needs **three wirings**: code default, compose/env, and every deploy target's env.
 
 ## Documentation
 - CLAUDE.md in every project root (50-100 lines, lean).
