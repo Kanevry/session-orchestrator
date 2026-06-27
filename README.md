@@ -4,15 +4,15 @@
 [![Version](https://img.shields.io/badge/version-3.10.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
-Turn ad-hoc agent sessions into a repeatable loop with verification gates — **loop engineering** for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
+Turn ad-hoc agent sessions into a repeatable loop with verification gates — loop engineering for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
 
-Works with **Claude Code, Codex CLI, Cursor IDE, and Pi** — the same skills and commands across all four, with platform-adapted hooks and enforcement (see [Platform support](#platform-support)). Community plugin (MIT, community-maintained) for solo devs and small teams.
+Works with **Claude Code, Codex CLI, Cursor IDE, and [Pi](docs/pi-setup.md)** — the same skills and commands across all four, with platform-adapted hooks and enforcement (see [Platform support](#platform-support)). Community plugin (MIT, community-maintained) for solo devs and small teams.
 
 ## A session in three commands
 
 ```text
 /session feature    # research + Q&A — inspect git, issues, history, then agree on scope
-/go                 # execute in five typed waves, with a quality gate between each
+/go                 # execute in five typed waves (fixed roles), with a quality gate between each
 /close              # verify every item, commit cleanly, file carryover issues for the rest
 ```
 
@@ -22,7 +22,9 @@ That is the whole loop. `/plan` and `/evolve` extend it (see [Lifecycle](#lifecy
 
 > **Prerequisite:** Node.js 24 or later (`node --version`). v3.x runs as ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/).
 
-### Claude Code
+The two paths below differ only by **install mechanism**, not capability or tier: Claude Code pulls from the plugin marketplace; every other platform clones the repo. The same skills and commands ship to all four.
+
+### Claude Code (plugin marketplace)
 
 Run these two slash commands **inside** Claude Code (not in a shell):
 
@@ -38,7 +40,7 @@ cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugi
 npm install
 ```
 
-### Codex CLI · Cursor IDE · Pi
+### Codex CLI, Cursor IDE & Pi (git clone)
 
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
@@ -52,7 +54,7 @@ Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md)
 
 ## Quick Start
 
-Add a `## Session Config` section to your project's `CLAUDE.md` (or `AGENTS.md` on Codex CLI / Pi). The smallest valid config is seven fields:
+Add a `## Session Config` section to your project's `CLAUDE.md` (Claude Code and Cursor IDE) or `AGENTS.md` (Codex CLI and Pi) — see [instruction-file-resolution](skills/_shared/instruction-file-resolution.md) for which file each platform reads. The smallest valid config is seven fields:
 
 ```yaml
 ## Session Config
@@ -73,7 +75,7 @@ Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-
 - **42 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, audits, and more
 - **22 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/test`, `/debug`, …)
 - **14 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …)
-- **10 hook event types** enforcing scope, blocking destructive commands, gating templates-first, capturing telemetry
+- **10 hook event types** enforcing scope, blocking destructive commands, gating templates-first, capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged on the other platforms ([Platform support](#platform-support))
 - **10,000+ vitest tests** run on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md))
 
 Full component inventory: [`docs/components.md`](docs/components.md).
@@ -127,7 +129,7 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Five typed waves, not one big batch.** Discovery first, so implementers start with shared context. Impl-Core before Impl-Polish, so architecture lands before integrations. Quality runs a *simplification pass* on AI-generated code **before** tests are written — otherwise tests pin the AI patterns into place.
 - **Inter-wave reviews, not just end-of-session.** Catching regressions between waves — not only at the end — stops a bad pattern from propagating into later work; the confidence floor filters speculative criticism so only high-signal findings reach you.
 - **State persists across crashes.** `STATE.md` records wave progress and deviations; the next `/session` offers to resume from the last completed wave.
-- **Hooks enforce, not just warn.** A pre-Bash guard blocks destructive shell commands, and pre-Edit scope enforcement blocks writes outside an agent's allowed paths — in main sessions and subagent waves alike (specifics in [Safety](#safety)).
+- **Hooks enforce, not just warn.** A pre-Bash guard blocks destructive shell commands, and pre-Edit scope enforcement blocks writes outside an agent's allowed paths — in main sessions and subagent waves alike (specifics in [Safety](#safety)). This hard enforcement is full on Claude Code; it degrades to experimental / post-hoc / bridged on Codex CLI, Cursor IDE, and Pi (see [Platform support](#platform-support)).
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
@@ -197,7 +199,7 @@ Contributor docs: [Plugin Architecture (v3)](docs/plugin-architecture-v3.md) · 
 
 ## Support & scope
 
-Session Orchestrator is MIT-licensed and provided **as-is** — a community project with no SLA, no commercial support contract, and no guaranteed response time. Maintenance is best-effort.
+Session Orchestrator is provided **as-is** — a community project with no SLA, no commercial support contract, and no guaranteed response time. Maintenance is best-effort.
 
 - Questions, ideas, show-and-tell → [GitHub Discussions](https://github.com/Kanevry/session-orchestrator/discussions)
 - Bugs and feature requests → [Issues](https://github.com/Kanevry/session-orchestrator/issues)
@@ -225,8 +227,8 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) — see [
 
 This plugin is a methodology turned into code. If you want the reasoning behind it — why execution runs in waves, why every wave ends at a verification gate, how to make an autonomous loop that actually finishes — those playbooks are taught hands-on at **[agenticbuilders.at](https://agenticbuilders.at)**:
 
-- **[Multi-Agent Orchestration](https://agenticbuilders.at/orchestrierung)** — leading several agents in coordinated waves instead of one long chat: when parallelism is worth it, how to brief subagents cleanly, and how to turn real failures into firm gates.
-- **[Loop Engineering](https://agenticbuilders.at/loop-engineering)** — designing autonomous loops that finish verifiably: done-conditions, deterministic verification gates, and kill-switches.
+- **[Multi-Agent Orchestration](https://agenticbuilders.at/orchestrierung)** — leading several agents in coordinated waves: when parallelism pays, briefing subagents cleanly, turning failures into firm gates.
+- **[Loop Engineering](https://agenticbuilders.at/loop-engineering)** — designing autonomous loops that finish verifiably: done-conditions, verification gates, kill-switches.
 
 The plugin is free and MIT. The courses are for going deeper, not a requirement for using it.
 
