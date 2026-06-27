@@ -88,7 +88,7 @@ jobs:
 
       - name: Install nested vault-sync deps
         shell: bash
-        run: (cd skills/vault-sync && npm install --no-audit --no-fund --silent)
+        run: (cd skills/vault-sync && npm ci --no-audit)
 
       - name: Owner-privacy leak gate (#471)
         shell: bash
@@ -120,14 +120,18 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          timeout --preserve-status 240s npm test -- --reporter=verbose --no-color 2>&1 | tee /tmp/vitest.raw.log || true
+          rm -f /tmp/vitest-result.json   # stale-file guard (defensive; runners are ephemeral)
+          timeout --preserve-status 240s npm test -- --reporter=verbose --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.raw.log || true
           sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/vitest.raw.log > /tmp/vitest.log || cp /tmp/vitest.raw.log /tmp/vitest.log
           tail -80 /tmp/vitest.log
-          PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/vitest.log 2>/dev/null || true)
-          FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/vitest.log 2>/dev/null || true)
-          echo "[ci] test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"
-          test "${FAIL_COUNT:-0}" = "0"
-          test "${PASS_COUNT:-0}" -ge "20"
+          # Fail-closed JSON verifier is the SINGLE authority on pass/fail. It replaces the
+          # brittle grep-the-stdout heuristic that reported a killed-mid-run suite as GREEN
+          # (the 8-pipeline silent regression — see CLAUDE.md Critical Gotchas and the
+          # rationale block in scripts/ci/assert-vitest-green.mjs). GitHub runs the full
+          # UNSHARDED suite (~10,000+ tests), so --min-tests=6000 is a safe floor below the
+          # real count that still catches a truncated/partial run. The `|| true` above lets
+          # the pipeline REACH this line; the exit code of THIS line is the job result.
+          node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result.json --min-tests=6000 --log=/tmp/vitest.log
 
       - name: Vitest (macOS — plain)
         if: runner.os == 'macOS'
@@ -138,13 +142,14 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          timeout --preserve-status 420s npm run test:coverage -- --reporter=verbose --no-color 2>&1 | tee /tmp/cov.raw.log || true
+          rm -f /tmp/cov-result.json   # stale-file guard (defensive; runners are ephemeral)
+          timeout --preserve-status 420s npm run test:coverage -- --reporter=verbose --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.raw.log || true
           sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/cov.raw.log > /tmp/cov.log || cp /tmp/cov.raw.log /tmp/cov.log
           tail -100 /tmp/cov.log
-          PASS_COUNT=$(grep -cE "(✓|PASS).*(tests|skills)/.*\.test\.mjs" /tmp/cov.log 2>/dev/null || true)
-          FAIL_COUNT=$(grep -cE "(✗|FAIL|❯ FAIL).*(tests|skills)/" /tmp/cov.log 2>/dev/null || true)
-          echo "[ci] coverage: test files passed=${PASS_COUNT:-0} failed=${FAIL_COUNT:-0}"
-          test "${FAIL_COUNT:-0}" = "0"
-          test "${PASS_COUNT:-0}" -ge "20"
+          # Fail-closed JSON verifier is the SINGLE authority on test pass/fail (replaces the
+          # brittle grep heuristic). The cobertura-artifact and threshold-breach grep below
+          # are SEPARATE gates from test-green: the JSON `success` field reflects pass/fail,
+          # NOT the coverage threshold. --min-tests=6000 floor matches the full unsharded run.
+          node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json --min-tests=6000
           test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"
           ! grep -q "Coverage for .* .* below" /tmp/cov.log
