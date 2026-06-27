@@ -15,6 +15,19 @@
  *  - Decision deferred: acquire() reports stale locks but does NOT auto-clear
  *    them. session-start handles the recovery AUQ flow (W3-C3).
  *
+ * BARREL CONTRACT (#630 A1 barrel-preserving split):
+ *   This module bundled THREE orthogonal lock protocols. Two of them — the
+ *   STATE.md write-lock and the staging-fence commit-mutex — were moved into
+ *   dedicated modules under `scripts/lib/locks/`. This file STAYS the canonical
+ *   barrel: it keeps the session-lock CORE protocol AND re-exports every moved
+ *   symbol, so the original 22-symbol import surface is preserved EXACTLY and
+ *   all 17 importers keep working UNCHANGED. The moved modules import shared
+ *   primitives from leaf modules (file-lock.mjs, locks/lock-body.mjs) and NEVER
+ *   from this file, so the barrel ↔ protocol-module edge is one-directional
+ *   (no import cycle).
+ *     - STATE.md write-lock    → ./locks/state-md-lock.mjs
+ *     - staging-fence mutex     → ./locks/staging-fence-lock.mjs
+ *
  * No external dependencies — Node 20+ stdlib only.
  */
 
@@ -22,9 +35,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { classifyMode } from './exclusivity-matrix.mjs';
-import { isPidAliveOnHost, tryAcquireFileLock } from './file-lock.mjs';
+import { isPidAliveOnHost } from './file-lock.mjs';
 
 // isPidAliveOnHost moved into file-lock.mjs in #630 (the file-lock primitive
 // owns it so the dependency edge points file-lock → io, never the reverse).
@@ -34,30 +46,35 @@ import { isPidAliveOnHost, tryAcquireFileLock } from './file-lock.mjs';
 export { isPidAliveOnHost };
 
 // ---------------------------------------------------------------------------
+// Re-exports — STATE.md write-lock + staging-fence commit-mutex (#630 split).
+// These two protocols live in dedicated modules now; the barrel re-exports
+// their full public surface so importers of session-lock.mjs are unchanged.
+// ---------------------------------------------------------------------------
+
+export {
+  STATE_LOCK_PATH,
+  DEFAULT_STATE_LOCK_TIMEOUT_MS,
+  STATE_LOCK_POLL_MS,
+  acquireStateLock,
+  releaseStateLock,
+  withStateMdLock,
+} from './locks/state-md-lock.mjs';
+
+export {
+  STAGING_FENCE_LOCK_PATH,
+  DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS,
+  STAGING_FENCE_LOCK_POLL_MS,
+  acquireStagingFenceLock,
+  releaseStagingFenceLock,
+  withStagingFenceLock,
+} from './locks/staging-fence-lock.mjs';
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_TTL_HOURS = 4;
 export const LOCK_PATH = '.orchestrator/session.lock';
-
-// STATE.md write-lock (PRD 2026-05-22 § 4 — Pattern 1, issue #518).
-// Orthogonal to the session-lock above:
-//   - session.lock = "this repo working-copy is held by an active session"
-//   - state.lock   = "STATE.md is being written right now"
-// Two distinct lock files so a session can hold its session-lock for hours
-// while still allowing fast acquire/release cycles around individual writes.
-export const STATE_LOCK_PATH = '.orchestrator/state.lock';
-export const DEFAULT_STATE_LOCK_TIMEOUT_MS = 10000;
-export const STATE_LOCK_POLL_MS = 100;
-
-// Staging-fence commit-mutex (PSA-004 sub-mode C, issue #552). Held only for
-// the duration of the wave-scope-commit-guard's cross-agent fence check.
-//   - state.lock          = "STATE.md is being written right now"
-//   - staging-fence.lock  = "the cross-fence commit check is running right now"
-// Distinct lockfile so the two locks never contend with each other.
-export const STAGING_FENCE_LOCK_PATH = '.orchestrator/staging-fence/.commit.lock';
-export const DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS = 10000;
-export const STAGING_FENCE_LOCK_POLL_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -249,9 +266,9 @@ function writeLockAtomic(lockFile, lock) {
  * concurrent SessionStart hooks that BOTH observed `readLock() === null` would
  * BOTH rename their tmp file over the lock and BOTH believe they acquired it.
  * `linkSync` is POSIX-atomic create-or-fail: exactly one concurrent caller wins
- * the create, every other caller gets EEXIST. This is the same idiom already
- * used by {@link createStateLockExclusive} and
- * {@link createStagingFenceLockExclusive} in this file.
+ * the create, every other caller gets EEXIST. This is the same idiom used by
+ * the file-lock primitive (tryAcquireFileLock) backing the state-lock and
+ * staging-fence-lock modules.
  *
  * Used ONLY by the no-existing-lock branch of {@link acquire}. The
  * intentional-overwrite paths (`forceAcquire`, `updateHeartbeat`) keep using
@@ -634,592 +651,4 @@ export function checkStale({ repoRoot } = {}) {
     host: lock.host,
     sameHost,
   };
-}
-
-// ---------------------------------------------------------------------------
-// STATE.md write-lock (PRD 2026-05-22 § 4 — Pattern 1, issue #518)
-// ---------------------------------------------------------------------------
-//
-// Mechanical enforcement of PSA-004 for STATE.md writes. Whereas the
-// session-lock above guards "this working-copy is held by one session", the
-// state-lock guards "STATE.md is being written right now" — a short-lived
-// lock acquired around every read-modify-write cycle.
-//
-// Design:
-//  - Atomic create via tmp + rename, same pattern as writeLockAtomic above.
-//  - Body: { pid, host, acquiredAt, holder } — host is included so cross-host
-//    callers (rare but possible via shared filesystems) avoid spurious PID
-//    liveness checks against unrelated PIDs.
-//  - Stale detection: process.kill(pid, 0). When the holder is on the same
-//    host and the PID is dead (ESRCH), the lock is overridden atomically and
-//    a WARN is written to stderr. Cross-host stale locks are NOT auto-cleared
-//    — they fall through to the timeout path.
-//  - Poll cadence: 100 ms by default. Configurable via STATE_LOCK_POLL_MS but
-//    no public override — tests inject via the optional `pollMs` parameter.
-//
-// Returns structured results, never throws (acquireStateLock / releaseStateLock).
-// withStateMdLock re-throws caller errors after releasing.
-
-/**
- * Resolve the absolute path to the state-lock file.
- * @param {string|undefined} repoRoot
- * @returns {string}
- */
-function stateLockPathFor(repoRoot) {
-  return path.join(repoRoot ?? process.cwd(), STATE_LOCK_PATH);
-}
-
-/**
- * Build a fresh state-lock body.
- * @param {{ holder?: string }} args
- * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }}
- */
-function buildStateLockBody({ holder }) {
-  return {
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: nowIso(),
-    holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
-  };
-}
-
-/**
- * Parse a lock-file body shared by the state-lock and staging-fence-lock.
- * Both locks use identical { pid, host, acquiredAt, holder } shape so a single
- * parser serves both. Returns null on any malformed input.
- *
- * Renamed from parseStateLock in #558 M4 — the previous name encoded a single
- * lock identity, but the function is used by both state-lock acquire/release
- * and staging-fence-lock acquire/release.
- *
- * @param {string} raw
- * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }|null}
- */
-function parseLockBody(raw) {
-  try {
-    const obj = JSON.parse(raw);
-    if (
-      typeof obj === 'object' &&
-      obj !== null &&
-      typeof obj.pid === 'number' &&
-      typeof obj.host === 'string' &&
-      typeof obj.acquiredAt === 'string' &&
-      typeof obj.holder === 'string'
-    ) {
-      return obj;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-// createStateLockExclusive + replaceStateLockAtomic were inlined into the
-// file-lock primitive in #630 — tryAcquireStateLock now delegates to
-// tryAcquireFileLock (indent:2, tmpPrefix:'.state.lock.tmp'), which performs the
-// tmp+linkSync create and the writeJsonAtomicSync stale-override internally.
-
-/**
- * Attempt one acquisition pass. Returns:
- *   { ok: true, lock }                          — lock written
- *   { ok: false, reason: 'held', existingLock } — held by a live holder
- *   { ok: false, reason: 'fs-error', error }    — filesystem failure
- *
- * Strategy:
- *   1. Try O_EXCL create (cross-process mutex). Success → return immediately.
- *   2. On EEXIST → read the existing lock, check PID liveness on same host.
- *      - Live PID → `held` (caller polls).
- *      - Dead PID (or unparseable contents) → stale, atomic override + WARN.
- *
- * Side-effect: stale-lock override writes a WARN to stderr. Cross-host locks
- * are never auto-overridden (can't signal a process on another machine).
- */
-function tryAcquireStateLock(lockFile, body) {
-  // Delegates to the shared file-lock primitive (issue #630). Behavior is
-  // preserved EXACTLY: pretty-printed body `{pid, host, acquiredAt, holder}`
-  // (indent 2), PID staleCheck, console.warn override channel with the original
-  // messages, override tmp prefix `.state.lock.tmp`, and the ENOENT-on-read race
-  // collapsed into `held`/existingLock:null (signalVanished:false).
-  //
-  // The primitive builds its own body (fresh acquiredAt per attempt) from the
-  // pid/host of THIS process plus the holder carried on `body`. acquiredAt is
-  // only meaningful on the written (winning) attempt, so reusing vs regenerating
-  // it across poll passes is observationally identical.
-  const attempt = tryAcquireFileLock(lockFile, {
-    staleCheck: 'pid',
-    holder: body.holder,
-    indent: 2,
-    tmpPrefix: '.state.lock.tmp',
-    warnMessage: (reason, _lp, existing) =>
-      existing === null
-        ? 'stale state.lock (unparseable contents) overridden'
-        : `stale state.lock from PID ${existing.pid} overridden`,
-  });
-
-  if (attempt.acquired) return { ok: true, lock: attempt.body };
-  if (attempt.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: attempt.error };
-  // reason === 'held' (live holder, cross-host, or vanished-collapsed-to-held).
-  return { ok: false, reason: 'held', existingLock: attempt.existing ?? null };
-}
-
-/**
- * Sleep helper for the acquire poll-loop. Promise-returning, so the loop is
- * async without blocking the event loop.
- * @param {number} ms
- */
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Acquire the STATE.md write-lock. Polls every STATE_LOCK_POLL_MS until the
- * lock is acquired or the timeout expires.
- *
- * Returns:
- *   { ok: true, lock }                                    — lock acquired (possibly after waiting)
- *   { ok: false, reason: 'timeout', existingLock? }       — timed out waiting for live holder
- *   { ok: false, reason: 'fs-error', error: string }      — filesystem failure
- *
- * Stale-lock side-effects: when the existing lock points to a dead PID on
- * the same host, the helper overrides it atomically and writes a WARN to
- * stderr. The next poll iteration will then succeed.
- *
- * Never throws.
- *
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs=10000] — max wait in milliseconds.
- * @param {string} [opts.repoRoot] — defaults to process.cwd().
- * @param {string} [opts.holder] — human-readable holder string (default `pid-<pid>`).
- * @param {number} [opts.pollMs] — test-only override of poll cadence.
- */
-export async function acquireStateLock({
-  timeoutMs = DEFAULT_STATE_LOCK_TIMEOUT_MS,
-  repoRoot,
-  holder,
-  pollMs = STATE_LOCK_POLL_MS,
-} = {}) {
-  const lockFile = stateLockPathFor(repoRoot);
-  const body = buildStateLockBody({ holder });
-  const deadline = Date.now() + (typeof timeoutMs === 'number' && timeoutMs >= 0 ? timeoutMs : DEFAULT_STATE_LOCK_TIMEOUT_MS);
-  const effectivePollMs = typeof pollMs === 'number' && pollMs > 0 ? pollMs : STATE_LOCK_POLL_MS;
-
-  // Loop until acquired or deadline reached. The first iteration runs
-  // unconditionally so a timeoutMs of 0 still attempts one acquisition.
-  for (;;) {
-    const attempt = tryAcquireStateLock(lockFile, body);
-    if (attempt.ok) return attempt;
-    if (attempt.reason === 'fs-error') return attempt;
-
-    if (Date.now() >= deadline) {
-      return {
-        ok: false,
-        reason: 'timeout',
-        existingLock: attempt.existingLock ?? null,
-      };
-    }
-    await delay(effectivePollMs);
-  }
-}
-
-/**
- * Release the STATE.md write-lock IFF the holder matches.
- *
- * Caller must pass the same identifier they used in acquireStateLock — either
- * `holder` (free-form string) OR `sessionId` (matched against the holder
- * field when holder follows the `<sessionId>` convention). If neither is
- * provided, the helper falls back to PID equality.
- *
- * Returns (per PRD § 4):
- *   { ok: true }                                 — lock unlinked
- *   { ok: false, reason: 'not-found' }           — no lock file exists
- *   { ok: false, reason: 'not-owner' }           — lock held by different holder/PID
- *   { ok: false, reason: 'fs-error', error }     — filesystem failure
- *
- * Never throws.
- *
- * @param {object} [opts]
- * @param {string} [opts.repoRoot]
- * @param {string} [opts.sessionId]  — matched against the `holder` field.
- * @param {string} [opts.holder]     — matched against the `holder` field (overrides sessionId).
- */
-export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
-  const lockFile = stateLockPathFor(repoRoot);
-
-  let raw;
-  try {
-    raw = fs.readFileSync(lockFile, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  const lock = parseLockBody(raw);
-  if (lock === null) {
-    // Unparseable — refuse to delete; some other process may be writing now.
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  const expectedHolder = holder ?? sessionId ?? null;
-  const ownerMatch = expectedHolder !== null
-    ? lock.holder === expectedHolder
-    : lock.pid === process.pid && lock.host === os.hostname();
-
-  if (!ownerMatch) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  try {
-    fs.unlinkSync(lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-}
-
-/**
- * High-level wrapper: acquire the STATE.md write-lock, run `fn`, release on
- * completion or throw. Always releases the lock — even if `fn` throws —
- * before re-raising the original error.
- *
- * Short-circuit: when `state-md-lock.enabled: false` is set in CLAUDE.md
- * (or AGENTS.md on Codex CLI — the two are aliases per
- * `skills/_shared/instruction-file-resolution.md`) Session Config, the lock
- * is bypassed entirely and `fn` is called directly. A stderr WARN line is
- * emitted so operators can detect the bypass. This honours the config knob
- * documented in `.claude/rules/parallel-sessions.md` PSA-005 without
- * removing the lock infrastructure.
- *
- * Per-call override via `opts._stateMdLockEnabled` (boolean): when provided,
- * takes precedence over the config value. Useful for tests that need to
- * exercise the short-circuit without touching CLAUDE.md on disk.
- * The leading underscore marks this as a test-only seam — production callers
- * MUST omit this option.
- *
- * Fail-safe: if CLAUDE.md cannot be read or the config block is malformed,
- * `enabled` defaults to `true` — lock is always acquired on errors.
- *
- * Throws when:
- *   - acquireStateLock fails (timeout or fs-error) → throws a labelled Error
- *     so callers see the failure as an exception rather than a silent
- *     {ok:false} return. This is the contract that lets call sites use plain
- *     `await withStateMdLock(repoRoot, async () => …)` without branching.
- *   - `fn` throws → the original error is re-thrown after release.
- *
- * @param {string|undefined} repoRoot
- * @param {() => (T | Promise<T>)} fn
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs]
- * @param {string} [opts.holder]
- * @param {number} [opts.pollMs]
- * @param {boolean} [opts._stateMdLockEnabled]  — test-only per-call override;
- *   takes precedence over the Session Config value when set. Production
- *   callers MUST omit this option.
- * @returns {Promise<T>}
- * @template T
- */
-export async function withStateMdLock(repoRoot, fn, opts = {}) {
-  if (typeof fn !== 'function') {
-    throw new TypeError('withStateMdLock: fn must be a function');
-  }
-
-  // Short-circuit: respect state-md-lock.enabled: false from Session Config.
-  // opts._stateMdLockEnabled (test-only per-call override) takes precedence when set.
-  let enabled = opts._stateMdLockEnabled;
-  if (enabled === undefined) {
-    try {
-      const claudeMdPath = path.join(repoRoot ?? process.cwd(), 'CLAUDE.md');
-      const claudeMdContents = fs.readFileSync(claudeMdPath, 'utf8');
-      const cfg = _parseStateMdLock(claudeMdContents);
-      enabled = cfg.enabled;
-    } catch {
-      // Fail-safe: if CLAUDE.md is absent or unreadable, default to locked.
-      enabled = true;
-    }
-  }
-
-  if (enabled === false) {
-    process.stderr.write('⚠ withStateMdLock: short-circuit (state-md-lock.enabled: false) — running fn without lock\n');
-    return await fn();
-  }
-
-  const holder = typeof opts.holder === 'string' && opts.holder.length > 0
-    ? opts.holder
-    : `pid-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-
-  const acquireResult = await acquireStateLock({
-    repoRoot,
-    timeoutMs: opts.timeoutMs,
-    holder,
-    pollMs: opts.pollMs,
-  });
-
-  if (!acquireResult.ok) {
-    const reason = acquireResult.reason;
-    const extra = reason === 'timeout' && acquireResult.existingLock
-      ? ` (held by ${acquireResult.existingLock.holder}, pid=${acquireResult.existingLock.pid})`
-      : reason === 'fs-error' && acquireResult.error
-        ? `: ${acquireResult.error}`
-        : '';
-    const err = new Error(`withStateMdLock: acquire failed (${reason})${extra}`);
-    err.code = `STATE_LOCK_${reason.toUpperCase().replace(/-/g, '_')}`;
-    throw err;
-  }
-
-  let result;
-  let caughtError = null;
-  try {
-    result = await fn();
-  } catch (err) {
-    caughtError = err;
-  } finally {
-    // Always release — even on fn() throw — so the lock does not leak.
-    // Only WARN on fs-error: 'not-found' and 'not-owner' are recoverable race
-    // conditions (someone else cleaned up our lock — already safe to proceed).
-    const releaseResult = releaseStateLock({ repoRoot, holder });
-    if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
-      console.warn(`withStateMdLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`);
-    }
-  }
-
-  if (caughtError !== null) throw caughtError;
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Staging-fence commit-mutex (PSA-004 sub-mode C, issue #552)
-// ---------------------------------------------------------------------------
-//
-// Held only around the wave-scope-commit-guard cross-fence check. Two sibling
-// wave-agents that both pass through the per-agent guard race to acquire this
-// lock; the winner inspects ALL fence files, the loser polls until the winner
-// releases. Without the mutex the check is TOCTOU-vulnerable: agent A reads
-// agent B's fence file BEFORE B writes agent B's last `git add` intent, and
-// both proceed to `git commit` with overlapping staged paths.
-//
-// Implementation reuses the same tmp+linkSync cross-process pattern as the
-// STATE.md lock above (createStateLockExclusive). The two lockfiles are
-// distinct so STATE.md writes never contend with commit-guard checks.
-
-/**
- * Resolve the absolute path to the staging-fence commit lock file.
- * @param {string|undefined} repoRoot
- * @returns {string}
- */
-function stagingFenceLockPathFor(repoRoot) {
-  return path.join(repoRoot ?? process.cwd(), STAGING_FENCE_LOCK_PATH);
-}
-
-/**
- * Build a fresh staging-fence lock body. Same shape as buildStateLockBody so
- * the parseLockBody parser works identically — there is no need for a
- * second parser.
- *
- * @param {{ holder?: string }} args
- * @returns {{ pid: number, host: string, acquiredAt: string, holder: string }}
- */
-function buildStagingFenceLockBody({ holder }) {
-  return {
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: nowIso(),
-    holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
-  };
-}
-
-// createStagingFenceLockExclusive + replaceStagingFenceLockAtomic were inlined
-// into the file-lock primitive in #630 — tryAcquireStagingFenceLock now
-// delegates to tryAcquireFileLock (indent:2, tmpPrefix:'.staging-fence.lock.tmp').
-
-/**
- * Single-pass acquire attempt for the staging-fence lock. Mirrors
- * tryAcquireStateLock — only the lockfile path + tmp prefix differ.
- *
- * Returns:
- *   { ok: true, lock }                          — acquired
- *   { ok: false, reason: 'held', existingLock } — live holder; caller polls
- *   { ok: false, reason: 'fs-error', error }    — filesystem failure
- */
-function tryAcquireStagingFenceLock(lockFile, body) {
-  // Delegates to the shared file-lock primitive (issue #630). Structurally
-  // identical to tryAcquireStateLock — only the tmp prefix + WARN messages
-  // differ. Behavior preserved EXACTLY: pretty body (indent 2), PID staleCheck,
-  // console.warn channel, override prefix `.staging-fence.lock.tmp`,
-  // ENOENT-on-read collapsed into `held`/existingLock:null.
-  const attempt = tryAcquireFileLock(lockFile, {
-    staleCheck: 'pid',
-    holder: body.holder,
-    indent: 2,
-    tmpPrefix: '.staging-fence.lock.tmp',
-    warnMessage: (reason, _lp, existing) =>
-      existing === null
-        ? 'stale staging-fence.lock (unparseable contents) overridden'
-        : `stale staging-fence.lock from PID ${existing.pid} overridden`,
-  });
-
-  if (attempt.acquired) return { ok: true, lock: attempt.body };
-  if (attempt.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: attempt.error };
-  return { ok: false, reason: 'held', existingLock: attempt.existing ?? null };
-}
-
-/**
- * Acquire the staging-fence commit-lock. Polls every STAGING_FENCE_LOCK_POLL_MS
- * until the lock is acquired or the timeout expires. Same semantics as
- * acquireStateLock above.
- *
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs=10000]
- * @param {string} [opts.repoRoot]
- * @param {string} [opts.holder]
- * @param {number} [opts.pollMs]
- */
-export async function acquireStagingFenceLock({
-  timeoutMs = DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS,
-  repoRoot,
-  holder,
-  pollMs = STAGING_FENCE_LOCK_POLL_MS,
-} = {}) {
-  const lockFile = stagingFenceLockPathFor(repoRoot);
-  const body = buildStagingFenceLockBody({ holder });
-  const deadline = Date.now() + (typeof timeoutMs === 'number' && timeoutMs >= 0
-    ? timeoutMs
-    : DEFAULT_STAGING_FENCE_LOCK_TIMEOUT_MS);
-  const effectivePollMs = typeof pollMs === 'number' && pollMs > 0
-    ? pollMs
-    : STAGING_FENCE_LOCK_POLL_MS;
-
-  for (;;) {
-    const attempt = tryAcquireStagingFenceLock(lockFile, body);
-    if (attempt.ok) return attempt;
-    if (attempt.reason === 'fs-error') return attempt;
-
-    if (Date.now() >= deadline) {
-      return {
-        ok: false,
-        reason: 'timeout',
-        existingLock: attempt.existingLock ?? null,
-      };
-    }
-    await delay(effectivePollMs);
-  }
-}
-
-/**
- * Release the staging-fence commit-lock IFF the holder matches.
- *
- * @param {object} [opts]
- * @param {string} [opts.repoRoot]
- * @param {string} [opts.holder]
- * @returns {{ ok: true } | { ok: false, reason: 'not-found'|'not-owner'|'fs-error', error?: string }}
- */
-export function releaseStagingFenceLock({ repoRoot, holder } = {}) {
-  const lockFile = stagingFenceLockPathFor(repoRoot);
-
-  let raw;
-  try {
-    raw = fs.readFileSync(lockFile, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  const lock = parseLockBody(raw);
-  if (lock === null) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  const ownerMatch = typeof holder === 'string' && holder.length > 0
-    ? lock.holder === holder
-    : lock.pid === process.pid && lock.host === os.hostname();
-
-  if (!ownerMatch) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  try {
-    fs.unlinkSync(lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-}
-
-/**
- * High-level wrapper: acquire the staging-fence commit-lock, run `fn`,
- * release on completion or throw. Always releases — even if `fn` throws —
- * before re-raising.
- *
- * No Session Config short-circuit is provided. Unlike the STATE.md lock
- * (which is bypassed when `state-md-lock.enabled: false`), this lock guards
- * a single small read-modify-write on a hidden runtime directory and has
- * no performance cost worth opting out of. If the lock genuinely needs to
- * be disabled, callers can skip the wrapper entirely.
- *
- * Throws when:
- *   - acquireStagingFenceLock fails (timeout or fs-error) → labelled Error.
- *   - `fn` throws → the original error is re-thrown after release.
- *
- * @param {string|undefined} repoRoot
- * @param {() => (T | Promise<T>)} fn
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs]
- * @param {string} [opts.holder]
- * @param {number} [opts.pollMs]
- * @returns {Promise<T>}
- * @template T
- */
-export async function withStagingFenceLock(repoRoot, fn, opts = {}) {
-  if (typeof fn !== 'function') {
-    throw new TypeError('withStagingFenceLock: fn must be a function');
-  }
-
-  const holder = typeof opts.holder === 'string' && opts.holder.length > 0
-    ? opts.holder
-    : `pid-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-
-  const acquireResult = await acquireStagingFenceLock({
-    repoRoot,
-    timeoutMs: opts.timeoutMs,
-    holder,
-    pollMs: opts.pollMs,
-  });
-
-  if (!acquireResult.ok) {
-    const reason = acquireResult.reason;
-    const extra = reason === 'timeout' && acquireResult.existingLock
-      ? ` (held by ${acquireResult.existingLock.holder}, pid=${acquireResult.existingLock.pid})`
-      : reason === 'fs-error' && acquireResult.error
-        ? `: ${acquireResult.error}`
-        : '';
-    const err = new Error(`withStagingFenceLock: acquire failed (${reason})${extra}`);
-    err.code = `STAGING_FENCE_LOCK_${reason.toUpperCase().replace(/-/g, '_')}`;
-    throw err;
-  }
-
-  let result;
-  let caughtError = null;
-  try {
-    result = await fn();
-  } catch (err) {
-    caughtError = err;
-  } finally {
-    const releaseResult = releaseStagingFenceLock({ repoRoot, holder });
-    if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
-      console.warn(
-        `withStagingFenceLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`,
-      );
-    }
-  }
-
-  if (caughtError !== null) throw caughtError;
-  return result;
 }

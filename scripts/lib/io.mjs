@@ -17,7 +17,7 @@
  */
 
 import { writeFile, rename, mkdir } from 'node:fs/promises';
-import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync } from 'node:fs';
 import path, { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
@@ -241,4 +241,64 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
   }
+}
+
+/**
+ * Parse newline-delimited JSON (JSONL) into an array of parsed objects.
+ *
+ * Splits `raw` on '\n', drops blank / whitespace-only lines, and JSON.parses
+ * each remaining line. This is the shared, tested replacement for the inline
+ * `raw.split('\n').filter(l => l.trim().length > 0).map(JSON.parse)` idiom that
+ * is re-implemented across ~30 metrics / event readers.
+ *
+ * Empty or whitespace-only input returns `[]` and never throws.
+ *
+ * @param {string} raw  Raw JSONL text.
+ * @param {object} [opts]
+ * @param {boolean} [opts.skipInvalid=false]  When `true`, silently skip lines
+ *        that fail JSON.parse. When `false` (default), throw an Error naming the
+ *        1-based source line number plus a short snippet of the offending line,
+ *        so callers get actionable diagnostics.
+ * @returns {object[]}  Parsed objects, in source order.
+ * @throws {Error} When `skipInvalid` is false and a non-blank line is not valid JSON.
+ */
+export function readJsonlLines(raw, opts = {}) {
+  const { skipInvalid = false } = opts;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return [];
+
+  const out = [];
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().length === 0) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch (err) {
+      if (skipInvalid) continue;
+      const snippet = line.length > 80 ? `${line.slice(0, 80)}…` : line;
+      throw new Error(
+        `io.mjs: readJsonlLines failed to parse JSON on line ${i + 1}: ${snippet} (${err?.message ?? String(err)})`,
+        { cause: err },
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Read a UTF-8 JSONL file and parse it via {@link readJsonlLines}.
+ *
+ * A missing file returns `[]` rather than throwing — JSONL metrics / events
+ * sidecars (e.g. `.orchestrator/metrics/*.jsonl`) are routinely absent on first
+ * run, and callers should treat "no file" identically to "empty file".
+ *
+ * @param {string} filePath  Path to a UTF-8 JSONL file.
+ * @param {object} [opts]    Forwarded to {@link readJsonlLines} (e.g. `{ skipInvalid: true }`).
+ * @returns {object[]}  Parsed objects, or `[]` when the file does not exist.
+ * @throws {Error} When the file exists but a non-blank line is invalid and `skipInvalid` is false.
+ */
+export function readJsonlFile(filePath, opts = {}) {
+  if (!existsSync(filePath)) return [];
+  const raw = readFileSync(filePath, 'utf8');
+  return readJsonlLines(raw, opts);
 }

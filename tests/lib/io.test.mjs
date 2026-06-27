@@ -20,7 +20,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { emitSystemMessage } from '@lib/io.mjs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { emitSystemMessage, readJsonlLines, readJsonlFile } from '@lib/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -285,5 +288,74 @@ describe('emitSystemMessage', () => {
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout.trim());
     expect(parsed.systemMessage).toBe('test message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readJsonlLines / readJsonlFile — pure helpers, tested in-process
+// ---------------------------------------------------------------------------
+
+describe('readJsonlLines / readJsonlFile', () => {
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir) {
+      rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  it('returns [] for an empty string', () => {
+    expect(readJsonlLines('')).toEqual([]);
+  });
+
+  it('returns [] for a whitespace-only string', () => {
+    expect(readJsonlLines('   \n  \t\n')).toEqual([]);
+  });
+
+  it('parses two valid lines plus a trailing blank line into 2 objects', () => {
+    const raw = '{"a":1,"b":"x"}\n{"a":2,"b":"y"}\n';
+    expect(readJsonlLines(raw)).toEqual([
+      { a: 1, b: 'x' },
+      { a: 2, b: 'y' },
+    ]);
+  });
+
+  it('skips blank/whitespace-only lines interspersed between valid lines', () => {
+    const raw = '{"id":1}\n\n   \n{"id":2}\n';
+    expect(readJsonlLines(raw)).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('throws by default when a line is invalid JSON', () => {
+    const bad = '{"ok":1}\nnot-json{{{\n{"ok":2}';
+    expect(() => readJsonlLines(bad)).toThrow();
+  });
+
+  it('error message names the 1-based source line number of the bad line', () => {
+    const bad = '{"ok":1}\nnot-json{{{\n{"ok":2}';
+    expect(() => readJsonlLines(bad)).toThrow(/line 2/);
+  });
+
+  it('skips invalid lines and returns only valid entries when skipInvalid is true', () => {
+    const raw = '{"ok":1}\nnot-json{{{\n{"ok":2}';
+    expect(readJsonlLines(raw, { skipInvalid: true })).toEqual([{ ok: 1 }, { ok: 2 }]);
+  });
+
+  it('readJsonlFile returns [] for a non-existent path', () => {
+    expect(readJsonlFile('/nonexistent/path/does/not/exist.jsonl')).toEqual([]);
+  });
+
+  it('readJsonlFile reads and parses a real temp file', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-jsonl-'));
+    const file = join(tmpDir, 'events.jsonl');
+    writeFileSync(file, '{"event":"start"}\n{"event":"stop"}\n', 'utf8');
+    expect(readJsonlFile(file)).toEqual([{ event: 'start' }, { event: 'stop' }]);
+  });
+
+  it('readJsonlFile forwards skipInvalid to readJsonlLines', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-jsonl-'));
+    const file = join(tmpDir, 'mixed.jsonl');
+    writeFileSync(file, '{"n":1}\nGARBAGE\n{"n":2}\n', 'utf8');
+    expect(readJsonlFile(file, { skipInvalid: true })).toEqual([{ n: 1 }, { n: 2 }]);
   });
 });
