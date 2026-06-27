@@ -120,7 +120,10 @@ describe('session-end SKILL.md — Phase 3.6.3 PRD reference', () => {
     expect(content).toContain('F2.1');
   });
 
-  it('references the PRD document path', () => {
-    expect(content).toContain('docs/prd/2026-05-21-learning-memory-modernization.md');
+  it('references the memory-proposals spec source (issue #501)', () => {
+    // The standalone PRD doc (docs/prd/2026-05-21-learning-memory-modernization.md)
+    // was moved to the vault for privacy (#462) and is no longer in-repo; the
+    // canonical in-repo spec reference is tracking issue #501. The skill points there.
+    expect(content).toContain('#501');
   });
 });

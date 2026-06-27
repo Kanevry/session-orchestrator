@@ -264,7 +264,7 @@ function loadSessionConfig() {
  * @param {string} _field  Relation field name ('blocks' | 'blocked_by')
  * @returns {number[]}
  */
-// TODO Phase D.2: query relations via glab api (e.g. glab api
+// TODO Phase D.2 (#341): query relations via glab api (e.g. glab api
 //   projects/:id/issues/:iid/links) to populate blocks/blocked_by.
 function extractRefs(_issue, _field) {
   return [];
@@ -368,7 +368,7 @@ async function runApplyLoop(state, libs, opts) {
   const allLoops   = [];           // LoopRegistration[]
   let lastCompletionAt = startMs;
 
-  // TODO Phase D.2: implement real cross-loop dependency commit-waiting.
+  // TODO Phase D.2 (#341): implement real cross-loop dependency commit-waiting.
   //   Currently all issues are treated as independent (blocks/blockedBy are []
   //   for v1). When commit-based deps land, nextReady() will need to check
   //   whether the blocker's commit is present on the target branch before
@@ -449,7 +449,7 @@ async function runApplyLoop(state, libs, opts) {
         repoRoot:       process.cwd(),
         draftMrPolicy:  flags.draftMrPolicy,
         bgIsolation,
-        // TODO Phase D.2: on-green MR-draft trigger — loop result does not
+        // TODO Phase D.2 (#341): on-green MR-draft trigger — loop result does not
         //   yet signal "first green test"; wire once runStoryPipeline
         //   propagates a firstGreenAt timestamp in StoryResult.
       }).then((result) => {
@@ -475,7 +475,7 @@ async function runApplyLoop(state, libs, opts) {
       if (registration.status === 'failed' && registration.killSwitch) {
         const cohortDecision = mkLib.decideCohortAction(allLoops, registration.loopId);
         if (cohortDecision.action === 'cohort-abort') {
-          // TODO Phase D.2: send real SIGTERM to in-process promises.
+          // TODO Phase D.2 (#341): send real SIGTERM to in-process promises.
           //   In v1 loops are in-process Promises; enforcement is logged only.
           //   Full SIGTERM requires spawning each pipeline in a child process
           //   with a dedicated pid, tracked on LoopRegistration.pid.

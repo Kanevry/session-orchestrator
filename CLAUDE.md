@@ -6,8 +6,11 @@
 > - **Install, CLI usage, architecture, component inventory** → [`README.md`](./README.md) ([§Components](./README.md#components))
 > - **Sub-agent authoring spec** (frontmatter, body, `sandbox-tier`, `output-schema`) → [`agents/AGENTS.md`](./agents/AGENTS.md)
 > - **Stable product/tech/structure context** → [`.orchestrator/steering/`](./.orchestrator/steering/) (injected at session-start Phase 2.6)
-> - **Always-on + path-scoped rules** → [`.claude/rules/`](./.claude/rules/)
+> - **Always-on + path-scoped rules** → [`.claude/rules/`](./.claude/rules/) (per-wave via `rule-loader.mjs`, #336/#694); authoring spec → [`docs/rule-authoring.md`](./docs/rule-authoring.md)
 > - **Session narrative & decisions log** → [[01-projects/session-orchestrator/decisions]] in the Meta-Vault
+> - **Operator tmux side-channel** → `/tmux-layout` (4-pane: STATE.md/CI-watch/events; [ADR-0007](docs/adr/0007-tmux-visualization-substrate.md))
+>
+> Additive instruction-file layering: this root for the big picture, nested files (`agents/AGENTS.md`, `.claude/rules/*.md`) for local conventions.
 
 ## Current State <!-- consistency:exempt:lean-root-pointer-section -->
 
@@ -26,20 +29,6 @@ These are the non-obvious, mistake-causing facts that must load every session. E
 - **Live state is not in this file.** Stack: Node 24+, vitest, ESLint 10 (`npm ci` after clone). Test counts, backlog, version, component inventory drift fast — the SSOT is README badges + `.orchestrator/metrics/sessions.jsonl`. Per-session detail lives in the Meta-Vault decisions log (linked above), not here.
 - **`memory.propose` requires `SO_WAVE_AGENT=1`.** `scripts/memory-propose.mjs` exits `3` (`rejected-wrong-context`) unless `process.env.SO_WAVE_AGENT === '1'`. The wave-executor boilerplate (see `skills/wave-executor/SKILL.md`) sets this env-var for every dispatched agent automatically. Direct invocation from the coordinator thread will always be rejected — use `/evolve` there instead. Full status dict: `queued` (0), `quota-exceeded` (1), `rejected-low-confidence` (2), `rejected-wrong-context` (3), `error` (4). See `docs/session-config-reference.md` § Memory Proposals. <!-- consistency:exempt:runtime-only -->
 - **Auto-promoted worktree cleanup is Hybrid Pattern (Anthropic-style).** When a session ran in a sibling worktree created via `enterWorktree()` (Phase 0.5 PROMOTION_OFFER outcome), `/close` Phase 4a detects this (`parseSessionId().format === 'semantic'` + path matches `<basePath>/<repo-name>-<sessionId>/`). Clean worktree → auto-remove with WARN. Dirty (uncommitted/untracked/unpushed) → AUQ `[Behalten/Löschen/Manuell]`. The Phase 4a cleanup runs AFTER Phase 4 commit+push, not before — this respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal. PSA-003 compliance enforced. Implementation: `skills/session-end/SKILL.md § Phase 4a`. <!-- consistency:exempt:runtime-only -->
-
-## Layered Instruction Files <!-- consistency:exempt:lean-root-pointer-section -->
-
-This repo uses Anthropic's additive instruction-file layering pattern: this root for the big picture, nested files for local conventions.
-
-| File | Scope | Loaded |
-|---|---|---|
-| `CLAUDE.md` / `AGENTS.md` (root) | This file — pointers + critical gotchas + Session Config | every session |
-| [`agents/AGENTS.md`](./agents/AGENTS.md) | Sub-agent authoring spec + local validation commands | when working under `agents/` |
-| [`.orchestrator/steering/{product,tech,structure}.md`](./.orchestrator/steering/) | Stable project context | session-start Phase 2.6 |
-| [`.claude/rules/*.md`](./.claude/rules/) | Always-on + glob-scoped (+ mode/host-class/expiry-gated) engineering rules | per-wave via `rule-loader.mjs` (wired #336/#694) |
-| [`docs/rule-authoring.md`](./docs/rule-authoring.md) | Canonical authoring spec for `.claude/rules/*.md` frontmatter (conditional loading: globs/mode/host-class/expiry; never-always-on for `auto-generated`) | reference (read when authoring a rule) |
-
-> **Opt-in visualization:** **`/tmux-layout`** renders a 4-pane operator side-channel (STATE.md tail, CI-watch, events.jsonl) in a second terminal — see [ADR-0007](docs/adr/0007-tmux-visualization-substrate.md). Coordinator chat stays in your original terminal (AUQ-001). PSA-003-compliant (`--force` required to replace an existing layout).
 
 ## Session Config
 
