@@ -59,8 +59,9 @@ variables:
     - git config --global user.name "CI Runner"
     - npm ci
     # Install nested vault-sync deps (zod, yaml) — ignored by root npm ci.
-    # Use `npm ci` for lockfile-deterministic installs (skills/vault-sync/package-lock.json exists).
-    - (cd skills/vault-sync && npm ci --no-audit)
+    # Use `npm install`: skills/vault-sync/package-lock.json is gitignored (.gitignore),
+    # so it is absent in CI's fresh clone — `npm ci` would EUSAGE-fail (no lockfile).
+    - (cd skills/vault-sync && npm install --no-audit --no-fund)
   cache:
     key:
       prefix: ${CI_CACHE_VERSION}

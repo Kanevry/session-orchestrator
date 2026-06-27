@@ -88,7 +88,9 @@ jobs:
 
       - name: Install nested vault-sync deps
         shell: bash
-        run: (cd skills/vault-sync && npm ci --no-audit)
+        # npm install (not npm ci): skills/vault-sync/package-lock.json is gitignored,
+        # so it is absent in CI's fresh clone — npm ci would EUSAGE-fail (no lockfile).
+        run: (cd skills/vault-sync && npm install --no-audit --no-fund)
 
       - name: Owner-privacy leak gate (#471)
         shell: bash
