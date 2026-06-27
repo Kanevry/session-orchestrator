@@ -163,6 +163,33 @@ describe('skills/repo-audit — #215 ported skill', () => {
     });
   });
 
+  describe('SKILL.md — Category 9 MCP server health probe (#707)', () => {
+    // Extract only the MCP section for scoped assertions — changes in other
+    // categories cannot produce false positives here.
+    const body = readFileSync(SKILL_PATH, 'utf8');
+    const mcpSectionMatch = body.match(/### Category 9: MCP Configuration[\s\S]+?(?=## Phase 4:|$)/);
+    const mcpSection = mcpSectionMatch ? mcpSectionMatch[0] : '';
+
+    it('(a) documents MCP server health-probe method using mcporter list --json', () => {
+      // Must fail if Category 9 is reverted to the original 3-row table (no health probe)
+      expect(mcpSection.length).toBeGreaterThan(100);
+      expect(mcpSection).toMatch(/mcporter list --json/);
+    });
+
+    it('(b) scope clarification states it does not cover MCPJungle or global gateway', () => {
+      // Must fail if the Scope: line is removed
+      expect(mcpSection).toMatch(/MCPJungle/);
+      expect(mcpSection).toMatch(/does NOT cover|not cover/i);
+    });
+
+    it('(c) mcporter framed as optional: skipped when absent, never a hard dependency', () => {
+      // Must fail if the graceful-degrade / SEC-020 framing is removed
+      expect(mcpSection).toMatch(/never a hard dependency/i);
+      expect(mcpSection).toMatch(/skipped/i);
+      expect(mcpSection).toMatch(/npm install -g mcporter/);
+    });
+  });
+
   describe('commands/repo-audit.md', () => {
     it('command file exists', () => {
       expect(existsSync(COMMAND_PATH)).toBe(true);

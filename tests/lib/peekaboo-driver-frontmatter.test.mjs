@@ -263,30 +263,35 @@ describe('peekaboo-driver body length', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 16: RUBRIC_GLASS_V2 env-gate canary
+// Test 16: rubric_features profile-flag gate canary
 //
-// The glass-modifiers emit block is gated on ${RUBRIC_GLASS_V2:-0} = "1" so
-// that v1 rubric runs do NOT emit the artifact and existing evaluator tests
+// The glass-modifiers emit block is gated on the active profile's
+// rubric_features array containing "glass-v2" (read from test-profiles.json),
+// so that v1 rubric runs do NOT emit the artifact and existing evaluator tests
 // are not broken by the new conformance field.
 //
 // This canary asserts:
-//   (a) The env-gate pattern is documented in the SKILL.md body.
-//   (b) The emit is conditional (the "if" / gate line appears before the cat block).
+//   (a) The profile-flag gate mechanism is documented in the SKILL.md body.
+//   (b) The emit is conditional (the gate line appears before the cat block).
 // If someone removes the gate and makes glass-modifiers emit unconditionally,
 // this test will fail — catching the regression before rubric-v1 evaluators break.
 // ---------------------------------------------------------------------------
 
-describe('peekaboo-driver RUBRIC_GLASS_V2 env-gate canary', () => {
-  it('body documents the RUBRIC_GLASS_V2 environment variable', () => {
-    expect(body).toContain('RUBRIC_GLASS_V2');
+describe('peekaboo-driver rubric_features profile-flag gate canary', () => {
+  it('body documents the rubric_features profile-flag gate mechanism', () => {
+    // The gate reads the active profile's rubric_features from test-profiles.json
+    expect(body).toContain('rubric_features');
+    expect(body).toContain('glass-v2');
   });
 
-  it('body gates glass-modifiers emit on RUBRIC_GLASS_V2=1 (conditional emit, not unconditional)', () => {
-    // The guard line uses the bash idiom: [ "${RUBRIC_GLASS_V2:-0}" = "1" ]
+  it('body gates glass-modifiers emit on profile rubric_features flag (conditional emit, not unconditional)', () => {
+    // The guard uses jq to check if the active profile declares rubric_features: ['glass-v2'].
     // Verify the gate is present AND precedes the `cat >` emit command for glass-modifiers.
     // We search for the `cat >` write command specifically (not documentation lines
     // that reference the artifact name in prose).
-    const gateLineIdx = bodyLines.findIndex((l) => l.includes('RUBRIC_GLASS_V2:-0'));
+    const gateLineIdx = bodyLines.findIndex((l) =>
+      l.includes('HAS_GLASS_V2') || l.includes('contains(["glass-v2"])'),
+    );
     // The actual emit line is the `cat >` command that writes the glass-modifiers file.
     const emitLineIdx = bodyLines.findIndex((l) =>
       l.includes('cat >') && l.includes('glass-modifiers-'),

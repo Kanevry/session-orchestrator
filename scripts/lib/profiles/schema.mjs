@@ -36,15 +36,16 @@ function makeError(message) {
  * Validate a single profile entry and return the parsed (defaulted) value.
  * Mirrors the Zod schema:
  *
- *   name:        string, matches /^[a-z0-9-]+$/, min 1, max 50
- *   target:      string | null | undefined
- *   driver:      'playwright' | 'peekaboo'
- *   mode:        'headless' | 'headed', default 'headless'
- *   rubric:      string, default 'skills/test-runner/rubric-v1.md'
- *   checks:      string[] | undefined
- *   tags:        string[] | undefined
- *   timeout_ms:  positive integer, default 120000
- *   description: string | undefined
+ *   name:            string, matches /^[a-z0-9-]+$/, min 1, max 50
+ *   target:          string | null | undefined
+ *   driver:          'playwright' | 'peekaboo'
+ *   mode:            'headless' | 'headed', default 'headless'
+ *   rubric:          string, default 'skills/test-runner/rubric-v1.md'
+ *   checks:          string[] | undefined
+ *   tags:            string[] | undefined
+ *   rubric_features: string[] | undefined
+ *   timeout_ms:      positive integer, default 120000
+ *   description:     string | undefined
  *
  * @param {unknown} value
  * @returns {{ success: true, data: object } | { success: false, error: object }}
@@ -116,6 +117,13 @@ function parseProfileEntry(value) {
     }
   }
 
+  // rubric_features (optional array of strings)
+  if (v.rubric_features !== undefined) {
+    if (!Array.isArray(v.rubric_features) || v.rubric_features.some((f) => typeof f !== 'string')) {
+      return { success: false, error: makeError('rubric_features must be an array of strings') };
+    }
+  }
+
   // timeout_ms (positive integer, with default)
   const timeout_ms = v.timeout_ms === undefined ? 120000 : v.timeout_ms;
   if (
@@ -152,6 +160,7 @@ function parseProfileEntry(value) {
   if (v.target !== undefined) data.target = v.target;
   if (v.checks !== undefined) data.checks = v.checks;
   if (v.tags !== undefined) data.tags = v.tags;
+  if (v.rubric_features !== undefined) data.rubric_features = v.rubric_features;
   if (v.description !== undefined) data.description = v.description;
 
   return { success: true, data };
