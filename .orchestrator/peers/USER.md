@@ -3,7 +3,7 @@ id: owner-card
 type: peer-card
 target: user
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-05-30T09:13:23.849Z"
+updated: "2026-07-02T07:40:26.819Z"
 source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913"]
 ---
 
@@ -56,4 +56,8 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913"]
 - When resuming a crashed session, grep-verify the STATE.md mission premise against the issue tracker + PRDs + actual code in the repo. A crashed STATE.md can encode hallucinated work (e.g., referencing closed/unrelated issues). Verify before continuing.
 - The crashed session's `.claude/wave-scope.json` (if present) is the reliable artifact showing planned file scope. Diff `.allowedPaths` against `git status` (modified+untracked) to separate completed work from the crash gap.
 - When resuming, run the existing test suite against the crashed work to verify it is sound before planning next steps.
-<!-- END MANAGED: crashed-session-recovery -->
+<!-- END MANAGED: crashed-session-recovery --><!-- BEGIN MANAGED: commit-discipline -->
+## Commit discipline and VCS
+
+- When referencing an issue in a commit that must stay open, use `refs #N` or `part of #N` in the subject line. NEVER use close-keywords (`close`, `closes`, `fixes`, `resolves`) anywhere in the commit message — GitLab's issue-closing matcher treats these keywords in the body as permission to auto-close, regardless of surrounding negation (e.g., "does NOT fully close #N" still triggers auto-close). For issues requiring documented rationale to stay open, omit close-keywords entirely.
+<!-- END MANAGED: commit-discipline -->
