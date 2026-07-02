@@ -197,7 +197,9 @@ function pendingDreamPath(repoRoot) {
  *
  * @param {object} args
  * @param {string} args.repoRoot
- * @param {string} args.diff                Markdown body (typically a unified-diff block).
+ * @param {string} args.diff                Complete-replacement MEMORY.md body, in exactly one
+ *   fenced ```markdown block (never git-style unified-diff hunks) — see the
+ *   Serialisation contract in `skills/memory-cleanup/SKILL.md`.
  * @param {string} [args.sourceSession]     Session id that produced the proposal.
  * @param {number} [args.memoryLinesBefore] MEMORY.md line count before.
  * @param {number} [args.proposedLinesAfter] MEMORY.md line count after the proposed diff.
@@ -299,6 +301,38 @@ function extractDiffBlock(body) {
 }
 
 /**
+ * Internal: detect whether an extracted block is a git-style unified diff
+ * (hunks meant to be applied against an existing file) rather than a
+ * complete-replacement Markdown body (issue #717).
+ *
+ * Detection is keyed on git-diff-SPECIFIC line signatures — deliberately NOT
+ * a bare `^[+-]` / `^- ` matcher, because MEMORY.md legitimately contains
+ * markdown bullets (`- [Title](file.md) — hook`) that such a naive matcher
+ * would false-positive on.
+ *
+ * @param {string} block
+ * @returns {boolean}
+ */
+function isGitStyleDiff(block) {
+  return /^--- /m.test(block) || /^\+\+\+ /m.test(block) || /^@@ .* @@/m.test(block);
+}
+
+/**
+ * Internal: count fenced ```diff / ```markdown (or untagged ```) code blocks
+ * in a raw sidecar body. More than one such fence is the multi-file /
+ * multi-hunk sidecar signature (issue #717) — `extractDiffBlock()` only ever
+ * consumes the FIRST fence, so a multi-fence body silently drops every
+ * subsequent hunk/section if applied naively.
+ *
+ * @param {string} body
+ * @returns {number}
+ */
+function countFencedBlocks(body) {
+  const matches = body.match(/```(?:diff|markdown)?\n[\s\S]*?```/g);
+  return matches ? matches.length : 0;
+}
+
+/**
  * Apply the pending dream by overwriting MEMORY.md with the body the
  * proposal carries, then deleting the sidecar.
  *
@@ -306,12 +340,18 @@ function extractDiffBlock(body) {
  *   - Returns `{ applied: false, reason: 'missing' }` when no sidecar exists.
  *   - Returns `{ applied: false, reason: 'stale' }` when the sidecar is older
  *     than 14 days (caller should re-run --dry-run).
+ *   - Returns `{ applied: false, reason: 'unsupported-format' }` (#717) when
+ *     the extracted block is a git-style diff (`isGitStyleDiff()`) or the raw
+ *     sidecar body contains more than one fenced block (`countFencedBlocks()`
+ *     > 1). MEMORY.md is left untouched and the sidecar is PRESERVED (not
+ *     unlinked) so the proposal can be regenerated in the correct format.
  *   - On success: deletes the sidecar, returns line-count deltas.
  *
  * The proposal is expected to embed the *complete* replacement body of
- * MEMORY.md inside a fenced ```` ```diff ```` or ```` ```markdown ```` block.
- * Free-form bodies are accepted but treated as the full replacement verbatim —
- * the dry-run subagent owns the format; this helper is the consumer.
+ * MEMORY.md inside a single fenced ```` ```diff ```` or ```` ```markdown ````
+ * block. Free-form bodies are accepted but treated as the full replacement
+ * verbatim — the dry-run subagent owns the format; this helper is the
+ * consumer, and it refuses formats it cannot safely apply (see above).
  *
  * @param {object} args
  * @param {string} args.repoRoot
@@ -347,7 +387,18 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
     linesBefore = raw.length === 0 ? 0 : raw.split('\n').length;
   }
 
-  const newBody = extractDiffBlock(body).trimEnd() + '\n';
+  const extractedBlock = extractDiffBlock(body);
+
+  // Guard (#717): refuse formats this applier cannot safely consume. A
+  // git-style diff (hunks) or a multi-fence body written verbatim as the new
+  // MEMORY.md would corrupt the index / silently drop subsequent sections.
+  // Preserve the sidecar — do NOT write, do NOT unlink — so the operator can
+  // regenerate a complete-body proposal via --dry-run.
+  if (isGitStyleDiff(extractedBlock) || countFencedBlocks(body) > 1) {
+    return { applied: false, reason: 'unsupported-format' };
+  }
+
+  const newBody = extractedBlock.trimEnd() + '\n';
   await mkdir(path.dirname(memoryPath), { recursive: true });
   const tmp = `${memoryPath}.${randomUUID().slice(0, 8)}.tmp`;
   await writeFile(tmp, newBody, 'utf8');

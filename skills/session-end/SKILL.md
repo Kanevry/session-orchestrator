@@ -549,7 +549,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 > Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
 
-After learnings are written (Phase 3.6), determine whether to emit a **manual-cadence nudge** to run `/memory-cleanup --dry-run` in the next session. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal. There is no `memory-cleanup` agent in the registry, so the historical auto-dream subagent dispatch never fired (see #614) — the nudge replaces it. A manually-run `/memory-cleanup --dry-run` writes a unified-diff proposal to `.orchestrator/pending-dream.md` for the session after that to apply via `/memory-cleanup --apply-pending`.
+After learnings are written (Phase 3.6), determine whether to emit a **manual-cadence nudge** to run `/memory-cleanup --dry-run` in the next session. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal. There is no `memory-cleanup` agent in the registry, so the historical auto-dream subagent dispatch never fired (see #614) — the nudge replaces it. A manually-run `/memory-cleanup --dry-run` writes a complete-replacement MEMORY.md proposal (single fenced ` ```markdown ` block — never git-style diff hunks, see #717) to `.orchestrator/pending-dream.md` for the session after that to apply via `/memory-cleanup --apply-pending`.
 
 1. Read `memory-cleanup-threshold` (default 5) and `memory-cleanup-soft-limit` (default 180) from `$CONFIG`.
 2. Invoke `shouldDispatchAutoDream` from `scripts/lib/auto-dream.mjs`:

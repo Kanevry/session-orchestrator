@@ -514,6 +514,144 @@ describe('shouldDispatchAutoDream — #699: cadence does NOT trigger after recen
 // Indirect coverage of internal helpers via applyPendingDream
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// #717 — applyPendingDream refuses unsupported sidecar formats
+// ---------------------------------------------------------------------------
+// isGitStyleDiff() / countFencedBlocks() are internal (not exported), so these
+// are covered indirectly through applyPendingDream — the public consumer.
+
+describe('applyPendingDream — #717: unsupported-format guard', () => {
+  it('refuses a multi-fence git-style-diff sidecar (3 diff hunks against different files): unsupported-format, MEMORY.md untouched, sidecar preserved', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const originalMemory = 'a\nb\nc\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), originalMemory, 'utf8');
+
+    // Mirrors the real #717 incident: 3 separate ```diff fences, each a
+    // git-style unified-diff hunk (--- / +++ / @@ markers) against a
+    // DIFFERENT file — exactly the shape extractDiffBlock() would otherwise
+    // silently truncate to just the first hunk if applied naively.
+    const multiFenceDiff = [
+      '```diff',
+      '--- a/MEMORY.md',
+      '+++ b/MEMORY.md',
+      '@@ -1,2 +1,2 @@',
+      '-old line',
+      '+new line',
+      '```',
+      '',
+      '```diff',
+      '--- a/user_profile.md',
+      '+++ b/user_profile.md',
+      '@@ -1,1 +1,1 @@',
+      '-old profile line',
+      '+new profile line',
+      '```',
+      '',
+      '```diff',
+      '--- a/session-history.md',
+      '+++ b/session-history.md',
+      '@@ -1,1 +1,1 @@',
+      '-old history line',
+      '+new history line',
+      '```',
+    ].join('\n');
+
+    await writePendingDream({ repoRoot, diff: multiFenceDiff, sourceSession: 'sess-717-a' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result).toEqual({ applied: false, reason: 'unsupported-format' });
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(originalMemory);
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
+  });
+
+  it('refuses a SINGLE fenced block that itself contains git-style diff markers', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const originalMemory = 'x\ny\nz\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), originalMemory, 'utf8');
+
+    const singleGitDiff = [
+      '```diff',
+      '--- a/MEMORY.md',
+      '+++ b/MEMORY.md',
+      '@@ -1,2 +1,2 @@',
+      '-old',
+      '+new',
+      '```',
+    ].join('\n');
+
+    await writePendingDream({ repoRoot, diff: singleGitDiff, sourceSession: 'sess-717-b' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result).toEqual({ applied: false, reason: 'unsupported-format' });
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(originalMemory);
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
+  });
+
+  it('refuses a multi-fence body even when the FIRST fence alone is not git-style (exercises the countFencedBlocks discriminator independently of isGitStyleDiff)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const originalMemory = 'p\nq\nr\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), originalMemory, 'utf8');
+
+    // First fence is plain markdown with no diff markers — isGitStyleDiff()
+    // on the extracted (first) block alone would say false. The SECOND fence
+    // is what must trip the refusal via countFencedBlocks(body) > 1.
+    const twoFenceBody = [
+      '```markdown',
+      '# Memory Index',
+      '- [Note](note.md) — some note',
+      '```',
+      '',
+      '```markdown',
+      '# Second Section',
+      '- [Other](other.md) — another note',
+      '```',
+    ].join('\n');
+
+    await writePendingDream({ repoRoot, diff: twoFenceBody, sourceSession: 'sess-717-d' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result).toEqual({ applied: false, reason: 'unsupported-format' });
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(originalMemory);
+  });
+
+  it('false-positive guard: a legitimate single markdown fence with MEMORY.md-typical bullet lines is still applied (not refused)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'), 'old body\n', 'utf8');
+
+    // Real MEMORY.md bullets use markdown link syntax with a leading hyphen —
+    // a naive `^[+-]` matcher would false-positive these as diff hunk lines.
+    const legitimateBody = [
+      '```markdown',
+      '# Memory Index',
+      '',
+      '## Project',
+      '- [User Profile](user_profile.md) — Austrian dev, GitLab ecosystem',
+      '- [Session History](session-history.md) — 5 sessions, reverse-chronological',
+      '```',
+    ].join('\n');
+
+    await writePendingDream({ repoRoot, diff: legitimateBody, sourceSession: 'sess-717-c' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    const memoryContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8');
+    expect(memoryContent).toContain('- [User Profile](user_profile.md) — Austrian dev, GitLab ecosystem');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+});
+
 describe('applyPendingDream / extractDiffBlock + parsePendingDream (internal)', () => {
   it('treats a body without a fenced code block as the full replacement verbatim', async () => {
     const repoRoot = tmp();
