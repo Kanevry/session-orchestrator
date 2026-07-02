@@ -21,7 +21,7 @@
  *   2 — I/O / parse error (non-JSON input, unwritable path)
  *
  * On success the script echoes a single JSON line to stdout:
- *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":1}
+ *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":2}
  */
 
 import { readFileSync } from 'node:fs';

@@ -3,9 +3,9 @@
  * backfill-sessions.mjs — normalize legacy shapes in sessions.jsonl.
  *
  * Issue #249 follow-up. Reads a sessions.jsonl file and rewrites each line
- * into the canonical schema_version=1 shape where a safe deterministic
- * mapping exists. Entries that cannot be safely mapped are tagged
- * `_deprecated: true` (preserved but flagged — never dropped).
+ * into the canonical schema_version=2 shape (bumped 1 -> 2 via #372) where a
+ * safe deterministic mapping exists. Entries that cannot be safely mapped are
+ * tagged `_deprecated: true` (preserved but flagged — never dropped).
  *
  * Usage:
  *   node scripts/backfill-sessions.mjs [--file PATH] [--apply] [--mark-deprecated-only]

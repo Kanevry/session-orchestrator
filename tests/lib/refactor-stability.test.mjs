@@ -254,9 +254,9 @@ describe('refactor-stability — session-schema.mjs public API after W2 split', 
     expect(mod.aliasLegacyEndedAt).toBeDefined();
   });
 
-  it('CURRENT_SESSION_SCHEMA_VERSION === 1', async () => {
+  it('CURRENT_SESSION_SCHEMA_VERSION === 2', async () => {
     const mod = await import('@lib/session-schema.mjs');
-    expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
+    expect(mod.CURRENT_SESSION_SCHEMA_VERSION).toBe(2);
   });
 
   it('SESSION_KEY_ALIASES is frozen with key count in range [1, 50]', async () => {

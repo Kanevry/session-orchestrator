@@ -70,15 +70,15 @@ describe('emit-session.mjs CLI', () => {
     expect(lines).toHaveLength(1);
     const parsed = JSON.parse(lines[0]);
     expect(parsed.session_id).toBe(entry.session_id);
-    expect(parsed.schema_version).toBe(1);
+    expect(parsed.schema_version).toBe(2);
   });
 
-  it('stamps schema_version:1 on entries that omit it', () => {
+  it('stamps schema_version:2 on entries that omit it', () => {
     const entry = validEntry();
     delete entry.schema_version;
     runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
     const parsed = JSON.parse(readFileSync(targetFile, 'utf8').trim());
-    expect(parsed.schema_version).toBe(1);
+    expect(parsed.schema_version).toBe(2);
   });
 
   it('emits a summary JSON line on stdout', () => {
@@ -87,7 +87,7 @@ describe('emit-session.mjs CLI', () => {
     const summary = JSON.parse(r.stdout.trim());
     expect(summary.action).toBe('appended');
     expect(summary.session_id).toBe(entry.session_id);
-    expect(summary.schema_version).toBe(1);
+    expect(summary.schema_version).toBe(2);
     expect(summary.path).toBe(targetFile);
   });
 

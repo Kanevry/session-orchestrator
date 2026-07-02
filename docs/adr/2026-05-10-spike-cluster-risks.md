@@ -72,6 +72,7 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 - **Detection:** automatic (`scripts/lib/validate/check-session-schema.mjs` runs in CI; flags missing required fields and unknown fields)
 - **Mitigation:** A6 documents the v1 schema (82 entries). Phase D extensions (`agent_identity`, `worktree_path`, `parent_run_id`, `stall_recovery_count`) MUST be **additive-only**: new fields default to `null` or `undefined`; existing readers tolerate missing fields. Bump `schema_version: 2` only when a field becomes required. Run the existing migrate-cli pattern (#305) for any non-additive change. Cite `backend-data.md` Migration Patterns: *"Always write reversible migrations."*
 - **Escalation:** if a reader breaks, fall back to `schema_version: 1` reads with explicit nullability handling for the new fields. Never strip unknown fields on write — preserves forward-compat for in-flight sessions.
+- **Status (2026-07-02):** the `schema_version: 2` bump landed via #372 — additive-only as mitigated above, gated on 135/135 production entries validating clean.
 
 ### R-H-2: MCP tool name collisions (#365)
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * migrate-sessions-jsonl.mjs — migrate old sessions.jsonl entries to the
- * canonical schema_version=1 shape.
+ * canonical schema_version=2 shape (bumped 1 -> 2 via #372; validateSession
+ * stamps whatever CURRENT_SESSION_SCHEMA_VERSION currently resolves to).
  *
  * Issue #304: 73% of sessions.jsonl records were mirror-invalid because two
  * incompatible writer formats coexisted:
@@ -29,7 +30,7 @@
  *   1 — I/O error or file not found
  *   2 — usage error
  *
- * Idempotency: already-canonical (schema_version=1) records are left byte-
+ * Idempotency: already-canonical (schema_version=2) records are left byte-
  * identical. Running --apply twice produces the same result.
  *
  * Output (stdout, one JSON line):
@@ -68,7 +69,7 @@ export function isOldShape(entry) {
 }
 
 /**
- * Map an old-shape entry to the canonical schema_version=1 shape.
+ * Map an old-shape entry to the canonical schema_version=2 shape.
  *
  * Mapping rules:
  *   total_agents       = agents_complete + agents_partial + agents_failed
@@ -83,7 +84,7 @@ export function isOldShape(entry) {
  *                        duration_seconds absent
  *
  * All original fields are PRESERVED alongside the new canonical fields so
- * no information is lost (additive migration). schema_version is stamped to 1.
+ * no information is lost (additive migration). schema_version is stamped to 2.
  *
  * @param {object} entry — raw old-shape entry
  * @returns {object} migrated entry (new object; input not mutated)
@@ -329,7 +330,7 @@ function parseArgs(argv) {
         'Usage: node scripts/migrate-sessions-jsonl.mjs [--file PATH] [--apply]\n' +
           '\n' +
           'Migrate old sessions.jsonl entries (agents_dispatched/waves_completed shape)\n' +
-          'to the canonical schema_version=1 shape (agent_summary/waves[]/total_agents).\n' +
+          'to the canonical schema_version=2 shape (agent_summary/waves[]/total_agents).\n' +
           '\n' +
           'Options:\n' +
           '  --file PATH   target JSONL file (default: .orchestrator/metrics/sessions.jsonl)\n' +

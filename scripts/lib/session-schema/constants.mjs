@@ -16,8 +16,13 @@
  * Current session-record schema version. New writes are stamped with this
  * value by validateSession. Records read without `schema_version` are tagged
  * as 0 (pre-versioning legacy) by normalizeSession.
+ *
+ * Bumped 1 -> 2 via issue #372 (2026-07-02): gate evidence — 135/135
+ * production entries in .orchestrator/metrics/sessions.jsonl validate
+ * cleanly against the accepted-version set in validator.mjs. The bump is
+ * additive-only; no required-field or shape change accompanies it.
  */
-export const CURRENT_SESSION_SCHEMA_VERSION = 1;
+export const CURRENT_SESSION_SCHEMA_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Key aliases (safe renames — no value transformation)

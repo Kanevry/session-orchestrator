@@ -69,16 +69,19 @@ function isPlainObject(v) {
 /**
  * Validate session entry's schema_version field.
  *
- * Accepted versions: 0 (legacy / pre-versioning), 1 (current writes per CURRENT_SESSION_SCHEMA_VERSION),
- * 2 (ADR-364 substrate scaffolding, commit 12c0df4), 3 (ADR-364 follow-ups, commit eb820ca).
+ * Accepted versions: 0 (legacy / pre-versioning), 1 (pre-#372 writes),
+ * 2 (current writes per CURRENT_SESSION_SCHEMA_VERSION, bumped via #372),
+ * 3 (ADR-364 follow-ups, commit eb820ca).
  *
  * Additive contract: as the schema evolves, older historical entries must remain readable.
  * #576 expanded this from `0 | 1` to `0 | 1 | 2 | 3` after discovering schema_version=3 entries
  * in production data (.orchestrator/metrics/sessions.jsonl line 11, session main-2026-05-24-0510-housekeeping).
+ * #372 bumped CURRENT_SESSION_SCHEMA_VERSION from 1 to 2 — the accepted set here was already
+ * wide enough (#576), so no change to ACCEPTED_VERSIONS was required for the bump itself.
  *
  * Cross-references:
- * - Issue: #576
- * - Constant: CURRENT_SESSION_SCHEMA_VERSION in ./constants.mjs (current=1; bump when adding fields)
+ * - Issue: #576, #372
+ * - Constant: CURRENT_SESSION_SCHEMA_VERSION in ./constants.mjs (current=2; bump when adding fields)
  * - PRD: docs/prd/<future-schema-evolution> when v4 is introduced
  *
  * @throws {ValidationError} when schema_version is set but not in [0, 1, 2, 3]

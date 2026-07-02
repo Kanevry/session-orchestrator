@@ -94,7 +94,7 @@ describe('normalizeSession — alias application', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeSession — schema_version stamping', () => {
-  it('tags missing schema_version as 0 (not CURRENT=1)', () => {
+  it('tags missing schema_version as 0 (not CURRENT=2)', () => {
     const out = normalizeSession({ session_id: 'sess-no-ver', session_type: 'deep' });
     expect(out.schema_version).toBe(0);
   });

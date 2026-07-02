@@ -56,10 +56,10 @@ describe('migrateEntry — v3 full waves[] + valid session_type', () => {
     expect(() => validateSession(migrated)).not.toThrow();
   });
 
-  it('sets schema_version to 1 after migration', () => {
+  it('sets schema_version to 2 after migration', () => {
     const migrated = migrateEntry(v3Full());
     const validated = validateSession(migrated);
-    expect(validated.schema_version).toBe(1);
+    expect(validated.schema_version).toBe(2);
   });
 
   it('derives total_waves from actual_waves when total_waves absent', () => {

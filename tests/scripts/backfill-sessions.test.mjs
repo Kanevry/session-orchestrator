@@ -2,8 +2,9 @@
  * tests/scripts/backfill-sessions.test.mjs
  *
  * Vitest suite for scripts/backfill-sessions.mjs — rewrites legacy
- * sessions.jsonl entries into canonical schema_version=1 shape, marks
- * unmappable entries `_deprecated: true` (Issue #249 follow-up).
+ * sessions.jsonl entries into the canonical schema_version shape (bumped
+ * 1 -> 2 via #372), marks unmappable entries `_deprecated: true` (Issue
+ * #249 follow-up).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -108,7 +109,7 @@ describe('backfill-sessions.mjs', () => {
   });
 
   describe('--apply', () => {
-    it('rewrites safe-alias entries into canonical v1 shape', () => {
+    it('rewrites safe-alias entries into the canonical current-version shape', () => {
       const legacy = { ...CANONICAL };
       delete legacy.session_type;
       legacy.type = 'deep';
@@ -123,7 +124,7 @@ describe('backfill-sessions.mjs', () => {
 
       const rewritten = readJsonlLines(file);
       expect(rewritten[0].session_type).toBe('deep');
-      expect(rewritten[0].schema_version).toBe(1);
+      expect(rewritten[0].schema_version).toBe(2);
     });
 
     it('creates a .bak-<ISO> backup of the original', () => {
@@ -170,7 +171,7 @@ describe('backfill-sessions.mjs', () => {
       // Canonical holds the rewritten content (session_type populated, schema_version stamped).
       const canonicalEntry = readJsonlLines(file)[0];
       expect(canonicalEntry.session_type).toBe('deep');
-      expect(canonicalEntry.schema_version).toBe(1);
+      expect(canonicalEntry.schema_version).toBe(2);
       // Backup holds the pre-rewrite content (type alias, no session_type, no schema_version).
       const backupEntry = JSON.parse(readFileSync(join(tmp, backups[0]), 'utf8').trim());
       expect(backupEntry.type).toBe('deep');
@@ -208,7 +209,7 @@ describe('backfill-sessions.mjs', () => {
       runCli(['--file', file, '--apply']);
       const [rewritten] = readJsonlLines(file);
       expect(rewritten.agent_summary).toEqual({ complete: 3, partial: 1, failed: 0, spiral: 0 });
-      expect(rewritten.schema_version).toBe(1);
+      expect(rewritten.schema_version).toBe(2);
     });
 
     it('converts duration_min → duration_seconds (multiply by 60)', () => {

@@ -26,7 +26,8 @@ const _warnedMissingSchemaVersion = new Set();
 /**
  * Normalize a session entry read from disk. Applies SAFE key aliases, tags
  * legacy entries without `schema_version` as 0 (distinct from
- * CURRENT_SESSION_SCHEMA_VERSION=1 which is stamped on new writes).
+ * CURRENT_SESSION_SCHEMA_VERSION=2 which is stamped on new writes; bumped
+ * 1 -> 2 via #372).
  *
  * Never throws. Malformed input (null, non-object, array) is passed through
  * unchanged. Original keys are preserved alongside their canonical alias for

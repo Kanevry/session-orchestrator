@@ -80,10 +80,33 @@ describe('historical sessions.jsonl entries — additive contract (ADR-364 DoD-1
   );
 
   it.skipIf(lines.length === 0)(
-    'asserts no v2 schema_version literal exists in current entries',
+    'asserts every historical schema_version is a valid accepted number, never a string literal (#372 post-bump guard)',
     () => {
-      const v2Hits = lines.filter((line) => /"schema_version"\s*:\s*("v2"|2[^0-9])/.test(line));
-      expect(v2Hits).toEqual([]);
+      // Pre-#372 this test forbade the literal numeric 2 (a premature/anomalous
+      // value before CURRENT_SESSION_SCHEMA_VERSION was bumped to 2). Now that
+      // 2 is the current version, numeric 2 is expected in fresh entries — the
+      // guard that still matters is: schema_version, when present, must be a
+      // NUMBER drawn from the validator's accepted set (mirrors ACCEPTED_VERSIONS
+      // in scripts/lib/session-schema/validator.mjs), never a string such as
+      // "v2" (a malformed-writer regression class this test still catches).
+      const ACCEPTED_VERSIONS = [0, 1, 2, 3];
+      const failures = [];
+      lines.forEach((line, idx) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          return; // JSON parse failures are already caught by the first test
+        }
+        if (!('schema_version' in parsed) || parsed.schema_version === undefined) return;
+        const v = parsed.schema_version;
+        if (typeof v !== 'number' || !ACCEPTED_VERSIONS.includes(v)) {
+          failures.push(
+            `line ${idx + 1} (session_id=${parsed.session_id ?? '?'}): schema_version ${JSON.stringify(v)} is not a valid accepted number`
+          );
+        }
+      });
+      expect(failures).toEqual([]);
     }
   );
 
@@ -152,6 +175,8 @@ describe('historical sessions.jsonl entries — additive contract (ADR-364 DoD-1
 //   sess-clamped-002   — entry with _clamped + _original_completed_at forensics
 //   sess-legacy-003    — old-shape (agents_dispatched / waves_completed) that
 //                        exercises the migrateEntry path
+//   sess-v2-004        — happy-path schema_version=2 canonical entry (#372 —
+//                        exercises the post-bump CURRENT_SESSION_SCHEMA_VERSION)
 // ---------------------------------------------------------------------------
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

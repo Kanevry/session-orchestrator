@@ -17,8 +17,8 @@ import {
 } from '@lib/session-schema/constants.mjs';
 
 describe('CURRENT_SESSION_SCHEMA_VERSION', () => {
-  it('is the number 1', () => {
-    expect(CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
+  it('is the number 2', () => {
+    expect(CURRENT_SESSION_SCHEMA_VERSION).toBe(2);
   });
 });
 

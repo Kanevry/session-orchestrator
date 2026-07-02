@@ -61,10 +61,10 @@ const VALID = () => ({
 // ---------------------------------------------------------------------------
 
 describe('validateSession — happy path', () => {
-  it('accepts a valid entry and stamps schema_version: 1 when absent', () => {
+  it('accepts a valid entry and stamps schema_version: 2 when absent', () => {
     const v = validateSession(VALID());
     expect(v.schema_version).toBe(CURRENT_SESSION_SCHEMA_VERSION);
-    expect(v.schema_version).toBe(1);
+    expect(v.schema_version).toBe(2);
     expect(v.session_id).toBe('sess-2026-04-24-test');
   });
 
@@ -343,8 +343,8 @@ describe('module exports', () => {
     expect(SESSION_KEY_ALIASES.waves_completed).toBe('total_waves');
   });
 
-  it('CURRENT_SESSION_SCHEMA_VERSION is 1', () => {
-    expect(CURRENT_SESSION_SCHEMA_VERSION).toBe(1);
+  it('CURRENT_SESSION_SCHEMA_VERSION is 2', () => {
+    expect(CURRENT_SESSION_SCHEMA_VERSION).toBe(2);
   });
 });
 
@@ -419,7 +419,7 @@ describe('validateSession — new shape accepted (#304)', () => {
   it('accepts a fully canonical new-shape record', () => {
     const entry = VALID();
     const v = validateSession(entry);
-    expect(v.schema_version).toBe(1);
+    expect(v.schema_version).toBe(2);
     expect(v.agent_summary).toEqual({ complete: 5, partial: 1, failed: 0, spiral: 0 });
     expect(Array.isArray(v.waves)).toBe(true);
     expect(typeof v.total_agents).toBe('number');
@@ -477,7 +477,7 @@ describe('migrateEntry — old to new shape mapping (#304)', () => {
     const migrated = migrateEntry(OLD_SHAPE());
     expect(() => validateSession(migrated)).not.toThrow();
     const validated = validateSession(migrated);
-    expect(validated.schema_version).toBe(1);
+    expect(validated.schema_version).toBe(2);
   });
 
   it('converts duration_min to duration_seconds when absent', () => {
@@ -548,8 +548,8 @@ describe('migrateEntry — idempotency (#304)', () => {
     const v2 = validateSession(twice);
     expect(v1.agent_summary).toEqual(v2.agent_summary);
     expect(v1.total_agents).toBe(v2.total_agents);
-    expect(v1.schema_version).toBe(1);
-    expect(v2.schema_version).toBe(1);
+    expect(v1.schema_version).toBe(2);
+    expect(v2.schema_version).toBe(2);
   });
 
   it('migrateEntry on a record with schema_version:1 does not change schema_version', () => {

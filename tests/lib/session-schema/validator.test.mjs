@@ -64,9 +64,9 @@ describe('ValidationError', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — happy path', () => {
-  it('accepts a valid entry and stamps schema_version: 1 when absent', () => {
+  it('accepts a valid entry and stamps schema_version: 2 when absent', () => {
     const v = validateSession(VALID());
-    expect(v.schema_version).toBe(1);
+    expect(v.schema_version).toBe(2);
   });
 
   it('preserves pre-existing schema_version: 0 (legacy)', () => {
@@ -142,7 +142,7 @@ describe('validateSession — schema_version', () => {
     );
   });
 
-  it('accepts schema_version: 1 (current)', () => {
+  it('accepts schema_version: 1 (pre-#372 writes, still readable)', () => {
     expect(() => validateSession({ ...VALID(), schema_version: 1 })).not.toThrow();
   });
 
@@ -150,7 +150,7 @@ describe('validateSession — schema_version', () => {
     expect(() => validateSession({ ...VALID(), schema_version: 0 })).not.toThrow();
   });
 
-  it('accepts schema_version: 2 (ADR-364 substrate)', () => {
+  it('accepts schema_version: 2 (current, bumped via #372)', () => {
     expect(() => validateSession({ ...VALID(), schema_version: 2 })).not.toThrow();
   });
 

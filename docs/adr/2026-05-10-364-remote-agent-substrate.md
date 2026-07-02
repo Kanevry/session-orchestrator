@@ -59,6 +59,8 @@ This ADR maps each concept from the four sources to one of four verdicts (adopt 
 The proposed thin slice is deliberately schema-and-scaffold heavy — three files, no behavioural change to the autopilot loop, no new external dependencies. It can ship in 1–2 deep sessions and unblocks the multi-story (#341) and quota-probe spikes without committing to either.
 
 1. **Extend `sessions.jsonl` schema (additive-only, schema_version stays at v1)** with optional fields `agent_identity`, `worktree_path`, `parent_run_id`, `lease_acquired_at`, `lease_ttl_seconds`, `expected_cost_tier`. **Schema-version stance:** additive-only first; the `schema_version` field stays at `v1` and the validator treats the new fields as optional. Bump to `v2` happens in a follow-up issue, only after all 82 historical entries have been read at least once with the new validator (see §Risks #1 — both clauses agree).
+
+   > **Status update (2026-07-02):** the deferred `v2` bump landed via issue #372 — `CURRENT_SESSION_SCHEMA_VERSION` is now `2`, gated on 135/135 production `sessions.jsonl` entries validating clean against the post-bump validator (`historical-entries.test.mjs`). Note this ADR's "`v1`"/"`v2`" string wording is shorthand for the schema's numeric `schema_version` field (`1`, `2`, …) — the implementation has always stamped and compared plain numbers, never the string literals `"v1"`/`"v2"`.
    - File: `scripts/lib/sessions-jsonl.mjs` + `scripts/lib/session-schema/constants.mjs:1-76` (per deep-4 split)
    - Effort: **S** (schema + validator + 1 migration test)
 
