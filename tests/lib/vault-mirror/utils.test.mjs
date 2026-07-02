@@ -107,6 +107,27 @@ describe('isValidSlug', () => {
   it('rejects spaces', () => {
     expect(isValidSlug('bad slug')).toBe(false);
   });
+
+  // ── issue #718: RegExp implicit ToString-coercion trap ─────────────────────
+  // Without the `typeof s === 'string'` guard, `slugRegex.test(undefined)`
+  // coerces its argument to the literal string "undefined", which matches the
+  // kebab-slug pattern — so isValidSlug(undefined) returned `true` pre-fix.
+
+  it('rejects undefined (RegExp ToString-coercion trap)', () => {
+    expect(isValidSlug(undefined)).toBe(false);
+  });
+
+  it('rejects null (RegExp ToString-coercion trap)', () => {
+    expect(isValidSlug(null)).toBe(false);
+  });
+
+  it('rejects a number input, even one that would stringify to a slug-shaped value', () => {
+    expect(isValidSlug(123)).toBe(false);
+  });
+
+  it('accepts the literal STRING "undefined" (a genuine string is still validated normally)', () => {
+    expect(isValidSlug('undefined')).toBe(true);
+  });
 });
 
 // ── uuidPrefix8 ───────────────────────────────────────────────────────────────

@@ -1543,3 +1543,159 @@ describe('regression #704 — source_session [[wikilink]] guard', () => {
     expect(md).not.toContain('[[');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #718 — per-record resilience: a mapper crash on ONE malformed record must
+// not abort the whole run, and must be distinguishable from a genuine
+// filesystem error (which must still abort).
+// ---------------------------------------------------------------------------
+
+describe('regression #718 — vault-mirror per-record resilience', () => {
+  const baseSession = (sessionId) => ({
+    session_id: sessionId,
+    session_type: 'feature',
+    platform: 'claude-code',
+    started_at: '2026-04-13T08:00:00Z',
+    completed_at: '2026-04-13T10:00:00Z',
+    duration_seconds: 7200,
+    total_waves: 3,
+    total_agents: 6,
+    total_files_changed: 12,
+    agent_summary: { complete: 5, partial: 1, failed: 0, spiral: 0 },
+    waves: [
+      { wave: 1, role: 'Planning', agent_count: 1, files_changed: 2, quality: 'ok' },
+      { wave: 2, role: 'Implementation', agent_count: 3, files_changed: 8, quality: 'ok' },
+      { wave: 3, role: 'QA', agent_count: 2, files_changed: 2, quality: 'ok' },
+    ],
+    effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
+  });
+
+  function writeJsonlDir(dir, lines) {
+    const p = join(dir, 'source.jsonl');
+    writeFileSync(p, lines.join('\n') + '\n', 'utf8');
+    return p;
+  }
+
+  let dirs = [];
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    dirs = [];
+  });
+  function tmp() {
+    const d = makeTmpDir();
+    dirs.push(d);
+    return d;
+  }
+
+  it('mid-file malformed record (started_at is a number, crashes toDate) does not abort the run: skipped-invalid with reason mapper-crash, surrounding records still processed', () => {
+    const vaultDir = tmp();
+    // Record 2 crashes the mapper: `started_at: 12345` survives JSON.parse but
+    // `toDate(12345)` throws "isoString.slice is not a function" inside
+    // generateSessionNote — a plain TypeError, not a `vault-mirror:` validation
+    // error and not a system error (no err.code/err.syscall).
+    const record1 = baseSession('session-2026-04-13-a');
+    const record2 = { ...baseSession('session-2026-04-13-b'), started_at: 12345 };
+    const record3 = baseSession('session-2026-04-13-c');
+    const sourceFile = writeJsonlDir(vaultDir, [
+      JSON.stringify(record1),
+      JSON.stringify(record2),
+      JSON.stringify(record3),
+    ]);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--dry-run']);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'session-2026-04-13-a' });
+    expect(lines[1]).toMatchObject({ action: 'skipped-invalid', id: 'session-2026-04-13-b', reason: 'mapper-crash' });
+    expect(lines[2]).toMatchObject({ action: 'created', id: 'session-2026-04-13-c' });
+  });
+
+  it('a bare `null` JSONL line (Wave-3 double-crash regression) does not abort the run: skipped-invalid with reason mapper-crash and id null', () => {
+    const vaultDir = tmp();
+    // JSON.parse('null') succeeds and yields the JS value null. Destructuring
+    // `session_id` from it throws inside processSession — and reading
+    // `entry.id` on that same null WITHOUT optional chaining would crash a
+    // SECOND time inside the catch handler itself (the pre-fix bug).
+    const record1 = baseSession('session-2026-04-13-x');
+    const sourceFile = writeJsonlDir(vaultDir, [JSON.stringify(record1), 'null']);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--dry-run']);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'session-2026-04-13-x' });
+    expect(lines[1]).toEqual({ action: 'skipped-invalid', path: null, kind: 'session', id: null, reason: 'mapper-crash' });
+  });
+
+  it('a legacy record missing session_id is skipped-invalid via the VALIDATION path (no crash, no mapper-crash reason)', () => {
+    const vaultDir = tmp();
+    // No `session_id` field at all (legacy `session`-keyed shape) — this hits
+    // REQUIRED_SESSION_FIELDS validation and throws a `vault-mirror: ...`
+    // error BEFORE toDate() is ever reached, so it must NOT carry
+    // reason: 'mapper-crash'.
+    const legacyRecord = {
+      session: 'legacy-id',
+      session_type: 'feature',
+      started_at: '2026-04-13T08:00:00Z',
+      completed_at: '2026-04-13T10:00:00Z',
+      total_waves: 3,
+      total_agents: 6,
+      total_files_changed: 12,
+      agent_summary: { complete: 5, partial: 1, failed: 0, spiral: 0 },
+      waves: [{ wave: 1, role: 'Planning', agent_count: 1, files_changed: 2, quality: 'ok' }],
+      effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    };
+    const sourceFile = writeJsonlDir(vaultDir, [JSON.stringify(legacyRecord)]);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--dry-run']);
+
+    expect(result.status).toBe(0);
+    const line = JSON.parse(result.stdout.trim());
+    expect(line).toEqual({ action: 'skipped-invalid', path: null, kind: 'session', id: null });
+    expect(line.reason).toBeUndefined();
+  });
+
+  it('genuine filesystem error mid-loop still aborts with exit 2 (system-error discriminator is not fooled by a real ENOTDIR)', () => {
+    const vaultDir = tmp();
+    // Pre-create 50-sessions AS A FILE so mkdirSync(targetDir, {recursive:true})
+    // throws a genuine ENOTDIR system error inside the same try/catch that
+    // now also catches mapper crashes — the #718 discriminator must still
+    // route a real err.code to the fatal exit-2 path, not skipped-invalid.
+    writeFileSync(join(vaultDir, '50-sessions'), 'blocking-file', 'utf8');
+    const sourceFile = writeJsonlDir(vaultDir, [JSON.stringify(baseSession('session-2026-04-13-fs'))]);
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('filesystem error');
+  });
+
+  it('--strict-schema still aborts (exit 1, strict-schema-abort) when the only failure is a mapper-crash record', () => {
+    const vaultDir = tmp();
+    const record = { ...baseSession('session-2026-04-13-strict'), started_at: 12345 };
+    const sourceFile = writeJsonlDir(vaultDir, [JSON.stringify(record)]);
+
+    const result = runMirror([
+      '--vault-dir', vaultDir,
+      '--source', sourceFile,
+      '--kind', 'session',
+      '--dry-run',
+      '--strict-schema',
+    ]);
+
+    expect(result.status).toBe(1);
+    const lines = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines[0]).toMatchObject({ action: 'skipped-invalid', reason: 'mapper-crash' });
+    const abort = lines[lines.length - 1];
+    expect(abort).toEqual({ action: 'strict-schema-abort', skipped: 1, kind: 'session' });
+  });
+});

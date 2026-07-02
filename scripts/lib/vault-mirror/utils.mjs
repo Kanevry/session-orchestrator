@@ -39,8 +39,23 @@ export function subjectToSlug(subject) {
 
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * Validate that `s` is a filesystem-safe kebab slug.
+ *
+ * Guards against RegExp's implicit ToString coercion (issue #718): without
+ * the `typeof` check, `slugRegex.test(undefined)` coerces to the literal
+ * string "undefined" — which matches `^[a-z0-9]+(?:-[a-z0-9]+)*$` — and
+ * `isValidSlug(undefined)` returns `true`. Callers (e.g. `processSession` in
+ * process.mjs) rely on `isValidSlug(rawSessionId) === false` to route
+ * missing/non-string ids to the uuid-based synthesizer; the coercion trap
+ * let `undefined` through as a "valid" id and crashed downstream on
+ * `session_id.length`.
+ *
+ * @param {unknown} s
+ * @returns {boolean}
+ */
 export function isValidSlug(s) {
-  return slugRegex.test(s);
+  return typeof s === 'string' && slugRegex.test(s);
 }
 
 /**

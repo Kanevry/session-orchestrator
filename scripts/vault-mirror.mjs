@@ -361,9 +361,38 @@ async function main() {
       // Validation errors (missing required fields) → per-entry skip, not a global failure
       if (err.message.startsWith('vault-mirror:')) {
         process.stderr.write(`${err.message}\n`);
-        const entryId = entry.id ?? entry.session_id ?? null;
+        const entryId = entry?.id ?? entry?.session_id ?? null;
         process.stdout.write(
           JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
+        );
+        skippedInvalidCount++;
+        continue;
+      }
+      // #718: discriminate genuine filesystem/system errors (which must still
+      // abort the whole run — a partially-written vault is worse than a loud
+      // failure) from mapper crashes on malformed producer data (a native
+      // TypeError/RangeError thrown while rendering ONE record, e.g. a shape
+      // the mapper didn't defensively guard). Node system errors always carry
+      // a non-empty `err.code` (EACCES/ENOSPC/EROFS/ENOENT/...) and/or
+      // `err.syscall` — a plain TypeError/RangeError from JS-level property
+      // access has neither, so this check is a reliable discriminator even in
+      // --dry-run mode (no writes happen, so a mapper crash there can only be
+      // a data-shape defect, never a real FS error).
+      const isSystemError =
+        (typeof err.code === 'string' && err.code.length > 0) || Boolean(err.syscall);
+      if (!isSystemError) {
+        process.stderr.write(
+          `vault-mirror: mapper crash on line ${lineNum} (${err.message}) — record skipped\n`,
+        );
+        const entryId = entry?.id ?? entry?.session_id ?? null;
+        process.stdout.write(
+          JSON.stringify({
+            action: 'skipped-invalid',
+            path: null,
+            kind,
+            id: entryId,
+            reason: 'mapper-crash',
+          }) + '\n',
         );
         skippedInvalidCount++;
         continue;
