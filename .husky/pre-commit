@@ -1,17 +1,34 @@
 #!/usr/bin/env sh
 # Husky v9+ — pre-commit hook
 #
-# Three stages, fail-fast:
-#   1. gitleaks (#350) — scan staged changes for secrets.
+# Four stages, fail-fast:
+#   1. check-package-manager (#715) — package-manager recurrence guard. Fires
+#      HERE (not via npm's `preinstall`/`pretest` lifecycle hooks) because
+#      this repo's `.npmrc` sets `ignore-scripts=true` (SEC-020), which makes
+#      npm silently skip lifecycle hooks — a git-native hook is the only
+#      place this guard reliably fires before a commit lands. Cheapest check
+#      (Node-stdlib-only, no deps needed), so it runs first.
+#   2. gitleaks (#350) — scan staged changes for secrets.
 #      Skipped silently if gitleaks is not installed locally
 #      (CI still runs it via gitleaks-scan job in .gitlab-ci.yml).
-#   2. check-owner-leakage (#494) — scan tracked files for P1–P7 owner-privacy
+#   3. check-owner-leakage (#494) — scan tracked files for P1–P7 owner-privacy
 #      leakage (personal paths, private GitLab host, private slugs, etc.). The
 #      scanner reads via `git ls-files`, which sees staged-but-not-committed
 #      files — closing the gap where `git add <leak> && git commit` slipped
 #      through 3× before (deep-1, deep-2, deep-3). Reuses the same scanner CI
 #      runs in the owner-leakage validate job, so local/CI parity is exact.
-#   3. lint-staged (#352) — eslint --fix on staged *.mjs.
+#   4. lint-staged (#352) — eslint --fix on staged *.mjs.
+# Skipped silently when the guard script is absent (vendored-hook consumers,
+# test fixtures) — mirrors the gitleaks not-installed skip in stage 2.
+if [ -f scripts/check-package-manager.mjs ]; then
+  node scripts/check-package-manager.mjs >/dev/null 2>&1 || {
+    echo "✗ check-package-manager: package-manager drift detected (see #715). Commit blocked." >&2
+    echo "  Run \`node scripts/check-package-manager.mjs\` for details." >&2
+    echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
+    exit 1
+  }
+fi
+
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks protect --staged --redact --no-banner --config .gitleaks.toml || {
     echo "✗ gitleaks: secret detected in staged changes. Commit blocked." >&2

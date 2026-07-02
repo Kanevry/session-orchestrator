@@ -32,10 +32,11 @@ Alternative: invoke via `pnpm exec tsgo --noEmit`. Slightly slower (pnpm lookup 
 This quirk bit several consumer repos before it was codified — the baseline mandates `tsgo`, so the PATH discipline is a rule, not a trivia note.
 
 ## Package Management
-- pnpm is the standard package manager for all JS/TS projects.
-- Always use `pnpm` commands, never `npm` or `yarn`.
-- Lock files (`pnpm-lock.yaml`) must be committed.
-- CI enforces `pnpm audit --prod --audit-level=high`. Fix critical/high vulnerabilities immediately.
+- The CANONICAL package manager of a repo is defined by its COMMITTED lockfile — never assumed from a cross-project default. Check `package.json`'s `packageManager` field first, then which lockfile is tracked in git (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lockb`).
+- pnpm is the cross-project default for newly scaffolded repos — but **this repo (session-orchestrator) is npm-canonical**: `package-lock.json` is the committed lockfile, `pnpm-lock.yaml` is gitignored. Always use `npm` commands here, never `pnpm` or `yarn`.
+- Never run a different package manager's install command in a repo than its canonical one. Doing so silently rewrites `node_modules` to that PM's layout (e.g. pnpm's `.pnpm` store + symlinked deps) and strands a foreign lockfile at the repo root — the incident class behind issue #715 (a stray `pnpm-lock.yaml` sat gitignored at this repo's root, invisible to CI, until `scripts/check-package-manager.mjs` was added as a recurrence guard). This repo's `.npmrc` sets `ignore-scripts=true` (SEC-020), which makes npm's own `preinstall`/`pretest` lifecycle hooks silently DEAD — the guard is instead wired via an explicit `node scripts/check-package-manager.mjs && vitest ...` chain in the `test`/`test:coverage`/`test:watch` scripts, a git-native `.husky/pre-commit` hook, the `.gitlab-ci.yml` `.node-setup` `before_script` (right after `npm ci`), and the standalone `package-manager-guard` CI job.
+- Lock files for the repo's canonical package manager must be committed. Never commit a lockfile for a different package manager than the one actually in use.
+- CI enforces `npm audit --omit=dev --audit-level=high` in this repo (or the pnpm/yarn/bun equivalent in repos whose canonical PM is one of those). Fix critical/high vulnerabilities immediately.
 
 ## Git Conventions
 Enforced by commitlint (see `.commitlintrc` / repo commitlint config). Quick ref: `type(scope): description`; `BREAKING CHANGE:` footer for majors.

@@ -16,7 +16,6 @@
       "Bash(git rev-parse:*)",
       "Bash(git remote:*)",
       "Bash(git merge:*)",
-      "Bash(pnpm:*)",
       "Bash(npx:*)",
       "Bash(node:*)",
       "Bash(jq:*)",

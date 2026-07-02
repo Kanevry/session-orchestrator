@@ -58,6 +58,15 @@ variables:
     - git config --global user.email "ci@session-orchestrator.local"
     - git config --global user.name "CI Runner"
     - npm ci
+    # package-manager guard (#715) — verify node_modules matches the
+    # committed npm lockfile immediately after a fresh install. This is what
+    # actually exercises w1/w2/w3 (working-tree drift) against a REAL
+    # node_modules tree in every node job — npm's own `preinstall`/`pretest`
+    # lifecycle hooks are DEAD under this repo's `ignore-scripts=true`
+    # (.npmrc), so they cannot be relied on here either. The standalone
+    # `package-manager-guard` job below covers only the cheap committed-tree
+    # (c1/c2) invariant, with no node_modules required.
+    - node scripts/check-package-manager.mjs
     # Install nested vault-sync deps (zod, yaml) — ignored by root npm ci.
     # Use `npm install`: skills/vault-sync/package-lock.json is gitignored (.gitignore),
     # so it is absent in CI's fresh clone — `npm ci` would EUSAGE-fail (no lockfile).
@@ -201,6 +210,31 @@ plugin-schema-validate:
         - .claude-plugin/*.json
         - .gitlab-ci.yml
   allow_failure: false
+
+# package-manager-guard — recurrence guard for the pnpm/npm working-tree drift
+# incident class (#715): a bare `pnpm install` at repo root silently rewrites
+# node_modules to a pnpm layout, and a stray gitignored pnpm-lock.yaml never
+# shows up in CI's own clone. This job asserts the COMMITTED tree invariant
+# (pnpm-lock.yaml never tracked, package-lock.json tracked) via `git
+# ls-files` — the cheap, node_modules-free half of the same guard that is
+# also wired into the `.node-setup` before_script above (real node_modules,
+# right after `npm ci`) and into `.husky/pre-commit` locally. npm's own
+# `preinstall`/`pretest` lifecycle hooks are DEAD under this repo's
+# `ignore-scripts=true` (.npmrc) — they are NOT part of the enforcement
+# chain. The script is Node-stdlib-only and needs no node_modules, so this
+# job intentionally skips the shared `.node-setup` anchor (no npm ci) to
+# stay cheap — same lightweight image-only pattern as npm-audit above.
+package-manager-guard:
+  stage: validate
+  image: node:${NODE_VERSION}
+  interruptible: true
+  timeout: 5m
+  allow_failure: false
+  script:
+    - node scripts/check-package-manager.mjs
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ---------------------------------------------------------------------------
 # Stage: test

@@ -10,9 +10,9 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "test": "vitest --run",
-    "test:coverage": "vitest --run --coverage",
-    "test:watch": "vitest",
+    "test": "node scripts/check-package-manager.mjs && vitest --run",
+    "test:coverage": "node scripts/check-package-manager.mjs && vitest --run --coverage",
+    "test:watch": "node scripts/check-package-manager.mjs && vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "node scripts/typecheck.mjs",
