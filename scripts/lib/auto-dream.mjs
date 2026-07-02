@@ -333,6 +333,30 @@ function countFencedBlocks(body) {
 }
 
 /**
+ * Internal: detect a fenced code block tagged with a language extractDiffBlock()
+ * does not recognize (issue #720) — e.g. ```js, ```python. extractDiffBlock()'s
+ * regex only matches `diff` / `markdown` / untagged (bare ``` immediately
+ * followed by a newline) fences; any OTHER tag word sits between the opening
+ * ``` and the required newline, so the match fails outright and
+ * extractDiffBlock() falls back to returning the RAW body verbatim — literal
+ * fence markers included — which would otherwise be written straight into
+ * MEMORY.md unrefused.
+ *
+ * Detection is keyed on `extractedBlock === body` (extraction found nothing to
+ * strip) AND the body containing an actual fence-opening line. The first half
+ * of that conjunction alone is not sufficient: a genuinely fence-free freeform
+ * body (issue #502's accepted verbatim-fallback contract) also has
+ * `extractedBlock === body`, and must NOT be refused.
+ *
+ * @param {string} body
+ * @param {string} extractedBlock
+ * @returns {boolean}
+ */
+function hasUnrecognizedFence(body, extractedBlock) {
+  return extractedBlock === body && /^```/m.test(body);
+}
+
+/**
  * Apply the pending dream by overwriting MEMORY.md with the body the
  * proposal carries, then deleting the sidecar.
  *
@@ -341,10 +365,13 @@ function countFencedBlocks(body) {
  *   - Returns `{ applied: false, reason: 'stale' }` when the sidecar is older
  *     than 14 days (caller should re-run --dry-run).
  *   - Returns `{ applied: false, reason: 'unsupported-format' }` (#717) when
- *     the extracted block is a git-style diff (`isGitStyleDiff()`) or the raw
+ *     the extracted block is a git-style diff (`isGitStyleDiff()`), the raw
  *     sidecar body contains more than one fenced block (`countFencedBlocks()`
- *     > 1). MEMORY.md is left untouched and the sidecar is PRESERVED (not
- *     unlinked) so the proposal can be regenerated in the correct format.
+ *     > 1), or the body contains a fence tagged with an unrecognized language
+ *     (`hasUnrecognizedFence()`, issue #720 — e.g. ```js, ```python; only
+ *     `diff` / `markdown` / untagged fences are recognized). MEMORY.md is left
+ *     untouched and the sidecar is PRESERVED (not unlinked) so the proposal
+ *     can be regenerated in the correct format.
  *   - On success: deletes the sidecar, returns line-count deltas.
  *
  * The proposal is expected to embed the *complete* replacement body of
@@ -389,12 +416,14 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
 
   const extractedBlock = extractDiffBlock(body);
 
-  // Guard (#717): refuse formats this applier cannot safely consume. A
-  // git-style diff (hunks) or a multi-fence body written verbatim as the new
-  // MEMORY.md would corrupt the index / silently drop subsequent sections.
-  // Preserve the sidecar — do NOT write, do NOT unlink — so the operator can
-  // regenerate a complete-body proposal via --dry-run.
-  if (isGitStyleDiff(extractedBlock) || countFencedBlocks(body) > 1) {
+  // Guard (#717, extended #720): refuse formats this applier cannot safely
+  // consume. A git-style diff (hunks), a multi-fence body, or a fence tagged
+  // with a language extractDiffBlock() doesn't recognize (e.g. ```js) written
+  // verbatim (fence markers included) as the new MEMORY.md would corrupt the
+  // index / silently drop subsequent sections / pollute MEMORY.md with a
+  // literal fence marker. Preserve the sidecar — do NOT write, do NOT unlink
+  // — so the operator can regenerate a complete-body proposal via --dry-run.
+  if (isGitStyleDiff(extractedBlock) || countFencedBlocks(body) > 1 || hasUnrecognizedFence(body, extractedBlock)) {
     return { applied: false, reason: 'unsupported-format' };
   }
 

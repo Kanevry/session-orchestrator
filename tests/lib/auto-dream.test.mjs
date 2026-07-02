@@ -652,6 +652,108 @@ describe('applyPendingDream — #717: unsupported-format guard', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #720 — applyPendingDream refuses fences tagged with an unrecognized
+// language (extractDiffBlock() only recognizes `diff` / `markdown` / untagged)
+// ---------------------------------------------------------------------------
+// hasUnrecognizedFence() is internal (not exported), so these are covered
+// indirectly through applyPendingDream — the public consumer.
+
+describe('applyPendingDream — #720: foreign-tagged fence guard', () => {
+  it('refuses a single ```js fence: unsupported-format, MEMORY.md untouched, sidecar preserved', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const originalMemory = 'orig-1\norig-2\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), originalMemory, 'utf8');
+
+    // extractDiffBlock()'s regex only recognizes ```diff / ```markdown /
+    // untagged ``` — a ```js tag fails the match entirely, falling back to
+    // returning the RAW body (including the literal fence markers) verbatim.
+    const jsFencedBody = ['```js', "console.log('hi');", '```'].join('\n');
+
+    await writePendingDream({ repoRoot, diff: jsFencedBody, sourceSession: 'sess-720-a' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result).toEqual({ applied: false, reason: 'unsupported-format' });
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(originalMemory);
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
+  });
+
+  it('refuses a single ```python fence: unsupported-format', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const originalMemory = 'orig-py\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), originalMemory, 'utf8');
+
+    const pyFencedBody = ['```python', 'print("hi")', '```'].join('\n');
+
+    await writePendingDream({ repoRoot, diff: pyFencedBody, sourceSession: 'sess-720-b' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result).toEqual({ applied: false, reason: 'unsupported-format' });
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(originalMemory);
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
+  });
+
+  it('regression: an UNTAGGED fence (```\\n...\\n```) is still applied, not refused', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'), 'old body\n', 'utf8');
+
+    const untaggedFenceBody = ['```', 'plain fenced content', '```'].join('\n');
+
+    await writePendingDream({ repoRoot, diff: untaggedFenceBody, sourceSession: 'sess-720-c' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    const memoryContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8');
+    expect(memoryContent).toContain('plain fenced content');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+
+  it('regression: a single ```markdown fence is still applied, not refused (L626-class)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'), 'old body\n', 'utf8');
+
+    const markdownFenceBody = ['```markdown', '# Memory Index', '- entry one', '```'].join('\n');
+
+    await writePendingDream({ repoRoot, diff: markdownFenceBody, sourceSession: 'sess-720-d' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    const memoryContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8');
+    expect(memoryContent).toContain('- entry one');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+
+  it('pin: a body with NO fence at all (freeform) is still applied verbatim, unaffected by #720', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'), 'old body\n', 'utf8');
+
+    const freeformBody = 'freeform replacement body, no fence markers at all';
+
+    await writePendingDream({ repoRoot, diff: freeformBody, sourceSession: 'sess-720-e' });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    const memoryContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8');
+    expect(memoryContent).toContain('freeform replacement body, no fence markers at all');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+});
+
 describe('applyPendingDream / extractDiffBlock + parsePendingDream (internal)', () => {
   it('treats a body without a fenced code block as the full replacement verbatim', async () => {
     const repoRoot = tmp();
