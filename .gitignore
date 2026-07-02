@@ -87,6 +87,11 @@ coverage/
 docs/specs/
 .orchestrator/session-notes/
 
+# Confidential analysis artifacts referencing private/client repos — NEVER for
+# the public repo. Sanitized (repo-anonymized) versions may be published under
+# docs/research/ instead; the full-detail originals stay local-only.
+docs/_private/
+
 # Nested vault-sync lockfile (CI runs `npm install` in skills/vault-sync/
 # fresh each run; no value pinning a lockfile for the sub-package)
 skills/vault-sync/package-lock.json
