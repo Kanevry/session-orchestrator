@@ -4,7 +4,9 @@
  * Extracted from scripts/lib/learnings.mjs (issue #358 Q3 follow-up).
  * Pure leaf module — imports only stdlib. No imports from sibling modules
  * (io.mjs, filters.mjs) or parent (../learnings.mjs). This breaks the
- * circular-import topology flagged by Q3 architect review.
+ * circular-import topology flagged by Q3 architect review. ("Pure leaf" refers
+ * to the import graph, not side-effect purity: {@link normalizeDialects}
+ * emits a deduped stderr WARN on a session_id/source_session conflict.)
  *
  * The parent ../learnings.mjs re-exports symbols from this module to
  * preserve the public API. Sibling modules (io.mjs, filters.mjs) import
@@ -27,6 +29,21 @@
  *   host_class:            string | null                   (default: null)
  *   anonymized:            boolean                         (default: false)
  *   anonymization_version: number | undefined              (bumped when redaction rules change)
+ *   file_paths:            string[] | undefined            (repo-relative scope paths;
+ *                                                           canonical rename of legacy `files`)
+ *   updated_at:            ISO 8601 string | undefined      (canonical rename of legacy `last_seen`)
+ *   evidence_sessions:     string[] | undefined            (OPTIONAL corroborating session ids;
+ *                                                           a documented array field — never
+ *                                                           collapsed into source_session)
+ *
+ * Producer-dialect normalization (Epic #723 B2 — {@link normalizeDialects}):
+ *   Legacy producers emitted `files`, a duplicate `session_id`, `last_seen`,
+ *   and a literal `next_review: null`. normalizeDialects() renames/reconciles
+ *   these on every read (normalizeLearning) and every migration
+ *   (migrateLegacyLearning) so downstream code sees ONE canonical shape. See
+ *   the function doc for the exact rules. Note: `evidence` MAY legally be an
+ *   array in some legacy records and is deliberately NOT coerced (validateLearning
+ *   does not type-check it), so the shape is preserved verbatim.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -107,6 +124,12 @@ const LEGACY_REQUIRED_FIELDS = Object.freeze([
   'created_at',
   'expires_at',
 ]);
+
+/**
+ * ISO-8601 timestamp fields re-serialized (verlustfrei, same instant) during
+ * dialect normalization. A value Date.parse cannot handle is left verbatim.
+ */
+const TIMESTAMP_FIELDS = Object.freeze(['created_at', 'updated_at', 'expires_at', 'next_review']);
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -201,11 +224,125 @@ export function validateLearning(entry) {
 // Migration
 // ---------------------------------------------------------------------------
 
+/** Module-level dedupe set for session_id↔source_session conflict warnings. */
+const _warnedSessionIdConflict = new Set();
+
+/**
+ * Normalize known producer DIALECTS to the canonical schema shape. Deliberately
+ * does NOT touch `schema_version`, `scope`, or the insight/subject alias chain —
+ * schema_version stamping is a WRITE concern (migrateLegacyLearning /
+ * appendLearning), and the alias chain lives in migrateLegacyLearning.
+ *
+ * Applied on BOTH the read funnel (normalizeLearning) and the migration/write
+ * funnel (migrateLegacyLearning) so every reader and the backfill writer see a
+ * single canonical shape. Pure except a deduped stderr WARN on a
+ * session_id/source_session conflict (see below); idempotent; never throws;
+ * non-objects (and arrays) pass through unchanged. Does NOT mutate its input.
+ *
+ * Dialect rules (Epic #723 B2 — census 2026-07-02):
+ *   - `files`        → `file_paths`  — verbatim value move; an empty array is
+ *                      preserved as an empty `file_paths`; a canonical
+ *                      `file_paths` already present wins (legacy `files` dropped).
+ *   - `session_id`   → dropped when it EXACTLY duplicates `source_session`; on a
+ *                      genuine conflict, `source_session` is canonical, BOTH keys
+ *                      are kept, and the conflict is logged once per record id.
+ *                      An orphan `session_id` (no source_session) is left as-is.
+ *   - `last_seen`    → `updated_at` ONLY when `updated_at` is missing/null; when
+ *                      both are present, both are preserved.
+ *   - `next_review`  literal `null` → key dropped entirely (a real timestamp is
+ *                      kept and re-serialized when `reserializeTimestamps`).
+ *   - timestamps     re-serialized via `new Date(x).toISOString()` (same instant,
+ *                      canonical millis + `Z`) when parseable; left verbatim
+ *                      otherwise. Gated by `reserializeTimestamps` (default true):
+ *                      the READ funnel + the backfill canonicalize timestamp
+ *                      FORMAT, but `migrateLegacyLearning` passes `false` to keep
+ *                      its existing byte-exact "does not overwrite an existing
+ *                      expires_at" contract — a schema/alias migration must not
+ *                      silently reformat a caller's timestamps.
+ *
+ * Documented NON-actions (invariants callers rely on):
+ *   - `evidence_sessions[]` is an OPTIONAL array field — never collapsed here.
+ *   - `evidence` may legally be an array in some legacy records — NOT coerced.
+ *
+ * @param {object} entry — raw record (possibly a producer dialect shape)
+ * @param {{ reserializeTimestamps?: boolean }} [opts] — when false, timestamp
+ *        fields are left byte-exact (used by migrateLegacyLearning).
+ * @returns {object} record with dialects normalized (schema_version untouched)
+ */
+export function normalizeDialects(entry, { reserializeTimestamps = true } = {}) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+
+  const out = { ...entry };
+
+  // files → file_paths (verbatim value move; canonical wins; empty array kept).
+  if ('files' in out) {
+    if (!('file_paths' in out)) {
+      out.file_paths = out.files;
+    }
+    delete out.files;
+  }
+
+  // session_id reconciliation against the canonical source_session.
+  if ('session_id' in out) {
+    const hasSource =
+      typeof out.source_session === 'string' && out.source_session.length > 0;
+    if (hasSource && out.session_id === out.source_session) {
+      // Exact duplicate — drop the redundant alias.
+      delete out.session_id;
+    } else if (hasSource && out.session_id !== out.source_session) {
+      // Genuine conflict: source_session wins; keep BOTH; warn once per id.
+      const warnKey = out.id ?? '<unknown>';
+      if (!_warnedSessionIdConflict.has(warnKey)) {
+        _warnedSessionIdConflict.add(warnKey);
+        console.error(
+          `[learnings] WARN: session_id (${out.session_id}) conflicts with source_session (${out.source_session}) (id=${warnKey}); source_session wins, keeping both`
+        );
+      }
+    }
+    // No source_session present → leave the orphan session_id untouched.
+  }
+
+  // last_seen → updated_at only when updated_at is absent/null; else keep both.
+  if ('last_seen' in out) {
+    const updMissing = out.updated_at === undefined || out.updated_at === null;
+    if (updMissing) {
+      out.updated_at = out.last_seen;
+      delete out.last_seen;
+    }
+  }
+
+  // next_review literal null → drop the key entirely.
+  if (out.next_review === null) {
+    delete out.next_review;
+  }
+
+  // Timestamp re-serialization — canonicalize to millis + Z, same instant.
+  // Skipped when the caller (migrateLegacyLearning) needs byte-exact timestamps.
+  if (reserializeTimestamps) {
+    for (const field of TIMESTAMP_FIELDS) {
+      const v = out[field];
+      if (typeof v === 'string' && v.length > 0) {
+        const ms = Date.parse(v);
+        if (Number.isFinite(ms)) {
+          out[field] = new Date(ms).toISOString();
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 /**
  * Migrate a legacy learning record to the canonical schema_version:1 shape.
  * Idempotent — calling it on an already-canonical record is a safe no-op.
  *
  * Alias precedence for insight: insight > description > recommendation > observation > lesson
+ *
+ * Producer dialects (`files`→`file_paths`, duplicate `session_id`, `last_seen`,
+ * `next_review: null`) are normalized by {@link normalizeDialects} as the final
+ * step. Timestamp FORMAT is deliberately NOT reformatted here (byte-exact
+ * contract preserved); the read funnel + backfill canonicalize timestamps.
  *
  * The caller MUST still run validateLearning() on the result to confirm the
  * migrated record passes the full schema gate before writing.
@@ -280,7 +417,12 @@ export function migrateLegacyLearning(entry) {
     out.schema_version = CURRENT_SCHEMA_VERSION;
   }
 
-  return out;
+  // Normalize producer dialects last (files→file_paths, session_id/last_seen/
+  // next_review reconciliation) — schema_version is preserved by normalizeDialects.
+  // reserializeTimestamps:false keeps migrateLegacyLearning's byte-exact timestamp
+  // contract (it does schema/alias migration, not timestamp reformatting). The
+  // READ funnel (normalizeLearning) and the backfill canonicalize timestamp format.
+  return normalizeDialects(out, { reserializeTimestamps: false });
 }
 
 // Module-level dedupe sets for warnings (per-process).
@@ -298,12 +440,18 @@ const _warnedMissingRequiredKeys = new Set();
 export function normalizeLearning(entry) {
   if (!entry || typeof entry !== 'object') return entry;
 
+  // Normalize producer dialects (files→file_paths, session_id/last_seen/
+  // next_review reconciliation, timestamp re-serialization) so every reader
+  // sees the canonical scope key. schema_version behaviour is UNCHANGED:
+  // normalizeDialects never touches it, and a missing version still reads as 0.
+  const d = normalizeDialects(entry);
+
   let schemaVersion;
-  if ('schema_version' in entry && entry.schema_version !== undefined) {
-    schemaVersion = entry.schema_version;
+  if ('schema_version' in d && d.schema_version !== undefined) {
+    schemaVersion = d.schema_version;
   } else {
     schemaVersion = 0;
-    const warnKey = entry.id ?? '<unknown>';
+    const warnKey = d.id ?? '<unknown>';
     if (!_warnedMissingSchemaVersion.has(warnKey)) {
       _warnedMissingSchemaVersion.add(warnKey);
       console.error(
@@ -312,9 +460,9 @@ export function normalizeLearning(entry) {
     }
   }
 
-  const missing = LEGACY_REQUIRED_FIELDS.filter((f) => !(f in entry));
+  const missing = LEGACY_REQUIRED_FIELDS.filter((f) => !(f in d));
   if (missing.length > 0) {
-    const warnId = entry.id ?? '<unknown>';
+    const warnId = d.id ?? '<unknown>';
     const warnKey = `${warnId}|${missing.join(',')}`;
     if (!_warnedMissingRequiredKeys.has(warnKey)) {
       _warnedMissingRequiredKeys.add(warnKey);
@@ -325,10 +473,10 @@ export function normalizeLearning(entry) {
   }
 
   return {
-    ...entry,
+    ...d,
     schema_version: schemaVersion,
-    scope: entry.scope ?? 'local',
-    host_class: entry.host_class ?? null,
-    anonymized: entry.anonymized ?? false,
+    scope: d.scope ?? 'local',
+    host_class: d.host_class ?? null,
+    anonymized: d.anonymized ?? false,
   };
 }

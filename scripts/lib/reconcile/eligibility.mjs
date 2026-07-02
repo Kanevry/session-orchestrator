@@ -13,46 +13,64 @@
  * of unknown types never silently produces a rule.
  *
  * ── The file-carrier key ─────────────────────────────────────────────────────
- * The scope key is `file_paths` (an array of repo-relative paths), NOT `files`.
- * Issue #695 wrote `files[]`, but that key does not exist on disk — the real
- * corpus carries `file_paths` (verified census). We read `file_paths`.
+ * The scope key we read is `file_paths` (an array of repo-relative paths).
+ * Provenance (corrected 2026-07-02, Epic #723 B2): the live corpus historically
+ * carried the scope under `files`, NOT `file_paths` — so this reader matched
+ * nothing (0/108 records had `file_paths`). Two fixes now converge on
+ * `file_paths` and keep this reader correct:
+ *   1. `scripts/backfill-learnings.mjs` normalized the on-disk corpus
+ *      `files` → `file_paths` (one-shot, 2026-07-02).
+ *   2. The schema SSOT (`learnings/schema.mjs` normalizeDialects) renames
+ *      `files` → `file_paths` on every read + migration going forward.
+ * We continue to read `file_paths` — it is now the canonical scope key.
+ * NOTE: this module reads its learnings via the engine's raw JSONL loader
+ * (`defaultLoadLearnings`), which does NOT pass records through
+ * normalizeLearning — so post-backfill correctness relies on the on-disk
+ * `file_paths` written by fix (1); wiring the raw loader through the SSOT is a
+ * separate follow-up.
  *
  * ── Type-name mapping (issue → real) ─────────────────────────────────────────
- *   issue 'fragile-file'    -> real 'fragile-pattern'
- *   issue 'recurring-issue' -> real 'recurring-issue' (verbatim)
- *   issue 'anti-pattern'    -> real 'anti-pattern'    (verbatim)
+ *   issue 'fragile-file'    -> real 'fragile-file'    (verbatim; 1 instance)
+ *   issue 'recurring-issue' -> real 'recurring-issue' (verbatim; 1 instance)
+ *   issue 'anti-pattern'    -> real 'anti-pattern'    (verbatim; 22 instances)
  * Forward-compat spec names with 0 instances today are also included so a future
- * renamed corpus still converts (they convert nothing now — harmless).
+ * renamed corpus still converts (they convert nothing now — harmless). See the
+ * CONVERT_TYPES doc for the full 2026-07-02 instance census.
  *
  * Pure functions, no external dependencies — Node 20+ stdlib only. No file I/O.
  */
 
 /**
- * The REAL learning `type` values that may become a conditional rule.
+ * The learning `type` values that may become a conditional rule.
  *
- * Real types (present in the corpus today):
- *   - 'fragile-pattern'  (issue spec called this 'fragile-file')
- *   - 'recurring-issue'  (verbatim)
- *   - 'anti-pattern'     (verbatim)
+ * Instance census (corrected 2026-07-02, Epic #723 B2 — the earlier comment
+ * was a stale mis-count that inverted `fragile-file` and `fragile-pattern`):
+ *   - 'anti-pattern'         — 22 instances
+ *   - 'architecture-pattern' —  2 instances
+ *   - 'convention'           —  1 instance
+ *   - 'design-pattern'       —  1 instance
+ *   - 'fragile-file'         —  1 instance
+ *   - 'recurring-issue'      —  1 instance
+ *   - 'fragile-pattern'      —  0 instances (kept for forward-compat)
+ *   - 'stagnation-class-frequency' — 0 instances (kept for forward-compat)
  *
- * Forward-compat issue-spec names (0 instances today — harmless inclusion so a
- * future renamed corpus still converts):
- *   - 'fragile-file', 'stagnation-class-frequency', 'architecture-pattern',
- *     'convention', 'design-pattern'
+ * The SET below is UNCHANGED — every listed type stays in the allow-list, so a
+ * future renamed/backfilled corpus still converts and 0-instance types convert
+ * nothing today. Only the census annotations were corrected.
  *
  * @type {Set<string>}
  */
 export const CONVERT_TYPES = new Set([
-  // Real types present on disk
-  'fragile-pattern',
-  'recurring-issue',
-  'anti-pattern',
-  // Forward-compat issue-spec names (0 instances today)
-  'fragile-file',
-  'stagnation-class-frequency',
-  'architecture-pattern',
-  'convention',
-  'design-pattern',
+  // Types with live instances as of 2026-07-02 (count in parens)
+  'anti-pattern', //          22
+  'architecture-pattern', //   2
+  'convention', //             1
+  'design-pattern', //         1
+  'fragile-file', //           1
+  'recurring-issue', //        1
+  // Forward-compat: 0 instances today, kept so a future corpus still converts
+  'fragile-pattern', //        0
+  'stagnation-class-frequency', // 0
 ]);
 
 /**
