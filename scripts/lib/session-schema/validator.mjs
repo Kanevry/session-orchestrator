@@ -27,6 +27,14 @@ import {
 const EXPECTED_COST_TIERS = Object.freeze(['quick', 'standard', 'deep']);
 
 /**
+ * Valid values for the optional `status` field (Epic #724 C1).
+ * `completed` — record written by a normal /close flow.
+ * `abandoned` — stub backfilled by the SessionEnd hook because the session
+ *               terminated without running /close.
+ */
+const SESSION_STATUS = Object.freeze(['completed', 'abandoned']);
+
+/**
  * Canonical ISO-8601 UTC timestamp regex — accepts `YYYY-MM-DDTHH:MM:SSZ`
  * and `YYYY-MM-DDTHH:MM:SS.SSSZ` (exactly 3 fractional digits).
  *
@@ -348,6 +356,40 @@ function _validateOptionalFields(entry) {
       throw new ValidationError(
         `subagents_with_tokens must be a non-negative integer, got: ${entry.subagents_with_tokens}`
       );
+    }
+  }
+
+  // Epic #724 C1 — SessionEnd close-through backfill provenance fields.
+  // All additive-optional; null/absent passes without further checks so that
+  // pre-#724 records (and every normally-closed record) validate cleanly.
+  if (entry.status !== undefined && entry.status !== null) {
+    if (!SESSION_STATUS.includes(entry.status)) {
+      throw new ValidationError(
+        `status must be one of ${SESSION_STATUS.join('|')} or null, got: ${entry.status}`
+      );
+    }
+  }
+  if (entry._backfill_source !== undefined && entry._backfill_source !== null) {
+    if (typeof entry._backfill_source !== 'string' || entry._backfill_source.length === 0) {
+      throw new ValidationError('_backfill_source must be a non-empty string or null');
+    }
+  }
+  if (entry._backfill_incomplete_fields !== undefined && entry._backfill_incomplete_fields !== null) {
+    if (
+      !Array.isArray(entry._backfill_incomplete_fields) ||
+      entry._backfill_incomplete_fields.some((f) => typeof f !== 'string')
+    ) {
+      throw new ValidationError('_backfill_incomplete_fields must be an array of strings or null');
+    }
+  }
+  if (entry._session_type_inferred !== undefined && entry._session_type_inferred !== null) {
+    if (typeof entry._session_type_inferred !== 'boolean') {
+      throw new ValidationError('_session_type_inferred must be a boolean or null');
+    }
+  }
+  if (entry._synthetic_session_id !== undefined && entry._synthetic_session_id !== null) {
+    if (typeof entry._synthetic_session_id !== 'boolean') {
+      throw new ValidationError('_synthetic_session_id must be a boolean or null');
     }
   }
 }

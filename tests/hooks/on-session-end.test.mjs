@@ -17,6 +17,7 @@ import os from 'node:os';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
+const LOCK_REL = path.join('.orchestrator', 'session.lock');
 
 const tmpDirs = [];
 
@@ -33,13 +34,69 @@ async function mkProject() {
 }
 
 /** Seed .orchestrator/current-session.json (as on-session-start.mjs writes it). */
-async function seedCurrentSession(projectDir, { sessionId, timestamp }) {
+async function seedCurrentSession(projectDir, { sessionId, timestamp, semanticSessionId }) {
   const dir = path.join(projectDir, '.orchestrator');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, 'current-session.json'),
-    JSON.stringify({ session_id: sessionId, timestamp }),
+    JSON.stringify({
+      session_id: sessionId,
+      timestamp,
+      ...(semanticSessionId ? { semantic_session_id: semanticSessionId } : {}),
+    }),
   );
+}
+
+/** Seed a v2 session.lock file. */
+async function seedLock(projectDir, { sessionId, semanticSessionId, lastHeartbeat }) {
+  const dir = path.join(projectDir, '.orchestrator');
+  await fs.mkdir(dir, { recursive: true });
+  const lock = {
+    session_id: sessionId,
+    started_at: new Date(Date.now() - 3600_000).toISOString(),
+    last_heartbeat: lastHeartbeat ?? new Date().toISOString(),
+    mode: 'deep',
+    pid: 999999,
+    host: os.hostname(),
+    ttl_hours: 4,
+    ...(semanticSessionId ? { semantic_session_id: semanticSessionId } : {}),
+  };
+  await fs.writeFile(path.join(dir, 'session.lock'), JSON.stringify(lock, null, 2) + '\n');
+}
+
+async function lockExists(projectDir) {
+  try {
+    await fs.access(path.join(projectDir, LOCK_REL));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Write the given records to a JSONL file under .orchestrator/metrics/. */
+async function writeMetricsJsonl(projectDir, relName, records) {
+  const dir = path.join(projectDir, '.orchestrator', 'metrics');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, relName),
+    records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+  );
+}
+
+const seedEvents = (projectDir, records) => writeMetricsJsonl(projectDir, 'events.jsonl', records);
+const seedSessions = (projectDir, records) => writeMetricsJsonl(projectDir, 'sessions.jsonl', records);
+
+/** Read + parse sessions.jsonl; missing file → []. */
+async function readSessions(projectDir) {
+  try {
+    const raw = await fs.readFile(
+      path.join(projectDir, '.orchestrator', 'metrics', 'sessions.jsonl'),
+      'utf8',
+    );
+    return raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
 }
 
 async function runHook({ projectDir, stdin = '' }) {
@@ -208,5 +265,191 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
     const record = await readLastEvent(dir);
     expect(record.duration_ms).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 (#724) — deterministic lock release
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 15000 }, () => {
+  it('releases the session.lock when it belongs to the ending session (UUID match)', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, { sessionId: 'sess-own', semanticSessionId: 'sem-own' });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-own' }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await lockExists(dir)).toBe(false);
+  });
+
+  it('releases the lock when only the SEMANTIC id matches (UUID rotated across clear)', async () => {
+    const dir = await mkProject();
+    // Lock recorded under an older UUID but the same semantic id.
+    await seedLock(dir, { sessionId: 'old-uuid', semanticSessionId: 'sem-shared' });
+    await seedCurrentSession(dir, {
+      sessionId: 'new-uuid',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-shared',
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid' }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await lockExists(dir)).toBe(false);
+  });
+
+  it('does NOT release a FOREIGN lock (different session, live heartbeat)', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, {
+      sessionId: 'foreign-sess',
+      semanticSessionId: 'foreign-sem',
+      lastHeartbeat: new Date().toISOString(),
+    });
+    await seedCurrentSession(dir, {
+      sessionId: 'sess-me',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-me',
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-me' }),
+    });
+
+    expect(result.code).toBe(0);
+    // Foreign lock must survive — PSA: never destroy another session's lease.
+    expect(await lockExists(dir)).toBe(true);
+    // And the informational event is still emitted despite the foreign lock.
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.session.ended');
+  });
+
+  it('exits 0 and still emits session.ended even with a foreign lock present (backfill/release are best-effort)', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, {
+      sessionId: 'other',
+      semanticSessionId: 'other-sem',
+      lastHeartbeat: new Date().toISOString(),
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'mine', reason: 'logout' }),
+    });
+
+    expect(result.code).toBe(0);
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.session.ended');
+    expect(record.reason).toBe('logout');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 (#724) — close-through backfill (full-hook integration)
+//
+// The RELEASE half is already covered end-to-end above; this exercises the
+// BACKFILL half through the real hook subprocess (not the lib in isolation):
+// an abandoned session with no sessions.jsonl record must gain exactly one
+// status:'abandoned' stub keyed by its SEMANTIC id, and its own lock must be
+// released. If the `backfillAbandonedSession(...)` call in on-session-end.mjs
+// were removed/mis-wired, the first test fails RED (0 records instead of 1).
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 15000 }, () => {
+  const UUID = '11111111-2222-4333-8444-555555555555';
+  const SEMANTIC = 'main-2026-07-02-session-1';
+  const STARTED_AT = '2026-07-02T09:00:00.000Z';
+
+  it('backfills exactly one abandoned record (semantic id) and releases the own lock', async () => {
+    const dir = await mkProject();
+    // Session started + lock acquired (UUID↔semantic bridge), but never /close.
+    await seedEvents(dir, [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main', project: 'demo' },
+      {
+        timestamp: '2026-07-02T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: SEMANTIC,
+        mode: 'deep',
+      },
+    ]);
+    // current-session.json supplies the semantic id the hook forwards to backfill.
+    await seedCurrentSession(dir, {
+      sessionId: UUID,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: SEMANTIC,
+    });
+    // Own live lock (UUID match) — backfill proceeds, release then clears it.
+    await seedLock(dir, { sessionId: UUID, semanticSessionId: SEMANTIC });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+
+    const records = await readSessions(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0].session_id).toBe(SEMANTIC);
+    expect(records[0].status).toBe('abandoned');
+    expect(records[0].session_type).toBe('deep'); // mode from lock.acquired
+
+    // The own lock is released by the release-half after backfill.
+    expect(await lockExists(dir)).toBe(false);
+  });
+
+  it('does NOT append a second record when the session is already recorded', async () => {
+    const dir = await mkProject();
+    await seedEvents(dir, [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-07-02T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: SEMANTIC,
+        mode: 'deep',
+      },
+    ]);
+    await seedCurrentSession(dir, {
+      sessionId: UUID,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: SEMANTIC,
+    });
+    // A real, complete record already exists for this semantic id.
+    await seedSessions(dir, [
+      {
+        session_id: SEMANTIC,
+        session_type: 'deep',
+        started_at: STARTED_AT,
+        completed_at: '2026-07-02T10:00:00.000Z',
+        total_waves: 1,
+        waves: [{ wave: 1, role: 'coordinator' }],
+        agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+        total_agents: 1,
+        total_files_changed: 2,
+      },
+    ]);
+
+    const before = await readSessions(dir);
+    expect(before).toHaveLength(1);
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // Dedupe short-circuits — the record count is unchanged (no abandoned stub).
+    const after = await readSessions(dir);
+    expect(after).toHaveLength(1);
+    expect(after[0].status).toBeUndefined(); // untouched original, not an abandoned stub
   });
 });

@@ -97,4 +97,14 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'total_token_input',
   'total_token_output',
   'subagents_with_tokens',
+  // Epic #724 C1 — SessionEnd close-through backfill provenance fields.
+  // `status` distinguishes normally-closed ('completed') from hook-backfilled
+  // ('abandoned') records. The `_backfill_*` markers record how a stub was
+  // synthesized when a session terminated without running /close. All are
+  // additive-optional: pre-#724 records lacking them validate cleanly.
+  'status',
+  '_backfill_source',
+  '_backfill_incomplete_fields',
+  '_session_type_inferred',
+  '_synthetic_session_id',
 ]);
