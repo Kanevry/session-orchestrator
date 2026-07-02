@@ -687,7 +687,13 @@ Group issues by:
 
    Additionally, invoke the instruction-budget probe (`scripts/lib/instruction-budget-guard.mjs`) via `checkInstructionBudget({ repoRoot })`. The helper returns `null` (silent no-op) when the always-on directive count is at or under the configured ceiling, or on any read failure. When a non-null result is returned (`{ severity: 'warn', message }`), render `result.message` alongside the other banners. Non-blocking. Cross-reference: `docs/audit/2026-06-20-instruction-budget-audit.md` and issue #687.
 
-   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install), skip silently.
+   Additionally, invoke the reconcile-nudge probe (`scripts/lib/reconcile-nudge-banner.mjs`) via `await checkReconcileNudge({ repoRoot, config: $CONFIG })`. The helper returns `null` (silent no-op) when `.orchestrator/metrics/learnings.jsonl` is missing/empty/all-malformed, when there are zero active learnings, or when none of its three nudge thresholds are met (≥20 active learnings with no reconcile run on record; >15 new learnings since the last determinable run; ≥3 rule-eligible learnings). Introduces NO new Session Config key — it reads the EXISTING `reconcile.enabled` key only to append an informational note, never to gate itself. When a non-null result is returned (`{ severity: 'warn', message }`), render `result.message` alongside the other banners:
+   - **Nudge fires**: `"⚠ reconcile-nudge: <N> active learnings, <E> rule-eligible, last reconcile run: <never|YYYY-MM-DD> — run /reconcile to convert learnings into rules."` plus, when `reconcile.enabled: false`, an additional line: `"(reconcile.enabled: false — banner is advisory only; /reconcile still runs on-demand.)"`
+   - **No nudge**: silent (no banner).
+
+   Non-blocking. Cross-reference: `scripts/lib/reconcile/engine.mjs` (`runReconcile`), `scripts/lib/reconcile/idempotency.mjs` (`.orchestrator/runtime/reconcile-candidates.jsonl` — the last-run provenance source), `skills/reconcile/SKILL.md`, and issue #723.
+
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 
