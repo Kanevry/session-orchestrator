@@ -451,25 +451,27 @@ fi
 
 ### Dispatch
 
-Call the convenience entry point `mirrorBoard` from `scripts/lib/vault-status/board-writer.mjs`, naming THIS repo's row `in-progress`:
+Call `sweepBoard` from `scripts/lib/vault-status/board-writer.mjs` — the host-wide sweep (issue #716):
 
 ```js
-import { mirrorBoard } from 'scripts/lib/vault-status/board-writer.mjs';
+import { sweepBoard } from 'scripts/lib/vault-status/board-writer.mjs';
 
-await mirrorBoard({
+await sweepBoard({
   repoRoot: process.cwd(),
-  explicitStatus: 'in-progress',
 });
 ```
 
-> **Call-site contract:** OMIT `repos` for the single-repo case. `mirrorBoard` then builds the descriptor `[{ repoRoot, status: explicitStatus }]` itself. Do NOT pass `repos: [process.cwd()]` — `collectRows` requires `{ repoRoot }` object descriptors and silently skips bare path strings (`board-writer.mjs` `collectRows` guard), which would write a board with no row for this repo. Pass `repos` only as an array of `{ repoRoot }` objects when sweeping multiple repos.
+`sweepBoard` enumerates candidate repos host-wide (`enumerateCandidates` — confinement root `~/Projects` plus any `cross-repo.projects` config-declared repos, issue #676), re-derives the board status for every BUSY repo it finds (`in-progress` or `force-closed`, never `frei`), unions in THIS repo so its own row is always re-derived, and writes the board in one idempotent merge. **A crashed session in ANY repo now renders `force-closed` on the board from THIS repo's session-start** — not only from that repo's own next session-start/-end.
 
-This single call does two things:
+> **Call-site contract:** `sweepBoard` is now the primary call. `explicitStatus` is **inert for `'in-progress'`** — `collectRows` only honors an explicit per-repo `status: 'closed'` override; THIS repo's `in-progress` row is always rendered from its own **live `session.lock` lease** (already written/heartbeated by Phase 1.2's `acquire()`), never from a passed-in status string. If constructing `repos` manually for a narrower sweep, `collectRows` requires `{ repoRoot }` object descriptors and silently skips bare path strings (`board-writer.mjs` `collectRows` guard) — `sweepBoard`/`buildSweepRepos` already produce the correct shape, so this only matters for a hand-rolled `mirrorBoard({ repos })` call.
+
+This single call does three things:
 
 1. **Sets THIS repo's board row to `in-progress`** with the current semantic-session-id, branch, mode, and heartbeat (read off this repo's `session.lock` v2 lease + the host-wide registry — both already written by Phase 1.2's `acquire()`).
-2. **Re-derives THIS repo's status from its live lease**, so a stale lease left by a prior crashed session in this same repo renders as `force-closed` (heartbeat older than the v2 ttl, default 4h — `DEFAULT_TTL_HOURS` in `scripts/lib/session-lock.mjs`, evaluated via `isLockLive`) and is **never silently dropped** — its fields are read straight off the dead lock. Other repos' prior rows are preserved unchanged via the idempotent merge. **Cross-repo sweep** (re-deriving *every* repo's dead-lease → `force-closed` from any session-start) requires the candidate-repo enumeration delivered in P2 (#676); until then the board reflects each repo's status as of that repo's own most recent session-start/-end.
+2. **Re-derives THIS repo's status from its live lease**, so a stale lease left by a prior crashed session in this same repo renders as `force-closed` (heartbeat older than the v2 ttl, default 4h — `DEFAULT_TTL_HOURS` in `scripts/lib/session-lock.mjs`, evaluated via `isLockLive`) and is **never silently dropped** — its fields are read straight off the dead lock.
+3. **Re-derives every OTHER busy repo's status host-wide** via `enumerateCandidates` — a dead lease in repo B renders `force-closed` on the board the next time ANY repo's session-start runs `sweepBoard`, closing the #676→#716 gap. `frei` (lock-less) repos are excluded from re-derivation to avoid board noise; their prior rows, and the prior rows of any repo `enumerateCandidates` did not surface, are preserved unchanged via the idempotent merge — never dropped.
 
-`mirrorBoard` itself re-reads Session Config, resolves the host-local vault-dir, and **silently no-ops** (returning `{ action: 'skipped-vault-disabled' }`) when `vault-integration.enabled` is not `true`, the vault-dir is absent, the vault resolves outside `$HOME`, or the config is unreadable. The Bash gate above is the fast-path skip; this internal guard is the defense-in-depth backstop — both agree on the same condition.
+`sweepBoard` internally calls `mirrorBoard`, which re-reads Session Config, resolves the host-local vault-dir, and **silently no-ops** (returning `{ action: 'skipped-vault-disabled' }`) when `vault-integration.enabled` is not `true`, the vault-dir is absent, the vault resolves outside `$HOME`, or the config is unreadable. The Bash gate above is the fast-path skip; this internal guard is the defense-in-depth backstop — both agree on the same condition.
 
 ### Safety invariants
 
@@ -479,7 +481,7 @@ This single call does two things:
 
 ### Non-blocking behavior
 
-This is **best-effort**, exactly like the Phase 4 banners: a board-write failure (I/O error, thrown exception, malformed lease) MUST NOT halt session-start. Wrap the `mirrorBoard` call so any error is swallowed and logged as a single WARN line, then continue to Phase 2. Session-start is never blocked by a vault-board failure.
+This is **best-effort**, exactly like the Phase 4 banners: a board-write failure (I/O error, thrown exception, malformed lease, or a failed host-wide enumeration) MUST NOT halt session-start. `sweepBoard` already degrades internally — if `enumerateCandidates` throws for any reason, it falls back to the pre-#716 single-repo write (`mirrorBoard({ repoRoot, explicitStatus: 'in-progress' })`) so the board write still happens. On top of that internal fallback, the coordinator MUST STILL wrap the `sweepBoard` call so any remaining error is swallowed and logged as a single WARN line, then continue to Phase 2. Session-start is never blocked by a vault-board failure.
 
 ## Phase 2: Git Analysis (parallel)
 
@@ -950,7 +952,7 @@ After user alignment:
 |------|---------|
 | `soul.md` | Identity and communication principles |
 | (inline) Phase 1.2 | Session Lock Acquire — `acquire()` call, active/stale/cross-host AUQ flows, `forceAcquire()` on user consent, deviation note wiring |
-| (inline) Phase 1.7 | Vault Live-Status Board (#674) — `mirrorBoard()` from `scripts/lib/vault-status/board-writer.mjs`; gated on `vault-integration.enabled: true`; marks this repo `in-progress` + runs the lease staleness sweep (`force-closed`); generator-marked + idempotent; never touches `_overview.md`; non-blocking |
+| (inline) Phase 1.7 | Vault Live-Status Board (#674/#716) — `sweepBoard()` from `scripts/lib/vault-status/board-writer.mjs`; gated on `vault-integration.enabled: true`; marks this repo `in-progress` + host-wide staleness sweep via `enumerateCandidates()` (`scripts/lib/dispatcher/enumerate.mjs`), so a crashed session in ANY repo renders `force-closed` from any repo's session-start; generator-marked + idempotent; never touches `_overview.md`; non-blocking (falls back to single-repo `mirrorBoard()` on enumeration failure) |
 | `presentation-format.md` | Phase 8 output templates and AskUserQuestion examples |
 | `phase-2-5-docs-planning.md` | Phase 2.5 full procedural body — docs-orchestrator config, audience detection, AUQ confirmation, result block emission, non-overlap rules |
 | (inline) Phase 2.6 | Steering docs gate + load — reads `.orchestrator/steering/{product,tech,structure}.md`; silent no-op when directory absent |

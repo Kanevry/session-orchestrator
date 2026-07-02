@@ -18,6 +18,8 @@
  *   normalizeUpdated  — stabilise the `updated:` line for byte-equality noop compare
  *   writeBoard        — idempotent write with skip-handwritten / skip-noop / dry-run
  *   mirrorBoard       — thin convenience: config-read + resolve + write (no-ops when vault off)
+ *   buildSweepRepos   — pure helper: Candidate[] → sweep repo descriptors (busy ∪ thisRepo)
+ *   sweepBoard        — host-wide sweep: enumerateCandidates + mirrorBoard (issue #716)
  *
  * Idempotent merge: writeBoard's caller passes a fully-rendered board, but
  * {@link collectRows} preserves rows for repos NOT in the current update by
@@ -40,6 +42,7 @@ import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-reg
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
 export const GENERATOR_MARKER = 'session-orchestrator-active-sessions@1';
@@ -531,4 +534,128 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   const content = renderBoard([...merged.values()], { now, createdIso });
 
   return writeBoard({ outputPath, content, dryRun, fs });
+}
+
+// ── Host-wide sweep (issue #716) ─────────────────────────────────────────────────
+
+/**
+ * Pure helper: reduce an {@link enumerateCandidates} result down to the sweep
+ * repo descriptors {@link mirrorBoard} expects — every BUSY candidate
+ * (`free === false`, i.e. `in-progress` or `force-closed`), unioned with the
+ * calling repo (`thisRepoRoot`) so its own row is always re-derived even when
+ * `enumerateCandidates` did not surface it (e.g. `thisRepoRoot` sits outside
+ * `startDir`'s confinement root).
+ *
+ * Free (`frei`) candidates are intentionally EXCLUDED — re-deriving them would
+ * add board noise for repos with nothing to report; their prior rows (if any)
+ * are preserved by {@link mirrorBoard}'s idempotent merge.
+ *
+ * Pure — no fs access, no I/O. Dedupe is by `path.resolve()` so a candidate
+ * already covering `thisRepoRoot` is not duplicated.
+ *
+ * @param {import('../dispatcher/enumerate.mjs').Candidate[]} candidates
+ * @param {{ thisRepoRoot: string }} opts
+ * @returns {Array<{ repoRoot: string }>}
+ */
+export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const seen = new Set();
+  const repos = [];
+
+  for (const candidate of list) {
+    if (!candidate || candidate.free !== false) continue;
+    if (typeof candidate.repoRoot !== 'string' || candidate.repoRoot.length === 0) continue;
+    const resolved = path.resolve(candidate.repoRoot);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    repos.push({ repoRoot: candidate.repoRoot });
+  }
+
+  if (typeof thisRepoRoot === 'string' && thisRepoRoot.length > 0) {
+    const resolvedThis = path.resolve(thisRepoRoot);
+    if (!seen.has(resolvedThis)) {
+      seen.add(resolvedThis);
+      repos.push({ repoRoot: thisRepoRoot });
+    }
+  }
+
+  return repos;
+}
+
+/**
+ * Host-wide vault-board staleness sweep (issue #716). Extends {@link mirrorBoard}'s
+ * single-repo re-derivation to every BUSY repo on the host, so a crashed session
+ * in repo A renders as `force-closed` on the board from any repo B's
+ * session-start — not only from repo A's own next session-start/-end.
+ *
+ * Composition: {@link enumerateCandidates}(startDir) → {@link buildSweepRepos}
+ * (busy ∪ thisRepo) → {@link mirrorBoard}(repos).
+ *
+ * Notes:
+ *   (a) THIS repo's `in-progress` row is rendered from ITS OWN live
+ *       `session.lock` lease via {@link collectRows} — NOT via `explicitStatus`
+ *       (that field is inert for `'in-progress'`; `collectRows` only honors an
+ *       explicit `status: 'closed'` override). The lease is the one Phase 1.2
+ *       writes/heartbeats for the calling session.
+ *   (b) `frei` (lock-less) repos are excluded from re-derivation to avoid board
+ *       noise — see {@link buildSweepRepos}. Prior rows of un-swept repos
+ *       (busy-but-not-enumerated, or genuinely frei) are preserved by
+ *       {@link mirrorBoard}'s idempotent merge, never dropped.
+ *   (c) The enumerate + collectRows path is synchronous fs (readdirSync /
+ *       existsSync / readLock per candidate) — O(repos) small reads, single-digit
+ *       ms at host scale (~31 repos observed). No timeout is applied: a sync
+ *       call cannot be preempted in-process, so a timeout would only convert a
+ *       slow sweep into a thrown error, not a faster one.
+ *   (d) Merge key is `repoName` (`path.basename`) — two differently-rooted repos
+ *       sharing a basename collapse to one board row. Known limitation,
+ *       inherited from {@link collectRows}/{@link mirrorBoard}; not addressed here.
+ *
+ * Best-effort contract: `sweepBoard` itself never throws for an enumeration
+ * failure — `enumerateCandidates` is wrapped in try/catch; on ANY failure the
+ * sweep degrades to the pre-#716 single-repo write
+ * (`mirrorBoard({ repoRoot, explicitStatus: 'in-progress' })`) so the board
+ * write still happens. `mirrorBoard`'s own internal guards (vault disabled,
+ * `_overview.md` refusal, noop-skip, …) are untouched and still apply.
+ *
+ * @param {object} [opts]
+ * @param {string} opts.repoRoot — the calling repo (always included in the sweep).
+ * @param {string} [opts.startDir] — enumeration root; omitted in production so
+ *   {@link enumerateCandidates} defaults to `getConfinementRoot()` (~/Projects).
+ *   Test seam only — do NOT compute `path.dirname(repoRoot)` here.
+ * @param {Date|number} [opts.now] — clock seam. A `Date` is used as-is; a finite
+ *   number is treated as epoch-ms (matching {@link collectRows}'s own
+ *   `now instanceof Date ? … : Date.now()` convention); anything else falls
+ *   back to `Date.now()`. Always forwarded to {@link mirrorBoard} as a `Date`
+ *   (see body) — {@link renderBoard} only special-cases `now instanceof Date`,
+ *   so a bare number would otherwise be silently discarded there.
+ * @param {boolean} [opts.dryRun]
+ * @param {object} [opts.fs] — injectable fs for {@link mirrorBoard}/{@link writeBoard}.
+ * @param {object} [opts.deps] — injectable deps for {@link enumerateCandidates}
+ *   (test seam: `readdirSync`, `existsSync`, `readLock`, `isLockLive`,
+ *   `getCrossRepoProjects`, `validatePathInsideProject`, `now`).
+ * @returns {Promise<{ action: string, path?: string }>}
+ */
+export async function sweepBoard({ repoRoot, startDir, now = new Date(), dryRun = false, fs, deps } = {}) {
+  // Accept both a Date and a caller-passed epoch-ms number (previously the
+  // numeric case was silently discarded by `now instanceof Date ? … : Date.now()`).
+  const nowMs = now instanceof Date
+    ? now.getTime()
+    : (typeof now === 'number' && Number.isFinite(now) ? now : Date.now());
+
+  // mirrorBoard → renderBoard only special-case `now instanceof Date` (a bare
+  // number falls through to `new Date()` inside renderBoard, breaking
+  // determinism). Forward a real Date built from `nowMs` so a numeric `now`
+  // stays deterministic end-to-end.
+  const nowForMirror = now instanceof Date ? now : new Date(nowMs);
+
+  try {
+    const candidates = await enumerateCandidates({ startDir, now: nowMs, deps });
+    const repos = buildSweepRepos(candidates, { thisRepoRoot: repoRoot });
+    return await mirrorBoard({ repoRoot, repos, now: nowForMirror, dryRun, fs });
+  } catch (err) {
+    console.warn('[sweepBoard] host-wide enumeration failed — degraded to single-repo board write:', err?.message ?? err);
+    // Best-effort fallback: enumeration failed for any reason — degrade to the
+    // pre-#716 single-repo write so the board is still updated for THIS repo.
+    return mirrorBoard({ repoRoot, explicitStatus: 'in-progress', now: nowForMirror, dryRun, fs });
+  }
 }
