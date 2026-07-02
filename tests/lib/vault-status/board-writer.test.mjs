@@ -14,8 +14,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -26,6 +26,7 @@ import {
   normalizeUpdated,
   parseBoardRows,
   writeBoard,
+  mirrorBoard,
 } from '../../../scripts/lib/vault-status/board-writer.mjs';
 
 import { repoPathHash } from '../../../scripts/lib/session-registry.mjs';
@@ -36,9 +37,16 @@ import { repoPathHash } from '../../../scripts/lib/session-registry.mjs';
 
 let sandbox;
 let prevRegistryDir;
+// mirrorBoard's Session Config read (readConfigFile) is a REAL disk read, not
+// injectable, and its vault-dir safety guard requires the resolved vault dir
+// to live under $HOME — so the foldKey/mirrorBoard tests below need vault
+// dirs created under os.homedir(), tracked here for cleanup alongside sandbox
+// (mirrors the precedent in board-writer-sweep.test.mjs).
+let extraCleanupDirs;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'board-writer-test-'));
+  extraCleanupDirs = [];
   // Isolate the host session registry: point the default registry dir at an
   // empty tmp dir so readRegistry() inside collectRows() returns [].
   prevRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
@@ -50,6 +58,10 @@ afterEach(() => {
   if (prevRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
   else process.env.SO_SESSION_REGISTRY_DIR = prevRegistryDir;
   rmSync(sandbox, { recursive: true, force: true });
+  for (const d of extraCleanupDirs) {
+    rmSync(d, { recursive: true, force: true });
+  }
+  extraCleanupDirs = [];
 });
 
 /** Create a temp repo dir with an optional crafted session.lock. */
@@ -103,6 +115,62 @@ function buildRegistryEntry({ repoRoot, branch, sessionId = 'reg-session', mode 
 }
 
 const FIXED_NOW = new Date('2026-06-18T12:00:00.000Z');
+
+/**
+ * A fresh vault dir under $HOME (mirrorBoard's safety guard requires this),
+ * tracked in `extraCleanupDirs` for teardown.
+ */
+function makeVaultDir() {
+  const d = mkdtempSync(join(homedir(), '.so-board-writer-fold-test-'));
+  extraCleanupDirs.push(d);
+  return d;
+}
+
+/**
+ * Create the "calling repo" fixture mirrorBoard needs: a real CLAUDE.md
+ * declaring vault-integration enabled, pointing at vaultDir. Mirrors the
+ * precedent in board-writer-sweep.test.mjs `makeThisRepo`.
+ */
+function makeThisRepoConfig(name, vaultDir) {
+  const repoRoot = join(sandbox, name);
+  mkdirSync(repoRoot, { recursive: true });
+  writeFileSync(
+    join(repoRoot, 'CLAUDE.md'),
+    `# Repo\n\n## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ${vaultDir}\n  mode: warn\n`,
+  );
+  return repoRoot;
+}
+
+/**
+ * Hand-build a generator-owned board file with EXACT row order (renderBoard
+ * always re-sorts alphabetically, which would defeat tests that need to prove
+ * a result is independent of file order — see the #719 heartbeat-preference
+ * tests below).
+ */
+function buildPriorBoardContent(rows, { now = FIXED_NOW } = {}) {
+  const nowIso = now.toISOString();
+  const lines = [
+    '---',
+    `_generator: ${GENERATOR_MARKER}`,
+    'type: board',
+    `created: ${nowIso}`,
+    `updated: ${nowIso}`,
+    '---',
+    '',
+    '# Active Sessions',
+    '',
+    '> Live session-status board. Generator-owned — do not hand-edit.',
+    '',
+    '| Repo | Status | Session | Branch | Mode | Last heartbeat |',
+    '|---|---|---|---|---|---|',
+    ...rows.map(
+      (r) =>
+        `| ${r.repo} | ${r.status} | ${r.session ?? '—'} | ${r.branch ?? '—'} | ${r.mode ?? '—'} | ${r.heartbeat ?? '—'} |`,
+    ),
+    '',
+  ];
+  return lines.join('\n');
+}
 
 /** In-memory fs stub for writeBoard/mirrorBoard. Seed with { path: content }. */
 function makeFsStub(seed = {}) {
@@ -550,5 +618,191 @@ describe('normalizeUpdated', () => {
   it('leaves content without an updated: line unchanged', () => {
     const input = '---\ntype: board\n---\nbody\n';
     expect(normalizeUpdated(input)).toBe(input);
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — case-insensitive merge-key folding (issue #719)
+// ===========================================================================
+
+describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
+  it('case-collision collapse: two prior rows differing only by case + a fresh row for one casing collapse to exactly ONE row, and the FRESH row wins', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const priorContent = buildPriorBoardContent([
+      { repo: 'some-repo', status: 'closed' },
+      { repo: 'Some-Repo', status: 'force-closed', session: 'old-sess', mode: 'deep', heartbeat: '2026-05-01T00:00:00.000Z' },
+    ]);
+    writeFileSync(boardPath, priorContent, 'utf8');
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-fold-a', vaultDir);
+    const freshLock = buildLockBody({ sessionId: 'fresh-sess', mode: 'deep', heartbeatAgeHours: 0, now: FIXED_NOW });
+    const freshRepoRoot = makeRepo('Some-Repo-live', freshLock);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }, { repoRoot: freshRepoRoot, repoName: 'Some-Repo' }],
+      now: FIXED_NOW,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const matches = rows.filter((r) => r.repo.toLowerCase() === 'some-repo');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual({
+      repo: 'Some-Repo',
+      status: 'in-progress',
+      session: 'fresh-sess',
+      branch: null,
+      mode: 'deep',
+      heartbeat: freshLock.last_heartbeat,
+    });
+  });
+
+  it.each([
+    [
+      'newer row FIRST in the file',
+      [
+        { repo: 'Some-Repo', status: 'closed', session: 'newer-sess', heartbeat: '2026-06-10T00:00:00.000Z' },
+        { repo: 'some-repo', status: 'force-closed', session: 'older-sess', heartbeat: '2026-06-01T00:00:00.000Z' },
+      ],
+    ],
+    [
+      'newer row LAST in the file',
+      [
+        { repo: 'some-repo', status: 'force-closed', session: 'older-sess', heartbeat: '2026-06-01T00:00:00.000Z' },
+        { repo: 'Some-Repo', status: 'closed', session: 'newer-sess', heartbeat: '2026-06-10T00:00:00.000Z' },
+      ],
+    ],
+  ])(
+    'preserved-only collision (no fresh row): survivor is always the newer-heartbeat row — %s',
+    async (_label, rowsInFileOrder) => {
+      const vaultDir = makeVaultDir();
+      const boardPath = resolveBoardPath(vaultDir);
+      mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+      writeFileSync(boardPath, buildPriorBoardContent(rowsInFileOrder), 'utf8');
+
+      const thisRepoRoot = makeThisRepoConfig('this-repo-fold-c', vaultDir);
+
+      const result = await mirrorBoard({
+        repoRoot: thisRepoRoot,
+        // No repo in this update folds to the 'some-repo' key — the survivor
+        // must come purely from the within-prior-file collision resolution.
+        repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo' }],
+        now: FIXED_NOW,
+      });
+
+      expect(result.action).toBe('written');
+      const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+      const matches = rows.filter((r) => r.repo.toLowerCase() === 'some-repo');
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toEqual({
+        repo: 'Some-Repo',
+        status: 'closed',
+        session: 'newer-sess',
+        branch: null,
+        mode: null,
+        heartbeat: '2026-06-10T00:00:00.000Z',
+      });
+    },
+  );
+
+  it.each([
+    [
+      'row A first, row B second',
+      [
+        { repo: 'some-repo', status: 'closed', session: 'row-a' },
+        { repo: 'Some-Repo', status: 'force-closed', session: 'row-b' },
+      ],
+      'row-b',
+    ],
+    [
+      'row B first, row A second',
+      [
+        { repo: 'Some-Repo', status: 'force-closed', session: 'row-b' },
+        { repo: 'some-repo', status: 'closed', session: 'row-a' },
+      ],
+      'row-a',
+    ],
+  ])(
+    'unparsable/missing heartbeats on both colliding rows fall back to last-written-wins (pinned current behavior) — %s',
+    async (_label, rowsInFileOrder, expectedSurvivorSession) => {
+      const vaultDir = makeVaultDir();
+      const boardPath = resolveBoardPath(vaultDir);
+      mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+      // Both heartbeats render as '—' (absent/unparsable) so Date.parse('') is
+      // NaN on both sides of the comparison — the guard cannot pick a winner
+      // by recency, so the loop's default (whichever is processed last)
+      // applies: the LAST row written into the file order wins.
+      writeFileSync(boardPath, buildPriorBoardContent(rowsInFileOrder), 'utf8');
+
+      const thisRepoRoot = makeThisRepoConfig('this-repo-fold-d', vaultDir);
+
+      const result = await mirrorBoard({
+        repoRoot: thisRepoRoot,
+        repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-2' }],
+        now: FIXED_NOW,
+      });
+
+      expect(result.action).toBe('written');
+      const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+      const matches = rows.filter((r) => r.repo.toLowerCase() === 'some-repo');
+      expect(matches).toHaveLength(1);
+      expect(matches[0].session).toBe(expectedSurvivorSession);
+    },
+  );
+
+  it('idempotency: a second mirrorBoard write over an already-collapsed board is skipped-noop', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'some-repo', status: 'closed' },
+        { repo: 'Some-Repo', status: 'force-closed', session: 'old-sess', heartbeat: '2026-06-01T00:00:00.000Z' },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-fold-e', vaultDir);
+    const repos = [{ repoRoot: thisRepoRoot, repoName: 'idempotent-repo' }];
+
+    const first = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW });
+    expect(first.action).toBe('written');
+
+    const second = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW });
+    expect(second.action).toBe('skipped-noop');
+  });
+
+  it('sticky-status fold: a lock-less repo whose prior row used DIFFERENT casing still inherits the terminal status via the folded prior-status lookup', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    // Prior board row is capitalized ('Some-Repo', in-progress).
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'Some-Repo', status: 'in-progress', session: 'prior-sess', mode: 'deep', heartbeat: '2026-06-01T00:00:00.000Z' },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-fold-f', vaultDir);
+    // This update's repoName is lowercase — a DIFFERENT casing than the prior
+    // board row — and has no session.lock (ghost repo, no live lease).
+    const ghost = ghostRepo('some-repo-ghost-f');
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }, { repoRoot: ghost, repoName: 'some-repo' }],
+      now: FIXED_NOW,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const row = rows.find((r) => r.repo.toLowerCase() === 'some-repo');
+    expect(row.status).toBe('closed');
   });
 });

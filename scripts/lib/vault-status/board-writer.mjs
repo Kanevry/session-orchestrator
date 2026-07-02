@@ -56,6 +56,24 @@ const STATUS_FORCE_CLOSED = 'force-closed';
 const STATUS_CLOSED = 'closed';
 const STATUS_FREI = 'frei';
 
+// ── Key normalization ────────────────────────────────────────────────────────────
+
+/**
+ * Fold a repo-name key to a case-insensitive form for merge/compare purposes
+ * (issue #719). On case-insensitive-preserving filesystems (APFS, the default
+ * for macOS Home volumes), `some-repo` and `Some-Repo` are the SAME
+ * physical directory — every site that keys rows by `repoName` (prior-status
+ * lookup, preserved-row map, merge upsert) must fold through this helper so
+ * the two casings collapse to one board row instead of rendering as
+ * duplicates. Row OBJECTS are left untouched — {@link renderBoard} still
+ * displays the row's original `repo` string (true on-disk casing); only the
+ * MAP KEY is folded.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+const foldKey = (s) => String(s ?? '').toLowerCase();
+
 // ── Path helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -146,8 +164,11 @@ function cell(value) {
  * @param {Date} [opts.now] — clock seam (defaults to new Date()).
  * @param {Array<object>} [opts.registry] — pre-read registry (test seam); defaults
  *   to a fresh {@link readRegistry} call.
- * @param {Map<string, string>} [opts.priorStatusByRepo] — repoName → prior board
- *   status, used to derive `closed` when a once-active repo now has no lock.
+ * @param {Map<string, string>} [opts.priorStatusByRepo] — {@link foldKey}-folded
+ *   (case-insensitive) repoName → prior board status, used to derive `closed`
+ *   when a once-active repo now has no lock. Callers MUST fold the key with
+ *   {@link foldKey} before inserting (issue #719) — this function folds its
+ *   own lookup key to match.
  * @returns {Promise<Array<{ repo: string, status: string, session: string|null,
  *   branch: string|null, mode: string|null, heartbeat: string|null }>>}
  */
@@ -216,7 +237,9 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
       status = STATUS_FORCE_CLOSED;
     } else {
       // No live lock. Derive status from the prior board state + registry freshness.
-      const prior = priorStatus.get(repoName);
+      // Key is folded (issue #719) so `Some-Repo` and `some-repo` resolve
+      // to the same prior-status entry on case-insensitive-preserving filesystems.
+      const prior = priorStatus.get(foldKey(repoName));
       if (prior === STATUS_CLOSED || prior === STATUS_FORCE_CLOSED) {
         // Terminal prior state is STICKY absent a live lock. A still-fresh registry
         // entry must NOT resurrect a cleanly-closed (or force-closed) repo to
@@ -500,11 +523,17 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   //      and the noop-skip in writeBoard would never fire.
   //   2. recover the prior per-repo status — drives the `closed` derivation for
   //      repos NOT in this update (idempotent merge: their rows are re-derived).
+  // Both maps are keyed by {@link foldKey}(repo) — case-insensitively folded
+  // (issue #719) — so two prior rows differing only by case (e.g.
+  // `some-repo` vs `Some-Repo`, the same physical directory on a
+  // case-insensitive-preserving filesystem like APFS) collapse to ONE entry
+  // instead of coexisting as duplicates. The row OBJECTS keep their original
+  // `repo` string untouched, so `renderBoard` still displays true casing.
   const fsReadFile = fs?.readFileSync ?? readFileSync;
   const fsExists = fs?.existsSync ?? existsSync;
   let createdIso;
   const priorStatusByRepo = new Map();
-  const preservedRows = new Map(); // repoName → prior row (for merge)
+  const preservedRows = new Map(); // foldKey(repoName) → prior row (for merge)
   if (fsExists(outputPath)) {
     let existing;
     try {
@@ -517,8 +546,25 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
       if (fm && fm['_generator'] === GENERATOR_MARKER) {
         if (fm['created']) createdIso = fm['created'];
         for (const prior of parseBoardRows(existing)) {
-          priorStatusByRepo.set(prior.repo, prior.status);
-          preservedRows.set(prior.repo, prior);
+          const key = foldKey(prior.repo);
+          const collidingPrior = preservedRows.get(key);
+          if (collidingPrior) {
+            // Collision WITHIN parseBoardRows output — two prior rows fold to
+            // the same key with no fresh row in play yet (that upsert happens
+            // below). Prefer the row with the most-recent `heartbeat` rather
+            // than silently last-in-file-order. Guard: if either heartbeat is
+            // unparsable, fall through to last-written-wins (the pre-#719
+            // default) by NOT skipping the overwrite below.
+            const collidingTs = Date.parse(collidingPrior.heartbeat ?? '');
+            const priorTs = Date.parse(prior.heartbeat ?? '');
+            if (Number.isFinite(collidingTs) && Number.isFinite(priorTs) && collidingTs > priorTs) {
+              // The already-preserved row is strictly newer — keep it, skip
+              // this older colliding row entirely.
+              continue;
+            }
+          }
+          priorStatusByRepo.set(key, prior.status);
+          preservedRows.set(key, prior);
         }
       }
     }
@@ -527,9 +573,13 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   const rows = await collectRows({ repos: repoList, now, priorStatusByRepo });
 
   // Idempotent merge: keep prior rows for repos NOT in this update, then upsert
-  // the freshly-derived rows over them so repeated writes stay stable.
+  // the freshly-derived rows over them so repeated writes stay stable. Both the
+  // seed (`preservedRows`) and the upsert key below are folded via {@link
+  // foldKey} (issue #719) — a freshly-derived row ALWAYS wins over a preserved
+  // row sharing its folded key, which is what collapses a live `Some-Repo`
+  // row over a stale preserved `some-repo` row on the next board write.
   const merged = new Map(preservedRows);
-  for (const row of rows) merged.set(row.repo, row);
+  for (const row of rows) merged.set(foldKey(row.repo), row);
 
   const content = renderBoard([...merged.values()], { now, createdIso });
 
@@ -606,9 +656,19 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  *       ms at host scale (~31 repos observed). No timeout is applied: a sync
  *       call cannot be preempted in-process, so a timeout would only convert a
  *       slow sweep into a thrown error, not a faster one.
- *   (d) Merge key is `repoName` (`path.basename`) — two differently-rooted repos
- *       sharing a basename collapse to one board row. Known limitation,
- *       inherited from {@link collectRows}/{@link mirrorBoard}; not addressed here.
+ *   (d) Merge key is `repoName` (`path.basename`), case-insensitively folded via
+ *       {@link foldKey} (issue #719) — two rows differing only by case (e.g.
+ *       `some-repo` vs `Some-Repo`, the same physical directory on a
+ *       case-insensitive-preserving filesystem like APFS) now collapse to ONE
+ *       board row instead of rendering as duplicates. The survivor is whichever
+ *       row is live/newest: a freshly-derived row (this sweep's own
+ *       `collectRows` output) always wins over a preserved stale row; among two
+ *       PRESERVED rows colliding on the folded key, the more-recent `heartbeat`
+ *       wins (see the collision-resolution loop inside {@link mirrorBoard}).
+ *       Two GENUINELY different, differently-rooted repos that happen to share
+ *       a basename (case-insensitively) still collapse to one row — that
+ *       remains a known limitation, inherited from {@link collectRows}/
+ *       {@link mirrorBoard}; not addressed here.
  *
  * Best-effort contract: `sweepBoard` itself never throws for an enumeration
  * failure — `enumerateCandidates` is wrapped in try/catch; on ANY failure the
