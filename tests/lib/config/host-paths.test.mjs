@@ -125,6 +125,45 @@ describe('resolveHostPath — key→env mapping', () => {
   });
 });
 
+describe('resolveHostPath — namespace-map-path (#725 D5)', () => {
+  it('reads SO_NAMESPACE_MAP with highest precedence', () => {
+    const result = resolveHostPath('namespace-map-path', '', {
+      env: { SO_NAMESPACE_MAP: '/env-map.json' },
+      ownerConfig: { paths: { 'namespace-map-path': '/owner-map.json' } },
+    });
+    expect(result).toBe('/env-map.json');
+  });
+
+  it('owner override wins when no env-var is set', () => {
+    const result = resolveHostPath('namespace-map-path', '', {
+      env: {},
+      ownerConfig: { paths: { 'namespace-map-path': '/owner-map.json' } },
+    });
+    expect(result).toBe('/owner-map.json');
+  });
+
+  it('falls through to the committed default when unset at both tiers', () => {
+    const result = resolveHostPath('namespace-map-path', '', { env: {}, ownerConfig: {} });
+    expect(result).toBe('');
+  });
+
+  it('SO_NAMESPACE_MAP does NOT affect vault-dir resolution', () => {
+    const result = resolveHostPath('vault-dir', '/committed', {
+      env: { SO_NAMESPACE_MAP: '/env-map.json' },
+      ownerConfig: {},
+    });
+    expect(result).toBe('/committed');
+  });
+
+  it('SO_VAULT_DIR does NOT affect namespace-map-path resolution', () => {
+    const result = resolveHostPath('namespace-map-path', '', {
+      env: { SO_VAULT_DIR: '/env-vault' },
+      ownerConfig: {},
+    });
+    expect(result).toBe('');
+  });
+});
+
 describe('loadHostPaths', () => {
   it('returns the loaded ownerConfig and the passed env', () => {
     const fakeEnv = { SO_VAULT_DIR: '/x' };

@@ -138,6 +138,20 @@ describe('generateLearningNote (v1)', () => {
     // The title line should have quotes around the value
     expect(out).toMatch(/^title: "Rule: always validate"$/m);
   });
+
+  // ── #725 D2: source-repo attribution ────────────────────────────────────────
+
+  it('#725 D2: emits source-repo line when opts.repoNs is provided', () => {
+    const out = generateLearningNote(makeV1Entry(), 'my-slug', { repoNs: 'session-orchestrator' });
+    expect(out).toContain('source-repo: session-orchestrator\n');
+    // Placed inside the frontmatter, before the _generator marker.
+    expect(out.indexOf('source-repo:')).toBeLessThan(out.indexOf('_generator:'));
+  });
+
+  it('#725 D2: omits source-repo line when opts.repoNs is absent (backward-compatible)', () => {
+    const out = generateLearningNote(makeV1Entry(), 'my-slug');
+    expect(out).not.toContain('source-repo:');
+  });
 });
 
 // ── generateLearningNoteV2 ────────────────────────────────────────────────────
@@ -204,6 +218,17 @@ describe('generateLearningNoteV2', () => {
   it('emits the generator marker in frontmatter', () => {
     const out = generateLearningNoteV2(makeV2Entry(), 'my-slug');
     expect(out).toContain('_generator: session-orchestrator-vault-mirror@1');
+  });
+
+  it('#725 D2: emits source-repo line when opts.repoNs is provided', () => {
+    const out = generateLearningNoteV2(makeV2Entry(), 'my-slug', { repoNs: 'session-orchestrator' });
+    expect(out).toContain('source-repo: session-orchestrator\n');
+    expect(out.indexOf('source-repo:')).toBeLessThan(out.indexOf('_generator:'));
+  });
+
+  it('#725 D2: omits source-repo line when opts.repoNs is absent (backward-compatible)', () => {
+    const out = generateLearningNoteV2(makeV2Entry(), 'my-slug');
+    expect(out).not.toContain('source-repo:');
   });
 });
 

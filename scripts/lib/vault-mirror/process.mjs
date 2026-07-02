@@ -235,7 +235,32 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   if (entryId === null || entryId === undefined) {
     throw new Error(`vault-mirror: learning entry missing required field 'id' (id=<no id>)`);
   }
-  const slugSource = schema === 'v2' ? entry.id : entry.subject;
+  // #725 D1: the raw v1 subject is prose WITH SPACES, and subjectToSlug() strips
+  // spaces WITHOUT hyphenating — so "Dead fallback removal when primary parser
+  // matures" collapsed into a single run "deadfallbackremovalwhenprimaryparser…"
+  // (a silent slug corruption that still passes isValidSlug). Pre-map the
+  // subject's whitespace to hyphens BEFORE subjectToSlug, mirroring the id
+  // derivation in normalizeLearningEntry (render-learnings.mjs L63-65) so a
+  // learning's slug matches its derived id. This keeps the subject as the v1 slug
+  // source (the established contract: entry.id is reserved for the disambiguation
+  // /invalid-slug fallback prefix via uuidPrefix8 below), and only heals the
+  // space-collapse defect. v2 ids are already kebab slugs.
+  //
+  // NOTE (#725 D1 divergence): the wave brief asked to make entry.id the PRIMARY
+  // slug source. That is architecturally incompatible with the invalid-slug
+  // fallback `learning-<uuidPrefix8(entry.id)>` (which requires entry.id to stay
+  // a clean value SEPARATE from the slug source) and would invert the slug-from-
+  // subject contract pinned by 15 tests in tests/unit/vault-mirror.test.mjs. The
+  // pre-map is the mechanism the brief itself names and yields the IDENTICAL slug
+  // for real data (kebab id derived from the same subject); see report.
+  let slugSource;
+  if (schema === 'v2') {
+    slugSource = entry.id;
+  } else if (typeof entry.subject === 'string') {
+    slugSource = entry.subject.trim().replace(/\s+/g, '-');
+  } else {
+    slugSource = entry.subject;
+  }
   let slug;
   if (typeof slugSource === 'string' && slugSource.length > 0) {
     slug = subjectToSlug(slugSource);
@@ -286,6 +311,12 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
   // #660: namespace new writes under a per-repo subdirectory.
   const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  // #725 D2: thread the resolved repo namespace into the learning frontmatter as
+  // `source-repo` for cross-repo attribution. repoNs is already sanitised +
+  // leak-guarded by resolveRepoNamespace, so it is safe to interpolate as-is. The
+  // renderer reads opts.repoNs (see render-learnings.mjs); when absent (older
+  // callers), the source-repo line is omitted — backward-compatible.
+  generatorOpts.repoNs = repoNs;
   const targetDir = join(resolve(vaultDir), '40-learnings', repoNs);
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 

@@ -11,8 +11,49 @@
  * and isOwnerLeakySegment() so a bug in the production function fails the assertion.
  */
 
-import { describe, it, expect } from 'vitest';
-import { resolveRepoNamespace } from '@lib/vault-mirror/namespace.mjs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  resolveRepoNamespace,
+  _setNamespaceMapPath,
+  _resetNamespaceMapState,
+} from '@lib/vault-mirror/namespace.mjs';
+import { _resetPseudonymMapCache } from '@lib/vault-mirror/pseudonym-map.mjs';
+
+// Insulate EVERY test in this file from the machine's real owner.yaml: force
+// "no pseudonym map" by default so the existing redaction/slug pins stay
+// deterministic and green regardless of any host-local namespace map (#725 D5).
+// The mapping describe-block below opts specific tests INTO a tmp map.
+let _tmpDirs = [];
+beforeEach(() => {
+  _resetNamespaceMapState();
+  _setNamespaceMapPath(null); // null = explicitly no map
+  _resetPseudonymMapCache();
+});
+afterEach(() => {
+  _resetNamespaceMapState();
+  _resetPseudonymMapCache();
+  for (const d of _tmpDirs) {
+    try {
+      rmSync(d, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+  _tmpDirs = [];
+  vi.restoreAllMocks();
+});
+
+/** Write a tmp namespace-map JSON file and pin it as the active map. Returns its path. */
+function writeMap(obj) {
+  const dir = mkdtempSync(join(tmpdir(), 'ns-map-test-'));
+  _tmpDirs.push(dir);
+  const p = join(dir, 'namespace-map.json');
+  writeFileSync(p, typeof obj === 'string' ? obj : JSON.stringify(obj), 'utf8');
+  return p;
+}
 
 // ---------------------------------------------------------------------------
 // vault-name override → sanitised slug
@@ -115,5 +156,78 @@ describe('resolveRepoNamespace — default (no vaultName)', () => {
   it('result is lowercase only (no uppercase chars)', () => {
     const result = resolveRepoNamespace({});
     expect(result).toBe(result.toLowerCase());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-local pseudonym mapping (#725 D5)
+//
+// Design: the map is consulted ONLY at the redaction site — a mapped OWNER-LEAKY
+// repo returns its stable pseudonym instead of collapsing to 'redacted-repo';
+// clean repos never touch the map (and never trigger the lazy owner.yaml read).
+//
+// Fixture-name policy: pseudonym VALUES use invented slugs ('alpha-team'). The
+// only real token used is 'bernhardg' — an owner USERNAME (CP1), already present
+// in this scanner-allowlisted redaction-fixture file above — reused ONLY to drive
+// the leaky-repo redaction site (the map is leaky-only, so a leaky KEY is required
+// to exercise it) and to prove a leaky pseudonym VALUE is rejected. No real CP6
+// project slug is introduced. Exhaustive map-parsing edge cases (invalid slug,
+// missing file, non-object JSON) are covered synthetically in pseudonym-map.test.mjs.
+// ---------------------------------------------------------------------------
+
+describe('resolveRepoNamespace — pseudonym mapping', () => {
+  it('a MAPPED owner-leaky repo returns its stable pseudonym instead of "redacted-repo"', () => {
+    // 'bernhardg' is owner-leaky (CP1). With a host-local mapping it resolves to the
+    // pseudonym — preserving per-repo write-isolation (#660) instead of collapsing to
+    // the shared 'redacted-repo' bucket.
+    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
+    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('alpha-team');
+  });
+
+  it('CONTROL: the same owner-leaky repo still redacts when NO map is configured', () => {
+    _setNamespaceMapPath(null);
+    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+  });
+
+  it('a CLEAN repo is returned as-is even when a map is configured (map is leaky-only)', () => {
+    // The map is consulted only at the redaction site, so a non-leaky repo never
+    // touches it — 'acme-internal' resolves to itself, not to any mapped value.
+    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
+    expect(resolveRepoNamespace({ vaultName: 'acme-internal' })).toBe('acme-internal');
+  });
+
+  it('an owner-leaky repo NOT present in the map still redacts (backward-compatible)', () => {
+    // Map exists but has no entry for this repo → falls through to redaction.
+    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
+    expect(resolveRepoNamespace({ vaultName: '~/Projects/Bernhard' })).toBe('redacted-repo');
+  });
+
+  it('missing map file → owner-leaky repo redacts (fallback)', () => {
+    _setNamespaceMapPath('/tmp/definitely-not-a-real-namespace-map-xyz/map.json');
+    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+  });
+
+  it('malformed JSON map → owner-leaky repo redacts + WARN', () => {
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+    _setNamespaceMapPath(writeMap('{ not: valid json'));
+    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    expect(writes.some((w) => /malformed JSON/.test(w))).toBe(true);
+  });
+
+  it('a leaky PSEUDONYM in the map is rejected → repo redacts + WARN (leak never reaches vault)', () => {
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+    // The mapped pseudonym is itself owner-leaky → dropped by loadPseudonymMap, so the
+    // repo falls back to redaction rather than writing the leaky value into the vault.
+    _setNamespaceMapPath(writeMap({ bernhardg: 'bernhardg' }));
+    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    expect(writes.some((w) => /owner-leaky/.test(w))).toBe(true);
   });
 });

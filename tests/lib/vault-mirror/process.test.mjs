@@ -319,6 +319,84 @@ describe('processLearning', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0].action).toBe('skipped-collision-resolved');
   });
+
+  // ── #725 D1: slug source = normalized id, not raw prose subject ──────────────
+
+  it('#725 D1: v1 prose subject with spaces → hyphenated slug, not a concatenated run', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    // Real v1 shape: kebab id + prose subject with spaces. The slug derives from
+    // the PRE-MAPPED subject (spaces → hyphens BEFORE subjectToSlug), yielding the
+    // correctly-hyphenated, lowercased form — NOT the pre-fix space-collapsed run.
+    const entry = {
+      id: 'command-hook-continue-on-block-irrelevant',
+      type: 'gotcha',
+      subject: 'command hook continueOnBlock irrelevant',
+      insight: 'The continueOnBlock field is ignored for command hooks',
+      evidence: 'grep transcript',
+      confidence: 0.9,
+      source_session: 'session-2026-07-02',
+      created_at: '2026-07-02T10:00:00Z',
+    };
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' }),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'command-hook-continueonblock-irrelevant' });
+    // NOT the pre-fix space-collapsed run.
+    expect(lines[0].id).not.toBe('commandhookcontinueonblockirrelevant');
+  });
+
+  it('#725 D1: v1 with space-subject and NO id → hyphenated derived slug, not a concatenated run', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    // No id → normalizeLearningEntry derives a hyphenated slug from the subject.
+    const entry = {
+      type: 'anti-pattern',
+      subject: 'Dead fallback removal when primary parser matures',
+      insight: 'Remove the fallback once the primary path is proven',
+      evidence: 'grep transcript',
+      confidence: 0.7,
+      source_session: 'session-2026-07-02',
+      created_at: '2026-07-02T10:00:00Z',
+    };
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' }),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+    // Hardcoded expected slug — the correctly-hyphenated form, NOT the pre-fix
+    // concatenated run 'deadfallbackremovalwhenprimaryparsermatures'.
+    expect(lines[0].id).toBe('dead-fallback-removal-when-primary-parser-matures');
+    expect(lines[0].id).not.toBe('deadfallbackremovalwhenprimaryparsermatures');
+  });
+
+  it('#725 D1 regression: an existing kebab subject slug is unchanged', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning();
+    // subject already kebab + id equal to it → slug stays 'explicit-contracts'.
+    const { lines } = await captureStdout(() =>
+      processLearning(VALID_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' }),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ action: 'created', id: 'explicit-contracts' });
+  });
+
+  // ── #725 D2: source-repo frontmatter attribution ────────────────────────────
+
+  it('#725 D2: created learning note frontmatter carries source-repo: <repoNs>', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processLearning = await getProcessLearning(); // git mock → repo 'o/r' → repoNs 'r'
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+    await captureStdout(() =>
+      processLearning(VALID_V1, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' }),
+    );
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(written).toContain('source-repo: r\n');
+    // Sits inside the frontmatter block, before the _generator marker.
+    expect(written.indexOf('source-repo: r')).toBeLessThan(written.indexOf('_generator:'));
+  });
 });
 
 // ── processSession ────────────────────────────────────────────────────────────

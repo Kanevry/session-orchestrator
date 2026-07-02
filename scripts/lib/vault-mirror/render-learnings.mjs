@@ -105,6 +105,14 @@ export function generateLearningNote(entry, slug, opts = {}) {
   // Check if expires has a value; it's optional in schema
   const expiresLine = expires ? `expires: ${expires}\n` : '';
 
+  // #725 D2: emit `source-repo` for cross-repo attribution when the caller
+  // (process.mjs) threads the resolved repo namespace through opts.repoNs. The
+  // value is already sanitised + leak-guarded by resolveRepoNamespace. Absent for
+  // older callers / unit tests → the line is omitted (backward-compatible; the
+  // vault-sync schema declares source-repo OPTIONAL).
+  const sourceRepoLine =
+    typeof opts.repoNs === 'string' && opts.repoNs.length > 0 ? `source-repo: ${opts.repoNs}\n` : '';
+
   // source_session is emitted as an Obsidian wikilink ONLY when source_session
   // resolves to a real, mirror-able session id (semantic or UUID-v4). Anything
   // else — 'unknown', legacy timestamp ids without a trailing counter, provenance
@@ -124,7 +132,7 @@ created: ${created}
 updated: ${updated}
 tags: ${tags}
 source_session: ${sourceSessionLink}
-${expiresLine}_generator: ${GENERATOR_MARKER}
+${expiresLine}${sourceRepoLine}_generator: ${GENERATOR_MARKER}
 ---
 
 # ${titleRaw}
@@ -143,7 +151,7 @@ ${evidence}
 `;
 }
 
-export function generateLearningNoteV2(entry, slug) {
+export function generateLearningNoteV2(entry, slug, opts = {}) {
   const REQUIRED_LEARNING_V2_FIELDS = ['id', 'type', 'text', 'scope', 'confidence', 'first_seen'];
   for (const field of REQUIRED_LEARNING_V2_FIELDS) {
     if (entry[field] === null || entry[field] === undefined) {
@@ -164,6 +172,11 @@ export function generateLearningNoteV2(entry, slug) {
   const scopeTag = subjectToSlug(scope) || 'unscoped';
   const tags = `[${buildTag(['learning', type])}, ${buildTag(['status', status])}, ${buildTag(['scope', scopeTag])}]`;
 
+  // #725 D2: emit `source-repo` for cross-repo attribution when the caller threads
+  // opts.repoNs (see generateLearningNote for the full contract). Backward-compatible.
+  const sourceRepoLine =
+    typeof opts.repoNs === 'string' && opts.repoNs.length > 0 ? `source-repo: ${opts.repoNs}\n` : '';
+
   return `---
 id: ${slug}
 type: learning
@@ -172,7 +185,7 @@ status: ${status}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-_generator: ${GENERATOR_MARKER}
+${sourceRepoLine}_generator: ${GENERATOR_MARKER}
 ---
 
 # ${titleRaw}

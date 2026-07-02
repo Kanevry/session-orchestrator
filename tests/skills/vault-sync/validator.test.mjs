@@ -320,6 +320,57 @@ describe('peer-card enum (#530 MED-1)', () => {
   });
 });
 
+// ── source-repo optional field (#725 D2) ──────────────────────────────────────
+
+describe('source-repo optional field (#725 D2)', () => {
+  function makeTempVault(frontmatterLines) {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-src-repo-test-'));
+    const note = `---\n${frontmatterLines}\n---\n\n# Test note\n`;
+    writeFileSync(join(dir, 'test-note.md'), note, 'utf8');
+    return dir;
+  }
+
+  it('accepts a learning note WITH source-repo (string)', () => {
+    const vaultDir = makeTempVault(
+      'id: test-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02\nsource-repo: session-orchestrator',
+    );
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.errors.length).toBe(0);
+  });
+
+  it('accepts a learning note WITHOUT source-repo (field is optional — backward-compatible)', () => {
+    const vaultDir = makeTempVault(
+      'id: test-no-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02',
+    );
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.errors.length).toBe(0);
+  });
+
+  it('rejects a non-string source-repo — proves the explicit declaration bites (not mere passthrough)', () => {
+    // A YAML sequence parses to an array → z.string() fails. Without the explicit
+    // `'source-repo': z.string().optional()` declaration, .passthrough() would
+    // accept ANY value here — so this asserts the declaration is load-bearing.
+    const vaultDir = makeTempVault(
+      'id: test-bad-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02\nsource-repo: [not, a, string]',
+    );
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('invalid');
+    const srcRepoError = parsed.errors.find((e) => e.path === 'source-repo');
+    expect(srcRepoError).toBeDefined();
+  });
+});
+
 // ── vault-dir guard (isVaultDir) ──────────────────────────────────────────────
 
 describe('vault-dir guard', () => {

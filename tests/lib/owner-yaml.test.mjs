@@ -286,14 +286,34 @@ describe('validateOwnerConfig — hash-salt required when enabled=true', () => {
 
 describe('paths: section (#653)', () => {
   it('getDefaults().paths equals empty-override defaults', () => {
-    expect(getDefaults().paths).toEqual({ 'vault-dir': '', 'baseline-path': '' });
+    expect(getDefaults().paths).toEqual({
+      'vault-dir': '',
+      'baseline-path': '',
+      'namespace-map-path': '',
+    });
   });
 
   it('accepts a config with a valid paths object', () => {
-    const cfg = validConfig({ paths: { 'vault-dir': '/v', 'baseline-path': '/b' } });
+    const cfg = validConfig({
+      paths: { 'vault-dir': '/v', 'baseline-path': '/b', 'namespace-map-path': '/m.json' },
+    });
     const result = validateOwnerConfig(cfg);
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it('accepts a paths object WITHOUT namespace-map-path (additive back-compat)', () => {
+    const cfg = validConfig({ paths: { 'vault-dir': '/v' } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('rejects a non-string paths.namespace-map-path member (#725)', () => {
+    const cfg = validConfig({ paths: { 'namespace-map-path': 42 } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('paths.namespace-map-path must be a string');
   });
 
   it('accepts a legacy config WITHOUT a paths key (absent-tolerant back-compat)', () => {

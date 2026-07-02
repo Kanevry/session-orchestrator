@@ -21,8 +21,12 @@
  *     enabled: boolean                           (required)
  *     hash-salt: string                          (required when enabled=true)
  *   paths:                  (optional; host-local path overrides — #653)
- *     vault-dir: string     ('' = no override; mirrors Session Config vault-integration.vault-dir)
- *     baseline-path: string ('' = no override; maps to Session Config plan-baseline-path / projects-baseline)
+ *     vault-dir: string          ('' = no override; mirrors Session Config vault-integration.vault-dir)
+ *     baseline-path: string      ('' = no override; maps to Session Config plan-baseline-path / projects-baseline)
+ *     namespace-map-path: string ('' = no override; #725 D5 — points at a host-local JSON
+ *                                  { "real-slug": "pseudonym-slug" } map that vault-mirror uses to
+ *                                  give owner-leaky repos stable pseudonyms instead of collapsing
+ *                                  them all to 'redacted-repo'. Never committed; env SO_NAMESPACE_MAP overrides.)
  *   dispatcher:             (optional; host-local cross-repo dispatcher autonomy override — #679)
  *     autonomy: string      ('' = no override; resolver enum off | advisory | autonomous-gated;
  *                            precedence env SO_DISPATCHER_AUTONOMY > this > committed > off)
@@ -92,6 +96,7 @@ export function getDefaults() {
     paths: {
       'vault-dir': '',
       'baseline-path': '',
+      'namespace-map-path': '',
     },
     dispatcher: {
       autonomy: '',
@@ -196,7 +201,7 @@ export function validateOwnerConfig(obj) {
     if (!isPlainObject(paths)) {
       errors.push('paths must be an object when present');
     } else {
-      for (const key of ['vault-dir', 'baseline-path']) {
+      for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path']) {
         const v = paths[key];
         if (v !== undefined && v !== null && typeof v !== 'string') {
           errors.push(`paths.${key} must be a string`);

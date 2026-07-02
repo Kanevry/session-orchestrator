@@ -771,8 +771,11 @@ describe('vault-mirror CLI', () => {
     expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'use-strict-mode.md'))).toBe(true);
   });
 
-  it('slug: spaces in subject are stripped (not converted to hyphens)', () => {
-    // "hello world" → "helloworld" (spaces are not in [a-z0-9-])
+  it('slug: spaces in subject are hyphenated, not concatenated (#725 D1)', () => {
+    // #725 D1: prose subjects carry spaces. The pre-fix code fed the raw subject
+    // to subjectToSlug (which strips spaces WITHOUT hyphenating) → "hello world"
+    // collapsed to "helloworld". process.mjs now pre-maps whitespace to hyphens
+    // BEFORE subjectToSlug → "hello-world" (matching the derived id).
     const entry = JSON.stringify({
       id: 'a1b2c3d4-0001-4000-8000-000000000001',
       type: 'architectural',
@@ -789,7 +792,9 @@ describe('vault-mirror CLI', () => {
 
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
-    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'helloworld.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'hello-world.md'))).toBe(true);
+    // NOT the pre-fix concatenated run.
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'helloworld.md'))).toBe(false);
   });
 
   // ── source_session sanitisation (regression: corrupted "[object" upstream) ──
