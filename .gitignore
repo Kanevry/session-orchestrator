@@ -83,6 +83,12 @@ coverage/
 # PSA-004 sub-mode C (#552) — staging-fence per-agent intent log; runtime only
 .orchestrator/staging-fence/
 
+# Lock-reaper archives (#724 C7) embed os.hostname() + session metadata, and
+# session-close-backfill (#724 C1) idempotency markers are runtime-only —
+# never committable on a public repo (security-review 2026-07-02, MED).
+.orchestrator/tmp/
+.orchestrator/metrics/.backfilled-*.marker
+
 # Internal design specs (kept locally, not for public repo)
 docs/specs/
 .orchestrator/session-notes/
