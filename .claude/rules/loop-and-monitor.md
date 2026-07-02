@@ -92,6 +92,13 @@ when `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set
 — on those configs fall back to a bounded `/loop` poll
 (code.claude.com/docs/en/tools-reference#monitor-tool).
 
+**WebSocket source (v2.1.195+).** Monitor also accepts a `ws://`/`wss://`
+source directly — the server pushes each text frame as one notification, no
+polling script and no `grep --line-buffered` line-buffering pitfall to get
+right. Prefer it over a `command` source whenever the upstream already
+speaks WebSocket; keep `command` (tail/grep) when frames still need
+shell-side filtering before they're notification-worthy.
+
 For vetted snippets, see `skills/_shared/monitor-patterns.md`.
 
 ## LM-002a: Use Channels When …
@@ -149,10 +156,11 @@ fan-out, use the `Workflow` tool; `/loop` is for the periodic, in-session axis b
 - A custom maintenance loop is wanted at session-start — wire it into
   `.claude/loop.md` (project) or `~/.claude/loop.md` (user).
 
-`/loop` is also exposed as `/proactive` (alias). Dynamic mode self-paces via
-the `ScheduleWakeup` tool (1 min–1 h); the pending wakeup surfaces in
-`session_crons` in the Stop-hook input
-(code.claude.com/docs/en/tools-reference#schedulewakeup).
+`/proactive` was historically documented as a `/loop` alias — upstream no
+longer documents it as of this re-verify (2026-07-02); treat `/loop` as the
+sole canonical form. Dynamic mode self-paces via the `ScheduleWakeup` tool
+(1 min–1 h); the pending wakeup surfaces in `session_crons` in the Stop-hook
+input (code.claude.com/docs/en/tools-reference#schedulewakeup).
 
 **Cadence selection** (matters for token cost — Anthropic prompt cache
 TTL is ~5 min):
@@ -164,10 +172,21 @@ TTL is ~5 min):
 | `1200s` – `3600s` (20 – 60 min) | Idle ticks, maintenance loops, vault-staleness re-banner. One cache miss buys a long wait. |
 | `> 3600s` | Use `/schedule` or Routines instead — `/loop`'s 7-day expiry is the ceiling, not the design point. |
 
+The cutoffs above are repo-internal best practice derived from the ~5-min
+Anthropic prompt-cache TTL — consistent with upstream docs, not
+upstream-normative; upstream does not itself prescribe cadence numbers.
+
 **Off-minutes hygiene.** Cron jitter penalises `:00` and `:30` for one-shots
 (fire up to 90 s early). For recurring jobs, prefer minutes other than 0/30:
 `3 9 * * *` not `0 9 * * *`. Honours the same fleet-spread argument as
 `CronCreate`'s built-in guidance.
+
+**Non-Anthropic providers (Bedrock/Vertex/Foundry).** Mirrors the Monitor
+unavailability noted above (LM-002): bare `/loop` (no explicit interval)
+runs on a fixed 10-minute schedule there instead of self-pacing via
+`ScheduleWakeup`, and neither `.claude/loop.md` nor `~/.claude/loop.md` is
+read. Always pass an explicit interval on these providers — do not rely on
+the project loop body.
 
 ## LM-004: Use Routines / Desktop When …
 
