@@ -2,7 +2,7 @@
 name: wave-executor
 user-invocable: false
 tags: [orchestration, execution, agents, waves]
-model: opus
+model: inherit
 model-preference: opus
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6

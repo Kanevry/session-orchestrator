@@ -2,7 +2,7 @@
 name: session-plan
 user-invocable: false
 tags: [orchestration, planning, waves, agents]
-model: opus
+model: inherit
 model-preference: opus
 model-preference-codex: gpt-5.4
 model-preference-cursor: claude-opus-4-6

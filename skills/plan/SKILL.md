@@ -2,7 +2,7 @@
 name: plan
 user-invocable: false
 tags: [planning, prd, requirements, research]
-model: opus
+model: inherit
 model-preference: opus
 model-preference-codex: gpt-5.4
 model-preference-cursor: claude-opus-4-6

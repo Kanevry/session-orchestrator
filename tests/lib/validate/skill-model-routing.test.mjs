@@ -3,8 +3,11 @@
  *
  * Verifies that every skill's SKILL.md frontmatter declares a `model:` field
  * from the allowed tier set, that the distribution matches expected floor/ceiling
- * bounds, and that critical reasoning skills are opus while lookup/triage skills
- * are haiku (issue #434).
+ * bounds, and that coordinator-critical skills inherit the session model while
+ * lookup/triage skills are haiku (issue #434; opus→inherit policy change 2026-07-02:
+ * a fixed opus pin acted as a quality FLOOR when opus was the top tier, but became
+ * a CEILING once the session model could sit above opus — inherit lets the
+ * operator's session-model choice win).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -60,19 +63,20 @@ describe('skill model: frontmatter routing (#434)', () => {
       if (model && distribution[model] !== undefined) distribution[model]++;
     }
 
-    // Floor/ceiling per test-quality.md — distribution may shift over time
-    expect(distribution.opus).toBeGreaterThanOrEqual(2);
-    expect(distribution.opus).toBeLessThanOrEqual(10);
+    // Floor/ceiling per test-quality.md — distribution may shift over time.
+    // opus has no floor since the 2026-07-02 opus→inherit policy change; the
+    // ceiling ratchets against fixed pins silently creeping back in.
+    expect(distribution.opus).toBeLessThanOrEqual(2);
     expect(distribution.sonnet).toBeGreaterThanOrEqual(8);
     expect(distribution.haiku).toBeGreaterThanOrEqual(8);
-    expect(distribution.inherit).toBeGreaterThanOrEqual(5);
+    expect(distribution.inherit).toBeGreaterThanOrEqual(9);
   });
 
-  it('critical reasoning skills are opus', () => {
-    const critical = ['session-plan', 'architecture', 'plan'];
+  it('coordinator-critical skills inherit the session model', () => {
+    const critical = ['session-plan', 'wave-executor', 'architecture', 'plan'];
     for (const skill of critical) {
       const model = getModel(path.join(SKILLS_DIR, skill, 'SKILL.md'));
-      expect(model, `${skill} should be opus tier`).toBe('opus');
+      expect(model, `${skill} should inherit the session model`).toBe('inherit');
     }
   });
 
