@@ -8,7 +8,10 @@
  * Responsibilities:
  *  - writeApproved:      promote approved ProposalRecords → learnings.jsonl
  *  - archiveRejected:    append rejected ProposalRecords → proposals.rejected.log
- *  - clearProposalsJsonl: truncate proposals.jsonl to 0 bytes
+ *  - clearProposalsJsonl: atomically clear proposals.jsonl (tmp + rename) AND
+ *    reset every per-wave proposals-summary-*.json sidecar in the same
+ *    metrics directory (issue #723 B3 — see function docstring for the
+ *    fleet-wide desync bug this closes).
  *
  * All three exported functions:
  *  - Never throw on individual record errors — collect into errors[] and continue.
@@ -16,12 +19,14 @@
  *    (from ../path-utils.mjs) with canonicalizeRoot:true on every write target.
  *  - Use the appendLearning() atomic-append pattern from learnings/io.mjs.
  *
- * Issue: #501 (F2.1 Memory-Proposals); #544 M3 (path-utils canonicalization).
+ * Issue: #501 (F2.1 Memory-Proposals); #544 M3 (path-utils canonicalization);
+ * #723 B3 (clearProposalsJsonl atomicity + summary-reset fix).
  */
 
-import { appendFile, mkdir } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { appendLearning } from '../learnings/io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 
@@ -180,32 +185,88 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
 }
 
 /**
- * Truncate proposals.jsonl to 0 bytes (end-of-cycle clear).
+ * Atomically clear proposals.jsonl AND reset every per-wave summary sidecar
+ * (end-of-cycle clear).
  *
- * Uses synchronous writeFileSync for atomic truncation — JSONL files
- * shorter than PIPE_BUF are written atomically on POSIX append, and
- * truncation to empty is a single syscall.
+ * Root cause this fixes (#723 B3, reproduced fleet-wide 3x): the previous
+ * implementation truncated ONLY proposals.jsonl via a direct `writeFileSync`
+ * — it never reset the per-wave `proposals-summary-<wave-id>.json` sidecars
+ * written by `store.mjs` `incrementSummary()`. `collector.mjs`
+ * `accumulateSummaryStats()` reads `stats.queued` exclusively from those
+ * summary files, and its short-circuit (return zero stats when
+ * proposals.jsonl does not exist) never engages after a clear because the
+ * clear leaves a 0-byte-but-EXISTING file behind. Net effect: every
+ * session-end after the first non-empty cycle reported a stale
+ * `queued > 0` count against a genuinely empty (0-byte) proposals.jsonl.
+ *
+ * Two-step fix:
+ *  1. Clear proposals.jsonl via tmp-file + rename (POSIX-atomic on the same
+ *     filesystem) instead of an in-place `writeFileSync` truncate — this also
+ *     brings the implementation in line with the documented contract in
+ *     `agents/memory-proposal-collector.md` ("atomic clear ... write empty
+ *     content to a tmp file, then rename over the target"), so a concurrent
+ *     reader never observes a partially-truncated file.
+ *  2. Remove every `proposals-summary-*.json` sidecar in the same metrics
+ *     directory so the NEXT `collectProposals()` call starts from zero
+ *     instead of re-summing a prior cycle's counters.
+ *
+ * Contract (skills/session-end/SKILL.md § 3.6 failure modes): this function
+ * must NEVER throw. Step 1 failures short-circuit with
+ * `{ cleared: false, summariesCleared: 0 }`. Step 2 is best-effort per file —
+ * a single summary file that fails to delete is skipped (not fatal) so a
+ * transient fs error on one sidecar cannot block the whole clear.
  *
  * Creates the file (with empty content) if it does not yet exist.
  *
  * @param {object} opts
  * @param {string} opts.repoRoot - absolute project root path
- * @returns {Promise<{ cleared: boolean }>}
+ * @returns {Promise<{ cleared: boolean, summariesCleared: number }>}
  */
 export async function clearProposalsJsonl({ repoRoot }) {
   const proposalsResult = validatePathInsideProject(PROPOSALS_REL, repoRoot, { canonicalizeRoot: true });
   if (!proposalsResult.ok) {
-    return { cleared: false };
+    return { cleared: false, summariesCleared: 0 };
   }
   const proposalsPath = proposalsResult.realPath ?? proposalsResult.lexicalPath;
+  const metricsDirPath = path.dirname(proposalsPath);
 
   try {
-    // Ensure parent directory exists before truncate/create
-    await mkdir(path.dirname(proposalsPath), { recursive: true });
-    // Synchronous atomic truncate — single syscall, no partial-write risk
-    writeFileSync(proposalsPath, '', 'utf8');
-    return { cleared: true };
+    // Ensure parent directory exists before clear/create.
+    await mkdir(metricsDirPath, { recursive: true });
+    // Atomic clear: write empty content to a tmp file, then rename over the
+    // target — a concurrent hook reading proposals.jsonl mid-clear observes
+    // either the pre-clear content or the fully-cleared file, never a
+    // partial truncate.
+    const tmpSuffix = crypto.randomBytes(6).toString('hex');
+    const tmpFile = path.join(metricsDirPath, `.proposals.jsonl.tmp.${tmpSuffix}`);
+    writeFileSync(tmpFile, '', 'utf8');
+    renameSync(tmpFile, proposalsPath);
   } catch {
-    return { cleared: false };
+    return { cleared: false, summariesCleared: 0 };
   }
+
+  // Reset per-wave summaries so a subsequent collectProposals() does not
+  // re-report a prior cycle's queued/dropped/below_floor counts against the
+  // now-empty proposals.jsonl (the #723 B3 root cause described above).
+  let summariesCleared = 0;
+  try {
+    const names = await readdir(metricsDirPath);
+    const summaryFiles = names.filter(
+      (n) => n.startsWith('proposals-summary-') && n.endsWith('.json')
+    );
+    for (const filename of summaryFiles) {
+      try {
+        await rm(path.join(metricsDirPath, filename), { force: true });
+        summariesCleared++;
+      } catch {
+        // Best-effort per file — a single sidecar failing to delete must not
+        // fail the overall clear (function-level never-throw contract).
+      }
+    }
+  } catch {
+    // Metrics dir became unreadable between mkdir and readdir (e.g. removed
+    // concurrently) — non-fatal, the JSONL clear above already succeeded.
+  }
+
+  return { cleared: true, summariesCleared };
 }

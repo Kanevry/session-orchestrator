@@ -33,6 +33,7 @@ import {
   mkdtempSync,
   rmSync,
   readFileSync,
+  readdirSync,
   existsSync,
   statSync,
   realpathSync,
@@ -604,6 +605,87 @@ describe('collector-sink integration (#501 F2.1)', () => {
       expect(cleared).toBe(true);
       expect(existsSync(proposalsJsonlPath)).toBe(true);
       expect(statSync(proposalsJsonlPath).size).toBe(0);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #723 B3 — clearProposalsJsonl summary-reset regression
+  //
+  // Root cause: the pre-fix clearProposalsJsonl truncated ONLY proposals.jsonl.
+  // The per-wave proposals-summary-<wave-id>.json sidecars written by
+  // store.mjs incrementSummary() were never reset, so collector.mjs
+  // accumulateSummaryStats() kept summing a prior cycle's queued/dropped
+  // counters against a genuinely empty (0-byte, but EXISTING) proposals.jsonl
+  // — the collector's existsSync short-circuit never engages post-clear
+  // because the file still exists. Reproduced fleet-wide 3x.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#723 B3 — clearProposalsJsonl resets per-wave summaries', () => {
+    const metricsDir = () => join(tmpRepo, '.orchestrator', 'metrics');
+
+    it('KERN-REGRESSION: append → collect(queued=1) → clear → collect again → stats.queued=0, queue=[]', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+
+      const before = await collectProposals({ repoRoot: tmpRepo });
+      // Guard: the summary sidecar actually recorded the queued proposal —
+      // otherwise the post-clear assertion below proves nothing.
+      expect(before.stats.queued).toBe(1);
+      expect(before.queue).toHaveLength(1);
+
+      await clearProposalsJsonl({ repoRoot: tmpRepo });
+
+      const after = await collectProposals({ repoRoot: tmpRepo });
+
+      // FALSIFICATION: if clearProposalsJsonl only truncated proposals.jsonl
+      // (pre-fix behavior) without resetting proposals-summary-W1.json,
+      // stats.queued would still read 1 here even though proposals.jsonl is
+      // 0 bytes — the exact fleet-wide desync from #723 B3.
+      expect(after.stats.queued).toBe(0);
+      expect(after.queue).toHaveLength(0);
+    });
+
+    it('multi-wave: summaries for W1 and W2 are both removed (summariesCleared=2)', async () => {
+      await appendProposal({ record: makeRecord({ waveId: 'W1' }), repoRoot: tmpRepo, waveId: 'W1' });
+      await appendProposal({ record: makeRecord({ waveId: 'W2' }), repoRoot: tmpRepo, waveId: 'W2' });
+
+      expect(existsSync(join(metricsDir(), 'proposals-summary-W1.json'))).toBe(true);
+      expect(existsSync(join(metricsDir(), 'proposals-summary-W2.json'))).toBe(true);
+
+      const { summariesCleared } = await clearProposalsJsonl({ repoRoot: tmpRepo });
+
+      // FALSIFICATION: if the summary-removal loop were removed, both files
+      // would still exist and summariesCleared would be 0.
+      expect(summariesCleared).toBe(2);
+      expect(existsSync(join(metricsDir(), 'proposals-summary-W1.json'))).toBe(false);
+      expect(existsSync(join(metricsDir(), 'proposals-summary-W2.json'))).toBe(false);
+    });
+
+    it('idempotent: clearing with no summaries present does not throw and reports summariesCleared=0', async () => {
+      expect(existsSync(proposalsJsonlPath)).toBe(false); // guard: nothing seeded yet
+
+      const result = await clearProposalsJsonl({ repoRoot: tmpRepo });
+
+      // FALSIFICATION: if the readdir/rm loop threw on an empty or absent
+      // metrics dir, this call would reject instead of resolving.
+      expect(result.cleared).toBe(true);
+      expect(result.summariesCleared).toBe(0);
+    });
+
+    it('atomicity-shape: after clear, proposals.jsonl is a real 0-byte file with no dangling tmp file left behind', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+
+      await clearProposalsJsonl({ repoRoot: tmpRepo });
+
+      expect(existsSync(proposalsJsonlPath)).toBe(true);
+      expect(statSync(proposalsJsonlPath).size).toBe(0);
+
+      // FALSIFICATION: if the tmp+rename sequence left the intermediate tmp
+      // file behind (e.g. a rename failure swallowed by the catch, or the
+      // rename step were dropped), a `.proposals.jsonl.tmp.*` entry would
+      // still be present in the metrics directory.
+      const entries = readdirSync(metricsDir());
+      const danglingTmp = entries.filter((name) => name.startsWith('.proposals.jsonl.tmp.'));
+      expect(danglingTmp).toHaveLength(0);
     });
   });
 

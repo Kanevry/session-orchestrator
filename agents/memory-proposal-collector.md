@@ -105,6 +105,12 @@ await sink.clearProposalsJsonl({ repoRoot });
 
 `clearProposalsJsonl` performs an **atomic clear** (write empty content to a tmp file, then
 rename over the target) so a concurrent hook invocation cannot read a partially-cleared file.
+It ALSO removes every `proposals-summary-<wave-id>.json` sidecar in the same metrics
+directory — those per-wave summaries are what `collectProposals()` sums into `stats.queued`
+(see `scripts/lib/memory-proposals/collector.mjs` `accumulateSummaryStats()`), so leaving
+them behind after a JSONL-only clear caused a stale `queued > 0` count against a genuinely
+empty proposals.jsonl on every subsequent session-end (issue #723 B3). The function returns
+`{ cleared, summariesCleared }` and never throws — see `sink.mjs` for the full contract.
 
 ---
 
