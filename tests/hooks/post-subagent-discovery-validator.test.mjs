@@ -27,10 +27,13 @@
  *   - Non-SubagentStop event → exit 0, no scan.
  *   - session_id precedence: event uses parent_session_id when both present
  *     (locks in FIX 2).
+ *   - additionalContext dedup only applies to repeated real
+ *     (project, session, agent) contexts; missing session ids never create a
+ *     global sentinel, and different project roots do not collide.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,6 +99,28 @@ function runHook(payloadObj) {
       SO_DISABLED_HOOKS: '',
     },
     timeout: 10_000,
+  });
+}
+
+function runHookAsync(payloadObj) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK], {
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: tmp,
+        SO_HOOK_PROFILE: 'full',
+        SO_DISABLED_HOOKS: '',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payloadObj));
   });
 }
 
@@ -383,6 +408,108 @@ describe('post-subagent-discovery-validator hook', () => {
     const out = JSON.parse(result.stdout);
     expect(out.hookSpecificOutput.additionalContext).toContain('PSA-006');
     expect(out.hookSpecificOutput.additionalContext).toContain('my-discovery-agent');
+  });
+
+  it('ENABLED + missing session id → does not deduplicate additionalContext or event appends', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
+    const payload = stopPayload(transcript);
+
+    const first = runHook(payload);
+    const second = runHook(payload);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain('PSA-006');
+    expect(JSON.parse(second.stdout).hookSpecificOutput.additionalContext).toContain('PSA-006');
+
+    const events = readEvents();
+    expect(events).toHaveLength(2);
+    expect(events[0].session_id).toBeUndefined();
+    expect(events[1].session_id).toBeUndefined();
+  });
+
+  it('ENABLED + repeated real context → suppresses only repeated additionalContext', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
+    const payload = stopPayload(transcript, {
+      agent_type: 'dedup-discovery-agent',
+      session_id: 'dedup-session-001',
+    });
+
+    const first = runHook(payload);
+    const second = runHook(payload);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain(
+      'dedup-discovery-agent'
+    );
+    expect(second.stdout.trim()).toBe('');
+
+    const events = readEvents();
+    expect(events).toHaveLength(2);
+    expect(events[0].session_id).toBe('dedup-session-001');
+    expect(events[1].session_id).toBe('dedup-session-001');
+  });
+
+  it('ENABLED + concurrent repeated real context → only one process emits additionalContext', async () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
+    const payload = stopPayload(transcript, {
+      agent_type: 'parallel-dedup-agent',
+      session_id: 'parallel-dedup-session-001',
+    });
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => runHookAsync(payload)));
+
+    expect(results.every((r) => r.status === 0)).toBe(true);
+    const stdoutCount = results.filter((r) => r.stdout.trim().length > 0).length;
+    expect(stdoutCount).toBe(1);
+
+    const events = readEvents();
+    expect(events).toHaveLength(8);
+    expect(events.every((e) => e.session_id === 'parallel-dedup-session-001')).toBe(true);
+  });
+
+  it('ENABLED + same session and agent in different project roots → both emit additionalContext', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
+
+    const first = runHook(stopPayload(transcript, {
+      agent_type: 'project-isolated-agent',
+      session_id: 'project-isolated-session',
+    }));
+
+    const originalTmp = tmp;
+    const otherTmp = mkdtempSync(join(tmpdir(), 'discovery-validator-test-'));
+    try {
+      tmp = otherTmp;
+      writeClaudeMd(CLAUDE_MD_ENABLED);
+      const otherTranscript = writeTranscript([
+        '4 of 4 callers opt-in to the helper. No grep was run.',
+      ]);
+
+      const second = runHook(stopPayload(otherTranscript, {
+        agent_type: 'project-isolated-agent',
+        session_id: 'project-isolated-session',
+      }));
+
+      expect(first.status).toBe(0);
+      expect(second.status).toBe(0);
+      expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain(
+        'project-isolated-agent'
+      );
+      expect(JSON.parse(second.stdout).hookSpecificOutput.additionalContext).toContain(
+        'project-isolated-agent'
+      );
+      expect(readEvents()).toHaveLength(1);
+    } finally {
+      tmp = originalTmp;
+      rmSync(otherTmp, { recursive: true, force: true });
+    }
+
+    expect(readEvents()).toHaveLength(1);
   });
 
   it('ENABLED + NO violation (adjacent grep block present) → stdout is empty (no additionalContext)', () => {

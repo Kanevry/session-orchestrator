@@ -92,6 +92,19 @@ describe('package-manager-detector module', () => {
     expect(detectPackageManagerFromRoot(sandbox)).toBe('pnpm');
   });
 
+  it('treats a gitignored root pnpm-lock.yaml as absent, falling back to npm (#715 bug class)', () => {
+    writeFileSync(join(sandbox, '.gitignore'), 'pnpm-lock.yaml\n', 'utf8');
+    writeFileSync(join(sandbox, 'pnpm-lock.yaml'), 'lockfileVersion: 6.0\n', 'utf8');
+    writeFileSync(join(sandbox, 'package-lock.json'), '{"lockfileVersion":3}\n', 'utf8');
+    expect(detectPackageManagerFromRoot(sandbox)).toBe('npm');
+  });
+
+  it('returns null when the only lockfile present is gitignored', () => {
+    writeFileSync(join(sandbox, '.gitignore'), 'pnpm-lock.yaml\n', 'utf8');
+    writeFileSync(join(sandbox, 'pnpm-lock.yaml'), 'lockfileVersion: 6.0\n', 'utf8');
+    expect(detectPackageManagerFromRoot(sandbox)).toBeNull();
+  });
+
   it('readPackageScripts returns array of script names from package.json', () => {
     writeFileSync(
       join(sandbox, 'package.json'),

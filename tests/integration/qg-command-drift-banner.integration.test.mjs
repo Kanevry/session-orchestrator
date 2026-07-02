@@ -15,9 +15,8 @@
  *     (persistence, enforcement, waves, agents-per-wave, *-command).
  *   - PROJECT_DEFAULTS: { lint: 'npm run lint', typecheck: 'npm run typecheck',
  *     test: 'npm test' }  — from qg-command-drift-banner.mjs source.
- *   - parse-config.mjs builtin defaults differ from PROJECT_DEFAULTS:
- *     { lint: 'pnpm lint', typecheck: 'tsgo --noEmit', test: 'pnpm test --run' }
- *     so a CLAUDE.md with NO Session Config block yields drift on all three.
+ *   - Missing `*-command` keys do not trigger drift; only explicit values that
+ *     differ from PROJECT_DEFAULTS produce a banner.
  *
  * Coverage (4 tests):
  *   A. All three commands match PROJECT_DEFAULTS → returns null (no drift)

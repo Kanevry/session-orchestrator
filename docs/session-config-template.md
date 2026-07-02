@@ -34,7 +34,7 @@ These seven fields are enforced by `scripts/lib/config-schema.mjs`. Validation i
 
 ```yaml
 test-command: npm test                # non-empty string — quality-gate test runner
-typecheck-command: npm run typecheck   # non-empty string — `tsgo --noEmit` is canonical
+typecheck-command: npm run typecheck   # non-empty string — canonical typecheck runner
 lint-command: npm run lint             # non-empty string — Full Gate lint runner
 agents-per-wave: 6                     # integer ≥ 2 (or { default: 6, deep: 18 })
 waves: 5                               # integer ≥ 3 — execution wave count

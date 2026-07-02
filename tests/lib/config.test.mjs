@@ -65,19 +65,19 @@ describe('parseSessionConfig', () => {
       expect(config.isolation).toBe('auto');
     });
 
-    it('applies default test-command to pnpm test --run', () => {
+    it('applies default test-command to npm test', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['test-command']).toBe('pnpm test --run');
+      expect(config['test-command']).toBe('npm test');
     });
 
-    it('applies default typecheck-command to tsgo --noEmit', () => {
+    it('applies default typecheck-command to npm run typecheck', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['typecheck-command']).toBe('tsgo --noEmit');
+      expect(config['typecheck-command']).toBe('npm run typecheck');
     });
 
-    it('applies default lint-command to pnpm lint', () => {
+    it('applies default lint-command to npm run lint', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['lint-command']).toBe('pnpm lint');
+      expect(config['lint-command']).toBe('npm run lint');
     });
 
     it('applies default recent-commits of 20', () => {

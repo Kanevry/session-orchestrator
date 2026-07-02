@@ -20,7 +20,7 @@ Read the project's `## Session Config` section in `CLAUDE.md` (or `AGENTS.md` fo
 **Command resolution follows `skills/quality-gates/SKILL.md` priority order:**
 1. `.orchestrator/policy/quality-gates.json` — canonical policy file (if present).
 2. Session Config `test-command` / `typecheck-command` / `lint-command` — fallback.
-3. Hardcoded defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`.
+3. Hardcoded defaults: `npm test`, `npm run typecheck`, `npm run lint`.
 
 If any command is set to the literal string `skip`, skip that check entirely and mark it `skipped`.
 

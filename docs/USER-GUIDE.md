@@ -374,9 +374,9 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
 | `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
-| `test-command` | string | `pnpm test --run` | Custom test command. Used by quality gates for all test invocations. |
-| `typecheck-command` | string | `tsgo --noEmit` | Custom TypeScript check command. Set to `skip` for non-TS projects. |
-| `lint-command` | string | `pnpm lint` | Custom lint command. Used by the Full Gate quality check at session end. |
+| `test-command` | string | `npm test` | Custom test command. Used by quality gates for all test invocations. |
+| `typecheck-command` | string | `npm run typecheck` | Custom TypeScript check command. Set to `skip` for non-TS projects. |
+| `lint-command` | string | `npm run lint` | Custom lint command. Used by the Full Gate quality check at session end. |
 | `ssot-freshness-days` | integer | `5` | Days before an SSOT file is flagged as stale during session start. |
 | `plugin-freshness-days` | integer | `30` | Days before the plugin itself is flagged as potentially outdated. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
@@ -1352,7 +1352,7 @@ node scripts/codex-install.mjs
 
 ### "tsgo: command not found"
 
-The orchestrator uses `tsgo` for TypeScript checking. If it is not available, it falls back to `npx tsgo --noEmit`. If neither works, TypeScript checks are skipped with a warning. Install globally if needed:
+The default typecheck command is `npm run typecheck`. If your project's `typecheck` script invokes `tsgo`, install it or change `typecheck-command` to the runner your project actually uses:
 
 ```bash
 npm install -g @anthropic-ai/tsgo

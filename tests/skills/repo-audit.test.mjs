@@ -132,10 +132,10 @@ describe('skills/repo-audit — #215 ported skill', () => {
       expect(body).toMatch(/lint-command/);
     });
 
-    it('documents hardcoded defaults (pnpm test --run, tsgo --noEmit, pnpm lint)', () => {
-      expect(body).toMatch(/pnpm test --run/);
-      expect(body).toMatch(/tsgo --noEmit/);
-      expect(body).toMatch(/pnpm lint/);
+    it('documents hardcoded defaults (npm test, npm run typecheck, npm run lint)', () => {
+      expect(body).toMatch(/npm test/);
+      expect(body).toMatch(/npm run typecheck/);
+      expect(body).toMatch(/npm run lint/);
     });
 
     it('documents "skip" literal as a way to bypass a command', () => {

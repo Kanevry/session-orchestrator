@@ -176,6 +176,82 @@ describe('computeDependencyHash', () => {
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     );
   });
+
+  it('skips a gitignored pnpm-lock.yaml candidate and derives the hash from package-lock.json instead (#715 bug class)', () => {
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a', version: '1.0.0' }),
+    );
+    writeFileSync(path.join(repoRoot, '.gitignore'), 'pnpm-lock.yaml\n');
+    writeFileSync(
+      path.join(repoRoot, 'pnpm-lock.yaml'),
+      'lockfileVersion: 9.0\n',
+    );
+    writeFileSync(
+      path.join(repoRoot, 'package-lock.json'),
+      '{"lockfileVersion":3}',
+    );
+    const withIgnoredPnpm = computeDependencyHash(repoRoot);
+
+    // Hash we'd get if only package.json + package-lock.json existed.
+    rmSync(path.join(repoRoot, 'pnpm-lock.yaml'));
+    rmSync(path.join(repoRoot, '.gitignore'));
+    const packageLockOnly = computeDependencyHash(repoRoot);
+
+    expect(withIgnoredPnpm).toBe(packageLockOnly);
+  });
+
+  it('falls back to a package.json-only hash when every lockfile candidate is gitignored', () => {
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a' }),
+    );
+    writeFileSync(
+      path.join(repoRoot, '.gitignore'),
+      'pnpm-lock.yaml\npackage-lock.json\nyarn.lock\n',
+    );
+    writeFileSync(
+      path.join(repoRoot, 'pnpm-lock.yaml'),
+      'lockfileVersion: 9.0\n',
+    );
+    writeFileSync(
+      path.join(repoRoot, 'package-lock.json'),
+      '{"lockfileVersion":3}',
+    );
+    writeFileSync(path.join(repoRoot, 'yarn.lock'), '# yarn lockfile v1\n');
+    const withAllIgnored = computeDependencyHash(repoRoot);
+
+    rmSync(path.join(repoRoot, '.gitignore'));
+    rmSync(path.join(repoRoot, 'pnpm-lock.yaml'));
+    rmSync(path.join(repoRoot, 'package-lock.json'));
+    rmSync(path.join(repoRoot, 'yarn.lock'));
+    const packageJsonOnly = computeDependencyHash(repoRoot);
+
+    expect(withAllIgnored).toBe(packageJsonOnly);
+  });
+
+  it('a NON-ignored pnpm-lock.yaml still wins over package-lock.json (preference order preserved)', () => {
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a' }),
+    );
+    writeFileSync(
+      path.join(repoRoot, 'pnpm-lock.yaml'),
+      'lockfileVersion: 9.0\n',
+    );
+    writeFileSync(
+      path.join(repoRoot, 'package-lock.json'),
+      '{"lockfileVersion":3}',
+    );
+    const before = computeDependencyHash(repoRoot);
+    // Mutating the losing candidate must not change the hash.
+    writeFileSync(
+      path.join(repoRoot, 'package-lock.json'),
+      '{"lockfileVersion":3,"changed":true}',
+    );
+    const after = computeDependencyHash(repoRoot);
+    expect(after).toBe(before);
+  });
 });
 
 // ---------------------------------------------------------------------------

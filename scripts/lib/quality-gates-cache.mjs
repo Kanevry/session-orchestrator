@@ -49,6 +49,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { digestMultiBufferSha256 } from './crypto-digest-utils.mjs';
+import { isIgnoredRootFile } from './package-manager.mjs';
 
 const CACHE_RELATIVE_PATH = '.orchestrator/metrics/baseline-results.jsonl';
 const DEFAULT_TTL_DAYS = 7;
@@ -70,10 +71,12 @@ export function computeDependencyHash(repoRoot) {
     buffers.push(fs.readFileSync(pkgPath));
   }
   // Prefer pnpm-lock.yaml (project standard), then package-lock.json, then yarn.lock.
+  // A gitignored root lockfile is skipped — a stray/local-only lockfile must
+  // not dominate the dependency hash (issue #715 bug class).
   const lockCandidates = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'];
   for (const candidate of lockCandidates) {
     const candidatePath = path.join(repoRoot, candidate);
-    if (fs.existsSync(candidatePath)) {
+    if (fs.existsSync(candidatePath) && !isIgnoredRootFile(repoRoot, candidate)) {
       buffers.push(fs.readFileSync(candidatePath));
       break;
     }

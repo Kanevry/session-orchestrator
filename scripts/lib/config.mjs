@@ -103,9 +103,9 @@ export function parseSessionConfig(mdContent) {
   const mirror = _coerceString(kv, 'mirror', undefined);
   const special = _coerceString(kv, 'special', undefined);
   const pencil = _coerceString(kv, 'pencil', undefined);
-  const testCommand = _coerceString(kv, 'test-command', 'pnpm test --run');
-  const typecheckCommand = _coerceString(kv, 'typecheck-command', 'tsgo --noEmit');
-  const lintCommand = _coerceString(kv, 'lint-command', 'pnpm lint');
+  const testCommand = _coerceString(kv, 'test-command', 'npm test');
+  const typecheckCommand = _coerceString(kv, 'typecheck-command', 'npm run typecheck');
+  const lintCommand = _coerceString(kv, 'lint-command', 'npm run lint');
   const baselineRef = _coerceString(kv, 'baseline-ref', undefined);
   const baselineProjectId = _coerceString(kv, 'baseline-project-id', undefined);
   const planBaselinePath = resolveHostPath(

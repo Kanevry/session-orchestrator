@@ -21,9 +21,9 @@ vcs: github
 mirror: none
 
 ### Quality
-test-command: pnpm test --run
-typecheck-command: tsgo --noEmit
-lint-command: pnpm lint
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
 
 ### Discovery
 discovery-on-close: false

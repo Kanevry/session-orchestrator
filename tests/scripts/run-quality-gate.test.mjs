@@ -11,10 +11,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
+import { parseSessionConfig } from '@lib/config.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../scripts/run-quality-gate.mjs');
@@ -27,14 +28,55 @@ const REPO_ROOT = resolve(__dirname, '../../');
  *
  * @param {string[]} args
  * @param {Record<string, string>} [extraEnv]
+ * @param {{cwd?: string}} [options]
  * @returns {import('node:child_process').SpawnSyncReturns<string>}
  */
-function run(args, extraEnv = {}) {
+function run(args, extraEnv = {}, options = {}) {
   return spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
-    cwd: REPO_ROOT,
+    cwd: options.cwd ?? REPO_ROOT,
     env: { ...process.env, ...extraEnv },
   });
+}
+
+function writeSkipPolicy(root) {
+  const policyDir = join(root, '.orchestrator', 'policy');
+  mkdirSync(policyDir, { recursive: true });
+  writeFileSync(
+    join(policyDir, 'quality-gates.json'),
+    JSON.stringify({
+      version: 1,
+      commands: {
+        typecheck: { command: 'skip' },
+        test: { command: 'skip' },
+        lint: { command: 'skip' },
+      },
+    }),
+    'utf8',
+  );
+}
+
+function writeMarkerNpmProject(root) {
+  writeFileSync(
+    join(root, 'mark.mjs'),
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "writeFileSync(`${process.argv[2]}.marker`, 'ok');",
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({
+      scripts: {
+        typecheck: 'node mark.mjs typecheck',
+        test: 'node mark.mjs test',
+        lint: 'node mark.mjs lint',
+      },
+    }),
+    'utf8',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +202,29 @@ describe('run-quality-gate.mjs — baseline variant', () => {
   });
 });
 
+describe('run-quality-gate.mjs — parser default command integration', () => {
+  it('uses npm defaults from parseSessionConfig output instead of stale pnpm/tsgo defaults', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-parser-defaults-'));
+    writeMarkerNpmProject(tmp);
+
+    const config = parseSessionConfig('## Session Config\n\npersistence: true\n');
+    const r = run(
+      ['--variant', 'full-gate', '--config', JSON.stringify(config)],
+      { CLAUDE_PROJECT_DIR: tmp },
+      { cwd: tmp },
+    );
+
+    try {
+      expect(r.status).toBe(0);
+      expect(existsSync(join(tmp, 'typecheck.marker'))).toBe(true);
+      expect(existsSync(join(tmp, 'test.marker'))).toBe(true);
+      expect(existsSync(join(tmp, 'lint.marker'))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // full-gate variant — JSON output shape
 // ---------------------------------------------------------------------------
@@ -280,13 +345,22 @@ describe('run-quality-gate.mjs — config handling', () => {
   });
 
   it('warns but does not crash when --config is not valid JSON', () => {
-    // Invalid JSON → falls back to defaults; warns to stderr
-    const r = run(['--variant', 'baseline', '--config', 'not-json-or-file']);
-    // Should not exit with an unhandled process error (but the gate itself
-    // will try to run the default typecheck/test commands, which may fail
-    // in CI — that's expected. We just assert the script launched.)
-    // The warning message about invalid config must appear on stderr.
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-invalid-config-'));
+    writeSkipPolicy(tmp);
+
+    const r = run(
+      ['--variant', 'baseline', '--config', 'not-json-or-file'],
+      { CLAUDE_PROJECT_DIR: tmp },
+      { cwd: tmp },
+    );
+
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(r.status).toBe(0);
     expect(r.stderr).toContain('Config is neither a valid file path nor valid JSON');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.typecheck).toBe('skip');
+    expect(parsed.test).toBe('skip');
   });
 });
 

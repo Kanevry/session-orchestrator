@@ -49,9 +49,9 @@ const GATES_DIR = join(__dirname, 'lib', 'gates');
 
 const VALID_VARIANTS = ['baseline', 'incremental', 'full-gate', 'per-file'];
 
-const DEFAULT_TEST_CMD = 'pnpm test --run';
-const DEFAULT_TYPECHECK_CMD = 'tsgo --noEmit';
-const DEFAULT_LINT_CMD = 'pnpm lint';
+const DEFAULT_TEST_CMD = 'npm test';
+const DEFAULT_TYPECHECK_CMD = 'npm run typecheck';
+const DEFAULT_LINT_CMD = 'npm run lint';
 
 // Gate sub-script mapping
 const GATE_SCRIPT = {

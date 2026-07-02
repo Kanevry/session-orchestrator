@@ -28,7 +28,9 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
 if (!shouldRunHook('post-subagent-discovery-validator')) process.exit(0);
 
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { appendJsonl } from '../scripts/lib/common.mjs';
@@ -279,6 +281,47 @@ function firstNonEmptyString(input, keys, fallback) {
   return fallback;
 }
 
+/**
+ * Sanitize a user/runtime-provided string for use in a tmp sentinel filename.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function safeSentinelComponent(s) {
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
+/**
+ * Produce a short stable hash for project-root isolation in tmp sentinels.
+ *
+ * @param {string} projectRoot
+ * @returns {string}
+ */
+function projectRootHash(projectRoot) {
+  return createHash('sha256').update(path.resolve(projectRoot)).digest('hex').slice(0, 16);
+}
+
+/**
+ * Build the dedup sentinel path for real project/session/agent contexts.
+ * Missing fallback IDs intentionally return null so unrelated hooks/tests do
+ * not collide on a global "unknown" key.
+ *
+ * @param {object} opts
+ * @param {string} opts.projectRoot
+ * @param {string|null} opts.sessionId
+ * @param {string|null} opts.agent
+ * @returns {string|null}
+ */
+function dedupSentinelPath({ projectRoot, sessionId, agent }) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
+  if (typeof agent !== 'string' || !agent.trim()) return null;
+
+  return path.join(
+    tmpdir(),
+    `psa006-${projectRootHash(projectRoot)}-${safeSentinelComponent(sessionId)}-${safeSentinelComponent(agent)}.lock`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -294,12 +337,18 @@ async function main() {
   const violations = findViolations(text);
   if (violations.length === 0) return;
 
-  const agent = typeof input.agent_type === 'string' ? input.agent_type : 'unknown';
+  const agentForDedup = firstNonEmptyString(input, ['agent_type'], null);
+  const agent = agentForDedup ?? 'unknown';
   // session_id precedence: parent_session_id first, mirroring the sibling hook
   // hooks/subagent-telemetry.mjs (firstNonEmptyString(['parent_session_id',
   // 'session_id'])). W2-review LOW finding (#567) — the prior `session_id ||
   // parent_session_id` order disagreed with telemetry and could log the wrong id.
   const sessionId = firstNonEmptyString(input, ['parent_session_id', 'session_id'], null);
+
+  // Project/session/agent deduplication: only emit additionalContext once for
+  // repeated real contexts. Missing session IDs never create/read a sentinel,
+  // so fallback traffic still surfaces warnings and cannot collide globally.
+  const sentinel = dedupSentinelPath({ projectRoot: SO_PROJECT_DIR, sessionId, agent: agentForDedup });
 
   const filePath = eventsFilePath();
   for (const claim of violations) {
@@ -317,6 +366,22 @@ async function main() {
     `lack an adjacent grep/rg/find transcript (non-blocking). ` +
     `See .claude/rules/parallel-sessions.md § PSA-006.`;
   process.stderr.write(warnText + '\n');
+
+  let alreadyWarned = false;
+  if (sentinel !== null) {
+    try {
+      await fs.writeFile(sentinel, '', { flag: 'wx' });
+    } catch (err) {
+      // EEXIST means another hook process already won this real-context key.
+      // Other filesystem errors should not suppress the inline warning.
+      alreadyWarned = err && err.code === 'EEXIST';
+    }
+  }
+
+  if (alreadyWarned) {
+    // Events logged above; suppress additionalContext to prevent coordinator loop.
+    return;
+  }
 
   // v2.1.163+ additionalContext: feed the warning back to the coordinator turn
   // so the finding is visible inline, not just in stderr + events.jsonl.

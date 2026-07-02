@@ -25,7 +25,7 @@ Quality-gate commands are resolved in this priority order:
 
 1. **`.orchestrator/policy/quality-gates.json`** — canonical policy file (preferred). Schema: `.orchestrator/policy/quality-gates.schema.json`. Bootstrap writes a package-manager-aware default; hand-edit to customize.
 2. **Session Config** `test-command` / `typecheck-command` / `lint-command` in CLAUDE.md (Claude Code / Cursor) or AGENTS.md (Codex CLI) — fallback.
-3. **Hardcoded defaults** — last resort: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`.
+3. **Hardcoded defaults** — last resort: `npm test`, `npm run typecheck`, `npm run lint`.
 
 Loader: `scripts/lib/quality-gates-policy.mjs` exports `loadQualityGatesPolicy(repoRoot)` and `resolveCommand(policy, key, fallback)`. The Node runner `scripts/run-quality-gate.mjs` performs the same resolution inline.
 
@@ -33,7 +33,7 @@ If any resolved command is set to the literal string `skip`, skip that check ent
 
 ## Scope Policy (#320)
 
-**Lint, typecheck, and test commands MUST run with the project's canonical, unscoped invocation** as resolved above (e.g., `pnpm lint`, `pnpm test --run`, `tsgo --noEmit`). The resolved command's own configuration (`eslint.config.*`, `tsconfig.json`, `vitest.config.*`, `package.json` scripts) is the single source of truth for which files are checked.
+**Lint, typecheck, and test commands MUST run with the project's canonical, unscoped invocation** as resolved above (e.g., `npm run lint`, `npm test`, `npm run typecheck`). The resolved command's own configuration (`eslint.config.*`, `tsconfig.json`, `vitest.config.*`, `package.json` scripts) is the single source of truth for which files are checked.
 
 **Domain-split scoping is FORBIDDEN.** Do NOT replace the canonical command with narrower variants such as:
 
@@ -158,7 +158,7 @@ When a consuming skill needs quality checks, include this directive:
 
 > **Quality Reference:** Run [Baseline|Incremental|Full Gate|Per-File] quality checks
 > per the quality-gates skill. Read `test-command`, `typecheck-command`, and `lint-command`
-> from Session Config (defaults: `pnpm test --run`, `tsgo --noEmit`, `pnpm lint`).
+> from Session Config (defaults: `npm test`, `npm run typecheck`, `npm run lint`).
 
 Replace the bracketed variant name with the specific variant required by that phase.
 

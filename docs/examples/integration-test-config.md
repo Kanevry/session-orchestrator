@@ -18,7 +18,7 @@ Every field is set explicitly (many to non-default values) so that tests can ver
 - **vcs:** github
 - **health-endpoints:** []
 - **special:** "Integration test repo for session-orchestrator v2.0"
-- **test-command:** npm test
+- **test-command:** npm test:integration
 - **typecheck-command:** npx tsc --noEmit
 - **lint-command:** npx eslint .
 - **ssot-freshness-days:** 3
@@ -66,9 +66,9 @@ Each field is set to a specific value for testing. The table below explains what
 
 | Field | Value | Default | What it tests |
 |-------|-------|---------|---------------|
-| `test-command` | `npm test` | `pnpm test --run` | Custom test runner; quality-gates must use this instead of default |
-| `typecheck-command` | `npx tsc --noEmit` | `tsgo --noEmit` | Custom typecheck; verify session-end Phase 2 uses it |
-| `lint-command` | `npx eslint .` | `pnpm lint` | Custom lint; verify all three quality gates use custom commands |
+| `test-command` | `npm test:integration` | `npm test` | Custom test runner; quality-gates must use this instead of default |
+| `typecheck-command` | `npx tsc --noEmit` | `npm run typecheck` | Custom typecheck; verify session-end Phase 2 uses it |
+| `lint-command` | `npx eslint .` | `npm run lint` | Custom lint; verify all three quality gates use custom commands |
 
 ### Thresholds and limits
 
@@ -156,9 +156,9 @@ These scenarios map config fields to observable behaviors during a full `/sessio
 
 **Fields exercised:** `test-command`, `typecheck-command`, `lint-command`
 
-- Quality wave runs `npm test` (not default `pnpm test --run`)
-- TypeScript check uses `npx tsc --noEmit` (not default `tsgo --noEmit`)
-- Lint check uses `npx eslint .` (not default `pnpm lint`)
+- Quality wave runs `npm test:integration` (not default `npm test`)
+- TypeScript check uses `npx tsc --noEmit` (not default `npm run typecheck`)
+- Lint check uses `npx eslint .` (not default `npm run lint`)
 - Session-end Full Gate uses all three custom commands
 
 ### Scenario 7: Discovery on close
