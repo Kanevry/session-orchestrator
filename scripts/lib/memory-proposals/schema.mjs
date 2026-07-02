@@ -40,8 +40,9 @@ import { randomUUID } from 'node:crypto';
 export const SCHEMA_VERSION = 1;
 
 /**
- * Canonical type enum — mirrors the learnings schema type set defined in
- * scripts/lib/learnings/schema.mjs (LEARNING_TTL_DAYS keys, minus 'default').
+ * Canonical type enum — agent-writable subset of the learnings schema type set
+ * defined in scripts/lib/learnings/schema.mjs (LEARNING_TTL_DAYS keys, minus
+ * 'default' and analyzer-only types).
  *
  * When a proposal is promoted to a learning, its type flows through unchanged.
  * Adding a new type here MUST be accompanied by a corresponding TTL entry in

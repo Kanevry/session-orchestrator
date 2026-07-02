@@ -89,16 +89,21 @@ describe('PROPOSAL_TYPES', () => {
     // FALSIFICATION: deleting 'domain-regression' from PROPOSAL_TYPES would fail this
     expect(PROPOSAL_TYPES).toContain('domain-regression');
   });
+
+  it('excludes analyzer-only "autonomy-verdict" (#683)', () => {
+    // FALSIFICATION: adding 'autonomy-verdict' would bypass its analyzer data gate
+    expect(PROPOSAL_TYPES).not.toContain('autonomy-verdict');
+  });
 });
 
 // ---------------------------------------------------------------------------
-// domain-regression registration invariant (#638)
+// learning-type registration invariants (#638, #683)
 //
 // The module-comment invariant on PROPOSAL_TYPES requires every type to have a
 // matching LEARNING_TTL_DAYS entry (so a promoted proposal derives a valid TTL).
 // ---------------------------------------------------------------------------
 
-describe('domain-regression registration (#638)', () => {
+describe('learning-type registration (#638, #683)', () => {
   it('LEARNING_TTL_DAYS defines a TTL for domain-regression', () => {
     // FALSIFICATION: omitting 'domain-regression' from LEARNING_TTL_DAYS leaves it undefined
     expect(LEARNING_TTL_DAYS['domain-regression']).toBe(60);
@@ -107,6 +112,11 @@ describe('domain-regression registration (#638)', () => {
   it('PROPOSAL_TYPES includes domain-regression', () => {
     // FALSIFICATION: omitting 'domain-regression' from PROPOSAL_TYPES would fail this
     expect(PROPOSAL_TYPES.includes('domain-regression')).toBe(true);
+  });
+
+  it('LEARNING_TTL_DAYS defines a TTL for autonomy-verdict', () => {
+    // FALSIFICATION: omitting 'autonomy-verdict' from LEARNING_TTL_DAYS leaves it undefined
+    expect(LEARNING_TTL_DAYS['autonomy-verdict']).toBe(90);
   });
 
   it('every PROPOSAL_TYPES entry has a matching LEARNING_TTL_DAYS entry (module invariant)', () => {

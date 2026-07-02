@@ -1023,11 +1023,11 @@ describe('deriveExpiresAt', () => {
     }
   });
 
-  it('all 9 keys in LEARNING_TTL_DAYS round-trip correctly', () => {
+  it('all keys in LEARNING_TTL_DAYS round-trip correctly', () => {
     const baseIso = '2026-05-01T00:00:00Z';
     const baseMs = Date.parse(baseIso);
     const keys = Object.keys(LEARNING_TTL_DAYS);
-    // Sanity: confirm we have at least the 9 named keys + 'default' (10 total)
+    // Sanity: confirm we have the named keys plus 'default'
     expect(keys.length).toBeGreaterThanOrEqual(10);
 
     for (const key of keys) {
@@ -1103,6 +1103,20 @@ describe('appendLearning — auto-stamp expires_at and created_at (#323)', () =>
   it('uses type-specific TTL (autopilot-effectiveness → 90d) not default', async () => {
     const filePath = join(tmp, 'autopilot-ttl.jsonl');
     const entry = { ...LEGACY(), type: 'autopilot-effectiveness', created_at: '2026-05-01T00:00:00Z' };
+    delete entry.expires_at;
+    await appendLearning(filePath, entry);
+
+    const content = readFileSync(filePath, 'utf8').trim();
+    const written = JSON.parse(content);
+    // 2026-05-01 + 90 days = 2026-07-30
+    expect(written.expires_at).toBe('2026-07-30T00:00:00.000Z');
+    // Sanity: ensure NOT the 60d default
+    expect(written.expires_at).not.toBe('2026-06-30T00:00:00.000Z');
+  });
+
+  it('uses type-specific TTL (autonomy-verdict → 90d) not default', async () => {
+    const filePath = join(tmp, 'autonomy-verdict-ttl.jsonl');
+    const entry = { ...LEGACY(), type: 'autonomy-verdict', created_at: '2026-05-01T00:00:00Z' };
     delete entry.expires_at;
     await appendLearning(filePath, entry);
 

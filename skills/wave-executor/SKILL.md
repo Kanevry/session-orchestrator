@@ -268,7 +268,7 @@ Wave-executor agents may propose memory entries (learnings) mid-session via the 
 During this wave, you may propose a learning to the session's memory via the CLI:
 
   SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
-      --type <one of: workflow-pattern|anti-pattern|pattern|recurring-issue|fragile-file|effective-sizing|proven-pattern|mode-selector-accuracy|hardware-pattern|autopilot-effectiveness> \
+      --type <one of: workflow-pattern|anti-pattern|recurring-issue|fragile-file|effective-sizing|proven-pattern|mode-selector-accuracy|hardware-pattern|autopilot-effectiveness|domain-regression> \
       --subject "one-line title (max 100 chars, no newlines)" \
       --insight "your discovery paragraph (max 2000 chars)" \
       --evidence "concrete proof: code citation / log excerpt / commit ref (max 5000 chars)" \
@@ -279,6 +279,8 @@ MUST prefix with `SO_WAVE_AGENT=1` — without it the CLI returns exit 3 `reject
 Exit code 0 = queued (the coordinator will present at session-end via AskUserQuestion); 1 = quota-exceeded; 2 = rejected-low-confidence (below floor 0.5); 3 = rejected-wrong-context (STATE.md not active OR SO_WAVE_AGENT != "1"); 4 = error (arg validation or internal).
 
 Use ONLY when you find a recurring pattern, anti-pattern, or constraint worth carrying into future sessions. The coordinator confirms each proposal before it lands in learnings.jsonl. Do NOT over-propose — quota is bounded per wave.
+
+Analyzer-only learning types, including `autonomy-verdict`, are intentionally not valid here; those are emitted by `/evolve` after their analyzer-specific evidence gates pass.
 ```
 
 **Skip injection** when:

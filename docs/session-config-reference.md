@@ -71,9 +71,9 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `test-command` | string | `pnpm test --run` | Custom test command. Used by quality gates for all test invocations. Overridden by `.orchestrator/policy/quality-gates.json` when present (#183). |
-| `typecheck-command` | string | `tsgo --noEmit` | Custom TypeScript check command. Set to `skip` for non-TS projects. Overridden by policy file when present. |
-| `lint-command` | string | `pnpm lint` | Custom lint command. Used by the Full Gate quality check at session end. Overridden by policy file when present. |
+| `test-command` | string | `npm test` | Custom test command. Used by quality gates for all test invocations. Overridden by `.orchestrator/policy/quality-gates.json` when present (#183). |
+| `typecheck-command` | string | `npm run typecheck` | Custom TypeScript check command. Set to `skip` for non-TS projects. Overridden by policy file when present. |
+| `lint-command` | string | `npm run lint` | Custom lint command. Used by the Full Gate quality check at session end. Overridden by policy file when present. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than `ssot-freshness-days`. |
 | `ssot-freshness-days` | integer | `5` | Days before an SSOT file is flagged as stale during session start. |
 | `plugin-freshness-days` | integer | `30` | Days before the plugin itself is flagged as potentially outdated. |
@@ -96,7 +96,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `memory-cleanup-soft-limit` | integer | `180` | Hard ceiling on accumulated memory files before the cleanup nudge escalates from a soft suggestion to a strong recommendation. PRD F2.2 / issue #502. Used by `scripts/lib/auto-dream.mjs`. |
-| `learning-expiry-days` | integer | `30` | Days until a learning expires. Confirmed learnings get their expiry reset. Adjust based on project velocity. |
+| `learning-expiry-days` | integer | `30` | Legacy/default expiry window used by review/extend flows. New analyzer learnings preserve a candidate-supplied `expires_at` or derive expiry from `LEARNING_TTL_DAYS[type]` (for example, `autonomy-verdict` is 90 days). |
 | `learnings-surface-top-n` | integer | `15` | Cap on how many learnings the session-start Phase 5.6 and session-plan Step 0.5 sections surface, ranked by confidence descending. `0` = do not surface any learnings. Applies to Project Intelligence output. |
 | `learning-decay-rate` | float (0.0 ≤ x < 1.0) | `0.05` | Confidence decay applied to every untouched learning at session-end (after touched-set update, before prune). `0.0` = disable decay. A learning starting at `0.5` confidence survives ~10 untouched sessions with default decay. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
@@ -406,7 +406,7 @@ Agents call the CLI with five required flags **and must set `SO_WAVE_AGENT=1`** 
 
 ```bash
 SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
-  --type learning \
+  --type workflow-pattern \
   --subject "vault-mirror BATS test ordering" \
   --insight "BATS test files must be sourced before harness fixtures load the fnmatch shim." \
   --evidence "tests/vault-mirror/harness.bats:23 fails when shim loads after assertion bindings." \
@@ -415,7 +415,7 @@ SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
 
 **Wave-executor dispatch**: the boilerplate prompt in `skills/wave-executor/SKILL.md` sets `SO_WAVE_AGENT=1` automatically for every dispatched agent. Direct CLI invocation from the coordinator thread or outside a wave-executor agent context will exit `3` (`rejected-wrong-context`) because the env-var is absent. This is intentional — the guard prevents accidental coordinator-context invocations. Use `/evolve` instead when proposing learnings from the coordinator level (#543 H3).
 
-`--type` accepts one of the `PROPOSAL_TYPES` enum values (mirrored from the learnings schema): `mode-selector-accuracy`, `hardware-pattern`, `fragile-file`, `effective-sizing`, `recurring-issue`, `workflow-pattern`, `proven-pattern`, `anti-pattern`, `autopilot-effectiveness`. Strings with embedded quotes must be shell-escaped per usual conventions. The CLI appends one JSONL line to `.orchestrator/metrics/proposals.jsonl` (atomic via O_APPEND under the `.orchestrator/metrics/proposals-write.lock` mutex) and updates a per-wave summary at `.orchestrator/metrics/proposals-summary-<wave-id>.json` (counters: queued / dropped / below_floor / fs_error). The coordinator surfaces both files at session-end Phase 3.6.3 to render the AUQ multiSelect; approved entries promote into `.orchestrator/metrics/learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`; rejected entries archive to `.orchestrator/proposals.rejected.log`. Privacy: `proposed_by_agent` is captured in the audit hook (`events.jsonl`) only and is stripped before promotion to learnings.jsonl.
+`--type` accepts one of the `PROPOSAL_TYPES` enum values (the agent-writable subset of the learnings schema): `mode-selector-accuracy`, `hardware-pattern`, `fragile-file`, `effective-sizing`, `recurring-issue`, `workflow-pattern`, `proven-pattern`, `anti-pattern`, `autopilot-effectiveness`, `domain-regression`. Analyzer-only learning types such as `autonomy-verdict` are intentionally excluded because their evidence gates are enforced by `/evolve` analyzers, not by agent proposals. Strings with embedded quotes must be shell-escaped per usual conventions. The CLI appends one JSONL line to `.orchestrator/metrics/proposals.jsonl` (atomic via O_APPEND under the `.orchestrator/metrics/proposals-write.lock` mutex) and updates a per-wave summary at `.orchestrator/metrics/proposals-summary-<wave-id>.json` (counters: queued / dropped / below_floor / fs_error). The coordinator surfaces both files at session-end Phase 3.6.3 to render the AUQ multiSelect; approved entries promote into `.orchestrator/metrics/learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`; rejected entries archive to `.orchestrator/proposals.rejected.log`. Privacy: `proposed_by_agent` is captured in the audit hook (`events.jsonl`) only and is stripped before promotion to learnings.jsonl.
 
 ### Exit codes
 

@@ -27,6 +27,16 @@ and emit the full proposed replacement body for any card you wish to update.
 4. **Respect the model budget**: you run as Haiku. Keep your reasoning compact; emit only the
    blocks you actually want applied.
 
+## Autonomy Readiness
+
+`autonomy-verdict` learnings may justify an `## Autonomy Readiness` section in
+`.orchestrator/peers/AGENT.md`. Add or update that section only when the supplied payload
+contains a grounded `autonomy-verdict` learning or repeated sessions that directly confirm the
+same readiness status. Summarize the readiness status, confidence, and practical operating
+constraint; do not infer dispatcher autonomy from unrelated productivity, CI, or preference
+signals, and do not treat a `ready` verdict as permission to bypass the configured
+`dispatcher-autonomy` dial.
+
 ## Input format
 
 The orchestrator dispatches you with a single prompt containing a JSON payload:
