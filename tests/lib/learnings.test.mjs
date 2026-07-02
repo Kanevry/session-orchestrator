@@ -10,9 +10,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import {
   validateLearning,
   normalizeLearning,
@@ -510,6 +510,138 @@ describe('rewriteLearnings — pre-write round-trip self-validation (#662)', () 
 
     const after = readFileSync(filePath, 'utf8');
     expect(after).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewriteLearnings — backup-before-rewrite + keep-N rotation (#721)
+//
+// The atomic rewrite is destructive on a gitignored store (no VCS restore). A
+// validating writer aimed at the live file destroyed 107 learnings on
+// 2026-07-02. These tests pin the safety net: a `.bak-<ISO>` snapshot before
+// the rename, a keep-3 rotation, an opt-out, and a dryRun probe path.
+//
+// Timestamps are RELATIVE (`Date.now() - offset`) — never hardcoded absolute
+// dates — so the suite carries no date-bomb. The rotation-failure test injects
+// a real FS state (a directory where a `.bak` file is expected) rather than
+// spying on ESM `fs` exports (forbidden — see testing.md § Vitest Gotchas).
+// ---------------------------------------------------------------------------
+
+// Build a `.bak-<ISO>` sibling name using the SAME dash-normalized ISO format
+// the writer uses, so lexical sort == chronological order across planted +
+// real backups.
+const bakName = (base, msAgo) =>
+  `${base}.bak-${new Date(Date.now() - msAgo).toISOString().replace(/[:.]/g, '-')}`;
+
+describe('rewriteLearnings — backup + keep-N rotation (#721)', () => {
+  it('backup default: rewriting over an existing file creates a .bak sibling holding the exact prior bytes', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    const priorBytes = JSON.stringify(LEGACY()) + '\n';
+    writeFileSync(filePath, priorBytes);
+
+    await rewriteLearnings(filePath, [{ ...LEGACY(), id: 'after-1' }]);
+
+    const backups = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(1);
+    // The backup must preserve the ORIGINAL bytes, not the rewritten content.
+    expect(readFileSync(join(tmp, backups[0]), 'utf8')).toBe(priorBytes);
+    // The live file now holds the new content.
+    const { entries } = await readLearnings(filePath);
+    expect(entries.map((e) => e.id)).toEqual(['after-1']);
+  });
+
+  it('keep-3 rotation: a rewrite prunes the single oldest .bak and retains the newest 3', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+
+    // Plant 3 pre-existing backups at distinct relative ages. The rewrite below
+    // stamps a 4th at "now" (newest), so rotation must drop exactly the oldest.
+    const oldest = bakName('learnings.jsonl', 30_000);
+    const mid = bakName('learnings.jsonl', 20_000);
+    const newestPlanted = bakName('learnings.jsonl', 10_000);
+    for (const name of [oldest, mid, newestPlanted]) {
+      writeFileSync(join(tmp, name), 'planted');
+    }
+
+    await rewriteLearnings(filePath, [{ ...LEGACY(), id: 'rotated' }]);
+
+    const backups = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    // 3 planted + 1 fresh = 4, minus 1 pruned = 3 retained.
+    expect(backups).toHaveLength(3);
+    // Exactly the oldest planted backup was pruned; the other two survive.
+    expect(backups).not.toContain(basename(oldest));
+    expect(backups).toContain(basename(mid));
+    expect(backups).toContain(basename(newestPlanted));
+  });
+
+  it('dryRun: true → neither the target file nor a .bak is written, validated entries are returned', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    const original = JSON.stringify(LEGACY()) + '\n';
+    writeFileSync(filePath, original);
+
+    const result = await rewriteLearnings(
+      filePath,
+      [{ ...LEGACY(), id: 'dry-1' }, { ...LEGACY(), id: 'dry-2' }],
+      { dryRun: true }
+    );
+
+    // Return contract preserved — validated entries handed back.
+    expect(result.map((e) => e.id)).toEqual(['dry-1', 'dry-2']);
+    // Target file byte-for-byte untouched.
+    expect(readFileSync(filePath, 'utf8')).toBe(original);
+    // No backup sidecar on a dry run.
+    const backups = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(0);
+  });
+
+  it('dryRun: true still THROWS ValidationError on an invalid entry (validation is not skipped)', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    const original = JSON.stringify(LEGACY()) + '\n';
+    writeFileSync(filePath, original);
+
+    await expect(
+      rewriteLearnings(filePath, [{ ...LEGACY(), id: 'dry-bad', confidence: NaN }], {
+        dryRun: true,
+      })
+    ).rejects.toThrow(ValidationError);
+    // The rejected dry run leaves the file untouched.
+    expect(readFileSync(filePath, 'utf8')).toBe(original);
+  });
+
+  it('backup: false → no .bak sidecar is created, and the rewrite still applies', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+
+    await rewriteLearnings(filePath, [{ ...LEGACY(), id: 'nobak-1' }], { backup: false });
+
+    const backups = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'));
+    expect(backups).toHaveLength(0);
+    const { entries } = await readLearnings(filePath);
+    expect(entries.map((e) => e.id)).toEqual(['nobak-1']);
+  });
+
+  it('a rotation failure (undeletable sibling) does NOT block the rewrite', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+
+    // The OLDEST backup slot is a DIRECTORY, not a file. rotateBackups sorts it
+    // first (oldest) into the prune window and calls unlink() on it — which
+    // rejects with EISDIR/EPERM on a directory for every uid (root included, so
+    // no root-as-uid-0 hazard). That rejection must be swallowed so the rewrite
+    // completes. Real FS state, no fs spy.
+    mkdirSync(join(tmp, bakName('learnings.jsonl', 40_000)));
+    // Enough real backups that the directory lands inside the prune window.
+    for (const msAgo of [30_000, 20_000, 10_000]) {
+      writeFileSync(join(tmp, bakName('learnings.jsonl', msAgo)), 'planted');
+    }
+
+    await expect(
+      rewriteLearnings(filePath, [{ ...LEGACY(), id: 'survived' }])
+    ).resolves.toBeDefined();
+
+    // The rewrite applied despite the rotation error.
+    const { entries } = await readLearnings(filePath);
+    expect(entries.map((e) => e.id)).toEqual(['survived']);
   });
 });
 

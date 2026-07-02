@@ -33,8 +33,7 @@
  * npm script: `npm run share:hw-learnings`
  */
 
-import { writeFile, mkdir, copyFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
   readLearnings,
@@ -323,15 +322,10 @@ export async function promoteHwLearnings(opts) {
   }
 
   if (!opts.dryRun) {
-    // Backup before rewrite
-    if (existsSync(opts.input)) {
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const backup = `${opts.input}.bak-${ts}`;
-      await copyFile(opts.input, backup);
-    }
-
     // Rewrite: all original entries + new public twins appended at the end.
     // Original private entries are preserved (the twin is a new record).
+    // The `.bak-<ISO>` backup (keep 3) is created inside rewriteLearnings (#721);
+    // the script-level dryRun gate above is what suppresses it on a dry run.
     const allEntries = [...entries, ...promotedEntries];
     await rewriteLearnings(opts.input, allEntries);
   }
