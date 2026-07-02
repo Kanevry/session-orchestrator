@@ -523,6 +523,25 @@ async function main() {
     });
   } catch { /* hook must remain non-blocking */ }
 
+  // Epic #724 C7 — own-repo orphaned-lock reaper (reconciliation net). If a
+  // dead-lease session.lock survived a crash-before-SessionEnd (the case that
+  // blocked this repo's start this morning until a manual force-takeover),
+  // archive-move it so it stops blocking. SINGLE-REPO only: no host-wide scan
+  // here (that stays CLI-only, scripts/lock-reaper.mjs) to keep hook latency
+  // small. Our own freshly-bootstrapped lock (written just above) is protected
+  // by the reaper's live-lock guard (fresh heartbeat) AND the currentSessionId
+  // guard, so this can never touch it. Best-effort: any failure is swallowed —
+  // the hook is informational-only and must never block.
+  try {
+    const { reapRepoLock } = await import('../scripts/lib/lock-reaper.mjs');
+    await reapRepoLock({
+      repoRoot: projectRoot,
+      currentSessionId: sessionId,
+      dryRun: false,
+      reapMode: 'auto-own-repo',
+    });
+  } catch { /* hook must remain non-blocking */ }
+
   let peers = [];
   try {
     await sweepZombies().catch(() => ({ removed: [], logged: 0 }));

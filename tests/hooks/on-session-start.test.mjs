@@ -905,3 +905,59 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     expect(mechanical).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Own-repo orphaned-lock reaper splice (Epic #724 C7)
+// ---------------------------------------------------------------------------
+
+describe('own-repo lock reaper splice (#724)', { timeout: 15000 }, () => {
+  const LOCK_RELPATH = path.join('.orchestrator', 'session.lock');
+
+  /** Seed a stale own-host session.lock owned by a foreign session id. */
+  async function seedStaleLock(dir, sessionId) {
+    const staleHeartbeat = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    const lock = {
+      session_id: sessionId,
+      started_at: staleHeartbeat,
+      last_heartbeat: staleHeartbeat,
+      mode: 'deep',
+      pid: 999999, // very unlikely to be a live PID → dead lease
+      host: os.hostname(),
+      ttl_hours: 4,
+    };
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(dir, LOCK_RELPATH), JSON.stringify(lock, null, 2) + '\n', 'utf8');
+  }
+
+  it('stays non-blocking (exit 0) and still emits its event when a stale orphan lock pre-exists', async () => {
+    const dir = await mkProjectTracked();
+    await seedStaleLock(dir, 'ghost-orphan');
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    // The reaper splice must never break the informational-only hook.
+    expect(result.code).toBe(0);
+
+    const events = await readEvents(dir);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('reconciles the orphan so the stale foreign session id is no longer the live lock', async () => {
+    const dir = await mkProjectTracked();
+    await seedStaleLock(dir, 'ghost-orphan');
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    expect(result.code).toBe(0);
+
+    // After start, the lock is either archived (absent) or replaced by our own
+    // fresh lock — in both cases the stale 'ghost-orphan' id must not survive as
+    // the live lease.
+    let lockRaw = null;
+    try {
+      lockRaw = await fs.readFile(path.join(dir, LOCK_RELPATH), 'utf8');
+    } catch { /* absent → reaped, acceptable */ }
+    if (lockRaw !== null) {
+      const lock = JSON.parse(lockRaw);
+      expect(lock.session_id).not.toBe('ghost-orphan');
+    }
+  });
+});

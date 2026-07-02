@@ -491,7 +491,8 @@ describe('category 4: Persistence Health', () => {
     const checks = runCategory4(root);
     const earned = totalPoints(checks);
     const possible = maxPoints(checks);
-    expect(possible).toBe(10);
+    // 4 original checks (3+3+2+2) + c4.5 orphaned-session-lock (2) = 12.
+    expect(possible).toBe(12);
     expect(earned).toBeGreaterThanOrEqual(8);
   });
 
@@ -526,12 +527,13 @@ describe('category 4: Persistence Health', () => {
     expect(earned).toBeLessThan(10);
   });
 
-  it('scores 0 when all required persistence files are absent', () => {
+  it('scores low when all required persistence files are absent', () => {
     const root = tmp();
     const checks = runCategory4(root);
     const earned = totalPoints(checks);
-    // Only vault-sync-validator can still pass (when vault not enabled)
-    expect(earned).toBeLessThanOrEqual(2);
+    // vault-sync-validator (vault not enabled) + orphaned-session-lock (no lock)
+    // are the only checks that pass on a bare root: 2 + 2 = 4.
+    expect(earned).toBeLessThanOrEqual(4);
   });
 
   it('fails sessions-jsonl-recent when last entry is older than 30 days', () => {

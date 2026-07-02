@@ -60,9 +60,9 @@ describe('runCategory4', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Happy path — all 4 checks pass
+  // Happy path — all 5 checks pass
   // -------------------------------------------------------------------------
-  it('returns 4 passing checks when all persistence files are valid and recent', () => {
+  it('returns 5 passing checks when all persistence files are valid and recent', () => {
     // STATE.md with all required frontmatter keys
     ensureDir(join(root, '.claude'));
     writeFileSync(join(root, '.claude/STATE.md'), validStateMd());
@@ -86,12 +86,65 @@ describe('runCategory4', () => {
 
     const checks = runCategory4(root);
 
-    expect(checks).toHaveLength(4);
+    expect(checks).toHaveLength(5);
     expect(checks.every((c) => c.status === 'pass')).toBe(true);
     expect(checks[0].check_id).toBe('state-md-schema');
     expect(checks[1].check_id).toBe('sessions-jsonl-recent');
     expect(checks[2].check_id).toBe('learnings-prunable');
     expect(checks[3].check_id).toBe('vault-sync-validator');
+    // c4.5 — no session.lock present in the fixture → orphaned-session-lock passes.
+    expect(checks[4].check_id).toBe('orphaned-session-lock');
+  });
+
+  // -------------------------------------------------------------------------
+  // c4.5 orphaned-session-lock — stale lease fails, live lease passes
+  // -------------------------------------------------------------------------
+  it('fails orphaned-session-lock when a dead-lease session.lock is present', () => {
+    ensureDir(join(root, '.orchestrator'));
+    // Heartbeat 5h ago against a 4h TTL — dead lease.
+    const staleHeartbeat = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeFileSync(
+      join(root, '.orchestrator/session.lock'),
+      JSON.stringify({
+        session_id: 'ghost-1',
+        started_at: staleHeartbeat,
+        last_heartbeat: staleHeartbeat,
+        mode: 'deep',
+        pid: 999999,
+        host: 'somehost',
+        ttl_hours: 4,
+      }),
+    );
+
+    const checks = runCategory4(root);
+    const orphan = checks.find((c) => c.check_id === 'orphaned-session-lock');
+    expect(orphan).toBeDefined();
+    expect(orphan.status).toBe('fail');
+    expect(orphan.points).toBe(0);
+    expect(orphan.message).toContain('scripts/lock-reaper.mjs');
+  });
+
+  it('passes orphaned-session-lock when the session.lock heartbeat is fresh', () => {
+    ensureDir(join(root, '.orchestrator'));
+    const freshHeartbeat = new Date().toISOString();
+    writeFileSync(
+      join(root, '.orchestrator/session.lock'),
+      JSON.stringify({
+        session_id: 'live-1',
+        started_at: freshHeartbeat,
+        last_heartbeat: freshHeartbeat,
+        mode: 'deep',
+        pid: 1234,
+        host: 'somehost',
+        ttl_hours: 4,
+      }),
+    );
+
+    const checks = runCategory4(root);
+    const orphan = checks.find((c) => c.check_id === 'orphaned-session-lock');
+    expect(orphan).toBeDefined();
+    expect(orphan.status).toBe('pass');
+    expect(orphan.points).toBe(2);
   });
 
   // -------------------------------------------------------------------------
