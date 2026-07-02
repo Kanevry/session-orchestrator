@@ -545,6 +545,12 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 - Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.6 Skill-Applied Judge (#645 L3), 3.6.7 Auto-Dialectic (#506)
 - Issue: #501
 
+### 3.6.4 Expired-Learnings Sweep (Advisory — Epic #723 B4)
+
+> Best-effort, non-blocking. Skip silently if the sweep script errors or `.orchestrator/metrics/learnings.jsonl` is absent.
+
+After learnings are written (Phase 3.6), run `node scripts/sweep-expired-learnings.mjs --json` (dry-run) against the learnings store. If the summary reports `archived > 0`, follow with `node scripts/sweep-expired-learnings.mjs --apply --json` to move the stale-past-grace entries into `.orchestrator/metrics/learnings-archive.jsonl` (append-only, never deleted). Note the resulting counts for the Phase 6 Final Report; any error surfaces on stderr with a non-zero exit (`1` usage error, `2` sweep failure) and never blocks close — the CLI does not write to `.orchestrator/metrics/sweep.log` (that path is the session-registry's own sweep log, unrelated to this CLI).
+
 ### 3.6.5 Auto-Dream Dispatch (#502, F2.2)
 
 > Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
@@ -1110,6 +1116,7 @@ Present to the user:
 | `phase-3-2-docs-verification.md` | Phase 3.2 full procedural body — docs-tasks load, SESSION_START_REF, per-task loop, mode-gated report, Documentation Coverage block |
 | `learning-patterns.md` | Phases 3.5a + 3.6 extraction heuristics, confidence updates, passive decay, and JSONL write procedure |
 | (inline) Phase 3.6.3 | Memory-Proposals Collection — `collectProposals` + AUQ multiSelect + `writeApproved` + `clearProposalsJsonl` |
+| (inline) Phase 3.6.4 | Expired-Learnings Sweep (Epic #723 B4) — advisory `node scripts/sweep-expired-learnings.mjs --json` (dry-run) then `--apply` when `archived > 0`; never blocks close |
 | (inline) Phase 3.6.5 | Auto-Dream nudge — `shouldDispatchAutoDream` + manual-cadence nudge to run /memory-cleanup --dry-run next session (no live dispatch — #614) |
 | (inline) Phase 3.6.6 | Skill-Applied Judge (#645 L3) — default OFF; when `skill-evolution.judge: true`, `runSkillJudge` does a LIVE read-only haiku dispatch returning JSON; the COORDINATOR writes advisory judgments to `.orchestrator/metrics/skill-judgments.jsonl` (#614-safe: agent returns, coordinator writes) |
 | (inline) Phase 3.6.7 | Auto-Dialectic nudge — `shouldDispatchAutoDialectic` + manual-cadence nudge to run /evolve --dialectic next session + advances `.orchestrator/dialectic-last-run` (no live dispatch — #614) |
