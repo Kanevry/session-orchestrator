@@ -145,14 +145,31 @@ describe('generateSessionNote (v1)', () => {
     expect(out).toContain('**Platform:** darwin');
   });
 
-  it('emits repo line in frontmatter when options.repo is set', () => {
-    const out = generateSessionNote(makeV1Entry(), { repo: 'Kanevry/session-orchestrator' });
-    expect(out).toMatch(/^repo: Kanevry\/session-orchestrator$/m);
+  it('#732: emits source-repo line in frontmatter when options.repoNs is set', () => {
+    const out = generateSessionNote(makeV1Entry(), { repoNs: 'session-orchestrator' });
+    expect(out).toMatch(/^source-repo: session-orchestrator$/m);
   });
 
-  it('does not emit repo line when options.repo is absent', () => {
+  it('#732: does not emit source-repo line when options.repoNs is absent', () => {
     const out = generateSessionNote(makeV1Entry(), {});
+    expect(out).not.toMatch(/^source-repo: /m);
+  });
+
+  it('#732: no longer emits the legacy repo: field, even when repoNs is set', () => {
+    const out = generateSessionNote(makeV1Entry(), { repoNs: 'session-orchestrator' });
     expect(out).not.toMatch(/^repo: /m);
+  });
+
+  it('#732: an arbitrary repoNs value (e.g. a pseudonym-mapped alias) reaches source-repo verbatim', () => {
+    // Mirrors the D5 pattern in render-learnings.test.mjs: the renderer does not
+    // care whether repoNs came from a plain slug or a pseudonym map — it just
+    // emits whatever string it is given. The pseudonym MAPPING mechanism itself
+    // (and its CP1/CP6/CP10 leak-detection fixtures) is exhaustively tested in
+    // namespace.test.mjs; this asserts only the render contract, using a
+    // synthetic (non-owner-leaky) alias so this file needn't carry a real
+    // private-slug literal.
+    const out = generateSessionNote(makeV1Entry(), { repoNs: 'alpha-team' });
+    expect(out).toMatch(/^source-repo: alpha-team$/m);
   });
 
   it('emits the generator marker', () => {
@@ -226,13 +243,18 @@ describe('generateSessionNoteV2', () => {
     expect(out).toContain('My special note.');
   });
 
-  it('emits repo line in frontmatter when options.repo is set', () => {
-    const out = generateSessionNoteV2(makeV2Entry(), { repo: 'org/name' });
-    expect(out).toMatch(/^repo: org\/name$/m);
+  it('#732: emits source-repo line in frontmatter when options.repoNs is set', () => {
+    const out = generateSessionNoteV2(makeV2Entry(), { repoNs: 'name' });
+    expect(out).toMatch(/^source-repo: name$/m);
   });
 
-  it('does not emit repo line when options.repo is absent', () => {
+  it('#732: does not emit source-repo line when options.repoNs is absent', () => {
     const out = generateSessionNoteV2(makeV2Entry(), {});
+    expect(out).not.toMatch(/^source-repo: /m);
+  });
+
+  it('#732: no longer emits the legacy repo: field, even when repoNs is set', () => {
+    const out = generateSessionNoteV2(makeV2Entry(), { repoNs: 'name' });
     expect(out).not.toMatch(/^repo: /m);
   });
 
@@ -341,15 +363,20 @@ describe('generateSessionNoteV3', () => {
     expect(out).toContain('Complete: 18 · Partial: 0 · Failed: 0 · Spiral: 0');
   });
 
-  it('emits repo line in frontmatter when options.repo is set', () => {
-    const out = generateSessionNoteV3(makeV3Entry(), { repo: 'org/name' });
-    expect(out).toMatch(/^repo: org\/name$/m);
+  it('#732: emits source-repo line in frontmatter when options.repoNs is set', () => {
+    const out = generateSessionNoteV3(makeV3Entry(), { repoNs: 'name' });
+    expect(out).toMatch(/^source-repo: name$/m);
   });
 
-  it('does not emit repo line when options.repo is absent', () => {
+  it('#732: does not emit source-repo line when options.repoNs is absent', () => {
     const out = generateSessionNoteV3(makeV3Entry(), {});
+    expect(out).not.toMatch(/^source-repo: /m);
+    expect(out).not.toContain('source-repo: undefined');
+  });
+
+  it('#732: no longer emits the legacy repo: field, even when repoNs is set', () => {
+    const out = generateSessionNoteV3(makeV3Entry(), { repoNs: 'name' });
     expect(out).not.toMatch(/^repo: /m);
-    expect(out).not.toContain('repo: undefined');
   });
 
   it('emits the generator marker', () => {
@@ -452,7 +479,7 @@ describe('normalizeSessionEntry (#635 producer-alias normalization)', () => {
     };
     const e = normalizeSessionEntry(raw);
     expect(detectSessionSchema(e)).toBe('v3');
-    expect(() => generateSessionNoteV3(e, { repo: 'org/repo' })).not.toThrow();
+    expect(() => generateSessionNoteV3(e, { repoNs: 'org-repo' })).not.toThrow();
   });
 
   it('renders the waves_completed/files_changed_total producer shape after normalization', () => {
@@ -471,6 +498,6 @@ describe('normalizeSessionEntry (#635 producer-alias normalization)', () => {
     };
     const e = normalizeSessionEntry(raw);
     expect(detectSessionSchema(e)).toBe('v3');
-    expect(() => generateSessionNoteV3(e, { repo: 'org/repo' })).not.toThrow();
+    expect(() => generateSessionNoteV3(e, { repoNs: 'org-repo' })).not.toThrow();
   });
 });

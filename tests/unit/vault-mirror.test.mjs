@@ -1408,41 +1408,51 @@ describe('generateSessionNote V1 — frontmatter skip-emit + platform (#343)', (
     expect(out).toContain(' · **Platform:** darwin');
   });
 
-  it('emits repo: line in frontmatter when options.repo is set', () => {
-    const out = generateSessionNote(V1_ENTRY(), { repo: 'Kanevry/session-orchestrator' });
-    // Frontmatter line: ^repo: <value>$ (multiline regex — find one matching line)
-    expect(out).toMatch(/^repo: Kanevry\/session-orchestrator$/m);
+  it('#732: emits source-repo: line in frontmatter when options.repoNs is set', () => {
+    const out = generateSessionNote(V1_ENTRY(), { repoNs: 'session-orchestrator' });
+    // Frontmatter line: ^source-repo: <value>$ (multiline regex — find one matching line)
+    expect(out).toMatch(/^source-repo: session-orchestrator$/m);
   });
 
-  it('does NOT emit repo: line when options.repo is omitted', () => {
+  it('#732: does NOT emit source-repo: line when options.repoNs is omitted', () => {
     const out = generateSessionNote(V1_ENTRY(), {});
-    expect(out).not.toMatch(/^repo: /m);
-    expect(out).not.toContain('repo: undefined');
+    expect(out).not.toMatch(/^source-repo: /m);
+    expect(out).not.toContain('source-repo: undefined');
   });
 
-  it('does NOT emit repo: line when options is the default (no second arg)', () => {
+  it('#732: does NOT emit source-repo: line when options is the default (no second arg)', () => {
     const out = generateSessionNote(V1_ENTRY());
+    expect(out).not.toMatch(/^source-repo: /m);
+    expect(out).not.toContain('source-repo: undefined');
+  });
+
+  it('#732: no longer emits the legacy repo: field, even when repoNs is set', () => {
+    const out = generateSessionNote(V1_ENTRY(), { repoNs: 'session-orchestrator' });
     expect(out).not.toMatch(/^repo: /m);
-    expect(out).not.toContain('repo: undefined');
   });
 });
 
-describe('generateSessionNoteV2 — frontmatter skip-emit + repo (#343)', () => {
-  it('emits repo: line in frontmatter when options.repo is set', () => {
-    const out = generateSessionNoteV2(V2_ENTRY(), { repo: 'org/name' });
-    expect(out).toMatch(/^repo: org\/name$/m);
+describe('generateSessionNoteV2 — frontmatter skip-emit + source-repo (#343, renamed #732)', () => {
+  it('#732: emits source-repo: line in frontmatter when options.repoNs is set', () => {
+    const out = generateSessionNoteV2(V2_ENTRY(), { repoNs: 'name' });
+    expect(out).toMatch(/^source-repo: name$/m);
   });
 
-  it('does NOT emit repo: line when options.repo is omitted', () => {
+  it('#732: does NOT emit source-repo: line when options.repoNs is omitted', () => {
     const out = generateSessionNoteV2(V2_ENTRY(), {});
-    expect(out).not.toMatch(/^repo: /m);
-    expect(out).not.toContain('repo: undefined');
+    expect(out).not.toMatch(/^source-repo: /m);
+    expect(out).not.toContain('source-repo: undefined');
   });
 
-  it('does NOT emit repo: line when options is the default (no second arg)', () => {
+  it('#732: does NOT emit source-repo: line when options is the default (no second arg)', () => {
     const out = generateSessionNoteV2(V2_ENTRY());
+    expect(out).not.toMatch(/^source-repo: /m);
+    expect(out).not.toContain('source-repo: undefined');
+  });
+
+  it('#732: no longer emits the legacy repo: field, even when repoNs is set', () => {
+    const out = generateSessionNoteV2(V2_ENTRY(), { repoNs: 'name' });
     expect(out).not.toMatch(/^repo: /m);
-    expect(out).not.toContain('repo: undefined');
   });
 });
 

@@ -464,10 +464,15 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     session_id = session_id.slice(0, 240).replace(/-+$/, '');
   }
 
-  // Derive repo once per session so V1+V2 frontmatter both carry it (issue #343).
-  // We derive it BEFORE the quality gate so the gate can call the generator once
-  // (rendered output is reused below to avoid double-rendering).
-  const repo = deriveRepo();
+  // #732: resolve the leak-guarded repo namespace ONCE per session, BEFORE the
+  // quality gate, so both the write path (targetDir, below) AND the rendered
+  // frontmatter (`source-repo`) use the SAME sanitised / pseudonym-mapped value.
+  // Previously the frontmatter carried the RAW deriveRepo() output via a `repo:`
+  // field while only the write path routed through resolveRepoNamespace() — an
+  // owner-leaky repo's real name reached the vault through the session-note
+  // frontmatter even though the directory AND the learning `source-repo` field
+  // were already pseudonym-mapped/redacted (#732 leak-guard bypass).
+  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
 
   // Quality gate (PRD F1.2): skip sessions whose rendered narrative is too short.
   // Measure on the rendered markdown body so the check is schema-agnostic across
@@ -478,7 +483,7 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // required field), it propagates up to vault-mirror.mjs which classifies it
   // as `skipped-invalid` rather than `skipped-quality-low` — semantically more
   // accurate for the metrics summary in session-end Phase 3.7.
-  const renderedBody = generator(entry, { repo });
+  const renderedBody = generator(entry, { repoNs });
   // Strip YAML frontmatter (lines between the first two `---` markers) so we
   // measure only narrative content, not boilerplate.
   const narrativeBody = renderedBody.replace(/^---[\s\S]*?---/m, '').trim();
@@ -495,11 +500,9 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     return;
   }
 
-  // #660: namespace new writes under a per-repo subdirectory.
-  // repoNs uses the sanitised, leak-guarded segment from namespace.mjs.
-  // Keep the existing `repo` value (deriveRepo()) for frontmatter unchanged —
-  // repoNs is ONLY used for the write path, not for the rendered content.
-  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  // #660: namespace new writes under a per-repo subdirectory. repoNs was
+  // resolved above (before the quality gate) so it is reused here unchanged —
+  // the write path and the rendered `source-repo` frontmatter share one value.
   const targetDir = join(resolve(vaultDir), '50-sessions', repoNs);
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 

@@ -181,16 +181,20 @@ describe('vault-mirror utils — tag/id slug helpers (#602)', () => {
 
 describe('generateSessionNote (v1) emits schema-valid frontmatter (#602)', () => {
   it('produces schema-valid frontmatter for normal input', () => {
-    const fm = parseFrontmatter(generateSessionNote(v1Session(), { repo: 'org/repo' }));
+    const fm = parseFrontmatter(generateSessionNote(v1Session(), { repoNs: 'org-repo' }));
     assertSchemaValid(fm);
     expect(fm.id).toBe('2026-05-23-deep');
     expect(parseTags(fm.tags)).toContain('session/deep');
     expect(parseTags(fm.tags)).toContain('status/verified');
+    // #732: session notes emit `source-repo` (schema field, vaultFrontmatterSchema
+    // declares it optional string) instead of the legacy raw `repo` field.
+    expect(fm['source-repo']).toBe('org-repo');
+    expect(fm['repo']).toBeUndefined();
   });
 
   it('slugifies an ISO-timestamp session_id so the id is a kebab slug', () => {
     const fm = parseFrontmatter(
-      generateSessionNote(v1Session({ session_id: '2026-05-28T17:44Z-deep' }), { repo: 'org/repo' }),
+      generateSessionNote(v1Session({ session_id: '2026-05-28T17:44Z-deep' }), { repoNs: 'org-repo' }),
     );
     expect(fm.id).not.toMatch(/[A-Z:.]/);
     assertSchemaValid(fm);
@@ -200,7 +204,7 @@ describe('generateSessionNote (v1) emits schema-valid frontmatter (#602)', () =>
     const fm = parseFrontmatter(
       generateSessionNote(
         v1Session({ session_id: '2026-05-28T17:44:03.123Z-deep', session_type: 'DEEP Mode!!' }),
-        { repo: 'org/repo' },
+        { repoNs: 'org-repo' },
       ),
     );
     assertSchemaValid(fm);
@@ -214,7 +218,7 @@ describe('generateSessionNote (v1) emits schema-valid frontmatter (#602)', () =>
 describe('generateSessionNoteV2 emits schema-valid frontmatter (#602)', () => {
   it('produces schema-valid frontmatter for hostile non-kebab session_type', () => {
     const fm = parseFrontmatter(
-      generateSessionNoteV2(v2Session({ session_type: 'Feature Branch!!' }), { repo: 'org/repo' }),
+      generateSessionNoteV2(v2Session({ session_type: 'Feature Branch!!' }), { repoNs: 'org-repo' }),
     );
     assertSchemaValid(fm);
     expect(parseTags(fm.tags)).toContain('session/feature-branch');
@@ -223,7 +227,7 @@ describe('generateSessionNoteV2 emits schema-valid frontmatter (#602)', () => {
 
 describe('generateSessionNoteV3 emits schema-valid frontmatter (#602)', () => {
   it('produces schema-valid frontmatter for normal input', () => {
-    const fm = parseFrontmatter(generateSessionNoteV3(v3Session(), { repo: 'org/repo' }));
+    const fm = parseFrontmatter(generateSessionNoteV3(v3Session(), { repoNs: 'org-repo' }));
     assertSchemaValid(fm);
     expect(fm.id).toBe('2026-05-23-deep-3');
   });
@@ -232,7 +236,7 @@ describe('generateSessionNoteV3 emits schema-valid frontmatter (#602)', () => {
     const fm = parseFrontmatter(
       generateSessionNoteV3(
         v3Session({ session_id: '2026-05-28T17:44:03.123Z-deep', session_type: 'DEEP Mode!!' }),
-        { repo: 'org/repo' },
+        { repoNs: 'org-repo' },
       ),
     );
     assertSchemaValid(fm);

@@ -522,6 +522,136 @@ describe('processSession', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0].action).toBe('updated');
   });
+
+  // ── #732: source-repo frontmatter attribution (rename from legacy `repo`) ──
+
+  it('#732: created session note frontmatter carries source-repo: <repoNs>, never the raw repo:', async () => {
+    existsSyncSpy.mockReturnValue(false);
+    const processSession = await getProcessSession(); // git mock → repo 'o/r' → repoNs 'r'
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+    await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, { vaultDir: '/vault', dryRun: false, kind: 'session' }),
+    );
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(written).toContain('source-repo: r\n');
+    // Sits inside the frontmatter block, before the _generator marker.
+    expect(written.indexOf('source-repo: r')).toBeLessThan(written.indexOf('_generator:'));
+    // The legacy raw field must be gone entirely — not just relocated.
+    expect(written).not.toMatch(/^repo: /m);
+  });
+
+  it('#732: regenerating a legacy note (repo: field) on update self-heals to source-repo', async () => {
+    // The on-disk note still carries the pre-#732 raw `repo:` field — the
+    // exact shape a note written before the #732 fix would have.
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(
+      '---\nid: session-2026-04-13\nupdated: 2026-04-13\nrepo: leaky-name\n_generator: session-orchestrator-vault-mirror@1\n---\n\nOld body.\n'
+    );
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+    // Newer completed_at forces the date-advance branch → action 'updated'
+    // (mirrors "uses completed_at date for the updated field comparison" above).
+    const newerEntry = { ...VALID_V1_SESSION, completed_at: '2026-04-14T10:00:00Z' };
+    const processSession = await getProcessSession(); // git mock → repo 'o/r' → repoNs 'r'
+
+    const { lines } = await captureStdout(() =>
+      processSession(newerEntry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session' }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('updated');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    // The regenerated content self-heals to the CURRENT source-repo field —
+    // the stale on-disk `repo:` field is never preserved into the rewrite;
+    // the whole note body (frontmatter included) is regenerated from scratch.
+    expect(written).toContain('source-repo: r\n');
+    expect(written).not.toMatch(/^repo: /m);
+  });
+});
+
+// ── #732: repo-namespace leak-guard reaches session frontmatter ──────────────
+//
+// Prior to #732, processSession rendered the frontmatter with the RAW
+// deriveRepo() output (`repo: <raw org/name>`) while the write path alone used
+// resolveRepoNamespace(). An owner-leaky git origin (matching one of the
+// isOwnerLeakySegment CP1/CP6/CP10 patterns) therefore reached the vault
+// verbatim via the session-note frontmatter even though its directory AND the
+// sibling learning notes' `source-repo` field were already redacted/pseudonym-
+// mapped. This describe block proves the fix: the SAME resolveRepoNamespace()
+// return value now backs BOTH the write path and the rendered `source-repo`
+// field — proven by stubbing resolveRepoNamespace() to a sentinel value that
+// deliberately DIFFERS from the raw git-origin identifier, so a regression
+// back to the pre-#732 "frontmatter uses raw deriveRepo()" behaviour would
+// make this test fail. (The CP1/CP6/CP10 leak-detection + pseudonym-mapping
+// mechanism ITSELF is exhaustively covered in namespace.test.mjs; duplicating
+// real private-slug fixtures here would also trip check-owner-leakage.mjs's
+// scanner for this file, which is not on its SELF_EXCLUSIONS allowlist.)
+
+describe('processSession #732: source-repo uses resolveRepoNamespace(), never raw deriveRepo()', () => {
+  let _existsSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    _existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+    vi.doUnmock('@lib/vault-mirror/namespace.mjs');
+  });
+
+  const VALID_V1_SESSION = {
+    session_id: 'session-2026-07-03',
+    session_type: 'feature',
+    started_at: '2026-07-03T08:00:00Z',
+    completed_at: '2026-07-03T10:00:00Z',
+    duration_seconds: 7200,
+    total_waves: 1,
+    total_agents: 2,
+    total_files_changed: 4,
+    agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
+    waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
+    effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+  };
+
+  it('write path AND rendered source-repo both use resolveRepoNamespace()s return value, never the raw origin', async () => {
+    vi.resetModules();
+    // git origin resolves to a raw identifier that deriveRepo() would return
+    // VERBATIM if the (pre-#732) frontmatter path ever fell back to it.
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:raw-org/raw-origin-identifier.git\n') };
+    });
+    // Stub resolveRepoNamespace() to a sentinel that deliberately differs from
+    // the raw origin above — proves process.mjs consumes the FUNCTION'S return
+    // value for the frontmatter, not deriveRepo() directly.
+    vi.doMock('@lib/vault-mirror/namespace.mjs', async () => {
+      const actual = await vi.importActual('@lib/vault-mirror/namespace.mjs');
+      return { ...actual, resolveRepoNamespace: vi.fn(() => 'leak-guarded-sentinel') };
+    });
+    const { processSession } = await import('@lib/vault-mirror/process.mjs');
+
+    let writtenPath = '';
+    let written = '';
+    writeFileSyncSpy.mockImplementation((p, content) => { writtenPath = p; written = content; });
+
+    await captureStdout(() =>
+      processSession(VALID_V1_SESSION, 1, { vaultDir: '/vault', dryRun: false, kind: 'session' }),
+    );
+
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    // Write path uses resolveRepoNamespace()'s return value.
+    expect(writtenPath).toContain('/50-sessions/leak-guarded-sentinel/');
+    // Frontmatter ALSO uses it — the #732 fix (previously it used raw deriveRepo()).
+    expect(written).toContain('source-repo: leak-guarded-sentinel\n');
+    // Never the raw origin identifier, and never the legacy `repo:` field name.
+    expect(written).not.toContain('raw-origin-identifier');
+    expect(written).not.toMatch(/^repo: /m);
+  });
 });
 
 // ── quality gate (PRD F1.2) ───────────────────────────────────────────────────

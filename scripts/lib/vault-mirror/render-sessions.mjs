@@ -2,6 +2,16 @@
  * render-sessions.mjs — Session markdown generators for vault-mirror (Issue #283 split).
  *
  * Exports: detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3
+ *
+ * #732: all three generators accept `options.repoNs` (the leak-guarded /
+ * pseudonym-mapped namespace segment from resolveRepoNamespace(), threaded
+ * through by process.mjs::processSession) and emit it as a `source-repo:`
+ * frontmatter line — mirroring render-learnings.mjs's `source-repo` field.
+ * Prior to #732, session notes emitted a raw `repo:` field sourced directly
+ * from deriveRepo() (bypassing the leak-guard entirely, even though the write
+ * PATH already used resolveRepoNamespace()). Historical notes on disk may still
+ * carry the legacy `repo:` key — the vault frontmatter Zod schema tolerates it
+ * via `.passthrough()`, and it is NOT rewritten retroactively by this change.
  */
 
 import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
@@ -133,7 +143,10 @@ export function generateSessionNote(entry, options = {}) {
     ? ''
     : ` · **Platform:** ${platform}`;
 
-  const { repo } = options;
+  // #732: emit `source-repo` (the leak-guarded/pseudonym-mapped namespace from
+  // resolveRepoNamespace(), threaded through by process.mjs) instead of the
+  // legacy raw `repo` field — mirrors render-learnings.mjs's source-repo line.
+  const { repoNs } = options;
 
   return `---
 id: ${noteId}
@@ -143,7 +156,7 @@ status: verified
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('repo', repo)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -215,7 +228,9 @@ export function generateSessionNoteV2(entry, options = {}) {
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
   const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
 
-  const { repo } = options;
+  // #732: emit `source-repo` (leak-guarded/pseudonym-mapped) instead of the
+  // legacy raw `repo` field — see generateSessionNote for the full rationale.
+  const { repoNs } = options;
 
   return `---
 id: ${noteId}
@@ -225,7 +240,7 @@ status: verified
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('repo', repo)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -319,7 +334,9 @@ export function generateSessionNoteV3(entry, options = {}) {
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
   const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
 
-  const { repo } = options;
+  // #732: emit `source-repo` (leak-guarded/pseudonym-mapped) instead of the
+  // legacy raw `repo` field — see generateSessionNote for the full rationale.
+  const { repoNs } = options;
 
   return `---
 id: ${noteId}
@@ -329,7 +346,7 @@ status: verified
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('repo', repo)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
