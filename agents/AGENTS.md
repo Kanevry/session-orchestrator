@@ -58,6 +58,14 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 - Length: 500–3000 words is the recommended range. Below 500 reads as under-specified; above 3000 reads as bloated.
 - Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`.
 
+## Git-Write Ban Requirement (PSA-007, #724)
+
+Every agent definition with `repo-write` sandbox-tier (i.e. `Edit`/`Write` present in `tools:`) MUST carry an explicit git-write ban line in its `## Rules` section:
+
+> Do NOT run ANY git write operation (`git add`, `git commit`, `git stash`, `git mv`, `git rm`, `git push`, `git reset`) — the git index and stash are shared session resources (PSA-007); the coordinator handles ALL VCS operations.
+
+This is deliberately more explicit than a bare "Do NOT commit" — the git index and stash are SHARED resources across concurrently-dispatched sibling agents in the same wave, and `git stash`/`git add`/`git mv`/`git rm` are index-mutating even when scoped to the agent's own files. `docs-writer.md` had NO git-write restriction at all until #724 closed the gap (its `repo-write` siblings at least carried a bare "Do NOT commit" line) — when adding a new repo-write agent, copy the ban line verbatim rather than re-deriving a weaker phrasing so this gap does not recur. See `.claude/rules/parallel-sessions.md` § PSA-007 for the full rationale and fleet evidence.
+
 ## Color Allocation Strategy (#443)
 
 `color` is an **operator side-channel**, not a cosmetic field. In a `/tmux-layout` or multi-pane session, the per-agent color lets the operator tell co-running agents apart at a glance. With only a 9-color palette (`blue | cyan | green | yellow | purple | orange | pink | red | magenta`) and more than 9 agents in this directory, some colors are **deliberately shared** — but never carelessly.

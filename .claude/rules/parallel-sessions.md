@@ -36,13 +36,28 @@ Did I detect any parallel-session signal?
 │
 ├─ No  →  Continue normally.
 │
-└─ Yes →  Does the signal touch files/scope I own in this task?
+└─ Yes →  Does the signal originate from a SIBLING wave-agent dispatched in
+          THIS SAME wave (in-run axis — same dispatch round, the file sits
+          inside that sibling's declared file-scope per the wave plan) —
+          AND the file is NOT ALSO inside my own declared file-scope?
           │
-          ├─ No  →  PSA-001 (Aware): note the signal, continue working.
-          │          Do NOT pause. Do NOT "fix" the foreign change.
+          ├─ Yes →  NOT a PSA-002 case. Consult the wave plan / coordinator
+          │          knowledge to confirm the sibling's file-scope ownership,
+          │          then continue working — note it PSA-001-style, do not
+          │          pause. (See PSA-007 for the in-run axis git-write rule.)
           │
-          └─ Yes →  PSA-002 (Pause): stop current action, ask the user
-                    via AskUserQuestion before proceeding.
+          └─ No  →  Does the signal touch files/scope I own in this task?
+                    │
+                    ├─ No  →  PSA-001 (Aware): note the signal, continue working.
+                    │          Do NOT pause. Do NOT "fix" the foreign change.
+                    │
+                    └─ Yes →  PSA-002 (Pause): stop current action, ask the user
+                              via AskUserQuestion before proceeding. This branch
+                              also catches a file assigned to BOTH my scope AND
+                              a sibling's scope per the wave plan (a wave-plan
+                              deconfliction bug) — that overlap is a genuine
+                              in-run collision, never a benign sibling signal,
+                              so the sibling branch above must not mask it.
 ```
 
 **Scope overlap examples (triggers PSA-002):**
@@ -70,6 +85,8 @@ Detect and note parallel-session signals without interrupting your work. Continu
 - **Files changed between reads:** If a file's content differs from what you read moments ago, another session likely edited it.
 - **New untracked files:** Files appearing in `git status` that you did not create belong to someone else's work.
 
+**In-run caveat (isolation:none waves):** in a wave dispatched with `isolation: none`, unfamiliar modifications outside your own scope or unexpected untracked files may simply belong to a sibling wave-agent's declared file-scope in the SAME dispatch round — disambiguate against the wave plan before logging it as a generic parallel-session signal (see PSA-007).
+
 **PSA-001 behaviour:**
 - Log the observation mentally (or in your response narrative).
 - Do NOT pause, do NOT ask the user, do NOT "fix" foreign changes.
@@ -88,6 +105,8 @@ When a parallel-session signal **directly overlaps your owned scope**, stop the 
 - `git diff --cached` includes staged changes you did not stage.
 - A file you need to write or edit is locked in an in-progress state by another session.
 - External changes block your task (e.g., a merge conflict in one of your files).
+
+**In-run caveat (isolation:none waves):** before pausing, check whether the unexpected modification or untracked file belongs to a sibling wave-agent's declared file-scope in the wave plan (same dispatch round) — if so, this is NOT a PSA-002 case; follow the Decision Tree's sibling-check branch instead (see PSA-007).
 
 **PSA-002 behaviour:**
 - Stop immediately — do not overwrite, merge, or work around the conflict.
@@ -184,6 +203,26 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 - "100% adoption" — a percentage is a distributional claim. Quote the numerator AND denominator from grep output.
 
 **Mechanical enforcement (#567).** When `discovery-validator.enabled: true` in Session Config (default `false`), the `SubagentStop` hook `hooks/post-subagent-discovery-validator.mjs` scans the subagent's transcript tail for the distributional-claim patterns above and records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` (plus a stderr WARN) whenever such a claim lacks an adjacent fenced grep/rg/find transcript. v1 is log + warn only and never blocks the agent — it complements the behavioural rule rather than replacing the coordinator's REJECT obligation above.
+
+## PSA-007 — Subagent Git-Write Prohibition (#724)
+
+*Axis: in-run — multiple agents coordinated inside a single session/run (see § PSA Scope Axes). Distinct from PSA-003/PSA-004, which govern the COORDINATOR's own destructive-op and commit discipline; PSA-007 governs what a DISPATCHED SUBAGENT may touch of the shared VCS state.*
+
+The git index and stash are **shared resources of the working copy**, not a private workspace scoped to each dispatched agent. When a wave dispatches multiple subagents in parallel (via the `Agent` tool / wave-executor), a subagent that runs a git-write command competes with its siblings for the SAME `.git/index` and stash stack. Fleet evidence (2026-07, 2 repos, confidence ≥0.9) recorded concurrent subagent git-write operations causing `index.lock` collisions and stash operations that silently discarded sibling work-in-progress.
+
+**Subagents dispatched via the Agent tool / wave-executor MUST NEVER run:**
+- `git add` / `git commit` — index writes race with a sibling agent's concurrent index write, even when each agent only stages its own files.
+- `git stash` (any form) — captures (and can drop) a sibling agent's uncommitted work; the sibling has no way to find or recover it.
+- `git mv` / `git rm` — index-mutating, same race class as `git add`.
+- `git push` — no subagent has the authority to publish; also destructive at the remote-history layer.
+- `git reset` / `git checkout -- <file>` — destructive to sibling work (already covered by the destructive-ops guard) AND an index-write race; PSA-007 bans them from subagents unconditionally, not only "when parallel work is suspected."
+
+**The only write channel a subagent has is `Edit`/`Write` on files inside its own declared file scope.** All VCS operations — staging, committing, pushing — belong to the coordinator. This makes the PSA-004 commit-discipline guarantee structural rather than behavioural at the subagent layer: an agent that never touches the index cannot violate PSA-004 by construction.
+
+**Anti-patterns:**
+- A code-implementer subagent running `git add <its own files>` "to be helpful" before reporting done — even scoped to its own files, it still races the coordinator's own staging pass and any sibling's concurrent index write.
+- A subagent running `git stash` to "save progress" before switching tasks — the coordinator does not mid-task-switch a live agent; if this situation arises, the agent should report `blocked` and let the coordinator decide, never stash.
+- A subagent running `git commit --no-verify` "just this once to unblock the wave" — commits are the coordinator's exclusive responsibility per every `agents/*.md` authoring convention (see `agents/AGENTS.md` § Authoring Convention for the mandatory ban-line every repo-write agent definition must carry).
 
 ## Anti-Patterns
 - Seeing unfamiliar changes and assuming they are "leftover mess" to clean up — they are likely active work.

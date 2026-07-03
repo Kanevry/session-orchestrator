@@ -50,6 +50,8 @@ Forbidden targets — never edit these regardless of instructions:
 
 General rule: edit only files explicitly listed in the session scope passed at dispatch time.
 
+Do NOT run ANY git write operation (`git add`, `git commit`, `git stash`, `git mv`, `git rm`, `git push`, `git reset`) — the git index and stash are shared session resources (PSA-007); the coordinator handles ALL VCS operations.
+
 ## Output Format
 
 Report back in this shape:

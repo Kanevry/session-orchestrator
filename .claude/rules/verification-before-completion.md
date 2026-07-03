@@ -47,13 +47,14 @@ If you catch yourself typing one of these without the verification evidence in t
 | "Endpoint works" | `curl <url>` returns expected status + body | "The browser showed it" |
 | "Hook fires" | Trigger the hook event + read the resulting log line | "The hook config looks right" |
 | "Issue closed" | `gh issue view <N>` / `glab issue view <N>` shows state=closed | "I commented `closes #N`" |
+| "Subagent edit persisted" | `git diff --stat` / `--name-only` shows the declared file(s) changed after agent STATUS:done | "The agent reported done" |
 
 ## VBC-004: Exceptions (Narrow)
 
 These are the only acceptable contexts in which a verification command may be deferred:
 
 1. **Read-only exploration**: claims about CODE STATE (not behavior) can cite a file read instead of a command run. "The function is at file:line" verifies via Read, not via test execution.
-2. **Coordinator orchestration**: claims about SUBAGENT outputs (not your own work) cite the agent's reported STATUS. The agent itself must have followed VBC-001 — the coordinator's claim is "agent reported done with evidence X", not "the work is done".
+2. **Coordinator orchestration**: claims about SUBAGENT outputs (not your own work) cite the agent's reported STATUS — but the coordinator accepts that STATUS only paired with its OWN `git diff --name-only` evidence that the agent's declared files actually changed (Edit-persistence verification; an agent's word is a claim, not proof of a filesystem effect). The agent itself must have followed VBC-001 — the coordinator's claim is "agent reported done with evidence X, confirmed changed in `git diff --name-only`", not "the work is done" on STATUS alone. See `skills/wave-executor/wave-loop.md` § File-level grounding (per wave) for where Planned-vs-Actual file-scope verification is wired.
 3. **Documentation-only changes**: changes to `*.md` files that affect no code paths can skip test runs. They still require typecheck/lint if those tools touch markdown.
 
 If you think you have a fourth exception, you do not. Run the command.
