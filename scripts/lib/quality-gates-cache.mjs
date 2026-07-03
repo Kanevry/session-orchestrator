@@ -9,8 +9,11 @@
  *   skip Incremental when the cache is still valid and the working-tree
  *   diff remains narrow.
  *
- * INVARIANT: Full Gate at session-end is NEVER skipped regardless of cache
- * state. This module only short-circuits Incremental in wave-executor.
+ * INVARIANT: Full Gate at session-end AND at the Quality wave is NEVER skipped
+ * regardless of cache state. shouldSkipIncremental({ waveRole: 'Quality' })
+ * hard-returns skip=false (reason 'quality-wave-full-gate-mandate') BEFORE any
+ * cache logic runs; the module otherwise only short-circuits Incremental in the
+ * Impl waves of wave-executor.
  *
  * Storage:
  *   .orchestrator/metrics/baseline-results.jsonl  (append-only JSONL, one
@@ -183,9 +186,24 @@ export function isCacheValid({ repoRoot, latestRecord, currentSessionStartRef, t
  * @param {string} params.repoRoot
  * @param {string} params.sessionStartRef
  * @param {number} [params.scopeThreshold=50]
+ * @param {string|null} [params.waveRole=null] Role of the wave being gated.
+ *   When 'Quality' (case-insensitive, whitespace-trimmed — e.g. 'quality',
+ *   ' Quality ' all match), the function hard-returns skip=false BEFORE any
+ *   cache logic so the Quality-wave Full Gate is mechanically un-skippable
+ *   (#724 C6). All other values (null/undefined/Impl-*) preserve the cache
+ *   short-circuit path.
  * @returns {{ skip: boolean, reason: string, changedFileCount: number }}
  */
-export function shouldSkipIncremental({ repoRoot, sessionStartRef, scopeThreshold = DEFAULT_SCOPE_THRESHOLD }) {
+export function shouldSkipIncremental({ repoRoot, sessionStartRef, scopeThreshold = DEFAULT_SCOPE_THRESHOLD, waveRole = null }) {
+  // C6 (#724): the Quality wave's Full Gate is NEVER skipped, regardless of a
+  // valid cache or a narrow diff. This mirrors the session-end close-safety
+  // invariant and makes the "After Quality: Full Gate" mandate mechanical
+  // rather than prose-only. Hard-return BEFORE any cache/git logic.
+  // Case-insensitive + trimmed match (#F-B) — a coordinator prose typo like
+  // 'quality' or 'Quality ' must not silently disable this invariant.
+  if (String(waveRole ?? '').trim().toLowerCase() === 'quality') {
+    return { skip: false, reason: 'quality-wave-full-gate-mandate', changedFileCount: -1 };
+  }
   try {
     const latestRecord = loadLatestBaselineResult({ repoRoot });
     const validity = isCacheValid({ repoRoot, latestRecord, currentSessionStartRef: sessionStartRef });

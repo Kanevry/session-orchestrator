@@ -111,7 +111,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 ## Worker-Pool Dispatch (#415)
 
-Opt-in bounded-concurrency cursor-based agent dispatch. When `enabled: true`, wave-executor uses `runWavePool()` (from `scripts/lib/wave-executor/pool.mjs`) instead of the default Promise.all() fan-out, so at most `max-parallel` agents are active at any moment. Projects that omit this block use the existing full fan-out model unchanged.
+Opt-in bounded-concurrency cursor-based agent dispatch. When `enabled: true`, wave-executor uses `runWavePool()` (from `scripts/lib/wave-executor/pool.mjs`), so at most `max-parallel` agents are active at any moment. Projects that omit this block use the default small-batch Agent() dispatch (3–4 calls per message, cumulative up to `agents-per-wave`; large single-message fan-outs are forbidden — see `skills/wave-executor/wave-loop.md § Dispatch Agents`).
 
 All fields live under a top-level `worker-pool` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -124,7 +124,7 @@ worker-pool:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `worker-pool.enabled` | boolean | `false` | When `false`, the existing single-message parallel Agent() dispatch is used. When `true`, dispatches via `runWavePool()` with a bounded cursor. |
+| `worker-pool.enabled` | boolean | `false` | When `false`, the default small-batch Agent() dispatch is used (3–4 calls per message; large single-message fan-outs forbidden). When `true`, dispatches via `runWavePool()` with a bounded cursor. |
 | `worker-pool.max-parallel` | integer | value of `agents-per-wave` | Maximum concurrent workers active simultaneously. Falls back to `agents-per-wave` when unset. |
 | `worker-pool.drain-timeout-ms` | integer | `10000` | Milliseconds the pool waits for in-flight workers to settle after an abort signal fires before returning partial results. |
 

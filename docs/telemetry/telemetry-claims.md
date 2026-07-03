@@ -102,6 +102,12 @@ this equals `agents-per-wave x concurrently-running waves` at the busiest moment
 the busiest session. The session config governing fan-out (`agents-per-wave`,
 `waves`) lives in each repo's `CLAUDE.md` Session Config block.
 
+> **Note (2026-07-03, refs #724):** the small-batch dispatch default (3–4 `Agent()`
+> calls per message, `wave-loop.md § Dispatch Agents`) structurally lowers future
+> instantaneous peaks — agents within a wave now start in staggered batches rather
+> than a single simultaneous fan-out, so the overlapping-interval peak trends below
+> the historical `agents-per-wave × waves` ceiling this figure was read off.
+
 ### "98.8% cleanly completed"
 
 Defined as **runs that completed cleanly / all dispatched runs**, where a clean

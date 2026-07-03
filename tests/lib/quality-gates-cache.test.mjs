@@ -8,6 +8,7 @@
  *   - saveBaselineResult / loadLatestBaselineResult round-trip + corruption tolerance
  *   - isCacheValid: every reason code + TTL boundary + NaN-safe
  *   - shouldSkipIncremental: fail-safe behaviour for all error paths
+ *   - shouldSkipIncremental: Quality-wave Full-Gate mandate (#724 C6)
  *   - Storage location contract
  *
  * Each test runs in an isolated tmpdir; no real repo state is touched.
@@ -764,6 +765,209 @@ describe.skipIf(!gitAvailable)('shouldSkipIncremental', () => {
     expect(res.skip).toBe(false);
     expect(res.reason).toBe('session-ref-mismatch');
     expect(res.changedFileCount).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSkipIncremental — Quality-wave Full-Gate mandate (#724 C6)
+//
+// The Quality wave's Full Gate must be mechanically un-skippable: even a valid
+// cache + narrow diff (the exact scenario that skips Incremental for Impl waves)
+// MUST NOT skip when waveRole === 'Quality'. Every test below first establishes
+// that the scenario IS a genuine skip candidate (baseline assertion) so the
+// Quality carve-out is proven to override a real skip, not a no-op.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!gitAvailable)('shouldSkipIncremental — Quality-wave Full-Gate mandate (#724)', () => {
+  let repoRoot;
+  let baseRef;
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-'));
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a', version: '1.0.0' }),
+    );
+    // Build a valid-cache + narrow-diff scenario (skip candidate for Impl waves).
+    git(repoRoot, 'init', '-q');
+    writeFileSync(path.join(repoRoot, '.gitignore'), '.orchestrator/\n');
+    writeFileSync(path.join(repoRoot, 'a.txt'), 'a\n');
+    git(repoRoot, 'add', '.');
+    git(repoRoot, 'commit', '-q', '-m', 'initial');
+    baseRef = git(repoRoot, 'rev-parse', 'HEAD');
+
+    saveBaselineResult({
+      repoRoot,
+      sessionId: 's',
+      sessionStartRef: baseRef,
+      results: passingResults,
+    });
+
+    // One new commit touching one file → narrow diff, cache stays valid.
+    writeFileSync(path.join(repoRoot, 'b.txt'), 'b\n');
+    git(repoRoot, 'add', 'b.txt');
+    git(repoRoot, 'commit', '-q', '-m', 'second');
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('(baseline) without waveRole the scenario IS a genuine cache skip', () => {
+    const res = shouldSkipIncremental({ repoRoot, sessionStartRef: baseRef });
+    expect(res.skip).toBe(true);
+    expect(res.reason).toBe('cache-hit');
+  });
+
+  it('(core) waveRole "Quality" returns skip=false even with a valid cache + narrow diff', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: baseRef,
+      waveRole: 'Quality',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('quality-wave-full-gate-mandate');
+    expect(res.changedFileCount).toBe(-1);
+  });
+
+  it('(core) the Quality mandate reason is the exact hardcoded literal', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: baseRef,
+      waveRole: 'Quality',
+    });
+    expect(res).toEqual({
+      skip: false,
+      reason: 'quality-wave-full-gate-mandate',
+      changedFileCount: -1,
+    });
+  });
+
+  it('(regression) waveRole null preserves the cache-skip behaviour', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: baseRef,
+      waveRole: null,
+    });
+    expect(res.skip).toBe(true);
+    expect(res.reason).toBe('cache-hit');
+  });
+
+  it('(regression) waveRole undefined preserves the cache-skip behaviour', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: baseRef,
+      waveRole: undefined,
+    });
+    expect(res.skip).toBe(true);
+    expect(res.reason).toBe('cache-hit');
+  });
+
+  it('(regression) a non-Quality role (Impl-Core) preserves the cache-skip behaviour', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: baseRef,
+      waveRole: 'Impl-Core',
+    });
+    expect(res.skip).toBe(true);
+    expect(res.reason).toBe('cache-hit');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSkipIncremental — Quality mandate short-circuits BEFORE cache/git
+//
+// The hard-return must precede every cache and git call. Prove it by invoking
+// with NO git repo and NO cache record — a non-Quality call fails safe with a
+// cache reason, while a Quality call still returns the mandate reason.
+// ---------------------------------------------------------------------------
+
+describe('shouldSkipIncremental — Quality mandate precedes cache/git logic (#724)', () => {
+  let repoRoot;
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-nocache-'));
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a', version: '1.0.0' }),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('waveRole "Quality" hard-returns the mandate even with no cache and no git repo', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: 'anything',
+      waveRole: 'Quality',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('quality-wave-full-gate-mandate');
+    expect(res.changedFileCount).toBe(-1);
+  });
+
+  it('a non-Quality call in the same no-cache repo fails safe with a cache reason', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: 'anything',
+      waveRole: 'Impl-Polish',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('no-record');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSkipIncremental — Quality waveRole case-insensitive + trim matching
+// (#F-B) — a coordinator prose typo ('quality', ' Quality ') must not
+// silently disable the mechanical Full-Gate mandate.
+// ---------------------------------------------------------------------------
+
+describe('shouldSkipIncremental — Quality waveRole case-insensitive matching (#F-B)', () => {
+  let repoRoot;
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-case-'));
+    writeFileSync(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ name: 'a', version: '1.0.0' }),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('lowercase "quality" still hard-returns the mandate (skip=false)', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: 'anything',
+      waveRole: 'quality',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('quality-wave-full-gate-mandate');
+  });
+
+  it('padded " Quality " (leading/trailing whitespace) still hard-returns the mandate (skip=false)', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: 'anything',
+      waveRole: ' Quality ',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('quality-wave-full-gate-mandate');
+  });
+
+  it('"QualityX" is NOT a match — falls through to normal cache/git behaviour', () => {
+    const res = shouldSkipIncremental({
+      repoRoot,
+      sessionStartRef: 'anything',
+      waveRole: 'QualityX',
+    });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toBe('no-record');
   });
 });
 

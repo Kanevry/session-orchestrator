@@ -507,7 +507,7 @@ Present the plan in this format:
 - Enforcement: [strict|warn|off] | Max turns: [N per session type]
 - Persistence: [true|false] | Pencil: [path|none]
 - Bite-sized plan: [path if exists, e.g. `docs/plans/2026-05-16-superpowers-cluster.md` | none]
-- Parallel dispatch: All agents within each wave execute simultaneously via Agent() tool
+- Parallel dispatch: agents execute in small batches of 3–4 per message (up to the wave cap)
 - Total agents planned: [sum across all waves]
 
 Ready to execute? Use /go to begin.
