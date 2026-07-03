@@ -134,10 +134,10 @@ main context. The bundled `/deep-research` is the canonical example.
 Constraints (cite https://code.claude.com/docs/en/workflows):
 
 - **Caps:** **16 concurrent** / **1000 total** agents per run — agent-count bounds, not stop-conditions.
-- **Kill-switch:** `disableWorkflows` (settings) or `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env).
+- **Kill-switch:** `disableWorkflows` (settings), `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env), or the `/config` toggle.
 - **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
-- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins).
-- **Trigger:** `/effort ultracode` is the on-ramp for dynamic Workflows.
+- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root — not unconditionally the repo-root one. Verify the actual write target before assuming root-level placement in a monorepo.
+- **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`).
 
 **Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`), and Workflows ships no `autopilot.jsonl`-equivalent telemetry. The Adopt/Adapter/Stay verdict is an open follow-up in `docs/adr/0010-native-autonomy-commands.md` — do not swap wave-executor for a bare Workflow on the assumption the caps substitute for the kill-switches.
 
@@ -146,7 +146,11 @@ single coordinator prompt on an interval; it has no native fan-out, no agent-
 count cap, and no rerunnable-script artifact. If the work is genuinely one-shot
 fan-out, use the `Workflow` tool; `/loop` is for the periodic, in-session axis below.
 
-## LM-003: Use `/loop` When …
+## LM-003: Use `/loop` When … (requires v2.1.72+)
+
+Scheduled tasks (the `/loop` family as a whole) need **v2.1.72+** — cite this
+as the base gate before any of the finer-grained version gates below
+(code.claude.com/docs/en/scheduled-tasks).
 
 - The check is genuinely periodic (no streamable trigger): vault-staleness
   during a multi-hour deep session, top-priority backlog snapshot during
@@ -161,6 +165,19 @@ longer documents it as of this re-verify (2026-07-02); treat `/loop` as the
 sole canonical form. Dynamic mode self-paces via the `ScheduleWakeup` tool
 (1 min–1 h); the pending wakeup surfaces in `session_crons` in the Stop-hook
 input (code.claude.com/docs/en/tools-reference#schedulewakeup).
+
+**Skill-Dispatch-Gate (v2.1.196+).** A scheduled fire only EXECUTES skills
+that Claude itself is permitted to invoke. Everything else arrives as inert
+plain text, not a run: built-in commands (`/permissions`, `/model`,
+`/clear`), skills declared `disable-model-invocation: true`, skills withheld
+via `skillOverrides`, and MCP prompts. Practical corollary: the
+`.claude/loop.md` body must only INSTRUCT the fire to invoke model-invokable
+skills — a reference to a built-in command or a non-invokable skill as
+something the run itself should execute silently no-ops (the text lands in
+the transcript, nothing fires). Recommending such a command to the
+**operator** ("consider running `/permissions`") is still fine — that is
+prose read by a human, not a dispatch attempted by the run
+(code.claude.com/docs/en/scheduled-tasks).
 
 **Cadence selection** (matters for token cost — Anthropic prompt cache
 TTL is ~5 min):
@@ -306,3 +323,7 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 - Project file: `.claude/loop.md` (the orchestrator's bare-`/loop` body)
 - Reference: `skills/_shared/monitor-patterns.md` (vetted Monitor filter snippets)
 - Upstream: https://code.claude.com/docs/en/workflows (dynamic Workflows — LM-002b fan-out axis)
+
+---
+
+_Re-verified 2026-07-03 (0 Korrekturen, 5 Ergänzungen — refs #724)._
