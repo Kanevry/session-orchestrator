@@ -98,6 +98,10 @@ docs/specs/
 # docs/research/ instead; the full-detail originals stay local-only.
 docs/_private/
 
+# Host-local vault registration manifest (internal ops tooling, references the
+# private GitLab project path). Kept locally; not plugin content.
+/.vault.yaml
+
 # Nested vault-sync lockfile (CI runs `npm install` in skills/vault-sync/
 # fresh each run; no value pinning a lockfile for the sub-package)
 skills/vault-sync/package-lock.json
