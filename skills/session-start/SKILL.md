@@ -693,7 +693,14 @@ Group issues by:
 
    Non-blocking. Cross-reference: `scripts/lib/reconcile/engine.mjs` (`runReconcile`), `scripts/lib/reconcile/idempotency.mjs` (`.orchestrator/runtime/reconcile-candidates.jsonl` — the last-run provenance source), `skills/reconcile/SKILL.md`, and issue #723.
 
-   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install), skip silently.
+   Additionally, invoke the sessions-staleness probe (`scripts/lib/sessions-staleness-banner.mjs`) via `checkSessionsStaleness({ repoRoot })` (synchronous — no await). This detects the "close-through" gap: sessions that end without ever writing a `.orchestrator/metrics/sessions.jsonl` ledger record. It returns `null` (silent no-op) when `.orchestrator/metrics/sessions.jsonl` or `.orchestrator/metrics/events.jsonl` are absent or all-malformed, when no foreign (pre-session) event exists, or when the gap between the last ledger entry and the newest foreign event is at or under the warn threshold. When a non-null result is returned (`{ severity, message }`), render `result.message` alongside the other banners:
+   - **warn** (gap > 8h): `"⚠ sessions-staleness: last sessions.jsonl entry <ISO> is <N>h behind pre-session events.jsonl activity <ISO> — possible close-through gap (sessions ended without a ledger record; run node scripts/backfill-abandoned-sessions.mjs --dry-run)."`
+   - **alert** (gap > 24h): same message with a `🚨` prefix and an appended `"— gap exceeds 24h."` clause.
+   - **No gap / under threshold**: silent (no banner).
+
+   Non-blocking. Cross-reference: `scripts/lib/session-lock.mjs` (`readLock`, `DEFAULT_TTL_HOURS` — the current session's lock `started_at` is the self-exclusion cutoff), `scripts/backfill-abandoned-sessions.mjs` (the backfill CLI the message recommends) and issue #724.
+
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install) or `sessions-staleness-banner.mjs` is absent (pre-#724 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 
