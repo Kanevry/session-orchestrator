@@ -40,7 +40,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { appendJsonl as defaultAppendJsonl } from './common.mjs';
-import { readLock as defaultReadLock, isLockLive as defaultIsLockLive } from './session-lock.mjs';
+import { readLock as defaultReadLock, isLockLive as defaultIsLockLive, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from '../emit-session.mjs';
 
@@ -143,11 +143,20 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   let project = null;
   let lastTerminalMs = null;
   let earliestMs = null;
+  // lastEventMs (#731): max timestamp over ALL matched events (not just the
+  // terminal STOPPED/ENDED subset lastTerminalMs tracks) — the dead-by-age
+  // relaxation needs "when did we last hear from this candidate at all",
+  // since a session that never emitted a terminal event is exactly the
+  // abandoned case this module exists to reconstruct.
+  let lastEventMs = null;
 
   for (const ev of events) {
     if (typeof ev.session_id !== 'string' || !uuids.has(ev.session_id)) continue;
     const ts = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
-    if (!Number.isNaN(ts)) earliestMs = earliestMs === null ? ts : Math.min(earliestMs, ts);
+    if (!Number.isNaN(ts)) {
+      earliestMs = earliestMs === null ? ts : Math.min(earliestMs, ts);
+      lastEventMs = lastEventMs === null ? ts : Math.max(lastEventMs, ts);
+    }
 
     if (ev.event === EVENT_STARTED) {
       if (typeof ev.timestamp === 'string') startedAt = ev.timestamp;
@@ -161,7 +170,46 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     }
   }
 
-  return { uuids, mode, semanticFromLock, startedAt, branch, project, lastTerminalMs, earliestMs };
+  return { uuids, mode, semanticFromLock, startedAt, branch, project, lastTerminalMs, earliestMs, lastEventMs };
+}
+
+/**
+ * Determine whether a candidate should be treated as dead-by-age DESPITE a
+ * live FOREIGN session.lock (#731 — the historical migration CLI blocks
+ * itself: every run happens FROM an active session, so the current lock is
+ * always live and shadows every candidate regardless of how old it is).
+ *
+ * True when EITHER:
+ *   - `assumeDeadBeforeMs` is set and the candidate's last known event
+ *     strictly PREDATES it (operator-supplied cutoff, CLI `--assume-dead-before`).
+ *   - `relaxDeadByAge` is set and the candidate's last known event is older
+ *     than the lock's own default TTL window (`DEFAULT_TTL_HOURS`) — a
+ *     session that stopped emitting events longer ago than a lock can even
+ *     stay live cannot legitimately be "blocked" by that unrelated lock.
+ *
+ * Both conditions require a resolvable `lastEventMs` — an unknown last-event
+ * time (gap in events.jsonl) never unlocks the relaxation, erring toward the
+ * existing conservative (block) behaviour. NOT exported: internal to the
+ * liveness guard below; default caller behaviour (both params absent) always
+ * returns false, i.e. identical to pre-#731 behaviour.
+ *
+ * @param {{ relaxDeadByAge: boolean, assumeDeadBeforeMs: number|null, lastEventMs: number|null, nowMs: number }} args
+ * @returns {boolean}
+ */
+function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs, nowMs }) {
+  if (typeof lastEventMs !== 'number' || Number.isNaN(lastEventMs)) return false;
+  if (
+    typeof assumeDeadBeforeMs === 'number' &&
+    !Number.isNaN(assumeDeadBeforeMs) &&
+    lastEventMs < assumeDeadBeforeMs
+  ) {
+    return true;
+  }
+  if (relaxDeadByAge === true) {
+    const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
+    if (nowMs - lastEventMs > ttlMs) return true;
+  }
+  return false;
 }
 
 /**
@@ -239,13 +287,19 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  * Backfill an abandoned session record into sessions.jsonl from events.jsonl.
  *
  * Never throws. Returns one of:
- *   { action: 'backfilled', sessionId, record }        — written to disk
- *   { action: 'would-backfill', sessionId, record }    — dryRun only, not written
+ *   { action: 'backfilled', sessionId, record, deadByAge? }        — written to disk
+ *   { action: 'would-backfill', sessionId, record, deadByAge? }    — dryRun only, not written
  *   { action: 'skipped-no-identifier' }                — neither id known
  *   { action: 'skipped-already-recorded', sessionId }  — already in sessions.jsonl
  *   { action: 'skipped-foreign-live-lock', sessionId, lockSessionId }
  *   { action: 'skipped-marker-exists', sessionId }     — lost the TOCTOU claim
  *   { action: 'error', error, sessionId? }             — any failure, swallowed
+ *
+ * `deadByAge: true` is present on `backfilled` / `would-backfill` ONLY when a
+ * foreign live lock was present AND bypassed via `relaxDeadByAge` /
+ * `assumeDeadBeforeMs` (#731) — it never appears on the default path, so
+ * callers can distinguish "genuinely no conflicting lock" from "we relaxed
+ * past one" without re-deriving the guard logic.
  *
  * @param {object} args
  * @param {string}  args.repoRoot                 absolute project root
@@ -253,6 +307,19 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  * @param {string|null} [args.semanticSessionId]  semantic id when already known (current-session.json)
  * @param {number|string} [args.now]              ms-since-epoch (test seam) or ISO string
  * @param {boolean} [args.dryRun=false]           compute + validate only, no marker/write
+ * @param {boolean} [args.relaxDeadByAge=false]
+ *   #731 — when true, a FOREIGN live lock no longer blocks a candidate whose
+ *   last known event (`lastEventMs`) is older than `DEFAULT_TTL_HOURS`
+ *   (session-lock.mjs SSOT). Purely additive: default `false` reproduces the
+ *   original always-block behaviour EXACTLY. Intended for the one-time
+ *   historical migration CLI only — `hooks/on-session-end.mjs` must NEVER
+ *   pass this (a hook-time foreign lock is by definition a real, active
+ *   session, not stale history).
+ * @param {number|null} [args.assumeDeadBeforeMs=null]
+ *   #731 — operator-supplied cutoff (ms-since-epoch). A candidate whose
+ *   `lastEventMs` strictly predates this value bypasses a foreign live lock
+ *   regardless of `relaxDeadByAge`. Corresponds to the CLI's
+ *   `--assume-dead-before <ISO>` flag.
  * @param {object}  [args.deps]                   DI overrides (fs, appendJsonl, readLock, …)
  * @returns {Promise<object>}
  */
@@ -262,6 +329,8 @@ export async function backfillAbandonedSession({
   semanticSessionId = null,
   now = Date.now(),
   dryRun = false,
+  relaxDeadByAge = false,
+  assumeDeadBeforeMs = null,
   deps = {},
 } = {}) {
   const {
@@ -348,6 +417,10 @@ export async function backfillAbandonedSession({
       }
 
       // -- Liveness guard — never overwrite a FOREIGN live lock ---------------
+      // deadByAge (#731): set when a foreign live lock was present but the
+      // candidate qualified for relaxation — surfaced on the final result so
+      // callers (the migration CLI's summary) can count relaxed backfills.
+      let deadByAge = false;
       let lock = null;
       try {
         lock = readLock({ repoRoot });
@@ -361,7 +434,16 @@ export async function backfillAbandonedSession({
           (Boolean(recordId) && lock.semantic_session_id === recordId);
         const foreign = !ownByUuid && !ownBySemantic;
         if (foreign && isLockLive(lock, nowMs)) {
-          return { action: 'skipped-foreign-live-lock', sessionId: recordId, lockSessionId: lock.session_id };
+          const relaxed = isCandidateDeadByAge({
+            relaxDeadByAge,
+            assumeDeadBeforeMs,
+            lastEventMs: gathered.lastEventMs,
+            nowMs,
+          });
+          if (!relaxed) {
+            return { action: 'skipped-foreign-live-lock', sessionId: recordId, lockSessionId: lock.session_id };
+          }
+          deadByAge = true;
         }
       }
 
@@ -376,7 +458,12 @@ export async function backfillAbandonedSession({
       }
 
       if (dryRun) {
-        return { action: 'would-backfill', sessionId: recordId, record: validated };
+        return {
+          action: 'would-backfill',
+          sessionId: recordId,
+          record: validated,
+          ...(deadByAge ? { deadByAge: true } : {}),
+        };
       }
 
       // -- TOCTOU marker — atomic create-or-fail keyed by the final id --------
@@ -398,7 +485,12 @@ export async function backfillAbandonedSession({
       } catch (err) {
         return { action: 'error', error: `append: ${err?.message ?? String(err)}`, sessionId: recordId };
       }
-      return { action: 'backfilled', sessionId: recordId, record: validated };
+      return {
+        action: 'backfilled',
+        sessionId: recordId,
+        record: validated,
+        ...(deadByAge ? { deadByAge: true } : {}),
+      };
     } catch (err) {
       // Absolute backstop — the hook must never see an exception from here.
       return { action: 'error', error: err?.message ?? String(err) };

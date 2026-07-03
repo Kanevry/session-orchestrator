@@ -146,6 +146,9 @@ async function main() {
 
   // (a) Backfill a status:'abandoned' stub when this session never reached /close.
   //     Dedupe + foreign-live-lock + TOCTOU-marker guards live in the lib.
+  //     Dead-by-age relaxation (relaxDeadByAge/assumeDeadBeforeMs, #731 — used by the
+  //     historical migration CLI) is NEVER passed here: a foreign lock that is live
+  //     at hook-time is, by definition, a real active session, not stale history.
   try {
     await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
   } catch { /* best-effort — never block teardown */ }

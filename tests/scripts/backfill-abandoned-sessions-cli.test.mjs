@@ -54,8 +54,64 @@ const TWO_ABANDONED_EVENTS = [
   },
 ];
 
+// Fixed far-in-the-past fixture (#731 dead-by-age tests) — deliberately dated
+// well before ANY plausible test-run wall-clock, so "older than the 4h TTL"
+// holds regardless of when CI actually executes this suite (no reliance on
+// the fixture being "yesterday" relative to a moving `now`).
+const UUID_OLD_1 = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+const UUID_OLD_2 = 'cccccccc-dddd-4eee-8fff-000000000000';
+const SEM_OLD_1 = 'main-2026-01-01-session-1';
+const SEM_OLD_2 = 'main-2026-01-01-session-2';
+const OLD_STARTED_AT = '2026-01-01T09:00:00.000Z';
+
+const TWO_OLD_ABANDONED_EVENTS = [
+  { timestamp: OLD_STARTED_AT, event: 'orchestrator.session.started', session_id: UUID_OLD_1, branch: 'main', project: 'demo' },
+  {
+    timestamp: '2026-01-01T09:01:00.000Z',
+    event: 'orchestrator.session.lock.acquired',
+    session_id: UUID_OLD_1,
+    semantic_session_id: SEM_OLD_1,
+    mode: 'deep',
+  },
+  { timestamp: '2026-01-01T11:00:00.000Z', event: 'orchestrator.session.started', session_id: UUID_OLD_2, branch: 'main' },
+  {
+    timestamp: '2026-01-01T11:01:00.000Z',
+    event: 'orchestrator.session.lock.acquired',
+    session_id: UUID_OLD_2,
+    semantic_session_id: SEM_OLD_2,
+    mode: 'feature',
+  },
+];
+
 function metricsFile(name) {
   return join(tmp, '.orchestrator', 'metrics', name);
+}
+
+/**
+ * Seed a LIVE foreign `.orchestrator/session.lock` — reproduces the
+ * structural self-block (#731): every real CLI run happens FROM an active
+ * session, so the current lock is always fresh at run-time regardless of how
+ * old the historical candidates are.
+ */
+function seedLiveForeignLock() {
+  mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+  writeFileSync(
+    join(tmp, '.orchestrator', 'session.lock'),
+    JSON.stringify(
+      {
+        session_id: 'foreign-uuid-live',
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        mode: 'deep',
+        pid: 999999,
+        host: 'some-other-host',
+        ttl_hours: 4,
+        semantic_session_id: 'foreign-sem-live',
+      },
+      null,
+      2
+    ) + '\n'
+  );
 }
 
 function seedEvents(records) {
@@ -157,6 +213,81 @@ describe('backfill-abandoned-sessions CLI — idempotency', () => {
     expect(summary.skipped['skipped-already-recorded']).toBe(2);
     // The store is unchanged — no duplicate abandoned stubs.
     expect(readSessions()).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) dead-by-age relaxation past a LIVE foreign session.lock (#731)
+// ---------------------------------------------------------------------------
+
+describe('backfill-abandoned-sessions CLI — dead-by-age relaxation past a LIVE foreign lock (#731)', () => {
+  it('reproduces + fixes the structural self-block: a LIVE foreign lock no longer blocks stale-by-age candidates (dry-run default)', () => {
+    seedEvents(TWO_OLD_ABANDONED_EVENTS);
+    seedLiveForeignLock();
+
+    const r = runCli(['--repo-root', tmp, '--json']);
+
+    expect(r.status).toBe(0);
+    const summary = summaryOf(r);
+    expect(summary.mode).toBe('dry-run');
+    expect(summary.total).toBe(2);
+    expect(summary.would_backfill).toBe(2);
+    expect(summary.dead_by_age).toBe(2);
+    expect(summary.skipped['skipped-foreign-live-lock']).toBeUndefined();
+    // Nothing written on disk — dry-run never mutates.
+    expect(existsSync(metricsFile('sessions.jsonl'))).toBe(false);
+  });
+
+  it('--apply writes the relaxed stubs to sessions.jsonl despite the live foreign lock', () => {
+    seedEvents(TWO_OLD_ABANDONED_EVENTS);
+    seedLiveForeignLock();
+
+    const r = runCli(['--repo-root', tmp, '--apply', '--json']);
+
+    expect(r.status).toBe(0);
+    const summary = summaryOf(r);
+    expect(summary.mode).toBe('apply');
+    expect(summary.backfilled).toBe(2);
+    expect(summary.dead_by_age).toBe(2);
+    expect(summary.errors).toBe(0);
+
+    const records = readSessions();
+    expect(records.map((rec) => rec.session_id).sort()).toEqual([SEM_OLD_1, SEM_OLD_2]);
+  });
+
+  it('--assume-dead-before <ISO> also bypasses the live foreign lock for a candidate whose last event predates the cutoff', () => {
+    seedEvents(TWO_OLD_ABANDONED_EVENTS);
+    seedLiveForeignLock();
+
+    const r = runCli(['--repo-root', tmp, '--json', '--assume-dead-before', '2026-01-02T00:00:00.000Z']);
+
+    expect(r.status).toBe(0);
+    const summary = summaryOf(r);
+    expect(summary.would_backfill).toBe(2);
+    expect(summary.dead_by_age).toBe(2);
+  });
+
+  it('running --apply twice with the live foreign lock still present performs 0 new writes (idempotent)', () => {
+    seedEvents(TWO_OLD_ABANDONED_EVENTS);
+    seedLiveForeignLock();
+
+    const first = runCli(['--repo-root', tmp, '--apply', '--json']);
+    expect(first.status).toBe(0);
+    expect(summaryOf(first).backfilled).toBe(2);
+    expect(readSessions()).toHaveLength(2);
+
+    const second = runCli(['--repo-root', tmp, '--apply', '--json']);
+    expect(second.status).toBe(0);
+    const summary = summaryOf(second);
+    expect(summary.backfilled).toBe(0);
+    expect(summary.skipped['skipped-already-recorded']).toBe(2);
+    expect(readSessions()).toHaveLength(2);
+  });
+
+  it('exits 1 on an invalid --assume-dead-before value', () => {
+    const r = runCli(['--repo-root', tmp, '--assume-dead-before', 'not-a-real-date']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/assume-dead-before/i);
   });
 });
 

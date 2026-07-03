@@ -453,3 +453,49 @@ describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 1500
     expect(after[0].status).toBeUndefined(); // untouched original, not an abandoned stub
   });
 });
+
+// ---------------------------------------------------------------------------
+// #731 — dead-by-age relaxation must NEVER leak into the hook path
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — dead-by-age relaxation does NOT leak into the hook (#731)', { timeout: 15000 }, () => {
+  it('still returns skipped-foreign-live-lock for a stale-by-age abandoned candidate when a FOREIGN lock is fresh at hook-time', async () => {
+    const dir = await mkProject();
+    const UUID_STALE = '22222222-3333-4444-8555-666666666666';
+    const SEM_STALE = 'main-2026-01-01-session-stale';
+    // The candidate's last known event is many hours in the past — old enough
+    // that the CLI migration's relaxDeadByAge WOULD bypass a live foreign
+    // lock (#731), but the hook must NEVER apply that relaxation:
+    // hooks/on-session-end.mjs calls backfillAbandonedSession() with no
+    // relaxDeadByAge/assumeDeadBeforeMs, so a lock that is live at hook-time
+    // stays a hard block regardless of how old the candidate is.
+    await seedEvents(dir, [
+      { timestamp: '2026-01-01T09:00:00.000Z', event: 'orchestrator.session.started', session_id: UUID_STALE, branch: 'main' },
+      {
+        timestamp: '2026-01-01T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID_STALE,
+        semantic_session_id: SEM_STALE,
+        mode: 'deep',
+      },
+    ]);
+    // A DIFFERENT session's lock, heartbeat = right now → live at hook-time.
+    await seedLock(dir, {
+      sessionId: 'foreign-fresh',
+      semanticSessionId: 'foreign-fresh-sem',
+      lastHeartbeat: new Date().toISOString(),
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID_STALE, reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // No abandoned stub written — the hook is still blocked by the live foreign lock.
+    const records = await readSessions(dir);
+    expect(records).toHaveLength(0);
+    // The foreign lock is not ours — it must survive untouched.
+    expect(await lockExists(dir)).toBe(true);
+  });
+});

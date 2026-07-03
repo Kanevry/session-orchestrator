@@ -230,6 +230,187 @@ describe('backfillAbandonedSession — foreign live lock guard', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Dead-by-age relaxation past a live foreign lock (#731)
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — dead-by-age relaxation (#731)', () => {
+  it('bypasses a LIVE foreign lock when the candidate is older than the default TTL and relaxDeadByAge is set', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // Foreign lock, heartbeat = now → live. The candidate's last known event
+    // (14:01) is 4h29m before NOW_MS — older than DEFAULT_TTL_HOURS (4h).
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      relaxDeadByAge: true,
+    });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.deadByAge).toBe(true);
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('still blocks on a LIVE foreign lock when the candidate is WITHIN the default TTL, even with relaxDeadByAge set', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        // 30 minutes before NOW_MS — well within the 4h TTL window.
+        timestamp: '2026-05-27T18:00:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      relaxDeadByAge: true,
+    });
+
+    expect(res.action).toBe('skipped-foreign-live-lock');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('assumeDeadBeforeMs boundary — exactly AT the cutoff stays blocked, 1ms before it backfills', async () => {
+    const lastEventMs = Date.parse(STARTED_AT);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    // Exactly at the candidate's last-event timestamp → NOT strictly before → blocked.
+    const atCutoff = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      semanticSessionId: 'boundary-at-cutoff',
+      now: NOW_MS,
+      assumeDeadBeforeMs: lastEventMs,
+    });
+    expect(atCutoff.action).toBe('skipped-foreign-live-lock');
+
+    // 1ms after the candidate's last-event timestamp (i.e. the candidate is
+    // 1ms before the cutoff) → strictly before → backfills.
+    const beforeCutoff = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      semanticSessionId: 'boundary-before-cutoff',
+      now: NOW_MS,
+      assumeDeadBeforeMs: lastEventMs + 1,
+    });
+    expect(beforeCutoff.action).toBe('backfilled');
+    expect(beforeCutoff.deadByAge).toBe(true);
+
+    expect(readSessions()).toHaveLength(1); // only the "before cutoff" one wrote
+  });
+
+  it('WITHOUT relaxDeadByAge/assumeDeadBeforeMs, a stale-by-age candidate still gets blocked by a LIVE foreign lock (regression)', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // Same shape as the first test in this block (dead-by-age eligible),
+    // but called with the DEFAULT params — must reproduce pre-#731 behaviour.
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('skipped-foreign-live-lock');
+    expect(res.deadByAge).toBeUndefined();
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('delta exactly == ttlMs stays blocked (strict >)', async () => {
+    // isCandidateDeadByAge uses `nowMs - lastEventMs > ttlMs` — a STRICT
+    // inequality. A candidate whose last known event sits EXACTLY at the
+    // DEFAULT_TTL_HOURS (4h) boundary must NOT be relaxed.
+    const ttlMs = 4 * 3600 * 1000; // DEFAULT_TTL_HOURS
+    const lastEventIso = new Date(NOW_MS - ttlMs).toISOString();
+    seedEvents([
+      { timestamp: lastEventIso, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      relaxDeadByAge: true,
+    });
+
+    expect(res.action).toBe('skipped-foreign-live-lock');
+    expect(res.deadByAge).toBeUndefined();
+  });
+
+  it('null lastEventMs (unparseable timestamps) never unlocks relaxDeadByAge', async () => {
+    // Every event timestamp is unparseable → collectSessionEvents never sets
+    // lastEventMs (it stays null). isCandidateDeadByAge's very first guard
+    // (`typeof lastEventMs !== 'number'`) must return false unconditionally —
+    // relaxDeadByAge:true must not somehow bypass a lock when the candidate's
+    // age cannot even be determined (erring toward the conservative/block
+    // behaviour per the module's own documented contract).
+    seedEvents([
+      { timestamp: 'not-a-real-timestamp', event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      relaxDeadByAge: true,
+    });
+
+    expect(res.action).toBe('skipped-foreign-live-lock');
+    expect(res.deadByAge).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TOCTOU marker skip
 // ---------------------------------------------------------------------------
 
