@@ -50,7 +50,7 @@ fi
 
 - **`mode: off`** — checker reports `status: skipped-mode-off`; include a single line "CLAUDE.md drift: skipped (mode=off)" in the quality gate report. Never blocks.
 - **`mode: warn`** — checker always exits 0. If `.errors | length > 0`, surface the list in the report under "CLAUDE.md drift warnings (mode=warn)" with check + file:line + message for each entry. Also list any `.warnings` (e.g. `#NN` the checker could not resolve via glab). Never blocks close, but remind the user that flipping to `mode: hard` would have blocked on N items.
-- **`mode: hard`** — checker exits 1 on errors. On exit 1: BLOCK session close, surface the full error list, and instruct the user to (a) fix the drift directly in `CLAUDE.md` (or `AGENTS.md` on Codex CLI) / `_meta/`, or (b) temporarily set `mode: warn` while backfilling, or (c) disable a specific check via its `check-*` flag if it reports false positives on this codebase.
+- **`mode: hard`** — checker exits 1 on errors. On exit 1: do NOT block the close. Surface the full error list, then default to **warn + carryover + continue** (Recommended): file a carryover issue (labels `carryover`, `priority:high`) titled `[Carryover] CLAUDE.md drift (hard) — <E> errors` capturing the drift items for a follow-up session, log a Deviation entry in STATE.md `## Deviations`, then continue the close. Offer "Override and close" (continue without a carryover issue; log the Deviation) as an alternative via AskUserQuestion. The user can also (a) fix the drift directly in `CLAUDE.md` (or `AGENTS.md` on Codex CLI) / `_meta/`, or (b) temporarily set `mode: warn` while backfilling, or (c) disable a specific check via its `check-*` flag if it reports false positives on this codebase.
 - **Exit 2** (infra error — missing `node`, unreadable `VAULT_DIR`, malformed args) — treat as a skipped gate with a loud warning ("CLAUDE.md drift: infrastructure error — <reason>"). Do NOT block the session close on infra failures.
 
 **Exit-code dispatch:** The checker writes infra-error JSON to stderr (suppressed by `2>/dev/null` above), so `DC_JSON` is empty when `DC_EXIT == 2`. Always branch on `DC_EXIT` first, then `DC_STATUS`:
@@ -59,7 +59,7 @@ fi
 if [[ "$DC_EXIT" == "2" ]]; then
   # infra error — DC_JSON is empty, stderr was suppressed. Surface loud warning, do not block.
 elif [[ "$DC_STATUS" == "invalid" && "$DC_MODE" == "hard" ]]; then
-  # hard-mode block
+  # hard-mode: surface + warn + carryover + continue (no hard block — #724)
 elif [[ "$DC_STATUS" == "invalid" ]]; then
   # warn-mode report
 else
