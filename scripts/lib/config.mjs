@@ -84,10 +84,16 @@ export { readConfigFile } from './config/io.mjs';
  * Parse ## Session Config block from markdown content.
  * Applies all defaults for missing keys.
  * @param {string} mdContent — full CLAUDE.md content
+ * @param {{ hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object } }} [opts]
+ *   — `hostPaths` injects the host-local resolution context (issue #653). Tests MUST pass a
+ *   hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when asserting COMMITTED values:
+ *   the default reads the real `owner.yaml`, so a host-local `paths:` override would otherwise
+ *   bleed into fixture assertions (incident: 2026-07-03 Full-Gate red after the operator set
+ *   `paths.baseline-path` host-locally).
  * @returns {object} config object with EXACT same shape as parse-config.sh stdout
  * @throws if any enum value is invalid
  */
-export function parseSessionConfig(mdContent) {
+export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const sectionLines = _extractConfigSection(mdContent);
   const kv = _parseKV(sectionLines);
 
@@ -95,7 +101,7 @@ export function parseSessionConfig(mdContent) {
   // committed default. Loaded once so vault-dir + baseline-path resolve without
   // re-reading disk. Applied AFTER sub-parsers run (see vault-integration/vault-sync
   // overrides below) to keep the parsers pure for claude-md-drift-check's raw-value parity.
-  const hostCtx = loadHostPaths();
+  const hostCtx = hostPaths ?? loadHostPaths();
 
   // String fields
   const vcs = _coerceString(kv, 'vcs', undefined);

@@ -487,9 +487,34 @@ describe('parseSessionConfig', () => {
       '- agents-per-wave: 6 (deep: 18)',
     ].join('\n');
 
+    // Hermetic ctx: the default hostPaths tier reads the REAL owner.yaml — a host-local
+    // `paths.baseline-path` override would bleed into this committed-value assertion
+    // (2026-07-03 Full-Gate incident). Inject an empty ctx to pin the COMMITTED tier.
+    const hermetic = { hostPaths: { env: {}, ownerConfig: undefined } };
+
     it('preserves "- plan-baseline-path: ~/..." as a string (was null pre-#497)', () => {
-      const config = parseSessionConfig(fixture);
+      const config = parseSessionConfig(fixture, hermetic);
       expect(config['plan-baseline-path']).toBe('~/Projects/projects-baseline');
+    });
+
+    it('owner.yaml paths.baseline-path override wins over the committed value (hermetic, #653)', () => {
+      const config = parseSessionConfig(fixture, {
+        hostPaths: {
+          env: {},
+          ownerConfig: { paths: { 'baseline-path': '/tmp/owner-override/projects-baseline' } },
+        },
+      });
+      expect(config['plan-baseline-path']).toBe('/tmp/owner-override/projects-baseline');
+    });
+
+    it('SO_BASELINE_PATH env override wins over owner.yaml and committed (hermetic, #653)', () => {
+      const config = parseSessionConfig(fixture, {
+        hostPaths: {
+          env: { SO_BASELINE_PATH: '/tmp/env-override/projects-baseline' },
+          ownerConfig: { paths: { 'baseline-path': '/tmp/owner-override/projects-baseline' } },
+        },
+      });
+      expect(config['plan-baseline-path']).toBe('/tmp/env-override/projects-baseline');
     });
 
     it('parses inline "- vault-integration: { ... }" into the full nested object', () => {
