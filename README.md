@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.10.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.11.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Turn ad-hoc agent sessions into a repeatable loop with verification gates — loop engineering for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
@@ -133,15 +133,17 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.10.0)
+## Recent highlights (v3.11.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.10.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.11.0 line:
 
-- **Cross-repo dispatcher** — `/dispatcher` ranks the repos you're *not* currently working on by backlog × staleness × readiness and points you at the next-best one, claiming its lease so two sessions don't collide. Autonomous launch is opt-in and **off by default** (a suitability check must pass first).
-- **Learning → rule reconciliation** — `/reconcile` turns confidence-scored session learnings into reviewable `.claude/rules/` proposals. Nothing is auto-applied; every rule write is yours to approve.
-- **Skill self-evolution** — the orchestrator can measure drift in its own skills and, opt-in, repair the safest cases behind a strict multi-gate. Everything riskier is surfaced as a reviewable change, never applied silently.
-- **Named multi-vault routing** — point different repos at different knowledge vaults via a host-local `owner.yaml`; with no config it behaves exactly as before.
-- **Instruction-budget guard** — a warn-only session-start banner that catches silent growth of always-on instructions before it bloats your context window.
+- **Self-healing session ledger** — a crashed session no longer leaves an orphaned lock or a hole in the session history: the SessionEnd hook backfills an `abandoned` ledger entry and releases the session lock deterministically, and a host-wide reaper (dry-run by default) cleans up whatever is left.
+- **Learning-store safety** — every learning rewrite snapshots a backup first and can be validated without writing; dialect normalization and a mechanical expiry sweep keep the cross-session learning store readable and lean instead of silently rotting.
+- **Vault mirroring hardened** — readable note slugs, per-record crash resilience, zero dangling wiki-links, and a host-local pseudonym map so private repo names never reach shared notes.
+- **Hardened CI** — the GitHub mirror can no longer report a silent green (fail-closed test verifier on every run), the CI toolchain is pinned with checksums, and a package-manager guard catches lockfile/store drift before it corrupts a run.
+- **Leaner instruction surface** — tier-aware rule loading lets wave agents skip coordinator-only rules, and instruction-surface trims cut the always-on directive budget by ~8%.
+
+Previous line (v3.10.0): cross-repo `/dispatcher`, learning → rule `/reconcile`, opt-in skill self-evolution, named multi-vault routing, instruction-budget guard.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
