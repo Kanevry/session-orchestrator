@@ -21,7 +21,8 @@
  *       (same per-user location convention as vault-migration-rules.yaml)
  *
  * Classification logic:
- *   SESSIONS: repo: frontmatter → resolveRepoNamespace({ vaultName: lastPathSegment(repo) })
+ *   SESSIONS: source-repo: frontmatter → resolveRepoNamespace({ vaultName: lastPathSegment(source-repo) })
+ *             OR repo: frontmatter → resolveRepoNamespace({ vaultName: lastPathSegment(repo) })
  *             OR project/<slug> tag → resolveRepoNamespace({ vaultName: slug })
  *             OR fallback → _unsorted
  *   LEARNINGS: project: wikilink → resolveRepoNamespace({ vaultName: slug })
@@ -183,8 +184,8 @@ function isPlainObject(v) {
 
 /**
  * Parse the opening YAML frontmatter block of a vault note, extracting the
- * fields relevant to relocation classification: type, repo, source, project,
- * source_session, tags, id.
+ * fields relevant to relocation classification: type, source-repo, repo, source,
+ * project, source_session, tags, id.
  *
  * Handles both scalar values and simple YAML arrays (block-sequence `- item`
  * syntax). The existing parseFrontmatter from utils.mjs only handles scalars
@@ -339,6 +340,23 @@ function projectTag(tags) {
   return null;
 }
 
+/**
+ * Resolve a repo-like frontmatter value through the same leak-guarded namespace
+ * path used for vault mirror writes. Degenerate values fall through so an empty
+ * vaultName can never trigger CWD-derived attribution.
+ *
+ * @param {unknown} value
+ * @param {'source-repo' | 'repo'} source
+ * @returns {{ namespace: string, source: 'source-repo' | 'repo' } | null}
+ */
+function namespaceFromRepoSignal(value, source) {
+  if (!value || typeof value !== 'string' || !value.trim()) return null;
+  const seg = lastPathSegment(value.trim());
+  if (!seg) return null;
+  const namespace = _resolveNamespace({ vaultName: seg });
+  return { namespace, source };
+}
+
 // ---------------------------------------------------------------------------
 // Classification: sessions
 // ---------------------------------------------------------------------------
@@ -347,10 +365,11 @@ function projectTag(tags) {
  * Derive the namespace for a session note.
  *
  * Priority:
- *   1. repo: frontmatter field  → resolveRepoNamespace({ vaultName: lastPathSegment(repo) })
- *   2. project/<slug> tag       → resolveRepoNamespace({ vaultName: slug })
- *   3. backfill index match     → entry.repo (ALREADY leak-guarded by backfill module)
- *   4. fallback                 → '_unsorted'
+ *   1. source-repo: frontmatter → resolveRepoNamespace({ vaultName: lastPathSegment(source-repo) })
+ *   2. repo: frontmatter field  → resolveRepoNamespace({ vaultName: lastPathSegment(repo) })
+ *   3. project/<slug> tag       → resolveRepoNamespace({ vaultName: slug })
+ *   4. backfill index match     → entry.repo (ALREADY leak-guarded by backfill module)
+ *   5. fallback                 → '_unsorted'
  *
  * The optional backfill index (W1-D5, Issue #700) supplies a repo for historical
  * sessions whose frontmatter carries NO in-file repo signal. Its entries are
@@ -362,20 +381,14 @@ function projectTag(tags) {
  *
  * @param {object} frontmatter
  * @param {{ backfillIndex?: Map<string, { repo: string, confidence: string, source: string }> }} [opts]
- * @returns {{ namespace: string, source: 'repo' | 'project-tag' | 'backfill' | 'fallback' }}
+ * @returns {{ namespace: string, source: 'source-repo' | 'repo' | 'project-tag' | 'backfill' | 'fallback' }}
  */
 export function namespaceForSession(frontmatter, opts = {}) {
-  const repo = frontmatter.repo;
-  if (repo && typeof repo === 'string' && repo.trim()) {
-    const seg = lastPathSegment(repo.trim());
-    // Guard against degenerate values (e.g. "/") whose last segment is empty —
-    // an empty vaultName makes resolveRepoNamespace fall back to deriveRepo() of
-    // the process CWD, mis-attributing a historical file. Fall through instead.
-    if (seg) {
-      const namespace = _resolveNamespace({ vaultName: seg });
-      return { namespace, source: 'repo' };
-    }
-  }
+  const sourceRepoResult = namespaceFromRepoSignal(frontmatter['source-repo'], 'source-repo');
+  if (sourceRepoResult) return sourceRepoResult;
+
+  const repoResult = namespaceFromRepoSignal(frontmatter.repo, 'repo');
+  if (repoResult) return repoResult;
 
   const tagSlug = projectTag(frontmatter.tags);
   if (tagSlug) {

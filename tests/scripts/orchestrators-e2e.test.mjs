@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +25,22 @@ const SKIP_CONFIG_WITH_LINT = JSON.stringify({
   'test-command': 'skip',
   'lint-command': 'skip',
 });
+const VALIDATE_PLUGIN_CHILD_TIMEOUT_MS = 30_000;
+const VALIDATE_PLUGIN_TEST_TIMEOUT_MS = 35_000;
+
+function formatSpawnSyncFailure(label, result) {
+  const error = result.error
+    ? `${result.error.name}: ${result.error.message}`
+    : 'none';
+  return [
+    `${label} failed`,
+    `status=${result.status} signal=${result.signal ?? 'none'} error=${error}`,
+    `stdout (${Buffer.byteLength(result.stdout ?? '', 'utf8')} bytes):`,
+    result.stdout || '<empty>',
+    `stderr (${Buffer.byteLength(result.stderr ?? '', 'utf8')} bytes):`,
+    result.stderr || '<empty>',
+  ].join('\n');
+}
 
 function runGate(args) {
   return spawnSync('node', [path.join(ROOT, 'scripts/run-quality-gate.mjs'), ...args], {
@@ -82,13 +99,15 @@ describe('orchestrators e2e (post .sh→.mjs port)', () => {
     const r = spawnSync('node', [path.join(ROOT, 'scripts/validate-plugin.mjs')], {
       encoding: 'utf8',
       cwd: ROOT,
-      timeout: 30_000,
+      timeout: VALIDATE_PLUGIN_CHILD_TIMEOUT_MS,
     });
-    expect(r.status).toBe(0);
+    if (r.status !== 0) {
+      throw new Error(formatSpawnSyncFailure('validate-plugin.mjs smoke', r));
+    }
     expect(r.stdout).toContain('Results:');
     const match = r.stdout.match(/Results:\s+(\d+)\s+passed,\s+(\d+)\s+failed/);
     expect(match).not.toBeNull();
     expect(parseInt(match[1], 10)).toBeGreaterThanOrEqual(15);
     expect(parseInt(match[2], 10)).toBe(0);
-  });
+  }, VALIDATE_PLUGIN_TEST_TIMEOUT_MS);
 });

@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { Buffer } from 'node:buffer';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -37,6 +38,33 @@ const NOW = Date.parse('2026-05-30T12:00:00.000Z');
 const WALKER_CLI = fileURLToPath(
   new URL('../../scripts/lib/sunset/walker.mjs', import.meta.url),
 );
+const WALKER_JSON_CHILD_TIMEOUT_MS = 15_000;
+const WALKER_JSON_TEST_TIMEOUT_MS = 20_000;
+
+function formatWalkerCliFailure(label, result, extra = []) {
+  const error = result.error
+    ? `${result.error.name}: ${result.error.message}`
+    : 'none';
+  return [
+    `${label} failed`,
+    `status=${result.status} signal=${result.signal ?? 'none'} error=${error}`,
+    ...extra,
+    `stdout (${Buffer.byteLength(result.stdout ?? '', 'utf8')} bytes):`,
+    result.stdout || '<empty>',
+    `stderr (${Buffer.byteLength(result.stderr ?? '', 'utf8')} bytes):`,
+    result.stderr || '<empty>',
+  ].join('\n');
+}
+
+function parseWalkerJsonStdout(result) {
+  try {
+    return JSON.parse(result.stdout);
+  } catch (err) {
+    throw new Error(formatWalkerCliFailure('walker CLI --json JSON parse', result, [
+      `parseError=${err.name}: ${err.message}`,
+    ]), { cause: err });
+  }
+}
 
 /** Build a SKILL.md under skills/<name>/ inside the given root. */
 function makeSkill(root, name, body) {
@@ -511,11 +539,14 @@ describe('walker CLI', () => {
     const res = spawnSync('node', [WALKER_CLI, '--json'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      timeout: WALKER_JSON_CHILD_TIMEOUT_MS,
     });
 
-    expect(res.status).toBe(0);
+    if (res.status !== 0) {
+      throw new Error(formatWalkerCliFailure('walker CLI --json', res));
+    }
     // stdout must be parseable JSON in its entirety (no human text mixed in).
-    const parsed = JSON.parse(res.stdout);
+    const parsed = parseWalkerJsonStdout(res);
     expect(parsed).toHaveProperty('meta');
     expect(parsed).toHaveProperty('summary');
     expect(Array.isArray(parsed.items)).toBe(true);
@@ -526,7 +557,7 @@ describe('walker CLI', () => {
       parsed.summary.demote +
       parsed.summary.retire;
     expect(total).toBe(parsed.items.length);
-  });
+  }, WALKER_JSON_TEST_TIMEOUT_MS);
 
   it('exits 1 on an invalid --kind and writes the error to stderr, not stdout', () => {
     const res = spawnSync('node', [WALKER_CLI, '--json', '--kind', 'bogus'], {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -221,15 +221,29 @@ describe('session-registry', () => {
       expect(line.age_minutes).toBeGreaterThanOrEqual(120);
     });
 
-    it('removes malformed entries and logs reason malformed-entry', async () => {
+    it('keeps fresh malformed entries because they may be semantic-id claim files', async () => {
       await mkdir(path.join(tmpBase, 'active'), { recursive: true });
-      await writeFile(path.join(tmpBase, 'active', 'bad.json'), '{oops');
+      await writeFile(path.join(tmpBase, 'active', 'fresh-claim.json'), '');
       const res = await sweepZombies({ thresholdMin: 60 });
+      expect(res.removed).toEqual([]);
+      const remaining = await readdir(path.join(tmpBase, 'active'));
+      expect(remaining).toEqual(['fresh-claim.json']);
+    });
+
+    it('removes old malformed entries and logs reason malformed-entry', async () => {
+      await mkdir(path.join(tmpBase, 'active'), { recursive: true });
+      const badPath = path.join(tmpBase, 'active', 'bad.json');
+      await writeFile(badPath, '{oops');
+      const now = Date.now();
+      const oldDate = new Date(now - 120 * 60_000);
+      await utimes(badPath, oldDate, oldDate);
+      const res = await sweepZombies({ thresholdMin: 60, now });
       expect(res.removed).toEqual(['bad.json']);
       const log = await readFile(sweepLogPath(), 'utf8');
       const line = JSON.parse(log.trim());
       expect(line.reason).toBe('malformed-entry');
       expect(line.session_id).toBeNull();
+      expect(line.age_minutes).toBeGreaterThanOrEqual(120);
     });
 
     it('returns empty result when registry dir does not exist', async () => {

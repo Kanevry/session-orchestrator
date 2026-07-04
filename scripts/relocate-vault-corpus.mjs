@@ -241,7 +241,7 @@ function enumerateFlatFiles(dir) {
  * basename — so a backfilled session lands in the SAME `<repo>/` namespace as that
  * repo's own native vault-mirror writes (which use `deriveRepo()` off the same
  * remote). Using the basename would split e.g. `AcmeWidgetV2/` → `acmewidgetv2`
- * while `repo:`-carrying notes use the canonical `acme-widget-v2`. Leak-guarding
+ * while source-repo:/repo:-carrying notes use the canonical `acme-widget-v2`. Leak-guarding
  * still happens later in the pure backfill module.
  *
  * @param {string} reposRoot - absolute path to the parent dir of sibling repos
@@ -346,16 +346,16 @@ async function buildCrossRepoIndices(reposRoot) {
 
 /**
  * Learn an authoritative `repoIdentity → canonicalNamespace` map from the vault's
- * OWN `repo:`-carrying session notes. A repo dir without a readable git remote
+ * OWN `source-repo:`/`repo:`-carrying session notes. A repo dir without a readable git remote
  * (so `repoCanonicalSlug` fell back to its CamelCase basename, e.g. `AcmeWidgetV2`
  * → `acmewidgetv2`) cannot derive the hyphenated canonical slug (`acme-widget-v2`)
  * from its name alone. But if that dir's `sessions.jsonl` contains the id of a vault
- * session that DOES carry a `repo:` field, that session's resolved namespace is the
+ * session that DOES carry a `source-repo:` or `repo:` field, that session's resolved namespace is the
  * ground-truth canonical for the dir — so backfilled repo-less sessions in the same
  * dir land in the SAME `<repo>/` folder instead of a split CamelCase variant.
  *
- * Only UNANIMOUS mappings are learned; an identity whose `repo:`-carrying sessions
- * disagree on the namespace is left unmapped (ambiguous → no remap).
+ * Only UNANIMOUS mappings are learned; an identity whose source-repo:/repo:
+ * sessions disagree on the namespace is left unmapped (ambiguous → no remap).
  *
  * @param {{ sidIndex: Map<string, Set<string>>, parsedVaultSessions: Array<{id:string, frontmatter:object}> }} args
  * @returns {Map<string, string>} identity → canonical namespace
@@ -366,12 +366,12 @@ function learnCanonicalMap({ sidIndex, parsedVaultSessions }) {
   const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
   const votes = new Map(); // identity → Map<canonicalNs, count>
   for (const { id, frontmatter } of parsedVaultSessions) {
-    if (!id || !frontmatter || !frontmatter.repo) continue;
-    const { namespace } = namespaceForSession(frontmatter); // repo: → canonical
+    if (!id || !frontmatter || !hasSessionRepoSignal(frontmatter)) continue;
+    const { namespace } = namespaceForSession(frontmatter); // source-repo:/repo: → canonical
     if (!isConfident(namespace)) continue; // skip _unsorted/redacted-repo/unknown-repo
     const identities = sidIndex.get(id);
     if (!identities) continue;
-    // Only an UNAMBIGUOUS repo: note teaches: if its id appears in >1 repo's jsonl,
+    // Only an UNAMBIGUOUS source-repo:/repo: note teaches: if its id appears in >1 repo's jsonl,
     // it would mis-teach every other identity its own namespace (collision pollution).
     if (identities.size !== 1) continue;
     for (const identity of identities) {
@@ -396,11 +396,19 @@ function learnCanonicalMap({ sidIndex, parsedVaultSessions }) {
   return learned;
 }
 
+function hasSessionRepoSignal(frontmatter) {
+  return hasStringSignal(frontmatter['source-repo']) || hasStringSignal(frontmatter.repo);
+}
+
+function hasStringSignal(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
 /**
  * Rewrite the cross-repo index identities through the learned canonical map (and
  * dedup the resulting sets — two raw dirs that canonicalise to the same repo are
  * one repo). No-op when `learned` is empty (e.g. no `--with-backfill`, or a fixture
- * with no `repo:`-carrying sessions), preserving byte-identical behaviour.
+ * with no source-repo:/repo:-carrying sessions), preserving byte-identical behaviour.
  */
 function remapIndices({ sidIndex, bdIndex }, learned) {
   if (learned.size === 0) return { sidIndex, bdIndex };
@@ -485,7 +493,7 @@ async function collectParsedVaultSessions(sessionsDir) {
 
 /**
  * Build a Map<sessionId, namespace> by scanning all session files — both flat
- * root AND existing <repo>/ subdirs (which carry frontmatter repo:).
+ * root AND existing <repo>/ subdirs (which carry frontmatter source-repo:/repo:).
  *
  * The index is passed to namespaceForLearning so it can resolve
  * source_session links to their owning namespace.
@@ -868,8 +876,8 @@ async function main() {
       : path.dirname(vaultDir);
     const rawIndices = await buildCrossRepoIndices(reposRoot);
     const parsedVaultSessions = await collectParsedVaultSessions(sessionsDir);
-    // Canonicalise repo identities against the vault's own repo:-ground-truth so a
-    // remote-less dir (CamelCase basename) shares the folder with its repo: notes.
+    // Canonicalise repo identities against the vault's own source-repo:/repo:
+    // ground truth so a remote-less dir shares the folder with its repo-signaled notes.
     const learned = learnCanonicalMap({ sidIndex: rawIndices.sidIndex, parsedVaultSessions });
     const { sidIndex, bdIndex } = remapIndices(rawIndices, learned);
     backfillIndex = buildBackfillIndex(parsedVaultSessions, { sidIndex, bdIndex });

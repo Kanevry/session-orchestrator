@@ -121,6 +121,21 @@ function createFixtureVault() {
   return vault;
 }
 
+function createSourceRepoOnlyVault() {
+  const vault = mkTmp('rvt-source-repo-');
+
+  writeFile(vault, '50-sessions/source-only.md',
+    '---\ntype: session\nid: source-only\nsource-repo: org/foo-bar\n---\n# source only\n');
+
+  spawnSync('git', ['init', vault], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', vault, 'commit', '-m', 'init source-repo fixture'], { encoding: 'utf8' });
+
+  return vault;
+}
+
 /**
  * Build a fixture for the --with-backfill cross-repo attribution path (#700).
  *
@@ -262,6 +277,24 @@ describe('relocate-vault-corpus — --help', () => {
 // ---------------------------------------------------------------------------
 
 describe('relocate-vault-corpus — dry-run (default)', () => {
+  it('plans a source-repo-only session into its resolved repo namespace', { timeout: 20_000 }, () => {
+    const vault = createSourceRepoOnlyVault();
+
+    const result = runScript(['--vault-dir', vault, '--json']);
+
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const sourceOnlyPlan = records.find(
+      (r) => r.action === 'would-move' && r.from.endsWith('/source-only.md'),
+    );
+    expect(sourceOnlyPlan).toBeDefined();
+    expect(sourceOnlyPlan.to).toBe(join(vault, '50-sessions', 'foo-bar', 'source-only.md'));
+    expect(sourceOnlyPlan.namespace).toBe('foo-bar');
+    expect(sourceOnlyPlan.source).toBe('source-repo');
+    expect(sourceOnlyPlan.confident).toBe(true);
+  });
+
   it('plans s1.md move to session-orchestrator/ subdirectory without moving files', { timeout: 20_000 }, () => {
     const vault = createFixtureVault();
 
@@ -796,6 +829,34 @@ describe('relocate-vault-corpus — --with-backfill canonical-learning (#700)', 
     const barePlan = records.find((r) => r.action === 'would-move' && r.from.endsWith(`/${bareSid}.md`));
     expect(barePlan).toBeDefined();
     // The load-bearing assertion: canonical 'foo-bar', NOT the CamelCase-basename 'foobar'.
+    expect(barePlan.namespace).toBe('foo-bar');
+    expect(barePlan.to).toBe(join(vault, '50-sessions', 'foo-bar', `${bareSid}.md`));
+    expect(barePlan.source).toBe('backfill');
+  });
+
+  it('backfills a repo:-less session into the canonical slug learned from a source-repo: note', { timeout: 20_000 }, () => {
+    const root = mkTmp('rvt-canon-source-');
+    const vault = join(root, 'vault');
+    const repos = join(root, 'repos');
+    const srcSid = 'canon-source-2026-04-19-1515';
+    const bareSid = 'canon-source-bare-2026-04-19-1616';
+
+    writeFile(vault, `50-sessions/${srcSid}.md`,
+      `---\ntype: session\nid: ${srcSid}\nsource-repo: org/foo-bar\n---\n# canon source\n`);
+    writeFile(vault, `50-sessions/${bareSid}.md`,
+      `---\ntype: session\nid: ${bareSid}\n---\n# canon bare\n`);
+
+    const jsonl =
+      JSON.stringify({ session_id: srcSid, branch: 'canon-source', started_at: '2026-04-19T15:15:00Z' }) + '\n' +
+      JSON.stringify({ session_id: bareSid, branch: 'canon-source-bare', started_at: '2026-04-19T16:16:00Z' }) + '\n';
+    writeFile(repos, `FooBar/.orchestrator/metrics/sessions.jsonl`, jsonl);
+
+    const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
+    expect(result.status).toBe(0);
+
+    const records = parseJsonl(result.stdout);
+    const barePlan = records.find((r) => r.action === 'would-move' && r.from.endsWith(`/${bareSid}.md`));
+    expect(barePlan).toBeDefined();
     expect(barePlan.namespace).toBe('foo-bar');
     expect(barePlan.to).toBe(join(vault, '50-sessions', 'foo-bar', `${bareSid}.md`));
     expect(barePlan.source).toBe('backfill');

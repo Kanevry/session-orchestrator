@@ -30,6 +30,7 @@ import {
 } from '../../../scripts/lib/vault-status/board-writer.mjs';
 
 import { repoPathHash } from '../../../scripts/lib/session-registry.mjs';
+import { parseFrontmatter } from '../../../scripts/lib/vault-mirror/utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
@@ -222,6 +223,19 @@ describe('renderBoard', () => {
   it('emits the _generator frontmatter sentinel', () => {
     const out = renderBoard([], { now: FIXED_NOW });
     expect(out).toContain(`_generator: ${GENERATOR_MARKER}`);
+  });
+
+  it('emits schema-valid active-sessions board frontmatter', () => {
+    const out = renderBoard([], { now: FIXED_NOW });
+    const frontmatter = parseFrontmatter(out);
+
+    expect(frontmatter).toMatchObject({
+      _generator: GENERATOR_MARKER,
+      id: 'active-sessions',
+      type: 'board',
+      created: FIXED_NOW.toISOString(),
+      updated: FIXED_NOW.toISOString(),
+    });
   });
 
   it('renders a markdown table header', () => {

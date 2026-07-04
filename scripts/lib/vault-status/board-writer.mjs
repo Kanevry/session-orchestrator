@@ -302,6 +302,7 @@ export function renderBoard(rows, opts = {}) {
   // Frontmatter
   lines.push('---');
   lines.push(`_generator: ${GENERATOR_MARKER}`);
+  lines.push('id: active-sessions');
   lines.push('type: board');
   lines.push(`created: ${createdValue}`);
   lines.push(`updated: ${updatedValue}`);

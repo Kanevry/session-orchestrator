@@ -302,8 +302,21 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
     if (!name.endsWith('.json')) continue;
     const full = path.join(dir, name);
     const parsed = await _readJsonSafe(full);
-    // Malformed file → treat as zombie too.
-    const age = _validEntry(parsed) ? _ageMinutes(parsed.last_heartbeat, now) : Infinity;
+    const valid = _validEntry(parsed);
+    let age;
+    if (valid) {
+      age = _ageMinutes(parsed.last_heartbeat, now);
+    } else {
+      // Malformed files can be fresh semantic-session claim files. Use mtime so
+      // a concurrent SessionStart claim is not swept before registerSelf()
+      // overwrites it with the real heartbeat entry.
+      try {
+        const info = await fs.stat(full);
+        age = (now - info.mtimeMs) / 60_000;
+      } catch {
+        age = Infinity;
+      }
+    }
     if (age > thresholdMin) {
       try {
         await fs.unlink(full);
@@ -314,7 +327,7 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
             session_id: parsed?.session_id ?? null,
             file: name,
             age_minutes: Number.isFinite(age) ? Math.round(age) : null,
-            reason: _validEntry(parsed) ? 'stale-heartbeat' : 'malformed-entry',
+            reason: valid ? 'stale-heartbeat' : 'malformed-entry',
           });
           logged += 1;
         } catch { /* log best-effort */ }

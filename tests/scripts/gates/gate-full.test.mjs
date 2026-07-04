@@ -19,9 +19,13 @@ const SCRIPT = path.resolve(
  * Spawn gate-full.mjs with the given extra env vars.
  */
 function run(extraEnv = {}) {
+  const env = { ...process.env };
+  for (const key of ['TYPECHECK_CMD', 'TEST_CMD', 'LINT_CMD', 'FILES', 'SESSION_START_REF']) {
+    delete env[key];
+  }
   return spawnSync('node', [SCRIPT], {
     encoding: 'utf8',
-    env: { ...process.env, ...extraEnv },
+    env: { ...env, ...extraEnv },
   });
 }
 

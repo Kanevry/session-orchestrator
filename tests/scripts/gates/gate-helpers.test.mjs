@@ -197,6 +197,15 @@ describe('runCheck', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('returns status=pass for a succeeding command with large output', () => {
+    const result = runCheck(
+      'node -e "process.stdout.write(\'x\'.repeat(2 * 1024 * 1024)); process.stdout.write(\'\\\\n42 passed\\\\n\')"',
+    );
+    expect(result.status).toBe('pass');
+    expect(result.output).toContain('42 passed');
+    expect(result.exitCode).toBe(0);
+  });
+
   it('stub short-circuit: echo stub returns stubbed echo result without executing', () => {
     const result = runCheck('echo "stub"');
     expect(result).toEqual({

@@ -10,7 +10,8 @@
  * ~/.config/session-orchestrator/.
  */
 
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -29,6 +30,10 @@ const HOOK_STOP = path.join(REPO_ROOT, 'hooks', 'on-stop.mjs');
 // overruns so the fork-pool worker is never pinned alive past the test
 // boundary by an orphan under CPU starvation.
 const CHILD_SPAWN_TIMEOUT_MS = 12000;
+const CONCURRENT_REGISTRY_WAIT_TIMEOUT_MS = 15_000;
+const CONCURRENT_REGISTRY_WAIT_INTERVAL_MS = 75;
+const CONCURRENT_REGISTRY_TEST_TIMEOUT_MS =
+  CHILD_SPAWN_TIMEOUT_MS + CONCURRENT_REGISTRY_WAIT_TIMEOUT_MS + 5_000;
 
 // ---------------------------------------------------------------------------
 // Per-test state
@@ -107,7 +112,7 @@ async function runSessionStart({ projectDir, registryDir: regDir, stdin = null }
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
 
     if (stdin !== null) {
       const raw = typeof stdin === 'string' ? stdin : JSON.stringify(stdin);
@@ -144,7 +149,7 @@ async function runStop({ projectDir, registryDir: regDir, stdin = null }) {
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
 
     if (stdin !== null) {
       const raw = typeof stdin === 'string' ? stdin : JSON.stringify(stdin);
@@ -160,22 +165,188 @@ async function runStop({ projectDir, registryDir: regDir, stdin = null }) {
  * @param {string} regDir
  */
 async function readRegistry(regDir) {
+  const snapshot = await inspectRegistry(regDir);
+  return snapshot.entries;
+}
+
+function isValidHeartbeatEntry(entry) {
+  return entry
+    && typeof entry === 'object'
+    && typeof entry.session_id === 'string'
+    && typeof entry.started_at === 'string'
+    && typeof entry.last_heartbeat === 'string';
+}
+
+function errorSummary(err) {
+  if (!err) return 'unknown error';
+  const prefix = err.code ? `${err.code}: ` : '';
+  return `${prefix}${err.name ?? 'Error'}: ${err.message}`;
+}
+
+function truncateForDiagnostics(value, maxChars = 4000) {
+  if (!value) return '<empty>';
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n<truncated ${value.length - maxChars} chars>`;
+}
+
+async function inspectRegistry(regDir) {
   const activeDir = path.join(regDir, 'active');
   let names;
   try {
-    names = await fs.readdir(activeDir);
-  } catch {
-    return [];
+    names = (await fs.readdir(activeDir)).sort();
+  } catch (err) {
+    return {
+      activeDir,
+      exists: false,
+      readdirError: errorSummary(err),
+      names: [],
+      files: [],
+      entries: [],
+    };
   }
+  const snapshot = {
+    activeDir,
+    exists: true,
+    names,
+    files: [],
+    entries: [],
+  };
   const entries = [];
   for (const name of names) {
-    if (!name.endsWith('.json')) continue;
+    const fullPath = path.join(activeDir, name);
+    const file = { name };
     try {
-      const raw = await fs.readFile(path.join(activeDir, name), 'utf8');
-      entries.push(JSON.parse(raw));
-    } catch { /* skip malformed */ }
+      const stat = await fs.stat(fullPath);
+      file.bytes = stat.size;
+    } catch (err) {
+      file.statError = errorSummary(err);
+      snapshot.files.push(file);
+      continue;
+    }
+
+    if (!name.endsWith('.json')) {
+      file.skipped = 'non-json-file';
+      snapshot.files.push(file);
+      continue;
+    }
+
+    let raw;
+    try {
+      raw = await fs.readFile(fullPath, 'utf8');
+      file.bytes = Buffer.byteLength(raw, 'utf8');
+    } catch (err) {
+      file.readError = errorSummary(err);
+      snapshot.files.push(file);
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      file.session_id = parsed?.session_id ?? null;
+      if (isValidHeartbeatEntry(parsed)) {
+        file.valid = true;
+        entries.push(parsed);
+      } else {
+        file.valid = false;
+        file.skipped = 'invalid-heartbeat-entry';
+      }
+    } catch (err) {
+      file.valid = false;
+      file.skipped = 'parse-error';
+      file.parseError = errorSummary(err);
+      file.rawPreview = raw.slice(0, 200);
+    }
+    snapshot.files.push(file);
   }
-  return entries;
+  snapshot.entries = entries;
+  return snapshot;
+}
+
+function formatRegistrySnapshot(snapshot) {
+  const lines = [
+    `activeDir=${snapshot.activeDir}`,
+    `exists=${snapshot.exists}`,
+    `filenames=${JSON.stringify(snapshot.names)}`,
+    `validEntries=${snapshot.entries.length}`,
+  ];
+  if (snapshot.readdirError) lines.push(`readdirError=${snapshot.readdirError}`);
+
+  lines.push('files:');
+  if (snapshot.files.length === 0) {
+    lines.push('  <none>');
+  } else {
+    for (const file of snapshot.files) {
+      const details = [
+        file.name,
+        `${file.bytes ?? 'unknown'} bytes`,
+      ];
+      if (file.valid) details.push(`valid session_id=${file.session_id}`);
+      if (file.skipped) details.push(`skipped=${file.skipped}`);
+      if (file.session_id && !file.valid) details.push(`session_id=${file.session_id}`);
+      if (file.statError) details.push(`statError=${file.statError}`);
+      if (file.readError) details.push(`readError=${file.readError}`);
+      if (file.parseError) details.push(`parseError=${file.parseError}`);
+      if (file.rawPreview !== undefined) {
+        details.push(`rawPreview=${JSON.stringify(file.rawPreview)}`);
+      }
+      lines.push(`  - ${details.join(' | ')}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function formatHookResult(result, index) {
+  return [
+    `child[${index}]: code=${result.code} signal=${result.signal ?? 'none'}`,
+    `child[${index}] stdout (${Buffer.byteLength(result.stdout ?? '', 'utf8')} bytes):`,
+    truncateForDiagnostics(result.stdout),
+    `child[${index}] stderr (${Buffer.byteLength(result.stderr ?? '', 'utf8')} bytes):`,
+    truncateForDiagnostics(result.stderr),
+  ].join('\n');
+}
+
+function formatHookResults(results) {
+  return results.map((result, index) => formatHookResult(result, index)).join('\n\n');
+}
+
+async function assertSessionStartsClean(results, regDir) {
+  const failures = results.filter((result) => result.code !== 0);
+  if (failures.length === 0) return;
+
+  const snapshot = await inspectRegistry(regDir);
+  throw new Error([
+    `${failures.length} session-start subprocess(es) exited non-zero or timed out`,
+    formatHookResults(results),
+    'Registry snapshot at child failure:',
+    formatRegistrySnapshot(snapshot),
+  ].join('\n\n'));
+}
+
+async function waitForDistinctRegistryEntries(regDir, expectedCount, childResults) {
+  const startedAt = Date.now();
+  let snapshot = await inspectRegistry(regDir);
+
+  while (true) {
+    const ids = new Set(snapshot.entries.map((entry) => entry.session_id));
+    if (snapshot.entries.length === expectedCount && ids.size === expectedCount) {
+      return snapshot.entries;
+    }
+
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= CONCURRENT_REGISTRY_WAIT_TIMEOUT_MS) {
+      throw new Error([
+        `Timed out after ${elapsed}ms waiting for ${expectedCount} distinct valid heartbeat entries`,
+        `observed validEntries=${snapshot.entries.length} distinctSessionIds=${ids.size}`,
+        'Registry snapshot at timeout:',
+        formatRegistrySnapshot(snapshot),
+        'Child subprocess results:',
+        formatHookResults(childResults),
+      ].join('\n\n'));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, CONCURRENT_REGISTRY_WAIT_INTERVAL_MS));
+    snapshot = await inspectRegistry(regDir);
+  }
 }
 
 /**
@@ -308,7 +479,7 @@ describe('stop without stdin session_id — current-session.json fallback', { ti
 // 4. Concurrent session-start calls do not lose entries
 // ---------------------------------------------------------------------------
 
-describe('concurrent session-start calls', { timeout: 15000 }, () => {
+describe('concurrent session-start calls', { timeout: CONCURRENT_REGISTRY_TEST_TIMEOUT_MS }, () => {
   it('three parallel session-start subprocesses each create a distinct heartbeat entry', async () => {
     const [dirA, dirB, dirC] = await Promise.all([mkProject(), mkProject(), mkProject()]);
 
@@ -323,28 +494,18 @@ describe('concurrent session-start calls', { timeout: 15000 }, () => {
     // non-zero exit (or SIGTERM-on-timeout → null) produces the same "got 2"
     // symptom as a slow flush, so without this guard a real crash would be
     // silently misattributed to timing. Assert all three exited cleanly first.
-    for (const r of results) {
-      expect(r.code).toBe(0);
-    }
+    await assertSessionStartsClean(results, registryDir);
 
     // Under CPU contention (coverage job, v8 instrumentation) the slowest
     // subprocess's atomic heartbeat write (tmp + rename) may land on disk
-    // milliseconds-to-seconds after the subprocess exits. This is a bounded
-    // 10s poll sized to coverage-instrumented contention — it stays WITHIN the
-    // enclosing describe's 15000ms per-test ceiling and does NOT change the
-    // global vitest testTimeout. vi.waitFor exits immediately once all 3
-    // distinct entries appear (green runs stay fast) and still fails hard if
-    // fewer than 3 distinct heartbeats are EVER written (throws on timeout).
-    await vi.waitFor(
-      async () => {
-        const entries = await readRegistry(registryDir);
-        // Exactly 3 entries, all with distinct session_ids
-        expect(entries).toHaveLength(3);
-        const ids = new Set(entries.map((e) => e.session_id));
-        expect(ids.size).toBe(3);
-      },
-      { timeout: 10000, interval: 50 },
-    );
+    // milliseconds-to-seconds after the subprocess exits. Poll the actual
+    // invariant and, on timeout, report both child output and every file the
+    // active registry reader had to parse or skip.
+    const entries = await waitForDistinctRegistryEntries(registryDir, 3, results);
+    // Exactly 3 entries, all with distinct session_ids.
+    expect(entries).toHaveLength(3);
+    const ids = new Set(entries.map((e) => e.session_id));
+    expect(ids.size).toBe(3);
   });
 });
 

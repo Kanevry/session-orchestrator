@@ -145,6 +145,52 @@ describe('dangling-link vault', () => {
   });
 });
 
+// ── Wiki-link alias parsing ──────────────────────────────────────────────────
+
+describe('wiki-link alias parsing', () => {
+  function makeWikiLinkVault(linkText, includeTarget = true) {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-wikilink-test-'));
+    const sourceNote = `---\nid: source-note\ntype: note\ncreated: 2026-07-03\nupdated: 2026-07-03\n---\n\n${linkText}\n`;
+    writeFileSync(join(dir, 'source-note.md'), sourceNote, 'utf8');
+
+    if (includeTarget) {
+      const targetNote = '---\nid: real-target\ntype: note\ncreated: 2026-07-03\nupdated: 2026-07-03\n---\n\n# Real target\n';
+      writeFileSync(join(dir, 'real-target.md'), targetNote, 'utf8');
+    }
+
+    return dir;
+  }
+
+  it('does not warn for an existing target with a Markdown-table escaped alias separator', () => {
+    const vaultDir = makeWikiLinkVault('[[real-target\\|Alias]]');
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
+  });
+
+  it('does not warn for an existing target with an anchor and escaped alias separator', () => {
+    const vaultDir = makeWikiLinkVault('[[real-target#Heading\\|Alias]]');
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
+  });
+
+  it('warns for the actual missing target when an escaped alias separator is present', () => {
+    const vaultDir = makeWikiLinkVault('[[missing-target\\|Alias]]', false);
+    const result = runValidator(vaultDir);
+    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const danglingWarnings = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+    expect(danglingWarnings).toHaveLength(1);
+    expect(danglingWarnings[0].message).toContain('[[missing-target]]');
+    expect(danglingWarnings[0].message).not.toContain('missing-target\\');
+  });
+});
+
 // ── Edge cases ────────────────────────────────────────────────────────────────
 
 describe('edge cases', () => {
@@ -266,12 +312,12 @@ describe('nested-tag vault', () => {
   });
 });
 
-// ── peer-card enum (#530 MED-1) ───────────────────────────────────────────────
+// ── vaultNoteTypeSchema enum coverage ────────────────────────────────────────
 //
-// These three tests guard the vaultNoteTypeSchema enum against regressions that
-// would silently break vault-sync for peer cards (#503 / #506).
+// Guards the vaultNoteTypeSchema enum against regressions that would silently
+// break vault-sync for first-class note types emitted by generators.
 
-describe('peer-card enum (#530 MED-1)', () => {
+describe('vaultNoteTypeSchema enum coverage', () => {
   function makeTempVault(frontmatterLines) {
     const dir = mkdtempSync(join(tmpdir(), 'vault-pc-test-'));
     const note = `---\n${frontmatterLines}\n---\n\n# Test note\n`;
@@ -289,7 +335,8 @@ describe('peer-card enum (#530 MED-1)', () => {
     ['learning'],
     ['session'],
     ['peer-card'],
-  ])('accepts type: %s (all vaultNoteTypeSchema enum values, including peer-card from #530 MED-1)', (typeValue) => {
+    ['board'],
+  ])('accepts type: %s (all vaultNoteTypeSchema enum values, including generated boards from #738)', (typeValue) => {
     const vaultDir = makeTempVault(
       `id: test-type-enum\ntype: ${typeValue}\ncreated: 2026-05-23\nupdated: 2026-05-23`,
     );

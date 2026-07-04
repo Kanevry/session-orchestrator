@@ -239,6 +239,23 @@ describe('parseRelocationFrontmatter — block-sequence tags', () => {
 // ---------------------------------------------------------------------------
 
 describe('namespaceForSession — repo: field', () => {
+  it('derives namespace from source-repo as the primary in-file repo signal', () => {
+    _setResolverForTest(mappingResolver);
+    const result = namespaceForSession({ 'source-repo': 'infrastructure/session-orchestrator' });
+    expect(result.namespace).toBe('session-orchestrator');
+    expect(result.source).toBe('source-repo');
+  });
+
+  it('lets source-repo WIN over legacy repo', () => {
+    _setResolverForTest(identityResolver);
+    const result = namespaceForSession({
+      'source-repo': 'org/source-wins',
+      repo: 'org/foo-repo',
+    });
+    expect(result.namespace).toBe('source-wins');
+    expect(result.source).toBe('source-repo');
+  });
+
   it('derives namespace from last segment of repo path and source is "repo"', () => {
     // Use the mapping resolver to verify it passes the last segment
     _setResolverForTest(mappingResolver);
@@ -291,9 +308,23 @@ describe('namespaceForSession — fallback', () => {
     expect(result.namespace).toBe('_unsorted');
     expect(result.source).toBe('fallback');
   });
+
+  it('returns "_unsorted" when source-repo is whitespace only', () => {
+    _setResolverForTest(throwingResolver);
+    const result = namespaceForSession({ 'source-repo': '   ' });
+    expect(result.namespace).toBe('_unsorted');
+    expect(result.source).toBe('fallback');
+  });
 });
 
 describe('degenerate path-only values fall through (Q3 LOW — never CWD-derive)', () => {
+  it('namespaceForSession: source-repo "/" → _unsorted WITHOUT calling the resolver', () => {
+    _setResolverForTest(throwingResolver);
+    const result = namespaceForSession({ 'source-repo': '/' });
+    expect(result.namespace).toBe('_unsorted');
+    expect(result.source).toBe('fallback');
+  });
+
   it('namespaceForSession: repo "/" → _unsorted WITHOUT calling the resolver', () => {
     _setResolverForTest(throwingResolver);
     const result = namespaceForSession({ repo: '/' });
@@ -326,6 +357,19 @@ describe('degenerate path-only values fall through (Q3 LOW — never CWD-derive)
 // ---------------------------------------------------------------------------
 
 describe('namespaceForSession — backfill index', () => {
+  it('lets source-repo WIN over the backfill index', () => {
+    _setResolverForTest(identityResolver);
+    const backfillIndex = new Map([
+      ['main-2026-06-21-s1', { repo: 'foo-repo', confidence: 'HIGH', source: 'sid-authoritative' }],
+    ]);
+    const result = namespaceForSession(
+      { id: 'main-2026-06-21-s1', 'source-repo': 'infrastructure/session-orchestrator' },
+      { backfillIndex },
+    );
+    expect(result.namespace).toBe('session-orchestrator');
+    expect(result.source).toBe('source-repo');
+  });
+
   it('matches the backfill index when no in-file repo/tag signal is present', () => {
     // No repo:, no project/ tag — the backfillIndex entry supplies the namespace.
     // The matched repo is returned verbatim (already leak-guarded), so the
