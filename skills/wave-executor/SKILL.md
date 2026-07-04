@@ -268,7 +268,7 @@ Wave-executor agents may propose memory entries (learnings) mid-session via the 
 During this wave, you may propose a learning to the session's memory via the CLI:
 
   SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
-      --type <one of: workflow-pattern|anti-pattern|recurring-issue|fragile-file|effective-sizing|proven-pattern|mode-selector-accuracy|hardware-pattern|autopilot-effectiveness|domain-regression> \
+      --type <one of: workflow-pattern|anti-pattern|recurring-issue|fragile-file|effective-sizing|proven-pattern|mode-selector-accuracy|hardware-pattern|autopilot-effectiveness|domain-regression|convention|architecture-pattern|design-pattern> \
       --subject "one-line title (max 100 chars, no newlines)" \
       --insight "your discovery paragraph (max 2000 chars)" \
       --evidence "concrete proof: code citation / log excerpt / commit ref (max 5000 chars)" \

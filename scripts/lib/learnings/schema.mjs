@@ -58,27 +58,63 @@ export const VALID_SCOPES = Object.freeze(['local', 'private', 'public']);
 export const CURRENT_ANONYMIZATION_VERSION = 1;
 
 /**
- * Per-type TTL policy (in days) for `expires_at` derivation.
- * See parent module documentation for tier rationale and policy lookup contract.
+ * Type capability registry (Epic #723 I1, issue #733 Teil b) — the single
+ * source of truth for every learning `type`'s TTL policy AND its two
+ * cross-module capability axes. Before this registry existed, three modules
+ * independently hand-maintained overlapping type lists that drifted out of
+ * sync (`memory-proposals/schema.mjs` PROPOSAL_TYPES, `reconcile/eligibility.mjs`
+ * CONVERT_TYPES, and this file's own LEARNING_TTL_DAYS) — e.g. `convention`,
+ * `architecture-pattern`, and `design-pattern` were CONVERT-eligible in the
+ * reconcile engine but had no TTL entry here and could never be proposed via
+ * memory.propose(). Both consumer modules now DERIVE their type sets from
+ * this registry instead of maintaining their own literal.
+ *
+ * Capability axes:
+ *   - ttlDays:          `expires_at` retention window (see deriveExpiresAt below).
+ *   - agentProposable:  may appear in `memory-proposals/schema.mjs` PROPOSAL_TYPES
+ *                       (i.e. a wave-agent may `memory.propose()` this type).
+ *   - ruleConvertible:  may appear in `reconcile/eligibility.mjs` CONVERT_TYPES
+ *                       (i.e. the reconcile engine may convert this type into a
+ *                       conditional `.claude/rules/*.md` rule proposal).
  */
-export const LEARNING_TTL_DAYS = Object.freeze({
-  'mode-selector-accuracy': 30,
-  'hardware-pattern': 60,
-  'fragile-file': 45,
-  'effective-sizing': 45,
-  'recurring-issue': 45,
-  'workflow-pattern': 90,
-  'proven-pattern': 90,
-  'anti-pattern': 90,
-  'autopilot-effectiveness': 90,
+export const LEARNING_TYPE_REGISTRY = Object.freeze({
+  'mode-selector-accuracy':      Object.freeze({ ttlDays: 30, agentProposable: true,  ruleConvertible: false }),
+  'hardware-pattern':            Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false }),
+  'fragile-file':                Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
+  'effective-sizing':            Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: false }),
+  'recurring-issue':             Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
+  'workflow-pattern':            Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
+  'proven-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
+  'anti-pattern':                Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  'autopilot-effectiveness':     Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
   // autonomy-verdict (#683): repo/scope readiness synthesis from autopilot
   // effectiveness plus skill-judge signals. 90d matches the operational
-  // autopilot-effectiveness horizon it depends on.
-  'autonomy-verdict': 90,
+  // autopilot-effectiveness horizon it depends on. Analyzer-only — never
+  // agent-proposable.
+  'autonomy-verdict':            Object.freeze({ ttlDays: 90, agentProposable: false, ruleConvertible: false }),
   // domain-regression (#638): a sidecar-sourced regression flag (metric baseline→recent
   // delta) surfaced via /evolve extra-sources. 60d aligns with the moderate-decay tier
   // (hardware-pattern / default) — a regression signal should age out if it stops recurring.
-  'domain-regression': 60,
+  'domain-regression':           Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false }),
+  'convention':                  Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  'architecture-pattern':        Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  'design-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  // fragile-pattern / stagnation-class-frequency: 0 live instances as of
+  // 2026-07-02 (see reconcile/eligibility.mjs census) — CONVERT-eligible but
+  // NOT agent-proposable (analyzer-synthesized classes, not agent-observed).
+  'fragile-pattern':             Object.freeze({ ttlDays: 45, agentProposable: false, ruleConvertible: true  }),
+  'stagnation-class-frequency':  Object.freeze({ ttlDays: 60, agentProposable: false, ruleConvertible: true  }),
+});
+
+/**
+ * Per-type TTL policy (in days) for `expires_at` derivation. Derived from
+ * {@link LEARNING_TYPE_REGISTRY} — see parent module documentation for tier
+ * rationale and policy lookup contract.
+ */
+export const LEARNING_TTL_DAYS = Object.freeze({
+  ...Object.fromEntries(
+    Object.entries(LEARNING_TYPE_REGISTRY).map(([type, meta]) => [type, meta.ttlDays])
+  ),
   default: 60,
 });
 

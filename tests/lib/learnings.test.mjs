@@ -30,6 +30,7 @@ import {
   deriveExpiresAt,
   LEARNING_TTL_DAYS,
 } from '@lib/learnings.mjs';
+import { LEARNING_TYPE_REGISTRY } from '@lib/learnings/schema.mjs';
 
 const LEGACY = () => ({
   id: 'test-id-1',
@@ -1174,6 +1175,44 @@ describe('deriveExpiresAt', () => {
   it('returns ISO 8601 formatted string', () => {
     const result = deriveExpiresAt('2026-05-01T00:00:00Z', 'recurring-issue');
     expect(result).toMatch(ISO_8601_RE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LEARNING_TYPE_REGISTRY (#733) — completeness + frozen-ness invariants
+// ---------------------------------------------------------------------------
+
+describe('LEARNING_TYPE_REGISTRY', () => {
+  it('every registry key has a positive integer ttlDays', () => {
+    // FALSIFICATION: a zero, negative, or non-integer ttlDays on any entry would fail this
+    const invalid = Object.entries(LEARNING_TYPE_REGISTRY).filter(
+      ([, meta]) => !Number.isInteger(meta.ttlDays) || meta.ttlDays <= 0,
+    );
+    expect(invalid).toEqual([]);
+  });
+
+  it('every registry key exists in LEARNING_TTL_DAYS with the same ttlDays value', () => {
+    // FALSIFICATION: a key present in the registry but missing (or mismatched)
+    // in LEARNING_TTL_DAYS would fail this
+    const mismatched = Object.entries(LEARNING_TYPE_REGISTRY).filter(
+      ([type, meta]) => LEARNING_TTL_DAYS[type] !== meta.ttlDays,
+    );
+    expect(mismatched).toEqual([]);
+  });
+
+  it('LEARNING_TTL_DAYS.default equals 60', () => {
+    // FALSIFICATION: changing the fallback default TTL would fail this
+    expect(LEARNING_TTL_DAYS.default).toBe(60);
+  });
+
+  it('is frozen at the top level', () => {
+    // FALSIFICATION: removing the outer Object.freeze() would fail this
+    expect(Object.isFrozen(LEARNING_TYPE_REGISTRY)).toBe(true);
+  });
+
+  it('is frozen at the per-type entry level', () => {
+    // FALSIFICATION: removing the inner Object.freeze() on a type's metadata would fail this
+    expect(Object.isFrozen(LEARNING_TYPE_REGISTRY['convention'])).toBe(true);
   });
 });
 

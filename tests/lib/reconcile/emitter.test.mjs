@@ -63,8 +63,23 @@ describe('toActivationMetadata — expiry', () => {
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
-  it('derives the per-type default expiry (fragile-pattern → 60d) when no override', () => {
+  it('derives the per-type explicit expiry (fragile-pattern → 45d) when no override', () => {
     const meta = toActivationMetadata(fragileLearning(), {});
+    expect(meta.expiresAt).toBe('2026-08-05');
+  });
+
+  it('falls through to the registry default (60d) for a type absent from LEARNING_TTL_DAYS', () => {
+    const meta = toActivationMetadata(
+      {
+        type: 'totally-unknown-type',
+        subject: 'zx-imports',
+        insight: 'session.ts churns. More text.',
+        confidence: 0.8,
+        file_paths: ['scripts/lib/autopilot/worktree-pipeline.mjs'],
+        created_at: '2026-06-21T00:00:00Z',
+      },
+      {},
+    );
     expect(meta.expiresAt).toBe('2026-08-20');
   });
 });

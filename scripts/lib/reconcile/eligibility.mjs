@@ -35,14 +35,20 @@
  * renamed corpus still converts (they convert nothing now — harmless). See the
  * CONVERT_TYPES doc for the full 2026-07-02 instance census.
  *
- * Pure functions, no external dependencies — Node 20+ stdlib only. No file I/O.
+ * Pure functions — depends only on the pure `learnings/schema` type registry
+ * (a frozen constant; no I/O). Deterministic, no file I/O.
  */
 
+import { LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
+
 /**
- * The learning `type` values that may become a conditional rule.
+ * The learning `type` values that may become a conditional rule. DERIVED
+ * (Epic #723 I1, issue #733 Teil b) from `scripts/lib/learnings/schema.mjs`'s
+ * `LEARNING_TYPE_REGISTRY`: every type whose `ruleConvertible` flag is `true`.
  *
  * Instance census (corrected 2026-07-02, Epic #723 B2 — the earlier comment
- * was a stale mis-count that inverted `fragile-file` and `fragile-pattern`):
+ * was a stale mis-count that inverted `fragile-file` and `fragile-pattern`),
+ * kept here as a historical record (the registry itself carries no counts):
  *   - 'anti-pattern'         — 22 instances
  *   - 'architecture-pattern' —  2 instances
  *   - 'convention'           —  1 instance
@@ -52,24 +58,17 @@
  *   - 'fragile-pattern'      —  0 instances (kept for forward-compat)
  *   - 'stagnation-class-frequency' — 0 instances (kept for forward-compat)
  *
- * The SET below is UNCHANGED — every listed type stays in the allow-list, so a
- * future renamed/backfilled corpus still converts and 0-instance types convert
- * nothing today. Only the census annotations were corrected.
+ * The membership is UNCHANGED from the prior hand-maintained literal — every
+ * listed type stays in the allow-list, so a future renamed/backfilled corpus
+ * still converts and 0-instance types convert nothing today.
  *
  * @type {Set<string>}
  */
-export const CONVERT_TYPES = new Set([
-  // Types with live instances as of 2026-07-02 (count in parens)
-  'anti-pattern', //          22
-  'architecture-pattern', //   2
-  'convention', //             1
-  'design-pattern', //         1
-  'fragile-file', //           1
-  'recurring-issue', //        1
-  // Forward-compat: 0 instances today, kept so a future corpus still converts
-  'fragile-pattern', //        0
-  'stagnation-class-frequency', // 0
-]);
+export const CONVERT_TYPES = new Set(
+  Object.entries(LEARNING_TYPE_REGISTRY)
+    .filter(([, meta]) => meta.ruleConvertible)
+    .map(([type]) => type)
+);
 
 /**
  * Classify a single learning record for rule-conversion eligibility.

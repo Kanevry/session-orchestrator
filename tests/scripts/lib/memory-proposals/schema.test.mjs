@@ -24,7 +24,7 @@ import {
   serializeProposal,
   validateProposalRecord,
 } from '@lib/memory-proposals/schema.mjs';
-import { LEARNING_TTL_DAYS } from '@lib/learnings/schema.mjs';
+import { LEARNING_TTL_DAYS, LEARNING_TYPE_REGISTRY } from '@lib/learnings/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared minimal-valid fixture
@@ -92,6 +92,59 @@ describe('PROPOSAL_TYPES', () => {
 
   it('excludes analyzer-only "autonomy-verdict" (#683)', () => {
     // FALSIFICATION: adding 'autonomy-verdict' would bypass its analyzer data gate
+    expect(PROPOSAL_TYPES).not.toContain('autonomy-verdict');
+  });
+
+  it('contains "convention" (#733)', () => {
+    // FALSIFICATION: deleting 'convention' from PROPOSAL_TYPES would fail this
+    expect(PROPOSAL_TYPES).toContain('convention');
+  });
+
+  it('contains "architecture-pattern" (#733)', () => {
+    // FALSIFICATION: deleting 'architecture-pattern' from PROPOSAL_TYPES would fail this
+    expect(PROPOSAL_TYPES).toContain('architecture-pattern');
+  });
+
+  it('contains "design-pattern" (#733)', () => {
+    // FALSIFICATION: deleting 'design-pattern' from PROPOSAL_TYPES would fail this
+    expect(PROPOSAL_TYPES).toContain('design-pattern');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LEARNING_TYPE_REGISTRY cross-module drift-guard (#733)
+//
+// PROPOSAL_TYPES is DERIVED from LEARNING_TYPE_REGISTRY's agentProposable flag
+// (see schema.mjs module comment). These guards check the relationship from
+// the registry's side: every dual-capable entry surfaces in PROPOSAL_TYPES,
+// and the deliberately convert-only entries do not — without re-deriving
+// PROPOSAL_TYPES itself and comparing arrays wholesale (that would just mirror
+// the production filter and hide a bug in it).
+// ---------------------------------------------------------------------------
+
+describe('LEARNING_TYPE_REGISTRY cross-module drift-guard (#733)', () => {
+  it('every registry entry with ruleConvertible+agentProposable is a PROPOSAL_TYPES member', () => {
+    // FALSIFICATION: flipping a dual-capable entry's agentProposable to false
+    // without removing it from PROPOSAL_TYPES (or vice versa) would fail this
+    const dualCapable = Object.entries(LEARNING_TYPE_REGISTRY)
+      .filter(([, meta]) => meta.ruleConvertible && meta.agentProposable)
+      .map(([type]) => type);
+    const missing = dualCapable.filter((type) => !PROPOSAL_TYPES.includes(type));
+    expect(missing).toEqual([]);
+  });
+
+  it('excludes convert-only "fragile-pattern" (ruleConvertible but not agentProposable)', () => {
+    // FALSIFICATION: adding 'fragile-pattern' to PROPOSAL_TYPES would bypass its analyzer-only gate
+    expect(PROPOSAL_TYPES).not.toContain('fragile-pattern');
+  });
+
+  it('excludes convert-only "stagnation-class-frequency" (ruleConvertible but not agentProposable)', () => {
+    // FALSIFICATION: adding 'stagnation-class-frequency' to PROPOSAL_TYPES would bypass its analyzer-only gate
+    expect(PROPOSAL_TYPES).not.toContain('stagnation-class-frequency');
+  });
+
+  it('excludes "autonomy-verdict" (neither ruleConvertible nor agentProposable)', () => {
+    // FALSIFICATION: adding 'autonomy-verdict' to PROPOSAL_TYPES would bypass its analyzer-only gate
     expect(PROPOSAL_TYPES).not.toContain('autonomy-verdict');
   });
 });

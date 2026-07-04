@@ -26,6 +26,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -40,26 +41,23 @@ import { randomUUID } from 'node:crypto';
 export const SCHEMA_VERSION = 1;
 
 /**
- * Canonical type enum — agent-writable subset of the learnings schema type set
- * defined in scripts/lib/learnings/schema.mjs (LEARNING_TTL_DAYS keys, minus
- * 'default' and analyzer-only types).
+ * Canonical type enum — agent-writable subset of the learnings schema type set.
+ * DERIVED (Epic #723 I1, issue #733 Teil b) from
+ * `scripts/lib/learnings/schema.mjs`'s `LEARNING_TYPE_REGISTRY`: every type
+ * whose `agentProposable` flag is `true`. Analyzer-only types (e.g.
+ * `autonomy-verdict`, `fragile-pattern`, `stagnation-class-frequency`) are
+ * excluded via that flag rather than by omission from a hand-maintained list.
  *
  * When a proposal is promoted to a learning, its type flows through unchanged.
- * Adding a new type here MUST be accompanied by a corresponding TTL entry in
- * the learnings schema.
+ * The "adding a type requires a TTL entry" invariant is now structural: every
+ * registry entry always carries a `ttlDays` field, so a new agent-proposable
+ * type can never be added here without a TTL.
  */
-export const PROPOSAL_TYPES = Object.freeze([
-  'mode-selector-accuracy',
-  'hardware-pattern',
-  'fragile-file',
-  'effective-sizing',
-  'recurring-issue',
-  'workflow-pattern',
-  'proven-pattern',
-  'anti-pattern',
-  'autopilot-effectiveness',
-  'domain-regression',
-]);
+export const PROPOSAL_TYPES = Object.freeze(
+  Object.entries(LEARNING_TYPE_REGISTRY)
+    .filter(([, meta]) => meta.agentProposable)
+    .map(([type]) => type)
+);
 
 // ---------------------------------------------------------------------------
 // Field limits (defined once for validation + documentation)

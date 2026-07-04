@@ -19,6 +19,7 @@ import {
   classifyLearning,
   filterEligible,
 } from '../../../scripts/lib/reconcile/eligibility.mjs';
+import { LEARNING_TYPE_REGISTRY } from '../../../scripts/lib/learnings/schema.mjs';
 import { RECONCILE_FIXTURE } from './_fixtures.mjs';
 
 describe('classifyLearning — eligible records', () => {
@@ -109,6 +110,48 @@ describe('CONVERT_TYPES', () => {
   it('does not contain default-reject types', () => {
     expect(CONVERT_TYPES.has('proven-pattern')).toBe(false);
     expect(CONVERT_TYPES.has('effective-sizing')).toBe(false);
+  });
+
+  it('contains the three newly convertible types (#733)', () => {
+    expect(CONVERT_TYPES.has('convention')).toBe(true);
+    expect(CONVERT_TYPES.has('architecture-pattern')).toBe(true);
+    expect(CONVERT_TYPES.has('design-pattern')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONVERT_TYPES cross-module drift-guard (#733)
+//
+// CONVERT_TYPES is DERIVED from LEARNING_TYPE_REGISTRY's ruleConvertible flag
+// (see eligibility.mjs module comment). Checked bidirectionally via membership
+// iteration on each side — not by re-deriving CONVERT_TYPES wholesale and
+// asserting set equality against itself.
+// ---------------------------------------------------------------------------
+
+describe('CONVERT_TYPES cross-module drift-guard (#733)', () => {
+  it('every CONVERT_TYPES member has ruleConvertible:true in LEARNING_TYPE_REGISTRY', () => {
+    // FALSIFICATION: adding a type to CONVERT_TYPES whose registry entry has
+    // ruleConvertible:false (or is absent) would fail this
+    const notConvertible = [...CONVERT_TYPES].filter(
+      (type) => LEARNING_TYPE_REGISTRY[type]?.ruleConvertible !== true,
+    );
+    expect(notConvertible).toEqual([]);
+  });
+
+  it('every ruleConvertible:true registry entry is a CONVERT_TYPES member', () => {
+    // FALSIFICATION: flipping a registry entry's ruleConvertible to true
+    // without CONVERT_TYPES picking it up would fail this
+    const missing = Object.entries(LEARNING_TYPE_REGISTRY)
+      .filter(([, meta]) => meta.ruleConvertible)
+      .map(([type]) => type)
+      .filter((type) => !CONVERT_TYPES.has(type));
+    expect(missing).toEqual([]);
+  });
+
+  it('has a bounded size (floor/ceiling; growing catalog, not shrinking)', () => {
+    // FALSIFICATION: emptying CONVERT_TYPES would drop below the floor
+    expect(CONVERT_TYPES.size).toBeGreaterThanOrEqual(6);
+    expect(CONVERT_TYPES.size).toBeLessThanOrEqual(30);
   });
 });
 
