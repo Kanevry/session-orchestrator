@@ -22,12 +22,10 @@
  *      `files` → `file_paths` (one-shot, 2026-07-02).
  *   2. The schema SSOT (`learnings/schema.mjs` normalizeDialects) renames
  *      `files` → `file_paths` on every read + migration going forward.
- * We continue to read `file_paths` — it is now the canonical scope key.
- * NOTE: this module reads its learnings via the engine's raw JSONL loader
- * (`defaultLoadLearnings`), which does NOT pass records through
- * normalizeLearning — so post-backfill correctness relies on the on-disk
- * `file_paths` written by fix (1); wiring the raw loader through the SSOT is a
- * separate follow-up.
+ * We continue to read `file_paths` — it is now the canonical scope key. The
+ * engine's default JSONL loader also runs records through migrateLegacyLearning
+ * + normalizeLearning, so direct `runReconcile({ repoRoot })` calls see the same
+ * legacy alias + `files`→`file_paths` mapping as the backfill/read funnels.
  *
  * ── Type-name mapping (issue → real) ─────────────────────────────────────────
  *   issue 'fragile-file'    -> real 'fragile-file'    (verbatim; 1 instance)

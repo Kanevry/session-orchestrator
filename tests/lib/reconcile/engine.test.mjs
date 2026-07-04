@@ -12,6 +12,10 @@
  * seam, but NEVER writes `.claude/rules/`.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, it, expect, vi } from 'vitest';
 
 import { runReconcile } from '../../../scripts/lib/reconcile/engine.mjs';
@@ -72,6 +76,57 @@ describe('runReconcile — DI injection', () => {
     // The merge seam received the minted candidates (proposal + rejection).
     expect(merge).toHaveBeenCalledTimes(1);
     expect(merge.mock.calls[0][0].candidates).toHaveLength(2);
+  });
+});
+
+describe('runReconcile — default loader uses the learnings schema SSOT', () => {
+  it('converts a legacy dialect record read from disk without requiring a prior backfill', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-loader-'));
+    try {
+      const metricsDir = join(repoRoot, '.orchestrator', 'metrics');
+      mkdirSync(metricsDir, { recursive: true });
+      writeFileSync(
+        join(metricsDir, 'learnings.jsonl'),
+        JSON.stringify({
+          type: 'anti-pattern',
+          name: 'legacy files carrier',
+          description: 'Legacy records with files[] must still reconcile through the default loader.',
+          evidence: 'Fleet corpus used files[] before file_paths[] became canonical.',
+          confidence: 0.9,
+          sessions: ['main-2026-07-04-deep-1'],
+          created_at: '2026-07-04T00:00:00Z',
+          files: ['scripts/lib/reconcile/engine.mjs'],
+        }) + '\n',
+        'utf8',
+      );
+
+      const result = await runReconcile({
+        repoRoot,
+        dryRun: true,
+        now: new Date('2026-07-04T00:00:00Z'),
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.summary).toMatchObject({
+        totalLearnings: 1,
+        eligible: 1,
+        proposed: 1,
+        rejected: 0,
+        written: false,
+      });
+      expect(result.proposals).toHaveLength(1);
+      expect(result.proposals[0].path).toMatch(
+        /^\.claude\/rules\/anti-pattern-legacy-files-carrier-[a-f0-9]{7}\.md$/,
+      );
+      expect(result.proposals[0].content).toContain(
+        'Legacy records with files[] must still reconcile through the default loader.',
+      );
+      expect(result.proposals[0].content).toContain(
+        '- source-session: `main-2026-07-04-deep-1`',
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 

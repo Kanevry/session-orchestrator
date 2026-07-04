@@ -74,6 +74,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { toActivationMetadata } from './emitter.mjs';
 import { renderRule } from './renderer.mjs';
@@ -106,8 +107,9 @@ function zeroedResult(error) {
 
 /**
  * Default learnings loader — read + parse `<repoRoot>/.orchestrator/metrics/learnings.jsonl`
- * line-by-line, skipping blank and malformed lines. A missing file yields `[]`.
- * Never throws (a read error degrades to `[]`).
+ * line-by-line, migrate/normalize records through the learnings schema SSOT,
+ * and skip blank/malformed lines. A missing file yields `[]`. Never throws (a
+ * read error degrades to `[]`).
  *
  * @param {string|undefined} repoRoot
  * @returns {Array<Record<string, unknown>>}
@@ -137,7 +139,9 @@ function defaultLoadLearnings(repoRoot) {
       continue; // skip malformed line
     }
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      records.push(/** @type {Record<string, unknown>} */ (parsed));
+      records.push(
+        /** @type {Record<string, unknown>} */ (normalizeLearning(migrateLegacyLearning(parsed))),
+      );
     }
   }
   return records;
