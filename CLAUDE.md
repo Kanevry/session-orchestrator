@@ -124,6 +124,10 @@ goal-integration:
 custom-phases: []                # #637 — repo-declared deterministic close/housekeeping phases (name/when/command/mode/review); empty = none. See docs/session-config-reference.md § Custom Phases
 evolve:
   extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources
+dialectic:
+  cadence: 5                     # #506 — session-end 3.6.7 auto-trigger alle N Sessions (0 = kill-switch; manuell geht immer)
+  model: haiku                   # haiku | sonnet | opus — fail-fast on unknown value
+  budget-tokens: 32000           # 2026-07-04 session-3: Default 8000 strukturell unerreichbar — Fixanteil (Peer-Cards+Steering+Gerüst) ≈13k, volle Inputs (top-50/last-10) ≈28.4k
 reconcile:
   enabled: false                 # #697 + #696 — opt-in; FA3 reads this to gate session-end Phase 3.6.8 (advisory rule-proposal delivery)
   mode: warn                     # off | warn — advisory only; rules are NEVER auto-applied, every write is operator-AUQ-gated (#696)

@@ -3,8 +3,8 @@ id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-05-30T09:13:23.849Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913"]
+updated: "2026-07-04T14:20:00.000Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes"]
 ---
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
