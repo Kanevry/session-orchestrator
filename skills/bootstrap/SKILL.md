@@ -522,6 +522,8 @@ PLUGIN_VERSION="$(node -e "const p=require('$PLUGIN_ROOT/package.json');console.
 
 The template's initial git commit includes `bootstrap.lock`. If the template already wrote the lock file (as `fast-template.md` does), skip this step — the lock is already committed.
 
+> Deep tier note: if Step D5.5 (GitHub Mirror Remote) added a `github` remote earlier in this run, it is committed alongside `bootstrap.lock` here — no separate commit is needed for the remote itself (remotes are local git config, not tracked files).
+
 ## Phase 4.5: Instruction-Budget Baseline
 
 Non-blocking, informational — never gates Phase 5. Runs two probes against the just-scaffolded instruction file and folds both results into the Phase 5 summary:
@@ -554,3 +556,4 @@ If invoked directly via `/bootstrap`: report the created files list and stop.
 - **ALWAYS commit** — bootstrap ends with a git commit. The lock file is part of that commit.
 - **ALWAYS check for retroactive flag** — if `--retroactive` is in `$ARGUMENTS`, skip all scaffolding and jump directly to writing `bootstrap.lock` (tier inferred from existing file inventory, fallback: `fast`).
 - **NEVER abort bootstrap on rules-fetch failure** — rules-fetch is opt-in and best-effort. The legacy Clank sync path is the safety net.
+- **Repos that mirror to GitHub SHOULD get the `github` remote added at bootstrap time** — Deep tier's Step D5.5 (`skills/bootstrap/deep-template.md`) wires this in for GitLab-primary repos (or any repo with `mirror: github` in Session Config), so mirror-push at session-end (§4.4) and mirror-drift auditing (repo-audit's `github-mirror-sync` check, `scripts/lib/harness-audit/categories/category6.mjs`, Category 6) both have a remote to work against from day one, rather than discovering the gap later.

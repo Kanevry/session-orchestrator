@@ -739,7 +739,7 @@ describe('category 6: Config Hygiene', () => {
     const checks = runCategory6(root);
     const earned = totalPoints(checks);
     const possible = maxPoints(checks);
-    expect(possible).toBe(8);
+    expect(possible).toBe(10);
     expect(earned).toBeGreaterThanOrEqual(6);
   });
 
@@ -778,9 +778,10 @@ describe('category 6: Config Hygiene', () => {
     expect(deadCheck.status).toBe('fail');
     expect(deadCheck.points).toBe(0);
 
-    // plugin-narrative-section passes as "consumer repo skip" (no session-start/SKILL.md either)
+    // plugin-narrative-section passes as "consumer repo skip" (no session-start/SKILL.md either);
+    // github-mirror-sync skip-as-passes (no .git/github remote in the tmp fixture)
     const earned = totalPoints(checks);
-    expect(earned).toBe(2);
+    expect(earned).toBe(4);
   });
 
   it('fails no-dead-branch-refs when CLAUDE.md contains a dead branch pattern', () => {
