@@ -303,6 +303,334 @@ describe('syncRules — corrupted _index.md', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Pre-write validation gate (issue #722 Epic A Wave 2) — validate: true default
+// ---------------------------------------------------------------------------
+
+describe('syncRules — pre-write validation gate', () => {
+  it('blocks the write and records an error for a file with an error-severity violation', () => {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'always-on');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/bad-rule.md` — a rule with a paths: mistake',
+        '- `always-on/good-rule.md` — a clean rule',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(rulesDir, 'bad-rule.md'),
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/bad-rule.md) -->\n---\npaths:\n  - src/**\n---\n\n# Bad Rule\n',
+    );
+    writeFileSync(
+      join(rulesDir, 'good-rule.md'),
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/good-rule.md) -->\n# Good Rule\n\nClean content.\n',
+    );
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].file).toBe('rules/always-on/bad-rule.md');
+    expect(result.errors[0].reason).toContain('validation-failed');
+    expect(result.written).toEqual(['good-rule.md']);
+
+    let exists = true;
+    try {
+      statSync(join(repoRoot, '.claude', 'rules', 'bad-rule.md'));
+    } catch {
+      exists = false;
+    }
+    expect(exists).toBe(false);
+  });
+
+  it('does not block the write for a warn-severity violation but surfaces it in warnings[]', () => {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'always-on');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/warn-rule.md` — a rule with a foreign glob',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(rulesDir, 'warn-rule.md'),
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/warn-rule.md) -->\n---\nglobs:\n  - src/FooBarTests/**\n---\n\n# Warn Rule\n',
+    );
+    const repoRoot = tmp();
+    // Give the repo a matching file so only foreign-glob fires (not zero-match-globs too).
+    mkdirSync(join(repoRoot, 'src', 'FooBarTests'), { recursive: true });
+    writeFileSync(join(repoRoot, 'src', 'FooBarTests', 'index.ts'), '// x\n');
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.written).toContain('warn-rule.md');
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].file).toBe('rules/always-on/warn-rule.md');
+    expect(result.warnings[0].reason).toContain('foreign-glob');
+  });
+
+  it('validate: false restores pre-Wave-2 behavior — writes even a paths: violating file', () => {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'always-on');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/bad-rule.md` — a rule with a paths: mistake',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(rulesDir, 'bad-rule.md'),
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/bad-rule.md) -->\n---\npaths:\n  - src/**\n---\n\n# Bad Rule\n',
+    );
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot, validate: false });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.written).toContain('bad-rule.md');
+  });
+
+  it('requireProvenance: false permits a headerless source file to pass the gate', () => {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'always-on');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/headerless.md` — a rule without a provenance header',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(rulesDir, 'headerless.md'), '# Headerless Rule\n\nClean content, no header.\n');
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot, requireProvenance: false });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.written).toContain('headerless.md');
+  });
+
+  it('requireProvenance default (true) blocks a headerless source file', () => {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'always-on');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/headerless.md` — a rule without a provenance header',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(rulesDir, 'headerless.md'), '# Headerless Rule\n\nClean content, no header.\n');
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].reason).toContain('provenance-header');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Archetype filtering (issue #722 Epic A Wave 3)
+// ---------------------------------------------------------------------------
+
+describe('syncRules — archetype filtering', () => {
+  function makeArchetypeFixture() {
+    const pluginRoot = tmp();
+    const rulesDir = join(pluginRoot, 'rules', 'opt-in-stack');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## opt-in-stack (vendored on match)',
+        '',
+        '- `opt-in-stack/nextjs-only.md` — a Next.js-specific rule [archetypes: nextjs-minimal, nextjs-saas]',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(rulesDir, 'nextjs-only.md'),
+      '<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/nextjs-only.md) -->\n# Next.js Only Rule\n\nClean content.\n',
+    );
+    return pluginRoot;
+  }
+
+  it('vendors a scoped entry when the explicit archetype arg matches', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+
+    const result = syncRules({
+      pluginRoot,
+      repoRoot,
+      categories: ['opt-in-stack'],
+      archetype: 'nextjs-minimal',
+    });
+
+    expect(result.written).toContain('nextjs-only.md');
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it('skips a scoped entry with reason archetype-mismatch when the explicit archetype does not match', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+
+    const result = syncRules({
+      pluginRoot,
+      repoRoot,
+      categories: ['opt-in-stack'],
+      archetype: 'python-uv',
+    });
+
+    expect(result.written).toHaveLength(0);
+    expect(result.skipped).toContainEqual({
+      file: 'rules/opt-in-stack/nextjs-only.md',
+      reason: 'archetype-mismatch',
+    });
+  });
+
+  it('skips a scoped entry with reason archetype-unknown when no archetype can be resolved', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp(); // no .orchestrator/bootstrap.lock, no explicit archetype
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['opt-in-stack'] });
+
+    expect(result.written).toHaveLength(0);
+    expect(result.skipped).toContainEqual({
+      file: 'rules/opt-in-stack/nextjs-only.md',
+      reason: 'archetype-unknown',
+    });
+  });
+
+  it('resolves the archetype from .orchestrator/bootstrap.lock when no explicit arg is given', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'bootstrap.lock'), 'archetype: nextjs-saas\n');
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['opt-in-stack'] });
+
+    expect(result.written).toContain('nextjs-only.md');
+  });
+
+  it('skips a scoped entry with archetype-unknown when bootstrap.lock has archetype: null', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'bootstrap.lock'), 'archetype: null\n');
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['opt-in-stack'] });
+
+    expect(result.written).toHaveLength(0);
+    expect(result.skipped).toContainEqual({
+      file: 'rules/opt-in-stack/nextjs-only.md',
+      reason: 'archetype-unknown',
+    });
+  });
+
+  it('a universal (untagged) entry still vendors regardless of archetype resolution', () => {
+    const pluginRoot = makeFakePluginRoot(tmp());
+    const repoRoot = tmp(); // no bootstrap.lock, no explicit archetype
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    // All 3 always-on entries in makeFakePluginRoot are untagged (universal).
+    expect(result.written).toHaveLength(3);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it('defaults to every manifest category with entries, including matching opt-in rules', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+
+    const result = syncRules({
+      pluginRoot,
+      repoRoot,
+      archetype: 'nextjs-minimal',
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.written).toContain('nextjs-only.md');
+  });
+
+  it('parses quoted bootstrap.lock archetype values with inline comments', () => {
+    const pluginRoot = makeArchetypeFixture();
+    const repoRoot = tmp();
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'bootstrap.lock'),
+      'archetype: "nextjs-saas" # selected by bootstrap\n',
+    );
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['opt-in-stack'] });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.written).toContain('nextjs-only.md');
+  });
+
+  it('reports duplicate target filenames across applicable manifest categories', () => {
+    const pluginRoot = tmp();
+    mkdirSync(join(pluginRoot, 'rules', 'always-on'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'rules', 'opt-in-stack'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/shared.md` — universal rule',
+        '',
+        '## opt-in-stack (vendored on match)',
+        '',
+        '- `opt-in-stack/shared.md` — stack rule [archetypes: nextjs-minimal]',
+        '',
+      ].join('\n'),
+    );
+    for (const rel of ['always-on/shared.md', 'opt-in-stack/shared.md']) {
+      writeFileSync(
+        join(pluginRoot, 'rules', rel),
+        `<!-- source: session-orchestrator plugin (canonical: rules/${rel}) -->\n# Rule\n\nContent.\n`,
+      );
+    }
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot, archetype: 'nextjs-minimal' });
+
+    expect(result.errors.some((e) => e.reason.includes('duplicate target filename'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 8 — CLI with missing --repo-root flag → exit 1, stderr hint
 // ---------------------------------------------------------------------------
 

@@ -927,6 +927,92 @@ describe('no tier key backward-compat (#692)', () => {
   });
 });
 
+// ===========================================================================
+// #722 Epic A Wave 2 — leading provenance-header tolerance in frontmatter parsing
+// ===========================================================================
+
+describe('leading provenance-header tolerance (#722)', () => {
+  it('loads a header-prefixed rule with globs as scoped, with matchedGlobs populated', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'vendored.md',
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/vendored.md) -->\n---\nglobs:\n  - src/**\n---\n\n# Vendored Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].matchedGlobs).toContain('src/**');
+  });
+
+  it('excludes a header-prefixed globs rule when the scope does not match', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'vendored.md',
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/vendored.md) -->\n---\nglobs:\n  - src/**\n---\n\n# Vendored Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['docs/readme.md'] });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('keeps scalar meta (description) on a header-prefixed rule', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'vendored.md',
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/vendored.md) -->\n---\ndescription: A vendored rule\nglobs:\n  - src/**\n---\n\n# Vendored Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
+
+    expect(results[0].description).toBe('A vendored rule');
+  });
+
+  it('a file starting directly with --- (no header) parses identically to before', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'plain.md', '---\nglobs:\n  - src/**\n---\n\n# Plain Rule\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].matchedGlobs).toContain('src/**');
+  });
+
+  it('a header-prefixed rule with no frontmatter at all stays always-on', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'no-fm.md',
+      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/no-fm.md) -->\n# No Frontmatter Rule\n\nJust prose, no frontmatter block.\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+  });
+
+  it('multiple stacked single-line comment header lines are still tolerated', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'multi-header.md',
+      '<!-- source: session-orchestrator plugin -->\n<!-- canonical: rules/always-on/multi-header.md -->\n---\nglobs:\n  - src/**\n---\n\n# Multi Header Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/x.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+  });
+});
+
 describe('tier gate composes with glob matching (#692)', () => {
   it('excludes a tier: wave-only glob-matched rule when context is coordinator (tier gate wins over glob match)', () => {
     const dir = makeTmpRulesDir();

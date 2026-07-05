@@ -17,6 +17,11 @@ const DEFAULTS = {
   'check-project-count-sync': true,
   'check-issue-reference-freshness': true,
   'check-session-file-existence': true,
+  'check-command-count': true,
+  'check-session-config-parity': true,
+  'check-vault-dir-parity': true,
+  'check-generated-rule-staleness': true,
+  'check-rule-scoping': true,
 };
 
 describe('_parseDriftCheck', () => {
@@ -47,20 +52,25 @@ describe('_parseDriftCheck', () => {
     });
 
     it('defaults enabled to false when not specified', () => {
-      const content = 'drift-check:\n  mode: strict\n';
+      const content = 'drift-check:\n  mode: hard\n';
       expect(_parseDriftCheck(content).enabled).toBe(false);
     });
   });
 
   describe('mode', () => {
-    it('parses mode: strict', () => {
-      const content = 'drift-check:\n  enabled: true\n  mode: strict\n';
-      expect(_parseDriftCheck(content).mode).toBe('strict');
+    it('parses mode: hard', () => {
+      const content = 'drift-check:\n  enabled: true\n  mode: hard\n';
+      expect(_parseDriftCheck(content).mode).toBe('hard');
     });
 
     it('parses mode: off', () => {
       const content = 'drift-check:\n  mode: off\n';
       expect(_parseDriftCheck(content).mode).toBe('off');
+    });
+
+    it('silently defaults to "warn" on stale strict mode', () => {
+      const content = 'drift-check:\n  mode: strict\n';
+      expect(_parseDriftCheck(content).mode).toBe('warn');
     });
 
     it('silently defaults to "warn" on invalid mode', () => {
@@ -124,15 +134,39 @@ describe('_parseDriftCheck', () => {
       expect(result['check-project-count-sync']).toBe(true);
       expect(result['check-issue-reference-freshness']).toBe(true);
       expect(result['check-session-file-existence']).toBe(true);
+      expect(result['check-command-count']).toBe(true);
+      expect(result['check-session-config-parity']).toBe(true);
+      expect(result['check-vault-dir-parity']).toBe(true);
+      expect(result['check-generated-rule-staleness']).toBe(true);
+      expect(result['check-rule-scoping']).toBe(true);
+    });
+
+    it('parses checks 5-9 flags when explicitly disabled', () => {
+      const content = [
+        'drift-check:',
+        '  check-command-count: false',
+        '  check-session-config-parity: false',
+        '  check-vault-dir-parity: false',
+        '  check-generated-rule-staleness: false',
+        '  check-rule-scoping: false',
+        '',
+      ].join('\n');
+      const result = _parseDriftCheck(content);
+
+      expect(result['check-command-count']).toBe(false);
+      expect(result['check-session-config-parity']).toBe(false);
+      expect(result['check-vault-dir-parity']).toBe(false);
+      expect(result['check-generated-rule-staleness']).toBe(false);
+      expect(result['check-rule-scoping']).toBe(false);
     });
   });
 
   describe('CRLF tolerance and inline comments', () => {
     it('handles CRLF line endings', () => {
-      const content = 'drift-check:\r\n  enabled: true\r\n  mode: strict\r\n';
+      const content = 'drift-check:\r\n  enabled: true\r\n  mode: hard\r\n';
       const result = _parseDriftCheck(content);
       expect(result.enabled).toBe(true);
-      expect(result.mode).toBe('strict');
+      expect(result.mode).toBe('hard');
     });
 
     it('strips inline YAML comments', () => {

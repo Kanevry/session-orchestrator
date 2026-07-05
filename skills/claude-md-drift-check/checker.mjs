@@ -5,7 +5,9 @@
  * Nine checks: path-resolver, project-count-sync, issue-reference-freshness,
  * session-file-existence, surface-count (command/skill/agent/hook-event/
  * hook-matcher/test families), session-config-parity, vault-dir-parity,
- * generated-rule-staleness (WARN-mode only).
+ * generated-rule-staleness (WARN-mode only), and rule-scoping (paths-presence,
+ * cited-but-missing rule citations, zero-match-globs, and foreign-glob
+ * PascalCase tokens in .claude/rules/*.md frontmatter).
  * Scans CLAUDE.md + _meta/**\/*.md by default.
  * Emits JSON on stdout. Exit 0 (ok/warn/skip), 1 (hard + errors), 2 (infra).
  *
@@ -17,14 +19,18 @@
  * claims numerically is skipped gracefully — no claim is ever invented.
  *
  * Reuses `_parseVaultIntegration` from scripts/lib/config/ for Check 7;
- * otherwise pure Node stdlib.
+ * reuses `parseGlobsFrontmatter` from scripts/lib/rule-loader.mjs for Check 9's
+ * glob extraction (mirrors the same picomatch-with-inline-fallback resolution
+ * rule-loader.mjs uses); otherwise pure Node stdlib.
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
+import { parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -43,6 +49,8 @@ function parseArgs(argv) {
     skipSurfaceCount: false,
     skipSessionConfigParity: false,
     skipVaultDirParity: false,
+    skipGeneratedRuleStaleness: false,
+    skipRuleScoping: false,
     repo: null,
     commandsDir: null,
     configTemplate: null,
@@ -62,8 +70,10 @@ function parseArgs(argv) {
     else if (a === '--skip-surface-count') out.skipSurfaceCount = true;
     else if (a === '--skip-session-config-parity') out.skipSessionConfigParity = true;
     else if (a === '--skip-vault-dir-parity') out.skipVaultDirParity = true;
+    else if (a === '--skip-generated-rule-staleness') out.skipGeneratedRuleStaleness = true;
+    else if (a === '--skip-rule-scoping') out.skipRuleScoping = true;
     else if (a === '--help' || a === '-h') {
-      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--config-template PATH] [--skip-surface-count] [--skip-command-count] [--skip-*]\n');
+      process.stdout.write('Usage: checker.mjs [--mode hard|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--config-template PATH] [--skip-surface-count] [--skip-command-count] [--skip-generated-rule-staleness] [--skip-rule-scoping] [--skip-*]\n');
       process.exit(0);
     } else {
       process.stderr.write(`{"status":"infra-error","reason":"unknown arg: ${a}"}\n`);
@@ -357,6 +367,140 @@ function lookupIssueState(iid, repo, cache) {
   return state;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Rule-scoping family (Check 9) — validates .claude/rules/*.md frontmatter
+// against the scripts/lib/rule-loader.mjs contract:
+//   1. paths-presence   → errors[]:   a top-level `paths:` key (rule-loader.mjs
+//      only recognises `globs:`; `paths:` silently loads the rule ALWAYS-ON).
+//   2. cited-but-missing → errors[]:  (a) `.claude/rules/<name>.md` citations in
+//      CLAUDE.md/AGENTS.md that don't exist on disk; (b) bare `<name>.md`
+//      tokens in a rule's own `## See Also` footer that don't exist on disk
+//      (tokens carrying a path separator are cross-directory references and
+//      out of scope).
+//   3. zero-match-globs → warnings[]: a `globs:` pattern matching 0 tracked
+//      files (git ls-files). WARN, not error — library/exemplar repos may
+//      legitimately carry dead stack rules.
+//   4. foreign-glob     → warnings[]: a glob pattern containing a PascalCase
+//      product-like token (e.g. `WalkAITalkieTests`) — a likely copy-paste
+//      leftover from another project's rule.
+//   5. unreadable-file  → warnings[]: a rule file that could not be read
+//      (permissions, race with a concurrent delete, etc.) — surfaced instead
+//      of being silently skipped, since a completeness audit that silently
+//      drops files defeats its purpose. WARN, not error — an unreadable file
+//      must not brick the gate under `mode: hard`.
+// ───────────────────────────────────────────────────────────────────────────
+
+let _picomatchRuleScoping = null;
+function getPicomatchForRuleScoping() {
+  if (_picomatchRuleScoping !== null) return _picomatchRuleScoping;
+  try {
+    const require = createRequire(import.meta.url);
+    _picomatchRuleScoping = require('picomatch');
+  } catch {
+    _picomatchRuleScoping = false;
+  }
+  return _picomatchRuleScoping;
+}
+
+/** Minimal glob-to-RegExp fallback (mirrors scripts/lib/rule-loader.mjs),
+ * used only when picomatch is unavailable in node_modules. */
+function globToRegExpFallback(pattern) {
+  const p = pattern.replace(/\\/g, '/');
+  let re = '';
+  let i = 0;
+  while (i < p.length) {
+    const c = p[i];
+    if (c === '*' && p[i + 1] === '*') {
+      re += '.*';
+      i += 2;
+      if (p[i] === '/') i++;
+    } else if (c === '*') {
+      re += '[^/]*';
+      i++;
+    } else if (c === '?') {
+      re += '[^/]';
+      i++;
+    } else if (c === '.') {
+      re += '\\.';
+      i++;
+    } else {
+      re += c.replace(/[$()+[\]^{|}]/g, '\\$&');
+      i++;
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** Returns true when `pattern` matches at least one entry in `trackedFiles`. */
+function globMatchesAny(pattern, trackedFiles) {
+  const pm = getPicomatchForRuleScoping();
+  if (pm) {
+    return trackedFiles.some((f) => pm.isMatch(f, pattern, { dot: true }));
+  }
+  const re = globToRegExpFallback(pattern);
+  return trackedFiles.some((f) => re.test(f));
+}
+
+/**
+ * Returns the repo's tracked files (relative, forward-slash separated) via
+ * `git ls-files`; falls back to a manual walk (excluding dotdirs and
+ * node_modules — same exclusions as `walkDir`) when git is unavailable.
+ */
+function listTrackedFiles(vaultDir) {
+  try {
+    const out = execFileSync('git', ['ls-files'], { cwd: vaultDir, encoding: 'utf8' });
+    return out.split('\n').filter(Boolean);
+  } catch {
+    const files = [];
+    walkDir(vaultDir, (f) => files.push(relative(vaultDir, f).replace(/\\/g, '/')));
+    return files;
+  }
+}
+
+const RULE_HEADER_LINE_RE = /^[ \t]*(?:<!--.*-->)?[ \t]*$/;
+
+function stripLeadingRuleHeaderLines(content) {
+  const lines = content.split(/\r?\n/);
+  let idx = 0;
+  while (idx < lines.length && RULE_HEADER_LINE_RE.test(lines[idx])) idx++;
+  return lines.slice(idx).join('\n');
+}
+
+/** Extracts the raw frontmatter block body (text between the `---` delimiters),
+ * or null when the file has no frontmatter block. Leading blank/comment
+ * provenance lines are tolerated so Check 9 sees the same frontmatter shape
+ * that rule-loader.mjs accepts. */
+function extractFrontmatterBlockBody(content) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(stripLeadingRuleHeaderLines(content));
+  return m ? m[1] : null;
+}
+
+/** PascalCase product-like token check (e.g. `WalkAITalkieTests`) — the
+ * foreign-glob probe's discriminator, per Check 9 spec. */
+const FOREIGN_GLOB_TOKEN_RE = /[A-Z][a-z]+[A-Z]/;
+
+/**
+ * Extracts bare `<name>.md` tokens from a "## See Also" footer's body lines,
+ * skipping any token that carries a path separator (cross-directory
+ * references are out of scope) or is not shaped like a kebab-case rule
+ * filename. Returns `[{ token, lineOffset }]`, `lineOffset` 0-based relative
+ * to `bodyLines[0]`.
+ */
+function extractSeeAlsoTokens(bodyLines) {
+  const results = [];
+  for (let i = 0; i < bodyLines.length; i++) {
+    const rawTokens = bodyLines[i].split(/[\s·]+/).filter(Boolean);
+    for (const raw of rawTokens) {
+      const stripped = raw.replace(/^[`[(]+/, '').replace(/[`\]),.;:]+$/, '');
+      if (!/\.md$/.test(stripped)) continue;
+      if (stripped.includes('/')) continue; // cross-directory reference — out of scope
+      if (!/^[a-z][a-z0-9-]*\.md$/.test(stripped)) continue; // not kebab-case rule-filename shaped
+      results.push({ token: stripped, lineOffset: i });
+    }
+  }
+  return results;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const vaultDir = resolve(process.env.VAULT_DIR || process.cwd());
@@ -561,14 +705,15 @@ function main() {
   // generated rule's key.
   // The check is silently skipped (no id pushed) when .claude/rules/ is absent
   // or contains no .md files with auto-generated: true.
-  (function runGeneratedRuleStaleness() {
+  if (!args.skipGeneratedRuleStaleness) {
+    (function runGeneratedRuleStaleness() {
     const rulesDir = join(vaultDir, '.claude', 'rules');
     if (!existsSync(rulesDir) || !statSync(rulesDir).isDirectory()) return;
 
     // Minimal inline frontmatter extractor for auto-generated + learning-key.
     // Reads the opening --- ... --- block from a markdown file.
     function extractFrontmatterFields(mdContent) {
-      const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(mdContent);
+      const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(stripLeadingRuleHeaderLines(mdContent));
       if (!m) return { autoGenerated: false, learningKey: null, expiresAt: null };
       const block = m[1];
       const autoGenM = /^auto-generated:\s*(.+)$/m.exec(block);
@@ -684,7 +829,130 @@ function main() {
 
     // Push the check id only when ≥1 generated rule was scanned.
     checksRun.push('generated-rule-staleness');
-  })();
+    })();
+  } else {
+    checksSkipped.push('generated-rule-staleness: explicitly skipped');
+  }
+
+  // Check 9: rule-scoping — validates .claude/rules/*.md frontmatter against
+  // the rule-loader.mjs contract (see the doc-comment above the helper
+  // functions for the five probes, incl. unreadable-file). Silently skipped (no id pushed, no
+  // checksSkipped entry) when .claude/rules/ is absent — mirrors Check 8's
+  // silent-skip semantics. `--skip-rule-scoping` disables the whole check.
+  if (!args.skipRuleScoping) {
+    (function runRuleScoping() {
+      const rulesDir = join(vaultDir, '.claude', 'rules');
+      if (!existsSync(rulesDir) || !statSync(rulesDir).isDirectory()) return;
+
+      checksRun.push('rule-scoping');
+
+      const ruleFileNames = readdirSync(rulesDir)
+        .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+        .filter((f) => statSync(join(rulesDir, f)).isFile());
+      const ruleFileSet = new Set(ruleFileNames);
+
+      // Lazily computed — only needed once any rule declares ≥1 glob pattern.
+      let trackedFiles = null;
+
+      for (const fname of ruleFileNames) {
+        const absPath = join(rulesDir, fname);
+        const relPath = relative(vaultDir, absPath);
+        let content;
+        try {
+          content = readFileSync(absPath, 'utf8');
+        } catch (err) {
+          warnings.push({
+            check: 'rule-scoping', file: relPath, line: 1,
+            message: `rule file unreadable — skipped from rule-scoping analysis (${err.code || err.message})`,
+            extracted: fname,
+          });
+          continue;
+        }
+
+        // --- Probe 1: paths-presence → errors[] ---
+        const fmBody = extractFrontmatterBlockBody(content);
+        if (fmBody && /^paths:/m.test(fmBody)) {
+          errors.push({
+            check: 'rule-scoping', file: relPath, line: 1,
+            message: `Rule frontmatter declares 'paths:' which rule-loader.mjs does not recognise — the rule silently loads ALWAYS-ON regardless of file scope. Migrate to 'globs:'.`,
+            extracted: 'paths:',
+          });
+        }
+
+        // --- Probes 3 & 4: zero-match-globs / foreign-glob → warnings[] ---
+        let parsed;
+        try { parsed = parseGlobsFrontmatter(content); } catch { parsed = { globs: null, meta: {} }; }
+        const globs = parsed.globs;
+        if (Array.isArray(globs) && globs.length > 0) {
+          if (trackedFiles === null) trackedFiles = listTrackedFiles(vaultDir);
+          for (const pattern of globs) {
+            if (!globMatchesAny(pattern, trackedFiles)) {
+              warnings.push({
+                check: 'rule-scoping', file: relPath, line: 1,
+                message: `glob '${pattern}' matches 0 tracked files (library/exemplar repos may legitimately carry dead stack rules)`,
+                extracted: pattern,
+              });
+            }
+            if (FOREIGN_GLOB_TOKEN_RE.test(pattern)) {
+              warnings.push({
+                check: 'rule-scoping', file: relPath, line: 1,
+                message: `glob '${pattern}' contains a PascalCase product-like token — verify this rule was not copy-pasted from another project`,
+                extracted: pattern,
+              });
+            }
+          }
+        }
+
+        // --- Probe 2b: cited-but-missing (this rule's own "## See Also" footer) → errors[] ---
+        const lines = content.split('\n');
+        let seeAlsoStart = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (/^##\s+See Also\s*$/i.test(lines[i])) { seeAlsoStart = i + 1; break; }
+        }
+        if (seeAlsoStart !== -1) {
+          let seeAlsoEnd = lines.length;
+          for (let i = seeAlsoStart; i < lines.length; i++) {
+            if (/^#{1,6}\s+/.test(lines[i])) { seeAlsoEnd = i; break; }
+          }
+          const bodyLines = lines.slice(seeAlsoStart, seeAlsoEnd);
+          for (const { token, lineOffset } of extractSeeAlsoTokens(bodyLines)) {
+            if (!ruleFileSet.has(token)) {
+              errors.push({
+                check: 'rule-scoping', file: relPath, line: seeAlsoStart + lineOffset + 1,
+                message: `'## See Also' cites '${token}' which does not exist in .claude/rules/`,
+                extracted: token,
+              });
+            }
+          }
+        }
+      }
+
+      // --- Probe 2a: cited-but-missing (CLAUDE.md / AGENTS.md citations) → errors[] ---
+      for (const instrName of ['CLAUDE.md', 'AGENTS.md']) {
+        const filePath = join(vaultDir, instrName);
+        if (!existsSync(filePath) || !statSync(filePath).isFile()) continue;
+        const fcontent = readFileSync(filePath, 'utf8');
+        const flines = fcontent.split('\n');
+        const citeRe = /\.claude\/rules\/([A-Za-z0-9_-]+\.md)\b/g;
+        for (let i = 0; i < flines.length; i++) {
+          citeRe.lastIndex = 0;
+          let m;
+          while ((m = citeRe.exec(flines[i])) !== null) {
+            const cited = m[1];
+            if (!ruleFileSet.has(cited)) {
+              errors.push({
+                check: 'rule-scoping', file: instrName, line: i + 1,
+                message: `References .claude/rules/${cited} which does not exist on disk`,
+                extracted: cited,
+              });
+            }
+          }
+        }
+      }
+    })();
+  } else {
+    checksSkipped.push('rule-scoping: explicitly skipped');
+  }
 
   if (scopeFiles.length === 0) {
     process.stdout.write(JSON.stringify({

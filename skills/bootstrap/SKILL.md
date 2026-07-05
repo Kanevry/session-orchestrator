@@ -288,7 +288,7 @@ Entered when `$ARGUMENTS` contains `--sync-rules`. This is a standalone flow —
 
 4. **Commit (optional).** `--sync-rules` does not auto-commit. If rules changed, prompt the user to review `git status` and stage/commit the updates manually. Rationale: rules are canonical artifacts and should travel with an intentional review, not land silently.
 
-5. **Report.** Print: `rules-sync complete. Written: <N>. Skipped: <N>. Preserved: <N>. Errors: <N>.` If `errors > 0`, non-zero exit.
+5. **Report.** Print: `rules-sync complete. Written: <N>. Skipped: <N>. Preserved: <N>. Warnings: <N>. Errors: <N>.` `warnings[]` carries WARN-severity validation findings (e.g. zero-match-globs, foreign-glob) surfaced by `validateRuleContent` — these do NOT block the write; they are informational only. If `errors > 0`, non-zero exit.
 
 **Local overrides.** Any `.claude/rules/<name>.md` without the plugin source header is considered local and never overwritten. To replace a local override with the canonical version, delete it before re-running.
 
@@ -521,6 +521,19 @@ PLUGIN_VERSION="$(node -e "const p=require('$PLUGIN_ROOT/package.json');console.
 ```
 
 The template's initial git commit includes `bootstrap.lock`. If the template already wrote the lock file (as `fast-template.md` does), skip this step — the lock is already committed.
+
+## Phase 4.5: Instruction-Budget Baseline
+
+Non-blocking, informational — never gates Phase 5. Runs two probes against the just-scaffolded instruction file and folds both results into the Phase 5 summary:
+
+1. **Directive-count baseline.** Call `checkInstructionBudget({ repoRoot: REPO_ROOT })` from `scripts/lib/instruction-budget-guard.mjs`. It returns a banner string or `null`. On a fresh scaffold there is no `.claude/rules/` directory yet, so this returns `null`/empty — expected, not an error. The probe becomes meaningful only after `--sync-rules` populates `.claude/rules/`.
+2. **Raw-file budget lint.** Run the same lint Step 2c of `fast-template.md` already ran once (idempotent to re-run here for tiers that skip Step 2c, e.g. Standard/Deep archetype copies that don't go through the Fast-tier CLAUDE.md path):
+
+   ```bash
+   node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --repo-root "$REPO_ROOT" --require-provenance --mode warn --json
+   ```
+
+Fold both results into one line for the Phase 5 report, e.g. `Instruction budget: n/a (no .claude/rules/ yet). Budget lint: ok.` or `Budget lint: 1 violation (max-lines).` Never block or retry — this phase informs only.
 
 ## Phase 5: Resume
 

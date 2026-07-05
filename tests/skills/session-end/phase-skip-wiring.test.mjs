@@ -160,6 +160,25 @@ describe('C — Gate F (drift-operations mode:hard) → warn + carryover', () =>
     expect(drift.toLowerCase()).toContain('carryover');
     expect(drift).toContain('priority:high');
   });
+
+  it('does not describe hard drift-check mode as blocking', () => {
+    expect(drift).not.toContain('would have blocked');
+    expect(drift).not.toContain('hard mode, blocking');
+  });
+
+  it('maps drift-check flags for checks 5-9 to checker skip args', () => {
+    const mappings = [
+      ['check-command-count', '--skip-command-count'],
+      ['check-session-config-parity', '--skip-session-config-parity'],
+      ['check-vault-dir-parity', '--skip-vault-dir-parity'],
+      ['check-generated-rule-staleness', '--skip-generated-rule-staleness'],
+      ['check-rule-scoping', '--skip-rule-scoping'],
+    ];
+    for (const [configKey, skipArg] of mappings) {
+      expect(drift).toContain(configKey);
+      expect(drift).toContain(skipArg);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

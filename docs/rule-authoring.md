@@ -14,6 +14,8 @@ Two rule categories existed before FA1:
 
 FA1 (issue #694) extends the frontmatter parser to capture additional **conditional activation axes** on each rule entry and to apply **deterministic gating** after a successful parse. The new axes are session-mode, host-class, and expiry, plus metadata keys (`learning-key`, `auto-generated`, `confidence`, `description`, `alwaysApply`) that future waves (FA2 reconciliation, FA4 validation) consume. The glob-scoping contract is unchanged; the new gates compose with it.
 
+A third category, added by issue #722 Epic A: **vendored rules** — files sourced from this repo's `rules/` library and copied into a consumer repo's `.claude/rules/` via `/bootstrap --sync-rules`. Vendored rules carry a mandatory provenance header (see [Provenance header + frontmatter coexistence](#provenance-header--frontmatter-coexistence-issue-722) below) and are validated before every write (see [Vendoring validation](#vendoring-validation-issue-722) below).
+
 ## Frontmatter Field Reference
 
 All keys are optional. Unknown keys are **ignored without error** — adding a new key never breaks the loader. Frontmatter is the standard `---`-delimited YAML block at the top of the file.
@@ -81,6 +83,49 @@ Degraded loading is always preferable to silently missing a security or architec
 
 - **Malformed frontmatter** → the rule is treated as **always-on** and a WARN is written to stderr. A rule is never silently dropped.
 - **Malformed `expires-at`** → the expiry gate does **not** exclude the rule (fail-open); the rule continues to load.
+
+## Vendored Rules (issue #722 Epic A)
+
+Rules sourced from this repo's `rules/` library (`rules/always-on/*.md`, and future `rules/opt-in-stack/*.md` / `rules/opt-in-domain/*.md`) and copied into a consumer repo's `.claude/rules/` via `/bootstrap --sync-rules` are a third rule category, alongside hand-authored and FA2 auto-generated rules. The sync pipeline (`scripts/lib/rules-sync.mjs`) has its own authoring contract, documented here.
+
+### Provenance header + frontmatter coexistence (issue #722)
+
+Vendored rule sources carry a mandatory single-line provenance header **before** any frontmatter block — `rules-sync.mjs` uses that header (`PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin ...'`) to tell "plugin-owned, safe to overwrite on re-sync" apart from "local override, preserve". The recommended shape for a vendored rule with `globs:` frontmatter:
+
+```markdown
+<!-- source: session-orchestrator plugin vX.Y.Z (canonical: rules/opt-in-stack/foo.md) -->
+---
+globs:
+  - src/**/*.tsx
+---
+# Foo Rules (Path-scoped)
+```
+
+`rule-loader.mjs`'s frontmatter parser (`parseGlobsFrontmatter`) tolerates a leading run of blank lines and/or single-line HTML comments before the opening `---`, so a vendored rule's provenance header does not defeat its `globs:` scoping — the header line is skipped, then frontmatter parses exactly as it would without the header. This tolerance is header-agnostic (it accepts any single-line HTML comment, not only the plugin's own), so a hand-authored rule that happens to start with a one-line comment is unaffected.
+
+### Vendoring validation (issue #722)
+
+Before `syncRules()` writes a source file into a consumer repo's `.claude/rules/`, it runs a pre-write gate via `validateRuleContent()` (`scripts/lib/validate-vendored-rules.mjs`). Five probes:
+
+| Probe | Severity | Rejects / flags |
+|-------|----------|------------------|
+| `paths-frontmatter` | error | A top-level `paths:` frontmatter key — `rule-loader.mjs` only recognises `globs:`; a `paths:` key is silently ignored and the rule loads always-on instead of the intended glob-scoped subset. |
+| `provenance-header` | error (opt-in via `requireProvenance`, default `true` in `syncRules()`) | Missing provenance header on a library source — without it, `rules-sync.mjs` mis-detects the file as a local override on the next re-sync and can never update it again. |
+| `placeholder` | error | Unfilled placeholder tokens: `{{PROJECT_NAME}}`-style handlebars, a `## TODO: Customize` heading, or a `<!-- TODO:` comment — skeleton content, not a finished rule. |
+| `zero-match-globs` | warn | A `globs:` pattern matching 0 files in the target repo's tracked file list (`git ls-files`, falling back to a directory walk). Legitimately possible in a freshly-scaffolded repo. |
+| `foreign-glob` | warn | A glob segment carrying a PascalCase, product-like token (regex `[A-Z][a-z]+[A-Z]`, e.g. `WalkAITalkieTests`) — a likely copy-paste leftover from another project's rule scope. |
+
+Error-severity violations skip the write for that file (recorded in `syncRules()`'s `errors[]`); warn-severity violations do not block the write and are recorded additively in `warnings[]`. The standalone CLI (`node scripts/lib/validate-vendored-rules.mjs --dir <rulesDir> [--target-root <repo>] [--require-provenance] [--json] [--mode hard|warn]`) exits `0` (no errors, or errors under `--mode warn`), `1` (errors present under `--mode hard`), or `2` (invocation error).
+
+### Archetype-scoped manifest tags (issue #722 Epic A Wave 3)
+
+`rules/_index.md` entries may carry an optional trailing `[archetypes: a, b]` tag:
+
+```markdown
+- `opt-in-stack/foo.md` — description [archetypes: nextjs-minimal, node-minimal]
+```
+
+Absent tag = universal (vendored to every consumer repo, the default and fully backward compatible). Present tag = scoped — vendored only when the consumer repo's resolved archetype matches one of the listed values (case-insensitive). Archetype resolution precedence: explicit `archetype` argument (CLI `--archetype`) > `<repoRoot>/.orchestrator/bootstrap.lock`'s `archetype:` line > unknown. A mismatch or an unresolvable target archetype records a `skipped[]` entry with reason `archetype-mismatch` or `archetype-unknown` respectively — never a hard error. See `rules/_index.md` § Entry syntax for the full archetype value list.
 
 ## The Never-Always-On Invariant (Auto-Generated Rules)
 
@@ -193,4 +238,8 @@ timeout masks real perf regressions.
 - [`scripts/lib/rule-loader.mjs`](../scripts/lib/rule-loader.mjs) — `loadApplicableRules()` implementation (the contract this doc specifies)
 - `scripts/lib/validate/check-rules.mjs` — FA4 CI validation gate (forward-reference; lands with #697)
 - [`scripts/print-applicable-rules.mjs`](../scripts/print-applicable-rules.mjs) — `--context wave|coordinator` flag exercises the tier gate (#692)
-- Issues: #336 (glob-scoping), #668 (instruction-budget), #692 (tier load-context gating), #693 (Rule Activation epic), #694 (FA1 foundation), #697 (FA4 validation)
+- [`scripts/lib/validate-vendored-rules.mjs`](../scripts/lib/validate-vendored-rules.mjs) — pre-write vendoring validator (issue #722 Epic A Wave 2)
+- [`scripts/lib/rules-sync.mjs`](../scripts/lib/rules-sync.mjs) — `syncRules()` implementation, archetype resolution (issue #722 Epic A)
+- [`rules/_index.md`](../rules/_index.md) — canonical manifest, `[archetypes: ...]` tag syntax
+- [`skills/claude-md-drift-check/SKILL.md`](../skills/claude-md-drift-check/SKILL.md) — Check 9 `rule-scoping` validates this frontmatter contract post-vendoring
+- Issues: #336 (glob-scoping), #668 (instruction-budget), #692 (tier load-context gating), #693 (Rule Activation epic), #694 (FA1 foundation), #697 (FA4 validation), #722 (vendoring validation + archetype-scoped manifest)

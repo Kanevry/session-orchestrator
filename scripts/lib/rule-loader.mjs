@@ -9,6 +9,17 @@
  * Rules with `globs:` load only when at least one `scopePath` matches at least
  * one glob pattern.
  *
+ * A rule file MAY carry a leading single-line provenance header before its
+ * frontmatter block — the vendoring pipeline (`scripts/rules-sync.mjs`)
+ * requires a first-line `<!-- source: session-orchestrator plugin
+ * (canonical: ...) -->` comment on every vendored rule. The frontmatter
+ * parser tolerates any leading run of blank lines and/or single-line HTML
+ * comments before the opening `---`, so a vendored rule keeps its `globs:`
+ * scoping and scalar meta instead of silently falling back to always-on.
+ * Only single-line comments are tolerated (no multi-line comment blocks);
+ * files with no header, or starting directly with `---`, parse exactly as
+ * before.
+ *
  * Beyond the `globs:` key (issue #336), the frontmatter parser also captures
  * these scalar activation keys (issue #694), surfaced on each RuleEntry:
  *   - `description`   (string)
@@ -124,6 +135,33 @@ function matchGlob(filePath, globPattern) {
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
+// A single header line is either blank or a complete single-line HTML
+// comment (`<!-- ... -->` on one line). Multi-line comment blocks are
+// deliberately NOT supported — the vendoring convention is a single first
+// line, and tolerating a few stacked comment lines (each matching this RE)
+// is sufficient.
+const HEADER_LINE_RE = /^[ \t]*(?:<!--.*-->)?[ \t]*$/;
+
+/**
+ * Skips a leading run of blank lines and/or single-line HTML comments
+ * (`<!-- ... -->`) at the very start of a rule file's contents, so the
+ * frontmatter opener (`---`) can be found even when the vendoring pipeline's
+ * mandatory provenance header precedes it. Stops at the first line that is
+ * neither blank nor a complete single-line comment.
+ *
+ * @param {string} contents - raw file contents
+ * @returns {string} contents starting at the first non-header line (empty
+ *   string when the entire content is header lines)
+ */
+function stripLeadingProvenanceHeader(contents) {
+  const lines = contents.split(/\r?\n/);
+  let idx = 0;
+  while (idx < lines.length && HEADER_LINE_RE.test(lines[idx])) {
+    idx++;
+  }
+  return lines.slice(idx).join('\n');
+}
+
 // Scalar activation keys captured (issue #694 + #692). The `globs` key keeps
 // its dedicated sequence/flow handling and is NOT routed through this table.
 const SCALAR_META_KEYS = new Set([
@@ -154,11 +192,16 @@ const SCALAR_META_KEYS = new Set([
  *   - all other recognised keys → quote-stripped strings
  * Unknown keys are ignored without error.
  *
+ * A leading run of blank lines and/or single-line HTML comments (e.g. the
+ * vendoring pipeline's provenance header) is tolerated before the opening
+ * `---` — see `stripLeadingProvenanceHeader`. Files with no such header parse
+ * identically to before this tolerance was added.
+ *
  * @param {string} contents - raw file contents
  * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
  */
 export function parseGlobsFrontmatter(contents) {
-  const match = FRONTMATTER_RE.exec(contents);
+  const match = FRONTMATTER_RE.exec(stripLeadingProvenanceHeader(contents));
   if (!match) return { globs: null, meta: {} };
 
   const fmText = match[1];

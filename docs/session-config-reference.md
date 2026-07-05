@@ -275,7 +275,19 @@ vault-sync:
 
 ## CLAUDE.md Drift Check
 
-Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drift-check/SKILL.md`). Four checks run against top-level repo docs: (1) absolute paths in CLAUDE.md / _meta resolve on disk, (2) hardcoded `01-projects/` count claims match the actual folder count, (3) issue references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) are not closed, (4) `50-sessions/YYYY-MM-DD-*.md` references exist on disk. Complementary to `vault-sync`: that gate validates frontmatter inside the vault tree; this gate validates narrative claims in top-level docs.
+Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drift-check/SKILL.md` for the full spec — the SSOT for check semantics). Nine checks run against top-level repo docs:
+
+1. `path-resolver` — absolute paths in CLAUDE.md / _meta resolve on disk
+2. `project-count-sync` — hardcoded `01-projects/` count claims match the actual folder count
+3. `issue-reference-freshness` — issue references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) are not closed
+4. `session-file-existence` — `50-sessions/YYYY-MM-DD-*.md` references exist on disk
+5. `command-count` — claimed "N commands" prose matches actual `commands/*.md` count
+6. `session-config-parity` — top-level `## Session Config` keys diffed against `docs/session-config-template.md`
+7. `vault-dir-parity` — `CLAUDE.md` vs `AGENTS.md` agreement on `vault-integration.vault-dir`
+8. `generated-rule-staleness` (WARN-only) — auto-generated rules whose `learning-key` is absent or expired in `learnings.jsonl`
+9. `rule-scoping` — `.claude/rules/*.md` `paths:`/`globs:` frontmatter defects, cited-but-missing rule citations, zero-match globs, foreign PascalCase glob tokens
+
+Complementary to `vault-sync`: that gate validates frontmatter inside the vault tree; this gate validates narrative claims in top-level docs.
 
 All fields live under a top-level `drift-check` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -285,22 +297,33 @@ drift-check:
   mode: warn
   include-paths:
     - CLAUDE.md
+    - AGENTS.md
     - _meta/**/*.md
   check-path-resolver: true
   check-project-count-sync: true
   check-issue-reference-freshness: true
   check-session-file-existence: true
+  check-command-count: true
+  check-session-config-parity: true
+  check-vault-dir-parity: true
+  check-generated-rule-staleness: true
+  check-rule-scoping: true
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `drift-check.enabled` | boolean | `false` | If true, session-end runs the drift checker as part of Phase 2.2. When false (or missing), the gate is skipped silently. |
-| `drift-check.mode` | string | `warn` | Gate severity. `hard` blocks session close on any drift. `warn` reports drift in the quality gate report but does not block. `off` bypasses the checker entirely. |
-| `drift-check.include-paths` | list of strings | `["CLAUDE.md", "_meta/**/*.md"]` | Files to scan. Supports exact paths and `<dir>/**/*.<ext>` directory-recursive patterns (relative to repo root). |
-| `drift-check.check-path-resolver` | boolean | `true` | Enable Check 1: every absolute `/Users/…` path in scope files must resolve via `existsSync`. Code-fence blocks are skipped. |
-| `drift-check.check-project-count-sync` | boolean | `true` | Enable Check 2: hardcoded `(N registered)` / `(N projects)` claims must match the actual `01-projects/*/` count. Auto-skipped if no `01-projects/` directory exists. |
-| `drift-check.check-issue-reference-freshness` | boolean | `true` | Enable Check 3: `#NN` references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) must be open per `glab issue view`. Auto-skipped if `glab` is not on PATH or origin repo cannot be detected. |
-| `drift-check.check-session-file-existence` | boolean | `true` | Enable Check 4: every `50-sessions/YYYY-MM-DD-*.md` reference must exist on disk at `<vault>/50-sessions/<file>`. |
+| `drift-check.mode` | string | `warn` | Gate severity. `hard` makes the checker exit non-zero on drift; session-end surfaces the errors, creates carryover, and continues. `warn` reports drift in the quality gate report but does not block. `off` bypasses the checker entirely. |
+| `drift-check.include-paths` | list of strings | `["CLAUDE.md", "AGENTS.md", "_meta/**/*.md"]` | Files to scan. Supports exact paths and `<dir>/**/*.<ext>` directory-recursive patterns (relative to repo root). |
+| `drift-check.check-path-resolver` | boolean | `true` | Enable Check 1 (`path-resolver`): every absolute `/Users/…` path in scope files must resolve via `existsSync`. Code-fence blocks are skipped. |
+| `drift-check.check-project-count-sync` | boolean | `true` | Enable Check 2 (`project-count-sync`): hardcoded `(N registered)` / `(N projects)` claims must match the actual `01-projects/*/` count. Auto-skipped if no `01-projects/` directory exists. |
+| `drift-check.check-issue-reference-freshness` | boolean | `true` | Enable Check 3 (`issue-reference-freshness`): `#NN` references inside forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps, Roadmap) must be open per `glab issue view`. Auto-skipped if `glab` is not on PATH or origin repo cannot be detected. |
+| `drift-check.check-session-file-existence` | boolean | `true` | Enable Check 4 (`session-file-existence`): every `50-sessions/YYYY-MM-DD-*.md` reference must exist on disk at `<vault>/50-sessions/<file>`. |
+| `drift-check.check-command-count` | boolean | `true` | Enable Check 5 (`command-count`): claimed "N commands" prose must match the actual count of `*.md` files directly inside `commands/` (non-recursive). Auto-skipped if no `commands/` directory exists. |
+| `drift-check.check-session-config-parity` | boolean | `true` | Enable Check 6 (`session-config-parity`): every top-level key under `## Session Config` in the canonical template (`docs/session-config-template.md`) must also be present in the resolved local instruction file. Missing keys are errors. |
+| `drift-check.check-vault-dir-parity` | boolean | `true` | Enable Check 7 (`vault-dir-parity`): when both `CLAUDE.md` and `AGENTS.md` exist, their `vault-integration.vault-dir` values must agree. Skipped when only one instruction file is present. |
+| `drift-check.check-generated-rule-staleness` | boolean | `true` | Enable Check 8 (`generated-rule-staleness`, WARN-only): every `.claude/rules/*.md` file with `auto-generated: true` frontmatter must carry a `learning-key` that resolves to a non-expired entry in `.orchestrator/metrics/learnings.jsonl`. Never blocks — this check only ever produces warnings. |
+| `drift-check.check-rule-scoping` | boolean | `true` | Enable Check 9 (`rule-scoping`): validates `.claude/rules/*.md` frontmatter against the `rule-loader.mjs` activation contract — a top-level `paths:` key (error), cited-but-missing rule citations in `CLAUDE.md`/`AGENTS.md`/`## See Also` footers (error), zero-match `globs:` patterns (warn), and foreign PascalCase glob tokens (warn). Skipped silently when `.claude/rules/` is absent. |
 
 ## Vault Integration
 

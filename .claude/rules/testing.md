@@ -6,7 +6,6 @@ globs:
   - tests/**
   - vitest.config.*
   - playwright.config.*
-  - "**/WalkAITalkieTests/**"
 tier: wave-only
 ---
 

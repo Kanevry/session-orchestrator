@@ -954,7 +954,7 @@ describe('vault-staleness parsing', () => {
 // #217 regression — vault-sync and drift-check no longer accept "hard" mode
 // ---------------------------------------------------------------------------
 
-describe('#217 regression — mode: hard silently defaults to warn', () => {
+describe('#217 regression — hard-mode handling by gate', () => {
   it('vault-sync.mode: hard silently defaults to warn', () => {
     const content = [
       '## Session Config',
@@ -967,7 +967,7 @@ describe('#217 regression — mode: hard silently defaults to warn', () => {
     expect(config['vault-sync'].mode).toBe('warn');
   });
 
-  it('drift-check.mode: hard silently defaults to warn', () => {
+  it('drift-check.mode: hard is preserved for checker hard-mode carryover flow', () => {
     const content = [
       '## Session Config',
       '',
@@ -976,7 +976,7 @@ describe('#217 regression — mode: hard silently defaults to warn', () => {
       '  mode: hard',
     ].join('\n');
     const config = parseSessionConfig(content);
-    expect(config['drift-check'].mode).toBe('warn');
+    expect(config['drift-check'].mode).toBe('hard');
   });
 });
 

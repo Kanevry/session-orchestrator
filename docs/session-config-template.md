@@ -413,7 +413,17 @@ Read by: `skills/discovery/probes/vault-staleness.mjs`, `skills/discovery/probes
 
 ## CLAUDE.md Drift Check
 
-Narrative-drift gate at session-end Phase 2.2. Four checks: absolute-path resolution, project-count claims, issue-reference freshness, session-file existence.
+Narrative-drift gate at session-end Phase 2.2. Nine checks (see `skills/claude-md-drift-check/SKILL.md` for the full spec):
+
+1. `path-resolver` — absolute-path resolution
+2. `project-count-sync` — `01-projects/` count claims
+3. `issue-reference-freshness` — closed refs in forward-looking sections
+4. `session-file-existence` — `50-sessions/YYYY-MM-DD-*.md` references
+5. `command-count` — claimed "N commands" vs actual `commands/*.md`
+6. `session-config-parity` — top-level keys diffed against `docs/session-config-template.md`
+7. `vault-dir-parity` — `CLAUDE.md` vs `AGENTS.md` agreement on `vault-integration.vault-dir`
+8. `generated-rule-staleness` (WARN-only) — auto-generated rules whose `learning-key` is absent or expired
+9. `rule-scoping` — `.claude/rules/*.md` `paths:`/`globs:` frontmatter defects, cited-but-missing rule citations, zero-match globs, foreign glob tokens
 
 ```yaml
 drift-check:
@@ -421,11 +431,17 @@ drift-check:
   mode: warn                           # warn | hard | off
   include-paths:
     - CLAUDE.md
+    - AGENTS.md
     - _meta/**/*.md
   check-path-resolver: true
   check-project-count-sync: true
   check-issue-reference-freshness: true
   check-session-file-existence: true
+  check-command-count: true
+  check-session-config-parity: true
+  check-vault-dir-parity: true
+  check-generated-rule-staleness: true
+  check-rule-scoping: true
 ```
 
 Read by: `skills/claude-md-drift-check/SKILL.md`, `skills/claude-md-drift-check/checker.mjs`.
@@ -721,11 +737,16 @@ vault-staleness:
 drift-check:
   enabled: true
   mode: warn
-  include-paths: [CLAUDE.md, "_meta/**/*.md"]
+  include-paths: [CLAUDE.md, AGENTS.md, "_meta/**/*.md"]
   check-path-resolver: true
   check-project-count-sync: true
   check-issue-reference-freshness: true
   check-session-file-existence: true
+  check-command-count: true
+  check-session-config-parity: true
+  check-vault-dir-parity: true
+  check-generated-rule-staleness: true
+  check-rule-scoping: true
 
 # Docs orchestrator
 docs-orchestrator:

@@ -11,9 +11,9 @@
  * include-paths=["CLAUDE.md","AGENTS.md","_meta/**\/*.md"] (CLAUDE.md and
  * AGENTS.md are transparent aliases per
  * skills/_shared/instruction-file-resolution.md),
- * all four per-check flags default to true.
+ * all nine per-check flags default to true.
  * @param {string} content — full file contents
- * @returns {{enabled: boolean, mode: string, "include-paths": string[], "check-path-resolver": boolean, "check-project-count-sync": boolean, "check-issue-reference-freshness": boolean, "check-session-file-existence": boolean}}
+ * @returns {{enabled: boolean, mode: string, "include-paths": string[], "check-path-resolver": boolean, "check-project-count-sync": boolean, "check-issue-reference-freshness": boolean, "check-session-file-existence": boolean, "check-command-count": boolean, "check-session-config-parity": boolean, "check-vault-dir-parity": boolean, "check-generated-rule-staleness": boolean, "check-rule-scoping": boolean}}
  */
 export function _parseDriftCheck(content) {
   // CLAUDE.md and AGENTS.md are transparent aliases per
@@ -29,6 +29,11 @@ export function _parseDriftCheck(content) {
     'check-project-count-sync': true,
     'check-issue-reference-freshness': true,
     'check-session-file-existence': true,
+    'check-command-count': true,
+    'check-session-config-parity': true,
+    'check-vault-dir-parity': true,
+    'check-generated-rule-staleness': true,
+    'check-rule-scoping': true,
   };
 
   const lines = content.split(/\r?\n/);
@@ -53,6 +58,11 @@ export function _parseDriftCheck(content) {
   let dcChkCount = true;
   let dcChkIssue = true;
   let dcChkSess = true;
+  let dcChkCommandCount = true;
+  let dcChkSessionConfigParity = true;
+  let dcChkVaultDirParity = true;
+  let dcChkGeneratedRuleStaleness = true;
+  let dcChkRuleScoping = true;
   const dcInclude = [];
   let inIncludeList = false;
 
@@ -85,7 +95,7 @@ export function _parseDriftCheck(content) {
         dcEnabled = v.toLowerCase() === 'true';
         break;
       case 'mode':
-        if (['strict', 'warn', 'off'].includes(v)) dcMode = v;
+        if (['hard', 'warn', 'off'].includes(v)) dcMode = v;
         break;
       case 'include-paths':
         if (!v) inIncludeList = true;
@@ -102,6 +112,21 @@ export function _parseDriftCheck(content) {
       case 'check-session-file-existence':
         dcChkSess = v.toLowerCase() !== 'false';
         break;
+      case 'check-command-count':
+        dcChkCommandCount = v.toLowerCase() !== 'false';
+        break;
+      case 'check-session-config-parity':
+        dcChkSessionConfigParity = v.toLowerCase() !== 'false';
+        break;
+      case 'check-vault-dir-parity':
+        dcChkVaultDirParity = v.toLowerCase() !== 'false';
+        break;
+      case 'check-generated-rule-staleness':
+        dcChkGeneratedRuleStaleness = v.toLowerCase() !== 'false';
+        break;
+      case 'check-rule-scoping':
+        dcChkRuleScoping = v.toLowerCase() !== 'false';
+        break;
     }
   }
 
@@ -113,5 +138,10 @@ export function _parseDriftCheck(content) {
     'check-project-count-sync': dcChkCount,
     'check-issue-reference-freshness': dcChkIssue,
     'check-session-file-existence': dcChkSess,
+    'check-command-count': dcChkCommandCount,
+    'check-session-config-parity': dcChkSessionConfigParity,
+    'check-vault-dir-parity': dcChkVaultDirParity,
+    'check-generated-rule-staleness': dcChkGeneratedRuleStaleness,
+    'check-rule-scoping': dcChkRuleScoping,
   };
 }
