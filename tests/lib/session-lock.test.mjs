@@ -165,12 +165,16 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
     expect(result.exclusivityClass).toBe('parallel-ok');
   });
 
-  it('EEXIST loser path: a second acquire over a dead-PID lock returns reason=stale-pid-dead', () => {
-    // Pre-write a same-host lock whose PID is guaranteed dead.
+  it('EEXIST loser path: a second acquire over an expired-heartbeat dead-PID lock returns reason=stale-pid-dead', () => {
+    // Pre-write a same-host lock whose PID is guaranteed dead AND whose
+    // heartbeat is expired (#744 re-fixture — a FRESH heartbeat with a dead
+    // PID must classify 'active', not 'stale-pid-dead'; see the dedicated
+    // "#744 heartbeat-first liveness" describe block below for that case).
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
     const deadLock = {
       session_id: 'sess-dead-winner',
-      started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
       mode: 'feature',
       pid: DEAD_PID,
       host: hostname(),
@@ -206,6 +210,157 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
     acquire({ sessionId: 'sess-hb', mode: 'deep', repoRoot });
     const ok = updateHeartbeat({ sessionId: 'sess-hb', repoRoot });
     expect(ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #744 — heartbeat-first liveness (classifyExisting via acquire())
+// ---------------------------------------------------------------------------
+//
+// Fixes the incident where a live heartbeating session was misclassified
+// 'stale-pid-dead': classifyExisting used to gate on
+// `!isTtlExpired(existing) && pidAlive !== false` — a dead recorded PID (the
+// lock's `pid` field is the ephemeral hook subprocess PID, not the semantic
+// session's own PID) VETOED a fresh last_heartbeat, and isTtlExpired measures
+// age from started_at rather than last_heartbeat, so a long-running-but-
+// heartbeating session was ALSO wrongly flagged expired. isLockLive(existing)
+// is now the SOLE active gate; these cases pin the corrected classification
+// matrix (fresh/expired heartbeat × dead/alive PID × same/cross host).
+
+describe('acquire() — #744 heartbeat-first liveness', () => {
+  function writeLockFile(repoRootDir, lock) {
+    const orchDir = join(repoRootDir, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(lock) + '\n');
+  }
+
+  it('case 1 (the incident): fresh heartbeat + dead PID (same host) classifies active, not stale-pid-dead', () => {
+    const now = new Date().toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-fresh-dead-pid',
+      started_at: now,
+      last_heartbeat: now,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-1', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock.session_id).toBe('sess-744-fresh-dead-pid');
+  });
+
+  it('case 2: fresh heartbeat + dead PID + old started_at (6h) still classifies active', () => {
+    const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+    const freshHeartbeat = new Date().toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-long-running',
+      started_at: sixHoursAgo,
+      last_heartbeat: freshHeartbeat,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-2', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+    expect(result.existingLock.session_id).toBe('sess-744-long-running');
+  });
+
+  it('case 3: expired heartbeat + dead PID classifies stale-pid-dead', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-expired-dead',
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-3', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-pid-dead');
+  });
+
+  it('case 4: expired heartbeat + live PID classifies stale-pid-alive', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-expired-alive',
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-4', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-pid-alive');
+  });
+
+  it('case 5a: cross-host fresh heartbeat classifies active', () => {
+    const now = new Date().toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-cross-host-fresh',
+      started_at: now,
+      last_heartbeat: now,
+      mode: 'deep',
+      pid: process.pid,
+      host: 'some-other-host-744',
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-5a', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+  });
+
+  it('case 5b: cross-host expired heartbeat classifies stale-pid-alive, never stale-pid-dead', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-cross-host-expired',
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      mode: 'deep',
+      pid: process.pid,
+      host: 'some-other-host-744',
+      ttl_hours: 4,
+    });
+
+    const result = acquire({ sessionId: 'sess-744-intruder-5b', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-pid-alive');
+  });
+
+  it('case 6: checkStale().isLive diverges from pidAlive on fresh-heartbeat + dead-PID', () => {
+    const now = new Date().toISOString();
+    writeLockFile(repoRoot, {
+      session_id: 'sess-744-checkstale',
+      started_at: now,
+      last_heartbeat: now,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: 4,
+    });
+
+    const result = checkStale({ repoRoot });
+
+    expect(result.pidAlive).toBe(false);
+    expect(result.isLive).toBe(true);
   });
 });
 
@@ -281,6 +436,20 @@ describe('release', () => {
     expect(existsSync(lockFile)).toBe(false);
   });
 
+  // #744 Fix 3 — post-delete verify. A clean unlink on a normal filesystem
+  // must report verified=true (the re-readLock confirms the file is truly
+  // gone, no retry needed).
+  it('release() post-delete verify: a clean release reports verified=true', () => {
+    acquire({ sessionId: 'sess-verify-release', mode: 'feature', repoRoot });
+
+    const result = release({ sessionId: 'sess-verify-release', repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.deleted).toBe(true);
+    expect(result.verified).toBe(true);
+    expect(readLock({ repoRoot })).toBeNull();
+  });
+
   it('returns ok=true deleted=false with reason when session_id does not match', () => {
     acquire({ sessionId: 'sess-owner', mode: 'feature', repoRoot });
     const lockFile = join(repoRoot, LOCK_PATH);
@@ -300,6 +469,135 @@ describe('release', () => {
 
     expect(result.ok).toBe(true);
     expect(result.deleted).toBe(false);
+  });
+
+  // #744 Fix 3 — bounded retry path. The post-delete verify re-reads the lock
+  // path; if it is STILL observable (a transient unlink/stat race), release()
+  // attempts exactly one bounded retry unlink before computing the final
+  // `verified` flag. These two tests force that "still observable" branch via
+  // an fs.readFileSync spy (same technique as the Issue #596 fault-injection
+  // block below), since a genuine unlink/stat race cannot be reproduced
+  // deterministically on a real filesystem.
+  describe('release() — #744 post-delete verify bounded retry', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('retries once when the lock transiently reappears, then reports verified=true once truly gone', () => {
+      acquire({ sessionId: 'sess-retry-transient', mode: 'feature', repoRoot });
+      const lockFile = join(repoRoot, LOCK_PATH);
+      const originalContent = readFileSync(lockFile, 'utf8');
+
+      const originalRead = fs.readFileSync.bind(fs);
+      let lockReadCount = 0;
+      const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+        if (p === lockFile) {
+          lockReadCount += 1;
+          // Call 1: release()'s up-front ownership readLock().
+          // Call 2: the post-delete verify read — simulate a transient reappearance.
+          if (lockReadCount <= 2) return originalContent;
+          // Call 3: the re-check after the bounded retry unlink — confirm truly gone.
+          const e = new Error('ENOENT: no such file or directory, open');
+          e.code = 'ENOENT';
+          throw e;
+        }
+        return originalRead(p, ...rest);
+      });
+      const unlinkSpy = vi.spyOn(fs, 'unlinkSync');
+
+      const result = release({ sessionId: 'sess-retry-transient', repoRoot });
+
+      expect(readSpy).toHaveBeenCalled();
+      expect(lockReadCount).toBe(3);
+      // Two unlink attempts: the primary delete + the one bounded retry.
+      expect(unlinkSpy).toHaveBeenCalledTimes(2);
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(true);
+      expect(result.verified).toBe(true);
+    });
+
+    it('reports verified=false when the lock remains observable even after the bounded retry', () => {
+      acquire({ sessionId: 'sess-retry-fails', mode: 'feature', repoRoot });
+      const lockFile = join(repoRoot, LOCK_PATH);
+      const originalContent = readFileSync(lockFile, 'utf8');
+
+      const originalRead = fs.readFileSync.bind(fs);
+      let lockReadCount = 0;
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+        if (p === lockFile) {
+          lockReadCount += 1;
+          // Every post-delete read (calls 2 and 3) reports the lock as still
+          // observable — the bounded retry does not resolve the race.
+          return originalContent;
+        }
+        return originalRead(p, ...rest);
+      });
+
+      const result = release({ sessionId: 'sess-retry-fails', repoRoot });
+
+      expect(lockReadCount).toBe(3);
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(true);
+      expect(result.verified).toBe(false);
+    });
+  });
+
+  // Ownership-scoped post-delete retry (PSA-005 sibling-lock race — security
+  // review finding, Wave 4 deep-2). The bounded retry above must NEVER fire
+  // against a lock it does not own: if a sibling session (B) legitimately
+  // re-`acquire()`d the lock path in the race window between A's unlink and
+  // A's post-delete verify read, A must treat its own lock as already gone
+  // (verified=true) and must NOT attempt a second unlink that would destroy
+  // B's fresh lock.
+  describe('release() — ownership-scoped retry (never deletes a sibling lock)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('does not retry-unlink when a DIFFERENT session_id lock is observed post-delete; reports verified=true', () => {
+      acquire({ sessionId: 'sess-race-a', mode: 'feature', repoRoot });
+      const lockFile = join(repoRoot, LOCK_PATH);
+      const ownContent = readFileSync(lockFile, 'utf8');
+
+      // B's lock, as it would look had B legitimately re-acquired the path
+      // in the race window right after A's primary unlink.
+      const foreignLock = {
+        session_id: 'sess-race-b',
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        mode: 'feature',
+        pid: 424242,
+        host: 'sibling-host',
+        ttl_hours: 4,
+      };
+      const foreignContent = JSON.stringify(foreignLock, null, 2) + '\n';
+
+      const originalRead = fs.readFileSync.bind(fs);
+      let lockReadCount = 0;
+      const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+        if (p === lockFile) {
+          lockReadCount += 1;
+          // Call 1: release()'s up-front ownership readLock() — still A's own lock.
+          if (lockReadCount === 1) return ownContent;
+          // Call 2: the post-delete verify read — B's sibling lock, now present
+          // at the same path.
+          return foreignContent;
+        }
+        return originalRead(p, ...rest);
+      });
+      const unlinkSpy = vi.spyOn(fs, 'unlinkSync');
+
+      const result = release({ sessionId: 'sess-race-a', repoRoot });
+
+      expect(readSpy).toHaveBeenCalled();
+      expect(lockReadCount).toBe(2);
+      // Exactly ONE unlink — A's own primary delete. No retry-unlink is ever
+      // attempted against B's foreign lock.
+      expect(unlinkSpy).toHaveBeenCalledTimes(1);
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(true);
+      expect(result.verified).toBe(true);
+    });
   });
 });
 

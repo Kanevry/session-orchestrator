@@ -472,17 +472,25 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     // up-front readLock() check AND the create-race EEXIST-loser path below so
     // both report identical active / stale-pid-dead / stale-pid-alive reasons.
     const classifyExisting = (existing) => {
-      const expired = isTtlExpired(existing);
       const sameHost = existing.host === os.hostname();
       // PID liveness is only meaningful on the same host.
       const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : null;
 
-      if (!expired && pidAlive !== false) {
-        // TTL still valid AND (PID is alive OR we can't check because cross-host).
+      // Heartbeat-first liveness (#744): isLockLive is the SOLE active gate.
+      // A dead recorded PID must NOT veto a fresh last_heartbeat — the pid on
+      // a session.lock is the ephemeral hook subprocess PID, not the semantic
+      // session's own PID (Epic #583, W1-D1 + W1-D4 consensus). Likewise,
+      // isTtlExpired measures age from started_at, which wrongly flags a
+      // long-running-but-heartbeating session as expired. Both bugs together
+      // produced the #744 incident: a live heartbeating session was
+      // misclassified 'stale-pid-dead' mid-wave.
+      if (isLockLive(existing)) {
         return { ok: false, reason: 'active', existingLock: existing, exclusivityClass: callerClass };
       }
 
-      // TTL expired or PID is confirmed dead — classify the stale variant.
+      // Heartbeat expired — classify the stale variant. Cross-host locks never
+      // have a confirmable dead PID (pidAlive stays null), so they always land
+      // on 'stale-pid-alive' rather than 'stale-pid-dead'.
       const reason = (pidAlive === false) ? 'stale-pid-dead' : 'stale-pid-alive';
       return { ok: false, reason, existingLock: existing, exclusivityClass: callerClass };
     };
@@ -555,8 +563,25 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
  * Silent no-op when the lock belongs to a different session or does not exist.
  * Never throws.
  *
+ * Post-delete verify (#744 Fix 3, refined): after unlinking, re-reads the
+ * lock path to confirm the delete was durable. The retry is **ownership-
+ * scoped** — only OUR OWN lock reappearing (same `session_id`) warrants a
+ * bounded retry unlink, which covers a transient unlink/stat race where our
+ * just-deleted file is briefly still observable. A FOREIGN lock (a
+ * different `session_id`) present at the re-read means a sibling session
+ * legitimately `acquire()`d the path in the race window between our unlink
+ * and this re-read — OUR lock is already gone (the delete succeeded), so
+ * this is treated as verified and the foreign lock is left untouched. This
+ * is load-bearing for PSA-005: a releaser must never unlink a lock it does
+ * not own, even indirectly via a "still present, so retry-unlink" heuristic
+ * that does not check who the present lock belongs to.
+ *
+ * `verified` is computed as "our lock is no longer present" — a foreign
+ * lock present is fine (ours is gone); only our own lock still being
+ * observable after the bounded retry sets `verified: false`.
+ *
  * @param {{ sessionId: string, repoRoot?: string }} args
- * @returns {{ ok: true, deleted: boolean, reason?: string }}
+ * @returns {{ ok: true, deleted: boolean, reason?: string, verified?: boolean }}
  */
 export function release({ sessionId, repoRoot } = {}) {
   const lockFile = lockPathFor(repoRoot);
@@ -572,7 +597,22 @@ export function release({ sessionId, repoRoot } = {}) {
     }
 
     fs.unlinkSync(lockFile);
-    return { ok: true, deleted: true };
+
+    // Post-delete verify: only retry when OUR OWN lock is still observable.
+    // A foreign lock here belongs to a sibling that re-acquired in the race
+    // window — never touch it (PSA-005).
+    let after = readLock({ repoRoot });
+    if (after !== null && after.session_id === sessionId) {
+      try {
+        fs.unlinkSync(lockFile);
+      } catch {
+        // best-effort retry — fall through to the final re-check regardless.
+      }
+      after = readLock({ repoRoot });
+    }
+
+    const verified = after === null || after.session_id !== sessionId;
+    return { ok: true, deleted: true, verified };
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
@@ -618,7 +658,8 @@ export function updateHeartbeat({ repoRoot, sessionId } = {}) {
  *   ttlExpired: boolean,
  *   pidAlive: boolean|null,
  *   host: string|null,
- *   sameHost: boolean
+ *   sameHost: boolean,
+ *   isLive: boolean
  * }}
  */
 export function checkStale({ repoRoot } = {}) {
@@ -633,6 +674,7 @@ export function checkStale({ repoRoot } = {}) {
       pidAlive: null,
       host: null,
       sameHost: false,
+      isLive: false,
     };
   }
 
@@ -641,6 +683,12 @@ export function checkStale({ repoRoot } = {}) {
   const sameHost = lock.host === os.hostname();
   // Only attempt PID check when the lock was written on this machine.
   const pidAlive = sameHost ? isPidAliveOnHost(lock.pid) : null;
+  // Heartbeat-based liveness (#744) — additive field alongside the pre-existing
+  // ttlExpired/pidAlive/sameHost fields (back-compat). This is the SAME check
+  // acquire()'s classifyExisting now uses as its sole active gate, surfaced
+  // here so callers of checkStale() (recovery-flow diagnostics) can observe
+  // when isLive diverges from the legacy pidAlive/ttlExpired signals.
+  const isLive = isLockLive(lock);
 
   return {
     exists: true,
@@ -650,5 +698,6 @@ export function checkStale({ repoRoot } = {}) {
     pidAlive,
     host: lock.host,
     sameHost,
+    isLive,
   };
 }

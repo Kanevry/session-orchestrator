@@ -121,12 +121,22 @@ export function migrateEntry(entry) {
   }
 
   // Normalize waves[].wave field: if missing, assign index+1.
+  // Also alias legacy waves[].name -> role when role is absent/empty (#745):
+  // no producer writes `name` today, but hand-authored/legacy records did.
+  // ONLY fills role when it's missing — never overwrites a present canonical
+  // role. `name` is kept alongside (harmless, no consumer reads it) rather
+  // than deleted, keeping this migration additive like the rest of the file.
   merged.waves = merged.waves.map((w, i) => {
     if (typeof w !== 'object' || w === null) return w;
-    if (typeof w.wave !== 'number' || w.wave < 1) {
-      return { ...w, wave: i + 1 };
+    let next = w;
+    const hasRole = typeof next.role === 'string' && next.role.length > 0;
+    if (!hasRole && typeof next.name === 'string' && next.name.length > 0) {
+      next = { ...next, role: next.name };
     }
-    return w;
+    if (typeof next.wave !== 'number' || next.wave < 1) {
+      next = { ...next, wave: i + 1 };
+    }
+    return next;
   });
 
   // Helper: resolve wave agent count from varied types

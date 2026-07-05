@@ -12,6 +12,9 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
+  unlinkSync,
+  statSync,
   existsSync,
   readdirSync,
   rmSync,
@@ -72,6 +75,24 @@ function makeRepo(startDir, name, lock) {
 
 const lockFileOf = (repo) => join(repo, '.orchestrator', 'session.lock');
 const reapedDirOf = (repo) => join(repo, '.orchestrator', 'tmp', 'reaped-locks');
+const currentSessionPathOf = (repo) => join(repo, '.orchestrator', 'current-session.json');
+
+/** Build a current-session.json body with a `timestamp` `offsetHours` before NOW. */
+function currentSessionBody({ sessionId = 'sess', semantic = null, offsetHours = 0 } = {}) {
+  return {
+    session_id: sessionId,
+    semantic_session_id: semantic,
+    pid: 424242,
+    source: 'test-fixture',
+    timestamp: new Date(NOW - offsetHours * 3600 * 1000).toISOString(),
+  };
+}
+
+/** Write a current-session.json fixture into a repo (creates .orchestrator/ as needed). */
+function writeCurrentSession(repo, body) {
+  mkdirSync(join(repo, '.orchestrator'), { recursive: true });
+  writeFileSync(currentSessionPathOf(repo), JSON.stringify(body, null, 2) + '\n');
+}
 
 /** enumerate DI: keep the scan confined to the tmp fixture (no real config/guard). */
 function enumerateDeps() {
@@ -368,5 +389,174 @@ describe('reapRepoLock', () => {
     expect(res.action).toBe('skipped');
     expect(res.reason).toMatch(/^error:/);
     expect(existsSync(lockFileOf(repo))).toBe(true);
+  });
+});
+
+// ===========================================================================
+// current-session.json orphan sweep (Epic #724 follow-up) — reapRepoLock is
+// the SessionStart hook's own-repo path, so these drive it directly.
+// ===========================================================================
+
+describe('current-session.json orphan sweep', () => {
+  it('archives + removes a current-session.json referencing a reaped dead lock', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(
+      startDir,
+      'cs-dead',
+      lockBody({ offsetHours: 5, host: HOST, sessionId: 'ghost-3', semantic: 'deep-100' }),
+    );
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'ghost-3', semantic: 'deep-100', offsetHours: 5 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('reaped');
+    expect(res.currentSession.archived).toBe(true);
+    expect(res.currentSession.archivePath).toContain('current-session-');
+    expect(existsSync(currentSessionPathOf(repo))).toBe(false);
+    const archived = readdirSync(reapedDirOf(repo)).filter((f) => f.startsWith('current-session-'));
+    expect(archived).toHaveLength(1);
+  });
+
+  it('preserves current-session.json when the repo lease is live', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-live', lockBody({ offsetHours: 0, host: HOST, sessionId: 'live-2' }));
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'live-2', offsetHours: 0 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('skipped');
+    expect(res.reason).toBe('live');
+    expect(res.currentSession).toEqual({ archived: false, reason: 'live' });
+    expect(existsSync(currentSessionPathOf(repo))).toBe(true);
+  });
+
+  it("preserves current-session.json referencing the caller's own currentSessionId (re-entrancy) even though the lock itself is reaped", async () => {
+    const startDir = makeStartDir();
+    // The LOCK does not reference currentSessionId (so the lock-level guard
+    // does not short-circuit) — only the FILE does, isolating the file-level
+    // re-entrancy guard (b) from the lock-level one.
+    const repo = makeRepo(startDir, 'cs-self', lockBody({ offsetHours: 5, host: HOST, sessionId: 'ghost-5' }));
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'ghost-5', semantic: 'main-deep-2', offsetHours: 5 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({
+      repoRoot: repo,
+      now: NOW,
+      dryRun: false,
+      currentSessionId: 'main-deep-2',
+      deps,
+    });
+
+    expect(res.action).toBe('reaped'); // the lock is dead and unrelated to currentSessionId
+    expect(res.currentSession).toEqual({ archived: false, reason: 'current-session' });
+    expect(existsSync(currentSessionPathOf(repo))).toBe(true);
+  });
+
+  it('preserves a fresh current-session.json when no lock exists at all', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-fresh', null);
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'bootstrapping', offsetHours: 1 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('none');
+    expect(res.reason).toBe('no-lock');
+    expect(res.currentSession).toEqual({ archived: false, reason: 'fresh' });
+    expect(existsSync(currentSessionPathOf(repo))).toBe(true);
+  });
+
+  it('archives an orphaned current-session.json when no lock exists at all and it is past the TTL floor', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-orphan-no-lock', null);
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'long-dead', offsetHours: 5 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('none');
+    expect(res.currentSession.archived).toBe(true);
+    expect(existsSync(currentSessionPathOf(repo))).toBe(false);
+  });
+
+  it('leaves current-session.json alone when its content does not reference the dead lock', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-unrelated', lockBody({ offsetHours: 5, host: HOST, sessionId: 'ghost-7' }));
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'totally-unrelated', offsetHours: 5 }));
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('reaped');
+    expect(res.currentSession).toEqual({ archived: false, reason: 'not-orphaned' });
+    expect(existsSync(currentSessionPathOf(repo))).toBe(true);
+  });
+
+  it('does not throw and preserves a malformed (non-JSON) current-session.json, reporting reason=malformed', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(
+      startDir,
+      'cs-malformed',
+      lockBody({ offsetHours: 5, host: HOST, sessionId: 'ghost-8' }),
+    );
+    const csPath = currentSessionPathOf(repo);
+    mkdirSync(join(repo, '.orchestrator'), { recursive: true });
+    writeFileSync(csPath, '{ this is not valid json');
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    // The lock side is still dead/eligible and reaps normally — the malformed
+    // file must never block or throw during the SAME lease decision.
+    expect(res.action).toBe('reaped');
+    expect(res.currentSession).toEqual({ archived: false, reason: 'malformed' });
+    // Left entirely untouched — never blindly deleted or reaped.
+    expect(existsSync(csPath)).toBe(true);
+    expect(readFileSync(csPath, 'utf8')).toBe('{ this is not valid json');
+  });
+
+  it('aborts the current-session.json archive when the file changes during the TOCTOU window (invariant e)', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-toctou', lockBody({ offsetHours: 5, host: HOST, sessionId: 'ghost-6' }));
+    const csPath = currentSessionPathOf(repo);
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'ghost-6', offsetHours: 5 }));
+    // Simulates a DIFFERENT session rewriting current-session.json in the
+    // window between evaluateCurrentSessionFile's initial read and
+    // archiveCurrentSessionFile's pre-unlink TOCTOU re-check.
+    const freshContent = { session_id: 'fresh-session', semantic_session_id: null, timestamp: new Date(NOW).toISOString() };
+
+    let readCount = 0;
+    const { deps } = makeDeps({ hostname: HOST });
+    deps.fs = {
+      mkdirSync,
+      writeFileSync,
+      unlinkSync,
+      statSync,
+      readFileSync: (p, enc) => {
+        if (p === csPath) {
+          readCount += 1;
+          if (readCount <= 2) return readFileSync(p, enc);
+          // 3rd read = archiveCurrentSessionFile's TOCTOU re-check. Physically
+          // rewrite the file first (a real concurrent write), then return it.
+          writeFileSync(csPath, JSON.stringify(freshContent, null, 2) + '\n');
+          return readFileSync(csPath, enc);
+        }
+        return readFileSync(p, enc);
+      },
+    };
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('reaped'); // the lock itself reaps fine
+    expect(res.currentSession.archived).toBe(false);
+    expect(res.currentSession.reason).toMatch(/changed/);
+    // Original untouched — the fresh (concurrent) write survives intact.
+    expect(existsSync(csPath)).toBe(true);
+    expect(JSON.parse(readFileSync(csPath, 'utf8')).session_id).toBe('fresh-session');
+    // Best-effort undo removed the archive copy written before the re-check.
+    const csArchiveFiles = readdirSync(reapedDirOf(repo)).filter((f) => f.startsWith('current-session-'));
+    expect(csArchiveFiles).toHaveLength(0);
   });
 });

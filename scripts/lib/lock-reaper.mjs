@@ -32,6 +32,26 @@
  *       reason 'lock-changed-during-reap' and best-effort undoes the archive
  *       write that was already made.
  *
+ * CURRENT-SESSION.JSON ORPHAN SWEEP (Epic #724 follow-up): `evaluateRepo` also
+ * sweeps an orphaned `.orchestrator/current-session.json` as part of the SAME
+ * lease decision — never as an independent check. The file's fate is folded
+ * into the per-repo result's `currentSession` field:
+ *   { archived: true, archivePath } | { archived: false, reason }
+ * The sweep only ever runs once the LOCK side has already been confirmed
+ * dead/absent/reap-eligible (mirrors invariants a-c by construction — a live,
+ * re-entrant, cross-host, or pid-alive lock short-circuits with the SAME
+ * reason before the file is even read). Once eligible, the file itself is
+ * still guarded by:
+ *   (b) re-entrancy — never touch a file that references `currentSessionId`.
+ *   (c) fresh-preservation — a file whose own age (its `timestamp` field,
+ *       falling back to mtime) is within `DEFAULT_TTL_HOURS` is preserved,
+ *       protecting a repo mid-bootstrap that wrote current-session.json
+ *       before its lock (mirrors the mtime fallback in session-registry.mjs
+ *       sweepZombies).
+ *   (d) archive-move (same reaped-locks directory, `current-session-` prefix).
+ *   (e) TOCTOU re-check immediately before the destructive unlink — aborts
+ *       with reason 'current-session-changed-during-reap' if the file changed.
+ *
  * No-throw contract: every path catches and degrades. Per-repo failures land in
  * `skipped` with an `error: …` reason; the sweep continues.
  *
@@ -41,17 +61,18 @@
  * Plain Node ESM. Named exports. No external deps.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { enumerateCandidates } from './dispatcher/enumerate.mjs';
-import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH } from './session-lock.mjs';
+import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { emitEvent } from './events.mjs';
 
 const REAPED_ARCHIVE_SUBDIR = '.orchestrator/tmp/reaped-locks';
 const EVENTS_RELPATH = '.orchestrator/metrics/events.jsonl';
 const REAPED_EVENT = 'orchestrator.session.lock.reaped';
+const CURRENT_SESSION_RELPATH = '.orchestrator/current-session.json';
 
 /**
  * Resolve the dependency bundle, defaulting every seam to the real
@@ -70,7 +91,7 @@ function resolveDeps(deps = {}) {
     isPidAliveOnHost: d.isPidAliveOnHost ?? isPidAliveOnHost,
     hostname: d.hostname ?? (() => os.hostname()),
     emitEvent: d.emitEvent ?? emitEvent,
-    fs: d.fs ?? { readFileSync, writeFileSync, unlinkSync, mkdirSync },
+    fs: d.fs ?? { readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync },
     // Passed straight through to enumerateCandidates for its own fs/config DI.
     // Tests set { getCrossRepoProjects: async () => [] } so the scan stays
     // confined to the tmp fixture and never unions in real ~/Projects paths.
@@ -178,13 +199,219 @@ function archiveLock(repoRoot, lockFile, lock, nowMs, fsDep, D) {
 }
 
 /**
+ * Absolute path to a repo's current-session.json.
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+function currentSessionPathFor(repoRoot) {
+  return path.join(repoRoot, CURRENT_SESSION_RELPATH);
+}
+
+/**
+ * Fractional hours since a current-session.json's own `timestamp` field.
+ * Falls back to the file's mtime when `timestamp` is absent/unparseable —
+ * mirrors the malformed-entry mtime fallback in session-registry.mjs
+ * sweepZombies (fresh-preservation protects an in-flight write from being
+ * swept before its author finishes bootstrapping).
+ *
+ * @param {object} parsed — the parsed current-session.json content.
+ * @param {string} filePath
+ * @param {number} nowMs
+ * @param {object} fsDep — { statSync, … }.
+ * @returns {number|null} null when neither the timestamp nor the mtime resolve.
+ */
+function currentSessionAgeHours(parsed, filePath, nowMs, fsDep) {
+  const ts = typeof parsed?.timestamp === 'string' ? parsed.timestamp : null;
+  const ms = ts ? Date.parse(ts) : NaN;
+  if (!Number.isNaN(ms)) {
+    return (nowMs - ms) / (3600 * 1000);
+  }
+  try {
+    const info = fsDep.statSync(filePath);
+    return (nowMs - info.mtimeMs) / (3600 * 1000);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a parsed current-session.json references the same session as
+ * `lock` — either the UUID `session_id` or the `semantic_session_id`
+ * matches. Both sides must be non-empty strings to count as a match; two
+ * absent/undefined fields are never treated as "matching".
+ *
+ * @param {object} parsed
+ * @param {object} lock
+ * @returns {boolean}
+ */
+function currentSessionReferencesLock(parsed, lock) {
+  const sameSessionId =
+    typeof parsed.session_id === 'string' && parsed.session_id.length > 0 &&
+    parsed.session_id === lock.session_id;
+  const sameSemanticId =
+    typeof parsed.semantic_session_id === 'string' && parsed.semantic_session_id.length > 0 &&
+    parsed.semantic_session_id === lock.semantic_session_id;
+  return sameSessionId || sameSemanticId;
+}
+
+/**
+ * Archive-move current-session.json (mirrors archiveLock's invariants d/e for
+ * the file sweep). Copies the original bytes into the SAME per-repo
+ * reaped-locks archive directory (prefixed `current-session-` to
+ * disambiguate from lock archives), then re-reads the live file immediately
+ * before the destructive unlink and aborts if it changed to reference a
+ * different session or the caller's own (fresh) session.
+ *
+ * @param {string} repoRoot
+ * @param {string} filePath
+ * @param {object} parsed — the content read at evaluation time.
+ * @param {number} nowMs
+ * @param {object} fsDep
+ * @param {string} [currentSessionId] — abort if the file now belongs to the caller.
+ * @returns {{ archived: true, archivePath: string } | { archived: false, reason: string }}
+ */
+function archiveCurrentSessionFile(repoRoot, filePath, parsed, nowMs, fsDep, currentSessionId) {
+  const safeId = String(parsed.semantic_session_id ?? parsed.session_id ?? 'unknown-session')
+    .replace(/[^A-Za-z0-9._-]/g, '_');
+  const ts = new Date(nowMs).toISOString().replace(/[:.]/g, '-');
+  const archiveDir = path.join(repoRoot, REAPED_ARCHIVE_SUBDIR);
+  fsDep.mkdirSync(archiveDir, { recursive: true });
+  const archivePath = path.join(archiveDir, `current-session-${safeId}-${ts}.json`);
+
+  // Preserve the exact original bytes; fall back to the serialised parsed
+  // content if the re-read fails (e.g. it vanished between read and here).
+  let raw;
+  try {
+    raw = fsDep.readFileSync(filePath, 'utf8');
+  } catch {
+    raw = JSON.stringify(parsed, null, 2) + '\n';
+  }
+  fsDep.writeFileSync(archivePath, raw, 'utf8');
+
+  // TOCTOU re-check (invariant e) — re-read immediately before the unlink.
+  let recheck;
+  try {
+    recheck = JSON.parse(fsDep.readFileSync(filePath, 'utf8'));
+  } catch {
+    recheck = null;
+  }
+  const stillSame =
+    recheck !== null &&
+    recheck.session_id === parsed.session_id &&
+    recheck.semantic_session_id === parsed.semantic_session_id;
+  const nowReferencesCaller =
+    recheck !== null &&
+    typeof currentSessionId === 'string' && currentSessionId.length > 0 &&
+    (recheck.session_id === currentSessionId || recheck.semantic_session_id === currentSessionId);
+
+  if (!stillSame || nowReferencesCaller) {
+    // Best-effort undo of the archive write — the original file is untouched
+    // either way, but leaving a stray archive copy around is misleading.
+    try { fsDep.unlinkSync(archivePath); } catch { /* best-effort */ }
+    return { archived: false, reason: 'current-session-changed-during-reap' };
+  }
+
+  fsDep.unlinkSync(filePath);
+  return { archived: true, archivePath };
+}
+
+/**
+ * Evaluate + (under !dryRun) sweep an orphaned current-session.json for one
+ * repo. The caller only invokes this once the LOCK side of the SAME lease
+ * decision has already been confirmed dead/absent/reap-eligible — invariants
+ * (a) live-lease, cross-host, and own-host-pid-alive are therefore enforced
+ * by the CALLER (evaluateRepo) short-circuiting with a matching reason before
+ * this function is ever reached, not by a redundant check here.
+ *
+ * Orphan predicate: the file is orphaned when `lock` is null (no lease exists
+ * at all for the repo — subject only to the freshness guard below) OR the
+ * file references `lock` (its `session_id`/`semantic_session_id` matches the
+ * already-confirmed-dead lock this evaluation is running against).
+ *
+ * Guards:
+ *   (b) re-entrancy — never touch a file that references `currentSessionId`
+ *       (the caller's own fresh write).
+ *   (c) fresh-preservation — a file whose own age (timestamp, falling back to
+ *       mtime) is within `DEFAULT_TTL_HOURS` is preserved.
+ *   (d) archive-move, never unlink-only.
+ *   (e) TOCTOU re-check immediately before the destructive unlink.
+ *
+ * @param {string} repoRoot
+ * @param {object} args
+ * @param {number} args.nowMs
+ * @param {boolean} args.dryRun
+ * @param {string} [args.currentSessionId]
+ * @param {object|null} args.lock — the confirmed-dead lock this file is being
+ *   evaluated against, or null when no lock exists at all for the repo.
+ * @param {object} args.fs — resolved fs dep bundle (readFileSync, statSync, …).
+ * @returns {{ archived: boolean, archivePath?: string, reason?: string }}
+ */
+function evaluateCurrentSessionFile(repoRoot, { nowMs, dryRun, currentSessionId, lock, fs: fsDep }) {
+  const filePath = currentSessionPathFor(repoRoot);
+  let raw;
+  try {
+    raw = fsDep.readFileSync(filePath, 'utf8');
+  } catch {
+    return { archived: false, reason: 'no-file' };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { archived: false, reason: 'malformed' };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { archived: false, reason: 'malformed' };
+  }
+
+  // Guard (b): re-entrancy — the file itself belongs to the caller's own session.
+  if (
+    typeof currentSessionId === 'string' && currentSessionId.length > 0 &&
+    (parsed.session_id === currentSessionId || parsed.semantic_session_id === currentSessionId)
+  ) {
+    return { archived: false, reason: 'current-session' };
+  }
+
+  // Orphan predicate: when a (confirmed-dead) lock exists, the file must
+  // reference IT to count as orphaned. Unrelated content is left alone.
+  if (lock && !currentSessionReferencesLock(parsed, lock)) {
+    return { archived: false, reason: 'not-orphaned' };
+  }
+
+  // Guard (c): fresh-preservation — protects a repo mid-bootstrap that wrote
+  // current-session.json before its lock.
+  const ageHours = currentSessionAgeHours(parsed, filePath, nowMs, fsDep);
+  if (ageHours === null || ageHours < DEFAULT_TTL_HOURS) {
+    return { archived: false, reason: 'fresh' };
+  }
+
+  if (dryRun) {
+    return { archived: false, reason: 'candidate' };
+  }
+
+  try {
+    return archiveCurrentSessionFile(repoRoot, filePath, parsed, nowMs, fsDep, currentSessionId);
+  } catch (err) {
+    return { archived: false, reason: `error: ${err?.message ?? String(err)}` };
+  }
+}
+
+/**
  * Evaluate a single repo's lease and — under !dryRun — reap it if eligible.
+ * As part of the SAME lease decision, also evaluates + (under !dryRun) sweeps
+ * an orphaned `.orchestrator/current-session.json` (see evaluateCurrentSessionFile).
+ * Every branch below attaches a `currentSession` field to its result; a
+ * lock-side guard (live / lock-level re-entrancy / cross-host / pid-alive /
+ * lock-changed-during-reap) short-circuits the file sweep with the SAME
+ * reason, without even reading the file — the file is only actually
+ * evaluated once the lock side is dead/absent/reap-eligible.
  *
  * Returns exactly one of:
- *   { action: 'none', repo, reason }        — no lock present.
- *   { action: 'skipped', repo, reason, … }  — protected by an invariant.
- *   { action: 'candidate', repo, … }        — reap-eligible, dry-run (not touched).
- *   { action: 'reaped', repo, …, archivePath } — reap-eligible, archived + emitted.
+ *   { action: 'none', repo, reason, currentSession }        — no lock present.
+ *   { action: 'skipped', repo, reason, …, currentSession }  — protected by an invariant.
+ *   { action: 'candidate', repo, …, currentSession }        — reap-eligible, dry-run (not touched).
+ *   { action: 'reaped', repo, …, archivePath, currentSession } — reap-eligible, archived + emitted.
  *
  * @param {string} repoRoot
  * @param {object} args
@@ -196,6 +423,8 @@ function archiveLock(repoRoot, lockFile, lock, nowMs, fsDep, D) {
  * @returns {Promise<object>}
  */
 async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMode, D }) {
+  const csArgs = { nowMs, dryRun, currentSessionId, fs: D.fs };
+
   let lock;
   try {
     lock = D.readLock({ repoRoot });
@@ -203,12 +432,22 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
     lock = null;
   }
   if (!lock || typeof lock !== 'object') {
-    return { action: 'none', repo: repoRoot, reason: 'no-lock' };
+    // No lease at all — the current-session.json sweep is still eligible
+    // (predicate branch 2: no lock exists, subject only to the freshness guard).
+    const currentSession = evaluateCurrentSessionFile(repoRoot, { ...csArgs, lock: null });
+    return { action: 'none', repo: repoRoot, reason: 'no-lock', currentSession };
   }
 
-  // Invariant (a): a live lock (fresh heartbeat) is NEVER reaped.
+  // Invariant (a): a live lock (fresh heartbeat) is NEVER reaped — and the
+  // current-session.json sweep is the SAME lease decision, so it is left
+  // entirely untouched too (never even read).
   if (D.isLockLive(lock, nowMs)) {
-    return { action: 'skipped', repo: repoRoot, reason: 'live' };
+    return {
+      action: 'skipped',
+      repo: repoRoot,
+      reason: 'live',
+      currentSession: { archived: false, reason: 'live' },
+    };
   }
 
   // Re-entrancy guard: never reap the current session's own lease. Protects the
@@ -217,7 +456,12 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
     currentSessionId &&
     (lock.session_id === currentSessionId || lock.semantic_session_id === currentSessionId)
   ) {
-    return { action: 'skipped', repo: repoRoot, reason: 'current-session' };
+    return {
+      action: 'skipped',
+      repo: repoRoot,
+      reason: 'current-session',
+      currentSession: { archived: false, reason: 'current-session' },
+    };
   }
 
   const ownHost = lock.host === D.hostname();
@@ -229,6 +473,7 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
       repo: repoRoot,
       reason: 'cross-host-requires-operator',
       host: lock.host ?? null,
+      currentSession: { archived: false, reason: 'cross-host-requires-operator' },
     };
   }
 
@@ -243,10 +488,17 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
     pidAlive = false;
   }
   if (pidAlive) {
-    return { action: 'skipped', repo: repoRoot, reason: 'own-host-pid-alive', pid: lock.pid ?? null };
+    return {
+      action: 'skipped',
+      repo: repoRoot,
+      reason: 'own-host-pid-alive',
+      pid: lock.pid ?? null,
+      currentSession: { archived: false, reason: 'own-host-pid-alive' },
+    };
   }
 
-  // Reap-eligible: own-host, dead lease (heartbeat past TTL), dead PID.
+  // Reap-eligible: own-host, dead lease (heartbeat past TTL), dead PID. The
+  // current-session.json sweep is now eligible too — same lease decision.
   const ageHours = ageHoursOf(lock, nowMs);
   const base = {
     repo: repoRoot,
@@ -258,7 +510,8 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
   };
 
   if (dryRun) {
-    return { action: 'candidate', ...base };
+    const currentSession = evaluateCurrentSessionFile(repoRoot, { ...csArgs, lock });
+    return { action: 'candidate', ...base, currentSession };
   }
 
   // Apply: archive-move (invariant d) then best-effort event.
@@ -266,13 +519,24 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
   try {
     archiveResult = archiveLock(repoRoot, lockPathFor(repoRoot), lock, nowMs, D.fs, D);
   } catch (err) {
-    return { action: 'skipped', repo: repoRoot, reason: `error: ${err?.message ?? String(err)}` };
+    // The lock predicate was already confirmed dead/eligible above — the file
+    // sweep still runs; only the LOCK's own archive mechanics failed.
+    const currentSession = evaluateCurrentSessionFile(repoRoot, { ...csArgs, lock });
+    return { action: 'skipped', repo: repoRoot, reason: `error: ${err?.message ?? String(err)}`, currentSession };
   }
   if (!archiveResult.ok) {
     // Invariant (e) — the re-check found a changed/live lease. Never unlink.
-    return { action: 'skipped', repo: repoRoot, reason: archiveResult.reason };
+    // A 'lock-changed-during-reap' means the TRUE state is no longer
+    // dead/absent, so the file sweep must NOT proceed either — a fresh
+    // session may already own both files.
+    const currentSession = archiveResult.reason === 'lock-changed-during-reap'
+      ? { archived: false, reason: 'lock-changed-during-reap' }
+      : evaluateCurrentSessionFile(repoRoot, { ...csArgs, lock });
+    return { action: 'skipped', repo: repoRoot, reason: archiveResult.reason, currentSession };
   }
   const archivePath = archiveResult.archivePath;
+
+  const currentSession = evaluateCurrentSessionFile(repoRoot, { ...csArgs, lock });
 
   try {
     await D.emitEvent(
@@ -284,6 +548,7 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
         pid: lock.pid ?? null,
         age_hours: ageHours,
         reap_mode: reapMode,
+        current_session: currentSession,
       },
       { filePath: path.join(repoRoot, EVENTS_RELPATH) },
     );
@@ -291,7 +556,7 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
     // Observability is best-effort — the archive-move already succeeded.
   }
 
-  return { action: 'reaped', ...base, archivePath };
+  return { action: 'reaped', ...base, archivePath, currentSession };
 }
 
 /**

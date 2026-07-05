@@ -31,7 +31,8 @@ if (!shouldRunHook('on-session-end')) process.exit(0);
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.mjs';
-import { readLock, release } from '../scripts/lib/session-lock.mjs';
+import { isLockLive, readLock, release } from '../scripts/lib/session-lock.mjs';
+import { reapRepoLock } from '../scripts/lib/lock-reaper.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — SessionEnd hooks exit 0 always, never deny)
@@ -156,14 +157,67 @@ async function main() {
   // (b) Deterministic lock release — ONLY our OWN lock. Match by UUID first,
   //     then by semantic id (the UUID rotates across clear/compact/resume while
   //     the semantic id stays stable, #612). A foreign lock is never released.
+  //
+  //     Epic #724 hardening ("ended logged but lock survived"): the ownership
+  //     match alone left two silent failure modes —
+  //       (1) release() can fail at the fs layer; the swallowed try/catch below
+  //           made this invisible (session.ended is logged, the lock survives).
+  //       (2) when the harness UUID rotates (clear/compact/resume) and
+  //           current-session.json's semantic_session_id is null/stale, BOTH
+  //           ownership checks are false and this branch never runs release()
+  //           at all — the lock survives until the NEXT session-start's own
+  //           reaper sweep discovers it.
+  //     Both are addressed below without loosening the strict
+  //     never-release-a-foreign-lock invariant: release() only ever runs when
+  //     ownership matched; the reconciliation fallback only ever runs through
+  //     reapRepoLock(), which independently NEVER reaps a live lease (and only
+  //     ever reaps on this same host with a dead recorded PID).
   try {
     const lock = readLock({ repoRoot: projectRoot });
     if (lock) {
       const ownByUuid = sessionId !== null && lock.session_id === sessionId;
       const ownBySemantic =
         semanticSessionId !== null && lock.semantic_session_id === semanticSessionId;
+
       if (ownByUuid || ownBySemantic) {
-        release({ sessionId: lock.session_id, repoRoot: projectRoot });
+        const releaseResult = release({ sessionId: lock.session_id, repoRoot: projectRoot });
+        // release() has a no-throw contract (always returns a structured
+        // result). A matched ownership that still fails to delete — an
+        // fs-error, or an unexpected non-delete outcome other than the benign
+        // "already gone" race (reason: 'no-lock') — must surface as a
+        // breadcrumb instead of vanishing into the catch below.
+        const benignAlreadyGone = releaseResult.ok === true && releaseResult.reason === 'no-lock';
+        if (!benignAlreadyGone && (!releaseResult.ok || releaseResult.deleted !== true)) {
+          try {
+            await emitEvent('orchestrator.session.lock.release_failed', {
+              session_id: sessionId,
+              reason: releaseResult.ok
+                ? (releaseResult.reason ?? 'not-deleted')
+                : (releaseResult.reason ?? 'fs-error'),
+            });
+          } catch { /* observability is best-effort */ }
+        }
+      } else if (!isLockLive(lock)) {
+        // Root-cause reconciliation fallback: neither the UUID nor the
+        // semantic id matched the recorded lock, but the lease is already
+        // dead. Reconcile now via the same reaper the SessionStart hook uses
+        // (Epic #724 C7), instead of leaving the orphaned lease for the next
+        // session-start to discover. Safe by construction: reapRepoLock()
+        // never touches a live lease, a cross-host lease, or a lease whose
+        // recorded PID is still alive on this host.
+        try {
+          const reapResult = await reapRepoLock({
+            repoRoot: projectRoot,
+            currentSessionId: sessionId,
+            dryRun: false,
+            reapMode: 'auto-session-end',
+          });
+          await emitEvent('orchestrator.session.lock.reconcile_attempted', {
+            session_id: sessionId,
+            action: reapResult?.action ?? 'unknown',
+            reason: reapResult?.reason ?? null,
+          });
+        } catch { /* best-effort — reconciliation must never block teardown */ }
       }
     }
   } catch { /* best-effort — never block teardown */ }

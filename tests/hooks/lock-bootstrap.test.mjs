@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 
 import { bootstrapLock } from '../../hooks/_lib/lock-bootstrap.mjs';
@@ -627,5 +627,77 @@ describe('bootstrapLock — observability', () => {
       _emitEventImpl: emit,
     });
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End-to-end hijack prevention (#744) — REAL acquire()/forceAcquire(), no DI
+// stubs. Discovery D1 flagged that the mocked "force-overwrites a stale-pid-
+// dead lock" test above (see `bootstrapLock — failure paths`) exercises only
+// the bootstrapLock-level branching, not the actual #744 classification fix
+// inside scripts/lib/session-lock.mjs's classifyExisting. These tests omit
+// `_acquireImpl`/`_forceAcquireImpl`/`_emitEventImpl` entirely so bootstrapLock
+// takes its PRODUCTION path: `await import('../../scripts/lib/session-lock.mjs')`
+// and calls the real `acquire`/`forceAcquire`.
+//
+// Fixture: a FOREIGN session's lock with a FRESH last_heartbeat (live) but a
+// dead recorded PID on this same host — exactly the #744 incident shape (the
+// lock's `pid` field is the ephemeral hook subprocess PID, not the semantic
+// session's own PID, so a dead PID must never veto a fresh heartbeat).
+//
+// Falsification: if the #744 fix in classifyExisting were reverted (dead PID
+// once again vetoes a fresh heartbeat), `acquire()` would misclassify this
+// foreign lock as 'stale-pid-dead', bootstrapLock's `shouldForce` would flip
+// true, and `forceAcquire()` would overwrite the foreign lock — the first
+// assertion below (`onDisk.session_id` still equals the foreign id) would fail.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/forceAcquire, no mocks)', () => {
+  /** Seed a REAL foreign session.lock: fresh heartbeat (live) + dead PID, same host. */
+  function seedForeignLiveLock(sessionId) {
+    const dir = join(sandbox, '.orchestrator');
+    mkdirSync(dir, { recursive: true });
+    const lock = {
+      session_id: sessionId,
+      started_at: '2020-01-01T00:00:00.000Z', // old start — irrelevant, heartbeat governs liveness
+      last_heartbeat: new Date().toISOString(), // FRESH heartbeat → live
+      mode: 'deep',
+      pid: 999999, // dead PID on this host
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    writeFileSync(join(dir, 'session.lock'), JSON.stringify(lock, null, 2) + '\n');
+  }
+
+  it('does NOT overwrite a foreign lock with a fresh heartbeat + dead PID (the #744 incident)', async () => {
+    const foreignSessionId = 'foreign-real-744-a';
+    seedForeignLiveLock(foreignSessionId);
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-own-session-744-a',
+      semanticSessionId: 'my-own-session-744-a',
+      mode: 'deep',
+    });
+
+    expect(result).toBeNull();
+    const onDisk = readLock();
+    expect(onDisk.session_id).toBe(foreignSessionId);
+  });
+
+  it('records the foreign session_id as a conflict signal (real acquire/forceAcquire path)', async () => {
+    const foreignSessionId = 'foreign-real-744-b';
+    seedForeignLiveLock(foreignSessionId);
+
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-own-session-744-b',
+      semanticSessionId: 'my-own-session-744-b',
+      mode: 'deep',
+    });
+
+    const session = readCurrentSession();
+    expect(session).not.toBeNull();
+    expect(session.conflict_with_session_id).toBe(foreignSessionId);
   });
 });

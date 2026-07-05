@@ -387,6 +387,75 @@ describe('migrateEntry — idempotency', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #745 — legacy waves[].name -> role back-compat alias
+// ---------------------------------------------------------------------------
+
+describe('migrateEntry — waves[].name -> role back-compat alias (#745)', () => {
+  it('aliases name to role when role is absent', () => {
+    const entry = {
+      session_id: 'sess-name-only-wave',
+      session_type: 'deep',
+      started_at: '2026-04-01T08:00:00Z',
+      completed_at: '2026-04-01T10:00:00Z',
+      waves: [{ wave: 1, name: 'Discovery', agents: 2, status: 'done' }],
+    };
+    const migrated = migrateEntry(entry);
+    expect(migrated.waves[0].role).toBe('Discovery');
+    expect(() => validateSession(migrated)).not.toThrow();
+  });
+
+  it('does NOT overwrite a present role when name is also present', () => {
+    const entry = {
+      session_id: 'sess-role-and-name-wave',
+      session_type: 'deep',
+      started_at: '2026-04-01T08:00:00Z',
+      completed_at: '2026-04-01T10:00:00Z',
+      waves: [{ wave: 1, role: 'Implementation', name: 'Legacy Name', agents: 2, status: 'done' }],
+    };
+    const migrated = migrateEntry(entry);
+    expect(migrated.waves[0].role).toBe('Implementation');
+  });
+
+  it('leaves wave normalization unchanged when neither name nor role is present', () => {
+    const entry = {
+      session_id: 'sess-no-name-no-role-wave',
+      session_type: 'deep',
+      started_at: '2026-04-01T08:00:00Z',
+      completed_at: '2026-04-01T10:00:00Z',
+      waves: [{ agents: 2, status: 'done' }],
+    };
+    const migrated = migrateEntry(entry);
+    expect(migrated.waves[0].wave).toBe(1);
+    expect(migrated.waves[0].role).toBeUndefined();
+  });
+
+  it('treats an empty-string role as absent and still aliases name in (hasRole boundary)', () => {
+    const entry = {
+      session_id: 'sess-empty-role-wave',
+      session_type: 'deep',
+      started_at: '2026-04-01T08:00:00Z',
+      completed_at: '2026-04-01T10:00:00Z',
+      waves: [{ wave: 1, role: '', name: 'Legacy Name', agents: 2, status: 'done' }],
+    };
+    const migrated = migrateEntry(entry);
+    // role.length > 0 is false for '' — hasRole is false — name is aliased in.
+    expect(migrated.waves[0].role).toBe('Legacy Name');
+  });
+
+  it('does NOT alias an empty-string name (name.length > 0 boundary), role stays undefined', () => {
+    const entry = {
+      session_id: 'sess-empty-name-wave',
+      session_type: 'deep',
+      started_at: '2026-04-01T08:00:00Z',
+      completed_at: '2026-04-01T10:00:00Z',
+      waves: [{ wave: 1, name: '', agents: 2, status: 'done' }],
+    };
+    const migrated = migrateEntry(entry);
+    expect(migrated.waves[0].role).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Regression: existing old-shape (agents_dispatched/waves_completed) still works
 // ---------------------------------------------------------------------------
 

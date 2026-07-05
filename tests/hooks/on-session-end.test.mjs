@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { permsEnforced } from '../_helpers/perms.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -123,6 +124,16 @@ async function readLastEvent(projectDir) {
   const content = await fs.readFile(path.join(projectDir, EVENTS_REL), 'utf8');
   const lines = content.trim().split('\n').filter((l) => l.length > 0);
   return JSON.parse(lines[lines.length - 1]);
+}
+
+/** Read + parse EVERY record in events.jsonl; missing file → []. */
+async function readAllEvents(projectDir) {
+  try {
+    const content = await fs.readFile(path.join(projectDir, EVENTS_REL), 'utf8');
+    return content.trim().split('\n').filter((l) => l.length > 0).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
 }
 
 describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
@@ -497,5 +508,112 @@ describe('on-session-end.mjs — dead-by-age relaxation does NOT leak into the h
     expect(records).toHaveLength(0);
     // The foreign lock is not ours — it must survive untouched.
     expect(await lockExists(dir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Epic #724 Wave 3 — hardened SessionEnd release path ("ended logged but lock
+// survived"). Two failure modes closed:
+//   (1) release() returns a non-delete result despite a matched ownership
+//       (fs-error) — must surface as a breadcrumb, never vanish silently.
+//   (2) neither ownership check matches (rotated harness UUID + null/stale
+//       semantic_session_id) but the lease is already dead — the reaper is
+//       invoked as a close-time reconciliation fallback instead of leaving the
+//       orphan for the next session-start to discover.
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout: 15000 }, () => {
+  it('reconciles a dead orphaned lock at close-time when the rotated UUID matches neither ownership check (load-bearing)', async () => {
+    const dir = await mkProject();
+    // The lease was acquired under an OLD uuid, with NO semantic_session_id
+    // recorded at all (the exact #724 root-cause shape: a harness UUID
+    // rotation racing ahead of current-session.json's semantic bridge).
+    // last_heartbeat is far past the 4h default TTL — a dead lease.
+    await seedLock(dir, {
+      sessionId: 'old-rotated-uuid',
+      lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
+    });
+    // No current-session.json seeded at all — semanticSessionId resolves to
+    // null, so ownBySemantic can never be true either.
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-rotated-uuid', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // The reconciliation fallback archive-moved the dead orphaned lease even
+    // though neither ownByUuid nor ownBySemantic matched.
+    expect(await lockExists(dir)).toBe(false);
+  });
+
+  it('does NOT reap a live lock that belongs to neither ownership check (reconciliation is dead-lease-only)', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, {
+      sessionId: 'foreign-live-uuid',
+      semanticSessionId: 'foreign-live-sem',
+      lastHeartbeat: new Date().toISOString(), // fresh — live
+    });
+    // No current-session.json — this session's own semanticSessionId is null,
+    // so ownBySemantic cannot accidentally match the foreign lock's semantic id.
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'me-different-uuid', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // Live + not-ours → reconciliation must never touch it.
+    expect(await lockExists(dir)).toBe(true);
+  });
+
+  it.skipIf(!permsEnforced())('emits a breadcrumb when release() fails despite a matched ownership (fs-error)', { timeout: 15000 }, async () => {
+    const dir = await mkProject();
+    await seedLock(dir, { sessionId: 'sess-own-fail', semanticSessionId: 'sem-own-fail' });
+    // Pre-create metrics/ BEFORE locking down .orchestrator/ so the primary
+    // session.ended emitEvent() write (which needs to mkdir the metrics/
+    // directory on first use) is unaffected by the permission change below.
+    await fs.mkdir(path.join(dir, '.orchestrator', 'metrics'), { recursive: true });
+
+    const orchestratorDir = path.join(dir, '.orchestrator');
+    // r-xr-xr-x: readLock() (read-only) still succeeds, but unlinkSync() of
+    // session.lock (a direct child of .orchestrator/) needs WRITE permission
+    // on this directory — removed here — so release() fails at the fs layer
+    // with reason: 'fs-error', despite the ownership match succeeding.
+    await fs.chmod(orchestratorDir, 0o555);
+    try {
+      const result = await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-own-fail', reason: 'clear' }),
+      });
+
+      expect(result.code).toBe(0);
+      // The unlink failed — the lock must still be on disk (nothing silently lost).
+      expect(await lockExists(dir)).toBe(true);
+      const events = await readAllEvents(dir);
+      const breadcrumb = events.find((e) => e.event === 'orchestrator.session.lock.release_failed');
+      expect(breadcrumb).toBeDefined();
+      expect(breadcrumb.session_id).toBe('sess-own-fail');
+      expect(breadcrumb.reason).toBe('fs-error');
+    } finally {
+      // Restore write permission so afterEach's recursive rm can clean up.
+      await fs.chmod(orchestratorDir, 0o755);
+    }
+  });
+
+  it('happy path unchanged: an owned live lock releases normally with no reconciliation and no failure breadcrumb', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, { sessionId: 'sess-happy', semanticSessionId: 'sem-happy' });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-happy', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await lockExists(dir)).toBe(false);
+    const events = await readAllEvents(dir);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.release_failed')).toBe(false);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
   });
 });
