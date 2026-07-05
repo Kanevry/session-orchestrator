@@ -9,12 +9,24 @@
  * hard-coded literals — no test-the-mock, no computed expectations.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// Wrap (never replace) the reconcile engine's runReconcile so every existing
+// test in this file keeps exercising the REAL engine end-to-end — only the
+// forwarding test in Group G below inspects the mock's recorded call args.
+// See #741.1/#741.2 Gap 3: a kebab-vs-camelCase typo in decideReconcile()'s
+// `min-rule-days`/`min-insight-chars` config reads would silently regress to
+// the engine's own defaults, with no prior test catching it.
+vi.mock('@lib/reconcile/engine.mjs', async (importActual) => {
+  const actual = await importActual();
+  return { ...actual, runReconcile: vi.fn(actual.runReconcile) };
+});
+
 import { planTailPhases, buildSkippedReport } from '@lib/session-end/phase-skip.mjs';
+import { runReconcile } from '@lib/reconcile/engine.mjs';
 
 // ---------------------------------------------------------------------------
 // tmp helpers
@@ -415,5 +427,40 @@ describe('F — fail-open on unreadable input', () => {
 
     expect(byId(p, '3.6.8')).toMatchObject({ run: false, inputSource: 'reconcile-dry-run' });
     expect(byId(p, '3.6.8').reason).toBe('0 proposals above confidence floor (eligible=0, floor=0.5)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G — decideReconcile forwards min-rule-days / min-insight-chars (#741.1/#741.2
+// Gap 3). A kebab-vs-camelCase typo (or a dropped forwarding line) in
+// decideReconcile()'s Session Config reads would silently regress both
+// overrides to the engine's own internal defaults with no test noticing —
+// this asserts the exact call args runReconcile receives.
+// ---------------------------------------------------------------------------
+
+describe('G — decideReconcile forwards min-rule-days / min-insight-chars to runReconcile', () => {
+  it('forwards minRuleDays and minInsightChars from Session Config verbatim', async () => {
+    const root = makeRepo();
+    writeJsonl(metric(root, 'learnings.jsonl'), [
+      {
+        id: 'c-fwd', created_at: '2026-07-01T00:00:00.000Z', type: 'convention', confidence: 0.9,
+        subject: 'forwarding probe', insight: 'insight long enough to pass', evidence: 'seen once',
+        expires_at: '2027-01-01T00:00:00.000Z', schema_version: 1,
+        scope: 'repo-local', file_paths: ['skills/x.md'],
+      },
+    ]);
+    vi.mocked(runReconcile).mockClear();
+
+    await plan(root, defaultConfig({
+      reconcile: {
+        enabled: true, 'confidence-floor': 0.5, 'rule-expiry-days': null,
+        'min-rule-days': 14, 'min-insight-chars': 12,
+      },
+    }));
+
+    expect(vi.mocked(runReconcile)).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(runReconcile).mock.calls[0][0];
+    expect(callArgs.minRuleDays).toBe(14);
+    expect(callArgs.minInsightChars).toBe(12);
   });
 });

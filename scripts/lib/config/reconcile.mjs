@@ -12,6 +12,8 @@
  *     targets: string[],
  *     'rule-expiry-days': number | null,
  *     'confidence-floor': number,
+ *     'min-rule-days': number,
+ *     'min-insight-chars': number,
  *   }
  *
  * Tolerant parser: malformed values silently fall back to defaults.
@@ -38,6 +40,15 @@
  *                                          Set to a positive integer to override.
  *   reconcile.confidence-floor:  0.5    — float 0.0..1.0; min learning confidence
  *                                          before a learning is eligible for rule proposal
+ *   reconcile.min-rule-days:     7       — positive integer; floor window (days) applied
+ *                                          to a proposed rule's `expires-at` so a near-dead
+ *                                          or already-elapsed natural expiry never produces
+ *                                          a born-dead rule (issue #741.1). Malformed,
+ *                                          absent, or non-positive values fall back to 7.
+ *   reconcile.min-insight-chars: 24      — integer >= 0; opt-in minimum insight length
+ *                                          gating the eligibility placeholder-insight check
+ *                                          (issue #741.2). Malformed, absent, or negative
+ *                                          values fall back to 24.
  *
  * YAML shape:
  *   reconcile:
@@ -46,6 +57,8 @@
  *     targets: [repo-local]
  *     rule-expiry-days: null        # default null — falls back to per-type TTL
  *     confidence-floor: 0.5
+ *     min-rule-days: 7
+ *     min-insight-chars: 24
  *
  * @param {string} content — full file contents
  * @returns {{
@@ -54,6 +67,8 @@
  *   targets: string[],
  *   'rule-expiry-days': number | null,
  *   'confidence-floor': number,
+ *   'min-rule-days': number,
+ *   'min-insight-chars': number,
  * }}
  */
 export function _parseReconcile(content) {
@@ -63,6 +78,8 @@ export function _parseReconcile(content) {
     targets: ['repo-local'],
     'rule-expiry-days': null,
     'confidence-floor': 0.5,
+    'min-rule-days': 7,
+    'min-insight-chars': 24,
   };
 
   const lines = content.split(/\r?\n/);
@@ -87,6 +104,8 @@ export function _parseReconcile(content) {
   let targets = ['repo-local'];
   let ruleExpiryDays = null;
   let confidenceFloor = 0.5;
+  let minRuleDays = 7;
+  let minInsightChars = 24;
 
   for (const rawLine of blockLines) {
     // Strip inline comments and trailing whitespace
@@ -144,6 +163,24 @@ export function _parseReconcile(content) {
         break;
       }
 
+      case 'min-rule-days': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (n > 0) minRuleDays = n;
+          // 0 or negative: silently ignore, keep default 7
+        }
+        break;
+      }
+
+      case 'min-insight-chars': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (n >= 0) minInsightChars = n;
+          // negative (unrepresentable by \d+ anyway) or malformed: keep default 24
+        }
+        break;
+      }
+
       // targets inline-list with no brackets (e.g. targets: repo-local) — single value
       case 'targets': {
         if (v && !v.startsWith('[')) {
@@ -160,5 +197,7 @@ export function _parseReconcile(content) {
     targets,
     'rule-expiry-days': ruleExpiryDays,
     'confidence-floor': confidenceFloor,
+    'min-rule-days': minRuleDays,
+    'min-insight-chars': minInsightChars,
   };
 }

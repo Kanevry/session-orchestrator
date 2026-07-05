@@ -46,7 +46,16 @@ function rejectLearning(overrides = {}) {
 
 describe('runReconcile — committed-fixture regression lock (DI-injected dryRun)', () => {
   it('produces the fixture verdict: 6 total / 2 eligible / 2 proposed / 4 rejected / not written', async () => {
-    const result = await runReconcile({ dryRun: true }, { learnings: RECONCILE_FIXTURE });
+    // Pinned `now` (issue #741.1c wiring — engine.mjs now threads nowMs into
+    // the eligibility expiry gate). The fixture's two eligible records expire
+    // 2026-08-05 (created_at 2026-06-21 + 45d fragile-pattern/recurring-issue
+    // TTL) — without this pin, `Date.now()` would flip this fixture-lock to
+    // "already-expired-at-proposal" after that date. Pinned well before expiry
+    // keeps the assertion deterministic forever.
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { learnings: RECONCILE_FIXTURE },
+    );
 
     expect(result.summary).toEqual({
       totalLearnings: 6,
@@ -64,8 +73,12 @@ describe('runReconcile — DI injection', () => {
   it('partitions injected learnings into 1 proposal + 1 rejection and passes candidates to the merge seam', async () => {
     const merge = vi.fn(() => ({ merged: [], written: true }));
 
+    // Pin `now` before the fixture's 2026-08-05 natural expiry (created_at
+    // 2026-06-21 + 45d fragile-pattern TTL) — engine.mjs threads nowMs into the
+    // eligibility expiry gate (#741.1c), so an unpinned Date.now() would flip
+    // eligibleLearning() to already-expired-at-proposal after that date.
     const result = await runReconcile(
-      {},
+      { now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [eligibleLearning(), rejectLearning()], merge },
     );
 
@@ -173,13 +186,72 @@ describe('runReconcile — never-throws boundary', () => {
   });
 });
 
+describe('runReconcile — minRuleDays / minInsightChars param forwarding (#741.1/#741.2 config plumbing)', () => {
+  it('minInsightChars, when forwarded, rejects a non-empty-but-short insight that is eligible by default', async () => {
+    const pinnedNow = new Date('2026-06-25T00:00:00Z');
+    const shortInsightLearning = eligibleLearning({
+      subject: 'short-insight-case',
+      insight: 'too short', // 9 chars — non-empty, non-placeholder, but < 24
+    });
+
+    // Baseline: minInsightChars omitted (undefined) — the placeholder-insight
+    // gate stays inert for a non-empty, non-placeholder insight, so the
+    // learning is still proposed.
+    const baseline = await runReconcile(
+      { dryRun: true, now: pinnedNow },
+      { learnings: [shortInsightLearning] },
+    );
+    expect(baseline.summary.proposed).toBe(1);
+    expect(baseline.summary.rejected).toBe(0);
+
+    // Fake-regression note: before this wave wired `minInsightChars` through
+    // to `filterEligible` (engine.mjs previously hardcoded the literal
+    // `undefined`), this call would have produced the SAME result as the
+    // baseline above — the gate below is the fix under test.
+    const gated = await runReconcile(
+      { dryRun: true, now: pinnedNow, minInsightChars: 24 },
+      { learnings: [shortInsightLearning] },
+    );
+    expect(gated.summary.proposed).toBe(0);
+    expect(gated.summary.rejected).toBe(1);
+    expect(gated.rejected[0].reason).toContain('min-insight-chars 24');
+  });
+
+  it('minRuleDays, when forwarded, floors a near-dead learning\'s expires-at to now + minRuleDays days', async () => {
+    // fragile-pattern TTL = 45d (learnings/schema.mjs LEARNING_TYPE_REGISTRY).
+    // created_at 2026-05-13 + 45d -> natural expiry 2026-06-27 (2 days after
+    // the pinned `now` below — eligible, not already-expired-at-proposal, but
+    // near-dead relative to a 15-day floor).
+    const nearDeadLearning = eligibleLearning({
+      subject: 'near-dead-case',
+      created_at: '2026-05-13T00:00:00Z',
+    });
+
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), minRuleDays: 15 },
+      { learnings: [nearDeadLearning] },
+    );
+
+    expect(result.summary.proposed).toBe(1);
+    // Fake-regression note: before this wave forwarded `minRuleDays` to
+    // `toActivationMetadata`, the emitter's internal MIN_RULE_DAYS_DEFAULT
+    // (7d) would have floored this to 2026-07-02 (now+7d) instead of the
+    // requested 2026-07-10 (now+15d) — the assertion below is the fix under test.
+    expect(result.proposals[0].content).toContain('expires-at: 2026-07-10');
+  });
+});
+
 describe('runReconcile — never writes .claude/rules/', () => {
   it('returns rule content inside the proposal object without persisting any rule file', async () => {
     // A merge stub keeps the real sidecar untouched; the engine NEVER writes
     // .claude/rules/, so the rendered rule is only ever carried in the proposal.
     const merge = vi.fn(() => ({ merged: [], written: true }));
 
-    const result = await runReconcile({}, { learnings: [eligibleLearning()], merge });
+    // Pin `now` before the fixture's 2026-08-05 natural expiry (see #741.1c note above).
+    const result = await runReconcile(
+      { now: new Date('2026-06-25T00:00:00Z') },
+      { learnings: [eligibleLearning()], merge },
+    );
 
     expect(result.proposals).toHaveLength(1);
     expect(typeof result.proposals[0].content).toBe('string');

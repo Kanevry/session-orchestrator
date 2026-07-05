@@ -35,6 +35,15 @@ import { deriveExpiresAt } from '../learnings/schema.mjs';
 const DAY_MS = 86400 * 1000;
 const DESCRIPTION_MAX = 120;
 
+// The "born-dead expiry" floor (issue #741.1a). A rule whose NATURAL expiry
+// (created_at + TTL) already sits in the past — or within this many days of
+// `now` — at proposal time would be excluded on first read: rule-loader.mjs
+// drops any rule whose `expires-at` satisfies `Date.parse(expiry) < Date.now()`
+// (strict `<`). 7 days sits below every per-type TTL in LEARNING_TTL_DAYS
+// (min 30d), so the floor only ever RAISES a near-dead/past expiry — it never
+// shortens a healthy future one.
+const MIN_RULE_DAYS_DEFAULT = 7;
+
 // Control chars: C0 range (U+0000–U+001F, includes \n \r \t) plus DEL (U+007F).
 // A newline in frontmatter would corrupt the YAML parse — stripping these is
 // critical. Written with \u escapes so the source stays pure ASCII.
@@ -123,30 +132,44 @@ function buildDescription(learning) {
  * When `created_at` is missing/unparseable, fall back to the injectable `now`
  * (epoch ms or Date) so the result stays deterministic under test.
  *
+ * The result is then FLOORED at `now + minRuleDays` (default
+ * {@link MIN_RULE_DAYS_DEFAULT}) so an older learning whose natural expiry has
+ * already elapsed — or sits within the floor window — never produces a
+ * born-dead rule (issue #741.1a). The floor only ever raises the expiry; a
+ * healthy future expiry passes through unchanged.
+ *
  * @param {object} learning
  * @param {number|undefined} ruleExpiryDays
  * @param {number|Date|undefined} now
+ * @param {number|undefined} minRuleDays - floor window in days; defaults to
+ *   {@link MIN_RULE_DAYS_DEFAULT} when not a finite positive number.
  * @returns {string} YYYY-MM-DD
  */
-function computeExpiresAt(learning, ruleExpiryDays, now) {
+function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
   const toYmd = (iso) => String(iso).slice(0, 10);
   const nowMs = () =>
     now instanceof Date ? now.getTime() : typeof now === 'number' ? now : Date.now();
 
+  let derivedMs;
   if (typeof ruleExpiryDays === 'number' && Number.isFinite(ruleExpiryDays)) {
     let baseMs = Date.parse(learning.created_at);
     if (!Number.isFinite(baseMs)) baseMs = nowMs();
-    return toYmd(new Date(baseMs + ruleExpiryDays * DAY_MS).toISOString());
+    derivedMs = baseMs + ruleExpiryDays * DAY_MS;
+  } else {
+    // No explicit override → per-type TTL. deriveExpiresAt falls back to
+    // `Date.now()` internally when created_at is missing; to keep the injectable
+    // `now` honoured for tests, substitute its ISO form as created_at in that case.
+    let createdAt = learning.created_at;
+    if (typeof createdAt !== 'string' || !Number.isFinite(Date.parse(createdAt))) {
+      createdAt = new Date(nowMs()).toISOString();
+    }
+    derivedMs = Date.parse(deriveExpiresAt(createdAt, learning.type));
   }
 
-  // No explicit override → per-type TTL. deriveExpiresAt falls back to
-  // `Date.now()` internally when created_at is missing; to keep the injectable
-  // `now` honoured for tests, substitute its ISO form as created_at in that case.
-  let createdAt = learning.created_at;
-  if (typeof createdAt !== 'string' || !Number.isFinite(Date.parse(createdAt))) {
-    createdAt = new Date(nowMs()).toISOString();
-  }
-  return toYmd(deriveExpiresAt(createdAt, learning.type));
+  const days =
+    Number.isFinite(minRuleDays) && minRuleDays > 0 ? minRuleDays : MIN_RULE_DAYS_DEFAULT;
+  const floorMs = nowMs() + days * DAY_MS;
+  return toYmd(new Date(Math.max(derivedMs, floorMs)).toISOString());
 }
 
 /**
@@ -160,6 +183,10 @@ function computeExpiresAt(learning, ruleExpiryDays, now) {
  *   finite number, overrides the per-type TTL.
  * @param {number|Date} [opts.now] - injectable clock used ONLY as a fallback when
  *   `created_at` is missing/unparseable (keeps expiry deterministic in tests).
+ * @param {number} [opts.minRuleDays] - floor window (days) applied to the
+ *   emitted expiry so it never falls in the past — see
+ *   {@link computeExpiresAt} and {@link MIN_RULE_DAYS_DEFAULT}. Defaults
+ *   internally when omitted; config plumbing for this is a later wave.
  * @returns {{
  *   globs: string[],
  *   description: string,
@@ -173,7 +200,7 @@ function computeExpiresAt(learning, ruleExpiryDays, now) {
  * @throws {Error} when no activation axis can be produced (empty globs AND no
  *   hostClass) — the never-always-on invariant.
  */
-export function toActivationMetadata(learning, { ruleExpiryDays, now } = {}) {
+export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDays } = {}) {
   if (learning === null || typeof learning !== 'object' || Array.isArray(learning)) {
     throw new Error('emitter: learning must be a non-null object');
   }
@@ -204,7 +231,7 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now } = {}) {
     description: buildDescription(learning),
     learningKey,
     confidence,
-    expiresAt: computeExpiresAt(learning, ruleExpiryDays, now),
+    expiresAt: computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays),
     autoGenerated: true,
     alwaysApply: false,
   };

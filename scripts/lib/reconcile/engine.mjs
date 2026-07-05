@@ -229,6 +229,12 @@ function buildCandidate({ id, learningKey, slug, status, reason, confidence, cre
  * @param {Object} [params]
  * @param {string} [params.repoRoot]      - repo root; defaults to `process.cwd()` for the default loader/merge.
  * @param {number} [params.ruleExpiryDays]- explicit rule expiry window (passed to the emitter).
+ * @param {number} [params.minRuleDays]   - floor window (days) applied to the emitted `expires-at`
+ *        so it never falls in the past (forwarded to the emitter — see `emitter.mjs`
+ *        `computeExpiresAt`). Defaults internally (7d) when omitted.
+ * @param {number} [params.minInsightChars]- opt-in minimum insight length gating the
+ *        eligibility placeholder-insight check (forwarded to `filterEligible`). Inert
+ *        (no additional rejections) when omitted.
  * @param {number|Date} [params.now]      - injectable clock (emitter fallback + candidate `created_at`).
  * @param {boolean} [params.dryRun]       - when true, compute proposals but SKIP the merge entirely
  *        (also accepted as `opts.dryRun`; either location sets it).
@@ -242,7 +248,10 @@ function buildCandidate({ id, learningKey, slug, status, reason, confidence, cre
  * @param {boolean} [opts.dryRun]         - when true, compute proposals but SKIP the merge entirely.
  * @returns {Promise<ReconcileResult>}
  */
-export async function runReconcile({ repoRoot, ruleExpiryDays, now, dryRun: dryRunParam } = {}, opts = {}) {
+export async function runReconcile(
+  { repoRoot, ruleExpiryDays, minRuleDays, minInsightChars, now, dryRun: dryRunParam } = {},
+  opts = {},
+) {
   try {
     // --- Resolve DI seams (real behaviour as defaults) ---------------------
     // dryRun may arrive in the first arg (acceptance criterion 1) OR in opts
@@ -275,7 +284,10 @@ export async function runReconcile({ repoRoot, ruleExpiryDays, now, dryRun: dryR
     const createdAt = new Date(nowMs).toISOString();
 
     // --- Pipeline step 3 — partition ---------------------------------------
-    const { eligible, rejected: rejectedLearnings } = filterEligible(learnings);
+    const { eligible, rejected: rejectedLearnings } = filterEligible(learnings, {
+      now: nowMs,
+      minInsightChars,
+    });
 
     /** @type {ReconcileProposal[]} */
     const proposals = [];
@@ -287,7 +299,7 @@ export async function runReconcile({ repoRoot, ruleExpiryDays, now, dryRun: dryR
     // --- Pipeline step 4 — per eligible learning (wrapped per-item) ---------
     for (const learning of eligible) {
       try {
-        const metadata = toActivationMetadata(learning, { ruleExpiryDays, now });
+        const metadata = toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDays });
         const { slug, path, content } = renderRule(learning, metadata);
         const candidateId = makeCandidateId(metadata.learningKey, slug);
 

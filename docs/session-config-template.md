@@ -360,6 +360,8 @@ reconcile:
   targets: [repo-local]          # where approved rules are written; repo-local = .claude/rules/ in v1
   rule-expiry-days: null         # null = per-type TTL (default 60d); set positive integer for flat override (#697)
   confidence-floor: 0.5          # float 0.0..1.0 — min learning confidence for rule proposal eligibility
+  min-rule-days: 7               # #741.1 — floor for emitted rule expires-at: max(derived, now + N days); prevents born-dead rules
+  min-insight-chars: 24          # #741.2 — reject a learning whose trimmed insight is shorter than N chars before rule conversion
 ```
 
 Field semantics:
@@ -368,6 +370,8 @@ Field semantics:
 - **`targets`** — list of write locations for approved rules. `repo-local` writes to `.claude/rules/` in the current repo.
 - **`rule-expiry-days`** — `null` (default) lets the reconcile engine use per-type TTL (fragile-pattern=30d, anti-pattern=90d, etc.). Set a positive integer to override all types with a flat expiry window.
 - **`confidence-floor`** — learnings below this confidence level are not eligible for rule proposals. Default 0.5 matches `memory.proposals.confidence-floor`.
+- **`min-rule-days`** — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule. Positive integer; malformed or ≤0 falls back to 7 (issue #741.1).
+- **`min-insight-chars`** — opt-in minimum insight length gating the eligibility placeholder-insight check; rejects a learning whose trimmed insight is shorter than N characters before rule conversion. Integer ≥ 0; `0` disables the check (issue #741.2).
 
 Read by: `scripts/lib/config/reconcile.mjs` (parser), `skills/session-end/SKILL.md` Phase 3.6.8 (FA3 delivery). FA2 engine: `scripts/lib/reconcile/`.
 
@@ -713,6 +717,8 @@ reconcile:
   targets: [repo-local]          # rule-write location; repo-local = .claude/rules/ in v1
   rule-expiry-days: null         # null = per-type TTL (default 60d); set integer to override
   confidence-floor: 0.5          # float 0.0..1.0 — min confidence for rule proposal eligibility
+  min-rule-days: 7               # #741.1 — floor for emitted rule expires-at (prevents born-dead rules)
+  min-insight-chars: 24          # #741.2 — reject a learning whose trimmed insight is shorter than N chars
 
 # Discovery-validator — PSA-006 enforcement (#567)
 discovery-validator:

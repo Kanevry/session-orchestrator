@@ -84,6 +84,61 @@ describe('toActivationMetadata — expiry', () => {
   });
 });
 
+describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
+  it('floors a PAST natural expiry to now + 7 days (default floor)', () => {
+    // created_at 2026-01-01 + fragile-pattern TTL (45d) → natural expiry
+    // 2026-02-15, already in the past relative to `now` below. Fake-regression
+    // check: without the Math.max floor this would assert '2026-02-15', not
+    // '2026-07-12' — remove the floor and this test goes red.
+    const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
+    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    expect(meta.expiresAt).toBe('2026-07-12');
+  });
+
+  it('floors a FUTURE natural expiry that still falls within the 7d window', () => {
+    // created_at chosen so natural expiry (created_at + 45d TTL for
+    // fragile-pattern) lands at 2026-07-08 — 3 days AFTER `now` (2026-07-05),
+    // i.e. `nowMs < derivedMs < nowMs + 7*DAY`. This is the genuine in-window
+    // boundary case: the natural expiry is NOT already past, but it is still
+    // inside the 7-day floor window, so it must be raised to now + 7 days
+    // (2026-07-12) rather than passed through as 2026-07-08.
+    // Fake-regression check: without the Math.max floor this would assert
+    // '2026-07-08' (the un-floored natural expiry), not '2026-07-12' — remove
+    // the floor and this test goes red.
+    const learning = fragileLearning({ created_at: '2026-05-24T00:00:00Z' });
+    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    expect(meta.expiresAt).toBe('2026-07-12');
+  });
+
+  it('leaves a healthy future expiry unchanged (floor inert)', () => {
+    // created_at 2026-06-21 + 45d = 2026-08-05, comfortably beyond now + 7d
+    // (2026-07-12) for an injected `now` of 2026-07-05.
+    const learning = fragileLearning({ created_at: '2026-06-21T00:00:00Z' });
+    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    expect(meta.expiresAt).toBe('2026-08-05');
+  });
+
+  it('applies the floor to an explicit ruleExpiryDays override too', () => {
+    // Explicit override branch: created_at + 5 days is in the past relative
+    // to `now`, so the floor must still raise it to now + 7.
+    const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
+    const meta = toActivationMetadata(learning, {
+      ruleExpiryDays: 5,
+      now: new Date('2026-07-05T00:00:00Z'),
+    });
+    expect(meta.expiresAt).toBe('2026-07-12');
+  });
+
+  it('honours a custom minRuleDays floor when supplied', () => {
+    const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
+    const meta = toActivationMetadata(learning, {
+      now: new Date('2026-07-05T00:00:00Z'),
+      minRuleDays: 14,
+    });
+    expect(meta.expiresAt).toBe('2026-07-19');
+  });
+});
+
 describe('toActivationMetadata — never-always-on invariant', () => {
   it('throws when there is no activation axis (empty file_paths AND no host_class)', () => {
     const learning = fragileLearning({ file_paths: [] });

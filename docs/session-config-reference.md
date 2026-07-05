@@ -438,6 +438,20 @@ SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
 
 **Wave-executor dispatch**: the boilerplate prompt in `skills/wave-executor/SKILL.md` sets `SO_WAVE_AGENT=1` automatically for every dispatched agent. Direct CLI invocation from the coordinator thread or outside a wave-executor agent context will exit `3` (`rejected-wrong-context`) because the env-var is absent. This is intentional — the guard prevents accidental coordinator-context invocations. Use `/evolve` instead when proposing learnings from the coordinator level (#543 H3).
 
+**`--dry-run` flag (#741.3)**: pass `--dry-run` to validate a proposal (argv parsing + schema shape) without writing to `proposals.jsonl`. Under `--dry-run`, the wrong-context gates above (STATE.md active-check, `SO_WAVE_AGENT`, current-wave presence) are all bypassed — a dry-run never reaches the write step, so their protective purpose is moot, and bypassing them is what makes the flag safely runnable from coordinator context (e.g. for manual CLI verification) without first faking a wave-agent environment:
+
+```bash
+node scripts/memory-propose.mjs \
+  --type workflow-pattern \
+  --subject "vault-mirror BATS test ordering" \
+  --insight "BATS test files must be sourced before harness fixtures load the fnmatch shim." \
+  --evidence "tests/vault-mirror/harness.bats:23 fails when shim loads after assertion bindings." \
+  --confidence 0.85 \
+  --dry-run
+```
+
+A successful dry-run exits `0` with stdout status `dry-run-ok` (see updated exit-codes table below) and never appends to `proposals.jsonl`.
+
 `--type` accepts one of the `PROPOSAL_TYPES` enum values (the agent-writable subset of the learnings schema): `mode-selector-accuracy`, `hardware-pattern`, `fragile-file`, `effective-sizing`, `recurring-issue`, `workflow-pattern`, `proven-pattern`, `anti-pattern`, `autopilot-effectiveness`, `domain-regression`, `convention`, `architecture-pattern`, `design-pattern`. Analyzer-only learning types such as `autonomy-verdict` are intentionally excluded because their evidence gates are enforced by `/evolve` analyzers, not by agent proposals. Strings with embedded quotes must be shell-escaped per usual conventions. The CLI appends one JSONL line to `.orchestrator/metrics/proposals.jsonl` (atomic via O_APPEND under the `.orchestrator/metrics/proposals-write.lock` mutex) and updates a per-wave summary at `.orchestrator/metrics/proposals-summary-<wave-id>.json` (counters: queued / dropped / below_floor / fs_error). The coordinator surfaces both files at session-end Phase 3.6.3 to render the AUQ multiSelect; approved entries promote into `.orchestrator/metrics/learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`; rejected entries archive to `.orchestrator/proposals.rejected.log`. Privacy: `proposed_by_agent` is captured in the audit hook (`events.jsonl`) only and is stripped before promotion to learnings.jsonl.
 
 ### Exit codes
@@ -445,12 +459,13 @@ SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
 | Exit code | stdout `status` | Meaning | Triggered by |
 |-----------|-----------------|---------|--------------|
 | `0` | `queued` | Queued | Proposal accepted into the per-wave staging directory; awaits operator confirmation at session-end Phase 3.6.3. |
-| `1` | `quota-exceeded` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. |
+| `0` | `dry-run-ok` | Validated, not written | `--dry-run` was passed and the proposal (argv + schema) validated successfully. No write to `proposals.jsonl` occurs; the wrong-context gates are bypassed under this flag (#741.3). |
+| `1` | `quota-exceeded` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. Not applicable under `--dry-run` (gate bypassed). |
 | `2` | `rejected-low-confidence` | Rejected — low confidence | `--confidence` argument is below `confidence-floor`. Tighten the insight or raise the confidence (operator can still tune the floor). |
-| `3` | `rejected-wrong-context` | Rejected — wrong context | Feature disabled (`enabled: false`), STATE.md not active, or `SO_WAVE_AGENT != "1"` (call originated outside a wave-executor agent context). |
+| `3` | `rejected-wrong-context` | Rejected — wrong context | Feature disabled (`enabled: false`), STATE.md not active, or `SO_WAVE_AGENT != "1"` (call originated outside a wave-executor agent context). Not applicable under `--dry-run` (gate bypassed). |
 | `4` | `error` | Arg error | Missing or malformed flag — invalid `--type`, empty `--subject`, non-numeric `--confidence`. The CLI prints a one-line usage message on stderr. |
 
-The call-site (agent prompt) is expected to handle exit codes `1`, `2`, `3` gracefully — they are anticipated outcomes, not errors. Only exit code `4` indicates a bug in the agent's invocation.
+The call-site (agent prompt) is expected to handle exit codes `1`, `2`, `3` gracefully — they are anticipated outcomes, not errors. Only exit code `4` indicates a bug in the agent's invocation. `dry-run-ok` (exit `0`) is a distinct success status from `queued` (also exit `0`) — callers that branch on stdout `status` (not just exit code) must match the exact string to distinguish "validated only" from "queued for review".
 
 ### Where it fits in the lifecycle
 
@@ -466,7 +481,7 @@ Together: F2.1 captures fresh insight mid-flight, F2.2 consolidates old insight 
 
 **Used by:** `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
 
-**Cross-reference:** issue #501, PRD F2.1 in the Learning-Memory Modernization PRD. Sibling features: `memory.banner` (above, F2.3 / #505), `dialectic.cadence` (F2.5 / #506), Auto-Dream (F2.2 / #502, surfaced via `memory-cleanup-soft-limit`).
+**Cross-reference:** issue #501, PRD F2.1 in the Learning-Memory Modernization PRD; issue #741.3 (`--dry-run` flag + `dry-run-ok` status). Sibling features: `memory.banner` (above, F2.3 / #505), `dialectic.cadence` (F2.5 / #506), Auto-Dream (F2.2 / #502, surfaced via `memory-cleanup-soft-limit`).
 
 ## Auto-Dream Proposal Filter (#566)
 
@@ -712,6 +727,8 @@ reconcile:
   targets: [repo-local]    # where approved rules are written
   rule-expiry-days: null   # null = per-type TTL (default 60d via deriveExpiresAt)
   confidence-floor: 0.5    # min learning confidence before a learning is eligible
+  min-rule-days: 7         # floor on emitted expires-at so a rule is never born-dead
+  min-insight-chars: 24    # reject placeholder/minimal insights before rule conversion
 ```
 
 | Field | Type | Default | Description |
@@ -721,6 +738,8 @@ reconcile:
 | `reconcile.targets` | string[] | `["repo-local"]` | Where approved rules are written. `repo-local` (v1) maps to `.claude/rules/` in the current repository. This is the rule-write location — it is NOT issue-state or label sync. Future values may include `baseline` (global baseline rules) or `global` (cross-repo). |
 | `reconcile.rule-expiry-days` | integer \| null | `null` | Optional override for the TTL stamped into each generated rule's `expires-at` frontmatter. **Default is `null`** — when null or absent, the engine uses per-type TTL (`deriveExpiresAt`, default 60 days). Setting this to a positive integer N forces a flat N-day expiry for all proposals in this repo, overriding per-type TTL. CRITICAL: the default must remain `null` to preserve per-type TTL behaviour; a non-null committed default would silently force flat expiry. |
 | `reconcile.confidence-floor` | float | `0.5` | Minimum learning confidence (0.0..1.0) required before a learning is eligible for a rule proposal. Learnings with `confidence < confidence-floor` are skipped by the engine. Bounds: `0.0 ≤ value ≤ 1.0`; out-of-range values silently fall back to `0.5`. Set to `0.0` to surface proposals for all learnings regardless of confidence. |
+| `reconcile.min-rule-days` | integer | `7` | Floor (in days) applied to the emitted rule's `expires-at` — issue #741.1. A learning close to its natural per-type TTL expiry could otherwise generate a rule that expires almost immediately ("born-dead"); `computeExpiresAt()` (`scripts/lib/reconcile/emitter.mjs`) floors the result at `now + min-rule-days` so an approved rule always has at least this many days of active life. Mirrors the hardcoded `MIN_RULE_DAYS_DEFAULT` constant in the emitter. Bounds: positive integer; non-finite or ≤0 values fall back to the default. |
+| `reconcile.min-insight-chars` | integer | `24` | Minimum `insight` length (characters) required before a learning is eligible for rule conversion — issue #741.2. Opt-in and additive to the always-on placeholder/empty-insight rejection in `classifyLearning()` (`scripts/lib/reconcile/eligibility.mjs`): a non-empty but too-short insight (e.g. a stub or a recovery placeholder) is rejected with reason `placeholder-insight` before it reaches proposal generation. Set to `0` to disable the length check (only the always-on empty/placeholder-regex check applies). |
 
 ### Never-always-on invariant
 
@@ -733,7 +752,9 @@ Generated rules carry a `globs:` frontmatter key (path-scoped conditional loadin
 - Resolver: `scripts/lib/config/reconcile.mjs`
 - `/reconcile` command: `skills/reconcile/SKILL.md` (on-demand invocation)
 - Epic #693 (reconciliation engine umbrella), FA3 #696 (advisory delivery), FA4 #697 (guardrails + this config block)
+- Issue #741.1 (`min-rule-days` born-dead floor) / #741.2 (`min-insight-chars` placeholder gate)
 - Instruction-budget guard: [Instruction Budget](#instruction-budget-687) (`instruction-budget.ceiling`, issue #687) — the never-always-on invariant protects this ceiling from reconciler-driven growth
+- Rule-authoring cross-reference: [`docs/rule-authoring.md`](rule-authoring.md#learning-type-taxonomy-ttl--provenance-standard-issue-723-b6--733) § "Learning Type-Taxonomy, TTL & Provenance Standard" — the type-taxonomy registry these config keys tune
 
 **Used by:** `scripts/lib/config/reconcile.mjs` (parser), `scripts/lib/reconcile/engine.mjs` (engine), `skills/session-end/SKILL.md` Phase 3.6.8.
 

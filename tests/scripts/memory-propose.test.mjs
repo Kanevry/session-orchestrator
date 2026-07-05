@@ -17,6 +17,7 @@
  *   Section C — below-confidence-floor (exit 2):  2 tests
  *   Section D — happy path (exit 0 + exit 1 quota): 3 tests
  *   Section E — wrong-context env-var guard (#543 H3, exit 3): 3 tests
+ *   Section F — --dry-run validate-only, no write (#741.3): 10 tests
  *
  * Env-var convention (#543 H3 / #544 M2):
  *   The `runCli` helper deletes SO_WAVE_AGENT from the child env by default,
@@ -714,5 +715,171 @@ describe('Section E — wrong-context env-var guard (#543 H3, exit 3)', () => {
     const result = parseJSON(stdout);
     expect(result.status).toBe('rejected-wrong-context');
     expect(result.detail).toContain('SO_WAVE_AGENT=1');
+  });
+});
+
+// ===========================================================================
+// Section F — --dry-run (validate-only, no write; #741.3)
+// ===========================================================================
+//
+// Motivation: every valid invocation of the CLI writes to the live
+// proposals.jsonl — there was no validate-only mode, which made a
+// verification probe write for real in a prior session. --dry-run runs
+// argv validation (Step 1) and schema/type-enum validation (Step 7), then
+// short-circuits BEFORE Step 8's appendProposal. It also bypasses the
+// STATE.md / SO_WAVE_AGENT / current-wave wrong-context gates (Steps
+// 2/2b/2c), since those gates exist solely to prevent accidental WRITES —
+// moot for a mode that never writes — which is what makes --dry-run usable
+// for safe CLI verification from coordinator context.
+//
+// FAKE-REGRESSION (mandatory per .claude/rules/testing.md): every
+// `existsSync(jsonlPath) === false` assertion below is a negative assertion
+// that MUST go red if the Step 7b short-circuit in memory-propose.mjs is
+// removed (i.e. --dry-run falling through to Step 8's appendProposal). This
+// was verified by temporarily deleting the `if (dryRun) { exit(...) }` block
+// during implementation: every "does NOT write" test below then failed with
+// `existsSync(jsonlPath) === true`, confirming the guard bites.
+
+describe('Section F — --dry-run (validate-only, no write; #741.3)', () => {
+  const WAVE_AGENT_ENV = { extraEnv: { SO_WAVE_AGENT: '1' } };
+
+  it('exits 0 with status "dry-run-ok" under --dry-run with valid args and active context', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run'], WAVE_AGENT_ENV);
+    expect(code).toBe(0);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('dry-run-ok');
+  });
+
+  it('does NOT write proposals.jsonl under --dry-run with valid args and active context', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    await runCli(dir, [...VALID_ARGS, '--dry-run'], WAVE_AGENT_ENV);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
+  });
+
+  it('stdout.dryRun is true and echoes the submitted type/subject under --dry-run', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run'], WAVE_AGENT_ENV);
+    const result = parseJSON(stdout);
+    expect(result.dryRun).toBe(true);
+    expect(result.type).toBe('proven-pattern');
+    expect(result.subject).toBe('Test subject for CLI integration');
+  });
+
+  it('stdout.wave equals "W2" under --dry-run when STATE.md current-wave=2 is present', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run'], WAVE_AGENT_ENV);
+    const result = parseJSON(stdout);
+    expect(result.wave).toBe('W2');
+  });
+
+  it('exits 0 with "dry-run-ok" under --dry-run even with NO SO_WAVE_AGENT and NO STATE.md (coordinator context)', async () => {
+    // No stateMd supplied, no SO_WAVE_AGENT — this is exactly the coordinator
+    // context the flag is designed to be safely runnable from, proving the
+    // Step 2/2b/2c bypass works.
+    const dir = setupTmpRepo();
+    const { code, stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run']);
+    expect(code).toBe(0);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('dry-run-ok');
+  });
+
+  it('does NOT write proposals.jsonl under --dry-run from coordinator context (no SO_WAVE_AGENT, no STATE.md)', async () => {
+    const dir = setupTmpRepo();
+    await runCli(dir, [...VALID_ARGS, '--dry-run']);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
+  });
+
+  it('stdout.wave equals "W-dryrun" under --dry-run when STATE.md is absent', async () => {
+    const dir = setupTmpRepo();
+    const { stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run']);
+    const result = parseJSON(stdout);
+    expect(result.wave).toBe('W-dryrun');
+  });
+
+  it('exits 4 (error) under --dry-run when --type is not a valid enum value — validation still runs', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [
+      '--type', 'invalid-nonexistent-type',
+      '--subject', 'Subject',
+      '--insight', 'Insight text here',
+      '--evidence', 'Evidence text here',
+      '--confidence', '0.7',
+      '--dry-run',
+    ];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('error');
+  });
+
+  it('does NOT write proposals.jsonl under --dry-run when --type is invalid', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [
+      '--type', 'invalid-nonexistent-type',
+      '--subject', 'Subject',
+      '--insight', 'Insight text here',
+      '--evidence', 'Evidence text here',
+      '--confidence', '0.7',
+      '--dry-run',
+    ];
+    await runCli(dir, args, WAVE_AGENT_ENV);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
+  });
+
+  it('exits 4 (error) under --dry-run with missing required args (argv validation still runs)', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code, stdout } = await runCli(dir, ['--dry-run'], WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('error');
+  });
+
+  // #741.3 gap — the Step 5 confidence-floor check is NOT gated behind
+  // `dryRun` in memory-propose.mjs (unlike Steps 2/2b/2c, which explicitly
+  // check `!dryRun`). A below-floor confidence must still exit 2 with
+  // "rejected-low-confidence" under --dry-run — proving the floor is a
+  // genuine VALIDATION gate, not one of the wrong-context WRITE guards the
+  // flag is documented to bypass.
+  //
+  // FAKE-REGRESSION (verified via a scratchpad copy of the production file,
+  // per PSA-007 / the enforce-scope hook — this task's file scope forbids
+  // editing scripts/memory-propose.mjs directly, even temporarily): gating
+  // Step 5 behind `if (!dryRun && confidence < confidenceFloor)` and re-running
+  // this exact scenario in the scratchpad copy produced exit 0 / stdout.status
+  // "dry-run-ok" instead of exit 2 / "rejected-low-confidence" — confirming
+  // this test goes RED if the confidence-floor gate is dry-run-bypassed.
+  it('exits 2 with "rejected-low-confidence" under --dry-run when confidence is below the floor', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [
+      '--type', 'proven-pattern',
+      '--subject', 'Below-floor dry-run subject',
+      '--insight', 'Below-floor dry-run insight content',
+      '--evidence', 'Below-floor dry-run evidence content',
+      '--confidence', '0.3',
+      '--dry-run',
+    ];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(2);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-low-confidence');
+  });
+
+  it('does NOT write proposals.jsonl under --dry-run when confidence is below the floor', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [
+      '--type', 'proven-pattern',
+      '--subject', 'Below-floor dry-run subject',
+      '--insight', 'Below-floor dry-run insight content',
+      '--evidence', 'Below-floor dry-run evidence content',
+      '--confidence', '0.3',
+      '--dry-run',
+    ];
+    await runCli(dir, args, WAVE_AGENT_ENV);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
   });
 });

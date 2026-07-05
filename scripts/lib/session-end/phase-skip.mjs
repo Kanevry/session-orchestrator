@@ -274,6 +274,8 @@ async function decideReconcile({ repoRoot, cfg }) {
     const { proposals, summary, error } = await runReconcile({
       repoRoot,
       ruleExpiryDays: cfg?.reconcile?.['rule-expiry-days'] ?? undefined,
+      minRuleDays: cfg?.reconcile?.['min-rule-days'] ?? undefined,
+      minInsightChars: cfg?.reconcile?.['min-insight-chars'] ?? undefined,
       now: new Date(),
       dryRun: true, // never write the candidate sidecar from the aggregator
     });

@@ -39,7 +39,18 @@
  * (a frozen constant; no I/O). Deterministic, no file I/O.
  */
 
-import { LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
+import { LEARNING_TYPE_REGISTRY, LEARNING_TTL_DAYS, deriveExpiresAt } from '../learnings/schema.mjs';
+
+/**
+ * Recovery-stub / legacy-backfill placeholder insight signature (issue #741.2).
+ * Legacy-recovery records occasionally carry a stub insight instead of a real
+ * one (e.g. `"(legacy record — insight backfilled during 2026-07-02 recovery)"`).
+ * A placeholder insight would produce an EMPTY rule body downstream (the
+ * renderer has nothing meaningful to render) — reject it honestly at the
+ * eligibility gate instead of letting a hollow rule reach the proposal stage.
+ * @type {RegExp}
+ */
+const PLACEHOLDER_RE = /insight backfilled during .* recovery|^\(?legacy record\b/i;
 
 /**
  * The learning `type` values that may become a conditional rule. DERIVED
@@ -78,13 +89,28 @@ export const CONVERT_TYPES = new Set(
  * file gate, so an out-of-allow-list type is rejected as such even when it
  * carries file paths.
  *
+ * Two further gates run AFTER the type + file gates succeed (issue #741):
+ *   - placeholder-insight (#741.2, always-on): an empty or recovery-stub
+ *     insight would produce an empty rule body — rejected honestly rather
+ *     than proposed with hollow content. `minInsightChars` additionally
+ *     rejects an insight that is non-empty but too short to be useful; it is
+ *     opt-in (inert when omitted).
+ *   - already-expired-at-proposal (#741.1c, opt-in via `now`): a learning
+ *     whose natural TTL (`created_at` + per-type TTL) already elapsed before
+ *     proposal time is rejected honestly instead of silently floored back to
+ *     life. Inert when `now` is omitted, so existing single-arg callers are
+ *     unaffected.
+ *
  * Defensive: a null / non-object record, or one missing `type`, is rejected
  * (never throws).
  *
  * @param {unknown} learning - an in-memory learning object.
+ * @param {{ now?: number, minInsightChars?: number }} [opts] - now: injectable
+ *        clock (ms epoch) gating the expiry check; minInsightChars: opt-in
+ *        minimum insight length gating the placeholder check.
  * @returns {{ eligible: boolean, reason: string }}
  */
-export function classifyLearning(learning) {
+export function classifyLearning(learning, { now, minInsightChars } = {}) {
   if (
     learning === null ||
     typeof learning !== 'object' ||
@@ -113,6 +139,37 @@ export function classifyLearning(learning) {
     };
   }
 
+  // Placeholder-insight gate (#741.2, always-on) — empty or recovery-stub
+  // insight would produce an empty rule body downstream.
+  const insight = typeof learning.insight === 'string' ? learning.insight.trim() : '';
+  if (insight === '' || PLACEHOLDER_RE.test(insight)) {
+    return {
+      eligible: false,
+      reason: `placeholder-insight — insight is empty or a recovery placeholder ("${insight.slice(0, 40)}")`,
+    };
+  }
+  if (typeof minInsightChars === 'number' && minInsightChars > 0 && insight.length < minInsightChars) {
+    return {
+      eligible: false,
+      reason: `placeholder-insight — insight ${insight.length} chars < min-insight-chars ${minInsightChars}`,
+    };
+  }
+
+  // Already-expired-at-proposal gate (#741.1c, opt-in via `now`) — a learning
+  // whose natural TTL already elapsed before proposal time is rejected
+  // honestly rather than silently floored back to life at emit time.
+  if (typeof now === 'number' && Number.isFinite(now)) {
+    const naturalExpiryIso = deriveExpiresAt(learning.created_at, type);
+    const naturalExpiryMs = Date.parse(naturalExpiryIso);
+    if (Number.isFinite(naturalExpiryMs) && naturalExpiryMs < now) {
+      const ttlDays = LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default;
+      return {
+        eligible: false,
+        reason: `already-expired-at-proposal — natural TTL (created_at + ${ttlDays}d) elapsed at ${naturalExpiryIso.slice(0, 10)} before proposal`,
+      };
+    }
+  }
+
   return {
     eligible: true,
     reason: `eligible: ${type} with ${filePaths.length} file path(s)`,
@@ -124,15 +181,17 @@ export function classifyLearning(learning) {
  * (each rejection carrying the specific audit reason).
  *
  * @param {unknown[]} learnings - list of in-memory learning objects.
+ * @param {{ now?: number, minInsightChars?: number }} [opts] - forwarded verbatim
+ *        to {@link classifyLearning} for every record.
  * @returns {{ eligible: object[], rejected: Array<{ learning: object, reason: string }> }}
  */
-export function filterEligible(learnings) {
+export function filterEligible(learnings, opts = {}) {
   const eligible = [];
   const rejected = [];
 
   const list = Array.isArray(learnings) ? learnings : [];
   for (const learning of list) {
-    const { eligible: isEligible, reason } = classifyLearning(learning);
+    const { eligible: isEligible, reason } = classifyLearning(learning, opts);
     if (isEligible) {
       eligible.push(learning);
     } else {

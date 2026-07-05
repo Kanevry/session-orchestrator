@@ -16,14 +16,22 @@
  * with `rejected-wrong-context`. This is the per-process guard against
  * accidental coordinator-context invocations (issue #543 H3).
  *
+ * Pass `--dry-run` to VALIDATE a proposal (argv + schema) without writing to
+ * proposals.jsonl. Under `--dry-run` the wrong-context gates above (STATE.md
+ * active-check, SO_WAVE_AGENT, current-wave presence) are bypassed entirely —
+ * a dry-run never reaches the write step, so their protective purpose is
+ * moot, and bypassing them is what makes the flag safely runnable from
+ * coordinator context for CLI verification (issue #741.3).
+ *
  * Stdout status values (canonical, see STATUS dict below):
  *   queued                   — proposal accepted (exit 0)
+ *   dry-run-ok               — validation passed under --dry-run, no write (exit 0)
  *   quota-exceeded           — wave quota reached (exit 1)
  *   rejected-low-confidence  — confidence < floor (exit 2)
  *   rejected-wrong-context   — STATE.md not active OR SO_WAVE_AGENT != "1" (exit 3)
  *   error                    — argv invalid or internal error (exit 4)
  *
- * Related issues: #501, #543 (H3 env-var guard), #544 (M2 status-dict)
+ * Related issues: #501, #543 (H3 env-var guard), #544 (M2 status-dict), #741.3 (--dry-run)
  * Related modules:
  *   scripts/lib/memory-proposals/schema.mjs — createProposalRecord, PROPOSAL_TYPES
  *   scripts/lib/memory-proposals/store.mjs  — appendProposal
@@ -55,6 +63,7 @@ const DEFAULT_CONFIDENCE_FLOOR = 0.5;
  */
 const STATUS = Object.freeze({
   QUEUED: 'queued',
+  DRY_RUN_OK: 'dry-run-ok',
   QUOTA_EXCEEDED: 'quota-exceeded',
   REJECTED_LOW_CONFIDENCE: 'rejected-low-confidence',
   REJECTED_WRONG_CONTEXT: 'rejected-wrong-context',
@@ -95,12 +104,18 @@ const rawArgv = process.argv.slice(2);
 if (rawArgv.includes('--help') || rawArgv.includes('-h')) {
   process.stdout.write(
     'Usage: SO_WAVE_AGENT=1 memory-propose.mjs --type <type> --subject "..." ' +
-    '--insight "..." --evidence "..." --confidence <0-1>\n\n' +
+    '--insight "..." --evidence "..." --confidence <0-1> [--dry-run]\n\n' +
     'Environment:\n' +
     '  SO_WAVE_AGENT=1 — REQUIRED. The CLI returns exit 3 (rejected-wrong-context)\n' +
-    '                    when this env-var is absent or not exactly "1".\n\n' +
+    '                    when this env-var is absent or not exactly "1".\n' +
+    '                    Bypassed under --dry-run.\n\n' +
+    'Flags:\n' +
+    '  --dry-run — Validate the proposal (argv + schema) but do NOT write to\n' +
+    '              proposals.jsonl. Bypasses the STATE.md / SO_WAVE_AGENT /\n' +
+    '              current-wave context gates so it can be run safely from\n' +
+    '              coordinator context (issue #741.3).\n\n' +
     'Exit codes / stdout status:\n' +
-    `  0 — ${STATUS.QUEUED}\n` +
+    `  0 — ${STATUS.QUEUED} (or ${STATUS.DRY_RUN_OK} under --dry-run)\n` +
     `  1 — ${STATUS.QUOTA_EXCEEDED}\n` +
     `  2 — ${STATUS.REJECTED_LOW_CONFIDENCE}\n` +
     `  3 — ${STATUS.REJECTED_WRONG_CONTEXT}\n` +
@@ -123,6 +138,7 @@ try {
       insight:    { type: 'string' },
       evidence:   { type: 'string' },
       confidence: { type: 'string' },
+      'dry-run':  { type: 'boolean' },
     },
     strict: false, // emit unknown flags as positionals rather than throwing
   });
@@ -138,6 +154,10 @@ const subjectVal    = parsedArgs.values['subject'];
 const insightVal    = parsedArgs.values['insight'];
 const evidenceVal   = parsedArgs.values['evidence'];
 const confidenceRaw = parsedArgs.values['confidence'];
+// #741.3 — validate-only mode: skips Step 8's disk write, bypasses the
+// wrong-context gates (Steps 2/2b/2c) below since they exist solely to
+// prevent accidental WRITES from the wrong context.
+const dryRun        = parsedArgs.values['dry-run'] === true;
 
 if (!typeVal)       argErrors.push('--type is required');
 if (!subjectVal)    argErrors.push('--subject is required');
@@ -167,63 +187,68 @@ const confidence = confidenceVal;
 // ---------------------------------------------------------------------------
 // Step 2 — Read STATE.md and validate context
 // ---------------------------------------------------------------------------
+//
+// #741.3 — under --dry-run every REJECTED_WRONG_CONTEXT exit below is gated
+// behind `!dryRun`. A dry-run never reaches Step 8 (the write), so these
+// gates' protective purpose — preventing accidental WRITES from the wrong
+// context — is moot for it. STATE.md is still read best-effort so a genuine
+// wave-id flows through validation when available; frontmatter stays `{}`
+// (and the placeholder waveId 'W-dryrun' is used at Step 3) when it isn't.
 
-// resolveStateMdPath from state-md.mjs: falls back to .claude/STATE.md
-let stateMdPath;
+let frontmatter = {};
+let stateMdReadOk = false;
+
 try {
+  // resolveStateMdPath from state-md.mjs: falls back to .claude/STATE.md
   const stateMdMod = await import('./lib/state-md.mjs');
-  stateMdPath = stateMdMod.resolveStateMdPath(process.cwd());
+  const stateMdPath = stateMdMod.resolveStateMdPath(process.cwd());
+
+  if (!existsSync(stateMdPath)) {
+    if (!dryRun) {
+      exit(
+        { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
+        3,
+      );
+    }
+  } else {
+    const stateContents = readFileSync(stateMdPath, 'utf8');
+    const parsedState = stateMdMod.parseStateMd(stateContents);
+    if (parsedState === null) {
+      if (!dryRun) {
+        exit(
+          { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
+          3,
+        );
+      }
+    } else {
+      frontmatter = parsedState.frontmatter;
+      stateMdReadOk = true;
+    }
+  }
 } catch {
-  // If the import fails, use the canonical default path directly
-  stateMdPath = join(process.cwd(), '.claude', 'STATE.md');
+  if (!dryRun) {
+    exit(
+      { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
+      3,
+    );
+  }
 }
 
-if (!existsSync(stateMdPath)) {
-  exit(
-    { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
-    3,
-  );
-}
-
-let stateContents;
-try {
-  stateContents = readFileSync(stateMdPath, 'utf8');
-} catch {
-  exit(
-    { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
-    3,
-  );
-}
-
-let parsedState;
-try {
-  const stateMdMod = await import('./lib/state-md.mjs');
-  parsedState = stateMdMod.parseStateMd(stateContents);
-} catch {
-  parsedState = null;
-}
-
-if (parsedState === null) {
-  exit(
-    { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },
-    3,
-  );
-}
-
-const { frontmatter } = parsedState;
-const stateStatus = frontmatter['status'];
-if (stateStatus !== 'active') {
-  exit(
-    {
-      status: STATUS.REJECTED_WRONG_CONTEXT,
-      detail: `STATE.md status is '${stateStatus ?? 'missing'}', not 'active'`,
-    },
-    3,
-  );
+if (stateMdReadOk) {
+  const stateStatus = frontmatter['status'];
+  if (stateStatus !== 'active' && !dryRun) {
+    exit(
+      {
+        status: STATUS.REJECTED_WRONG_CONTEXT,
+        detail: `STATE.md status is '${stateStatus ?? 'missing'}', not 'active'`,
+      },
+      3,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Step 2b — Wrong-context env-var guard (#543 H3)
+// Step 2b — Wrong-context env-var guard (#543 H3) — bypassed under --dry-run
 // ---------------------------------------------------------------------------
 //
 // The wave-executor injects SO_WAVE_AGENT=1 into agent prompt CLI examples
@@ -231,7 +256,7 @@ if (stateStatus !== 'active') {
 // env-var by construction. Strict-equality check ('1' only — never '0',
 // 'true', or undefined) ensures accidental flag-style values do not pass.
 // Single source of truth: scripts/lib/wave-context.mjs (#548 A4).
-if (!isWaveAgentContext()) {
+if (!dryRun && !isWaveAgentContext()) {
   exit(
     {
       status: STATUS.REJECTED_WRONG_CONTEXT,
@@ -243,6 +268,7 @@ if (!isWaveAgentContext()) {
 
 // ---------------------------------------------------------------------------
 // Step 2c — Guard against STATE.md active but missing current-wave field (#547)
+// bypassed under --dry-run
 // ---------------------------------------------------------------------------
 //
 // Without this guard, Step 3 would build waveId='W?' when current-wave is
@@ -253,7 +279,7 @@ if (!isWaveAgentContext()) {
 // (exit 3). Fixing upstream here keeps store.mjs's regex defense intact
 // while delivering the contracted exit code.
 const currentWaveRaw = frontmatter['current-wave'];
-if (currentWaveRaw === undefined || currentWaveRaw === null || currentWaveRaw === '') {
+if (!dryRun && (currentWaveRaw === undefined || currentWaveRaw === null || currentWaveRaw === '')) {
   exit(
     {
       status: STATUS.REJECTED_WRONG_CONTEXT,
@@ -264,10 +290,17 @@ if (currentWaveRaw === undefined || currentWaveRaw === null || currentWaveRaw ==
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Build wave ID from STATE.md current-wave (guaranteed present by 2c)
+// Step 3 — Build wave ID from STATE.md current-wave (guaranteed present by 2c
+// when !dryRun; falls back to a 'W-dryrun' placeholder under --dry-run when
+// STATE.md was absent/unparseable/missing the field — #741.3)
 // ---------------------------------------------------------------------------
 
-const waveId = `W${currentWaveRaw}`;
+const frontmatterWaveId =
+  currentWaveRaw !== undefined && currentWaveRaw !== null && currentWaveRaw !== ''
+    ? `W${currentWaveRaw}`
+    : undefined;
+
+const waveId = dryRun ? (frontmatterWaveId ?? 'W-dryrun') : frontmatterWaveId;
 
 // ---------------------------------------------------------------------------
 // Step 4 — Read Session Config (quota + floor)
@@ -346,6 +379,28 @@ try {
   }
 } catch (err) {
   exit({ status: STATUS.ERROR, validation: [`Schema validation error: ${err.message}`] }, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Step 7b — Dry-run short-circuit (#741.3)
+// ---------------------------------------------------------------------------
+//
+// Argv validation (Step 1) and schema/type-enum validation (Step 7) both
+// passed. Under --dry-run we stop HERE — before Step 8's appendProposal —
+// so nothing touches proposals.jsonl. This is the entire point of the flag:
+// a safe way to verify a proposal is well-formed without a live write.
+
+if (dryRun) {
+  exit(
+    {
+      status: STATUS.DRY_RUN_OK,
+      dryRun: true,
+      type,
+      subject,
+      wave: waveId,
+    },
+    0,
+  );
 }
 
 // ---------------------------------------------------------------------------

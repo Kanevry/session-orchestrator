@@ -238,7 +238,7 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
 
 #### Coordinator-direct procedure
 
-1. Read Session Config: `reconcile.enabled` (default `false`), `reconcile['rule-expiry-days']` (default `null` — falls back to per-type TTL in the engine), `reconcile['confidence-floor']` (default `0.5`). If `reconcile.enabled` is not `true`, log `reconcile: disabled (reconcile.enabled=false)` and skip all remaining steps.
+1. Read Session Config: `reconcile.enabled` (default `false`), `reconcile['rule-expiry-days']` (default `null` — falls back to per-type TTL in the engine), `reconcile['confidence-floor']` (default `0.5`), `reconcile['min-rule-days']` (default `7` — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule, issue #741.1), `reconcile['min-insight-chars']` (default `24` — opt-in minimum insight length gating the eligibility placeholder-insight check, issue #741.2). If `reconcile.enabled` is not `true`, log `reconcile: disabled (reconcile.enabled=false)` and skip all remaining steps.
 
 2. Invoke `runReconcile` from `scripts/lib/reconcile/engine.mjs`:
 
@@ -247,6 +247,8 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
    const { proposals, rejected, summary, error } = await runReconcile({
      repoRoot: process.cwd(),
      ruleExpiryDays: config.reconcile['rule-expiry-days'] ?? undefined,
+     minRuleDays: config.reconcile['min-rule-days'] ?? undefined,
+     minInsightChars: config.reconcile['min-insight-chars'] ?? undefined,
      now: new Date(),
    });
    ```

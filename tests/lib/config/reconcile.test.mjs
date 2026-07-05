@@ -3,8 +3,10 @@
  *
  * Covers _parseReconcile:
  *   - Defaults when the reconcile: block is absent
- *   - Explicit override parsing (enabled, mode, targets, rule-expiry-days, confidence-floor)
- *   - Tolerant parse: invalid mode / out-of-range confidence / non-numeric rule-expiry-days
+ *   - Explicit override parsing (enabled, mode, targets, rule-expiry-days, confidence-floor,
+ *     min-rule-days, min-insight-chars)
+ *   - Tolerant parse: invalid mode / out-of-range confidence / non-numeric rule-expiry-days /
+ *     malformed or non-positive min-rule-days / malformed or negative min-insight-chars
  *     all fall back to their safe defaults
  *   - CRITICAL: rule-expiry-days absent → MUST be null (never a number) so the engine's
  *     per-type TTL fallback is preserved
@@ -26,6 +28,8 @@ const DEFAULTS = {
   targets: ['repo-local'],
   'rule-expiry-days': null,
   'confidence-floor': 0.5,
+  'min-rule-days': 7,
+  'min-insight-chars': 24,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,24 @@ describe('_parseReconcile — explicit overrides', () => {
     expect(result.targets).toEqual(['repo-local']);
   });
 
+  it('parses min-rule-days: 14 as integer 14', () => {
+    const content = 'reconcile:\n  min-rule-days: 14\n';
+    const result = _parseReconcile(content);
+    expect(result['min-rule-days']).toBe(14);
+  });
+
+  it('parses min-insight-chars: 40 as integer 40', () => {
+    const content = 'reconcile:\n  min-insight-chars: 40\n';
+    const result = _parseReconcile(content);
+    expect(result['min-insight-chars']).toBe(40);
+  });
+
+  it('parses min-insight-chars: 0 as integer 0 (opt-out is a valid explicit value)', () => {
+    const content = 'reconcile:\n  min-insight-chars: 0\n';
+    const result = _parseReconcile(content);
+    expect(result['min-insight-chars']).toBe(0);
+  });
+
   it('parses a full explicit block correctly', () => {
     const content = [
       'reconcile:',
@@ -109,6 +131,8 @@ describe('_parseReconcile — explicit overrides', () => {
       '  targets: [repo-local]',
       '  rule-expiry-days: 60',
       '  confidence-floor: 0.75',
+      '  min-rule-days: 14',
+      '  min-insight-chars: 40',
     ].join('\n') + '\n';
 
     const result = _parseReconcile(content);
@@ -118,6 +142,8 @@ describe('_parseReconcile — explicit overrides', () => {
       targets: ['repo-local'],
       'rule-expiry-days': 60,
       'confidence-floor': 0.75,
+      'min-rule-days': 14,
+      'min-insight-chars': 40,
     });
   });
 
@@ -188,6 +214,36 @@ describe('_parseReconcile — tolerant parse (invalid values → safe defaults)'
     const result = _parseReconcile(content);
     // Only exact "true" flips the flag
     expect(result.enabled).toBe(false);
+  });
+
+  it('non-numeric min-rule-days falls back to default 7', () => {
+    const content = 'reconcile:\n  min-rule-days: two-weeks\n';
+    const result = _parseReconcile(content);
+    expect(result['min-rule-days']).toBe(7);
+  });
+
+  it('min-rule-days: 0 (non-positive) falls back to default 7', () => {
+    const content = 'reconcile:\n  min-rule-days: 0\n';
+    const result = _parseReconcile(content);
+    expect(result['min-rule-days']).toBe(7);
+  });
+
+  it('negative min-rule-days falls back to default 7', () => {
+    const content = 'reconcile:\n  min-rule-days: -5\n';
+    const result = _parseReconcile(content);
+    expect(result['min-rule-days']).toBe(7);
+  });
+
+  it('non-numeric min-insight-chars falls back to default 24', () => {
+    const content = 'reconcile:\n  min-insight-chars: lots\n';
+    const result = _parseReconcile(content);
+    expect(result['min-insight-chars']).toBe(24);
+  });
+
+  it('negative min-insight-chars falls back to default 24', () => {
+    const content = 'reconcile:\n  min-insight-chars: -10\n';
+    const result = _parseReconcile(content);
+    expect(result['min-insight-chars']).toBe(24);
   });
 });
 
