@@ -1,6 +1,6 @@
 ---
 description: Systematic quality discovery and issue detection
-argument-hint: "[all|code|infra|ui|arch|session|audit|vault] [--since <git-ref>] [--full]"
+argument-hint: "[all|code|infra|ui|arch|session|audit|vault|feature] [--since <git-ref>] [--full]"
 ---
 
 # /discovery

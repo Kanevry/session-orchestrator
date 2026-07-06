@@ -117,6 +117,7 @@ done
 - `area:frontend` | `area:backend` | `area:database`
 - `area:ai` | `area:security` | `area:testing`
 - `area:ci` | `area:infrastructure` | `area:compliance`
+- `area:skills` | `area:vcs` | `area:harness`
 
 ### Type Labels
 - `bug` | `feature` | `enhancement` | `refactor`
@@ -249,7 +250,7 @@ Relates to #ORIGINAL_IID
 
 **Probe:** <probe_name>
 **Severity:** <priority:critical|high|medium|low>
-**Category:** <code|infra|ui|arch|session>
+**Category:** <code|infra|ui|arch|session|audit|vault|feature>
 
 ### Finding
 

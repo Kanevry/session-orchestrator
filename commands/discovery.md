@@ -1,6 +1,6 @@
 ---
 description: Systematic quality discovery and issue detection
-argument-hint: "[all|code|infra|ui|arch|session|audit|vault] [--since <git-ref>] [--full]"
+argument-hint: "[all|code|infra|ui|arch|session|audit|vault|feature] [--since <git-ref>] [--full]"
 ---
 
 # Quality Discovery
@@ -23,7 +23,7 @@ Error: Cannot use --since with --full. Provide one, not both.
 
 Do NOT proceed with discovery when this conflict is present.
 
-**Argument validation:** Valid scopes: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault` (comma-separated for multiple). If any scope is invalid, inform the user: "Invalid scope '[token]'. Valid scopes: all, code, infra, ui, arch, session, audit, vault." and default that token to `all`.
+**Argument validation:** Valid scopes: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature` (comma-separated for multiple). If any scope is invalid, inform the user: "Invalid scope '[token]'. Valid scopes: all, code, infra, ui, arch, session, audit, vault, feature." and default that token to `all`.
 
 When `--since <git-ref>` is provided, pass `since_ref` to the discovery skill (Phase 3 plumbing — see `skills/discovery/SKILL.md`).
 

@@ -92,7 +92,7 @@ Read by: `skills/quality-gates/SKILL.md`, `skills/session-end/SKILL.md`. The thr
 
 ```yaml
 discovery-on-close: auto               # session-type aware: housekeeping=false, feature/deep=true (#264)
-discovery-probes: [all]                # all | code | infra | ui | arch | session
+discovery-probes: [all]                # all | code | infra | ui | arch | session | audit | vault | feature
 discovery-exclude-paths: []            # globs (e.g. "vendor/**", "dist/**")
 discovery-severity-threshold: low      # critical | high | medium | low
 discovery-confidence-threshold: 60     # 0–100; below this auto-defers

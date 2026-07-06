@@ -384,7 +384,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 | `discovery-on-close` | boolean | `false` | Run discovery probes automatically during `/close`. |
-| `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`. |
+| `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |

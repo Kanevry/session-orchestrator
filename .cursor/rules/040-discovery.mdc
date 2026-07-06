@@ -13,7 +13,7 @@ Systematic quality discovery that runs modular probes adapted to the project's t
 - **Standalone** (`/discovery [scope]`): Full flow with interactive triage (Phases 0-5 + Phase 6 stats)
 - **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-3 only, returns structured JSON to caller
 
-Scope accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, or comma-separated like `code,session`.
+Scope accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature`, or comma-separated like `code,session`.
 
 ## Phase 0: Read Session Config
 
@@ -151,6 +151,14 @@ Probes run: [N] | Findings verified: [N] | False positives discarded: [N]
 
 | Category | Critical | High | Medium | Low | Total |
 |----------|----------|------|--------|-----|-------|
+| Code     | ...      | ...  | ...    | ... | ...   |
+| Infra    | ...      | ...  | ...    | ... | ...   |
+| UI       | ...      | ...  | ...    | ... | ...   |
+| Arch     | ...      | ...  | ...    | ... | ...   |
+| Session  | ...      | ...  | ...    | ... | ...   |
+| Audit    | ...      | ...  | ...    | ... | ...   |
+| Vault    | ...      | ...  | ...    | ... | ...   |
+| Feature  | ...      | ...  | ...    | ... | ...   |
 ```
 
 ### Step 2: Critical + High Findings — Review Individually
