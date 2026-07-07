@@ -61,6 +61,20 @@ can describe in ≤ 4000 chars)?
                                              /loop CANNOT cover these — it dies with the session.
 ```
 
+### Crosswalk — Anthropic's four loop archetypes
+
+Anthropic's "designing loops" framing describes four generic loop shapes.
+This table maps each to the repo primitive that implements it and its
+current deployment state (config-key-driven wherever a knob exists) — read
+it as a cross-check on the Decision Tree above, not a replacement for it.
+
+| Article loop type | Repo primitive | Deployment state |
+|---|---|---|
+| **Turn-based loop** | wave-executor inter-wave loop + `/goal` (LM-008) | wave-executor always-on; `/goal` opt-in via `goal-integration.enabled` (Session Config) |
+| **Goal-based loop** | `/goal` (LM-008) | opt-in — `goal-integration.enabled` + `goal-integration.seams` (Session Config) |
+| **Time-based loop** | `/loop` (LM-003) + Routines / `/schedule` (LM-004 / LM-004a) | `/loop` — `.claude/loop.md` present at repo root; Routines — off by design, "teach it, don't run it" (see LM-004 posture) |
+| **Proactive / event loop** | Monitor (LM-002) + Channels (LM-002a) | Monitor — ad hoc, no persistent config; Channels — research preview, `--channels` opt-in per session |
+
 ## LM-002: Use Monitor When …
 
 - A long-running build or test suite emits progress to stdout
@@ -138,13 +152,22 @@ Constraints (cite https://code.claude.com/docs/en/workflows):
 - **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
 - **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root — not unconditionally the repo-root one. Verify the actual write target before assuming root-level placement in a monorepo.
 - **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`).
+- **`args` global:** a workflow script receives its parameters via the structured-data global `args` — `undefined` when the workflow is invoked without any parameters passed.
+- **Usage view (v2.1.186+):** `/workflows` exposes a per-phase breakdown of agent counts and token totals, keyed `p`/`x`/`r`/`s`/`f` — use it to see where a run spent its budget before re-tuning the script.
+- **Per-stage model routing:** the `agent()` call in a workflow script accepts `model`/`effort` options, so different stages of the same run can route to different models/effort levels rather than one model for the whole workflow.
+- **Resume (`resumeFromRunId`) is same-session only** — it cannot resume a run that was started in a different session.
 
-**Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`), and Workflows ships no `autopilot.jsonl`-equivalent telemetry. The Adopt/Adapter/Stay verdict is an open follow-up in `docs/adr/0010-native-autonomy-commands.md` — do not swap wave-executor for a bare Workflow on the assumption the caps substitute for the kill-switches.
+**Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`), and Workflows ships no `autopilot.jsonl`-equivalent telemetry. **RESOLVED 2026-06-20 (#665) → Stay (with Adapter-fallback)** — see ADR-0010 § Native-Overlap Refresh; do not swap wave-executor for a bare Workflow on the assumption the caps substitute for the kill-switches.
 
 **Never reimplement a one-shot fan-out as `/loop`.** A `/loop` body re-runs a
 single coordinator prompt on an interval; it has no native fan-out, no agent-
 count cap, and no rerunnable-script artifact. If the work is genuinely one-shot
 fan-out, use the `Workflow` tool; `/loop` is for the periodic, in-session axis below.
+
+**Distinct from Agent Teams.** Workflows' one-shot fan-out is unrelated to the
+experimental `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` flag (off-by-default,
+in-run multi-agent coordination within a single live session) — see
+`parallel-sessions.md` § PSA Scope Axes and ADR-0002 / #484 for that boundary.
 
 ## LM-003: Use `/loop` When … (requires v2.1.72+)
 
@@ -205,6 +228,14 @@ runs on a fixed 10-minute schedule there instead of self-pacing via
 read. Always pass an explicit interval on these providers — do not rely on
 the project loop body.
 
+**Limits & kill-switches.** `CLAUDE_CODE_DISABLE_CRON=1` is the total
+kill-switch — it disables the cron scheduler AND `/loop` entirely, not just
+one task. Each session is capped at **50 scheduled tasks**. Both
+`.claude/loop.md` (project) and `~/.claude/loop.md` (user) are TRUNCATED by
+upstream past **25,000 bytes** — whichever file is actually loaded for the
+fire, not the other. Keep the loop body lean; a bloated body silently loses
+its tail rather than erroring.
+
 ## LM-004: Use Routines / Desktop When …
 
 - The work must run when no session is open (overnight, weekly, monthly).
@@ -214,6 +245,32 @@ the project loop body.
 
 `/loop` is the wrong tool here — its session-scoped lifetime guarantees
 the work will eventually be missed.
+
+**Routines (research preview)** run in Anthropic's cloud, not on the local
+host — this requires a claude.ai account (Pro/Max/Team/Enterprise) and
+Claude Code on the web; Console-API-key-only setups cannot use them. Three
+trigger types: **(a) Scheduled** (cron-style, minimum 1h interval per run),
+**(b) API-trigger** via `/fire` with beta header
+`experimental-cc-routine-2026-04-01`, **(c) GitHub events**
+(`pull_request.*`, `release.*`). A **daily run cap** applies per Routine
+(one-off manual runs are exempt from the cap). Routines push exclusively to
+`claude/`-prefixed branches (branch-safety guard) and can be disabled
+org-wide via an org-level toggle.
+
+**Repo posture: "teach it, don't run it."** ADR-0003 remains SUPERSEDED and
+#485 remains won't-do — this repo documents Routines knowledge for when an
+operator needs it elsewhere, but does not itself operate any Routine. See
+LM-004a for the `/schedule` CLI gate.
+
+## LM-004a: `/schedule` Gating
+
+`/schedule` is the CLI front-end to Routines (list/update/run scheduled
+cloud agents). It requires **CLI v2.1.81+** AND a claude.ai subscription
+login — it is invisible/disabled on Console-API-key auth, on
+Bedrock/Vertex/Foundry, or when any of these are set: `DISABLE_TELEMETRY`,
+`DO_NOT_TRACK`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`,
+`DISABLE_GROWTHBOOK`. Subcommands: `/schedule list` · `/schedule update` ·
+`/schedule run`.
 
 ## LM-005: Never Reimplement These as `/loop`
 
@@ -257,7 +314,7 @@ it as you would any coordinator action:
 - Using `/goal` as a quality gate — the evaluator reads the transcript only; pair `/goal` with a deterministic exit-code gate (LM-008).
 - Unbounded `/goal` with no turn/time-bound clause — always embed "or stop after N turns / M minutes" (LM-008).
 - Hand-rolling a one-shot fan-out as a `/loop` body — use the `Workflow` tool (LM-002b).
-- Swapping wave-executor for a bare Workflow assuming its 16/1000 caps replace the ten kill-switches — they don't; verdict open in ADR-0010 (LM-002b).
+- Swapping wave-executor for a bare Workflow assuming its 16/1000 caps replace the ten kill-switches — they don't; verdict: Stay, RESOLVED 2026-06-20 #665 (LM-002b).
 
 ## LM-008: Use `/goal` When …
 
@@ -288,6 +345,13 @@ https://code.claude.com/docs/en/goal.
   30 minutes" so a non-converging goal terminates. 4000-char condition limit;
   one goal per session; `/goal clear` removes it; restored on `--resume`;
   works headless (`claude -p "/goal …"`).
+- **`/goal` with no arguments is introspection**, not a new goal — it prints
+  the current goal's turns-elapsed and token-spend against the goal's
+  baseline. `/goal stop`, `/goal off`, `/goal reset`, `/goal none`,
+  `/goal cancel`, and a bare `/clear` are all aliases that remove the active
+  goal (same effect as `/goal clear`). Restore is not limited to `--resume` —
+  `--continue` restores the goal too, and doing so RESETS the turn/timer/token
+  baseline the evaluator measures against.
 
 **The load-bearing caveat — `/goal` provides CONTINUATION, never JUDGMENT.**
 The evaluator is a transcript reader, not a verifier. Deterministic quality
@@ -302,7 +366,10 @@ its own.
 
 **Availability constraints:** requires Claude Code v2.1.139+; one active goal
 per session; UNAVAILABLE when `disableAllHooks` or `allowManagedHooksOnly` is
-set (the mechanism is a managed Stop hook). When unavailable, fall back to a
+set (the mechanism is a managed Stop hook). `/goal` is also gated by
+workspace trust — an untrusted workspace makes `/goal` unavailable regardless
+of the flags above. Surfaces: CLI, the Desktop app, and Remote Control
+sessions all support `/goal` (not CLI-only). When unavailable, fall back to a
 bounded `/loop` body that re-runs the deterministic gate and reports.
 
 **Pairing with Auto mode (unattended runs).** For an unattended `/goal` that
@@ -315,15 +382,15 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 
 ## See Also
 
-- `parallel-sessions.md` (PSA discipline that applies inside loop bodies)
+- `parallel-sessions.md` (PSA discipline that applies inside loop bodies; § PSA Scope Axes for the Agent Teams boundary — `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, see LM-002b)
 - `ask-via-tool.md` (loop bodies must still use AUQ for user decisions)
 - `development.md` · `security.md` · `mvp-scope.md` · `cli-design.md`
 - `verification-before-completion.md` (why `/goal` never replaces an exit-code gate)
-- ADR: `docs/adr/0010-native-autonomy-commands.md` (full `/goal` vs `/loop` vs Monitor vs Routines verdict; Workflows watch-item FIRED 2026-06-12)
+- ADR: `docs/adr/0010-native-autonomy-commands.md` (full `/goal` vs `/loop` vs Monitor vs Routines verdict; Workflows watch-item FIRED 2026-06-12; RESOLVED → Stay 2026-06-20 (#665))
 - Project file: `.claude/loop.md` (the orchestrator's bare-`/loop` body)
 - Reference: `skills/_shared/monitor-patterns.md` (vetted Monitor filter snippets)
 - Upstream: https://code.claude.com/docs/en/workflows (dynamic Workflows — LM-002b fan-out axis)
 
 ---
 
-_Re-verified 2026-07-03 (0 Korrekturen, 5 Ergänzungen — refs #724)._
+_Re-verified 2026-07-07 (3 Stale-Fixes, 7 Ergänzungen — refs #765)._

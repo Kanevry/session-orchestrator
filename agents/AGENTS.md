@@ -39,7 +39,7 @@ Agent files live in `agents/` as Markdown with YAML frontmatter. Required fields
 ---
 name: kebab-case-name                # 3-50 chars, lowercase + hyphens only
 description: Use this agent when [conditions]. <example>Context: ... user: "..." assistant: "..." <commentary>Why this agent is appropriate</commentary></example>
-model: inherit                        # inherit | sonnet | opus | haiku — OR full ID like claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001
+model: inherit                        # inherit | sonnet | opus | haiku | fable — OR full ID like claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-5, claude-fable-5
 color: blue                           # blue | cyan | green | yellow | purple | orange | pink | red | magenta
 tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (both accepted; we prefer comma-string for consistency)
 ---
@@ -57,6 +57,18 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 - Sections: `**Your Core Responsibilities:**` → `**[X] Process:**` → `**Quality Standards:**` → `**Output Format:**` → `**Edge Cases:**`.
 - Length: 500–3000 words is the recommended range. Below 500 reads as under-specified; above 3000 reads as bloated.
 - Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`.
+
+## Model Selection & Cost Routing (#768)
+
+`model:` is not just a compatibility field — it is a cost/quality dial per agent. Pick deliberately, don't default to `sonnet` everywhere.
+
+- **`haiku`** — cheap, fast, advisory/judge roles where the task is narrow classification or a single yes/no verdict, not open-ended reasoning. Precedent: `dialectic-deriver`, `skill-applied-judge`. Pin `haiku` when the agent's whole job is "read a short input, emit a structured verdict."
+- **`sonnet`** — the default workhorse tier. Use for implementation, test-writing, and review agents that need real reasoning over a non-trivial diff or codebase slice (code-implementer, test-writer, security-reviewer, and most of the catalog).
+- **`inherit`** — let the coordinator/session's active model tier flow through. Default for read-only reviewer/analysis agents that benefit from running at whatever tier the operator picked for the session (e.g. an Opus session should give its reviewers Opus-quality judgment too), and for agents with no strong cost/quality reason to diverge from the session.
+- **`opus`** — reserve for agents whose task genuinely needs the strongest available reasoning (e.g. `ux-evaluator`) and where the cost is justified because the agent runs rarely (dispatched solo, not fanned out across a wave).
+- **Full model-ID pinning** (`claude-opus-4-7`, `claude-sonnet-5`, `claude-fable-5-20260101`, …) — only when the agent has a demonstrated dependency on a SPECIFIC model version, e.g. a reproducibility requirement that needs a dated snapshot, or a known behavioral regression on newer models for this agent's exact prompt. Pinning trades away automatic model-family upgrades — document the reason inline as a frontmatter comment when you do this.
+
+**Resolution order** (highest precedence first): `CLAUDE_CODE_SUBAGENT_MODEL` environment variable → the invocation-time model parameter (if the dispatcher passes one explicitly) → the agent's own frontmatter `model:` value. An agent's `model:` is therefore a default, not a guarantee — a session or environment override can supersede it.
 
 ## Git-Write Ban Requirement (PSA-007, #724)
 

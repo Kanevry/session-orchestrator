@@ -6,6 +6,8 @@ import {
   parseAgentFrontmatter,
   validateAgentFrontmatter,
   validateAgentFile,
+  ALLOWED_MODEL_ALIASES,
+  MODEL_ID_RE,
 } from '@lib/agent-frontmatter.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,9 +122,79 @@ describe('validateAgentFrontmatter', () => {
   });
 
   it('accepts all valid model values', () => {
-    for (const model of ['inherit', 'sonnet', 'opus', 'haiku']) {
+    for (const model of ['inherit', 'sonnet', 'opus', 'haiku', 'fable']) {
       const fm = { name: 'my-agent', description: 'Desc.', model, color: 'blue' };
       expect(validateAgentFrontmatter(fm).ok, `model=${model}`).toBe(true);
+    }
+  });
+
+  // --- Full model IDs (#768) — closed-list family, optional trailing numeric group + date suffix ---
+  it('accepts full model IDs across all families (incl. fable and Claude-5-shaped two-part IDs)', () => {
+    // Note: 'claude-fable-5-20260101' is ambiguous by design — the greedy
+    // (-\d+)? group absorbs the 8-digit date as the second number group
+    // rather than the dedicated (-\d{8})? date group, but the overall
+    // pattern still matches end-to-end, so this remains a VALID model ID.
+    const validIds = [
+      'claude-fable-5',
+      'claude-sonnet-5',
+      'claude-opus-4-8',
+      'claude-haiku-4-5-20251001',
+      'claude-fable-5-20260101',
+      'claude-opus-4-8-20260101',
+    ];
+    for (const model of validIds) {
+      const fm = { name: 'my-agent', description: 'Desc.', model, color: 'blue' };
+      expect(validateAgentFrontmatter(fm).ok, `model=${model}`).toBe(true);
+    }
+  });
+
+  it('rejects malformed model-ID-shaped strings (family/anchor guards)', () => {
+    const invalidIds = ['fable-5', 'claude-fable', 'claude-5-fable', 'claude-opus-4-8x', 'claude-opus-4-8-'];
+    for (const model of invalidIds) {
+      const fm = { name: 'my-agent', description: 'Desc.', model, color: 'blue' };
+      const v = validateAgentFrontmatter(fm);
+      expect(v.ok, `model=${model}`).toBe(false);
+      if (!v.ok) {
+        expect(v.errors.some((e) => e.path === 'model' && e.rule === 'enum'), `model=${model}`).toBe(true);
+      }
+    }
+  });
+
+  // --- SSOT shape (#768): aliases are closed Set-membership, MODEL_ID_RE is a
+  // disjoint mechanism — an alias must never also satisfy the ID regex, and
+  // vice versa the regex must anchor on the "claude-" prefix so it can never
+  // silently absorb an alias keyword. ---
+  it('ALLOWED_MODEL_ALIASES contains exactly the 5 canonical aliases', () => {
+    expect([...ALLOWED_MODEL_ALIASES].sort()).toEqual(['fable', 'haiku', 'inherit', 'opus', 'sonnet']);
+  });
+
+  it('MODEL_ID_RE never matches an alias keyword (Set-membership and regex are disjoint mechanisms)', () => {
+    for (const alias of ALLOWED_MODEL_ALIASES) {
+      expect(MODEL_ID_RE.test(alias), alias).toBe(false);
+    }
+  });
+
+  it('rejects an empty-string model value (key present, value empty)', () => {
+    const contents = '---\nname: my-agent\ndescription: Desc.\nmodel: \ncolor: blue\n---\n';
+    const parsed = parseAgentFrontmatter(contents);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const v = validateAgentFrontmatter(parsed.frontmatter);
+      expect(v.ok).toBe(false);
+      if (!v.ok) {
+        expect(v.errors.some((e) => e.path === 'model' && e.rule === 'required')).toBe(true);
+      }
+    }
+  });
+
+  it('rejects a non-string model value passed directly to validateAgentFrontmatter', () => {
+    // Bypasses the string-only parser to exercise the enum branch's duck-typed
+    // guard (`ALLOWED_MODEL_ALIASES.has(model)` / `MODEL_ID_RE.test(model)`)
+    // against a raw number, proving it neither throws nor silently passes.
+    const v = validateAgentFrontmatter({ name: 'my-agent', description: 'D', model: 42, color: 'blue' });
+    expect(v.ok).toBe(false);
+    if (!v.ok) {
+      expect(v.errors.some((e) => e.path === 'model' && e.rule === 'enum')).toBe(true);
     }
   });
 

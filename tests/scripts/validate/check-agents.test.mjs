@@ -7,7 +7,7 @@
 
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +69,49 @@ describe('check-agents.mjs — smoke against current repo', () => {
     const match = r.stdout.match(/Results:\s+\d+\s+passed,\s+(\d+)\s+failed/);
     expect(match).not.toBeNull();
     expect(parseInt(match[1], 10)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSOT drift-guard (#768): check-agents.mjs must import the model-alias Set
+// and model-ID regex from agent-frontmatter.mjs rather than re-declaring its
+// own copy. A re-declared inline regex is exactly the drift class #768 fixed
+// (the script's palette had drifted out of sync with the SSOT, missing
+// "fable" and the two-part Claude-5-shaped ID form).
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects a re-introduced inline `claude-(opus|sonnet|haiku...)` family regex
+ * literal in a script's source text, ignoring the sanctioned SSOT import line
+ * itself. Extracted as a standalone function so the fake-regression check
+ * below can exercise it against a synthetic drifted fixture without touching
+ * production code.
+ */
+function hasInlineModelFamilyRegex(source) {
+  const linesWithoutSsotImport = source.split('\n').filter((l) => !l.includes("from '../agent-frontmatter.mjs'"));
+  return linesWithoutSsotImport.some((l) => /claude-\(opus\|sonnet\|haiku/.test(l));
+}
+
+describe('check-agents.mjs — model-regex SSOT drift guard (#768)', () => {
+  const SCRIPT_SOURCE = readFileSync(SCRIPT, 'utf8');
+
+  it('imports ALLOWED_MODEL_ALIASES and MODEL_ID_RE from agent-frontmatter.mjs', () => {
+    expect(SCRIPT_SOURCE).toContain("import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs'");
+  });
+
+  it('the actual check-agents.mjs source has no reintroduced inline model-family regex', () => {
+    expect(hasInlineModelFamilyRegex(SCRIPT_SOURCE)).toBe(false);
+  });
+
+  it('fake-regression: the drift-guard detector DOES flag a synthetic fixture with a reintroduced inline regex', () => {
+    // Proves the detector is not a tautology — it goes "red" (detects true)
+    // against a fixture shaped like the pre-#768 drift (own regex literal,
+    // no SSOT import), and pins that the guard would have caught it.
+    const driftedFixture =
+      "import { readFileSync } from 'node:fs';\n" +
+      "const MODEL_RE = /^claude-(opus|sonnet|haiku)-\\d+$/;\n" +
+      "if (MODEL_RE.test(modelVal)) { /* ... */ }\n";
+    expect(hasInlineModelFamilyRegex(driftedFixture)).toBe(true);
   });
 });
 
@@ -246,7 +289,7 @@ color: blue
 ---
 `);
     const r = run(dir);
-    expect(r.stdout).toContain("FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku or a full model ID like 'claude-opus-4-7' (got: 'gpt-4')");
+    expect(r.stdout).toContain("FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku|fable or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: 'gpt-4')");
   });
 });
 
@@ -297,6 +340,72 @@ color: blue
 `);
     const r = run(dir);
     expect(r.status).toBe(0);
+  });
+
+  // --- Claude-5-shaped two-part IDs + fable family (#768) ---
+  it('exits 0 when agent model is a two-part claude-sonnet-5 ID', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'sonnet-5-id.md', `---
+name: sonnet-5-id
+description: Some description inline here
+model: claude-sonnet-5
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent model is a two-part claude-fable-5 ID', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'fable-5-id.md', `---
+name: fable-5-id
+description: Some description inline here
+model: claude-fable-5
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 0 when agent model is a three-part claude-opus-4-8 ID', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'opus-4-8-id.md', `---
+name: opus-4-8-id
+description: Some description inline here
+model: claude-opus-4-8
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('exits 1 when model is claude-fable with no numeric group', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'bad-fable.md', `---
+name: bad-fable
+description: Some description inline here
+model: claude-fable
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(1);
+  });
+
+  it('exits 1 when model is claude-5-fable (family token out of position)', () => {
+    dir = makeFixture();
+    writeAgent(dir, 'bad-order.md', `---
+name: bad-order
+description: Some description inline here
+model: claude-5-fable
+color: blue
+---
+`);
+    const r = run(dir);
+    expect(r.status).toBe(1);
   });
 });
 

@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -182,14 +183,17 @@ if (mdFiles.length === 0) {
       }
     }
 
-    // model: alias (inherit|sonnet|opus|haiku) OR full model ID (claude-{opus|sonnet|haiku}-N-N[-YYYYMMDD])
+    // model: alias (inherit|sonnet|opus|haiku|fable) OR full model ID
+    // (claude-{opus|sonnet|haiku|fable}-N[-N][-YYYYMMDD]).
+    // Validated against the SSOT exports from agent-frontmatter.mjs (#768) —
+    // do not re-declare the alias set or the model-ID regex here.
     // Per https://code.claude.com/docs/en/sub-agents — the canonical doc accepts both.
     if (hasField(frontmatter, 'model')) {
       const modelVal = getField(frontmatter, 'model');
-      const modelRe = /^(inherit|sonnet|opus|haiku|claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?)$/;
-      if (modelVal === null || !modelRe.test(modelVal)) {
+      if (modelVal === null || (!ALLOWED_MODEL_ALIASES.has(modelVal) && !MODEL_ID_RE.test(modelVal))) {
         const got = modelVal ?? '';
-        fail(`${agentName}: model must be inherit|sonnet|opus|haiku or a full model ID like 'claude-opus-4-7' (got: '${got}')`);
+        const aliasList = [...ALLOWED_MODEL_ALIASES].join('|');
+        fail(`${agentName}: model must be ${aliasList} or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: '${got}')`);
       }
     }
 

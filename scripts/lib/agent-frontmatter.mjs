@@ -20,11 +20,16 @@ import { readFileSync } from 'node:fs';
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 // Aliases per https://code.claude.com/docs/en/sub-agents § model resolution.
-// Full model IDs (claude-{opus|sonnet|haiku}-N-N[-YYYYMMDD]) also accepted via MODEL_ID_RE.
+// Full model IDs (claude-{opus|sonnet|haiku|fable}-N[-N][-YYYYMMDD], e.g.
+// "claude-opus-4-7", "claude-sonnet-5", "claude-fable-5-20260101") also
+// accepted via MODEL_ID_RE. `fable` is a valid upstream model family
+// alongside opus/sonnet/haiku (#768) — the trailing numeric group is
+// optional so both the two-part ("claude-sonnet-5") and three-part
+// ("claude-opus-4-7") ID shapes validate.
 // Exported so persona-panel modules (catalog-loader.mjs, persona-gate-wave.mjs) can
 // validate against the SSOT instead of re-declaring (W4 architect MED-1, 2026-05-19).
-export const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku']);
-export const MODEL_ID_RE = /^claude-(opus|sonnet|haiku)-\d+-\d+(-\d{8})?$/;
+export const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku', 'fable']);
+export const MODEL_ID_RE = /^claude-(opus|sonnet|haiku|fable)-\d+(-\d+)?(-\d{8})?$/;
 
 // Canonical Anthropic palette (red|blue|green|yellow|purple|orange|pink|cyan)
 // plus magenta from plugin-dev SKILL.md for backward-compat.
@@ -160,7 +165,7 @@ export function validateAgentFrontmatter(frontmatter) {
     errors.push({
       path: 'model',
       rule: 'enum',
-      message: `model must be one of ${[...ALLOWED_MODEL_ALIASES].map((m) => JSON.stringify(m)).join('|')} or a full model ID like "claude-opus-4-7" (got ${JSON.stringify(model)})`,
+      message: `model must be one of ${[...ALLOWED_MODEL_ALIASES].map((m) => JSON.stringify(m)).join('|')} or a full model ID like "claude-opus-4-7" or "claude-sonnet-5" (got ${JSON.stringify(model)})`,
     });
   }
 
