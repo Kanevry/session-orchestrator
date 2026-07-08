@@ -90,6 +90,20 @@ describe('probes-<category>.md existence & anatomy', () => {
     const probeHeadings = content.match(/^### Probe:/gm) || [];
     expect(probeHeadings.length).toBe(2);
   });
+
+  it('probes-docs.md exists and has 1 probe (docs-staleness)', () => {
+    const content = readFileSync(join(REPO_ROOT, 'skills/discovery/probes-docs.md'), 'utf8');
+    const probeHeadings = content.match(/^### Probe:/gm) || [];
+    expect(probeHeadings.length).toBe(1);
+    expect(content).toContain('### Probe: docs-staleness');
+  });
+
+  it('skills/discovery/probes/docs-staleness.mjs exists and exports runProbe', () => {
+    const probeFilePath = join(REPO_ROOT, 'skills/discovery/probes/docs-staleness.mjs');
+    expect(existsSync(probeFilePath)).toBe(true);
+    const content = readFileSync(probeFilePath, 'utf8');
+    expect(content).toContain('export async function runProbe');
+  });
 });
 
 // ---------------------------------------------------------------------------

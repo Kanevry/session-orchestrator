@@ -37,6 +37,7 @@ import { _parseVaultSync } from './config/vault-sync.mjs';
 import { _parseDriftCheck } from './config/drift-check.mjs';
 import { _parseDocsOrchestrator } from './config/docs-orchestrator.mjs';
 import { _parseVaultStaleness } from './config/vault-staleness.mjs';
+import { _parseDocsStaleness } from './config/docs-staleness.mjs';
 import { _parseEventsRotation } from './config/events-rotation.mjs';
 import { _parseVaultIntegration, _parseResourceThresholds } from './config/vault-integration.mjs';
 import { _parseTest } from './config/test.mjs';
@@ -231,6 +232,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
 
   // vault-staleness: parsed from full content (standalone top-level block)
   const vaultStaleness = _parseVaultStaleness(mdContent);
+  // docs-staleness: parsed from full content (standalone top-level block, #781)
+  const docsStaleness = _parseDocsStaleness(mdContent);
 
   // events-rotation: parsed from full content (standalone top-level block)
   const eventsRotation = _parseEventsRotation(mdContent);
@@ -409,6 +412,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'drift-check': driftCheck,
     'docs-orchestrator': docsOrchestrator,
     'vault-staleness': vaultStaleness,
+    'docs-staleness': docsStaleness,
     'events-rotation': eventsRotation,
     'test': testConfig,
     'gitlab-portfolio': gitlabPortfolio,
