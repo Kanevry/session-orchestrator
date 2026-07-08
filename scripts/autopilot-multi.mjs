@@ -5,7 +5,7 @@
 // wired in by W3 P5-Orchestration-Glue agent.
 //
 // References:
-//   - docs/prd/2026-05-07-autopilot-phase-d.md (PRD, status: shaped)
+//   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault) (PRD, status: shaped)
 //   - scripts/lib/autopilot/dep-graph.mjs (NEW, parallel-built by C2 agent)
 //   - scripts/lib/autopilot/worktree-pipeline.mjs (NEW, parallel-built by C3 agent)
 //   - scripts/lib/autopilot/multi-killswitch.mjs (NEW, parallel-built by C4 agent)

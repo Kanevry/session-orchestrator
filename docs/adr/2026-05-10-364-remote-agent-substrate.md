@@ -110,11 +110,11 @@ This ADR does NOT decide:
 - **Cost-cap enforcement currency** ($ vs tokens vs requests). TOKEN_BUDGET (#355) covers tokens; Crabbox covers $. Pick one as primary before extending kill-switches further. Defer.
 - **Whether `events.jsonl` retention should be solved here.** W1-A6 §gap 1 (86K entries, no retention) is real but orthogonal to the substrate question. Defer to a dedicated retention-policy issue.
 - **How `validateWorkspacePath` interacts with the existing destructive-command guard** (`hooks/pre-bash-destructive-guard.mjs`). Both are path-shaped invariants but at different layers. Defer to the follow-up that wires the helper to live call sites.
-- **Should `subagent_stop` events in `events.jsonl` be enriched with `session_id` + `wave` + `agent_identity` as part of this thin slice, or deferred to PRD-366's `failures.jsonl` work?** Today `subagent_stop` records lack these correlation fields, blocking post-hoc per-agent forensics. Cite: `docs/spike-probes/2026-05-10-proofs.md` probe 4 finding #3 (B6 schema gap on subagent_stop events). Resolution may live here (additive fields on `events.jsonl` `subagent_stop` records, consistent with item 1's additive-only stance) OR be folded into PRD-366's verification-failure schema work. Defer to coordinator decision before Phase 1 of either spike opens.
+- **Should `subagent_stop` events in `events.jsonl` be enriched with `session_id` + `wave` + `agent_identity` as part of this thin slice, or deferred to PRD-366's `failures.jsonl` work?** Today `subagent_stop` records lack these correlation fields, blocking post-hoc per-agent forensics. Cite: "Spike Proofs" (#364/#365/#366; archived in the private Meta-Vault) probe 4 finding #3 (B6 schema gap on subagent_stop events). Resolution may live here (additive fields on `events.jsonl` `subagent_stop` records, consistent with item 1's additive-only stance) OR be folded into PRD-366's verification-failure schema work. Defer to coordinator decision before Phase 1 of either spike opens.
 
 ## Sources
 
-Primary references — all consolidated in `docs/spike-probes/2026-05-10-w1-research-context.md`:
+Primary references — all consolidated in "W1 Research Context" (#364/#365/#366; archived in the private Meta-Vault):
 
 - **W1-A1** (VibeTunnel) §"What", §"Architecture", §"Adopt", §"Reject", §"Open Q" — `amantus-ai/vibetunnel`, https://vibetunnel.sh/
 - **W1-A2** (Crabbox + CodexBar) §Crabbox, §CodexBar, §"Cross-cutting" — https://crabbox.sh/, `steipete/CodexBar`

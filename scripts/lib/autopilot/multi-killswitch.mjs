@@ -4,7 +4,7 @@
 // autopilot --multi-story. Pure decision logic; no I/O, no shell.
 //
 // References:
-//   - docs/prd/2026-05-07-autopilot-phase-d.md (OPEN-2, OPEN-3, OPEN-5 decisions)
+//   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault) (OPEN-2, OPEN-3, OPEN-5 decisions)
 //   - scripts/lib/autopilot/kill-switches.mjs (existing 10 switches; STALL_TIMEOUT precedent)
 //   - scripts/lib/resource-probe.mjs (snapshot shape)
 

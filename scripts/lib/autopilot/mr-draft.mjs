@@ -7,7 +7,7 @@
 // Policy values: 'off' (default), 'on-loop-start', 'on-green' (deferred).
 //
 // References:
-//   - docs/prd/2026-05-07-autopilot-phase-d.md (OPEN-6 [DECIDED])
+//   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault) (OPEN-6 [DECIDED])
 //   - docs/adr/2026-05-10-364-remote-agent-substrate.md (C5 security finding)
 
 import { execFile as execFileCb } from 'node:child_process';

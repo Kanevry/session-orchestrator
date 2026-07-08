@@ -31,6 +31,29 @@ export function makeTmpPath(prefix) {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${rand}`);
 }
 
+/**
+ * Expand a leading `~` (home-directory shorthand) to the current user's home
+ * directory. Non-`~`-prefixed strings, non-strings, and the empty string pass
+ * through unchanged.
+ *
+ * Canonical shared implementation for vault-dir-consuming call-sites added
+ * under Epic #774 (docs Public-Split) — see `scripts/lib/vault-archive.mjs`
+ * and `scripts/export-hw-learnings.mjs`. Several pre-existing inline copies
+ * of this exact shape (e.g. `scripts/lib/vault-status/board-writer.mjs`,
+ * `narrative-mirror.mjs`, `scripts/lib/dispatcher/enumerate.mjs`) are
+ * intentionally NOT migrated to this shared helper here — that consolidation
+ * is a separate follow-up, not this fix's scope.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+export function expandTilde(p) {
+  if (typeof p !== 'string' || p.length === 0) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 // ---------------------------------------------------------------------------
 // Timestamp helpers
 // ---------------------------------------------------------------------------

@@ -277,7 +277,7 @@ describe('checkInstructionBudget — banner wrapper', () => {
     expect(banner.message).toContain('over ceiling 5');
     // Top file (alpha.md, 6) appears in the Top-files line.
     expect(banner.message).toContain('alpha.md (6)');
-    expect(banner.message).toContain('docs/audit/2026-06-20-instruction-budget-audit.md');
+    expect(banner.message).toContain('instruction-budget audit (#687; archived in the private Meta-Vault)');
   });
 });
 

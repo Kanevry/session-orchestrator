@@ -1,7 +1,7 @@
 # ADR 0005: EARS Notation for /plan
 
 > Status: ACCEPTED · session main-2026-05-19-deep-2 · issue #440
-> Source research: docs/research/2026-05-19-ears-evaluation.md
+> Source research: "EARS Evaluation" (#440; archived in the private Meta-Vault)
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see `skills/_shared/instruction-file-resolution.md`. References to `CLAUDE.md` below resolve via that precedence rule.
 
 ## Context

@@ -190,7 +190,7 @@ What is **never published** from the source corpus:
 
 Only aggregate counts and definitions leave the private corpus. This mirrors the
 anonymization pattern already enforced for shared learnings by
-`scripts/export-hw-learnings.mjs` (see also `docs/telemetry/hardware-patterns.md`),
+`scripts/export-hw-learnings.mjs` (see also hardware-patterns; vault-archived; regenerated via `npm run share:hw-learnings`),
 which strips paths, IPs, VCS URLs, hostnames, emails, git authors, and token-shaped
 strings, and exports only structured fields — never free-form user text. The same
 "counts out, records stay home" principle applies to every figure in this document.

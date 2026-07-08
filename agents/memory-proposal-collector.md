@@ -246,7 +246,7 @@ resolver, which is the correct failure mode.
 | Resource | Purpose |
 |---|---|
 | Issue #501 | Original spec and acceptance criteria for this component |
-| `docs/prd/2026-05-21-learning-memory-modernization.md` (F2.1) | PRD section describing the AUQ approval flow |
+| "Learning Memory Modernization" (F2.1) — moved to the vault for privacy (#462); canonical in-repo spec reference is tracking issue #501 | PRD section describing the AUQ approval flow |
 | `skills/session-end/SKILL.md` Phase 3.6.3 | The session-end skill step that invokes this flow |
 | `scripts/lib/memory-proposals/schema.mjs` | `ProposalRecord` and `LearningRecord` type definitions |
 | `scripts/lib/memory-proposals/store.mjs` | Low-level JSONL read/write for proposals queue |

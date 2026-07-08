@@ -6,8 +6,16 @@
  *
  * Reads `.orchestrator/metrics/learnings.jsonl`, filters to
  * `type: hardware-pattern AND scope: public`, anonymizes per the hard
- * requirements in issue #172, and writes a human-readable markdown doc to
- * `docs/telemetry/hardware-patterns.md`.
+ * requirements in issue #172, and writes a human-readable markdown doc.
+ *
+ * Default output target: Epic #774 (docs Public-Split) removed the prior
+ * in-repo generated telemetry doc — the default `--output` path now resolves
+ * to the private Meta-Vault (`<vault-dir>/01-projects/session-orchestrator/
+ * research/hardware-patterns.md`), via the same `vault-integration.vault-dir`
+ * resolution `scripts/archive-closed-prds.mjs` uses (findProjectRoot →
+ * CLAUDE.md/AGENTS.md → parseSessionConfig; host-resolved: SO_VAULT_DIR env >
+ * owner.yaml paths.vault-dir > committed default). Pass `--output <path>` to
+ * override.
  *
  * Idempotent: running without new data rewrites the same file byte-for-byte
  * modulo the generated-at line.
@@ -34,6 +42,7 @@
  */
 
 import { writeFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   readLearnings,
@@ -44,6 +53,48 @@ import {
   rewriteLearnings,
   CURRENT_ANONYMIZATION_VERSION,
 } from './lib/learnings.mjs';
+import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
+import { parseSessionConfig } from './lib/config.mjs';
+
+// Vault-relative default write target (Epic #774 — docs Public-Split removed
+// the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
+const DEFAULT_VAULT_SUBPATH = path.join('01-projects', 'session-orchestrator', 'research', 'hardware-patterns.md');
+
+/**
+ * Resolve the default `--output` path when the CLI caller does not pass one
+ * explicitly. Mirrors the vault-dir resolution `scripts/archive-closed-prds.mjs`
+ * uses: findProjectRoot → CLAUDE.md/AGENTS.md → parseSessionConfig →
+ * vault-integration.vault-dir (host-resolved: SO_VAULT_DIR env > owner.yaml
+ * paths.vault-dir > committed default).
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] — override for findProjectRoot() (tests).
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [opts.hostPaths]
+ *   — forwarded to parseSessionConfig (tests pass `{ env: {}, ownerConfig: undefined }`
+ *   for hermetic, owner.yaml-free resolution — issue #653 bleed guard).
+ * @returns {string|null} the resolved output path, or null when vault-dir is
+ *   unconfigured/unresolvable.
+ */
+export function resolveDefaultOutput({ repoRoot, hostPaths } = {}) {
+  const root = repoRoot ?? findProjectRoot();
+  const instr = resolveInstructionFile(root);
+  if (!instr) return null;
+
+  let vaultDir;
+  try {
+    const content = readFileSync(instr.path, 'utf8');
+    const config = parseSessionConfig(content, hostPaths ? { hostPaths } : undefined);
+    vaultDir = config?.['vault-integration']?.['vault-dir'];
+  } catch {
+    return null;
+  }
+  if (!vaultDir || typeof vaultDir !== 'string' || vaultDir.trim() === '') return null;
+
+  // Expand a `~`-prefixed vault-dir (e.g. the committed Session Config default
+  // `~/Projects/vault`) — this path does NOT route through vault-archive.mjs,
+  // so it needs its own expansion seam (issue: architect review finding).
+  return path.join(expandTilde(vaultDir), DEFAULT_VAULT_SUBPATH);
+}
 
 // ---------------------------------------------------------------------------
 // Anonymization
@@ -235,7 +286,7 @@ function parseArgs(argv) {
     dryRun: false,
     promote: false,
     input: '.orchestrator/metrics/learnings.jsonl',
-    output: 'docs/telemetry/hardware-patterns.md',
+    output: undefined, // resolved lazily below (default = vault-dir target)
     generatedAt: new Date().toISOString(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -253,13 +304,27 @@ function parseArgs(argv) {
         '  --promote        Anonymize scope=private hardware-pattern entries and promote\n' +
         '                   them to scope=public, then render. Writes back to learnings.jsonl\n' +
         '                   (backup created first). Use with --dry-run to preview.\n' +
-        '  --dry-run        Print markdown to stdout; do not write any files.\n'
+        '  --dry-run        Print markdown to stdout; do not write any files.\n' +
+        '  --output FILE    Override the default write target. Default: resolved from\n' +
+        '                   vault-integration.vault-dir (see script header doc).\n'
       );
       process.exit(0);
     } else {
       process.stderr.write(`unknown arg: ${a}\n`);
       process.exit(2);
     }
+  }
+  if (!out.output && !out.dryRun) {
+    const resolved = resolveDefaultOutput();
+    if (!resolved) {
+      process.stderr.write(
+        'export-hw-learnings: could not resolve vault-integration.vault-dir for the default ' +
+        '--output path (no CLAUDE.md/AGENTS.md found, or vault-dir is unset). ' +
+        'Pass --output <path> explicitly.\n'
+      );
+      process.exit(1);
+    }
+    out.output = resolved;
   }
   return out;
 }

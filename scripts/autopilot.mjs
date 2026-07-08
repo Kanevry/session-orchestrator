@@ -29,7 +29,7 @@
  *   scripts/lib/resource-probe.mjs     — probe, evaluate
  *   scripts/lib/session-registry.mjs   — detectPeers
  *   scripts/lib/session-schema.mjs     — normalizeSession
- *   docs/prd/2026-04-25-autopilot-loop.md
+ *   "/autopilot Loop Command (Phase C)" (#277/#271; archived in the private Meta-Vault)
  */
 
 import { readFileSync, existsSync } from 'node:fs';

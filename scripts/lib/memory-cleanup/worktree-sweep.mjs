@@ -9,7 +9,7 @@
  *   - listAutoPromotedWorktrees(repoRoot, mainCheckoutRoot): Array<{wtPath, sessionId, branch}>
  *   - isWorktreeStale(wtPath, staleBranchDays): boolean
  *
- * PRD: docs/prd/2026-05-26-parallel-aware-sessions.md §3 P3 Gherkin row 4 + §3.A P3
+ * PRD: "Parallel-aware sessions" (#568; archived in the private Meta-Vault) §3 P3 Gherkin row 4 + §3.A P3
  * Closes #575 P3.2
  *
  * DI seam (#580-DI-001): this module uses a SYNCHRONOUS `opts.execFileFn`

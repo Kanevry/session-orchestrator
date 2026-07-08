@@ -1,7 +1,7 @@
 # ADR 0002: Agent Teams as Wave Substrate
 
 > Status: ACCEPTED · session main-2026-05-19-deep-2 · issue #437
-> Source research: docs/research/2026-05-19-agent-teams-evaluation.md (W2 + W3 Empirical)
+> Source research: "Agent Teams Evaluation" (#437; archived in the private Meta-Vault) (W2 + W3 Empirical)
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context
@@ -53,7 +53,7 @@ Rationale: **Adopt is refuted on evidence** — migrating would forfeit eleven v
 Adapter verdict stands. H3 hard-precondition test scaffolded but **PENDING-EMPIRICAL** (manual operator step — interactive Agent Teams spawn cannot be automated):
 
 - **H3 harness shipped**: `hooks/agent-teams-h3-test.sh` (DRY-RUN scaffold: precondition_check / scaffold_team_dir / generate_log_template / print_manual_procedure; exit 0/1/2 contract; shellcheck-clean).
-- **H3 + H4 procedure documented**: `docs/research/2026-05-19-deep-3-agent-teams-h3.md` (9 sections + appended H4 config-overwrite verification procedure).
+- **H3 + H4 procedure documented**: "Deep-3 Agent Teams H3" (#484; archived in the private Meta-Vault) (9 sections + appended H4 config-overwrite verification procedure).
 - **Preconditions verified (W1 D2/D6)**: claude-code 2.1.144 (≥ 2.1.32 min), `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` present in binary, no pre-existing `~/.claude/teams/`. TaskCompleted exit-2 hook contract + ~7× plan-mode token cost + isolation-premise-false all re-confirmed against live docs 2026-05-19.
 - **Session Config key NOT wired**: the default-off `agent-teams:` key (ADR 0002:69) is intentionally deferred — wiring is gated on `H3 PASS`, which requires the manual empirical run. If H3 fails across 3 runs, ADR collapses to Stay per the existing contract.
 

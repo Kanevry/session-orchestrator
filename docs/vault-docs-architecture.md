@@ -18,12 +18,12 @@ the layer:
 - **Cross-session memory loss.** A session ends, the chat closes, the next
   session starts cold. Without a structured place to land decisions, status
   changes, and learnings, every session re-discovers context. The Meta-Vault
-  (`~/Projects/vault`) is that place. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
+  (`~/Projects/vault`) is that place. Source: "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault)
   Section 1 ("Why" — 14 active projects, daily multi-session workflow).
 - **Audience-specific documentation rotting in parallel.** READMEs,
   `CLAUDE.md`, and Vault narratives drift independently because nothing
   reminds the session to update them in lock-step with the diff. Source:
-  `docs/prd/2026-04-21-vault-docs-orchestration.md` Section 1 (no
+  "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault) Section 1 (no
   Docs-Planning step in session-start; doku only touched in session-end Phase 3.1).
 - **Operational telemetry without a home.** Wave outcomes, learnings, and
   session metrics are JSONL on disk; humans need them as Markdown notes
@@ -220,7 +220,7 @@ activation rules).
 
 The **opt-in default** is the design contract: when no Session Config block
 is present for a given skill, that skill's hook short-circuits silently —
-zero overhead. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
+zero overhead. Source: "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault)
 Section 5 (Risk: "Marketplace-Kompatibilität — alle neuen Config-Felder
 opt-in mit sicherem Default → zero-impact für bestehende Plugin-User").
 
@@ -238,7 +238,7 @@ opt-in mit sicherem Default → zero-impact für bestehende Plugin-User").
 | `vault-mirror` finds a hand-written file at the target path | `skipped-handwritten` action emitted; file untouched | Intentional safety: human files are never overwritten. If the file should be regenerated, delete it manually. Source: `skills/vault-mirror/SKILL.md` § Idempotency item 4. |
 | Session Config block absent | All hooks skip silently | Default behavior. To enable, add the relevant block per `docs/session-config-reference.md`. |
 | `docs-orchestrator.mode: off` | Phase 2.5 / 3.2 read config but skip all execution | Lighter than `enabled: false` (config still parsed). Useful during onboarding. Source: `skills/docs-orchestrator/SKILL.md` § "Session Config Reference". |
-| Repo lacks `.vault.yaml` but `vault-integration.enabled: true` | vault-sync warns "kein .vault.yaml gefunden" but does not block | Run `scripts/vault-backfill.mjs` (dry-run default) to generate. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md` § Edge Cases. |
+| Repo lacks `.vault.yaml` but `vault-integration.enabled: true` | vault-sync warns "kein .vault.yaml gefunden" but does not block | Run `scripts/vault-backfill.mjs` (dry-run default) to generate. Source: "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault) § Edge Cases. |
 
 ---
 
@@ -253,13 +253,13 @@ date (per CLAUDE.md "Current State"):
 - vault-backfill CLI + `/plan retro vault-backfill` sub-mode (#241).
 - vault-mirror auto-commit phase via `--session-id` (GH#31).
 
-Source: `CLAUDE.md` § "Current State" and `docs/prd/2026-04-21-vault-docs-orchestration.md`
+Source: `CLAUDE.md` § "Current State" and "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault)
 § Sub-Epic A/B/C tracking lists.
 
 **Open work:** Sub-Epic B (projects-baseline `setup-project.sh` Vault auto-
 provisioning) lives in a sibling repo and ships independently. CLAUDE.md
 narrative-sync remediation across consumer repos remains a recurring
-maintenance load. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
+maintenance load. Source: "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault)
 § Sub-Epic B.
 
 **Explicit non-goals** — these are not on the roadmap:
@@ -277,7 +277,7 @@ maintenance load. Source: `docs/prd/2026-04-21-vault-docs-orchestration.md`
 - **Migration of historical 50-sessions / 40-learnings entries.** vault-mirror
   is forward-compatible only.
 
-Source: `docs/prd/2026-04-21-vault-docs-orchestration.md` § Out-of-Scope.
+Source: "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault) § Out-of-Scope.
 
 ---
 
@@ -286,7 +286,7 @@ Source: `docs/prd/2026-04-21-vault-docs-orchestration.md` § Out-of-Scope.
 - `docs/session-config-reference.md` — authoritative config reference for all
   fields mentioned above (Vault Sync, CLAUDE.md Drift Check, Vault
   Integration, Vault Staleness, Docs Orchestrator).
-- `docs/prd/2026-04-21-vault-docs-orchestration.md` — PRD for the umbrella
+- "Vault & Docs Orchestration" (#229; archived in the private Meta-Vault) — PRD for the umbrella
   epic, including layering diagram and ownership table this document
   derives from.
 - `skills/docs-orchestrator/audience-mapping.md` — single source of truth

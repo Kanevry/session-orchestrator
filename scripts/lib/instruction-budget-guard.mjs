@@ -18,7 +18,7 @@
  * `./rule-loader.mjs` (single SSOT) — we do NOT hard-code the file list.
  *
  * Cross-references:
- * - docs/audit/2026-06-20-instruction-budget-audit.md (#668 / #687)
+ * - "2026-06-20 instruction-budget audit" (#668 / #687; archived in the private Meta-Vault)
  * - scripts/lib/rule-loader.mjs (always-on classification SSOT)
  * - scripts/lib/qg-command-drift-banner.mjs (banner-shape convention)
  * - scripts/lib/ci-status-banner.mjs (never-throws convention)
@@ -323,7 +323,7 @@ export function checkInstructionBudget(opts = {}) {
   const message = [
     `⚠ Instruction budget: ${budget.totalDirectives} always-on directives across ${budget.perFile.length} rules — over ceiling ${budget.ceiling}.`,
     `  Top files: ${top}`,
-    '  See docs/audit/2026-06-20-instruction-budget-audit.md (#687) for the prune/demote list.',
+    '  See the instruction-budget audit (#687; archived in the private Meta-Vault) for the prune/demote list.',
   ].join('\n');
 
   return { severity: 'warn', message };

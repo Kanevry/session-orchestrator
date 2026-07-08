@@ -4,9 +4,9 @@
  * create|new` invocations when no matching template was Read earlier in the
  * session.
  *
- * Implements Pattern 3 of PRD docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md
- * (issue #519). Companion to pre-bash-destructive-guard.mjs (issue #155); both
- * share the PreToolUse Bash matcher and run sequentially.
+ * Implements Pattern 3 of "gsd Pattern Adoption Quick-Wins" (#519; archived in
+ * the private Meta-Vault). Companion to pre-bash-destructive-guard.mjs (issue
+ * #155); both share the PreToolUse Bash matcher and run sequentially.
  *
  * Decision flow:
  *   G1 tool filter — only Bash is gated; other tools pass through.
@@ -92,7 +92,7 @@ function blockCreate(ctx) {
     `Found templates:`,
     pathList,
     `Read one of these first, OR run \`/templates-ack\` (writes ${ackFile}) to bypass for this session.`,
-    `See: issue #519, PRD docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md (Pattern 3)`,
+    `See: issue #519, "gsd Pattern Adoption Quick-Wins" (archived in the private Meta-Vault) (Pattern 3)`,
   ].join('\n');
 
   // PRD § 3 Gherkin Pattern 3 spec: stderr lists template paths + ack hint.

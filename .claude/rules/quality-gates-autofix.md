@@ -71,7 +71,7 @@ See `.claude/rules/security.md` § "Session Config Command Trust (Quality-Gate C
 - API: `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`)
 - Wave-executor integration: `skills/wave-executor/SKILL.md` § "Inter-Wave Quality-Gate (with Auto-Fix Loop — #521)"
 - Test anti-patterns: `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention" (BE-012, test-the-mock)
-- PRD: `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 4
+- PRD: "gsd Pattern Adoption Quick-Wins" (#521; archived in the private Meta-Vault) § Pattern 4
 - Issue: #521
 
 ## See Also

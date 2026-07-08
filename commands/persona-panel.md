@@ -90,7 +90,7 @@ Only the `physicist` and `ai-expert` catalog entries are dispatched. Others are 
 **3. Hard-gate mode, unanimous threshold:**
 
 ```
-/persona-panel docs/research/wfk-2.1.5.md --mode hard-gate --threshold all
+/persona-panel notes/draft.md --mode hard-gate --threshold all
 ```
 
 All resolved personas must return PASS. A single FAIL produces a final FAIL verdict.

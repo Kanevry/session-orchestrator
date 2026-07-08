@@ -68,7 +68,7 @@ node scripts/autopilot-multi.mjs [OPTIONS]
 
 ## See Also
 
-- `docs/prd/2026-05-07-autopilot-phase-d.md` — full PRD (status: shaped)
+- "Autopilot Phase D" (#341; archived in the private Meta-Vault) — full PRD (status: shaped)
 - `docs/adr/2026-05-10-364-remote-agent-substrate.md` — ADR-364 substrate
 - `scripts/lib/autopilot/{dep-graph,worktree-pipeline,multi-killswitch,mr-draft,stall-sampler}.mjs` — implementation
 - [`/autopilot`](autopilot.md) — single-session headless driver (Phase C-1.b)

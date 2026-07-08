@@ -133,7 +133,7 @@ These rules are mechanical contracts that the three sibling ADR/PRD authors MUST
 
 ## Sources
 
-- W1 research context: `docs/spike-probes/2026-05-10-w1-research-context.md` — sections A1 (VibeTunnel), A2 (Crabbox + CodexBar), A3 (Symphony), A4 (reloaderoo), A5 (Stop-Hook Patterns), A6 (Internal Codebase Audit).
+- W1 research context: "W1 Research Context" (#364/#365/#366; archived in the private Meta-Vault) — sections A1 (VibeTunnel), A2 (Crabbox + CodexBar), A3 (Symphony), A4 (reloaderoo), A5 (Stop-Hook Patterns), A6 (Internal Codebase Audit).
 - glab issues: #364 (architecture), #365 (devex), #366 (autopilot stop-hook). Tracking-only neighbours: #341 (Phase D multi-story), #305 (vault strict watcher), #355 (token-budget kill-switch), #297 (autopilot calibration, data-gated).
-- Sibling spike documents authored in parallel in this session: see ADR-364, ADR-365, PRD-366 (paths under `docs/adr/` and `docs/prd/` for the 2026-05-10 cluster).
+- Sibling spike documents authored in parallel in this session: see ADR-364, ADR-365 (paths under `docs/adr/` for the 2026-05-10 cluster), and PRD-366 (#366; archived in the private Meta-Vault).
 - CLAUDE.md "Current State" section — backlog snapshot 2026-05-09 (6 open issues, zero `priority:high|medium` code work remaining).

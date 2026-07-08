@@ -1,7 +1,7 @@
 # ADR 0006: prompt-hook continueOnBlock Migration
 
 > Status: ACCEPTED · session main-2026-05-19-deep-2 · issue #447
-> Source research: docs/research/2026-05-19-prompt-hook-migration.md
+> Source research: "Prompt-Hook Migration" (#447; archived in the private Meta-Vault)
 > Project-instruction file: this repo uses `CLAUDE.md` on Claude Code / Cursor; the Codex CLI equivalent is `AGENTS.md` (instruction-file-resolution per repo doc-consistency rule).
 
 ## Context

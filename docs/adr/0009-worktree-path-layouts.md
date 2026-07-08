@@ -1,7 +1,7 @@
 # ADR 0009: Worktree Path-Layouts — Two Functions, Two Layouts, No Unification
 
 > Status: Accepted · session main-2026-05-27-deep-3 · issues #574 #580
-> Source: `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment + `enterWorktree()` / `setupWorktree()`; `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling; `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 layout requirement.
+> Source: `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment + `enterWorktree()` / `setupWorktree()`; `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling; "Parallel-Aware Sessions" (#568; archived in the private Meta-Vault) §3 P3 layout requirement.
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context
@@ -77,7 +77,7 @@ The `opts.$` / `opts.execFileFn` seam split is preserved as the canonical patter
 - Issue #580 — follow-up audit; #580-DI-001 seam-divergence documentation
 - `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment and `enterWorktree()` JSDoc
 - `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling
-- `docs/prd/2026-05-26-parallel-aware-sessions.md` §3 P3 layout requirement (Gherkin row-1)
+- "Parallel-Aware Sessions" (#568; archived in the private Meta-Vault) §3 P3 layout requirement (Gherkin row-1)
 - `scripts/lib/session-end/worktree-cleanup.mjs` — `detectAutoPromotedWorktree()` (consumes sibling-flat naming contract)
 - `scripts/gc-stale-worktrees.mjs` — GC for 2-level nested per-story worktrees
 - ADR 0008 — worktree-cleanup ordering (Phase 4a, consumer of `enterWorktree()` path contract)

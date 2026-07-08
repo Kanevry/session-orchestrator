@@ -7,7 +7,7 @@
  *     (opts.execFileFn — injectable execFileSync seam for tests; #577 HARDEN-001)
  *
  * Closes #575 — Epic #568 Phase 3.2 (Parallel-Aware Sessions Auto-Promoted Worktree Cleanup)
- * PRD: docs/prd/2026-05-26-parallel-aware-sessions.md §3 P3 Gherkin rows 2-3
+ * PRD: "Parallel-aware sessions" (#568; archived in the private Meta-Vault) §3 P3 Gherkin rows 2-3
  *
  * Lifted verbatim from skills/session-end/SKILL.md Phase 4a so that the helpers
  * are unit-testable and reusable (instruction-text → executable extraction).

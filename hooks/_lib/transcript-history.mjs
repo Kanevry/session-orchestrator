@@ -1,10 +1,10 @@
 /**
  * transcript-history.mjs — Read-only inspection of the Claude Code transcript JSONL.
  *
- * Part of issue #519 (PRD docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md,
- * Pattern 3: gh-templates-first PreToolUse hook). Other hooks call into this
- * helper to answer "did the coordinator already Read a matching template path
- * during this session?".
+ * Part of issue #519 ("gsd Pattern Adoption Quick-Wins", archived in the
+ * private Meta-Vault, Pattern 3: gh-templates-first PreToolUse hook). Other
+ * hooks call into this helper to answer "did the coordinator already Read a
+ * matching template path during this session?".
  *
  * Schema reference (Claude Code hook contract): each PreToolUse stdin payload
  * carries a `transcript_path` field pointing at a JSONL file. Each line is one

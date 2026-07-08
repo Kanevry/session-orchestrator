@@ -1,7 +1,7 @@
 # ADR 0004: context-mode Tool-Output Sandbox for test-runner
 
 > Status: ACCEPTED · session main-2026-05-19-deep-2 · issue #439
-> Source research: docs/research/2026-05-19-context-mode-evaluation.md
+> Source research: "Context-Mode Evaluation" (#439; archived in the private Meta-Vault)
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md). Wherever this ADR says `CLAUDE.md`, the alias rule applies.
 
 ## Context

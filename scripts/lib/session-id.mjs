@@ -12,8 +12,8 @@
  *               .orchestrator/audits/W1-D2-resolveSemanticSessionId.md
  *
  * PRD refs:
- *  - docs/prd/2026-05-26-parallel-aware-sessions.md §3 P2 + §3.A P2
- *  - docs/prd/2026-05-27-parallel-session-detection-hardening.md (Epic #583)
+ *  - "Parallel-aware sessions" (#568; archived in the private Meta-Vault) §3 P2 + §3.A P2
+ *  - Epic #583 (Parallel-Session Detection Wiring Hardening)
  *
  * Design notes:
  *  - resolveSemanticSessionId wraps its body in withStateMdLock so two

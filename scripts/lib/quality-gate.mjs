@@ -50,7 +50,7 @@
  *   scripts/run-quality-gate.mjs                      — legacy variant-based entrypoint
  *   scripts/lib/gates/gate-helpers.mjs                — runCheck, csvToJsonArray, …
  *   hooks/post-tool-failure-corrective-context.mjs    — writes corrective_context
- *   docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md § 4 Pattern 4
+ *   "gsd Pattern Adoption Quick-Wins" (#517/#521; archived in the private Meta-Vault) § 4 Pattern 4
  *   skills/wave-executor/wave-loop.md                 — caller (Agent B's scope)
  *   tests/unit/quality-gate-autofix.test.mjs          — unit tests (Agent C's scope)
  */

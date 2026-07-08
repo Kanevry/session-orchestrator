@@ -7,7 +7,13 @@ import yaml from 'js-yaml';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'write-executable-plan', 'SKILL.md');
 const TEMPLATE_PATH = join(REPO_ROOT, 'skills', 'write-executable-plan', 'plan-template.md');
-const REF_PLAN_PATH = join(REPO_ROOT, 'docs', 'plans', '2026-05-16-superpowers-cluster.md');
+// The original dogfood reference plan ("Superpowers-adoption cluster", #35)
+// was archived to the private Meta-Vault as part of Epic #774's docs/
+// process-record split. This fixture reproduces the same structural shape
+// (6 Tasks, 6 "### Files" sub-headings, a fenced code block containing
+// quoted placeholder-linter tokens) at a fraction of the size, so these
+// tests no longer depend on an in-repo process-record doc.
+const REF_PLAN_PATH = join(REPO_ROOT, 'tests', 'fixtures', 'write-executable-plan', 'reference-plan.md');
 
 function parseFrontmatter(absPath) {
   const raw = readFileSync(absPath, 'utf8');
@@ -171,15 +177,17 @@ describe('write-executable-plan plan-template.md', () => {
 });
 
 // ─── Group 3: Reference plan dogfood validity ────────────────────────────────
+// Reference plan fixture: tests/fixtures/write-executable-plan/reference-plan.md
+// (structural stand-in for the archived "Superpowers-adoption cluster" plan, #35).
 
-describe('reference plan docs/plans/2026-05-16-superpowers-cluster.md — existence', () => {
-  it('reference plan exists and has >200 lines', () => {
-    expect(existsSync(REF_PLAN_PATH), 'reference plan must exist').toBe(true);
+describe('reference plan fixture — existence', () => {
+  it('reference plan fixture exists and is substantial (>200 lines)', () => {
+    expect(existsSync(REF_PLAN_PATH), 'reference plan fixture must exist').toBe(true);
     const content = readFileSync(REF_PLAN_PATH, 'utf8');
     const lineCount = content.split('\n').length;
     expect(
       lineCount,
-      `reference plan must have >200 lines (documented as 927); found ${lineCount}`,
+      `reference plan fixture must have >200 lines; found ${lineCount}`,
     ).toBeGreaterThan(200);
   });
 });

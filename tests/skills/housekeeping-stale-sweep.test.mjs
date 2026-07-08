@@ -6,8 +6,8 @@
  *   - isWorktreeStale(wtPath, staleBranchDays)
  *   - skills/memory-cleanup/SKILL.md Phase 4.5 structure verification
  *
- * PRD: docs/prd/2026-05-26-parallel-aware-sessions.md §3 P3 Gherkin row 4
- *      + §3.A P3 EARS state-driven clause
+ * PRD: "Parallel-aware sessions" (#568; archived in the private Meta-Vault)
+ *      §3 P3 Gherkin row 4 + §3.A P3 EARS state-driven clause
  *
  * Testing strategy:
  *   - listAutoPromotedWorktrees: DI seam via opts.execFileFn — no vi.mock needed.

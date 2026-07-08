@@ -42,16 +42,14 @@
  *   1. Lines with office@gotzendorfer.at or security@gotzendorfer.at
  *      and no other gotzendorfer.at token
  *   2. https://gotzendorfer.at[...] URLs in README.md and the 3 manifest files
- *      and docs/marketplace/**, docs/submissions/**
  *   3. Manifest author/email/url/websiteURL/privacyPolicyURL/termsOfServiceURL keys
  *      in .claude-plugin/plugin.json, .claude-plugin/marketplace.json, .codex-plugin/plugin.json
  *      (covered by exclusions 1 + 2 above; listed explicitly for audit trail)
- *   4. docs/marketplace/** + docs/submissions/** lines with sanctioned email/URL only
- *   5. .orchestrator/audits/** — never scanned (excluded in file enumeration)
- *   6. tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line:
+ *   4. .orchestrator/audits/** — never scanned (excluded in file enumeration)
+ *   5. tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line:
  *      " *   - No literal `events.gotzendorfer.at` URL appears anywhere in scripts/ or hooks/."
  *      (a real string-literal events.gotzendorfer.at elsewhere in that file still FAILs)
- *   7. tests/scripts/export-hw-learnings.test.mjs — exempt from P8 ONLY: the RFC1918
+ *   6. tests/scripts/export-hw-learnings.test.mjs — exempt from P8 ONLY: the RFC1918
  *      IPs there are the redaction subject of the anonymizeString suite, not leaks.
  *
  * Exit codes:
@@ -529,7 +527,7 @@ function isAllowlisted(relPath, line) {
   // Normalize to forward-slash for matching
   const norm = relPath.replace(/\\/g, '/');
 
-  // A.4 exclusion 6: tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line
+  // A.4 exclusion 5: tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line
   if (norm === 'tests/lib/events-default-url.test.mjs') {
     // The exact doc-comment line: " *   - No literal `events.gotzendorfer.at` URL..."
     // Match the literal backtick-quoted pattern in a JSDoc/comment line
@@ -550,18 +548,16 @@ function isAllowlisted(relPath, line) {
     return true;
   }
 
-  // A.4 exclusion 2 + 3 + 4: https://gotzendorfer.at URLs in README.md, the 3 manifest files,
-  // docs/marketplace/**, docs/submissions/**
+  // A.4 exclusion 2 + 3: https://gotzendorfer.at URLs in README.md and the 3 manifest files
   const ALLOWLISTED_URL_PATHS = new Set([
     'README.md',
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
     '.codex-plugin/plugin.json',
   ]);
-  const inDocsMarketplace = norm.startsWith('docs/marketplace/') || norm.startsWith('docs/submissions/');
   const inAllowlistedFile = ALLOWLISTED_URL_PATHS.has(norm);
 
-  if ((inAllowlistedFile || inDocsMarketplace)) {
+  if (inAllowlistedFile) {
     // Check that the only gotzendorfer.at occurrences on this line are sanctioned URLs or emails
     const SANCTIONED_URL = /https?:\/\/gotzendorfer\.at\b/g;
     const allGotzOnLine = [...line.matchAll(/gotzendorfer\.at/g)];

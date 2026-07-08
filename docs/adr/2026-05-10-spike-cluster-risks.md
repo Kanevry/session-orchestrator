@@ -5,7 +5,7 @@
 - **Author:** session main-2026-05-10-deep-1 W2 B5
 - **Status:** review-feed for W3 reviewers (analyst, security-reviewer, qa-strategist)
 
-This register consolidates the inline "Risks" sub-bullets from `docs/spike-probes/2026-05-10-w1-research-context.md` (sections A1–A6) and re-frames them against our existing risk-discipline in `.claude/rules/security.md` (SEC-001 ff.) and `.claude/rules/parallel-sessions.md` (PSA-001/002/003). Source citations refer to the W1 research file unless otherwise noted.
+This register consolidates the inline "Risks" sub-bullets from "W1 Research Context" (#364/#365/#366; archived in the private Meta-Vault) (sections A1–A6) and re-frames them against our existing risk-discipline in `.claude/rules/security.md` (SEC-001 ff.) and `.claude/rules/parallel-sessions.md` (PSA-001/002/003). Source citations refer to the W1 research file unless otherwise noted.
 
 ## Risk classification
 
@@ -196,7 +196,7 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 
 ## Sources
 
-- `docs/spike-probes/2026-05-10-w1-research-context.md` (W1 research consolidation):
+- "W1 Research Context" (#364/#365/#366; archived in the private Meta-Vault) (W1 research consolidation):
   - A1 — VibeTunnel architecture + adoption tiers
   - A2 — Crabbox (lease/TTL, cost-cap) + CodexBar (quota visibility)
   - A3 — Symphony three-level isolation + 4 kill-switches + risks bullet

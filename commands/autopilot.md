@@ -69,7 +69,7 @@ The runtime entrypoint is `runLoop(opts)`. Production callers wire injectable de
 - `peerCounter`: calls `detectPeers({sessionId})` from `scripts/lib/session-registry.mjs` and returns the array length.
 - `abortSignal`: hooked to Ctrl+C / Esc handlers.
 
-Loop semantics, kill-switches, resource-adaptive cap logic, and telemetry contract are documented in the skill. The PRD at `docs/prd/2026-04-25-autopilot-loop.md` is the underlying design document.
+Loop semantics, kill-switches, resource-adaptive cap logic, and telemetry contract are documented in the skill. The PRD "Autopilot Loop" (#277; archived in the private Meta-Vault) is the underlying design document.
 
 ## Critical Rules
 

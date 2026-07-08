@@ -11,8 +11,8 @@
  *                  audit advisory, typosquat heuristic). RESERVED FOR FUTURE WAVES —
  *                  the MVP NEVER emits SUS. The npm-deprecated-flag and audit-warning
  *                  detection paths are not wired up. Tests must not expect SUS emission
- *                  until that detection logic ships. See PRD § 5
- *                  (docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md) for intent.
+ *                  until that detection logic ships. See PRD § 5 —
+ *                  "gsd Pattern Adoption Quick-Wins" (#520; archived in the private Meta-Vault) — for intent.
  *   - SLOP       — package does NOT exist in the registry (404 / non-zero exit /
  *                  empty version list). Highest-confidence "hallucinated name" signal.
  *

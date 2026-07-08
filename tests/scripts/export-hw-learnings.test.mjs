@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   anonymizeString,
@@ -22,10 +22,16 @@ import {
   renderMarkdown,
   exportHwLearnings,
   promoteHwLearnings,
+  resolveDefaultOutput,
 } from '../../scripts/export-hw-learnings.mjs';
 import { CURRENT_ANONYMIZATION_VERSION } from '@lib/learnings.mjs';
 
 const GENERATED_AT = '2026-04-19T14:00:00Z';
+
+// Hermetic host-path ctx for resolveDefaultOutput: no env override, no
+// owner.yaml bleed (issue #653 vault-dir bleed guard) — mirrors the
+// HOST_PATHS convention in tests/scripts/archive-closed-prds.test.mjs.
+const HOST_PATHS = { env: {}, ownerConfig: undefined };
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -606,5 +612,84 @@ describe('promoteHwLearnings', () => {
     const result = await promoteHwLearnings({ input, dryRun: true });
 
     expect(result.flags.some((f) => f.includes('malformed'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part D — resolveDefaultOutput (qa-strategist finding: no dedicated coverage)
+// ---------------------------------------------------------------------------
+
+describe('resolveDefaultOutput', () => {
+  it('vault-dir configured (absolute) resolves to <vaultDir>/01-projects/session-orchestrator/research/hardware-patterns.md', () => {
+    const vaultDir = join(tmp, 'my-vault');
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      [
+        '# Fixture',
+        '',
+        '## Session Config',
+        '',
+        'persistence: true',
+        '',
+        'vault-integration:',
+        '  enabled: true',
+        `  vault-dir: ${vaultDir}`,
+        '  mode: warn',
+        '',
+      ].join('\n'),
+    );
+
+    const result = resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS });
+
+    expect(result).toBe(join(vaultDir, '01-projects', 'session-orchestrator', 'research', 'hardware-patterns.md'));
+  });
+
+  it('vault-dir configured WITH a tilde prefix resolves through the real home directory (integration with expandTilde)', () => {
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      [
+        '# Fixture',
+        '',
+        '## Session Config',
+        '',
+        'persistence: true',
+        '',
+        'vault-integration:',
+        '  enabled: true',
+        '  vault-dir: ~/so-hw-test-vault',
+        '  mode: warn',
+        '',
+      ].join('\n'),
+    );
+
+    const result = resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS });
+
+    expect(result).not.toBeNull();
+    expect(result.startsWith(homedir())).toBe(true);
+    expect(result).not.toContain('~');
+  });
+
+  it('returns null when the vault-integration block has no vault-dir key', () => {
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      [
+        '# Fixture',
+        '',
+        '## Session Config',
+        '',
+        'persistence: true',
+        '',
+        'vault-integration:',
+        '  enabled: true',
+        '  mode: warn',
+        '',
+      ].join('\n'),
+    );
+
+    expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
+  });
+
+  it('returns null when no CLAUDE.md/AGENTS.md exists at repoRoot', () => {
+    expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
   });
 });

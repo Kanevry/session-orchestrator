@@ -2,7 +2,8 @@
  * tests/agents/persona-reviewers.test.mjs
  *
  * Regression tests for #339 — persona-reviewer agents.
- * Config key renamed to wave-reviewers in #461 — see docs/migrations/2026-05-18-461-persona-reviewers-rename.md
+ * Config key renamed to wave-reviewers in #461 — see "Migration: `persona-reviewers`
+ * → `wave-reviewers`" (#461; archived in the private Meta-Vault)
  *
  * Verifies that:
  *   - All three new agent files exist

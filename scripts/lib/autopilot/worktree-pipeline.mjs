@@ -15,7 +15,7 @@
 // seam would break the sync/async boundary. Do NOT unify.
 //
 // References:
-//   - docs/prd/2026-05-07-autopilot-phase-d.md (PRD)
+//   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault) (PRD)
 //   - docs/adr/2026-05-10-364-remote-agent-substrate.md (ADR-364)
 //   - scripts/lib/autopilot/loop.mjs (substrate: forward-compat params)
 //   - scripts/lib/worktree/lifecycle.mjs (substrate: validateWorkspacePath)

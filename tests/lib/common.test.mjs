@@ -4,7 +4,8 @@
  * Vitest tests for scripts/lib/common.mjs
  *
  * Exports under test:
- *   makeTmpPath, utcTimestamp, epochMs, readJson, writeJson, appendJsonl
+ *   makeTmpPath, utcTimestamp, epochMs, readJson, writeJson, appendJsonl,
+ *   expandTilde
  *
  * Issue #136 — v3.0.0 Windows native migration.
  */
@@ -20,6 +21,7 @@ import {
   readJson,
   writeJson,
   appendJsonl,
+  expandTilde,
 } from '@lib/common.mjs';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,46 @@ describe('makeTmpPath', () => {
 
   it('error message mentions "prefix" and "non-empty"', () => {
     expect(() => makeTmpPath('')).toThrow(/prefix.*non-empty|non-empty.*prefix/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expandTilde
+// ---------------------------------------------------------------------------
+
+describe('expandTilde', () => {
+  it('expands a bare "~" to the home directory', () => {
+    expect(expandTilde('~')).toBe(os.homedir());
+  });
+
+  it('expands a "~/"-prefixed path to a home-relative path', () => {
+    expect(expandTilde('~/Projects/vault')).toBe(path.join(os.homedir(), 'Projects/vault'));
+  });
+
+  it('the expanded path does NOT contain a literal "~"', () => {
+    expect(expandTilde('~/so-test-vault')).not.toContain('~');
+  });
+
+  it('leaves an absolute path unchanged', () => {
+    expect(expandTilde('/absolute/path')).toBe('/absolute/path');
+  });
+
+  it('leaves a relative (non-tilde) path unchanged', () => {
+    expect(expandTilde('relative/path')).toBe('relative/path');
+  });
+
+  it('passes through non-string input unchanged', () => {
+    expect(expandTilde(42)).toBe(42);
+    expect(expandTilde(null)).toBe(null);
+    expect(expandTilde(undefined)).toBe(undefined);
+  });
+
+  it('passes through the empty string unchanged', () => {
+    expect(expandTilde('')).toBe('');
+  });
+
+  it('does not expand a mid-string "~" (only a leading "~/" or bare "~")', () => {
+    expect(expandTilde('/some/~/path')).toBe('/some/~/path');
   });
 });
 

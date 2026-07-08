@@ -2,7 +2,8 @@
 //
 // Issue dependency graph + topological-sort scheduler for autopilot --multi-story.
 // Pure data layer — no I/O, no shell. Powers nextReady() lookups during multi-story
-// pipeline scheduling per docs/prd/2026-05-07-autopilot-phase-d.md.
+// pipeline scheduling per "Autopilot Phase D — Per-Story Worktree Pipelines"
+// (#341; archived in the private Meta-Vault).
 //
 // Substrate: ADR-364 thin-slice MVP. Issue selection criterion: `status:ready` label
 // only (OPEN-1 decision in PRD). Cross-loop wait semantics use commit-based deps
@@ -18,7 +19,7 @@
  *
  * References:
  *   - ADR-364 thin-slice MVP
- *   - docs/prd/2026-05-07-autopilot-phase-d.md
+ *   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault)
  */
 
 /**

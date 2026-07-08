@@ -161,7 +161,7 @@ Pattern 1 of the gsd Adoption Quick-Win Bundle (Issue #518) complements the PSA-
 - STATE.md readers (`parseStateMd`, `readMissionStatus`) — locking readers serialises them unnecessarily with no safety benefit
 - Other lock domains: the session lock (`acquire()` in `session-lock.mjs`) is orthogonal — session lock means "this repo working copy is occupied by an active session"; state lock means "STATE.md is being written right now"
 
-See `docs/prd/2026-05-22-gsd-pattern-adoption-quickwins.md` § Pattern 1 and Issue #518.
+See "gsd Pattern Adoption Quick-Wins" (#518; archived in the private Meta-Vault) § Pattern 1 and Issue #518.
 
 **Epic #583 mechanical extension.** Since Epic #583, `session.lock` acquisition is also wired mechanically via `hooks/_lib/lock-bootstrap.mjs` (`bootstrapLock()`) invoked from `on-session-start.mjs` on every `SessionStart`. This closes the complementary gap in session-lock wiring: previously, `session.lock` was only written when the coordinator-LLM executed Phase 1.2 prose — a Disziplin-statt-Mechanik risk identical to the STATE.md write-race. Lock schema v2 also replaces PID-liveness with heartbeat-based liveness (`last_heartbeat` field), and surfaces `semantic_session_id` alongside the UUID `session_id` on Claude Code. See `skills/_shared/state-ownership.md § Session Lock Schema` for the full v2 field contract.
 
@@ -233,4 +233,4 @@ The git index and stash are **shared resources of the working copy**, not a priv
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · docs/research/2026-06-20-native-overlap-verdicts.md § PSA re-scope
+development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · "Native-Overlap Verdicts" research (#665; archived in the private Meta-Vault) § PSA re-scope
