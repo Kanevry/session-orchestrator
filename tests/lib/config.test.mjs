@@ -400,6 +400,14 @@ describe('parseSessionConfig', () => {
   });
 
   describe('vault-integration nested object', () => {
+    // Hermetic ctx (issue #783): the default hostPaths tier reads the REAL
+    // owner.yaml — a host-local `paths.vault-dir` override (set on this
+    // machine) would otherwise WIN over the fixture/committed `vault-dir`
+    // value and bleed into these committed-value assertions (the exact
+    // LOCAL-RED/CI-GREEN class documented in #783). Inject an empty ctx to
+    // pin the COMMITTED tier, mirroring the `hermetic` pattern below (#497).
+    const hermetic = { hostPaths: { env: {}, ownerConfig: undefined } };
+
     it('returns vault-integration with enabled, vault-dir, mode keys when absent', () => {
       const config = parseSessionConfig(readFixture('config-minimal.md'));
       expect(config['vault-integration']).toHaveProperty('enabled');
@@ -413,7 +421,7 @@ describe('parseSessionConfig', () => {
     });
 
     it('defaults vault-integration.vault-dir to null', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      const config = parseSessionConfig(readFixture('config-minimal.md'), hermetic);
       expect(config['vault-integration']['vault-dir']).toBeNull();
     });
 
@@ -435,7 +443,7 @@ describe('parseSessionConfig', () => {
         '  vault-dir: /secrets/vault',
         '  mode: strict',
       ].join('\n');
-      const config = parseSessionConfig(content);
+      const config = parseSessionConfig(content, hermetic);
       expect(config['vault-integration'].enabled).toBe(true);
       expect(config['vault-integration']['vault-dir']).toBe('/secrets/vault');
       expect(config['vault-integration'].mode).toBe('strict');
@@ -518,13 +526,36 @@ describe('parseSessionConfig', () => {
     });
 
     it('parses inline "- vault-integration: { ... }" into the full nested object', () => {
-      const config = parseSessionConfig(fixture);
+      // Hermetic ctx (issue #783): vault-dir goes through the SAME
+      // resolveHostPath tier as plan-baseline-path above — a host-local
+      // `paths.vault-dir` override would otherwise win over the committed
+      // `~/Projects/vault` value asserted here.
+      const config = parseSessionConfig(fixture, hermetic);
       expect(config['vault-integration']).toEqual({
         enabled: true,
         'vault-dir': '~/Projects/vault',
         mode: 'warn',
         'vault-name': null,
       });
+    });
+
+    // Regression (issue #783): proves the `hostPaths` DI seam deterministically
+    // governs vault-dir resolution — an INJECTED (fake, test-controlled) owner.yaml
+    // context wins over the fixture's committed value, exactly mirroring
+    // resolveHostPath's env > owner.yaml > committed precedence. This is the
+    // load-bearing half of the #783 fix: because the test passes its OWN
+    // `hostPaths` context explicitly, the REAL host's on-disk owner.yaml is never
+    // consulted — the resolution is fully deterministic and independent of
+    // whatever `paths.vault-dir` happens to be configured on the machine running
+    // the suite. Host state cannot leak in; only the injected context can win.
+    it('owner.yaml paths.vault-dir override wins over the committed value (hermetic, #783)', () => {
+      const config = parseSessionConfig(fixture, {
+        hostPaths: {
+          env: {},
+          ownerConfig: { paths: { 'vault-dir': '/tmp/fake-owner-override/vault' } },
+        },
+      });
+      expect(config['vault-integration']['vault-dir']).toBe('/tmp/fake-owner-override/vault');
     });
 
     it('parses "- vcs:" scalar (was null pre-#497)', () => {

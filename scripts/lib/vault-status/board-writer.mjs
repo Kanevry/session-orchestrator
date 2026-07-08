@@ -480,9 +480,16 @@ export function writeBoard(opts) {
  * @param {Date} [opts.now]
  * @param {boolean} [opts.dryRun]
  * @param {object} [opts.fs] — injectable fs for tests.
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [opts.hostPaths]
+ *   — forwarded verbatim to {@link parseSessionConfig}'s `hostPaths` DI seam (issue #653).
+ *   Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when
+ *   asserting a fixture's committed `vault-dir` — omitting it reads the REAL host
+ *   `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the fixture value
+ *   and bleeds into the assertion (issue #783). Production callers omit this — the
+ *   default (real owner.yaml resolution) is the correct host-local behavior there.
  * @returns {Promise<{ action: string, path?: string }>}
  */
-export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new Date(), dryRun = false, fs } = {}) {
+export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new Date(), dryRun = false, fs, hostPaths } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     return { action: 'skipped-vault-disabled' };
   }
@@ -491,7 +498,7 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   let config;
   try {
     const text = await readConfigFile(repoRoot);
-    config = parseSessionConfig(text);
+    config = parseSessionConfig(text, { hostPaths });
   } catch {
     return { action: 'skipped-vault-disabled' };
   }
@@ -694,9 +701,14 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  * @param {object} [opts.deps] — injectable deps for {@link enumerateCandidates}
  *   (test seam: `readdirSync`, `existsSync`, `readLock`, `isLockLive`,
  *   `getCrossRepoProjects`, `validatePathInsideProject`, `now`).
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [opts.hostPaths]
+ *   — forwarded verbatim to every {@link mirrorBoard} call below (both the happy-path
+ *   and the enumeration-failure-fallback path), which in turn forwards it to
+ *   {@link parseSessionConfig}'s `hostPaths` DI seam (issue #653/#783). See
+ *   {@link mirrorBoard}'s own `hostPaths` doc for the hermetic-test rationale.
  * @returns {Promise<{ action: string, path?: string }>}
  */
-export async function sweepBoard({ repoRoot, startDir, now = new Date(), dryRun = false, fs, deps } = {}) {
+export async function sweepBoard({ repoRoot, startDir, now = new Date(), dryRun = false, fs, deps, hostPaths } = {}) {
   // Accept both a Date and a caller-passed epoch-ms number (previously the
   // numeric case was silently discarded by `now instanceof Date ? … : Date.now()`).
   const nowMs = now instanceof Date
@@ -712,11 +724,11 @@ export async function sweepBoard({ repoRoot, startDir, now = new Date(), dryRun 
   try {
     const candidates = await enumerateCandidates({ startDir, now: nowMs, deps });
     const repos = buildSweepRepos(candidates, { thisRepoRoot: repoRoot });
-    return await mirrorBoard({ repoRoot, repos, now: nowForMirror, dryRun, fs });
+    return await mirrorBoard({ repoRoot, repos, now: nowForMirror, dryRun, fs, hostPaths });
   } catch (err) {
     console.warn('[sweepBoard] host-wide enumeration failed — degraded to single-repo board write:', err?.message ?? err);
     // Best-effort fallback: enumeration failed for any reason — degrade to the
     // pre-#716 single-repo write so the board is still updated for THIS repo.
-    return mirrorBoard({ repoRoot, explicitStatus: 'in-progress', now: nowForMirror, dryRun, fs });
+    return mirrorBoard({ repoRoot, explicitStatus: 'in-progress', now: nowForMirror, dryRun, fs, hostPaths });
   }
 }

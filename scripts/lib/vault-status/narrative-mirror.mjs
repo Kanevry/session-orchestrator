@@ -408,11 +408,18 @@ export function writeNarrative(opts) {
  *   now?: Date,
  *   dryRun?: boolean,
  *   fs?: object,
+ *   hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object },
  * }} opts
+ *   `hostPaths` is forwarded verbatim to {@link parseSessionConfig}'s `hostPaths` DI
+ *   seam (issue #653). Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig:
+ *   undefined }`) when asserting a fixture's committed `vault-dir` — omitting it reads
+ *   the REAL host `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the
+ *   fixture value and bleeds into the assertion (issue #783). Production callers omit
+ *   this — the default (real owner.yaml resolution) is the correct host-local behavior.
  * @returns {Promise<{ action: string, path?: string }>}
  */
 export async function mirrorNarrative(opts) {
-  const { repoRoot, repo, now = new Date(), dryRun = false, fs: injectedFs } = opts;
+  const { repoRoot, repo, now = new Date(), dryRun = false, fs: injectedFs, hostPaths } = opts;
 
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     return { action: 'skipped-vault-disabled' };
@@ -429,7 +436,7 @@ export async function mirrorNarrative(opts) {
   let config;
   try {
     const configText = await readConfigFile(repoRoot);
-    config = parseSessionConfig(configText);
+    config = parseSessionConfig(configText, { hostPaths });
   } catch {
     return { action: 'skipped-vault-disabled' };
   }

@@ -118,6 +118,17 @@ function buildRegistryEntry({ repoRoot, branch, sessionId = 'reg-session', mode 
 const FIXED_NOW = new Date('2026-06-18T12:00:00.000Z');
 
 /**
+ * Hermetic hostPaths ctx (issue #783) — mirrorBoard's Session Config read
+ * defaults to the REAL host `owner.yaml` when no `hostPaths` is passed. On a
+ * host with `paths.vault-dir` set, that override wins over the fixture's
+ * `vault-dir:` value AND resolves to the real vault dir (not the tmp dir these
+ * tests create), silently mutating the operator's real vault board. Every
+ * `mirrorBoard()` call below MUST pass this hermetic ctx so the fixture's
+ * `vault-dir:` value is what actually resolves.
+ */
+const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+
+/**
  * A fresh vault dir under $HOME (mirrorBoard's safety guard requires this),
  * tracked in `extraCleanupDirs` for teardown.
  */
@@ -658,6 +669,7 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
       repoRoot: thisRepoRoot,
       repos: [{ repoRoot: thisRepoRoot }, { repoRoot: freshRepoRoot, repoName: 'Some-Repo' }],
       now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
@@ -705,6 +717,7 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
         // must come purely from the within-prior-file collision resolution.
         repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo' }],
         now: FIXED_NOW,
+        hostPaths: HERMETIC_HOST_PATHS,
       });
 
       expect(result.action).toBe('written');
@@ -757,6 +770,7 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
         repoRoot: thisRepoRoot,
         repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-2' }],
         now: FIXED_NOW,
+        hostPaths: HERMETIC_HOST_PATHS,
       });
 
       expect(result.action).toBe('written');
@@ -783,10 +797,10 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
     const thisRepoRoot = makeThisRepoConfig('this-repo-fold-e', vaultDir);
     const repos = [{ repoRoot: thisRepoRoot, repoName: 'idempotent-repo' }];
 
-    const first = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW });
+    const first = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
     expect(first.action).toBe('written');
 
-    const second = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW });
+    const second = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
     expect(second.action).toBe('skipped-noop');
   });
 
@@ -812,11 +826,58 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
       repoRoot: thisRepoRoot,
       repos: [{ repoRoot: thisRepoRoot }, { repoRoot: ghost, repoName: 'some-repo' }],
       now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
     const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
     const row = rows.find((r) => r.repo.toLowerCase() === 'some-repo');
     expect(row.status).toBe('closed');
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — hostPaths forwarding is load-bearing (issue #783 follow-up)
+//
+// The tests above all pass HERMETIC_HOST_PATHS ({ env: {}, ownerConfig:
+// undefined }) — an EMPTY ctx that happens to equal the CI default. That
+// proves the fix does not LEAK the real host owner.yaml into a fixture
+// assertion, but it does NOT prove mirrorBoard actually FORWARDS `hostPaths`
+// to parseSessionConfig: if the forwarding were silently dropped (i.e.
+// mirrorBoard called `parseSessionConfig(text)` with no options), every test
+// above would still pass, because falling back to the real (empty-on-CI)
+// host context produces the same resolved vault-dir as passing the empty
+// ctx explicitly. This test closes that gap with a FAKE, NON-EMPTY
+// hostPaths override that must win over the fixture's committed vault-dir.
+// ===========================================================================
+
+describe('mirrorBoard — hostPaths forwarding (load-bearing, #783 falsification)', () => {
+  it('a fake owner.yaml vault-dir override resolves the board path, proving hostPaths is forwarded to parseSessionConfig', async () => {
+    // Fixture's OWN committed vault-dir (what CLAUDE.md declares).
+    const committedVaultDir = makeVaultDir();
+    const thisRepoRoot = makeThisRepoConfig('this-repo-hostpaths-fwd', committedVaultDir);
+
+    // A FAKE vault-dir injected via ownerConfig.paths — must live under $HOME
+    // to pass mirrorBoard's safety guard, but is otherwise never created on
+    // disk (dryRun means nothing touches it).
+    const fakeVaultDir = join(homedir(), '.so-board-writer-fake-owner-injected-mirrorBoard');
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }],
+      now: FIXED_NOW,
+      dryRun: true,
+      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+    });
+
+    // Falsification proof: if mirrorBoard stopped forwarding `hostPaths` to
+    // parseSessionConfig, config would resolve via the REAL host context
+    // instead (empty on CI — no SO_VAULT_DIR, no owner.yaml paths.vault-dir),
+    // which falls through to the fixture's COMMITTED vault-dir. The resolved
+    // path would then equal resolveBoardPath(committedVaultDir), NOT
+    // resolveBoardPath(fakeVaultDir) — this assertion would go RED.
+    expect(result.action).toBe('dry-run');
+    expect(result.path).toBe(resolveBoardPath(fakeVaultDir));
+    expect(result.path).not.toBe(resolveBoardPath(committedVaultDir));
   });
 });

@@ -406,6 +406,17 @@ describe('resolveNarrativePath', () => {
 // ── mirrorNarrative (orchestration) — os.tmpdir temp repos ─────────────────────
 
 describe('mirrorNarrative', () => {
+  /**
+   * Hermetic hostPaths ctx (issue #783) — mirrorNarrative's Session Config
+   * read defaults to the REAL host `owner.yaml` when no `hostPaths` is
+   * passed. On a host with `paths.vault-dir` set, that override wins over
+   * the fixture's `vault-dir:` value, so the resolved vault path silently
+   * diverges from the tmp dir these tests create. Every `mirrorNarrative()`
+   * call below passes this hermetic ctx so the fixture's `vault-dir:` value
+   * is what actually resolves.
+   */
+  const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+
   let tmpBase;
 
   afterEach(() => {
@@ -438,7 +449,7 @@ describe('mirrorNarrative', () => {
 
   it('derives repo from repoRoot basename when repo is OMITTED — never mis-files under "unknown" (#675)', async () => {
     const { repoRoot } = scaffold({ repoDirName: 'MyCoolRepo' });
-    const result = await mirrorNarrative({ repoRoot });
+    const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
 
     expect(result.action).toBe('written');
     expect(result.path).toContain('/01-projects/mycoolrepo/_session-narrative.md');
@@ -451,13 +462,13 @@ describe('mirrorNarrative', () => {
 
   it('returns skipped-vault-disabled when vault-integration is absent/disabled', async () => {
     const { repoRoot } = scaffold({ repoDirName: 'NoVault', vaultEnabled: false });
-    const result = await mirrorNarrative({ repoRoot });
+    const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
     expect(result).toEqual({ action: 'skipped-vault-disabled' });
   });
 
   it('returns skipped-no-statemd when STATE.md is absent but vault is enabled', async () => {
     const { repoRoot } = scaffold({ repoDirName: 'NoState', withStateMd: false });
-    const result = await mirrorNarrative({ repoRoot });
+    const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
     expect(result.action).toBe('skipped-no-statemd');
     expect(result.path).toContain('/01-projects/nostate/_session-narrative.md');
   });
@@ -470,5 +481,46 @@ describe('mirrorNarrative', () => {
   it('returns skipped-vault-disabled when repoRoot is missing', async () => {
     const result = await mirrorNarrative({});
     expect(result).toEqual({ action: 'skipped-vault-disabled' });
+  });
+
+  // =========================================================================
+  // hostPaths forwarding is load-bearing (issue #783 follow-up)
+  //
+  // Every mirrorNarrative test above passes HERMETIC_HOST_PATHS ({ env: {},
+  // ownerConfig: undefined }) — an EMPTY ctx that happens to equal the CI
+  // default. That proves the fix does not leak the real host owner.yaml into
+  // a fixture assertion, but it does NOT prove mirrorNarrative actually
+  // FORWARDS `hostPaths` to parseSessionConfig: if that forwarding were
+  // silently dropped (i.e. mirrorNarrative called `parseSessionConfig(configText)`
+  // with no options), every test above would still pass, because falling
+  // back to the real (empty-on-CI) host context resolves the SAME committed
+  // vault-dir. This test closes that gap with a FAKE, NON-EMPTY hostPaths
+  // override that must win over the fixture's committed vault-dir.
+  // =========================================================================
+
+  it('LOAD-BEARING (#783 falsification): a fake owner.yaml vault-dir override resolves the narrative path, proving hostPaths is forwarded to parseSessionConfig', async () => {
+    const { repoRoot, vaultDir } = scaffold({ repoDirName: 'HostPathsRepo' });
+    const repoSlug = 'hostpaths-fake-repo'; // already slug-canonical — subjectToSlug is a no-op on it
+    // A FAKE vault-dir injected via ownerConfig.paths — mirrorNarrative has no
+    // $HOME guard (unlike mirrorBoard), so this can live anywhere; keep it
+    // under tmpBase for tidy cleanup even though dryRun never touches it.
+    const fakeVaultDir = path.join(tmpBase, 'fake-owner-injected-mirrorNarrative-vault');
+
+    const result = await mirrorNarrative({
+      repoRoot,
+      repo: repoSlug,
+      dryRun: true,
+      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+    });
+
+    // Falsification proof: if mirrorNarrative stopped forwarding `hostPaths`
+    // to parseSessionConfig, config would resolve via the REAL host context
+    // instead (empty on CI — no SO_VAULT_DIR, no owner.yaml paths.vault-dir),
+    // which falls through to the fixture's COMMITTED vault-dir. The resolved
+    // path would then equal resolveNarrativePath(vaultDir, repoSlug), NOT
+    // resolveNarrativePath(fakeVaultDir, repoSlug) — this assertion would go RED.
+    expect(result.action).toBe('dry-run');
+    expect(result.path).toBe(resolveNarrativePath(fakeVaultDir, repoSlug));
+    expect(result.path).not.toBe(resolveNarrativePath(vaultDir, repoSlug));
   });
 });

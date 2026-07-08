@@ -62,6 +62,17 @@ const REAL_TMP_BASE = realpathSync(tmpdir());
 
 const FIXED_NOW = new Date('2026-06-18T12:00:00.000Z');
 
+/**
+ * Hermetic hostPaths ctx (issue #783) — sweepBoard → mirrorBoard's Session
+ * Config read defaults to the REAL host `owner.yaml` when no `hostPaths` is
+ * passed. On a host with `paths.vault-dir` set, that override wins over the
+ * fixture's `vault-dir:` value AND resolves to the real vault dir (not the
+ * tmp dir these tests create), silently mutating the operator's real vault
+ * board. Every `sweepBoard()` call below MUST pass this hermetic ctx so the
+ * fixture's `vault-dir:` value is what actually resolves.
+ */
+const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+
 let cleanupDirs;
 let prevRegistryDir;
 let prevVaultDirEnv;
@@ -237,6 +248,7 @@ describe('sweepBoard happy path', () => {
       startDir: hostDir,
       now: FIXED_NOW,
       deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
@@ -261,7 +273,7 @@ describe('sweepBoard happy path', () => {
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
     });
 
-    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS });
+    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS, hostPaths: HERMETIC_HOST_PATHS });
 
     const rows = readBoardRows(vaultDir);
     const liveRow = rows.find((r) => r.repo === 'foreign-live-repo');
@@ -282,7 +294,7 @@ describe('sweepBoard happy path', () => {
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
     });
 
-    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS });
+    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS, hostPaths: HERMETIC_HOST_PATHS });
 
     const rows = readBoardRows(vaultDir);
     const thisRow = rows.find((r) => r.repo === 'this-repo');
@@ -304,7 +316,7 @@ describe('sweepBoard happy path', () => {
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
     });
 
-    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS });
+    await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS, hostPaths: HERMETIC_HOST_PATHS });
 
     const rows = readBoardRows(vaultDir);
     expect(rows.find((r) => r.repo === 'foreign-free-repo')).toBeUndefined();
@@ -317,7 +329,7 @@ describe('sweepBoard happy path', () => {
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
     });
 
-    const result = await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS });
+    const result = await sweepBoard({ repoRoot: thisRepoRoot, startDir: hostDir, now: FIXED_NOW, deps: NO_CROSS_REPO_DEPS, hostPaths: HERMETIC_HOST_PATHS });
 
     expect(result.path.endsWith('_active-sessions.md')).toBe(true);
     expect(result.path.endsWith('_overview.md')).toBe(false);
@@ -353,6 +365,7 @@ describe('sweepBoard idempotent merge — frei exclusion', () => {
       startDir: hostDir,
       now: FIXED_NOW,
       deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
@@ -396,6 +409,7 @@ describe('sweepBoard enumeration-failure fallback', () => {
           throw new Error('boom-read-lock');
         },
       },
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
@@ -435,11 +449,61 @@ describe('sweepBoard numeric now clock seam', () => {
       startDir: hostDir,
       now: FIXED_NOW.getTime(),
       deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
     });
 
     expect(result.action).toBe('written');
     const content = readFileSync(result.path, 'utf8');
     expect(content).toContain('updated: 2026-06-18T12:00:00.000Z');
     expect(content).toContain('created: 2026-06-18T12:00:00.000Z');
+  });
+});
+
+// ===========================================================================
+// sweepBoard — hostPaths forwarding is load-bearing (issue #783 follow-up)
+//
+// Every sweepBoard test above passes HERMETIC_HOST_PATHS ({ env: {},
+// ownerConfig: undefined }) — an EMPTY ctx that happens to equal the CI
+// default. That proves the fix does not leak the real host owner.yaml into a
+// fixture assertion, but it does NOT prove sweepBoard actually FORWARDS
+// `hostPaths` through to mirrorBoard: if that forwarding were silently
+// dropped from the `mirrorBoard({ ..., hostPaths })` call inside sweepBoard's
+// happy path, every test above would still pass (falling back to the real,
+// empty-on-CI host context resolves the SAME committed vault-dir). This test
+// closes that gap with a FAKE, NON-EMPTY hostPaths override that must win.
+// ===========================================================================
+
+describe('sweepBoard — hostPaths forwarding (load-bearing, #783 falsification)', () => {
+  it('a fake owner.yaml vault-dir override resolves the board path, proving hostPaths is forwarded through to mirrorBoard', async () => {
+    const { hostDir, vaultDir, sandbox } = scaffold();
+    const thisRepoRoot = makeThisRepo(sandbox, 'this-repo-hostpaths-fwd', {
+      vaultDir,
+      lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    // A FAKE vault-dir injected via ownerConfig.paths — must live under $HOME
+    // to pass mirrorBoard's internal safety guard, but is never created on
+    // disk (dryRun means nothing touches it).
+    const fakeVaultDir = join(homedir(), '.so-sweep-fake-owner-injected-sweepBoard');
+    cleanupDirs.push(fakeVaultDir); // no-op if never created; harmless rmSync
+
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      dryRun: true,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+    });
+
+    // Falsification proof: if sweepBoard stopped forwarding `hostPaths` to
+    // its internal mirrorBoard() call, config would resolve via the REAL
+    // host context instead (empty on CI), which falls through to the
+    // fixture's COMMITTED vault-dir. The resolved path would then equal
+    // resolveBoardPath(vaultDir), NOT resolveBoardPath(fakeVaultDir) — this
+    // assertion would go RED.
+    expect(result.action).toBe('dry-run');
+    expect(result.path).toBe(resolveBoardPath(fakeVaultDir));
+    expect(result.path).not.toBe(resolveBoardPath(vaultDir));
   });
 });
