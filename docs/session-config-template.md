@@ -427,9 +427,23 @@ vault-staleness:
 
 Read by: `skills/discovery/probes/vault-staleness.mjs`, `skills/discovery/probes/vault-narrative-staleness.mjs`, `skills/session-end/SKILL.md` Phase 2.3.
 
+## Docs Staleness
+
+Filesystem-mtime staleness probe for living reference docs (`docs/*.md` root-level + `docs/examples/*.md`; excludes `docs/adr/` — historically stable — and `docs/prd/` — active work-in-progress). Used by `/discovery` when enabled (#781, Epic #774).
+
+```yaml
+docs-staleness:
+  enabled: false                       # opt-in
+  mode: warn                           # strict | warn | off
+  thresholds:
+    living: 90                         # days — single tier; severity escalates at 1×/2×/3× threshold
+```
+
+Read by: `skills/discovery/probes/docs-staleness.mjs`, `scripts/lib/config/docs-staleness.mjs`.
+
 ## CLAUDE.md Drift Check
 
-Narrative-drift gate at session-end Phase 2.2. Nine checks (see `skills/claude-md-drift-check/SKILL.md` for the full spec):
+Narrative-drift gate at session-end Phase 2.2. Ten checks (see `skills/claude-md-drift-check/SKILL.md` for the full spec):
 
 1. `path-resolver` — absolute-path resolution
 2. `project-count-sync` — `01-projects/` count claims
@@ -440,6 +454,7 @@ Narrative-drift gate at session-end Phase 2.2. Nine checks (see `skills/claude-m
 7. `vault-dir-parity` — `CLAUDE.md` vs `AGENTS.md` agreement on `vault-integration.vault-dir`
 8. `generated-rule-staleness` (WARN-only) — auto-generated rules whose `learning-key` is absent or expired
 9. `rule-scoping` — `.claude/rules/*.md` `paths:`/`globs:` frontmatter defects, cited-but-missing rule citations, zero-match globs, foreign glob tokens
+10. `docs-parity` — `docs/components.md` count-claims vs actual on-disk counts, Session Config key parity between `docs/session-config-template.md` and `docs/session-config-reference.md`, and legacy pre-`.orchestrator/metrics/` path references in the docs tree
 
 ```yaml
 drift-check:
@@ -458,6 +473,7 @@ drift-check:
   check-vault-dir-parity: true
   check-generated-rule-staleness: true
   check-rule-scoping: true
+  check-docs-parity: true
 ```
 
 Read by: `skills/claude-md-drift-check/SKILL.md`, `skills/claude-md-drift-check/checker.mjs`.
@@ -756,6 +772,13 @@ vault-staleness:
     active: 60
     archived: 180
 
+# Docs staleness (#781)
+docs-staleness:
+  enabled: false
+  mode: warn
+  thresholds:
+    living: 90
+
 # CLAUDE.md drift check
 drift-check:
   enabled: true
@@ -770,6 +793,7 @@ drift-check:
   check-vault-dir-parity: true
   check-generated-rule-staleness: true
   check-rule-scoping: true
+  check-docs-parity: true
 
 # Docs orchestrator
 docs-orchestrator:
@@ -878,7 +902,7 @@ skill-evolution:
   judge: off               # opt-in session-end LLM-judge for A's L3 (advisory only); default off
 ```
 
-Read by: `skills/evolve/SKILL.md` (skill-health summary), `scripts/lib/config/skill-evolution.mjs` (parser). PRD: `docs/prd/2026-06-14-skill-self-evolution-foundation.md`. Issue: #646.
+Read by: `skills/evolve/SKILL.md` (skill-health summary), `scripts/lib/config/skill-evolution.mjs` (parser). PRD: "Skill Self-Evolution Foundation" (#643; archived in the private Meta-Vault). Issue: #646.
 
 ## Dispatcher Autonomy
 
@@ -892,4 +916,4 @@ dispatcher-autonomy:
   confidence-floor: 0.5    # float 0.0..1.0
 ```
 
-Read by: `scripts/lib/config/dispatcher-autonomy.mjs` (parser + resolver), `skills/dispatcher/SKILL.md` (cross-repo dispatch flow). PRD: `docs/prd/2026-06-18-cross-repo-vault-status-autopilot-dispatcher.md`. Issue: #679.
+Read by: `scripts/lib/config/dispatcher-autonomy.mjs` (parser + resolver), `skills/dispatcher/SKILL.md` (cross-repo dispatch flow). PRD: "Cross-Repo Vault-Status / Autopilot Dispatcher" (#673; archived in the private Meta-Vault). Issue: #679.

@@ -22,6 +22,7 @@ const DEFAULTS = {
   'check-vault-dir-parity': true,
   'check-generated-rule-staleness': true,
   'check-rule-scoping': true,
+  'check-docs-parity': true,
 };
 
 describe('_parseDriftCheck', () => {
@@ -139,9 +140,10 @@ describe('_parseDriftCheck', () => {
       expect(result['check-vault-dir-parity']).toBe(true);
       expect(result['check-generated-rule-staleness']).toBe(true);
       expect(result['check-rule-scoping']).toBe(true);
+      expect(result['check-docs-parity']).toBe(true);
     });
 
-    it('parses checks 5-9 flags when explicitly disabled', () => {
+    it('parses checks 5-10 flags when explicitly disabled', () => {
       const content = [
         'drift-check:',
         '  check-command-count: false',
@@ -149,6 +151,7 @@ describe('_parseDriftCheck', () => {
         '  check-vault-dir-parity: false',
         '  check-generated-rule-staleness: false',
         '  check-rule-scoping: false',
+        '  check-docs-parity: false',
         '',
       ].join('\n');
       const result = _parseDriftCheck(content);
@@ -158,6 +161,7 @@ describe('_parseDriftCheck', () => {
       expect(result['check-vault-dir-parity']).toBe(false);
       expect(result['check-generated-rule-staleness']).toBe(false);
       expect(result['check-rule-scoping']).toBe(false);
+      expect(result['check-docs-parity']).toBe(false);
     });
   });
 

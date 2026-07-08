@@ -11,9 +11,9 @@
  * include-paths=["CLAUDE.md","AGENTS.md","_meta/**\/*.md"] (CLAUDE.md and
  * AGENTS.md are transparent aliases per
  * skills/_shared/instruction-file-resolution.md),
- * all nine per-check flags default to true.
+ * all ten per-check flags default to true.
  * @param {string} content — full file contents
- * @returns {{enabled: boolean, mode: string, "include-paths": string[], "check-path-resolver": boolean, "check-project-count-sync": boolean, "check-issue-reference-freshness": boolean, "check-session-file-existence": boolean, "check-command-count": boolean, "check-session-config-parity": boolean, "check-vault-dir-parity": boolean, "check-generated-rule-staleness": boolean, "check-rule-scoping": boolean}}
+ * @returns {{enabled: boolean, mode: string, "include-paths": string[], "check-path-resolver": boolean, "check-project-count-sync": boolean, "check-issue-reference-freshness": boolean, "check-session-file-existence": boolean, "check-command-count": boolean, "check-session-config-parity": boolean, "check-vault-dir-parity": boolean, "check-generated-rule-staleness": boolean, "check-rule-scoping": boolean, "check-docs-parity": boolean}}
  */
 export function _parseDriftCheck(content) {
   // CLAUDE.md and AGENTS.md are transparent aliases per
@@ -34,6 +34,7 @@ export function _parseDriftCheck(content) {
     'check-vault-dir-parity': true,
     'check-generated-rule-staleness': true,
     'check-rule-scoping': true,
+    'check-docs-parity': true,
   };
 
   const lines = content.split(/\r?\n/);
@@ -63,6 +64,7 @@ export function _parseDriftCheck(content) {
   let dcChkVaultDirParity = true;
   let dcChkGeneratedRuleStaleness = true;
   let dcChkRuleScoping = true;
+  let dcChkDocsParity = true;
   const dcInclude = [];
   let inIncludeList = false;
 
@@ -127,6 +129,9 @@ export function _parseDriftCheck(content) {
       case 'check-rule-scoping':
         dcChkRuleScoping = v.toLowerCase() !== 'false';
         break;
+      case 'check-docs-parity':
+        dcChkDocsParity = v.toLowerCase() !== 'false';
+        break;
     }
   }
 
@@ -143,5 +148,6 @@ export function _parseDriftCheck(content) {
     'check-vault-dir-parity': dcChkVaultDirParity,
     'check-generated-rule-staleness': dcChkGeneratedRuleStaleness,
     'check-rule-scoping': dcChkRuleScoping,
+    'check-docs-parity': dcChkDocsParity,
   };
 }
