@@ -1,4 +1,0 @@
-Error: Server does not support completions (required for completion/complete)
-{
-  "error": "MCP error -32601: Method not found: ping"
-}
