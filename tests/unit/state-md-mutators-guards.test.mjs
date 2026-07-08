@@ -12,6 +12,8 @@ import {
   appendDeviationOnDisk,
   markExpressPathCompleteOnDisk,
   recordAutoCommitOnDisk,
+  appendOpenQuestionOnDisk,
+  markOpenQuestionAnsweredOnDisk,
 } from '@lib/state-md/body-sections.mjs';
 import {
   updateFrontmatterFieldsOnDisk,
@@ -162,6 +164,46 @@ describe('recordAutoCommitOnDisk()', () => {
 
   it('throws with repoRoot is required when repoRoot is empty string', async () => {
     await expect(recordAutoCommitOnDisk('', { sha: 'abc1234', waveN: 1, waveResultSummary: 'ok' }))
+      .rejects.toThrow('repoRoot is required');
+  });
+});
+
+// ─── appendOpenQuestionOnDisk (#771/#772) ────────────────────────────────────
+
+describe('appendOpenQuestionOnDisk()', () => {
+  const ENTRY = { question: 'q', source: 'W1/x', priority: 'high' };
+
+  it('throws with repoRoot is required when repoRoot is undefined', async () => {
+    await expect(appendOpenQuestionOnDisk(undefined, ENTRY))
+      .rejects.toThrow('repoRoot is required');
+  });
+
+  it('throws with repoRoot is required when repoRoot is null', async () => {
+    await expect(appendOpenQuestionOnDisk(null, ENTRY))
+      .rejects.toThrow('repoRoot is required');
+  });
+
+  it('throws with repoRoot is required when repoRoot is empty string', async () => {
+    await expect(appendOpenQuestionOnDisk('', ENTRY))
+      .rejects.toThrow('repoRoot is required');
+  });
+});
+
+// ─── markOpenQuestionAnsweredOnDisk (#771/#772) ──────────────────────────────
+
+describe('markOpenQuestionAnsweredOnDisk()', () => {
+  it('throws with repoRoot is required when repoRoot is undefined', async () => {
+    await expect(markOpenQuestionAnsweredOnDisk(undefined, 'q', 'a'))
+      .rejects.toThrow('repoRoot is required');
+  });
+
+  it('throws with repoRoot is required when repoRoot is null', async () => {
+    await expect(markOpenQuestionAnsweredOnDisk(null, 'q', 'a'))
+      .rejects.toThrow('repoRoot is required');
+  });
+
+  it('throws with repoRoot is required when repoRoot is empty string', async () => {
+    await expect(markOpenQuestionAnsweredOnDisk('', 'q', 'a'))
       .rejects.toThrow('repoRoot is required');
   });
 });

@@ -6,7 +6,7 @@
  *
  * @see scripts/lib/state-md/yaml-parser.mjs        parseStateMd, serializeStateMd
  * @see scripts/lib/state-md/frontmatter-mutators.mjs touchUpdatedField, updateFrontmatterFields
- * @see scripts/lib/state-md/body-sections.mjs       readCurrentTask, appendDeviation, markExpressPathComplete, appendWhatNotToRetry, readWhatNotToRetry
+ * @see scripts/lib/state-md/body-sections.mjs       readCurrentTask, appendDeviation, markExpressPathComplete, appendWhatNotToRetry, readWhatNotToRetry, readOpenQuestions, appendOpenQuestion, markOpenQuestionAnswered
  * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, writeMissionStatus, setMissionStatus, readMissionStatus
  * @see scripts/lib/state-md/recommendations.mjs     parseRecommendations
  */
@@ -33,6 +33,12 @@ export {
   appendWhatNotToRetry,
   readWhatNotToRetry,
   appendWhatNotToRetryOnDisk,
+  readOpenQuestions,
+  appendOpenQuestion,
+  markOpenQuestionAnswered,
+  appendOpenQuestionOnDisk,
+  markOpenQuestionAnsweredOnDisk,
+  MAX_OPEN_QUESTIONS_STORED,
 } from './state-md/body-sections.mjs';
 
 export {

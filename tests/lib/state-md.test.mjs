@@ -12,6 +12,12 @@ import {
   appendWhatNotToRetry,
   readWhatNotToRetry,
   appendWhatNotToRetryOnDisk,
+  readOpenQuestions,
+  appendOpenQuestion,
+  markOpenQuestionAnswered,
+  appendOpenQuestionOnDisk,
+  markOpenQuestionAnsweredOnDisk,
+  MAX_OPEN_QUESTIONS_STORED,
 } from '@lib/state-md.mjs';
 
 const SAMPLE = `---
@@ -48,6 +54,26 @@ describe('barrel re-exports (#623 What Not To Retry)', () => {
     expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetry');
     expect(stateMdBarrel).toHaveProperty('readWhatNotToRetry');
     expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetryOnDisk');
+  });
+});
+
+describe('barrel re-exports (Open Questions — Close Handover-Alignment-Gate, PRD 2026-07-07)', () => {
+  it('re-exports readOpenQuestions, appendOpenQuestion, markOpenQuestionAnswered, appendOpenQuestionOnDisk, markOpenQuestionAnsweredOnDisk, MAX_OPEN_QUESTIONS_STORED', () => {
+    expect(typeof readOpenQuestions).toBe('function');
+    expect(typeof appendOpenQuestion).toBe('function');
+    expect(typeof markOpenQuestionAnswered).toBe('function');
+    expect(typeof appendOpenQuestionOnDisk).toBe('function');
+    expect(typeof markOpenQuestionAnsweredOnDisk).toBe('function');
+    expect(MAX_OPEN_QUESTIONS_STORED).toBe(20);
+  });
+
+  it('all six Open-Questions symbols are present on the barrel namespace', () => {
+    expect(stateMdBarrel).toHaveProperty('readOpenQuestions');
+    expect(stateMdBarrel).toHaveProperty('appendOpenQuestion');
+    expect(stateMdBarrel).toHaveProperty('markOpenQuestionAnswered');
+    expect(stateMdBarrel).toHaveProperty('appendOpenQuestionOnDisk');
+    expect(stateMdBarrel).toHaveProperty('markOpenQuestionAnsweredOnDisk');
+    expect(stateMdBarrel).toHaveProperty('MAX_OPEN_QUESTIONS_STORED');
   });
 });
 

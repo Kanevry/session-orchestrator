@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
   readCurrentTask,
@@ -7,6 +10,12 @@ import {
   appendWhatNotToRetry,
   readWhatNotToRetry,
   MAX_WHAT_NOT_TO_RETRY,
+  readOpenQuestions,
+  appendOpenQuestion,
+  markOpenQuestionAnswered,
+  appendOpenQuestionOnDisk,
+  markOpenQuestionAnsweredOnDisk,
+  MAX_OPEN_QUESTIONS_STORED,
 } from '@lib/state-md/body-sections.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -506,6 +515,455 @@ status: active
         why_failed: '',
         session_id: 'deep-400',
         date: '2026-06-04',
+      },
+    ]);
+  });
+});
+
+// ─── Open Questions (Close Handover-Alignment-Gate, PRD 2026-07-07) ──────────
+
+const OQ_NO_SECTION = `---
+schema-version: 1
+status: active
+updated: 2026-07-07T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+`;
+
+const OQ_PLACEHOLDER = `---
+schema-version: 1
+status: active
+updated: 2026-07-07T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## Open Questions
+
+(none yet)
+
+## Wave History
+`;
+
+const OQ_UNANSWERED = `---
+schema-version: 1
+status: active
+updated: 2026-07-07T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## Open Questions
+
+- [ ] Should we use Postgres or SQLite? (source: W2/analyst, prio: high)
+
+## Wave History
+`;
+
+const OQ_ANSWERED = `---
+schema-version: 1
+status: active
+updated: 2026-07-07T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## Open Questions
+
+- [x] Should we use Postgres or SQLite? (source: W2/analyst, prio: high) → Antwort: Postgres
+
+## Wave History
+`;
+
+const OQ_MIXED = `---
+schema-version: 1
+status: active
+updated: 2026-07-07T10:00:00Z
+---
+
+## Current Wave
+
+Wave 1
+
+## Open Questions
+
+- [x] Already answered one? (source: W1/coder, prio: low) → Antwort: Yes, done.
+- [ ] Still open one? (source: W2/analyst, prio: medium)
+
+## Wave History
+`;
+
+describe('readOpenQuestions', () => {
+  it('returns [] when the section is absent', () => {
+    expect(readOpenQuestions(OQ_NO_SECTION)).toEqual([]);
+  });
+
+  it('returns [] when the section holds only the (none yet) placeholder', () => {
+    expect(readOpenQuestions(OQ_PLACEHOLDER)).toEqual([]);
+  });
+
+  it('returns [] on unparseable input', () => {
+    expect(readOpenQuestions('# no frontmatter')).toEqual([]);
+  });
+
+  it('parses an unanswered bullet with question, source, priority, answered: false', () => {
+    const entries = readOpenQuestions(OQ_UNANSWERED);
+    expect(entries).toEqual([
+      {
+        question: 'Should we use Postgres or SQLite?',
+        source: 'W2/analyst',
+        priority: 'high',
+        answered: false,
+      },
+    ]);
+  });
+
+  it('parses an answered bullet with answered: true and the answer text', () => {
+    const entries = readOpenQuestions(OQ_ANSWERED);
+    expect(entries).toEqual([
+      {
+        question: 'Should we use Postgres or SQLite?',
+        source: 'W2/analyst',
+        priority: 'high',
+        answered: true,
+        answer: 'Postgres',
+      },
+    ]);
+  });
+
+  it('parses a mixed section with one answered and one unanswered entry', () => {
+    const entries = readOpenQuestions(OQ_MIXED);
+    expect(entries).toEqual([
+      {
+        question: 'Already answered one?',
+        source: 'W1/coder',
+        priority: 'low',
+        answered: true,
+        answer: 'Yes, done.',
+      },
+      {
+        question: 'Still open one?',
+        source: 'W2/analyst',
+        priority: 'medium',
+        answered: false,
+      },
+    ]);
+  });
+
+  it('tolerates a malformed line by skipping it', () => {
+    const malformed = `---
+status: active
+---
+
+## Open Questions
+
+- this is not a valid open-question bullet
+- [ ] Valid one? (source: W3/qa, prio: low)
+
+## Wave History
+`;
+    const entries = readOpenQuestions(malformed);
+    expect(entries).toEqual([
+      { question: 'Valid one?', source: 'W3/qa', priority: 'low', answered: false },
+    ]);
+  });
+});
+
+describe('appendOpenQuestion', () => {
+  const ENTRY = {
+    question: 'Should we use Postgres or SQLite?',
+    source: 'W2/analyst',
+    priority: 'high',
+  };
+
+  it('creates the section when missing', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, ENTRY);
+    expect(out).toContain('## Open Questions');
+    const currentWaveIdx = out.indexOf('## Current Wave');
+    const oqIdx = out.indexOf('## Open Questions');
+    expect(oqIdx).toBeGreaterThan(currentWaveIdx);
+  });
+
+  it('renders the exact unanswered bullet format', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, ENTRY);
+    expect(out).toContain(
+      '- [ ] Should we use Postgres or SQLite? (source: W2/analyst, prio: high)'
+    );
+  });
+
+  it('replaces the (none yet) placeholder', () => {
+    const out = appendOpenQuestion(OQ_PLACEHOLDER, ENTRY);
+    expect(out).not.toContain('(none yet)');
+    expect(out).toContain(
+      '- [ ] Should we use Postgres or SQLite? (source: W2/analyst, prio: high)'
+    );
+  });
+
+  it('dedups by question text — a second append with the same question replaces, not duplicates', () => {
+    const first = appendOpenQuestion(OQ_NO_SECTION, ENTRY);
+    const second = appendOpenQuestion(first, {
+      question: 'Should we use Postgres or SQLite?',
+      source: 'W4/reviewer',
+      priority: 'medium',
+    });
+    const entries = readOpenQuestions(second);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      question: 'Should we use Postgres or SQLite?',
+      source: 'W4/reviewer',
+      priority: 'medium',
+      answered: false,
+    });
+  });
+
+  it('appends after an existing distinct entry, before the next heading', () => {
+    const out = appendOpenQuestion(OQ_UNANSWERED, {
+      question: 'A brand new distinct question?',
+      source: 'W3/qa',
+      priority: 'low',
+    });
+    const existingIdx = out.indexOf('Should we use Postgres or SQLite?');
+    const newIdx = out.indexOf('A brand new distinct question?');
+    const waveHistoryIdx = out.indexOf('## Wave History');
+    expect(newIdx).toBeGreaterThan(existingIdx);
+    expect(newIdx).toBeLessThan(waveHistoryIdx);
+  });
+
+  it('returns input unchanged on unparseable input', () => {
+    const input = '# no frontmatter';
+    expect(appendOpenQuestion(input, ENTRY)).toBe(input);
+  });
+
+  it('coerces missing fields to defaults', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, {});
+    expect(out).toContain('- [ ] (unspecified question) (source: unknown-source, prio: medium)');
+  });
+
+  it('defaults an invalid priority to medium', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, {
+      question: 'Q?',
+      source: 'W1/x',
+      priority: 'urgent-ish',
+    });
+    expect(out).toContain('- [ ] Q? (source: W1/x, prio: medium)');
+  });
+
+  it('output is parseable and preserves frontmatter', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, ENTRY);
+    const parsed = parseStateMd(out);
+    expect(parsed).not.toBeNull();
+    expect(parsed.frontmatter['schema-version']).toBe(1);
+    expect(parsed.frontmatter.status).toBe('active');
+  });
+
+  it('caps the section to MAX_OPEN_QUESTIONS_STORED entries, dropping the oldest (FIFO)', () => {
+    let contents = OQ_NO_SECTION;
+    for (let n = 1; n <= MAX_OPEN_QUESTIONS_STORED + 2; n++) {
+      contents = appendOpenQuestion(contents, {
+        question: `question-${n}?`,
+        source: 'W1/x',
+        priority: 'low',
+      });
+    }
+    const entries = readOpenQuestions(contents);
+    expect(entries).toHaveLength(MAX_OPEN_QUESTIONS_STORED);
+    const questions = entries.map((e) => e.question);
+    expect(questions).not.toContain('question-1?');
+    expect(questions).not.toContain('question-2?');
+    expect(questions[0]).toBe('question-3?');
+    expect(questions[MAX_OPEN_QUESTIONS_STORED - 1]).toBe(`question-${MAX_OPEN_QUESTIONS_STORED + 2}?`);
+  });
+
+  it('MAX_OPEN_QUESTIONS_STORED constant is 20', () => {
+    expect(MAX_OPEN_QUESTIONS_STORED).toBe(20);
+  });
+
+  it('format-lockstep roundtrip: readOpenQuestions(appendOpenQuestion(c, entry)) returns the entry back', () => {
+    const out = appendOpenQuestion(OQ_NO_SECTION, ENTRY);
+    const entries = readOpenQuestions(out);
+    expect(entries).toEqual([
+      {
+        question: 'Should we use Postgres or SQLite?',
+        source: 'W2/analyst',
+        priority: 'high',
+        answered: false,
+      },
+    ]);
+  });
+
+  it('roundtrips a source field containing a comma without dropping the entry (architect LOW fix)', () => {
+    // A comma-intolerant reader regex (`[^,]+?`) would fail to match this
+    // writer-valid bullet, silently vanishing the question from the roundtrip.
+    const out = appendOpenQuestion(OQ_NO_SECTION, {
+      question: 'q',
+      source: 'W2/db-schema, RLS',
+      priority: 'high',
+    });
+    const entries = readOpenQuestions(out);
+    expect(entries).toEqual([
+      {
+        question: 'q',
+        source: 'W2/db-schema, RLS',
+        priority: 'high',
+        answered: false,
+      },
+    ]);
+  });
+});
+
+describe('markOpenQuestionAnswered', () => {
+  it('flips an unanswered bullet to answered with the given answer text', () => {
+    const out = markOpenQuestionAnswered(
+      OQ_UNANSWERED,
+      'Should we use Postgres or SQLite?',
+      'Postgres'
+    );
+    expect(out).toContain(
+      '- [x] Should we use Postgres or SQLite? (source: W2/analyst, prio: high) → Antwort: Postgres'
+    );
+    expect(out).not.toContain('- [ ] Should we use Postgres or SQLite?');
+  });
+
+  it('is a no-op when the question is not found', () => {
+    const out = markOpenQuestionAnswered(OQ_UNANSWERED, 'A question that does not exist?', 'answer');
+    expect(out).toBe(OQ_UNANSWERED);
+  });
+
+  it('is a no-op when the section is absent', () => {
+    const out = markOpenQuestionAnswered(OQ_NO_SECTION, 'Any question?', 'answer');
+    expect(out).toBe(OQ_NO_SECTION);
+  });
+
+  it('is a no-op when the matched bullet is already answered', () => {
+    const out = markOpenQuestionAnswered(
+      OQ_ANSWERED,
+      'Should we use Postgres or SQLite?',
+      'A different answer'
+    );
+    expect(out).toBe(OQ_ANSWERED);
+  });
+
+  it('returns input unchanged on unparseable input', () => {
+    const input = '# no frontmatter';
+    expect(markOpenQuestionAnswered(input, 'Q?', 'A')).toBe(input);
+  });
+
+  it('output is parseable and preserves frontmatter', () => {
+    const out = markOpenQuestionAnswered(
+      OQ_UNANSWERED,
+      'Should we use Postgres or SQLite?',
+      'Postgres'
+    );
+    const parsed = parseStateMd(out);
+    expect(parsed).not.toBeNull();
+    expect(parsed.frontmatter['schema-version']).toBe(1);
+  });
+
+  it('only flips the matching bullet, preserving a sibling unanswered entry', () => {
+    const out = markOpenQuestionAnswered(OQ_MIXED, 'Still open one?', 'Resolved now.');
+    expect(out).toContain(
+      '- [x] Already answered one? (source: W1/coder, prio: low) → Antwort: Yes, done.'
+    );
+    expect(out).toContain(
+      '- [x] Still open one? (source: W2/analyst, prio: medium) → Antwort: Resolved now.'
+    );
+  });
+});
+
+// ─── Open Questions on-disk wrappers — round-trip (#771/#772) ────────────────
+//
+// `appendOpenQuestionOnDisk` and `markOpenQuestionAnsweredOnDisk` were new
+// lock-guarded public API with zero coverage (qa HIGH finding). These tests
+// exercise the full read-modify-write cycle against a real temp STATE.md,
+// mirroring the tmp-dir pattern used by size-ceiling-guard.test.mjs.
+
+const tmpRoots = [];
+
+function makeTmpRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'state-md-open-questions-'));
+  tmpRoots.push(root);
+  return root;
+}
+
+function statePathFor(root) {
+  return join(root, '.claude', 'STATE.md');
+}
+
+/** Writes `content` directly to `<root>/.claude/STATE.md`, creating the directory first. */
+function seedState(root, content) {
+  const statePath = statePathFor(root);
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(statePath, content, { encoding: 'utf8' });
+  return statePath;
+}
+
+afterEach(() => {
+  while (tmpRoots.length > 0) {
+    const root = tmpRoots.pop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('appendOpenQuestionOnDisk / markOpenQuestionAnsweredOnDisk — on-disk round-trip', () => {
+  it('appendOpenQuestionOnDisk persists a new entry to disk, readable via readOpenQuestions', async () => {
+    const root = makeTmpRepo();
+    const statePath = seedState(root, OQ_NO_SECTION);
+
+    const result = await appendOpenQuestionOnDisk(root, {
+      question: 'Should we use Postgres or SQLite?',
+      source: 'W2/analyst',
+      priority: 'high',
+    });
+
+    expect(result.written).toBe(true);
+    const onDisk = readFileSync(statePath, 'utf8');
+    const entries = readOpenQuestions(onDisk);
+    expect(entries).toEqual([
+      {
+        question: 'Should we use Postgres or SQLite?',
+        source: 'W2/analyst',
+        priority: 'high',
+        answered: false,
+      },
+    ]);
+  });
+
+  it('markOpenQuestionAnsweredOnDisk flips a previously-persisted entry to answered on disk', async () => {
+    const root = makeTmpRepo();
+    seedState(root, OQ_NO_SECTION);
+
+    await appendOpenQuestionOnDisk(root, {
+      question: 'Should we use Postgres or SQLite?',
+      source: 'W2/analyst',
+      priority: 'high',
+    });
+
+    const result = await markOpenQuestionAnsweredOnDisk(
+      root,
+      'Should we use Postgres or SQLite?',
+      'Postgres'
+    );
+
+    expect(result.written).toBe(true);
+    const statePath = statePathFor(root);
+    const onDisk = readFileSync(statePath, 'utf8');
+    const entries = readOpenQuestions(onDisk);
+    expect(entries).toEqual([
+      {
+        question: 'Should we use Postgres or SQLite?',
+        source: 'W2/analyst',
+        priority: 'high',
+        answered: true,
+        answer: 'Postgres',
       },
     ]);
   });
