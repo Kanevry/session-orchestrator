@@ -525,6 +525,25 @@ cold-start:
 
 **Used by:** `scripts/lib/cold-start-detector.mjs`.
 
+## Handover Alignment Gate (#769)
+
+Opt-out configuration for the interactive Handover-Alignment-Gate in `/close`. The gate surfaces open questions before carryover issues are filed, giving the operator a chance to align on scope/expectations before the session's incomplete work is handed off. Fail-open: the gate is skipped entirely when disabled, when running headless, or under `/autopilot`.
+
+All fields live under a top-level `handover-gate` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+handover-gate:
+  enabled: true
+  max-open-questions: 3
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `handover-gate.enabled` | boolean | `true` | Master toggle for the Handover-Alignment-Gate. When `false`, the gate is skipped entirely — `/close` proceeds straight to carryover filing with no interactive triage step. Fail-open: also skipped automatically when running headless or under `/autopilot`, regardless of this value. Issue #769. |
+| `handover-gate.max-open-questions` | integer | `3` | Maximum number of open questions surfaced in the gate's triage AUQ. Bounds: integer ≥ 0. `0` means no questions are surfaced — the channel stays active (the gate still runs) but presents nothing to triage. Issue #769. |
+
+**Used by:** `scripts/lib/config/handover-gate.mjs`, session-end Phase 1.65.
+
 ## Dialectic-Deriver (#506)
 
 Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to USER.md/AGENT.md peer cards (#503). The dry-run writes a sidecar at `.orchestrator/dialectic-pending.md`; the operator applies via `/evolve --dialectic --apply` in a subsequent session. Set `cadence: 0` as a kill-switch.

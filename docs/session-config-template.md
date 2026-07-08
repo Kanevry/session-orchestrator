@@ -270,6 +270,18 @@ state-md-lock:
 
 Read by: `scripts/lib/session-lock.mjs` (new `acquireStateLock`/`releaseStateLock`/`withStateMdLock` helpers), every STATE.md writer under `scripts/lib/state-md/`.
 
+## Handover Alignment Gate
+
+Interactive gate in `/close` (session-end) that surfaces open questions before carryover issues are filed — giving the operator a chance to align on scope/expectations before the session's incomplete work is handed off (issue #769). Fail-open by design: the gate is skipped entirely when disabled, when running headless, or under `/autopilot` — it never blocks an unattended run.
+
+```yaml
+handover-gate:
+  enabled: true                  # default true; skips when disabled/headless/autopilot (fail-open)
+  max-open-questions: 3          # integer ≥ 0 — max open questions surfaced in the gate's triage AUQ (0 = none; channel stays active)
+```
+
+Read by: `scripts/lib/config/handover-gate.mjs`, `skills/session-end/SKILL.md` Phase 1.65.
+
 ## Slopcheck (Package Legitimacy Gate)
 
 Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When enabled, `classifyPackages(pkgs)` consults the registry and returns `LEGITIMATE` / `ASSUMED` / `SUS` / `SLOP` per package. Hooked into `/plan` PRD generation and `/discovery` supply-chain probes. PRD gsd Pattern 2 / issue #520.
@@ -679,6 +691,11 @@ auto-dream:
 state-md-lock:
   enabled: true
   timeout-ms: 10000
+
+# Handover Alignment Gate (#769)
+handover-gate:
+  enabled: true
+  max-open-questions: 3
 
 # Slopcheck (PRD gsd Pattern 2 / #520)
 slopcheck:

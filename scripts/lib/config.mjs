@@ -48,6 +48,7 @@ import { _parseVaultMirrorQuality } from './config/vault-mirror-quality.mjs';
 import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
+import { _parseHandoverGate } from './config/handover-gate.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
@@ -248,6 +249,10 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // state-md-lock: parsed from full content (PRD gsd Pattern 1 / issues #517, #518)
   const stateMdLock = _parseStateMdLock(mdContent);
 
+  // handover-gate: parsed from full content (PRD 2026-07-07 /close
+  // Handover-Alignment-Gate — Epic #724)
+  const handoverGate = _parseHandoverGate(mdContent);
+
   // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
   const slopcheck = _parseSlopcheck(mdContent);
 
@@ -390,6 +395,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'cold-start': coldStart,
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
+    'handover-gate': handoverGate,
     'slopcheck': slopcheck,
     'skill-evolution': skillEvolution,
     'dispatcher-autonomy': dispatcherAutonomy,

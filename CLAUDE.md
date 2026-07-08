@@ -89,6 +89,9 @@ cold-start:
 state-md-lock:
   enabled: true                  # PRD gsd Pattern 1 (#518) — mechanical STATE.md write lock
   timeout-ms: 10000              # acquire timeout
+handover-gate:
+  enabled: true                  # #769 — interactive Handover-Alignment-Gate in /close before carryover filing (fail-open: skips when disabled/headless/autopilot)
+  max-open-questions: 3          # integer ≥ 0 — max open questions surfaced in the gate's triage AUQ (0 = none; channel stays active)
 slopcheck:
   enabled: false                 # PRD gsd Pattern 2 (#520) — opt-in package legitimacy gate
   sources: [plan, discovery]     # where classifyPackages is invoked
