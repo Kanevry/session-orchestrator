@@ -64,6 +64,15 @@ vault-staleness:
     active: 60             # days — tier=active
     archived: 180          # days — tier=archived
   mode: warn               # warn | strict | off
+docs-staleness:
+  enabled: false           # opt-in — #781 (Epic #774) — mtime-staleness probe für docs/*.md (root) + docs/examples/*.md; docs/adr/ + docs/prd/ bewusst ausgenommen
+  thresholds:
+    living: 90             # days — single tier; severity eskaliert bei 1×/2×/3× threshold
+  mode: warn               # strict | warn | off
+drift-check:
+  enabled: true            # #780 (Epic #774) — session-end Phase 2.2 Narrative-Drift-Gate; alle check-*-Flags defaulten true
+  mode: warn               # warn (report, exit 0) | hard (exit 1 on errors)
+  check-docs-parity: true  # Check 10 — components.md-Zähl-Claims, Template↔Reference-Key-Parität, Metrics-Pfad-Liveness
 wave-reviewers:
   enabled: false           # opt-in inter-wave architecture/QA/PRD audits
   reviewers: []            # ["architect-reviewer", "qa-strategist", "analyst"]
@@ -124,7 +133,13 @@ compact-nudge:
 goal-integration:
   enabled: false                 # Lever 5 (#636) — opt-in advisory /goal continuation anchor at named seams; ADR-0010: continuation, never judgment
   seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time
-custom-phases: []                # #637 — repo-declared deterministic close/housekeeping phases (name/when/command/mode/review); empty = none. See docs/session-config-reference.md § Custom Phases
+custom-phases:
+  # #637 — repo-declared deterministic close/housekeeping phases; see docs/session-config-reference.md § Custom Phases.
+  # Parser-Gotcha: die `custom-phases:`-Key-Zeile selbst darf KEINEN Inline-Kommentar tragen (custom-phases.mjs /^custom-phases:\s*$/).
+  - name: archive-closed-prds
+    when: both                   # #782 (Epic #774) — verschiebt PRDs geschlossener Epics in den Meta-Vault (dry-run-Default im CLI; hier explizit --apply)
+    command: node scripts/archive-closed-prds.mjs --apply
+    mode: warn                   # non-blocking — fail-closed CLI skippt bei unklarem Epic-State
 evolve:
   extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources
 dialectic:
