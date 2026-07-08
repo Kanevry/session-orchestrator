@@ -67,6 +67,25 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 
+## Templates-First Hook (#519)
+
+Opt-out configuration for the PreToolUse `Bash` hook that blocks `gh|glab pr|mr|issue create` calls unless the matching repo template (`.github/PULL_REQUEST_TEMPLATE*`, `.github/ISSUE_TEMPLATE*`, `.gitlab/merge_request_templates/*`, `.gitlab/issue_templates/*`) was Read in the current session. Per-session acknowledgement is tracked in `.orchestrator/runtime/templates-acknowledged.json` — once a template is Read (or `/templates-ack` is invoked), the hook stops blocking for the remainder of the session. Mechanical replacement for gitlab-ops template advice. PRD gsd Pattern 3 / issue #519.
+
+All fields live under a top-level `templates-first` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+templates-first:
+  enabled: true                        # default true; mechanical replacement for gitlab-ops template advice
+  hosts: [github, gitlab]              # array of "github" | "gitlab" — host allow-list
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `templates-first.enabled` | boolean | `true` | Master toggle for the hook. When `false`, the hook is bypassed entirely — `gh`/`glab` create calls are never blocked on template-read state. |
+| `templates-first.hosts` | list of `"github"` \| `"gitlab"` | `[github, gitlab]` | Host allow-list the hook enforces against. A malformed or empty list falls back to the default; unrecognised entries are filtered out silently. |
+
+**Used by:** `hooks/pre-bash-templates-first.mjs`, `.orchestrator/policy/templates-policy.json`, `/templates-ack` (session-scoped bypass).
+
 ## Quality
 
 | Field | Type | Default | Description |
@@ -78,6 +97,25 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `ssot-freshness-days` | integer | `5` | Days before an SSOT file is flagged as stale during session start. |
 | `plugin-freshness-days` | integer | `30` | Days before the plugin itself is flagged as potentially outdated. |
 
+## Verification Auto-Fix Loop (#521)
+
+Opt-in retry loop that dispatches a `code-implementer` fixer-agent after an inter-wave Quality-Gate failure, supplying the failed gate's output, `corrective_context`, and the changed file paths since the last green SHA. Bounded by `max-retries` — after the loop is exhausted, a diagnostics bundle is written to `.orchestrator/metrics/verification-failures/<ISO-timestamp>.json` and the wave hard-aborts. When disabled (default), the wave-executor aborts on the first gate failure — today's behaviour is unchanged. PRD gsd Pattern 4 / issue #521.
+
+All fields live under a top-level `verification-auto-fix` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+verification-auto-fix:
+  enabled: false                       # opt-in; default false preserves current abort-on-fail behaviour
+  max-retries: 2                       # integer ≥ 0 — bounded fixer-agent retries before hard abort
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `verification-auto-fix.enabled` | boolean | `false` | Master toggle. When `false`, the inter-wave Quality-Gate aborts the wave on the first failure — no fixer-agent is dispatched. |
+| `verification-auto-fix.max-retries` | integer | `2` | Maximum number of fixer-agent dispatch attempts before the loop gives up and hard-aborts the wave. Bounds: integer ≥ 0. |
+
+**Used by:** `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`), `skills/wave-executor/SKILL.md` inter-wave checkpoint, `.claude/rules/quality-gates-autofix.md`.
+
 ## Discovery
 
 | Field | Type | Default | Description |
@@ -88,6 +126,25 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
 | `discovery-parallelism` | integer | `5` | Maximum probe agents dispatched in parallel per category during Phase 3. Bounds: `1..16`; out-of-range values silently fall back to the default. Raise for large stacks to reduce wall-clock, lower to relieve a busy host. |
+
+## Slopcheck (Package Legitimacy Gate) (#520)
+
+Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When enabled, `classifyPackages(pkgs)` consults the registry and classifies each package as `LEGITIMATE` (exists, download count above threshold), `ASSUMED` (exists but very new / low downloads — warning, not block), `SUS` (audit warning hit — operator confirmation required), or `SLOP` (package not found in the registry — a possible LLM hallucination; hard block in plan-flow). Hooked into `/plan` PRD generation (Phase 3.5 Package-Audit) and `/discovery` supply-chain probes. Complementary to the always-on SEC-020 supply-chain baseline (`ignore-scripts=true`, `block-exotic-subdeps=true`, `minimum-release-age=1440`): SEC-020 prevents post-install execution of malicious packages; Slopcheck prevents adopting non-existent (typosquat-target) packages in the first place. PRD gsd Pattern 2 / issue #520.
+
+All fields live under a top-level `slopcheck` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+slopcheck:
+  enabled: false                       # opt-in; defaults to off so existing sessions are unaffected
+  sources: [plan, discovery]           # array of "plan" | "discovery" — where classifyPackages is invoked
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slopcheck.enabled` | boolean | `false` | Master toggle for the package-legitimacy gate. When `false`, `classifyPackages()` is never invoked from `/plan` or `/discovery`. |
+| `slopcheck.sources` | list of `"plan"` \| `"discovery"` | `[plan, discovery]` | Which call-sites invoke `classifyPackages()`. A malformed or empty list falls back to the default; unrecognised entries are filtered out silently. |
+
+**Used by:** `scripts/lib/slopcheck.mjs` (`classifyPackages`), `skills/plan/SKILL.md` Phase 3.5, `skills/discovery/probes/supply-chain-slopcheck.mjs`.
 
 ## Persistence & Safety
 
@@ -108,6 +165,42 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. Explicit `worktree` or `none` overrides the graduation. See [isolation graduation](#isolation-graduation) below. |
 | `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 | `auto-commit-per-wave` | boolean | `false` | Automatically commit each wave's work after the Quality-Lite gate passes. Checkpoint commits per wave reduce the risk of data loss from `git stash` collisions in parallel sessions (V3.3 RESCUE incident — see GitLab #214). When `false`, all work is committed at session-end via `/close`. Requires `persistence: true`; the flag is silently ignored when `persistence: false`. Trade-off: each wave produces an additional commit; git log shows N+1 commits instead of 1. Use `/simplify` or `git rebase -i --autosquash` before final close to squash if a clean history is desired. **Implementation note:** the procedural commit sequence (`scripts/lib/auto-commit.mjs`) is deferred to V3.6. Until then, setting this flag to `true` triggers a session-start warning that auto-commits are not yet active — the flag is a no-op but is validated so projects can opt in early. |
+
+## STATE.md Lock (#518)
+
+Mechanical write-lock around STATE.md that prevents race conditions between parallel worker sessions (or parallel wave-executor checkpoints within one session) writing the same file. When enabled, `withStateMdLock(repoRoot, fn)` acquires `.orchestrator/state.lock` via atomic tmp-file + rename before invoking `fn`, and releases on completion or throw. A stale lock (holder PID no longer alive, or heartbeat expired) is overridden atomically with a WARN on stderr; genuine contention past `timeout-ms` returns `{ ok: false, reason: 'timeout' }` to the caller. This mechanically enforces PSA-003/PSA-004 (Destructive Action Safeguards / Commit Discipline) for STATE.md specifically — the race condition becomes structurally impossible rather than merely discouraged. PRD gsd Pattern 1 / issue #518.
+
+All fields live under a top-level `state-md-lock` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+state-md-lock:
+  enabled: true                        # default true; mechanical guard against PSA-003/PSA-004 violations
+  timeout-ms: 10000                    # integer ≥ 0 — acquire timeout in milliseconds
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `state-md-lock.enabled` | boolean | `true` | Master toggle for the mechanical write-lock. When `false`, STATE.md writers proceed without acquiring `.orchestrator/state.lock` — behaviour reverts to the pre-#518 unlocked write path. |
+| `state-md-lock.timeout-ms` | integer | `10000` | Milliseconds a caller waits to acquire the lock before giving up. Bounds: integer ≥ 0. |
+
+**Used by:** `scripts/lib/session-lock.mjs` (`acquireStateLock`/`releaseStateLock`/`withStateMdLock`), every STATE.md writer under `scripts/lib/state-md/`, session-start Phase 1.5/1b, wave-executor inter-wave checkpoints, session-end Phase 3.7. See `.claude/rules/parallel-sessions.md` § PSA-005.
+
+## Discovery-Validator (PSA-006 Enforcement, #567)
+
+Non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") appearing in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only — exit 0 always, never blocks the agent; a blocking hard-gate is reserved for a future iteration. Default ON (flip risk is near-zero; the hook only ever generates telemetry).
+
+All fields live under a top-level `discovery-validator` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+discovery-validator:
+  enabled: true                        # on by default; log+warn-only, exit-0-always — set false to silence
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `discovery-validator.enabled` | boolean | `true` | Master toggle. When `false`, the `SubagentStop` hook is bypassed entirely — no transcript scanning, no `discovery_validator_violation` events. Note: when the `discovery-validator:` block is present but omits the `enabled:` line, the parser conservatively resolves to `false` (only a literal `true` flips it) — the `true` default applies when the block is absent entirely. Always set `enabled` explicitly when adding this block. |
+
+**Used by:** `hooks/post-subagent-discovery-validator.mjs`, `scripts/lib/config/discovery-validator.mjs` (`_parseDiscoveryValidator`). See `.claude/rules/parallel-sessions.md` § PSA-006.
 
 ## Worker-Pool Dispatch (#415)
 
@@ -275,7 +368,7 @@ vault-sync:
 
 ## CLAUDE.md Drift Check
 
-Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drift-check/SKILL.md` for the full spec — the SSOT for check semantics). Nine checks run against top-level repo docs:
+Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drift-check/SKILL.md` for the full spec — the SSOT for check semantics). Ten checks run against top-level repo docs:
 
 1. `path-resolver` — absolute paths in CLAUDE.md / _meta resolve on disk
 2. `project-count-sync` — hardcoded `01-projects/` count claims match the actual folder count
@@ -286,6 +379,7 @@ Opt-in narrative-drift gate at session-end Phase 2.2 (see `skills/claude-md-drif
 7. `vault-dir-parity` — `CLAUDE.md` vs `AGENTS.md` agreement on `vault-integration.vault-dir`
 8. `generated-rule-staleness` (WARN-only) — auto-generated rules whose `learning-key` is absent or expired in `learnings.jsonl`
 9. `rule-scoping` — `.claude/rules/*.md` `paths:`/`globs:` frontmatter defects, cited-but-missing rule citations, zero-match globs, foreign PascalCase glob tokens
+10. `docs-parity` — `docs/components.md` count-claims vs actual on-disk counts, Session Config key parity between `docs/session-config-template.md` and `docs/session-config-reference.md`, and stale legacy metrics-path references (the pre-#217 `.claude`-rooted convention, superseded by `.orchestrator/metrics/`) in the docs tree (three sub-checks a/b/c; issue #780)
 
 Complementary to `vault-sync`: that gate validates frontmatter inside the vault tree; this gate validates narrative claims in top-level docs.
 
@@ -308,6 +402,7 @@ drift-check:
   check-vault-dir-parity: true
   check-generated-rule-staleness: true
   check-rule-scoping: true
+  check-docs-parity: true
 ```
 
 | Field | Type | Default | Description |
@@ -324,6 +419,7 @@ drift-check:
 | `drift-check.check-vault-dir-parity` | boolean | `true` | Enable Check 7 (`vault-dir-parity`): when both `CLAUDE.md` and `AGENTS.md` exist, their `vault-integration.vault-dir` values must agree. Skipped when only one instruction file is present. |
 | `drift-check.check-generated-rule-staleness` | boolean | `true` | Enable Check 8 (`generated-rule-staleness`, WARN-only): every `.claude/rules/*.md` file with `auto-generated: true` frontmatter must carry a `learning-key` that resolves to a non-expired entry in `.orchestrator/metrics/learnings.jsonl`. Never blocks — this check only ever produces warnings. |
 | `drift-check.check-rule-scoping` | boolean | `true` | Enable Check 9 (`rule-scoping`): validates `.claude/rules/*.md` frontmatter against the `rule-loader.mjs` activation contract — a top-level `paths:` key (error), cited-but-missing rule citations in `CLAUDE.md`/`AGENTS.md`/`## See Also` footers (error), zero-match `globs:` patterns (warn), and foreign PascalCase glob tokens (warn). Skipped silently when `.claude/rules/` is absent. |
+| `drift-check.check-docs-parity` | boolean | `true` | Enable Check 10 (`docs-parity`): three sub-checks over the public docs surface, all reported under the single `docs-parity` check id — **(a)** `docs/components.md`'s own heading counts vs the same on-disk derivation Check 5's surface-count family uses; **(b)** top-level Session Config keys documented in `docs/session-config-template.md` (opt-in baseline) vs `docs/session-config-reference.md` (a key counts as documented when it appears in a `yaml` fence, a heading, or the first cell of a table row); **(c)** stale legacy metrics-path references (the old `.claude`-rooted convention, superseded by `.orchestrator/metrics/`) in root `docs/*.md` / `docs/examples/*.md`. Skipped silently when `docs/components.md` is absent, or explicitly via `--skip-docs-parity`. Issue #780. |
 
 ## Vault Integration
 
@@ -612,6 +708,28 @@ vault-staleness:
 - `.orchestrator/metrics/vault-narrative-staleness.jsonl` — JSONL output from the narrative-staleness probe
 - GitLab issue `#232` (foundation), `#242` (Sub-Epic C integration)
 
+## Docs Staleness (#781)
+
+Opt-in filesystem-mtime staleness probe for living reference docs — root-level `docs/*.md` plus `docs/examples/*.md`. Deliberately excludes `docs/adr/` (historically stable, immutable-by-design decision records) and `docs/prd/` (active work-in-progress scoped to a project's lifecycle). Unlike `vault-staleness` above, which reads a YAML frontmatter `updated:` field, this probe measures staleness via filesystem mtime — most repo docs under `docs/` carry no frontmatter at all. Used by `/discovery` when enabled. Epic #774 / issue #781.
+
+All fields live under a top-level `docs-staleness` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+docs-staleness:
+  enabled: false                       # opt-in
+  mode: warn                           # strict | warn | off
+  thresholds:
+    living: 90                         # days — single tier; severity escalates at 1×/2×/3× threshold
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `docs-staleness.enabled` | boolean | `false` | If true, the probe is activated as part of `/discovery`. When false (or missing), the probe is skipped silently. |
+| `docs-staleness.mode` | string | `warn` | Gate severity: `strict` \| `warn` \| `off`. A malformed value falls back to `warn`. The probe itself is fail-soft regardless of mode — it never throws. |
+| `docs-staleness.thresholds.living` | integer (days) | `90` | Age threshold for the single `living` tier. Severity escalates relative to this threshold: `low` above `1×`, `medium` above `2×`, `high` above `3×`. Non-numeric or non-positive values fall back to the default. |
+
+**Used by:** `skills/discovery/probes/docs-staleness.mjs` (`runProbe`), `scripts/lib/config/docs-staleness.mjs` (`_parseDocsStaleness`). Writes one JSONL summary record per run to `.orchestrator/metrics/docs-staleness.jsonl`. See `docs/README.md` for the living-vs-archived docs classification this probe enforces.
+
 ## Docs Orchestrator
 
 Opt-in configuration for the `docs-orchestrator` skill, which generates audience-split documentation (User / Dev / Vault) within sessions (see `skills/docs-orchestrator/SKILL.md`). When enabled, session-start runs a Phase 2.5 docs-context step, session-plan assigns a Docs role, and session-end runs a Phase 3.2 gap-reporting step. The `docs-writer` agent is made available automatically when `enabled: true`.
@@ -870,6 +988,48 @@ frontend-slop-hook:
 
 **Cross-reference:** detector rule markers (`<!-- rule:<id> -->`) live in `.claude/rules/frontend.md` (Absolute Bans / Motion / Layout sections). Mirrors the opt-in / default-on contrast against `loop-guard`.
 
+## Loop Guard (#619)
+
+Always-on `PostToolUse` guard that maintains a per-session ring buffer of recent `{tool, argsHash}` pairs and injects an `additionalContext` loop-warning when the same (tool + args) call recurs `threshold` or more times within the last `window` tool calls. Warn-only / non-blocking — it never stops a tool call, it only surfaces a hint. The Hook Runtime Profile Control gate (below) also applies, so the hook can be silenced via the standard profile env-vars even when `enabled: true`. Default ON — the contrast case for `frontend-slop-hook` (above), which defaults off.
+
+All fields live under a top-level `loop-guard` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+loop-guard:
+  enabled: true                        # on by default; warn-only, non-blocking; profile-gate also applies
+  threshold: 3                         # identical (tool+argsHash) calls within window before a loop-warning fires
+  window: 5                            # ring-buffer size (recent tool calls tracked per session)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `loop-guard.enabled` | boolean | `true` | Master toggle. Only an explicit `enabled: false` disables the hook — any other value (or an absent `enabled` line inside a present block) leaves it on. |
+| `loop-guard.threshold` | integer (≥ 2) | `3` | Number of identical `{tool, argsHash}` calls within `window` before a loop-warning fires. Non-integer or below-minimum values fall back to the default. |
+| `loop-guard.window` | integer (≥ 2) | `5` | Ring-buffer size — how many recent tool calls are tracked per session. Non-integer or below-minimum values fall back to the default. Self-healing clamp: a `window` smaller than `threshold` is silently widened to `threshold` (a shorter ring could never recur `threshold` times, so the guard would never fire). |
+
+**Used by:** `hooks/loop-guard.mjs`, `scripts/lib/config/loop-guard.mjs` (`_parseLoopGuard`). Issue #619.
+
+## Config Protection (#622)
+
+`PreToolUse` `Edit`/`Write` guard that intercepts edits to a small allow-list of quality-gate config files (eslint, vitest, tsconfig, prettier, commitlint, gitleaks) and warns — or, in `strict` mode, blocks — when an edit LOOSENS a gate (a threshold lowered, a disable/ignore directive added, a rule removed, a gitleaks allowlist widened, tsconfig strictness relaxed). The edit-tool analogue of the test-the-mock gate-cheating anti-pattern (see `.claude/rules/testing.md`). First-time file creation, tightening edits, and neutral edits are always allowed regardless of mode.
+
+All fields live under a top-level `config-protection` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+config-protection:
+  enabled: true                        # PreToolUse guard: warn when an Edit/Write loosens a quality gate
+  mode: warn                           # warn (stderr + event, exit 0) | strict (block loosening edits, exit 2)
+allow-config-weakening: false          # per-session bypass (mirrors allow-destructive-ops); top-level, NOT nested under config-protection
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `config-protection.enabled` | boolean | `true` | Master toggle. Only an explicit `enabled: false` disables the guard — any other value (or an absent `enabled` line inside a present block) leaves it on. |
+| `config-protection.mode` | `warn` \| `strict` | `warn` | `warn` emits a stderr message + an event, exit code 0 (never blocks). `strict` blocks the loosening `Edit`/`Write` with exit code 2. Any value other than `strict` resolves to `warn`. |
+| `allow-config-weakening` | boolean | `false` | Top-level key (NOT nested under `config-protection`) — a per-session bypass mirroring `allow-destructive-ops`. When `true`, the guard is bypassed for the entire session — for intentional config-weakening changes (e.g. deliberately relaxing a rule as planned work). |
+
+**Used by:** `hooks/config-protection.mjs`, `scripts/lib/config/config-protection.mjs` (`_parseConfigProtection`, `_isConfigWeakeningAllowed`). Issue #622.
+
 ## Instruction Budget (#687)
 
 Always-on directive-budget banner. At session-start Phase 4 the probe (`scripts/lib/instruction-budget-guard.mjs`, `checkInstructionBudget`) sums the structural directives (bullets, ordered items, headings ≥ depth 2 — fenced code and YAML frontmatter excluded) across the always-on `.claude/rules/*.md` files (membership delegated to `rule-loader.mjs`; glob-scoped rules excluded) and renders a **warn-only / non-blocking** banner when the total **exceeds** `ceiling`. It is a *growth-ratchet*: the current baseline (~457 structural directives across 11 always-on rules) sits under the default ceiling of `480`, so the banner is silent today and only fires when NEW always-on directives push the count over the ceiling — "mechanism over discipline". Default ON (this is a guard, not an opt-in feature) — set `enabled: false` or `mode: off` to silence it.
@@ -891,7 +1051,7 @@ instruction-budget:
 
 **Behaviour on config-load failure:** if no instruction file is found (or it is unreadable), the probe falls back to `{ enabled: true, ceiling: 480, mode: warn }` and still computes — graceful, like the other session-start probes. The wrapper never throws.
 
-**Why a ratchet, not in-repo glob-respecting injection:** the Claude Code harness injects ALL `.claude/rules/*.md` into the coordinator context regardless of each rule's `globs:` frontmatter (`rule-loader.mjs` governs only the PER-WAVE surface). The repo cannot make the harness respect `globs:` for coordinator injection — see `docs/research/2026-06-20-687-instruction-budget-mechanism.md`. The directive-budget ratchet is therefore the one in-repo, mechanism-over-discipline lever; physically trimming/merging rule files is tracked separately in #688.
+**Why a ratchet, not in-repo glob-respecting injection:** the Claude Code harness injects ALL `.claude/rules/*.md` into the coordinator context regardless of each rule's `globs:` frontmatter (`rule-loader.mjs` governs only the PER-WAVE surface). The repo cannot make the harness respect `globs:` for coordinator injection — see "Instruction-Budget Mechanism — Coordinator-Injection Verdict" (#687; archived in the private Meta-Vault). The directive-budget ratchet is therefore the one in-repo, mechanism-over-discipline lever; physically trimming/merging rule files is tracked separately in #688.
 
 **Used by:** session-start Phase 4 (`skills/session-start/SKILL.md`). Probe: `scripts/lib/instruction-budget-guard.mjs`.
 
@@ -1122,6 +1282,46 @@ Leave disabled (default) when:
 - `skills/wave-executor/wave-loop.md` § 3b — the wave-executor hook contract.
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema enforced before write.
 
+## Compact Nudge (#620)
+
+Advisory-only checkpoint surfaced at inter-wave boundaries in the wave-executor loop. Never auto-compacts — `/compact` is a user slash-command, and the coordinator/operator decides when to invoke it. When the gate conditions are met, the wave-executor appends ONE advisory bullet to the wave progress update suggesting a `/compact` before the next wave.
+
+All fields live under a top-level `compact-nudge` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+compact-nudge:
+  enabled: false                       # opt-in advisory /compact nudge at inter-wave checkpoints (never auto-compacts)
+  after: [discovery, impl]             # wave boundaries that may fire the nudge — subset of {discovery, impl, failed-wave}
+  mode: warn                           # warn (surface one bullet in the wave progress update) | off (silent no-op)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compact-nudge.enabled` | boolean | `false` | Master toggle. When `false` (or the block is absent), the nudge never fires — zero behaviour change. |
+| `compact-nudge.after` | list of `"discovery"` \| `"impl"` \| `"failed-wave"` | `[discovery, impl]` | Wave boundaries that may fire the nudge. `discovery`/`impl` are wave ROLES, matched against the just-completed wave's role string. `failed-wave` is not a role — it keys off the wave's failure OUTCOME (any wave that did not pass its quality gate), so it can fire after a wave of any role. |
+| `compact-nudge.mode` | `warn` \| `off` | `warn` | `warn` emits the advisory bullet in the wave progress update. `off` is a silent no-op even when `enabled: true`. |
+
+**Used by:** `skills/wave-executor/wave-loop.md` § 3c "Strategic Compact-Nudge". Issue #620. See `.claude/rules/loop-and-monitor.md` for the broader `/loop` vs `/goal` vs Monitor routing this nudge composes with.
+
+## Goal Integration (#636)
+
+Opt-in advisory continuation anchor that surfaces a suggested `/goal` command at named seams — the inter-wave fix-loop (`inter-wave-fixloop`) and the session-end backlog drain (`session-end-backlog`). Never auto-invokes `/goal`, never blocks forward progress; `/goal` remains a user slash-command the operator chooses to run. Per ADR-0010, `/goal` provides CONTINUATION, never JUDGMENT — the suggested condition always references freshly-run deterministic gate output and embeds a bound (e.g. "or stop after N attempts"); the exit-code result of the underlying gate stays the authority.
+
+All fields live under a top-level `goal-integration` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+goal-integration:
+  enabled: false                       # opt-in advisory; default off — zero behaviour change when absent
+  seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `goal-integration.enabled` | boolean | `false` | Master toggle. When `false` (or the block is absent), no `/goal` suggestion is ever surfaced — zero behaviour change. |
+| `goal-integration.seams` | list of `"session-end-backlog"` \| `"inter-wave-fixloop"` | `[session-end-backlog, inter-wave-fixloop]` | Which seam(s) may surface the advisory `/goal` suggestion. Only ONE `/goal` can be active per session — if both seams are listed, the operator picks a single seam to actually invoke; the two cannot hold simultaneous active goals. |
+
+**Used by:** `skills/wave-executor/wave-loop.md` § "/goal Continuation Anchor" (inter-wave-fixloop seam), `skills/session-end/SKILL.md` § 1.3a "Optional /goal Backlog-Drain" (session-end-backlog seam). Lever 5 / issue #636. See `.claude/rules/loop-and-monitor.md` § LM-008 for the full continuation-vs-judgment contract.
+
 ## Skill Evolution (#646)
 
 Opt-in configuration for the Skill Self-Evolution Foundation (Epic #643, Sub-issue #646). Controls whether `/evolve` surfaces skill health signals for operator review only (`advisory`) or additionally applies deterministic repairs to local config artifacts behind an evidence gate (`autonomous-gated`). The default is `off` — no behavior change for repos that omit this block.
@@ -1145,7 +1345,7 @@ skill-evolution:
 
 **Used by:** `skills/evolve/SKILL.md` (skill-health summary step), `scripts/lib/config/skill-evolution.mjs` (parser), `scripts/lib/skill-judge.mjs` (L3 judge), `scripts/lib/skill-judgments-schema.mjs` (sidecar schema), `skills/session-end/SKILL.md` § Phase 3.6.6 (judge dispatch + coordinator-write).
 
-**Cross-reference:** PRD `docs/prd/2026-06-14-skill-self-evolution-foundation.md`, Epic #643, Sub-issue #646.
+**Cross-reference:** "Skill Self-Evolution Foundation (OpenSpace-inspired)" (#643; archived in the private Meta-Vault), Sub-issue #646.
 
 **Parity note.** The `skill-evolution:` key is documented in `docs/session-config-template.md` as a **standalone `## Skill Evolution` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6. Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
 
@@ -1170,7 +1370,7 @@ dispatcher-autonomy:
 
 **Host-local override (#653 pattern).** The effective `autonomy` enum is resolved at config-load time with precedence (highest first): `SO_DISPATCHER_AUTONOMY` env-var > `owner.yaml` `dispatcher.autonomy` (host-local, never committed) > committed `dispatcher-autonomy.autonomy` > `off`. An invalid/empty value at any tier falls through to the next tier — mirroring the `vault-dir` / `baseline-path` host-path resolution layer (`scripts/lib/config/host-paths.mjs`). This keeps a per-host autonomy posture out of the committed Session Config. The pure parser keeps the raw committed value for `claude-md-drift-check` raw-value parity; only the final `loadConfig()` object carries the resolved enum.
 
-**Cross-reference:** PRD `docs/prd/2026-06-18-cross-repo-vault-status-autopilot-dispatcher.md`, Epic #673, Sub-issue #679.
+**Cross-reference:** "Cross-Repo Vault-Status Mirror + Autopilot Dispatcher" (#673; archived in the private Meta-Vault), Sub-issue #679.
 
 **Parity note.** The `dispatcher-autonomy:` key is documented in `docs/session-config-template.md` as a **standalone `## Dispatcher Autonomy` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6 (session-config-parity). Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
 

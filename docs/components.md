@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>41 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>21 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>42 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>22 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,22 +18,22 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (41 user-facing)
+## Skills (42 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`
 - **Planning & discovery:** `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`
 - **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
-- **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `sunset-review`
+- **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (21)
+## Commands (22)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`.
 
 ## Agents (14 typed sub-agents)
 
@@ -55,7 +55,7 @@ Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markd
 
 ## `/harness-audit` — Anthropic large-codebase rubric
 
-`scripts/harness-audit.mjs` runs **8 deterministic categories / 33 checks** over a repo and emits `.orchestrator/metrics/audit.jsonl`. Category 8 ("Large-Codebase Readiness") operationalises Anthropic's [Claude Code large-codebase best-practices](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start) checklist — layered `CLAUDE.md` (or `AGENTS.md`), codebase-map presence, LSP/code-intelligence wiring, scoped test/lint commands, `permissions.deny`, and root-file leanness — as scored signals you can run on yourself and on consumer repos. These checks are intentionally orthogonal to repo-audit's baseline-compliance pass/fail; both surfaces ship.
+`scripts/harness-audit.mjs` runs **9 deterministic categories / 38 checks** over a repo and emits `.orchestrator/metrics/audit.jsonl`. Category 8 ("Large-Codebase Readiness") operationalises Anthropic's [Claude Code large-codebase best-practices](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start) checklist — layered `CLAUDE.md` (or `AGENTS.md`), codebase-map presence, LSP/code-intelligence wiring, scoped test/lint commands, `permissions.deny`, and root-file leanness — as scored signals you can run on yourself and on consumer repos. Category 9 ("Skill-Health Surfacing") surfaces the #648 per-skill health pipeline — telemetry hygiene, scorer wiring, and an advisory-only verdict tally that never affects points; non-adoption always scores full points. These checks are intentionally orthogonal to repo-audit's baseline-compliance pass/fail; both surfaces ship.
 
 ## Comparison vs. maestro-orchestrate
 

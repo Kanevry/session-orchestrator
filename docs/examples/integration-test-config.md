@@ -147,9 +147,9 @@ These scenarios map config fields to observable behaviors during a full `/sessio
 
 **Fields exercised:** `persistence`, `memory-cleanup-threshold`
 
-- `.claude/metrics/sessions.jsonl` receives a JSONL entry after `/close`
+- `.orchestrator/metrics/sessions.jsonl` receives a JSONL entry after `/close`
 - Entry contains `session_id`, `duration_seconds`, `total_waves`, `total_agents`, `agent_summary`
-- `.claude/metrics/learnings.jsonl` is populated with extracted learnings (fragile files, sizing, recurring issues)
+- `.orchestrator/metrics/learnings.jsonl` is populated with extracted learnings (fragile files, sizing, recurring issues)
 - After 3+ session memory files, cleanup suggestion is shown
 
 ### Scenario 6: Custom quality commands

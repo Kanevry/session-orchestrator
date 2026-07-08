@@ -11,7 +11,7 @@ This example shows a minimal Session Config for a Swift iOS project. Session Orc
 - **waves:** 3
 - **vcs:** github
 - **test-command:** xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 16'
-- **typecheck-command:** skip
+- **typecheck-command:** "true"  # no-op — Swift projects typecheck via xcodebuild in test-command
 - **special:** "Build with `xcodebuild build -scheme MyApp`."
 ```
 
@@ -20,7 +20,7 @@ This example shows a minimal Session Config for a Swift iOS project. Session Orc
 - **Reduced scope**: 3 agents, 3 waves — appropriate for a focused iOS project
 - **GitHub integration**: Uses `gh` CLI for issues and PRs
 - **Custom test command**: The `special` field tells the orchestrator how to run tests
-- **No TypeScript checks**: Skipped via special instructions
+- **No TypeScript checks**: No-op command — the gate runs `true` which always exits 0
 
 ## What's intentionally NOT configured
 

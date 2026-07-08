@@ -266,7 +266,7 @@ Structured requirement gathering, PRD generation, and issue creation. Accepts on
 
 **`/plan feature`** — Compact feature planning. Gathers requirements in 1-2 waves, generates a 5-section PRD with acceptance criteria, and creates feature sub-issues. Typically 5-15 minutes.
 
-**`/plan retro`** — Data-driven retrospective. Reads session metrics from `.claude/metrics/sessions.jsonl`, surfaces trends and patterns, guides reflection, and creates improvement issues. Typically 10-20 minutes.
+**`/plan retro`** — Data-driven retrospective. Reads session metrics from `.orchestrator/metrics/sessions.jsonl`, surfaces trends and patterns, guides reflection, and creates improvement issues. Typically 10-20 minutes.
 
 **When to use `/plan` vs `/session`:**
 - `/plan` answers **"What should we build?"** — requirements, PRDs, issues
@@ -902,17 +902,19 @@ No flags. The script always audits the current working directory / repo root.
 - **stderr** — a concise human-readable summary
 - **`.orchestrator/metrics/audit.jsonl`** — the same record appended as a single JSONL line for historical tracking
 
-### The 7 categories
+### The 9 categories
 
 | Category | What it checks |
 |----------|----------------|
 | Session Discipline | STATE.md lifecycle, session-type usage, turn-limit compliance |
 | Quality Gate Coverage | Test command configured, typecheck command configured, lint command configured |
-| Hook Integrity | All 7 hook handlers registered and pointing to existing files |
+| Hook Integrity | All registered hook handlers point to existing files |
 | Persistence Health | sessions.jsonl present and parseable, learnings.jsonl consistent |
 | Plugin-Root Resolution | Plugin path resolves correctly; bootstrap.lock committed |
 | Config Hygiene | Session Config fields are valid types; no unknown fields; no embedded secrets |
-| Policy Freshness | blocked-commands.json present; rubric_version matches `2026-05` |
+| Policy Freshness | blocked-commands.json present; rubric_version matches `2026-06` |
+| Large-Codebase Readiness | Layered instruction files, a navigable codebase map, LSP/language-server tooling, scoped test/lint commands, a version-controlled destructive-command deny-list, and a lean delegated root |
+| Skill-Health Surfacing | Skill-invocation telemetry hygiene, the skill-health scorer module wired correctly, and an advisory (never-scored) verdict tally — absence of adoption is a healthy state, not a defect |
 
 ### Severity escalation
 
@@ -924,7 +926,7 @@ No flags. The script always audits the current working directory / repo root.
 
 ### Rubric version and bump policy
 
-The current rubric version is `2026-05`. It is embedded in every audit record as the `rubric_version` field. When session-orchestrator releases a minor version that changes the rubric, the version string is bumped via a conventional commit (`chore: bump rubric version to YYYY-MM`). Older records in `audit.jsonl` retain their original `rubric_version` and remain valid — use the field to filter when comparing across versions.
+The current rubric version is `2026-06`. It is embedded in every audit record as the `rubric_version` field. When session-orchestrator releases a minor version that changes the rubric, the version string is bumped via a conventional commit (`chore: bump rubric version to YYYY-MM`). Older records in `audit.jsonl` retain their original `rubric_version` and remain valid — use the field to filter when comparing across versions.
 
 ### Related commands
 
@@ -1047,7 +1049,7 @@ Session Orchestrator tracks metrics across sessions to provide historical trends
 - **Per-session**: total duration, total waves, total agents, total files changed, agent summary (complete/partial/failed/spiral)
 
 ### Storage
-Metrics are stored in `.claude/metrics/sessions.jsonl` — one JSON line per session, append-only. This file is created automatically on first session close.
+Metrics are stored in `.orchestrator/metrics/sessions.jsonl` — one JSON line per session, append-only. This file is created automatically on first session close.
 
 ### Historical Trends
 During session-start (Phase 7), the last 5 sessions are displayed as a trend table:
@@ -1086,7 +1088,7 @@ The learning system captures patterns from completed sessions and surfaces them 
 - **Deviation patterns**: plan adaptations that recur across sessions (scope changes, unexpected blockers)
 
 ### Storage
-Learnings are stored in `.claude/metrics/learnings.jsonl` — one JSON line per learning.
+Learnings are stored in `.orchestrator/metrics/learnings.jsonl` — one JSON line per learning.
 
 ### Confidence System
 Each learning has a confidence score (0.0 to 1.0):

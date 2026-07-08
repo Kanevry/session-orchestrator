@@ -12,11 +12,11 @@ Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/12
 | Hooks | `.sh` files in `hooks/` | `.mjs` files (ES modules) |
 | Install step | `git clone` only | `git clone` **then** `npm install` |
 | Windows support | Implicit via WSL / Git-Bash | Native (no wrapper shell) |
-| CI | Ubuntu-only | Ubuntu + macOS + Windows matrix |
+| CI | Ubuntu-only | Ubuntu + macOS matrix |
 | Test framework | `bats` shell harness | `vitest` |
 | Dependencies | `jq`, `bash`, `git` hard deps | Node 20+, `git`; `jq` optional |
 
-Nothing about skills, commands, or session flow changes. `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap` work the same.
+Nothing about skills, commands, or session flow changes. `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, and 15 more (see [`docs/components.md`](./components.md#commands-22)) work the same.
 
 ## 2. Prerequisites
 
@@ -76,7 +76,7 @@ None of the following change in v3. Existing data migrates transparently.
 - **`<state-dir>/STATE.md`** — schema v1 frontmatter unchanged.
 - **Session memory** (`~/.claude/projects/<project>/memory/`) — untouched.
 - **Session Config** in `CLAUDE.md` / `AGENTS.md` / Cursor rules — same field names and defaults. New optional fields (`resource-awareness`, `resource-thresholds`, `allow-destructive-ops`, `worktree-exclude`) default to safe values.
-- **All 7 slash commands** — same arguments, same flow.
+- **All 22 slash commands** — same arguments, same flow. See [`docs/components.md`](./components.md#commands-22) for the full list.
 - **Skill Markdown** — skills are still pure Markdown with YAML frontmatter; no build step.
 - **VCS integration** — `glab` / `gh` commands, label taxonomy, issue templates.
 
