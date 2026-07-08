@@ -128,8 +128,8 @@ describe('selectPiHooks', () => {
     const hooks = selectPiHooks(manifest, 'tool_call', { toolName: 'bash' });
     const commands = hooks.map((h) => h.command);
 
-    expect(commands).toContain('node "$PI_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs"');
-    expect(commands).toContain('node "$PI_PLUGIN_ROOT/hooks/enforce-commands.mjs"');
+    expect(commands).toContain('sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs"');
+    expect(commands).toContain('sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/enforce-commands.mjs"');
   });
 
   it('selects wildcard tool_result hooks', () => {
@@ -137,7 +137,7 @@ describe('selectPiHooks', () => {
     const hooks = selectPiHooks(manifest, 'tool_result', { toolName: 'read' });
     const commands = hooks.map((h) => h.command);
 
-    expect(commands).toEqual(['node "$PI_PLUGIN_ROOT/hooks/loop-guard.mjs"']);
+    expect(commands).toEqual(['sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/loop-guard.mjs"']);
   });
 });
 

@@ -74,19 +74,19 @@ Always wrap `main()` in a top-level `.catch` that calls `emitDeny` — an unhand
 
 ### Registering the hook
 
-Edit `hooks/hooks.json`. Each entry maps an event matcher to the Node command:
+Edit `hooks/hooks.json`. Each entry maps an event matcher to the Node command, routed through the `run-node.sh` resolver shim (GH#53 — the harness hook shell does not source `~/.zshrc`, so a bare `node` may be unresolvable even when it works in your terminal):
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/example.mjs\"" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/example.mjs\"" } ] }
     ]
   }
 }
 ```
 
-Use `$CLAUDE_PLUGIN_ROOT` (or `$CODEX_PLUGIN_ROOT` / `$CURSOR_RULES_DIR`) — these are set by the editor. Never hard-code absolute paths.
+Use `$CLAUDE_PLUGIN_ROOT` (or `$CODEX_PLUGIN_ROOT` / `$CURSOR_RULES_DIR`) — these are set by the editor. Never hard-code absolute paths, and never register a bare `node ...` command (the wiring guard in `tests/hooks/run-node-shim.test.mjs` fails on it).
 
 ## 3. Shared Lib Catalog
 
