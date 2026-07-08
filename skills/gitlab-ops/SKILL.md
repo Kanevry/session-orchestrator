@@ -239,6 +239,11 @@ What should be achieved and why.
 ### Context for next session
 [relevant context, file paths, decisions made]
 
+### Open Questions
+_(optional — include only when unanswered questions remain in STATE.md `## Open Questions` at close; omit this section entirely otherwise)_
+- [ ] [unanswered question 1] (source: W<N>/<agent>, prio: high|medium|low)
+- [ ] [unanswered question 2] (source: W<N>/<agent>, prio: high|medium|low)
+
 ### Original Issue
 Relates to #ORIGINAL_IID
 ```
