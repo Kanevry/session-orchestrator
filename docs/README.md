@@ -28,6 +28,12 @@ re-accumulate:
 Config block) is treated as living reference too — it is read directly by
 setup instructions in the root docs above.
 
+`docs/pm-skills-marketplace.md` is a root-level living-reference doc: when to
+install the `phuryn/pm-skills` marketplace alongside this plugin (product-heavy
+repos with standalone PM artifacts), when not to (the techniques are already
+cribbed into `/grill`, `/brainstorm`, `/plan`, and `/discovery`'s `feature`
+scope), and the overlap table between the two.
+
 ### 2. Public decision history
 
 `docs/adr/` — Architecture Decision Records. These stay public permanently:
@@ -95,4 +101,5 @@ Two things worth knowing about this split:
 
 - `docs/prd/2026-07-08-docs-public-split.md` — the epic that established this split (S1–S8, issues #775–#782).
 - `docs/session-config-reference.md` — full Session Config field reference, including the two guards named above.
+- `docs/pm-skills-marketplace.md` — when to install `phuryn/pm-skills` alongside this plugin, and the overlap table against `/grill`, `/brainstorm`, `/plan`, `/discovery`.
 - `README.md` — top-level project overview; links into this router for anything docs-specific.
