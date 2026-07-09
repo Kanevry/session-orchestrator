@@ -24,6 +24,25 @@ The catalog lives in `.claude/personas/*.md` — per-repo, never plugin-central.
 intentional: climate-research repos need physicists; SaaS repos need buyer personas;
 compliance repos need auditors. Plugin-central catalogs block that diversity.
 
+## Bundled Presets
+
+The plugin ships one ready-made preset alongside the general `templates/personas/` catalog: a
+3-lens PM/Designer/Engineer panel at `skills/persona-panel/presets/` (`pm-lens.md`,
+`designer-lens.md`, `engineer-lens.md`; tier `domain-expert`). Each lens audits one assumption
+dimension — value (PM), usability (Designer), feasibility (Engineer) — as three parallel
+domain-expert personas rather than one reviewer working all three serially.
+
+Reach for it on feature/PRD/design reviews in a repo whose `.claude/personas/` is empty or
+missing and no domain-specific catalog exists yet. It is a starting point, not a substitute —
+the per-repo catalog philosophy above still holds; copy and adapt into the project's own
+catalog rather than referencing the plugin copy in place.
+
+Install:
+```bash
+mkdir -p .claude/personas
+cp "$(claude plugin dir session-orchestrator)/skills/persona-panel/presets/"*.md .claude/personas/
+```
+
 ## Phase 0: Bootstrap Gate
 
 Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED,
