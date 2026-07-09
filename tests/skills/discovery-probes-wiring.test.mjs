@@ -1,14 +1,21 @@
 // Wiring guard for the /discovery scope-enum + probe-category surface.
 //
-// Closes a zero-coverage gap: the canonical scope token set (code, infra, ui,
-// arch, session, audit, vault, feature) is duplicated by hand across 9
-// tracked markdown surfaces (the scope-arg family, the discovery-probes
-// config-doc family, and the gitlab-ops Category-field family) plus a
-// per-category `skills/discovery/probes-<category>.md` file. Nothing
-// previously caught a surface falling out of sync, or a probe file going
-// missing/empty while still referenced from `skills/discovery/SKILL.md`.
+// scope-enum SSOT (#762): the canonical scope token set (code, infra, ui,
+// arch, session, audit, vault, feature) lives in exactly ONE place -- the
+// scope-arg line in `skills/discovery/SKILL.md`, marked with an inline
+// "scope-enum SSOT (#762)" HTML comment directly above it. This test DERIVES
+// SCOPE_TOKENS from that single canonical line at runtime (see
+// `deriveScopeTokens()` below) instead of hand-maintaining a 10th copy of the
+// same list here, then GUARDS that the derived set is mirrored across the
+// other 8 tracked markdown surfaces (the scope-arg family, the
+// discovery-probes config-doc family, and the gitlab-ops Category-field
+// family) plus a per-category `skills/discovery/probes-<category>.md` file.
+// Nothing previously caught a surface falling out of sync, or a probe file
+// going missing/empty while still referenced from
+// `skills/discovery/SKILL.md`.
 //
-// See issue #753 (Epic #750).
+// See issue #762 (single-source mechanism) and issue #753 (Epic #750,
+// original 9-surface guard this mechanism hardens).
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -108,6 +115,12 @@ describe('probes-<category>.md existence & anatomy', () => {
 
 // ---------------------------------------------------------------------------
 // Block 2 + 3: scope-enum consistency across the 9 tracked surfaces.
+//
+// 1 canonical source (skills/discovery/SKILL.md's scope-arg line, marked with
+// the "scope-enum SSOT (#762)" comment) + 8 guarded mirror surfaces. The
+// canonical surface is still listed in TRACKED_SURFACES below -- checking it
+// against SCOPE_TOKENS derived FROM ITSELF is a trivial/vacuous pass, kept
+// for symmetry with the other 8 real guards.
 // ---------------------------------------------------------------------------
 
 const TRACKED_SURFACES = [
@@ -122,7 +135,59 @@ const TRACKED_SURFACES = [
   '.cursor/rules/070-gitlab-ops.mdc',
 ];
 
-const SCOPE_TOKENS = ['code', 'infra', 'ui', 'arch', 'session', 'audit', 'vault', 'feature'];
+// Derives SCOPE_TOKENS from the canonical scope-enum line in SKILL.md at
+// runtime, rather than hand-maintaining a 10th hardcoded copy of the same
+// list here (the pre-#762 state of this file). Anchors on the SSOT comment
+// first (constraining the search so a stray same-pattern match elsewhere in
+// the file can never win); falls back to a bare pattern search across the
+// whole file if the comment marker itself has drifted or gone missing.
+const SCOPE_ENUM_SSOT_MARKER = 'scope-enum SSOT (#762)';
+const SCOPE_ENUM_LINE_PATTERN = /The `scope` argument accepts:([^\n]*)/;
+
+function deriveScopeTokens(skillMdText) {
+  const ssotIdx = skillMdText.indexOf(SCOPE_ENUM_SSOT_MARKER);
+  const searchScope = ssotIdx === -1 ? skillMdText : skillMdText.slice(ssotIdx);
+  const lineMatch = searchScope.match(SCOPE_ENUM_LINE_PATTERN);
+  if (!lineMatch) {
+    throw new Error(
+      'canonical scope line not found/parsable -- check skills/discovery/SKILL.md SSOT marker ' +
+        '(expected a line matching "The `scope` argument accepts:" near the "' +
+        SCOPE_ENUM_SSOT_MARKER +
+        '" comment)',
+    );
+  }
+
+  // The enum line also carries a trailing formatting example ("...or
+  // comma-separated like `code,session`.") -- strip everything from that
+  // marker onward before token extraction, so the compound example isn't
+  // mistaken for a scope token in its own right.
+  let enumPortion = lineMatch[1];
+  const exampleMarkerIdx = enumPortion.indexOf('comma-separated like');
+  if (exampleMarkerIdx !== -1) {
+    enumPortion = enumPortion.slice(0, exampleMarkerIdx);
+  }
+
+  const rawTokens = [...enumPortion.matchAll(/`([a-z][a-z-]*)`/g)].map((m) => m[1]);
+  // `all` is a meta-token (the default/wildcard), not a discovery-probe
+  // scope category -- exclude it from the derived enum.
+  const derived = [...new Set(rawTokens)].filter((token) => token !== 'all');
+
+  // Sanity-gate the derivation itself: a broken anchor/marker must fail LOUD
+  // (a clear error) rather than silently producing an empty or nonsensical
+  // token set that would make every downstream assertion vacuously pass.
+  if (derived.length < 5 || derived.length > 20 || !derived.includes('feature') || !derived.includes('code')) {
+    throw new Error(
+      'canonical scope line not found/parsable -- check skills/discovery/SKILL.md SSOT marker ' +
+        '(derived token set failed sanity bounds: ' +
+        JSON.stringify(derived) +
+        ')',
+    );
+  }
+
+  return derived;
+}
+
+const SCOPE_TOKENS = deriveScopeTokens(skillMdContent);
 
 // Extracts every line in `content` containing `marker`, joined with '\n'.
 // Throws if zero lines match -- a failed extraction (the surface was

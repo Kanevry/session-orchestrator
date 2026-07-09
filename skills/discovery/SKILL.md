@@ -22,6 +22,7 @@ Two modes of operation:
 - **Standalone** (`/discovery [scope]`): Full 6-phase flow with interactive triage (Phases 0-6)
 - **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-4 only, returns structured findings to session-end
 
+<!-- scope-enum SSOT (#762): this line is the canonical token list; the wiring test derives SCOPE_TOKENS from it. Add/remove tokens HERE first, the test guards the other surfaces. -->
 The `scope` argument accepts: `all` (default), `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature`, or comma-separated like `code,session`.
 
 ## Phase 0: Bootstrap Gate
