@@ -320,6 +320,13 @@ describe('fake-regression (guard bites)', () => {
 // probe categories are added, so it is never pinned to an exact count).
 // ---------------------------------------------------------------------------
 
+describe('phase-4.2 dual verification path (#757 — prose-existence guard)', () => {
+  it('SKILL.md documents the vcs-issue verification_method branch', () => {
+    const skillMd = readFileSync(join(REPO_ROOT, 'skills/discovery/SKILL.md'), 'utf8');
+    expect(skillMd).toContain('verification_method: vcs-issue');
+  });
+});
+
 describe('probe-file count sanity', () => {
   it('skills/discovery/ has between 8 and 50 probes-*.md files (excluding probes-intro.md)', () => {
     const probeFiles = readdirSync(join(REPO_ROOT, 'skills/discovery')).filter(

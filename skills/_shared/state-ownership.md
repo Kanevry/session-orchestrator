@@ -88,7 +88,7 @@ Helpers: `readOpenQuestions` (pure), `appendOpenQuestion` (pure), `markOpenQuest
 
 ### Shared-File Single-Writer Rule (`isolation: none` waves)
 
-The Ownership Model above resolves *STATE.md* specifically, but the same discipline generalizes to any file more than one dispatched agent could plausibly need to touch inside a single `isolation: none` wave (STATE.md, CLAUDE.md, central Session Config, other cross-cutting configs). Such a file MUST NEVER be given two writers in the same wave — the wave plan picks exactly one of:
+The Ownership Model above resolves *STATE.md* specifically, but the same discipline generalizes to any file more than one dispatched agent could plausibly need to touch inside a single `isolation: none` wave (STATE.md, CLAUDE.md / AGENTS.md — the Codex CLI alias, central Session Config, other cross-cutting configs). Such a file MUST NEVER be given two writers in the same wave — the wave plan picks exactly one of:
 
 - **Designated single-writer agent** — one agent in the wave owns the file in its declared file-scope; every other agent that would otherwise touch it is scoped away from it and reports its intended change (if any) back to the coordinator instead of editing directly.
 - **Coordinator-direct defer** — no agent in the wave touches the file at all; the coordinator applies the accumulated edits itself at the inter-wave checkpoint, after all agents report.
