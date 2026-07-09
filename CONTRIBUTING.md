@@ -1,6 +1,6 @@
 # Contributing to Session Orchestrator
 
-This guide explains how to extend and modify the Session Orchestrator plugin for Claude Code. It covers the plugin architecture, conventions, and step-by-step instructions for adding new components.
+This guide explains how to extend and modify the Session Orchestrator plugin. It covers the plugin architecture, conventions, and step-by-step instructions for adding new components.
 
 ## Table of Contents
 
@@ -16,19 +16,20 @@ This guide explains how to extend and modify the Session Orchestrator plugin for
 10. [Label Taxonomy](#label-taxonomy)
 11. [Platform Abstraction](#platform-abstraction)
 12. [Pull Request Guidelines](#pull-request-guidelines)
-13. [Code of Conduct](#code-of-conduct)
+13. [Good First Contribution Areas](#good-first-contribution-areas)
+14. [Code of Conduct](#code-of-conduct)
 
 ---
 
 ## Overview
 
-Session Orchestrator is a **Claude Code plugin** that adds session-level orchestration to any project. It manages wave planning, VCS integration (GitHub and GitLab), parallel subagent dispatch, and quality gates. For user-facing documentation, see [README.md](README.md) and [User Guide](docs/USER-GUIDE.md).
+Session Orchestrator is a **multi-harness local orchestration plugin** that adds session-level orchestration to any project. It works with **Claude Code, Codex CLI, Cursor IDE, and Pi** — the same skills and commands across all four, with platform-adapted hooks and enforcement. It manages wave planning, VCS integration (GitHub and GitLab), parallel subagent dispatch, and quality gates. For user-facing documentation, see [README.md](README.md) and [User Guide](docs/USER-GUIDE.md); the full component inventory lives in [docs/components.md](docs/components.md).
 
 How it works:
 
-- The plugin is loaded by Claude Code at startup. There is no build step.
-- Skills, commands, agents, and hooks are all **Markdown or JSON files** that Claude Code reads directly.
-- You extend the plugin by editing or adding files. Changes take effect the next time Claude Code loads the plugin.
+- The plugin is loaded by the harness at startup (Claude Code loads it natively; Codex CLI, Cursor IDE, and Pi use the installers under `scripts/`). There is no build or compilation step.
+- Skill, command, and agent surfaces are **Markdown or JSON files** the harness reads directly. Scripts, hooks, installers, and tests are **Node ESM (`.mjs`)** and run on Node.js 24+.
+- You extend the plugin by editing or adding files. Changes take effect the next time the harness loads the plugin.
 
 The user workflow is:
 
@@ -44,7 +45,24 @@ The user workflow is:
    git clone https://github.com/Kanevry/session-orchestrator.git
    ```
 
-2. **Install as a local plugin** — run these slash commands inside a Claude Code session (not in your shell):
+2. **Install dependencies** (requires Node.js 24 or later — check with `node --version`):
+
+   ```bash
+   cd session-orchestrator && npm install
+   ```
+
+   This repo is **npm-canonical** (`package-lock.json` is the committed lockfile) — always use `npm`, never `pnpm` or `yarn`. The runtime dependencies (`zx`, `ajv`, `remark`, …) are required by the hooks and scripts.
+
+3. **Validate your environment:**
+
+   ```bash
+   npm test                           # full vitest suite
+   npm run lint                       # ESLint
+   npm run typecheck                  # typecheck
+   node scripts/validate-plugin.mjs   # optional: structural plugin validation
+   ```
+
+4. **Install as a local plugin** — run these slash commands inside a Claude Code session (not in your shell):
 
    ```text
    /plugin marketplace add /absolute/path/to/your/clone
@@ -53,7 +71,9 @@ The user workflow is:
 
    Use the absolute path to your clone. After the install confirmation, reload Claude Code so the commands register.
 
-3. **Test your changes:**
+   For Codex CLI, Cursor IDE, or Pi, use the installers instead: `node scripts/codex-install.mjs`, `node scripts/cursor-install.mjs /path/to/project`, `node scripts/pi-install.mjs /path/to/project --settings-only` (setup guides under `docs/`).
+
+5. **Test your changes:**
 
    Open any project repository and run `/session feature`. This invokes the full session flow and exercises most plugin components.
 
@@ -64,7 +84,7 @@ The user workflow is:
    - `/discovery [scope]` -- tests systematic quality discovery
    - `/plan new` -- tests structured project planning and PRD generation
 
-There is no build step, no compilation, and no dependency installation. Edit the files, reload Claude Code, and test.
+There is no build or compilation step — edit the files, reload the harness, and test. Dependency installation (`npm install`) is required once after cloning and again whenever `package-lock.json` changes.
 
 ## Plugin Architecture
 
@@ -82,12 +102,12 @@ Skills are the core logic units. Each skill is a Markdown file with YAML frontma
 | `description` | Yes      | Multi-line description of what the skill does     |
 
 **Key characteristics:**
-- Loaded by Claude Code when invoked by commands or other skills
+- Loaded by the harness when invoked by commands or other skills
 - Self-contained -- each skill includes all the context it needs to operate
 - Skills can invoke other skills (e.g., `session-start` invokes `session-plan`)
 - A skill directory may contain supporting files (e.g., `soul.md` alongside `SKILL.md`)
 
-**Current skills:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `ecosystem-health`, `gitlab-ops`, `quality-gates`, `discovery`, `plan`, `evolve`, `vault-sync` (design brief)
+**Current skills:** see the full inventory in [docs/components.md](docs/components.md) — the single source of truth for skill, command, agent, and hook counts.
 
 ### Commands (`commands/<name>.md`)
 
@@ -106,7 +126,7 @@ Commands are user-facing entry points that map slash commands to skill invocatio
 - Commands should be thin wrappers -- delegate logic to skills
 - Each command maps to one primary skill
 
-**Current commands:** `/session`, `/go`, `/close`, `/discovery`, `/plan`
+**Current commands:** see [docs/components.md](docs/components.md) for the full slash-command list.
 
 ### Agents (`agents/<name>.md`)
 
@@ -127,13 +147,13 @@ Agents are subagent definitions dispatched by the wave-executor during parallel 
 - Must be fully self-contained: include all review criteria, output formats, and instructions
 - The `<example>` blocks in the description are required by Claude Code for agent dispatch
 
-**Current agents:** `session-reviewer`
+**Current agents:** see [docs/components.md](docs/components.md) for the full roster. The authoritative authoring spec — frontmatter contract, `sandbox-tier`, `output-schema`, validation commands — is [`agents/AGENTS.md`](agents/AGENTS.md).
 
 ### Hooks (`hooks/hooks.json`)
 
-Hooks fire on specific Claude Code events (startup, clear, compact).
+Hooks fire on specific harness events. The plugin currently wires 10 hook event types (see [docs/components.md](docs/components.md) for the full list); `hooks/hooks.json` is the Claude Code wiring, with platform variants in `hooks/hooks-codex.json`, `hooks/hooks-cursor.json`, and `hooks/hooks-pi.json`.
 
-**Format:** JSON following the Claude Code hooks specification.
+**Format:** JSON following the Claude Code hooks specification. Hook implementations are Node ESM (`.mjs`) files invoked through the `hooks/run-node.sh` shim. Excerpt from the real `hooks/hooks.json`:
 
 ```json
 {
@@ -144,29 +164,20 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v2.0.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
-            "async": false
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.mjs\"",
+            "timeout": 5,
+            "async": true
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.sh\"",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
             "timeout": 5
           }
         ]
@@ -176,10 +187,10 @@ Hooks fire on specific Claude Code events (startup, clear, compact).
 }
 ```
 
-**Current hooks:**
-- `SessionStart` — notification displaying plugin version and usage hint
-- `PreToolUse` (Edit/Write) — scope enforcement via `enforce-scope.sh`
-- `PreToolUse` (Bash) — command restrictions via `enforce-commands.sh`
+**Current hook wiring** (excerpt — the full 10-event-type inventory is in [docs/components.md](docs/components.md)):
+- `SessionStart` — version banner + session initialization (`hooks/on-session-start.mjs`)
+- `PreToolUse` (Edit/Write) — scope enforcement via `hooks/enforce-scope.mjs`
+- `PreToolUse` (Bash) — destructive-command guard (`hooks/pre-bash-destructive-guard.mjs`), command restrictions (`hooks/enforce-commands.mjs`), templates-first gate, staging fence, and more
 
 ## Skill Anatomy
 
@@ -377,7 +388,7 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 ## Custom Agents for Your Project
 
-Session Orchestrator includes 5 generic base agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer) that work in any project. For domain-specific needs, define custom agents in your project's `.claude/agents/` directory.
+Session Orchestrator ships generic base agents (code-implementer, test-writer, ui-developer, db-specialist, security-reviewer, …) that work in any project — see [docs/components.md](docs/components.md) for the full roster. For domain-specific needs, define custom agents in your project's `.claude/agents/` directory.
 
 ### How Agent Resolution Works
 
@@ -422,13 +433,13 @@ Session Config is the per-repo configuration mechanism. It lives in each project
 
 When adding new configurable behavior:
 
-1. **Add the field to the Field Reference table** in `docs/USER-GUIDE.md` Section 4 (the authoritative reference for all Session Config fields). Include: field name, type, default value, and description.
+1. **Add the field to [`docs/session-config-reference.md`](docs/session-config-reference.md)** — the canonical type/default reference all skills point to. Include: field name, type, default value, and description.
 
-2. **Add the field to `session-start` Phase 0** where all config fields are listed with brief descriptions.
+2. **Add the field to [`docs/session-config-template.md`](docs/session-config-template.md).** The `claude-md-drift-check` skill (Check 6) enforces top-level-key parity between this repo's Session Config and the template — a field missing from the template will be flagged. Add usage guidance to `docs/USER-GUIDE.md` Section 4 if the field is user-facing.
 
 3. **Use graceful degradation.** If the field is not present in a repo's config, the skill should either skip the related functionality or use a sensible default. Never fail because a config field is missing.
 
-4. **Example:** To add a `test-command` field, add it to USER-GUIDE.md Section 4 Field Reference table, add it to session-start Phase 0 config list, and in the consuming skill write: "Read `test-command` from Session Config. If not set, default to `pnpm test --run`."
+4. **Example:** To add a `my-tool-command` field, add it to `docs/session-config-reference.md` and `docs/session-config-template.md`, and in the consuming skill write: "Read `my-tool-command` from Session Config. If not set, default to `npm run my-tool`."
 
 ## Label Taxonomy
 
@@ -438,7 +449,7 @@ When your skill or agent interacts with VCS labels, reference the gitlab-ops tax
 
 ## Platform Abstraction
 
-Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contributing, follow these guidelines to maintain cross-platform compatibility:
+Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When contributing, follow these guidelines to maintain cross-platform compatibility:
 
 ### File Location Conventions
 
@@ -450,6 +461,8 @@ Session Orchestrator supports Claude Code, Codex CLI, and Cursor IDE. When contr
 | Hooks (Claude Code) | `hooks/hooks.json` | Uses `$CLAUDE_PLUGIN_ROOT` |
 | Hooks (Codex) | `hooks/hooks-codex.json` | Uses `$CODEX_PLUGIN_ROOT` |
 | Hooks (Cursor) | `hooks/hooks-cursor.json` | Reference; configure in Cursor Settings |
+| Hooks (Pi) | `hooks/hooks-pi.json` | Installed via `scripts/pi-install.mjs` |
+| Extension (Pi) | `pi/extensions/session-orchestrator.ts` | Pi manifest lives in the `package.json` `pi` key |
 | Rules (Cursor) | `.cursor/rules/*.mdc` | Cursor-native format, one per skill |
 | Agents (Claude Code) | `agents/` | Markdown format |
 | Agents (Codex) | `.codex-plugin/agents/` | TOML format |
@@ -498,13 +511,15 @@ Test files are in `tests/`. Add new tests as `tests/<area>/<name>.test.mjs` foll
 
 ### Platform Variables
 
-Scripts use these environment variables (resolved by `platform.mjs` — see `detectPlatform()`):
-- `SO_PLATFORM`: `claude` | `codex` | `cursor`
-- `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor`
-- `SO_CONFIG_FILE`: `CLAUDE.md` | `AGENTS.md`
+`scripts/lib/platform.mjs` exports these as **module constants** (computed at load time via `detectPlatform()` — they are not environment variables; import them, don't read `process.env`):
+- `SO_PLATFORM`: `claude` | `codex` | `cursor` | `pi`
+- `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor` | `.pi`
+- `SO_CONFIG_FILE`: `CLAUDE.md` (Claude Code, Cursor) | `AGENTS.md` (Codex, Pi)
 - `SO_SHARED_DIR`: `.orchestrator` (all platforms)
 
 ## Pull Request Guidelines
+
+> **Note on process:** active planning happens on a private GitLab tracker; the public GitHub repository shows a mirrored subset of that work. Small, self-contained PRs that cite concrete observed drift (a stale path, a wrong count, a broken example) are the best entry point for external contributions.
 
 - **One logical change per PR.** Do not bundle unrelated skill changes.
 
@@ -539,6 +554,13 @@ npx ajv-cli validate -c ajv-formats -s "https://json.schemastore.org/claude-code
 ```
 
 The same checks run in CI via the `plugin-schema-validate` job. Editors that respect `$schema` (VS Code, JetBrains) provide live autocomplete and on-save validation.
+
+## Good First Contribution Areas
+
+- **Setup-guide reproduction** — follow [Development Setup](#development-setup) on a fresh machine and file an issue/PR for any step that does not work as written.
+- **Docs-drift fixes** — counts, paths, and examples drift as the plugin evolves. Mechanical guards exist (the `claude-md-drift-check` docs-parity check, the opt-in `docs-staleness` probe), but human-spotted drift with a concrete citation is always welcome.
+- **Small parity tests** — tests that pin a doc claim to the filesystem (e.g. "every hook referenced in `hooks/hooks.json` exists") are low-risk and high-value.
+- **Low-risk wording fixes** in `.claude/rules/` or `skills/` — clarify a confusing sentence, fix a stale cross-reference; pair the change with a test when the wording is load-bearing.
 
 ## Code of Conduct
 

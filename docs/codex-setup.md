@@ -13,6 +13,7 @@ Guide for using Session Orchestrator with OpenAI Codex.
 ### Option 1: Home-local plugin
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator && npm install
 node ~/Projects/session-orchestrator/scripts/codex-install.mjs
 ```
 
@@ -27,10 +28,14 @@ Add a `## Session Config` section to your project's `AGENTS.md`. The format is i
 ```markdown
 ## Session Config
 
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
 agents-per-wave: 6
 waves: 5
 persistence: true
 enforcement: warn
+vcs: github
 ```
 
 See `docs/templates/AGENTS-session-config.md` for a complete template.
@@ -74,7 +79,7 @@ After restart, the plugin exposes these commands:
 | State directory | .claude/ | .codex/ |
 | Config file | CLAUDE.md | AGENTS.md |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
-| Model | Claude Opus 4.6 / Sonnet 4.6 | GPT-5.4 / GPT-5.4-mini |
+| Model | Anthropic Claude models | OpenAI GPT models |
 
 ## Shared Knowledge
 
@@ -88,7 +93,7 @@ This means you can switch between Claude Code and Codex on the same project and 
 
 ### Agent Specialization
 
-Claude Code uses 5 domain-specific agents (code-implementer, test-writer, db-specialist, ui-developer, security-reviewer) with specialized prompts for each role. Codex maps all implementation tasks to the generic `wave-worker` role, which means:
+Claude Code dispatches typed, role-specialized agents, each with a specialized prompt for its role — see `docs/components.md` for the full agent inventory. Codex maps all implementation tasks to the generic `wave-worker` role, which means:
 
 - All agents share the same base prompt and capabilities
 - Domain-specific instructions (e.g., test quality rules, security review patterns) are included in the task prompt rather than the agent definition

@@ -12,8 +12,9 @@ Guide for using Session Orchestrator with Cursor IDE.
 
 ### Option 1: Clone and symlink (recommended)
 ```bash
-# 1. Clone the session-orchestrator repo
+# 1. Clone the session-orchestrator repo and install its dependencies
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator && npm install
 
 # 2. Symlink Cursor rules into your project
 node ~/Projects/session-orchestrator/scripts/cursor-install.mjs /path/to/your/project
@@ -34,10 +35,14 @@ Cursor reads CLAUDE.md natively — no separate config file needed! Add a `## Se
 ```markdown
 ## Session Config
 
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
 agents-per-wave: 6
 waves: 5
 persistence: true
 enforcement: warn
+vcs: github
 ```
 
 Note: `agents-per-wave` is ignored on Cursor since tasks execute sequentially (no parallel Agent dispatch).

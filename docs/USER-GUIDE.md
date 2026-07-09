@@ -55,7 +55,7 @@ Claude Code installs plugins through slash commands inside a running session. Th
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v2.0.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
+🎯 Session Orchestrator v3.x — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
 ```
 
 #### Codex
@@ -65,6 +65,7 @@ Clone the repository, then run the installer from the plugin root:
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git
 cd session-orchestrator
+npm install
 node scripts/codex-install.mjs
 ```
 
@@ -82,12 +83,17 @@ A minimal configuration looks like this:
 ```markdown
 ## Session Config
 
-- **agents-per-wave:** 6
-- **waves:** 5
-- **vcs:** github
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
+agents-per-wave: 6
+waves: 5
+persistence: true
+enforcement: warn
+vcs: github
 ```
 
-If you skip this step, the plugin uses sensible defaults: `feature` type, 6 agents per wave, 5 waves, and auto-detected VCS.
+If you skip this step, the plugin uses sensible defaults: `feature` type, 6 agents per wave, 5 waves, and auto-detected VCS. See [`docs/session-config-template.md`](session-config-template.md) for the full field walkthrough.
 
 ### Run your first session
 
@@ -210,7 +216,7 @@ This adds the required structure around your existing files without modifying th
 
 ## 3. Commands Reference
 
-Session Orchestrator provides five commands:
+This section introduces the core commands of the session lifecycle — the ones the subsections below document in detail. Session Orchestrator ships many more; the full command inventory lives in [`docs/components.md`](components.md).
 
 | Command | Purpose | When to use |
 |---------|---------|-------------|
