@@ -22,7 +22,7 @@ Every question you put to the user carries your recommended answer, marked `(Rec
 ### Contradictions are the prize
 When the user's statement collides with the glossary, with the code, or with an earlier answer, that collision is the most valuable thing in the session. Surface it immediately and make the user resolve it. A grill that finds zero contradictions either had a perfect plan (rare) or wasn't grilling hard enough (common).
 
-## The Five Tactics
+## The Six Tactics
 
 Apply these continuously throughout the grill — they are the substance of the interrogation, not an optional appendix:
 
@@ -31,6 +31,12 @@ Apply these continuously throughout the grill — they are the substance of the 
 3. **Code contradiction** — when a claim about behaviour disagrees with the code you read, surface the gap: "Your code cancels entire Orders, but you just said partial cancellation already works — which is right?"
 4. **Edge-case scenario** — invent a concrete scenario that probes a boundary and forces precision: "A customer cancels item 2 of 3, then the warehouse ships all 3 anyway — what does the system show?"
 5. **Assumption audit** — challenge the load-bearing assumptions the plan rests on: feasibility, appetite, dependencies, regulatory constraints. "You've scoped this at one week — that includes the migration AND the backfill AND the rollback path. Is one week real, or is it a wish?"
+   - **Steelman, then attack.** State the assumption's strongest form first — the version a smart advocate would defend — before you challenge it. Attacking a strawman feels productive and proves nothing.
+   - **Operationalize every kill assumption.** An assumption that would kill the plan if false gets four fields, not a shrug: *Fails-if* (the observable condition that falsifies it), *Evidence-this-week* (what's checkable in the next 5 working days), *Kill-criterion* (the threshold past which the plan dies, not just gets revised), *Cheapest-test* (the lowest-cost way to gather that evidence).
+   - "Steelman: the migration processed 50k rows in staging last month. Fails-if: prod row width is 3x staging's. Evidence-this-week: `EXPLAIN ANALYZE` against a prod-sized snapshot. Kill-criterion: >2x staging runtime kills the one-week appetite. Cheapest-test: run it against last week's prod dump, not a full staging rebuild."
+6. **Pre-mortem** — prospective hindsight: "It's six months from now and this has failed — what was the cause?" Working backward from a vivid failure surfaces risks forward reasoning never asks about, because forward reasoning defends the plan while pre-mortem interrogates it.
+   - Sort every cause into **Tiger** (a real danger that eats the plan unaddressed), **Paper Tiger** (looks dangerous, isn't), or **Elephant** (the obvious thing nobody's said out loud).
+   - Only Tigers earn a kill-assumption workup (Tactic 5); name and dismiss Paper Tigers so they stop haunting the room; say the Elephant out loud once, on the record.
 
 **Apply the tactics that bite.** Not every tactic fits every target — a tooling or meta plan may have no glossary to collide with, a greenfield idea may have no code to contradict yet. Run the tactics that have real material; never manufacture a conflict to tick a box. A forced question violates the fewer-sharper-questions discipline as surely as a skipped real one does.
 

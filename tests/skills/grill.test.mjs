@@ -44,13 +44,14 @@ describe('Grill skill', () => {
       expect(stats.length).toBeGreaterThan(200);
     });
 
-    it('soul.md documents all Five Tactics', () => {
+    it('soul.md documents all Six Tactics', () => {
       const soul = readFileSync(SOUL_PATH, 'utf8').toLowerCase();
       expect(soul).toContain('glossary conflict');
       expect(soul).toContain('sharpen fuzzy language');
       expect(soul).toContain('code contradiction');
       expect(soul).toContain('edge-case scenario');
       expect(soul).toContain('assumption audit');
+      expect(soul).toContain('pre-mortem');
     });
   });
 
