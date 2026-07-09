@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] - 2026-07-09
+
+Curation & handover release. Headline: the session handover becomes an **explicit, gated
+loop** instead of an implicit convention — open questions survive the session boundary as a
+first-class STATE.md channel, carryover filing runs through an operator-triaged alignment
+gate, and wave dispatch turns fail-loud. The public `docs/` tree was curated down to
+user-facing content (68 process records moved to the private Meta-Vault behind a green
+sensitivity gate) with three permanent guards against re-bloat. Everything is additive and
+backward-compatible; new config keys are opt-in or fail-open.
+
+### Added
+
+- **Handover-Alignment-Gate at session close (#769, #770).** Session-end no longer files carryover issues scattered across four phases: Phases 1.2–1.6 now *collect* candidates, a new Phase 1.65 routes them through a pure classifier (`autoCarry` = critical/high priority, spiral-failed, or no-origin-issue; the middle band goes to an operator triage AUQ), and Phase 5.3 files gate-authoritatively. Answered-question marking is atomic with filing — closing a silent-forget-on-abort race. Fail-open when disabled, headless, or under autopilot. New `handover-gate` Session Config key (`enabled`, `max-open-questions`).
+
+- **`## Open Questions` — a cross-session STATE.md channel (#771, #772).** Wave agents can raise an optional `OPEN-QUESTIONS:` report line; the coordinator collects entries lock-guarded at inter-wave checkpoints (`readOpenQuestions`/`appendOpenQuestion`/`markOpenQuestionAnswered`, cloning the What-Not-To-Retry trio). Idle Reset preserves the section across sessions; session-start Phase 6.5.2 renders unanswered entries as a HISTORICAL-guarded forced-read and Phase 8 folds them into the alignment AUQ as explicit decision candidates. The gitlab-ops carryover template gains an `### Open Questions` section.
+
+- **`docs/` public-split with three permanent guards (Epic #774).** 68 process records (retros, audits, session transcripts) moved from the public tree to the private Meta-Vault — gated by a sensitivity scan (0 CRITICAL/HIGH across 1351 tracked files) and a scoped `vault-sync --mode hard` (0 errors). Living docs repaired, references converted, a `docs/README.md` router published. The guards: drift-check **Check 10 docs-parity** (components.md count-claims vs on-disk, template↔reference config-key parity, metrics-path liveness — #780), a **docs-staleness probe** for `/discovery` (config-gated mtime probe over living root docs with 1×/2×/3× severity escalation — #781), and an **epic-close archive routine** (`archive-closed-prds.mjs`, fail-closed dry-run-default CLI on the reusable `vault-archive.mjs` helper, wired as a repo-declared custom-phase — #782; dogfood: it archived its own epic's PRD at close).
+
+- **/plan Phase 5.5 PRD-commit HARD-gate (#784).** A generated PRD must be committed to HEAD before any issue may reference it — an issue pointing at an uncommitted file is an unverifiable claim (the pattern had occurred three times). Verification via `git status --porcelain` + `git ls-files`; the epic backlink lands as a separate non-amend follow-up commit.
+
+- **Fail-loud wave dispatch (#724).** The wave-executor's single-message fan-out mandate is replaced by a small-batch default (3–4 `Agent()` calls per message — fleet evidence showed large fan-outs drop calls silently), plus a Dispatch Verification step (planned-vs-started count, re-dispatch of missing agents) and an Edit-Persistence Verify step (git-diff evidence gates agent `STATUS: done`). `shouldSkipIncremental()` gains a `waveRole` param: the Quality wave hard-skips the incremental cache, making the full-gate invariant mechanical.
+
+- **Session-end mechanical tail skip-plan + abort-gate diet (#724).** `planTailPhases()` computes a mechanical run/skip plan for the 3.6.3–3.6.8 tail from existing lib fast-paths (config-gate first, side-effect-free, fail-open); 333 lines of inline prose moved to progressive disclosure (SKILL.md 1149→858 lines). Abort-attractor gates convert to warn+carryover+continue so a close can no longer strand mid-phase on a soft failure.
+
+- **PSA-007 — subagent git-write ban (#724).** Dispatched subagents must never run git write operations (`add`/`commit`/`stash`/`mv`/`rm`/`push`/`reset`) — the index and stash are shared session resources; fleet evidence recorded `index.lock` collisions and stash-lost sibling work. Ban line wired verbatim into all five repo-write agent definitions; the PSA decision tree gains a sibling-vs-external disambiguation branch; VBC gains a subagent-edit-persistence rule.
+
+- **sessions.jsonl staleness banner (#724).** Session-start now compares the last ledger record against the newest pre-session `events.jsonl` activity (self-exclusion via the current lock's `started_at`) and warns >8h / alerts >24h — the close-through gap is visible at the start of every session instead of accumulating silently.
+
+- **Loop-Engineering delta-sync (#764–#768).** `loop-and-monitor.md` re-synced against upstream (Routines research-preview rewrite with teach-it-don't-run-it posture, `/schedule` gating, `/goal` introspection + clear-aliases + trust-gate, Workflows `args`/usage-view/model-routing/resume); monitor-patterns updated to ten kill-switches; the loop-readiness banner now also detects `CLAUDE_CODE_DISABLE_CRON` and the 25,000-byte loop.md truncation limit (#767) — a present-but-disabled-or-truncated loop.md no longer reads as healthy.
+
+- **/discovery `feature` scope (#750 S1–S3).** New scope token with a standalone-only Feature-Scope router (explicit-only activation, never bare `all`), an intent-drift probe (doc-line anchoring) + stubbed-dead-feature probe, and a wiring-guard test pinning all tracked surfaces.
+
+- **VCS-hygiene slice (Epic F, #727).** repo-audit gains a github-mirror-sync check (warns on local commits missing from the mirror); new `stale-mr-sweep` CLI (open MRs/PRs >14d, pure core + injectable exec); gitlab-ops SKILL hardening (label PUT-replaces-set semantics, project-ID re-resolve, canonical pagination/dedupe enumeration pattern); bootstrap gains a best-effort GitHub-mirror remote step.
+
+- **Rule-scoping & instruction-layer sanitation (Epic A, #722).** New `validate-vendored-rules` vendoring validator + rules-sync gate (catches `paths:`/`globs:` defects, dangling cites, foreign globs before they land in consumer repos), drift-check Check 9 rule-scoping, and a `claude-md-budget-lint` raw-file property lint wired into bootstrap.
+
+- **Reconcile pipeline dogfood hardening (#741).** Rule `expires-at` is floored at `now + min-rule-days` (default 7 — no more born-dead rules excluded by the loader at approval time); a placeholder-insight gate rejects stub learnings before rule conversion (`min-insight-chars`, default 24); `memory-propose --dry-run` validates without writing (new `dry-run-ok` status).
+
+- **`LEARNING_TYPE_REGISTRY` as single type-SSOT (#733, #723).** A frozen capability registry (16 types × `{ttlDays, agentProposable, ruleConvertible}`) from which `PROPOSAL_TYPES`/`CONVERT_TYPES` are derived — agents can now propose `convention`/`architecture-pattern`/`design-pattern` learnings, and formerly TTL-less convert types carry explicit TTLs.
+
+### Fixed
+
+- **Session-lock heartbeat-first liveness + lock reaper + STATE.md size guard (#744, #739, #745).** A dead ephemeral PID no longer vetoes a fresh heartbeat (`isLockLive` is the sole active gate) — ending the live-session-hijack incident class. A lock reaper sweeps orphaned registry claims (heartbeat-age, archive-move, TOCTOU re-read, fresh-preservation); `release()` gains an ownership-scoped post-delete verify, eliminating a race where a retry could delete a sibling session's re-acquired lock. STATE.md writes are size-guarded (256 KB + >5× ratio, refuse+WARN) against the balloon-incident class.
+
+- **Hook commands routed through a node-resolver shim (GH-53).** All command-shaped hook configs invoked a bare `node`, which fails on every tool call when the harness's hook-exec PATH cannot resolve it (Homebrew on Apple Silicon, nvm/volta/asdf — hook shells never source `~/.zshrc`). `hooks/run-node.sh` resolves node via `SO_NODE_BIN` > PATH > well-known install dirs > nvm, and degrades to exit-0 with one rate-limited warning instead of per-tool-call spam.
+
+- **Historical abandoned-session migration self-block (#731).** The migration CLI compared every historical candidate against the *current* live lock — always live during a CLI run (dry-run evidence: 137 total / 0 backfillable). An additive dead-by-age relaxation bypasses the guard only for candidates whose own last event is older than the lock TTL; post-fix: 103 backfillable. The SessionEnd hook never opts in.
+
+- **vault-mirror session-note repo attribution leak (#732).** The raw `deriveRepo()` value no longer reaches the vault: `processSession()` threads the leak-guarded, pseudonym-mapped namespace into both the write path and the rendered frontmatter; all three generators emit `source-repo:` (learning-note convention), and legacy `repo:` notes self-heal on regeneration.
+
+- **Hermetic host-config test isolation (#783).** `mirrorBoard`/`sweepBoard`/`mirrorNarrative` (and the config layer) forward an optional `hostPaths` DI seam, so tests inject a hermetic `owner.yaml` instead of reading the host's real one — closing an 18-test local-red/CI-green divergence.
+
+- **Living-doc repairs + reference convention (#775, #778).** Five stale root docs + examples repaired; ~15 JSDoc citations converted to the file-level convention; the `expandTilde` adopter bug in `common.mjs` fixed along the way.
+
+- **Reconcile default-loader normalization + vault reader-first close fixes.** The reconcile engine's default learnings loader now routes through dialect normalization; reader-first session fixes for the vault close path.
+
 ## [3.11.0] - 2026-07-03
 
 Reliability release. Headline: the orchestrator now **closes its own loops mechanically**
