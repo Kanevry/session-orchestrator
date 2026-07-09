@@ -68,9 +68,28 @@ Finalize session metrics by reading the wave data accumulated during execution:
      total_files_changed: <N>,
      agent_summary: {complete: <N>, partial: <N>, failed: <N>, spiral: <N>},
      waves: [/* {wave, role, agent_count, files_changed, quality} */],
-     // Optional fields below — populate per the Conditional Fields rules at the
-     // bottom of this file; OMIT (do not write null) when the gating condition
-     // is not met.
+     // effectiveness is CONSTRUCTED EXPLICITLY (#773) — NOT left as an optional
+     // field for the coordinator to remember. Leaving it optional is exactly how
+     // the carryover=0 blind spot recurred (41/41 records read carryover:0).
+     // `carryover` = the Phase 1.65 gate carry-list length (see counting rules
+     // below), NOT the raw Phase 1.2+1.3 candidate count.
+     effectiveness: {
+       planned_issues: <N>,
+       completed: <N>,
+       carryover: <N>,   // = Phase 1.65 gate carry-list length (see rules below)
+       emergent: <N>,
+       completion_rate: <0.0-1.0>,
+     },
+     // Handover-gate open-question telemetry (#773) — top-level, additive,
+     // non-negative integers. OMIT (do not write 0) when the gate did not run an
+     // interactive triage (fail-open skip / headless / fast-path): absent = "not
+     // measured", 0 = "measured zero".
+     open_questions_asked: <N>,      // surfaced in Phase 1.65 AUQ Call 2
+     open_questions_answered: <N>,   // operator answered
+     open_questions_deferred: <N>,   // left `- [ ]`, roundtripped to next session
+     // Other optional fields below — populate per the Conditional Fields rules at
+     // the bottom of this file; OMIT (do not write null) when the gating
+     // condition is not met.
    };
    process.stdout.write(JSON.stringify(entry));
    ")
@@ -121,6 +140,9 @@ Finalize session metrics by reading the wave data accumulated during execution:
        "emergent": N,
        "completion_rate": 0.0
      },
+     "open_questions_asked": N,
+     "open_questions_answered": N,
+     "open_questions_deferred": N,
      "grounding_injections": {
        "count": N,
        "files": ["..."],
@@ -142,7 +164,8 @@ Finalize session metrics by reading the wave data accumulated during execution:
 > **Conditional fields:**
 > - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 4.6 for schema). When discovery runs in **embedded mode** (Phases 0-4 only), `user_dismissed`, `issues_created`, and `actioned` per category will always be `0` — embedded mode does not perform user triage (Phase 5) or issue creation (Phase 6).
 > - `review_stats`: populated ONLY when Phase 1.8 dispatched the session-reviewer agent AND it returned findings. Source: the session-reviewer's output summary.
-> - `effectiveness`: ALWAYS populated from Phase 1 plan verification results. `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed).
+> - `effectiveness`: ALWAYS populated from Phase 1 plan verification results, and CONSTRUCTED EXPLICITLY in the METRICS_ENTRY snippet (#773) — never deferred to a "remember to add" optional step (that omission is how `carryover: 0` slipped past 41 records). `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed). **`carryover` counting rule (#773):** `carryover` is the **length of the Phase 1.65 gate carry-list** — `autoCarry` ∪ the middle-band `ask` items the operator LEFT SELECTED ∪ the answered-question `impliesWork: true` candidates — NOT the raw Phase 1.2+1.3 candidate count. On the fail-open skip (gate disabled / headless / AUQ unavailable), EVERY candidate carries, so `carryover` = the full candidate-list length. Count the gate's OUTPUT (what reaches Phase 5 Step 3 filing), not its INPUT.
+> - `open_questions_asked` / `open_questions_answered` / `open_questions_deferred` (#773): the three open-question counts from the Phase 1.65 gate's AUQ Call 2 (identical to the `questions_*` payload fields on the `orchestrator.handover.gated` event). Top-level, additive, non-negative integers. Populate ONLY when the gate ran an interactive triage ("Closen + Triage" path). OMIT all three (do NOT write `0`) when the gate was skipped (fail-open / headless / disabled) or took the fast-path — absent = "not measured", `0` = "measured, zero questions". Validator accepts absent/null/non-negative-integer.
 > - `stagnation_events`: populated ONLY when ≥1 stagnation event was logged to `events.jsonl` during this session. When `total == 0`, the field is omitted from the JSONL entry.
 > - `grounding_injections`: populated ONLY when ≥1 `orchestrator.grounding.injected` event was logged to `events.jsonl` during this session. When `count == 0`, the field is omitted from the JSONL entry.
 > - `memory_cleanup_at`: populated whenever `/memory-cleanup` ran **THIS session** in ANY mode — dry-run, apply-pending, OR healthy no-op (MEMORY.md already healthy, no files mutated). Set `memory_cleanup_at = completed_at` so the auto-dream cadence marker (`readDreamSignals` → `lastCleanupAt`) advances and `shouldDispatchAutoDream` does not fire a false nudge. **A no-op is still a cleanup; the cadence marker MUST advance.** Use `stampMemoryCleanup(record, { ranCleanup: true, completedAt: record.completed_at })` from `scripts/lib/memory-cleanup-stamp.mjs` — this is the testable, no-throw seam that applies the stamp. Omit the field (do NOT set it to null) when `/memory-cleanup` did not run this session. (#699)

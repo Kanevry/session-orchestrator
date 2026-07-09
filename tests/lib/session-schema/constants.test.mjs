@@ -159,6 +159,12 @@ describe('OPTIONAL_FIELDS', () => {
     expect(OPTIONAL_FIELDS).toContain('agent_identity');
   });
 
+  it('contains the three open_questions_* telemetry fields (#773)', () => {
+    expect(OPTIONAL_FIELDS).toContain('open_questions_asked');
+    expect(OPTIONAL_FIELDS).toContain('open_questions_answered');
+    expect(OPTIONAL_FIELDS).toContain('open_questions_deferred');
+  });
+
   it('contains worktree_path', () => {
     expect(OPTIONAL_FIELDS).toContain('worktree_path');
   });

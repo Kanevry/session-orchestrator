@@ -196,6 +196,15 @@ Skip the gate entirely — treat EVERY candidate as carry (byte-identical to the
 
 Fail-open NEVER hangs the close on an unanswerable AUQ and NEVER loses data — it degrades exactly to today's silent-carryover behavior. Log e.g. `⚠ handover-gate: skipped (<reason>) — all candidates carry (status quo)`.
 
+**Telemetry on skip (#773):** even when the gate is skipped, emit the `orchestrator.handover.gated` event ONCE with `path: "fail_open"` so this never-interactive path is still measurable (the carryover=0 blind spot #773 closed was invisible precisely because skipped closes emitted nothing). Every candidate carries, so `auto_carry = candidates_total`, `asked = 0`, `dropped = 0`, and the three question counts are `0`:
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.handover.gated --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: CT, asked: 0, dropped: 0, questions_asked: 0, questions_answered: 0, questions_deferred: 0, path: 'fail_open'}))")"
+```
+
+(`CT` = the in-memory candidate-list length. The Zero-Friction clean-close variant — empty candidates AND no open questions — emits with all counts `0` and `path: "fail_open"` too, so even the quietest close leaves a breadcrumb.)
+
 #### Step 1 — Assemble candidates + open questions
 
 1. The in-memory **candidate list** is the union of the candidates appended by Phases 1.2 / 1.3 (still-relevant) / 1.4 (unfinished emergent) / 1.6 (SPIRAL/FAILED). Each candidate object carries `{ task, sourcePhase, originIssue, priority, bucket }` (plus any filing payload, e.g. the SPIRAL/FAILED `_spiral` kind/context). See `plan-verification.md § Candidate Record Format`.
@@ -225,7 +234,14 @@ Render ONE `AskUserQuestion`. The question text NAMES the candidate counts by cl
 
 - **"Closen + Triage (Recommended)"** — proceed to AUQ Call 2 (triage the middle-band + answer the top open questions), then file the resulting carry-list in Phase 5 Step 3.
 - **"Alle carryoven (ohne Triage)"** — fast-path: carry ALL candidates (`autoCarry ∪ ask`) with no triage; SKIP AUQ Call 2; unanswered questions stay `- [ ]` and roundtrip to the next session. Equivalent to the status quo for filing, minus the friction.
-- **"Weiterarbeiten (Close abbrechen)"** — abort session-end cleanly: NO commit, NO lock-release, NO issue creation; STATE.md stays `status: active`; the session remains open and the coordinator continues working the open points. Print `session-end aborted at Phase 1.65 by user choice (Weiterarbeiten). Session stays open.` and STOP the close (do not fall through to Phase 1.7).
+- **"Weiterarbeiten (Close abbrechen)"** — abort session-end cleanly: NO commit, NO lock-release, NO issue creation; STATE.md stays `status: active`; the session remains open and the coordinator continues working the open points. **Before stopping, emit `orchestrator.handover.gated` ONCE with `path: "weiterarbeiten"` (#773)** — the gate WAS rendered (AUQ Call 1 happened) and the operator chose to keep working, which is a distinct, previously-unmeasured outcome. Nothing is filed, so report `auto_carry = autoCarry.length`, `asked = ask.length`, `dropped = 0`, and all three question counts `0`:
+
+  ```bash
+  node scripts/emit-event.mjs --type orchestrator.handover.gated --payload \
+    "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: AC, asked: ASK, dropped: 0, questions_asked: 0, questions_answered: 0, questions_deferred: 0, path: 'weiterarbeiten'}))")"
+  ```
+
+  Then print `session-end aborted at Phase 1.65 by user choice (Weiterarbeiten). Session stays open.` and STOP the close (do not fall through to Phase 1.7).
 
 (Codex CLI / Cursor IDE: same three options as a numbered Markdown list.)
 
@@ -257,6 +273,24 @@ Combine the Middle-Band triage multiSelect AND up to `max-open-questions` open-q
    If the chosen answer **implies NEW work** (`impliesWork: true`), ALSO enqueue it now onto the carry-list as a carry-candidate (`originIssue: null` → auto-carry), carrying the answer as body context, so Phase 5 Step 3 files the issue AND marks the question `[x]` atomically. Pure decisions with no to-do (`impliesWork: false`) carry no candidate; they are recorded only by the Phase 5.3 STATE.md `[x]` mark + the Final Report. Unanswered / over-cap questions stay `- [ ]` and roundtrip to the next session (FA4).
 
 3. The gate's carry/drop split feeds the Phase 1.7 carryover count.
+
+#### Step 5 — Emit gate telemetry (#773)
+
+After the carry/drop split is settled, emit `orchestrator.handover.gated` **exactly once** for the interactive path taken. This is the mechanical producer that makes the gate observable — before #773 the gate decided carry/drop entirely in coordinator prose, so `effectiveness.carryover` had no mechanical anchor and 41/41 records read `carryover: 0` despite real filtering. Derive the payload from the in-memory gate state:
+
+- `candidates_total` = `autoCarry.length + ask.length`
+- `auto_carry` = `autoCarry.length` (non-deselectable)
+- `asked` = `ask.length` (middle-band candidates surfaced for triage)
+- `dropped` = drop-list length (middle-band items the operator DESELECTED; `0` on the `"Alle carryoven"` fast-path since AUQ Call 2 is skipped)
+- `questions_asked` / `questions_answered` / `questions_deferred` = the open-question counts from AUQ Call 2 (surfaced / answered / left `- [ ]` and roundtripped). All `0` on the fast-path.
+- `path` = `"triage"` (after "Closen + Triage") or `"fast_path"` (after "Alle carryoven ohne Triage")
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.handover.gated --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: AC, asked: ASK, dropped: DROP, questions_asked: QA, questions_answered: QAN, questions_deferred: QD, path: PATH}))")"
+```
+
+The `questions_asked / questions_answered / questions_deferred` values here are the SAME three counts recorded as the top-level `open_questions_asked / open_questions_answered / open_questions_deferred` session fields in Phase 1.7 (see `metrics-collection.md`). Emit the event with the exact `scripts/emit-event.mjs --type … --payload …` flag signature (NOT a positional argument — see the CLI header).
 
 ### 1.7 Metrics Collection
 

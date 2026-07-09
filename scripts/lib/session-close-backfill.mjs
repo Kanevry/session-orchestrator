@@ -250,6 +250,11 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
     total_agents: 0,
     total_files_changed: 0,
     status: 'abandoned',
+    // Issue #773 — an abandoned session never ran Phase 1.65, so its carryover
+    // is genuinely UNKNOWN. Emit `null` (not 0) so downstream effectiveness
+    // consumers can tell "not measured" apart from "measured zero" — 0 here
+    // would resurrect the very carryover=0 blind spot #773 exists to close.
+    effectiveness: { carryover: null },
     _backfill_source: 'events-jsonl',
     _backfill_incomplete_fields: incomplete,
   };

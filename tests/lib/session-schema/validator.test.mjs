@@ -494,3 +494,67 @@ describe('ADR-364 optional additive fields', () => {
     expect(() => validateSession({ ...VALID(), lease_ttl_seconds: 0 })).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #773 — Handover-Alignment-Gate open-question telemetry fields
+// (open_questions_asked / open_questions_answered / open_questions_deferred:
+//  non-negative integers, null/absent = "gate not run / not measured").
+// ---------------------------------------------------------------------------
+
+describe('#773 open-question telemetry fields', () => {
+  it('happy path: passes through open_questions_asked/answered/deferred integer counts', () => {
+    const v = validateSession({
+      ...VALID(),
+      open_questions_asked: 2,
+      open_questions_answered: 1,
+      open_questions_deferred: 0,
+    });
+    expect(v.open_questions_asked).toBe(2);
+    expect(v.open_questions_answered).toBe(1);
+    expect(v.open_questions_deferred).toBe(0);
+  });
+
+  it('throws when open_questions_asked is negative (-1)', () => {
+    expect(() => validateSession({ ...VALID(), open_questions_asked: -1 })).toThrow(
+      /open_questions_asked must be a non-negative integer/
+    );
+  });
+
+  it('throws when open_questions_answered is a non-integer (1.5)', () => {
+    expect(() => validateSession({ ...VALID(), open_questions_answered: 1.5 })).toThrow(
+      /open_questions_answered must be a non-negative integer/
+    );
+  });
+
+  it('throws when open_questions_answered is a numeric string ("2", wrong type)', () => {
+    expect(() => validateSession({ ...VALID(), open_questions_answered: '2' })).toThrow(
+      /open_questions_answered must be a non-negative integer/
+    );
+  });
+
+  it('throws when open_questions_deferred is negative (proves the third field is wired into the loop)', () => {
+    expect(() => validateSession({ ...VALID(), open_questions_deferred: -3 })).toThrow(
+      /open_questions_deferred must be a non-negative integer/
+    );
+  });
+
+  it('explicit null is tolerated for all three fields (not-measured sentinel)', () => {
+    expect(() =>
+      validateSession({
+        ...VALID(),
+        open_questions_asked: null,
+        open_questions_answered: null,
+        open_questions_deferred: null,
+      })
+    ).not.toThrow();
+  });
+
+  it('legacy compatibility: a record omitting all 3 fields validates and never coerces them to 0', () => {
+    // Core #773 distinction — "not measured" must stay ABSENT, never become 0.
+    // If the validator ever stamped a `?? 0` default, these keys would appear.
+    const v = validateSession(VALID());
+    expect('open_questions_asked' in v).toBe(false);
+    expect('open_questions_answered' in v).toBe(false);
+    expect('open_questions_deferred' in v).toBe(false);
+  });
+});

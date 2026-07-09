@@ -164,3 +164,23 @@ describe('validateEventRecord — invalid records', () => {
     });
   });
 });
+
+describe('validateEventRecord — #773 orchestrator.handover.gated', () => {
+  it('accepts a handover.gated record carrying the full 8-field payload with path fail_open', () => {
+    const result = validateEventRecord({
+      timestamp: '2026-07-08T14:35:13.123Z',
+      event: 'orchestrator.handover.gated',
+      candidates_total: 5,
+      auto_carry: 2,
+      asked: 3,
+      dropped: 0,
+      questions_asked: 3,
+      questions_answered: 2,
+      questions_deferred: 1,
+      path: 'fail_open',
+    });
+    // The dotted name is a well-formed orchestrator.<domain>.<verb>, and the
+    // extra payload fields pass through untouched → valid with no errors.
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+});

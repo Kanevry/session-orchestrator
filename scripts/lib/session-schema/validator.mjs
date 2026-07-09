@@ -392,6 +392,29 @@ function _validateOptionalFields(entry) {
       throw new ValidationError('_synthetic_session_id must be a boolean or null');
     }
   }
+
+  // Issue #773 — Handover-Alignment-Gate open-question telemetry (additive,
+  // v1-compatible). Each field is a non-negative integer count surfaced by the
+  // session-end Phase 1.65 gate: how many open questions were surfaced in the
+  // triage AUQ (`_asked`), how many the operator answered (`_answered`), and how
+  // many stayed unanswered / over-cap and roundtripped to the next session
+  // (`_deferred`). Absent/null = the gate did not run or the session was not
+  // measured (fail-open skip, headless, pre-#773 record) — never coerced to 0,
+  // so "not measured" stays distinguishable from "zero questions". Same
+  // non-negative-integer contract as subagents_with_tokens above.
+  for (const field of ['open_questions_asked', 'open_questions_answered', 'open_questions_deferred']) {
+    if (entry[field] !== undefined && entry[field] !== null) {
+      if (
+        typeof entry[field] !== 'number' ||
+        !Number.isInteger(entry[field]) ||
+        entry[field] < 0
+      ) {
+        throw new ValidationError(
+          `${field} must be a non-negative integer, got: ${entry[field]}`
+        );
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

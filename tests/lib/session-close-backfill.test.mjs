@@ -136,6 +136,50 @@ describe('backfillAbandonedSession — happy path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #773 — carryover sentinel: an abandoned stub never ran Phase 1.65, so its
+// carryover is genuinely UNKNOWN and must be emitted as null (not 0).
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — carryover sentinel (#773)', () => {
+  const gatedEvents = () => [
+    { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    {
+      timestamp: '2026-05-27T14:01:00.000Z',
+      event: 'orchestrator.session.lock.acquired',
+      session_id: UUID,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      mode: 'feature',
+    },
+  ];
+
+  it('synthesizes effectiveness.carryover as null (unknown), never 0 (measured)', async () => {
+    seedEvents(gatedEvents());
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    const rec = readSessions()[0];
+    // toEqual({ carryover: null }) is exact — a coerced-to-0 regression fails it,
+    // and it survives the JSONL append + re-read round-trip (null is not dropped).
+    expect(rec.effectiveness).toEqual({ carryover: null });
+  });
+
+  it('the stub carrying effectiveness.carryover:null still re-validates against the schema', async () => {
+    seedEvents(gatedEvents());
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    const rec = readSessions()[0];
+    // Premise — confirm the null sentinel is actually present on the record...
+    expect(rec.effectiveness.carryover).toBeNull();
+    // ...then prove the { carryover: null } shape passes the schema's
+    // effectiveness object-or-null gate (round-trip contract).
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Dedupe skip
 // ---------------------------------------------------------------------------
 

@@ -107,4 +107,9 @@ export const OPTIONAL_FIELDS = Object.freeze([
   '_backfill_incomplete_fields',
   '_session_type_inferred',
   '_synthetic_session_id',
+  // #773 — Handover-Alignment-Gate telemetry (additive, v1-compatible).
+  // Non-negative integers; absent = gate did not run / not measured.
+  'open_questions_asked',
+  'open_questions_answered',
+  'open_questions_deferred',
 ]);

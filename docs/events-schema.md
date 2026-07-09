@@ -64,6 +64,7 @@ namespace we own. The validator + regex live in `scripts/lib/events-schema.mjs`
 | `orchestrator.wave.started` / `.completed` | `hooks/post-tool-batch-wave-signal.mjs` | PostToolBatch — fires live via `.claude/wave-scope.json` `.wave` increase (mechanical fallback, #612); an explicit injected `wave_signal` still takes precedence |
 | `orchestrator.quality_gate.passed` / `.failed` | `scripts/run-quality-gate.mjs` | per gate-CLI run (live) |
 | `orchestrator.grounding.injected` | `scripts/compute-grounding-injection.sh` (via `scripts/emit-event.mjs`) | grounding injection, when `PERSISTENCE=true` |
+| `orchestrator.handover.gated` | `skills/session-end/SKILL.md` Phase 1.65 (skill-prose, via `scripts/emit-event.mjs`) | Handover-Alignment-Gate outcome (#773). Payload: `candidates_total`, `auto_carry`, `asked`, `dropped`, `questions_asked`, `questions_answered`, `questions_deferred`, `path` (`fast_path`\|`triage`\|`weiterarbeiten`\|`fail_open`). Emitted exactly once per close — including the fail-open skip and the "Weiterarbeiten" abort — so never-measured paths become observable |
 
 Non-orchestrator names still present in the stream: `tmux-layout.{invoked,completed,degraded}`
 (tmux-layout skill) and `stagnation_detected`. (`grounding_injected` was migrated to
