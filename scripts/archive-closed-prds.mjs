@@ -1,21 +1,27 @@
 #!/usr/bin/env node
 /**
- * archive-closed-prds.mjs — archive PRDs whose Epic is closed into the Meta-Vault.
+ * archive-closed-prds.mjs — archive docs whose referenced Epic/Issue is closed
+ * into the Meta-Vault. Generic over the doc directory: used for both `docs/prd`
+ * (default) and `docs/plans` (via `--prd-dir docs/plans`, #786).
  *
- * Epic #774 (docs Public-Split) / S8 (#782) — the durable Epic-close routine.
- * Runs as a `custom-phases:` entry (`node scripts/archive-closed-prds.mjs --apply`).
+ * Epic #774 (docs Public-Split) / S8 (#782) — the durable close routine; #786
+ * generalised it to also archive executable plans (`docs/plans/`). Runs as a
+ * `custom-phases:` entry — one entry per doc directory (see CLAUDE.md):
+ *   - `node scripts/archive-closed-prds.mjs --apply` (docs/prd, defaults)
+ *   - `… --apply --prd-dir docs/plans --vault-subdir <plans-subdir>` (docs/plans)
  *
  * Flow:
  *   1. findProjectRoot → resolve CLAUDE.md → parseSessionConfig → vault-integration.vault-dir
  *      (host-resolved: SO_VAULT_DIR env > owner.yaml paths.vault-dir > committed).
- *   2. Enumerate tracked PRD .md files under --prd-dir (git ls-files), excluding
- *      *.original-uncommitted.md.
- *   3. For each PRD: parse the FIRST `#NNN` Epic reference in the header region
- *      (first ~20 lines, up to the first `## ` section). No ref → skip (WARN).
- *   4. `glab issue view <iid> --output json` → state. Only `closed` Epics archive;
+ *   2. Enumerate tracked .md files under --prd-dir (git ls-files), excluding
+ *      *.original-uncommitted.md. A missing/empty --prd-dir yields [] → clean
+ *      report, exit 0 (no crash) — see listTrackedPrds.
+ *   3. For each doc: parse the FIRST `#NNN` Epic/Issue reference in the header
+ *      region (first ~20 lines, up to the first `## ` section). No ref → skip (WARN).
+ *   4. `glab issue view <iid> --output json` → state. Only `closed` refs archive;
  *      `opened` and unknown/error states skip (never guess).
  *   5. Closed → archiveFileToVault(...) into <vault>/<--vault-subdir>/. Under
- *      --apply the source PRD is removed with `git rm`; --dry-run (default) writes
+ *      --apply the source doc is removed with `git rm`; --dry-run (default) writes
  *      NOTHING (not even to the vault).
  *
  * Output: human-readable summary + optional --json manifest. Data → stdout,
@@ -109,8 +115,14 @@ export function readHeaderRegion(absPath, maxLines = 20) {
 }
 
 /**
- * List tracked PRD markdown files under `prdDir`, excluding uncommitted-original
- * snapshots (`*.original-uncommitted.md`).
+ * List tracked markdown docs under `prdDir`, excluding uncommitted-original
+ * snapshots (`*.original-uncommitted.md`). Generic over the doc directory
+ * (docs/prd or docs/plans).
+ *
+ * A MISSING or empty `prdDir` is graceful, not an error: `git ls-files` on an
+ * untracked/non-existent pathspec exits 0 with empty output, so this returns []
+ * → the caller emits a clean "(no tracked docs)" report and exits 0. This is the
+ * expected state for docs/plans when the last plan was already archived (#786).
  * @param {string} repoRoot
  * @param {string} prdDir — repo-relative directory.
  * @param {(args: string[]) => { ok: boolean, stdout: string, stderr: string }} gitRunFn
@@ -160,7 +172,8 @@ export function epicState(iid, glabRunFn, glabRepo) {
 // ---------------------------------------------------------------------------
 
 function printHelp() {
-  process.stdout.write(`archive-closed-prds.mjs — archive PRDs of closed Epics into the Meta-Vault
+  process.stdout.write(`archive-closed-prds.mjs — archive docs of closed Epics/Issues into the Meta-Vault
+  (generic over the doc directory: docs/prd default, or docs/plans via --prd-dir).
 
 USAGE
   node scripts/archive-closed-prds.mjs [--dry-run|--apply] [--json]
@@ -168,9 +181,9 @@ USAGE
 
 FLAGS
   --dry-run          (default) Plan the archive; write NOTHING (not even the vault).
-  --apply            Copy each closed-Epic PRD into the vault and 'git rm' the source.
+  --apply            Copy each closed-Epic/Issue doc into the vault and 'git rm' the source.
   --json             Emit a machine-readable JSON manifest to stdout.
-  --prd-dir DIR      Repo-relative PRD directory (default: ${DEFAULT_PRD_DIR}).
+  --prd-dir DIR      Repo-relative doc directory (default: ${DEFAULT_PRD_DIR}; e.g. docs/plans).
   --vault-subdir DIR Vault-relative destination (default: ${DEFAULT_VAULT_SUBDIR}).
   --glab-repo SPEC   OWNER/REPO or repo URL passed to glab as -R, so Epic state
                      resolves non-interactively (a bare glab spawn ignores any
@@ -188,7 +201,7 @@ EXIT CODES
 
 function printHuman(archived, skipped, isDryRun, vaultDir, vaultSubdir) {
   process.stdout.write(
-    `PRD archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${vaultDir}/${vaultSubdir}\n`,
+    `Doc archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${vaultDir}/${vaultSubdir}\n`,
   );
   if (archived.length > 0) {
     process.stdout.write(`  ${isDryRun ? 'WOULD ARCHIVE' : 'ARCHIVED'} (${archived.length}):\n`);
@@ -203,12 +216,12 @@ function printHuman(archived, skipped, isDryRun, vaultDir, vaultSubdir) {
     }
   }
   if (archived.length === 0 && skipped.length === 0) {
-    process.stdout.write('  (no tracked PRDs found)\n');
+    process.stdout.write('  (no tracked docs found)\n');
   }
   process.stdout.write(
     isDryRun
-      ? `\nDry-run. Use --apply to copy the ${archived.length} PRD(s) into the vault and 'git rm' the sources.\n`
-      : `\nApplied. Archived ${archived.length} PRD(s).\n`,
+      ? `\nDry-run. Use --apply to copy the ${archived.length} doc(s) into the vault and 'git rm' the sources.\n`
+      : `\nApplied. Archived ${archived.length} doc(s).\n`,
   );
 }
 

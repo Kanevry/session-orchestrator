@@ -140,6 +140,10 @@ custom-phases:
     when: both                   # #782 (Epic #774) — verschiebt PRDs geschlossener Epics in den Meta-Vault (dry-run-Default im CLI; hier explizit --apply)
     command: node scripts/archive-closed-prds.mjs --apply
     mode: warn                   # non-blocking — fail-closed CLI skippt bei unklarem Epic-State
+  - name: archive-closed-plans
+    when: both                   # #786 — verschiebt docs/plans/-Artefakte geschlossener Features/Epics in den Meta-Vault (gleicher fail-closed Mechanismus wie archive-closed-prds)
+    command: node scripts/archive-closed-prds.mjs --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans
+    mode: warn                   # non-blocking — fail-closed CLI skippt bei unklarem Epic-State
 evolve:
   extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources
 dialectic:

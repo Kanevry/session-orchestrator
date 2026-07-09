@@ -827,6 +827,11 @@ custom-phases:
 
 Read by: `scripts/lib/config/custom-phases.mjs` (parser), `skills/session-end/SKILL.md` Phase 2.5 (executor + routing).
 
+**This repo's committed phases.** Two `archive-closed-*` phases are declared in `CLAUDE.md`, both `when: both`, `mode: warn`, both driven by the same generic `scripts/archive-closed-prds.mjs` (archive docs of closed Epics/Issues into the Meta-Vault; fail-closed — skips on unclear Epic state):
+
+- `archive-closed-prds` (#782, Epic #774) — `node scripts/archive-closed-prds.mjs --apply` — archives `docs/prd/` PRDs (defaults).
+- `archive-closed-plans` (#786) — `… --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans` — archives `docs/plans/` executable-plan artefacts of closed features/Epics. The plan's tracking `#NNN` (inline in the plan's `Source:` header, see `skills/write-executable-plan/`) is the anchor this phase reads; a plan with no `#NNN` is never archived (fail-closed `no-epic-ref`).
+
 ## Evolve Extra Sources (#638)
 
 Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per flag that has persisted across ≥2 consecutive sessions. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.
