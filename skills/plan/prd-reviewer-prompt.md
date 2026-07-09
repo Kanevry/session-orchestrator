@@ -58,7 +58,7 @@ Evaluate the PRD against these 7 criteria. For each, report **PASS** or **FAIL**
 - **SKIP if:** the PRD has no `## User Stories` section (stories were not requested) — in that case this criterion is not evaluated.
 - When a populated `## User Stories` section IS present, check:
   - (a) the section is present and non-empty.
-  - (b) every story uses the complete `Als/möchte/damit` form (persona, capability, benefit all present).
+  - (b) every story uses one complete form — either `Als/möchte/damit` (persona, capability, benefit all present) or the job-story form `When [situation], I want [motivation], so I can [outcome]` (situation, motivation, outcome all present). A single section must use one form consistently, not mix both.
   - (c) each story links at least one acceptance criterion via a `↳ AC:` pointer to §3/§3.A (feature PRD) or §5/§5.A (full PRD).
 - Do NOT apply INVEST (Independent / Negotiable / Estimable) checks — only the present/form/link checks above.
 

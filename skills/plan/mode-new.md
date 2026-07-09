@@ -36,7 +36,7 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 1. **Project archetype** — Options from `$BASELINE_PATH/templates/` directory. Present agent findings. Choices: Dynamically list directories in $BASELINE_PATH/templates/. Present each as an option via AskUserQuestion.
 2. **Visibility** — internal (GitLab private), private (+ optional GitHub mirror), public/OSS (+ GitHub public + license).
 3. **Target audience** — Options informed by market research agent. User selects or provides custom.
-4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Bei "ja" emittiert die PRD eine optionale ## User Stories Sektion (Als/möchte/damit, je Story ein ↳ AC-Pointer); bei "nein" byte-identisches Status-quo-Verhalten.
+4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
 5. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
 6. **GitLab group** — Discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or use `glab group list` to discover GitLab groups. Present findings via AskUserQuestion.
 
@@ -103,7 +103,7 @@ Agent({ subagent_type: "Explore", description: "Research success benchmarks",
    - **Section 2 (Problem & Context):** From Wave 1 Q3 + Q5 (core problem) answers. Include market research findings.
    - **Section 3 (Target Audience):** From Wave 1 Q3 + research agent output. Define 1-3 personas.
    - **Section 4 (Solution & Scope):** From Wave 3 Q1 (appetite) + Wave 2 tech decisions. Explicit **In-Scope MVP** and **Out-of-Scope** lists. This section drives issue creation in Phase 4.
-   - **## User Stories (conditional):** Emit only when the User-Story-Schicht toggle = yes; one story per persona-goal (from Section 3 personas) in Als/möchte/damit form, each linking ≥1 acceptance criterion. Omit the section entirely when toggle = no (byte-for-byte status quo).
+   - **## User Stories (conditional):** Emit only when the User-Story-Schicht toggle ≠ "Nein"; one story per persona-goal (from Section 3 personas), each linking ≥1 acceptance criterion. Toggle = "Ja (Als/möchte/damit)" → classic Als/möchte/damit form. Toggle = "Ja (job-story)" → job-story form ("When [situation], I want [motivation], so I can [outcome]"). Omit the section entirely when toggle = "Nein" (byte-for-byte status quo).
    - **Section 5 (Success Criteria):** From Wave 3 Q2. SMART table format: Metric | Target | Method | Deadline.
    - **Section 6 (Technical Architecture):** From Wave 1 Q1 (archetype) + Wave 2 (tech stack, integrations). Include schema sketch if DB is involved.
    - **Section 7 (Risks & Dependencies):** From Wave 3 Q3 + Q5. Table format: Risk | Probability | Impact | Mitigation.

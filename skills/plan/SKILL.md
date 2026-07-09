@@ -111,6 +111,16 @@ Agent({ subagent_type: "Explore", description: "Analyze repo context",
 
 Wait for ALL agents to complete before proceeding. Use `run_in_background: false` for all agents.
 
+### Opportunity Score (Ranking Candidate Subfeatures)
+
+When a Wave 1 "what to build" question surfaces multiple candidate subfeatures (rather than one clear scope), rank the candidates before recommending one. Score each candidate:
+
+```
+Opportunity Score = Importance × (1 − Satisfaction)
+```
+
+Both `Importance` and `Satisfaction` are estimated on a 0..1 scale from the Wave 1 research/Explore agent findings (market signal, existing-issue signal, repo-pattern signal) — not asked of the user directly. Rank candidates descending by score; the top-ranked candidate becomes the `(Recommended)` Option 1 in the AskUserQuestion payload for that question. Apply this only when genuinely multiple candidates are surfaced — a single well-defined feature needs no ranking.
+
 ### 3.2 Question Presentation
 
 Synthesize research results into 5 questions per wave. Split across 2 AskUserQuestion calls (3+2 or 4+1) to stay within the 4-question-per-call limit. Note: in `feature` and `new` modes, Wave 1 may present 6 questions (split 3+3) when the optional User-Story toggle question is included; the 5-question / 3+2|4+1 default stands otherwise.
@@ -262,7 +272,7 @@ The reviewer checks 7 criteria:
 4. **Scope** — focused on one project/feature, not sprawling across multiple subsystems
 5. **YAGNI** — no unrequested features or gold-plating
 6. **SMART metrics** — success criteria are Specific, Measurable, Achievable, Relevant, Time-bound
-7. **User Stories** (gated — active only when a populated ## User Stories section is present) — section present, every story in complete Als/möchte/damit form, each story links ≥1 acceptance criterion; SKIP when no User Stories section. No INVEST checks.
+7. **User Stories** (gated — active only when a populated ## User Stories section is present) — section present, every story in one complete form (either the Als/möchte/damit persona form, or the job-story form: "When [situation], I want [motivation], so I can [outcome]"), each story links ≥1 acceptance criterion; SKIP when no User Stories section. No INVEST checks.
 
 ### 5.2 Revision Loop
 
@@ -370,7 +380,11 @@ Score each issue using three factors:
 
 2. **Business value (medium weight):** Issues the user marked as core MVP features in the PRD get `priority:high`. Nice-to-haves and polish items get `priority:medium` or `priority:low`.
 
-3. **Risk (tiebreaker):** Issues with identified risks, unknowns, or external dependencies get bumped up one priority level.
+3. **Risk (tiebreaker) — Impact × Risk 2×2 triage:** Classify each issue by Impact (high/low) and Risk (high/low) before applying the bump:
+   - **High-Impact + Low-Risk → Implement.** Proceed directly; apply the one-level priority bump from the tiebreaker rule.
+   - **High-Impact + High-Risk → Experiment.** De-risk with the smallest possible spike first (a time-boxed investigation issue) before scheduling the full-scope issue.
+   - **Low-Impact + Low-Risk → Defer.** Push to backlog rather than scheduling in this PRD's issue set.
+   - **Low-Impact + High-Risk → Reject.** Do not create an issue for this candidate; note the rejection rationale in the PRD's Risks & Dependencies section instead.
 
 Assign labels from the standard taxonomy:
 - `priority:critical` / `priority:high` / `priority:medium` / `priority:low`

@@ -34,9 +34,10 @@ Synthesize agent findings into 2 AskUserQuestion calls (3+3 split):
 **Questions:**
 
 1. **What to build** — Open-ended. Analyze the answer and suggest structure (e.g., break into sub-features, identify components). Use codebase agent findings to ground suggestions.
+   - *Multiple candidate subfeatures surfaced?* Rank them by Opportunity Score (see `SKILL.md` § "Opportunity Score (Ranking Candidate Subfeatures)") and present the top-ranked candidate as the `(Recommended)` Option 1.
 2. **Why now** — Business driver, user feedback, or technical necessity? Present agent-found context (related issues, recent changes) as options.
 3. **Who uses it** — Existing personas or new audience? Reference existing user research if available in the repo.
-4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Bei "ja" emittiert die PRD eine optionale ## User Stories Sektion (Als/möchte/damit, je Story ein ↳ AC-Pointer); bei "nein" byte-identisches Status-quo-Verhalten.
+4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
 5. **Scope** — MVP appetite (Shape Up: 1w/2w/6w) + explicit exclusions. Push hard for "what is NOT in this feature." First option is always the recommended appetite based on complexity.
 6. **Dependencies** — On existing issues, features, or other repos. Pre-populate from VCS agent findings. Flag blockers.
 
@@ -84,7 +85,7 @@ Agent({ subagent_type: "Explore", description: "Research technical approach",
 |---------|--------|
 | 1. Problem & Motivation | Wave 1 Q1 (what) + Q2 (why). Concise, 2-3 paragraphs. |
 | 2. Solution & Scope | Wave 1 Q5 (scope). Explicit In-Scope and Out-of-Scope lists. |
-| ## User Stories (conditional) | Emit only when the User-Story-Schicht toggle = yes; one story per persona-goal in Als/möchte/damit form, each linking ≥1 §3/§3.A acceptance criterion. Omit the section entirely when toggle = no (byte-for-byte status quo). |
+| ## User Stories (conditional) | Emit only when the User-Story-Schicht toggle ≠ "Nein"; one story per persona-goal, each linking ≥1 §3/§3.A acceptance criterion. Toggle = "Ja (Als/möchte/damit)" → emit the classic Als/möchte/damit form. Toggle = "Ja (job-story)" → emit the job-story form ("When [situation], I want [motivation], so I can [outcome]"). Omit the section entirely when toggle = "Nein" (byte-for-byte status quo). |
 | 3. Acceptance Criteria | Derive Given/When/Then scenarios from Wave 1 answers. Each sub-feature produces 1-3 Gherkin scenarios. |
 | 3.A Acceptance Criteria (EARS) | OPTIONAL — emit EARS clauses (Ubiquitous/State-driven/Event-driven/Optional feature/Unwanted behaviour) for the same Feature Areas. Used by `/write-executable-plan` for 1:1 vitest stub generation. Leave blank if Section 3 narrative suffices. |
 | 4. Technical Notes | Wave 2 findings if it ran (architecture, affected files, data model). If Wave 2 was skipped, populate from Wave 1 Explore agent findings. |
@@ -113,7 +114,7 @@ Apply this scoring:
 1. **Technical dependencies** — Issues that block other issues get `priority:critical` or `priority:high`. DB before API, API before UI, shared before consumers.
 2. **Core acceptance criteria** — Issues covering primary happy-path scenarios get `priority:high`.
 3. **Edge cases / nice-to-haves** — Defensive scenarios, error handling, optional behaviors get `priority:medium` or `priority:low`.
-4. **Risk factor** — Issues with identified risks or unknowns get bumped up one level.
+4. **Risk factor — Impact × Risk 2×2 triage:** Classify by Impact (high/low) × Risk (high/low): **High-Impact + Low-Risk → Implement** (bump priority up one level); **High-Impact + High-Risk → Experiment** (smallest spike first); **Low-Impact + Low-Risk → Defer** (backlog, no issue in this set); **Low-Impact + High-Risk → Reject** (no issue — note rationale in § Risks & Dependencies). Full quadrant definitions: `SKILL.md` § 6.2 Auto-Prioritize.
 
 ### Labels
 
