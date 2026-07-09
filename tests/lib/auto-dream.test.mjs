@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -791,5 +791,186 @@ describe('applyPendingDream / extractDiffBlock + parsePendingDream (internal)', 
     // With empty frontmatter, no staleness rejection happens.
     const memoryContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8');
     expect(memoryContent).toContain('no-frontmatter body');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #788 — applyPendingDream stale-index drift guard
+// ---------------------------------------------------------------------------
+// applyPendingDream is a complete-replacement write frozen on the dry-run
+// snapshot. If MEMORY.md was edited BETWEEN the producing --dry-run and this
+// apply, a naive write would clobber those interim edits (the "clobber"
+// incident class from the pending-dream reference note). #788 refuses with
+// { applied: false, reason: 'stale-index', driftMs } when
+// Math.floor(statSync(MEMORY.md).mtimeMs) > Date.parse(generated_at), leaving
+// MEMORY.md untouched and PRESERVING the sidecar so --dry-run can re-run.
+//
+// ms-Floor semantics: generated_at (ISO) has whole-ms resolution; APFS mtime
+// carries sub-ms precision. A MEMORY.md write in the SAME millisecond as the
+// sidecar must NOT refuse — the Floor makes equal-ms look equal, and strict `>`
+// then passes (Test 3 pins this). driftMs is the RAW (unfloored) delta, so we
+// assert only a lower bound, never an exact value.
+//
+// Fake-regression proof (testing.md § Negative-Assertion): the guard lives in
+// read-only production code, so it cannot be disabled here. Instead the Red-Fall
+// (Test 1) was first RUN with a deliberately WRONG expectation
+// (expect(result.applied).toBe(true)). vitest reported it RED:
+//     AssertionError: expected false to be true // Object.is equality
+//       - Expected: true   + Received: false
+//     ❯ tests/lib/auto-dream.test.mjs:860 (drift: refuses with stale-index …)
+// Correcting the expectation to .toBe(false) turned it green — proving the
+// assertion is load-bearing (it fails exactly when the guard's refusal is not
+// observed). Full transcript quoted in the wave report.
+
+describe('applyPendingDream — #788: stale-index drift guard', () => {
+  // Extract the sidecar's ISO `generated_at` so tests can pin MEMORY.md's mtime
+  // deterministically relative to it (no hardcoded calendar dates — the
+  // time-bomb bug class).
+  function readGeneratedAt(repoRoot) {
+    const raw = readFileSync(join(repoRoot, '.orchestrator', 'pending-dream.md'), 'utf8');
+    const m = raw.match(/^generated_at:\s*(.+)$/m);
+    return m ? m[1].trim() : null;
+  }
+
+  it('drift: refuses with stale-index when MEMORY.md mtime is newer than generated_at, leaving the interim body untouched', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const memoryPath = join(memoryDir, 'MEMORY.md');
+
+    // 1. Snapshot MEMORY.md the dry-run saw.
+    writeFileSync(memoryPath, 'snapshot body the dry-run saw\n', 'utf8');
+    // 2. Produce the sidecar (stamps generated_at = now).
+    await writePendingDream({
+      repoRoot,
+      diff: '```markdown\nREPLACEMENT that must NOT land\n```\n',
+      sourceSession: 'sess-788-drift',
+    });
+    // 3. Interim edit AFTER the dry-run — this is what a clobber would destroy.
+    const interim = 'INTERIM edit that must survive the refused apply\n';
+    writeFileSync(memoryPath, interim, 'utf8');
+    // 4. Pin mtime deterministically 1s past generated_at → unambiguous drift.
+    const generatedAt = readGeneratedAt(repoRoot);
+    const future = new Date(Date.parse(generatedAt) + 1000);
+    utimesSync(memoryPath, future, future);
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('stale-index');
+    // driftMs is the RAW delta — assert lower bound only (never exact).
+    expect(result.driftMs).toBeGreaterThanOrEqual(1000);
+    // MEMORY.md is the interim version, NOT the refused replacement body.
+    expect(readFileSync(memoryPath, 'utf8')).toBe(interim);
+    // Sidecar preserved so the caller can re-run --dry-run.
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
+  });
+
+  it('no drift: applies when MEMORY.md mtime predates generated_at, replacing the body and consuming the sidecar', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const memoryPath = join(memoryDir, 'MEMORY.md');
+
+    // MEMORY.md written BEFORE the sidecar → its mtime predates generated_at.
+    writeFileSync(memoryPath, 'stale snapshot body\n', 'utf8');
+    await writePendingDream({
+      repoRoot,
+      diff: '```markdown\nfresh replacement body\n```\n',
+      sourceSession: 'sess-788-nodrift',
+    });
+    // Pin mtime 1s BEFORE generated_at → deterministically no drift.
+    const generatedAt = readGeneratedAt(repoRoot);
+    const past = new Date(Date.parse(generatedAt) - 1000);
+    utimesSync(memoryPath, past, past);
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    const memoryContent = readFileSync(memoryPath, 'utf8');
+    expect(memoryContent).toContain('fresh replacement body');
+    expect(memoryContent).not.toContain('stale snapshot body');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+
+  it('same-millisecond edge: applies when MEMORY.md mtime equals generated_at exactly (Floor semantics, not a drift signal)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const memoryPath = join(memoryDir, 'MEMORY.md');
+
+    writeFileSync(memoryPath, 'same-ms snapshot\n', 'utf8');
+    await writePendingDream({
+      repoRoot,
+      diff: '```markdown\napplied same-ms body\n```\n',
+      sourceSession: 'sess-788-samems',
+    });
+    // mtime pinned EXACTLY on generated_at's millisecond → Math.floor(mtimeMs)
+    // == generatedMs, strict `>` is false → must apply (proves Floor semantics).
+    const generatedAt = readGeneratedAt(repoRoot);
+    const exact = new Date(Date.parse(generatedAt));
+    utimesSync(memoryPath, exact, exact);
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    expect(readFileSync(memoryPath, 'utf8')).toContain('applied same-ms body');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+
+  it('missing MEMORY.md: applies (nothing to clobber, drift check is skipped)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    const memoryPath = join(memoryDir, 'MEMORY.md');
+    // No MEMORY.md written — existsSync(memoryPath) is false, drift check skipped.
+    await writePendingDream({
+      repoRoot,
+      diff: '```markdown\nbootstrapped memory body\n```\n',
+      sourceSession: 'sess-788-missing',
+    });
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(true);
+    expect(existsSync(memoryPath)).toBe(true);
+    expect(readFileSync(memoryPath, 'utf8')).toContain('bootstrapped memory body');
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(false);
+  });
+
+  it('guard order: a >14d-old sidecar WITH MEMORY.md drift refuses as "stale", not "stale-index" (14d gate runs first)', async () => {
+    const repoRoot = tmp();
+    const memoryDir = join(repoRoot, '_memory');
+    mkdirSync(memoryDir, { recursive: true });
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    const memoryPath = join(memoryDir, 'MEMORY.md');
+
+    // Ancient sidecar (30 days old) — the 14d gate must fire before the drift gate.
+    const ancient = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const sidecar = [
+      '---',
+      `generated_at: ${ancient}`,
+      'source_session: sess-788-order',
+      'memory_lines_before: null',
+      'proposed_lines_after: null',
+      '---',
+      '',
+      '```markdown\nreplacement\n```\n',
+    ].join('\n');
+    writeFileSync(join(repoRoot, '.orchestrator', 'pending-dream.md'), sidecar, 'utf8');
+
+    // MEMORY.md exists with an mtime pinned 5 days AFTER the ancient generated_at
+    // → the drift condition (Math.floor(mtimeMs) > generatedMs) is ALSO satisfied.
+    // If the 14d gate did NOT run first, this would return 'stale-index'.
+    writeFileSync(memoryPath, 'current memory that also drifts\n', 'utf8');
+    const driftMtime = new Date(Date.parse(ancient) + 5 * 24 * 60 * 60 * 1000);
+    utimesSync(memoryPath, driftMtime, driftMtime);
+
+    const result = await applyPendingDream({ repoRoot, memoryDir });
+
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('stale');
+    // Sidecar preserved by the stale-skip.
+    expect(existsSync(join(repoRoot, '.orchestrator', 'pending-dream.md'))).toBe(true);
   });
 });

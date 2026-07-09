@@ -21,7 +21,7 @@
  */
 
 import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -364,6 +364,14 @@ function hasUnrecognizedFence(body, extractedBlock) {
  *   - Returns `{ applied: false, reason: 'missing' }` when no sidecar exists.
  *   - Returns `{ applied: false, reason: 'stale' }` when the sidecar is older
  *     than 14 days (caller should re-run --dry-run).
+ *   - Returns `{ applied: false, reason: 'stale-index', driftMs }` (#788) when
+ *     MEMORY.md's mtime is newer than the sidecar's `generated_at` — MEMORY.md
+ *     was updated BETWEEN the producing --dry-run and this apply, so a
+ *     complete-replacement write would clobber those interim edits. MEMORY.md
+ *     is left untouched and the sidecar is PRESERVED so the caller can re-run
+ *     --dry-run against the current MEMORY.md. A missing MEMORY.md never
+ *     triggers this (nothing to clobber). Strict `>`: equal mtimes are clock
+ *     resolution noise, not a drift signal.
  *   - Returns `{ applied: false, reason: 'unsupported-format' }` (#717) when
  *     the extracted block is a git-style diff (`isGitStyleDiff()`), the raw
  *     sidecar body contains more than one fenced block (`countFencedBlocks()`
@@ -384,7 +392,7 @@ function hasUnrecognizedFence(body, extractedBlock) {
  * @param {string} args.repoRoot
  * @param {string} args.memoryDir
  * @param {number} [args.maxAgeDays=14]
- * @returns {Promise<{applied:boolean, reason?:string, linesBefore?:number, linesAfter?:number, path?:string}>}
+ * @returns {Promise<{applied:boolean, reason?:string, ageDays?:number, driftMs?:number, linesBefore?:number, linesAfter?:number, path?:string}>}
  */
 export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }) {
   const target = pendingDreamPath(repoRoot);
@@ -395,6 +403,8 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
   const content = await readFile(target, 'utf8');
   const { frontmatter, body } = parsePendingDream(content);
 
+  const memoryPath = path.join(memoryDir, 'MEMORY.md');
+
   // Staleness check — refuse if generated_at is older than maxAgeDays.
   const generatedAt = frontmatter.generated_at;
   if (typeof generatedAt === 'string' && generatedAt.length > 0) {
@@ -404,10 +414,29 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
       if (ageDays > maxAgeDays) {
         return { applied: false, reason: 'stale', ageDays: Math.round(ageDays) };
       }
+
+      // Drift check (#788) — refuse if MEMORY.md changed AFTER the producing
+      // --dry-run. applyPendingDream is a complete-replacement write frozen on
+      // the dry-run snapshot; an interim MEMORY.md edit would be silently
+      // clobbered. A missing MEMORY.md has nothing to clobber.
+      //
+      // Resolution note: `generated_at` is `new Date().toISOString()`, truncated
+      // to whole milliseconds, whereas statSync().mtimeMs carries sub-ms
+      // (nanosecond) precision on APFS/ext4. Comparing them raw makes a
+      // MEMORY.md written in the SAME millisecond as the sidecar (mtimeMs
+      // fractionally > the floored generatedMs) look like drift. Floor mtimeMs
+      // to the resolution `generated_at` actually has, then apply strict `>`
+      // (mirrors `ageDays > maxAgeDays`): same-millisecond = clock-resolution
+      // noise, not a drift signal; a later write (≥1ms) is a real signal.
+      if (existsSync(memoryPath)) {
+        const memoryMtimeMs = statSync(memoryPath).mtimeMs;
+        if (Math.floor(memoryMtimeMs) > generatedMs) {
+          return { applied: false, reason: 'stale-index', driftMs: Math.round(memoryMtimeMs - generatedMs) };
+        }
+      }
     }
   }
 
-  const memoryPath = path.join(memoryDir, 'MEMORY.md');
   let linesBefore = 0;
   if (existsSync(memoryPath)) {
     const raw = await readFile(memoryPath, 'utf8');

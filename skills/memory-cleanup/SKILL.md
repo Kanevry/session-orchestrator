@@ -36,7 +36,7 @@ This skill accepts two optional flags. Default (no flag) runs the interactive 4-
 | Flag | Behavior |
 |---|---|
 | `--dry-run` | Run Phases 1-3 read-only; instead of mutating MEMORY.md / topic files, write a complete-body MEMORY.md proposal (single fenced block — never a unified-diff) to `.orchestrator/pending-dream.md` (atomic). Exit 0. |
-| `--apply-pending` | Read `.orchestrator/pending-dream.md`; refuse if older than 14 days; apply diff; delete pending file; print `auto-dream applied: -<X> lines, +<Y> entries`. Exit 0. |
+| `--apply-pending` | Read `.orchestrator/pending-dream.md`; refuse if older than 14 days (`stale`) or if MEMORY.md changed since the producing --dry-run (`stale-index`, #788); apply diff; delete pending file; print `auto-dream applied: -<X> lines, +<Y> entries`. Exit 0. |
 
 Flags are mutually exclusive — passing both is an error. Absence of both = legacy interactive mode (Phases 1-4 below).
 
@@ -54,8 +54,9 @@ Flags are mutually exclusive — passing both is an error. Absence of both = leg
   - `applied: true` → print `auto-dream applied: -<linesBefore-linesAfter> lines, +<entries> consolidated entries` and exit 0.
   - `applied: false, reason: 'missing'` → print `no pending dream to apply` and exit 1.
   - `applied: false, reason: 'stale'` → print `pending dream is stale (>14d), re-run --dry-run` and exit 1.
+  - `applied: false, reason: 'stale-index'` (#788) → print `MEMORY.md changed since the producing --dry-run; re-run --dry-run.` and exit 1. The sidecar is preserved and MEMORY.md is left untouched (MEMORY.md's mtime is newer than the sidecar's `generated_at`, so applying the frozen dry-run snapshot would clobber the interim edits).
   - `applied: false, reason: 'unsupported-format'` → print `auto-dream NOT applied: pending-dream.md contains git-style diff hunks this applier cannot consume. MEMORY.md left untouched, sidecar preserved. Re-run /memory-cleanup --dry-run to regenerate a complete-body proposal.` and exit 1.
-- The sidecar file is deleted on successful apply; staleness, missing sidecar, or unsupported-format never deletes anything.
+- The sidecar file is deleted on successful apply; staleness (`stale` / `stale-index`), missing sidecar, or unsupported-format never deletes anything.
 
 Both flag-driven flows delegate atomicity and staleness enforcement to `scripts/lib/auto-dream.mjs`. The interactive Phases 1-4 below remain unchanged.
 
