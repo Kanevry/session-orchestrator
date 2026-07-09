@@ -126,6 +126,9 @@ Constraints (cite https://code.claude.com/docs/en/channels):
 
 - **Anthropic-auth only** — unavailable on Bedrock/Vertex/Foundry.
 - **Per-session opt-in** via the `--channels` flag.
+- **Org-gated on Team/Enterprise** — the org owner must additionally turn on
+  `channelsEnabled` (a master switch) before any member can use Channels; on
+  Pro/Max without an org, Channels is directly available with no extra toggle.
 - **Research-preview status** — the contract may change; do not wire a
   load-bearing automation onto it without a Monitor/`/loop` fallback.
 
@@ -151,13 +154,14 @@ Constraints (cite https://code.claude.com/docs/en/workflows):
 - **Kill-switch:** `disableWorkflows` (settings), `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env), or the `/config` toggle.
 - **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
 - **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root — not unconditionally the repo-root one. Verify the actual write target before assuming root-level placement in a monorepo.
-- **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`).
+- **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`). Since v2.1.203, `claude --effort ultracode` at launch is an additional on-ramp alongside `/effort ultracode` and the inline keyword.
+- **Dynamic workflow size (v2.1.202+):** a `/config` setting — `unrestricted` / `small` / `medium` / `large` — controls the agent count Claude targets when planning a run. Tune it down for a tighter/cheaper fan-out, up when the objective genuinely needs the full 16/1000 headroom.
 - **`args` global:** a workflow script receives its parameters via the structured-data global `args` — `undefined` when the workflow is invoked without any parameters passed.
 - **Usage view (v2.1.186+):** `/workflows` exposes a per-phase breakdown of agent counts and token totals, keyed `p`/`x`/`r`/`s`/`f` — use it to see where a run spent its budget before re-tuning the script.
 - **Per-stage model routing:** the `agent()` call in a workflow script accepts `model`/`effort` options, so different stages of the same run can route to different models/effort levels rather than one model for the whole workflow.
 - **Resume (`resumeFromRunId`) is same-session only** — it cannot resume a run that was started in a different session.
 
-**Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`), and Workflows ships no `autopilot.jsonl`-equivalent telemetry. **RESOLVED 2026-06-20 (#665) → Stay (with Adapter-fallback)** — see ADR-0010 § Native-Overlap Refresh; do not swap wave-executor for a bare Workflow on the assumption the caps substitute for the kill-switches.
+**Workflows vs wave-executor + `autopilot-multi`:** the 16/1000 caps are agent-count bounds, not the repo's ten kill-switches (`scripts/lib/autopilot/kill-switches.mjs`). Since v2.1.202, workflow-spawned agents emit OTel attributes `workflow.run_id` + `workflow.name`, and since v2.1.203 the progress line surfaces an advisory `Large workflow` warning once a run exceeds 25 planned agents OR 1.5M projected tokens — but neither closes the #665 gap: there is still no `autopilot.jsonl`-equivalent telemetry sink, no ten kill-switches, and the warning is advisory/non-blocking, not a gate. **RESOLVED 2026-06-20 (#665) → Stay (with Adapter-fallback)** — see ADR-0010 § Native-Overlap Refresh; do not swap wave-executor for a bare Workflow on the assumption the caps (or the new OTel/warning signals) substitute for the kill-switches.
 
 **Never reimplement a one-shot fan-out as `/loop`.** A `/loop` body re-runs a
 single coordinator prompt on an interval; it has no native fan-out, no agent-
@@ -179,7 +183,10 @@ as the base gate before any of the finer-grained version gates below
   during a multi-hour deep session, top-priority backlog snapshot during
   long-running work, branch-tending while waiting on review.
 - The work fits inside a single Claude session and the operator is at the
-  keyboard (or will resume with `claude --resume` within 7 days).
+  keyboard (or will resume with `claude --resume` within 7 days). Backgrounding
+  the session (`/background`) carries its `/loop` tasks into a background
+  session that keeps running without a terminal attached — the 7-day expiry
+  is still the outer bound (code.claude.com/docs/en/scheduled-tasks#limitations).
 - A custom maintenance loop is wanted at session-start — wire it into
   `.claude/loop.md` (project) or `~/.claude/loop.md` (user).
 
@@ -187,7 +194,13 @@ as the base gate before any of the finer-grained version gates below
 longer documents it as of this re-verify (2026-07-02); treat `/loop` as the
 sole canonical form. Dynamic mode self-paces via the `ScheduleWakeup` tool
 (1 min–1 h); the pending wakeup surfaces in `session_crons` in the Stop-hook
-input (code.claude.com/docs/en/tools-reference#schedulewakeup).
+input (code.claude.com/docs/en/tools-reference#schedulewakeup). Since
+v2.1.202, a self-paced `/loop` can cleanly end itself by calling
+`ScheduleWakeup` with `stop: true`, which cancels the pending wakeup
+immediately. If an iteration ends without either a reschedule or `stop: true`,
+Claude Code plans one fallback wakeup ~20 minutes later and then ends the loop
+(before v2.1.202, not rescheduling was the only self-termination path)
+(code.claude.com/docs/en/scheduled-tasks#stop-a-loop).
 
 **Skill-Dispatch-Gate (v2.1.196+).** A scheduled fire only EXECUTES skills
 that Claude itself is permitted to invoke. Everything else arrives as inert
@@ -393,4 +406,4 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 
 ---
 
-_Re-verified 2026-07-07 (3 Stale-Fixes, 7 Ergänzungen — refs #765)._
+_Re-verified 2026-07-09 (Delta-Sync v2.1.197→v2.1.205: ScheduleWakeup stop:true, Workflows-OTel/Large-warning, workflow-size/effort-Flag, Channels-org-gate, /background-carryover; Routines-Seite re-verifiziert)._
