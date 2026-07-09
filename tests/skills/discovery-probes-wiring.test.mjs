@@ -92,10 +92,13 @@ describe('probes-<category>.md existence & anatomy', () => {
     },
   );
 
-  it('probes-feature.md exists and has 2 probes', () => {
+  it('probes-feature.md exists and has 3+ probes (floor/ceiling — testing.md § Dynamic Artifact Counts)', () => {
     const content = readFileSync(join(REPO_ROOT, 'skills/discovery/probes-feature.md'), 'utf8');
     const probeHeadings = content.match(/^### Probe:/gm) || [];
-    expect(probeHeadings.length).toBe(2);
+    // Floor 3 (intent-drift, stubbed-dead-feature, feature-request-cluster #757);
+    // ceiling 10 catches accidental duplication loops.
+    expect(probeHeadings.length).toBeGreaterThanOrEqual(3);
+    expect(probeHeadings.length).toBeLessThanOrEqual(10);
   });
 
   it('probes-docs.md exists and has 1 probe (docs-staleness)', () => {

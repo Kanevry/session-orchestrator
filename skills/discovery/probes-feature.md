@@ -104,4 +104,47 @@ Export Status: exported/public | internal
 
 ---
 
+### Probe: feature-request-cluster
+
+**Activation:** A VCS platform is configured (`vcs: gitlab` or `vcs: github` in Session Config) — the probe queries the issue tracker directly rather than the source tree, so it activates whenever a VCS remote is resolvable.
+
+**Detection Method:**
+
+1. List open feature/enhancement issues via the VCS CLI (syntax reference: `skills/gitlab-ops/SKILL.md` § "Common CLI Commands" — do not duplicate CLI flags here beyond what's needed to name the call):
+```bash
+# GitLab
+glab issue list --label "feature" --per-page 100
+glab issue list --label "enhancement" --per-page 100
+# GitHub
+gh issue list --label "feature" --limit 100
+gh issue list --label "enhancement" --limit 100
+```
+
+2. Extract theme keywords from each issue's title (and first paragraph of body where available): lowercase, strip stop-words, tokenize on non-alphanumeric boundaries. Group issues that share two or more significant keywords (e.g. "export", "csv", "invoice") into a candidate cluster.
+
+3. For each candidate cluster with 3 or more issues, check whether ANY member issue is already linked to an epic (`epic` label, a GitLab Epic relationship, or an in-body reference such as `part of #<epic-iid>` / `Epic: #<epic-iid>`):
+```bash
+# GitLab -- inspect labels + description for epic linkage
+glab issue view <IID>
+  Grep pattern: (^Labels:.*\bepic\b|part of #|Epic:\s*#)
+# GitHub -- same check against issue body/labels
+gh issue view <NUMBER>
+  Grep pattern: (^labels:.*\bepic\b|part of #|Epic:\s*#)
+```
+
+4. The largest cluster (by issue count) with ZERO epic-linked members is the finding. Ties are broken by the lowest minimum issue number (the oldest cluster wins).
+
+**Evidence Format:**
+```
+Cluster Theme: <shared keyword(s)>
+Location: <comma-separated issue IDs, e.g. #142, #156, #171 -- an issue-ID set, not a file:line>
+Cluster Size: <n>
+Sample Titles: <up to 3 issue titles as evidence>
+verification_method: vcs-issue
+```
+
+**Default Severity:** Medium; High when cluster size >= 5 (a recurring, unaddressed theme at that size signals systemic backlog drift).
+
+---
+
 **Labels for auto-created issues:** `type:discovery`, `area:skills`, `priority:high` (High/Critical severity) or `priority:medium` (Medium severity), `status:ready`.

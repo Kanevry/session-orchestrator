@@ -107,7 +107,7 @@ AskUserQuestion({
     header: "Feature Scope",
     options: [
       { label: "Grounded scan (Recommended)", description: "Run the evidence-anchored feature probes (intent-drift, stubbed-dead-feature) on the probe→verify→triage rails." },
-      { label: "Also judgment topics", description: "Grounded scan PLUS collect judgment-based product questions (opportunity framing, personas) as a non-verified appendix routed to /brainstorm or /grill — judgment items never enter the verified-findings pipeline." },
+      { label: "Also judgment topics", description: "Grounded scan PLUS collect judgment-based product questions (opportunity framing, personas). A follow-up prompt after Phase 5 offers inline synthesis or hand-off to /brainstorm or /plan feature — judgment items never enter the verified-findings pipeline." },
       { label: "Route out", description: "No scan; hand off to /brainstorm (product ideation) or /grill (assumption stress-test) instead." },
       { label: "Skip", description: "Drop `feature` from this run's scope set." }
     ],
@@ -119,7 +119,28 @@ AskUserQuestion({
 **On user selection (every branch is explicit — do not fall through):**
 
 - **"Grounded scan"** → keep `feature` in the active scope set and continue to Phase 3 unchanged.
-- **"Also judgment topics"** → keep `feature` in the active scope set and continue to Phase 3. Additionally, AFTER Phase 5 triage, append a `### Judgment Topics (non-verified)` section to the discovery report listing open product-judgment questions (opportunity framing, personas, market-sizing) encountered during the scan, each with a pointer to `/brainstorm` (ideation) or `/grill` (assumption stress-test). These items are report-appendix ONLY — they MUST NOT become findings, MUST NOT pass through Phase 4 verification, and MUST NOT produce issues in Phase 6.
+- **"Also judgment topics"** → keep `feature` in the active scope set and continue to Phase 3 unchanged for the grounded probes. Collect any judgment-based product questions (opportunity framing, personas, market-sizing) encountered during the scan as plain notes — do not route them through Phase 4 (Verification) or Phase 6 (Issue-Creation) at any point. AFTER Phase 5 triage completes, present a SECOND AskUserQuestion that forks how the collected topics are handled:
+
+```
+AskUserQuestion({
+  questions: [{
+    question: "Judgment topics were collected alongside the grounded scan. How should they be handled?",
+    header: "Judgment Topics",
+    options: [
+      { label: "Inline synthesis (Recommended)", description: "Sketch a lightweight OST/persona pass directly in the report's `### Judgment Topics (non-verified)` appendix — explicitly marked non-verified, no separate skill invocation needed." },
+      { label: "Route to /brainstorm", description: "Hand the collected topics off as pre-filled context to /brainstorm for a full Socratic ideation dialogue." },
+      { label: "Route to /plan feature", description: "Hand the collected topics off as pre-filled context to /plan feature for feature-PRD scoping." }
+    ],
+    multiSelect: false
+  }]
+})
+```
+
+  - **"Inline synthesis"** → append a `### Judgment Topics (non-verified)` section to the discovery report. For each collected topic, write a brief candidate outcome/opportunity sketch (Teresa Torres OST framing) and, where a persona angle is evident, a one-line persona note — every line explicitly labeled `(non-verified sketch)`. This is prose synthesis, never a probe finding.
+  - **"Route to /brainstorm"** → append the same `### Judgment Topics (non-verified)` section, but render each topic as a one-line pointer plus the recommendation to invoke `/brainstorm` with the collected topic context pre-filled as its initial prompt. Do not auto-invoke `/brainstorm` — surface the recommendation and let the operator trigger it.
+  - **"Route to /plan feature"** → same rendering as the `/brainstorm` branch above, pointing at `/plan feature` with the collected topic context pre-filled instead.
+
+  **Invariant (PRD §4 Non-Goals) — holds across all three sub-branches above:** judgment items are report-appendix ONLY — they MUST NOT become findings, MUST NOT pass through Phase 4 verification, and MUST NOT produce issues in Phase 6.
 - **"Route out"** → remove `feature` from the active scope set. Do NOT run the feature probes. Recommend the operator invoke `/brainstorm` or `/grill` after this run (name whichever fits the operator's question), then continue to Phase 3 with the remaining scopes — or, if `feature` was the ONLY requested scope, stop after reporting: "Feature scope routed out — no probes to run. Invoke /brainstorm or /grill directly."
 - **"Skip"** → remove `feature` from the active scope set before Phase 3. If `feature` was the only requested scope, stop with: "Feature scope skipped — nothing to run."
 
@@ -153,7 +174,7 @@ Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max `
 - **Vault probes** (`skills/discovery/probes-vault.md`): invokes `skills/discovery/probes/vault-staleness.mjs` and `skills/discovery/probes/vault-narrative-staleness.mjs` directly via `node`. Each probe returns `{findings, metrics, duration_ms}`. The runner reports `FINDING:` blocks per finding and appends summary records to `.orchestrator/metrics/vault-staleness.jsonl` and `vault-narrative-staleness.jsonl`.
 - **Supply-chain probe** (`skills/discovery/probes-supply-chain.md`): invokes `skills/discovery/probes/supply-chain-slopcheck.mjs` directly via `node`. **Gated:** only activates when `slopcheck.enabled: true` AND `"discovery"` is in `slopcheck.sources` (Session Config). The probe returns `{findings, summary}`. SLOP findings surface as `critical`, ASSUMED as `medium`, LEGITIMATE packages generate no finding. See `probes-supply-chain.md` for invocation details and classification reference.
 - **Docs probe** (`skills/discovery/probes-docs.md`): invokes `skills/discovery/probes/docs-staleness.mjs` directly via `node`. **Gated:** only activates when a `docs/` directory exists AND `docs-staleness.enabled: true` (Session Config). The probe returns `{findings, metrics, duration_ms}`. Scans `docs/*.md` (root level) and `docs/examples/*.md` for filesystem-mtime staleness against the `docs-staleness.thresholds.living` threshold (default 90d); `docs/adr/` and `docs/prd/` are deliberately excluded. See `probes-docs.md` for invocation details and severity escalation.
-- **Feature probes agent** (`skills/discovery/probes-feature.md`): intent-drift + stubbed-dead-feature probes. Findings MUST carry file_path:line_number anchors that survive the Phase 4.2 re-read (±3 lines).
+- **Feature probes agent** (`skills/discovery/probes-feature.md`): intent-drift + stubbed-dead-feature + feature-request-cluster probes. The first two MUST carry file_path:line_number anchors that survive the Phase 4.2 re-read (±3 lines); feature-request-cluster instead anchors on a VCS issue-ID set and MUST carry `verification_method: vcs-issue` — see Phase 4.2's dual verification path below.
 
 Each agent receives:
 - The probe definitions from `probes-intro.md` (confidence scoring reference) AND the category-specific `probes-<category>.md` file for this agent's category (include the actual grep commands/patterns in the prompt)
@@ -194,10 +215,18 @@ Collect all `FINDING:` blocks from agent outputs into a unified findings list.
 
 ### 4.2 Verification Pass
 
-For EACH finding:
+For EACH finding, use the verification path matching how the finding is anchored:
+
+**Default path — file-anchored findings (no `verification_method` field, or `verification_method: file-line`):**
 1. Read the file at `file_path:line_number` using the Read tool
 2. Confirm `matched_text` appears at or near that line (+/-3 lines tolerance)
 3. If NOT confirmed, discard with note "false positive -- text not found at reported location"
+
+**VCS-issue-anchored findings (`verification_method: vcs-issue`)** — e.g. `feature-request-cluster`, whose findings anchor on a set of issue IDs rather than a file location:
+1. For each issue ID in the finding's `Location` set, verify it via the VCS CLI — syntax reference: `skills/gitlab-ops/SKILL.md` § "Common CLI Commands" (`glab issue view <IID>` / `gh issue view <NUMBER>`); do not duplicate the CLI syntax here
+2. Confirm the issue exists and is still open (`state` != closed)
+3. If an issue ID no longer resolves or was closed since detection, drop it from the `Location` set; if EVERY issue in the set is gone/closed, discard the finding entirely with note "false positive -- all referenced issues closed/removed since detection"
+
 4. Report: "Verification: N confirmed, M discarded as false positives"
 
 ### 4.2a Confidence Scoring
@@ -410,6 +439,8 @@ For each approved finding:
 
 ### 6.2 Final Report
 
+When the active scope included `feature` AND at least one verified feature finding was approved into an issue, insert an **Opportunity Solution Tree (OST) section** between `### Created Issues` and `### Dismissed Findings` (shown below). This section is feature-scope-only — every other category keeps the flat `### Created Issues` table as its sole findings view, unchanged.
+
 ```
 ## Discovery Report
 
@@ -424,6 +455,16 @@ For each approved finding:
 | # | Title | Priority | Area | Probe |
 |---|-------|----------|------|-------|
 | <IID> | <title> | <priority> | <area> | <probe> |
+
+### Opportunity Solution Tree (feature scope only)
+> Present ONLY when the active scope included `feature` and at least one verified feature finding was approved. Group the approved feature findings under a Teresa Torres OST hierarchy: **outcome** (the user/business result the product is steering toward) -> **opportunity** (the observed gap or unmet need the finding surfaces) -> **solution** (the finding itself — the created issue). Infer outcome/opportunity from the finding's probe + description; never fabricate a hierarchy level with no evidentiary basis — when the outcome is genuinely unclear, write "Outcome: (unclassified)" rather than guessing.
+
+Example:
+Outcome: Reduce time-to-first-value for new users
+  Opportunity: Onboarding drops users before they reach the "aha" moment (intent-drift: docs claim auto-provisioning, code path is manual)
+    Solution: #182 -- Implement auto-provisioning of default workspace
+  Opportunity: Users repeatedly request the same missing capability without a tracked epic
+    Solution: #191, #204, #211 -- feature-request-cluster: "CSV export" cluster (3 issues, no epic)
 
 ### Dismissed Findings
 - [N] dismissed as intentional
