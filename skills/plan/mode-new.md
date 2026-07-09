@@ -293,3 +293,5 @@ glab api -X POST projects/:id/issues/:issue2_iid/links \
   -f target_issue_iid=:issue1_iid \
   -f link_type=is_blocked_by
 ```
+
+On HTTP 403 (non-Premium/Ultimate GitLab tier): fall back to `link_type=relates_to` + a body-ordering note — see gitlab-ops SKILL.md § "Issue Linking (`blocks` / `is_blocked_by`)".

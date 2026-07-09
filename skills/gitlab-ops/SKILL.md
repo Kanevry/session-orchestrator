@@ -127,6 +127,21 @@ done
 ### Provenance Labels
 - `from:<agent>` — SHOULD be applied to any issue/MR created by an automated agent (e.g. `from:discovery`, `from:reconcile`), so operators can filter agent-authored items from human-authored ones. Single-colon form, per the taxonomy convention above.
 
+## Issue Linking (`blocks` / `is_blocked_by`)
+
+GitLab's native issue-link types `blocks` and `is_blocked_by` (`glab api -X POST projects/:id/issues/:issue_iid/links -f link_type=blocks|is_blocked_by`) are a **Premium/Ultimate license feature**. On a Free/Core-tier GitLab instance this call returns **HTTP 403** — a license-gate signal, not an auth/permission failure. Do not retry with different credentials or escalate as an auth bug.
+
+**Fallback (non-Premium instances):**
+1. **Use `relates_to` instead** — `link_type=relates_to` is available on every GitLab tier (no ordering semantics, just an unscoped relation). Same API shape, only the `link_type` value changes:
+   ```bash
+   glab api -X POST "projects/:id/issues/:issue_iid/links" \
+     -f target_project_id=:id -f target_issue_iid=:other_iid -f link_type=relates_to
+   ```
+2. **Document the blocking semantics in the issue body** — since `relates_to` carries no ordering meaning, add an explicit ordering note to both issues, e.g. `⚠ Ordering: erst #<blocker_iid>, dann dieses Issue — blocks-Link nicht verfügbar (non-Premium)`.
+3. **Recognize the 403 as a license signal, not an auth error** — before assuming a token/scope problem, try `relates_to` on the same project pair: if `relates_to` succeeds where `blocks`/`is_blocked_by` 403s, the license gate — not authentication — is the cause.
+
+GitHub has no native issue-blocking relation at all — the body-ordering-note fallback in step 2 above is the standing convention there too, regardless of license tier (see "GitHub (gh)" below).
+
 ## Common CLI Commands
 
 ### GitLab (glab)
@@ -161,6 +176,8 @@ glab api "projects/$(glab repo view --output json | python3 -c "import json,sys;
 **Label update caveat (PUT-replaces, not additive):** `glab issue update --label` (and the underlying GitLab labels API) PUT-REPLACES the entire label set — it does not add to the existing set. To change a single label you must pass the FULL desired label list, or use the dedicated add/remove operations, which are themselves unreliable across `glab` versions. Preferred safe pattern: use `--label` (adds) together with `--unlabel` (removes) on `glab issue update` when your installed `glab` version supports both; otherwise read the current labels first, compute the full new set, and PUT once. The same PUT-replace semantics apply to `glab mr update --label`.
 
 **Close verification:** after `glab issue close <IID>`, always verify the close actually landed — re-read the issue (`glab issue view <IID>`) and confirm `state: closed` in the output. A stale/wrong project ID or a silent 404 can report local success while closing nothing; a documented incident closed 32 issues into the void this way (project ID pointed at the wrong project — see "Dynamic Project Resolution" above for the re-resolve-each-session rule that prevents it).
+
+**Commit-body close-keyword footgun:** GitLab (and GitHub) auto-close an issue when a commit pushed to the default branch contains a close keyword — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved` — followed by `#N` ANYWHERE in the commit body, not just the subject line. This fires even inside a negation ("does NOT close #N") — the platform pattern-matches the keyword + issue reference; it does not parse English negation, so the negation offers no protection. Rule: when a commit body needs to MENTION an issue without closing intent, always use a non-closing reference — `refs #N`, `part of #N`, `siehe #N` — never a close-keyword verb next to the number, negated or not.
 
 **`-f`/`--raw-field` vs `-F`/`--field` on `glab api`:** `-f` (`--raw-field`) sends a literal string value with no coercion and no `@file` expansion. `-F` (`--field`) interprets a value starting with `@` as a file to read, and coerces bare `true`/`false`/`null`/numeric strings to their typed form. Prefer `-f` for literal values — it avoids an unintended `@`-expansion when a value happens to start with `@` (e.g. an `@mention` in a comment body).
 

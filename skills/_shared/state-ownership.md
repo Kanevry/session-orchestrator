@@ -86,6 +86,15 @@ Helpers: `readOpenQuestions` (pure), `appendOpenQuestion` (pure), `markOpenQuest
 | **session-start** | Read + conditional reset | Reads for continuity checks (Phase 1.5): inspects `status` field to detect crashed/paused sessions. Surfaces `## What Not To Retry` as a forced-read HISTORICAL block (Phase 6.5.1). May reset STATE.md to idle at the boundary between a completed session and a new session — only when prior `status: completed`. The reset clears `current-wave` (→ 0), sets `status: idle`, demotes `## Wave History` into `## Previous Session`, and empties `## Deviations` — but PRESERVES `## What Not To Retry` (cross-session continuity, #623) and `## Open Questions` (Close Handover-Alignment-Gate, PRD 2026-07-07). Never resets on `active` or `paused` (those paths are user-interactive). |
 | **evolve** | Read-only | Reads `## Deviations` section for deviation pattern extraction (Step 2.2, pattern 5) |
 
+### Shared-File Single-Writer Rule (`isolation: none` waves)
+
+The Ownership Model above resolves *STATE.md* specifically, but the same discipline generalizes to any file more than one dispatched agent could plausibly need to touch inside a single `isolation: none` wave (STATE.md, CLAUDE.md, central Session Config, other cross-cutting configs). Such a file MUST NEVER be given two writers in the same wave — the wave plan picks exactly one of:
+
+- **Designated single-writer agent** — one agent in the wave owns the file in its declared file-scope; every other agent that would otherwise touch it is scoped away from it and reports its intended change (if any) back to the coordinator instead of editing directly.
+- **Coordinator-direct defer** — no agent in the wave touches the file at all; the coordinator applies the accumulated edits itself at the inter-wave checkpoint, after all agents report.
+
+This is the wave-plan-time analog of PSA-007 (subagents never race the shared git index) applied one layer up, to shared *files* rather than the git index — see [`../../.claude/rules/parallel-sessions.md`](../../.claude/rules/parallel-sessions.md) § PSA-007.
+
 ## Guards
 
 ### Branch Validation

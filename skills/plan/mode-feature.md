@@ -136,6 +136,6 @@ Present the full issue structure via AskUserQuestion before creation:
 ### Create Issues
 
 1. Create via VCS CLI (auto-detect per gitlab-ops skill: `glab` or `gh`).
-2. Set `blocks` / `is-blocked-by` dependency links between issues.
+2. Set `blocks` / `is-blocked-by` dependency links between issues. On HTTP 403 (non-Premium/Ultimate): `relates_to` + body-ordering-note fallback — see gitlab-ops SKILL.md § "Issue Linking (`blocks` / `is_blocked_by`)".
 3. Report created issue URLs to user.
 4. **Epic Backlink Commit:** once the Epic issue's IID is known, follow `SKILL.md` § 6.6 to add an `**Epic:** #<IID>` line to the PRD and commit it as a separate follow-up commit.

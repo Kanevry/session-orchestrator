@@ -426,7 +426,7 @@ For each approved issue:
    - **GitHub**: `gh issue create --title "[Plan] <title>" --label "type:feature,priority:high,status:ready" --body "<body>"`
 2. Brief pause (1s) between creations for rate limiting
 3. After all issues are created, set dependency links:
-   - **GitLab**: use `glab api` to set `blocks`/`is-blocked-by` relations
+   - **GitLab**: use `glab api` to set `blocks`/`is-blocked-by` relations. On HTTP 403 (non-Premium/Ultimate): `relates_to` + body-ordering-note fallback — see gitlab-ops SKILL.md § "Issue Linking (`blocks` / `is_blocked_by`)".
    - **GitHub**: note dependencies in issue body (GitHub lacks native blocking)
 
 ### 6.5 Final Report
