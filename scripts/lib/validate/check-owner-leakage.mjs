@@ -34,6 +34,15 @@
  *        matched (only literal 4-octet IPs), so SSRF-range docs stay clean.
  *   CP10 `~/Projects/<PersonalName>/` — personal-name segment in a Projects path
  *        (name-denylist driven; see PERSONAL_NAMES constant below; issue #653)
+ *   CP11 host-local confidential customer/repo names — matched from a NEVER-COMMITTED
+ *        list referenced by owner.yaml `paths.confidential-names-file`
+ *        (env SO_CONFIDENTIAL_NAMES_FILE; issue #728a). UNIQUE among CP-rules: a CP11
+ *        violation REDACTS the matched name span from its reported lineContent, because
+ *        this scanner runs in a PUBLIC GitHub-Actions mirror — printing the confidential
+ *        name verbatim to the public CI log would be a worse leak than the one guarded.
+ *
+ * CP11 is INACTIVE unless a host-local names file is configured (the ~99% default),
+ * so public CI and unconfigured hosts see no behaviour change.
  *
  * Legacy P-numbering note: P1+P9 are now ONE canonical rule (CP1). The FAIL
  * label still names the offending class for the audit trail.
@@ -62,6 +71,14 @@ import { join, extname, relative, basename, sep, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { argv } from 'node:process';
 import { fileURLToPath } from 'node:url';
+// NOTE: the two host-local helper modules (../config/host-paths.mjs and
+// ./confidential-names.mjs) are imported DYNAMICALLY inside
+// getConfidentialNamePatterns(), NOT statically here. This scanner is a
+// documented standalone single-file vendoring target (security.md § Owner-Privacy:
+// "Reuse the same scanner") — the .husky/pre-commit E2E and any consumer that
+// copies ONLY this file into a fresh tree would otherwise crash at module load
+// with ERR_MODULE_NOT_FOUND, blocking clean commits. Dynamic import lets CP11 go
+// silently inert when the helpers are absent while CP1–CP10 run unchanged.
 
 // ---------------------------------------------------------------------------
 // CLI / import-mode detection (#661)
@@ -450,6 +467,114 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Redact every confidential-name span from `line`, ORDER-INDEPENDENTLY (Fix 1 + Fix 2).
+ *
+ * This is the single redaction sink for the confidential-names privacy invariant.
+ * It is applied at the print choke-point over EVERY violation's lineContent — not
+ * only CP11 hits — because this scanner runs in a PUBLIC GitHub-Actions mirror: a
+ * confidential customer/repo name that co-occurs with a CP1–CP10 hit on the same
+ * line (e.g. a name beside an RFC1918 IP that fails CP8) would otherwise be echoed
+ * verbatim to the public CI log (Fix 1).
+ *
+ * ORDER-INDEPENDENCE (Fix 2): a naïve chain of `.replace()` calls is order-dependent
+ * — when one configured name is a PREFIX of another (`['acme','acme-corp-secret']`),
+ * redacting the shorter first destroys the longer's match and leaks a suffix residue
+ * (`[REDACTED]-corp-secret`). Instead we compute ALL match spans against the ORIGINAL
+ * (unmutated) string across every pattern, merge overlapping/adjacent intervals, and
+ * splice `[REDACTED]` per merged interval. No pattern ever sees a string another
+ * pattern already rewrote, so prefix/suffix overlap cannot leak regardless of list
+ * order.
+ *
+ * @param {string} line — the raw (already-trimmed) violation lineContent.
+ * @param {RegExp[]} patterns — confidential-name regexes (word-boundary, case-insensitive).
+ * @returns {string} the line with every configured name span replaced by [REDACTED].
+ */
+function redactSpans(line, patterns) {
+  if (!Array.isArray(patterns) || patterns.length === 0) return line;
+
+  // 1. Collect [start, end) spans of every match of every pattern against the
+  //    ORIGINAL line (never a partially-mutated one). Global clone so exec() walks
+  //    all matches; zero-width guard prevents an infinite loop on a degenerate regex.
+  const spans = [];
+  for (const re of patterns) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = g.exec(line)) !== null) {
+      if (m[0].length === 0) {
+        g.lastIndex += 1;
+        continue;
+      }
+      spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+  if (spans.length === 0) return line;
+
+  // 2. Merge overlapping / adjacent intervals (sorted by start).
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const [s, e] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1]) {
+      last[1] = Math.max(last[1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+
+  // 3. Splice [REDACTED] per merged interval, left-to-right over the ORIGINAL line.
+  let out = '';
+  let cursor = 0;
+  for (const [s, e] of merged) {
+    out += line.slice(cursor, s) + '[REDACTED]';
+    cursor = e;
+  }
+  out += line.slice(cursor);
+  return out;
+}
+
+/**
+ * CP11: build word-boundary, case-insensitive regexes from the host-local
+ * confidential-names list (#728a). Mirrors CP6_PATTERNS (private slugs), but the
+ * name source is LOADED from a never-committed host-local file instead of a
+ * closed in-source array — the confidential customer/repo names must never live
+ * in a committed file.
+ *
+ * LAZY BY CONTRACT: this reads the host-local file (owner.yaml + env), so it MUST
+ * be called only from runScan() — NOT at module top-level. This module is
+ * dual-mode (CLI entry point AND importable library, `isMain` guard); a top-level
+ * fs read would fire on every library import (e.g. pseudonym-map.mjs importing
+ * isOwnerLeakySegment). loadConfidentialNames caches per path, so calling this
+ * once per scan reads the file at most once.
+ *
+ * STANDALONE-SAFE: the two host-local helper modules are DYNAMICALLY imported
+ * here (not statically at the top of the file) so a single-file copy of this
+ * scanner — the documented vendoring pattern (security.md § Owner-Privacy: "Reuse
+ * the same scanner"; exercised by tests/husky/pre-commit-owner-leakage.test.mjs,
+ * which copies ONLY this file into a tmp repo) — does not crash at module load
+ * with ERR_MODULE_NOT_FOUND. When the helpers are unresolvable (or throw), CP11
+ * degrades to inert ([] patterns) and CP1–CP10 run unchanged.
+ *
+ * @returns {Promise<RegExp[]>} one regex per configured name, or [] when
+ *   unconfigured / unusable / unresolvable (standalone copy).
+ */
+async function getConfidentialNamePatterns() {
+  try {
+    const { loadHostPaths, resolveHostPath } = await import('../config/host-paths.mjs');
+    const { loadConfidentialNames } = await import('./confidential-names.mjs');
+    const ctx = loadHostPaths();
+    const namesPath = resolveHostPath('confidential-names-file', '', ctx);
+    const names = loadConfidentialNames({ namesPath });
+    if (!names) return [];
+    return names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i'));
+  } catch {
+    // Helper modules absent (standalone single-file vendoring) or a config read
+    // failure — CP11 goes silently inert; the CP1–CP10 rules need none of these
+    // modules and continue to enforce the scan.
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Text-scan extension allowlist (spec A.2)
 // ---------------------------------------------------------------------------
@@ -595,7 +720,7 @@ function fail(msg) {
 // and process.exit() below are skipped.
 // ---------------------------------------------------------------------------
 
-function runScan() {
+async function runScan() {
 console.log('--- Check 11: owner-privacy leakage ---');
 
 if (!existsSync(pluginRoot)) {
@@ -645,6 +770,13 @@ const scanFiles = textFiles.filter((f) => {
   if (SELF_EXCLUSIONS.has(rel)) return false;
   return true;
 });
+
+// CP11 (#728a): load the host-local confidential-names patterns ONCE per scan.
+// [] when unconfigured (the default) OR when the host-local helper modules are
+// unresolvable (standalone single-file copy) → the CP11 block below is a no-op.
+// Awaited once, before the per-line loop, because the helpers are now dynamically
+// imported (standalone-safe) — CP1–CP10 behaviour is unchanged.
+const cp11Patterns = await getConfidentialNamePatterns();
 
 /** @type {Array<{relPath: string, lineNum: number, pattern: string, lineContent: string}>} */
 const violations = [];
@@ -724,6 +856,18 @@ for (const filePath of scanFiles) {
         }
       }
     }
+
+    // CP11: host-local confidential customer/repo names (#728a). INACTIVE unless a
+    // names file is configured (cp11Patterns is [] by default).
+    //
+    // DETECTION ONLY here — the confidential-name REDACTION is applied at the print
+    // choke-point (redactSpans over EVERY violation's lineContent), so a name that
+    // rides in on a CP1–CP10 hit on the same line is scrubbed too (Fix 1), and a
+    // name that is a prefix of another configured name cannot leak a suffix residue
+    // (Fix 2). cp11Patterns are non-global, so `.test()` is stateless.
+    if (cp11Patterns.length > 0 && cp11Patterns.some((re) => re.test(line))) {
+      violations.push({ relPath, lineNum, pattern: 'CP11 (confidential name)', lineContent: line.trim() });
+    }
   });
 }
 
@@ -736,7 +880,15 @@ if (violations.length === 0) {
   pass(`no owner-privacy leakage found across ${scanFiles.length} scanned files`);
 } else {
   for (const v of violations) {
-    fail(`${v.relPath}:${v.lineNum} — ${v.pattern}: ${v.lineContent.slice(0, 120)}`);
+    // Choke-point redaction (Fix 1 + Fix 2): scrub every configured confidential
+    // name from EVERY violation's lineContent — not only CP11 hits — BEFORE it
+    // reaches stdout (the public GitHub-Actions log). redactSpans is order-
+    // independent (span-merge, never chained .replace), and is a no-op when no
+    // names file is configured (cp11Patterns === []), so the CP1–CP10 default-path
+    // output is byte-identical to before. Redact first, THEN truncate, so a name
+    // straddling the 120-char boundary can never leak its tail.
+    const safeContent = redactSpans(v.lineContent, cp11Patterns);
+    fail(`${v.relPath}:${v.lineNum} — ${v.pattern}: ${safeContent.slice(0, 120)}`);
   }
 }
 
@@ -793,5 +945,15 @@ export function isOwnerLeakySegment(value) {
 
 // Run the scan only when invoked directly as a CLI (#661).
 if (isMain) {
-  runScan();
+  // runScan is async (the CP11 confidential-names helpers are now dynamically
+  // imported, standalone-safe) and self-terminates via process.exit(). We do NOT
+  // await it — that would make this a top-level-await module and force every static
+  // importer of isOwnerLeakySegment to become async. Instead we attach a `.catch`
+  // (Fix 4): while runScan's sole async step swallows its own errors today, an
+  // unhandled rejection from ANY future refactor must fail CLOSED with context and a
+  // deterministic exit 1 — never a silent unhandled-rejection warning + exit 0.
+  runScan().catch((err) => {
+    console.error('check-owner-leakage crashed:', err);
+    process.exit(1);
+  });
 }

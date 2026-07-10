@@ -4,7 +4,7 @@ tier: always
 
 # Security Rules (Always-on)
 
-Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `security-web.md`. Compliance and AI/LLM rules live in the baseline `security-compliance` rules (not vendored into this plugin).
+Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `rules/opt-in-stack/security-web.md`. Compliance and AI/LLM rules live in the baseline `security-compliance` rules (not vendored into this plugin).
 
 ## SEC Rule Numbering Convention
 SEC identifiers are assigned sequentially as rules are created. Gaps are intentional:
@@ -12,9 +12,10 @@ SEC identifiers are assigned sequentially as rules are created. Gaps are intenti
 - **SEC-004 to SEC-009**: Core security rules (auth, validation, SQL, secrets, errors)
 - **SEC-010 to SEC-012**: Compliance rules (documented in the baseline `security-compliance` rules, not vendored into this plugin)
 - **SEC-013 to SEC-015**: Advanced protection (XXE, SSRF, crypto)
-- **SEC-016 to SEC-017**: Data integrity (CSV injection, session hardening — in security-web.md)
+- **SEC-016 to SEC-017**: Data integrity (CSV injection, session hardening — in rules/opt-in-stack/security-web.md)
 - **SEC-018 to SEC-019**: Reserved candidates (prototype pollution CWE-1321, unsafe deserialization CWE-502 — currently covered by SEC-006)
 - **SEC-020**: Supply chain security (dependency trust, build script control)
+- **SEC-021**: Settings-allowlist token guard (PAT/token leakage into `.claude/settings.json` / `.claude/settings.local.json` permission entries)
 
 ## Authentication (SEC-004: Auth-at-Boundary)
 - Every server action MUST authenticate first: `const { user, businessId, supabase } = await requireAuth()`
@@ -141,19 +142,24 @@ Cross-references:
 - `git commit --no-verify` bypass remains available but logs a warning per `.claude/rules/development.md` Git Safety Protocol — use only after triage.
 - Regression test: every repo using this pattern should have a husky test asserting hook contains the scanner invocation, plus E2E tests that plant leaks in a tmp git repo and assert the commit is blocked. Reference: `tests/husky/pre-commit-owner-leakage.test.mjs`.
 
+## Settings-Allowlist Token Guard (SEC-021, #728b)
+- Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-xxxxxxxxxxxxxxxxxxxx:...)` allowlist line). A live GitLab PAT surfaced exactly this way in a portfolio repo — pasted in cleartext into a settings allowlist entry. Use an env-var reference or the OS keychain instead; never the raw secret value.
+- `.gitleaks.toml` (37 rules) is the canonical regex source for token shapes (`glpat-`, `ghp_`, `github_pat_`, `sk-ant-`, `AKIA`, …) and `scripts/lib/validate/check-test-fixture-shapes.mjs` (patterns F5–F8) is the in-repo prior art for the same shapes applied to test fixtures. Do not maintain a fifth copy of these regexes — the `repo-audit` Category 6 grep row (`skills/repo-audit/SKILL.md`) is a deliberate high-signal SUBSET of the 5 prefixes above, not a competing source of truth.
+- **Why `check-owner-leakage.mjs` does not cover this:** that scanner enumerates `git ls-files` — tracked files only, by design (see § "Owner-Privacy Pre-Commit Hook" above). `.claude/settings.local.json` is conventionally gitignored/untracked, so a token pasted there is structurally invisible to the pre-commit hook. `repo-audit`'s on-disk grep (reads the file directly, not via `git ls-files`) is the only mechanism in this repo that inspects the live file regardless of tracked status.
+
 ## OWASP Top 10 2021 Mapping
 
 | OWASP ID | Risk | Baseline Coverage |
 |---|---|---|
-| A01 | Broken Access Control | SEC-004 (Auth-at-Boundary), SEC-007 (RLS), security-web.md (CSRF), open-redirect (CWE-601), path-traversal (CWE-22) |
+| A01 | Broken Access Control | SEC-004 (Auth-at-Boundary), SEC-007 (RLS), rules/opt-in-stack/security-web.md (CSRF), open-redirect (CWE-601), path-traversal (CWE-22) |
 | A02 | Cryptographic Failures | SEC-015 (below), weak-hash (CWE-328), TLS validation (CWE-295), Math.random detection (CWE-338), Semgrep rules #37-38, #42-43 |
 | A03 | Injection | SEC-006 (Zod), SEC-007 (parameterized queries), SEC-013 (XXE), prototype-pollution (CWE-1321), ReDoS (CWE-1333), DOMPurify sanitization |
 | A04 | Insecure Design | MVP scope rules (mvp-scope.md), threat modeling at design phase |
-| A05 | Security Misconfiguration | security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), baseline infrastructure rules — Docker hardening (not vendored) |
+| A05 | Security Misconfiguration | rules/opt-in-stack/security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), baseline infrastructure rules — Docker hardening (not vendored) |
 | A06 | Vulnerable Components | Dependencies section (pnpm audit), CI Semgrep (65+ custom rules) + Gitleaks (37 rules) |
-| A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in security-web.md) |
+| A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in rules/opt-in-stack/security-web.md) |
 | A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
-| A09 | Logging Failures | backend.md (structured logging), @your-org/logger |
+| A09 | Logging Failures | rules/opt-in-stack/backend.md (structured logging), @your-org/logger |
 | A10 | SSRF | SEC-014 (safeFetch/safeFetchJSON, redirect re-validation) |
 
 ## Cryptographic Failures (SEC-015)
@@ -169,4 +175,4 @@ Cross-references:
 - Template at `templates/shared/SECURITY.md`. Customize contact email and scope per project.
 
 ## See Also
-development.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md
+development.md · testing.md · mvp-scope.md · cli-design.md · parallel-sessions.md

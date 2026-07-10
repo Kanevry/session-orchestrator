@@ -27,6 +27,11 @@
  *                                  { "real-slug": "pseudonym-slug" } map that vault-mirror uses to
  *                                  give owner-leaky repos stable pseudonyms instead of collapsing
  *                                  them all to 'redacted-repo'. Never committed; env SO_NAMESPACE_MAP overrides.)
+ *     confidential-names-file: string ('' = no override; #728a — points at a host-local FLAT JSON
+ *                                  array-of-strings ["customer-name", "private-repo", …] the
+ *                                  owner-leakage scanner's CP11 rule matches against tracked files.
+ *                                  The names live in the referenced file ONLY — NEVER inline in
+ *                                  owner.yaml. Never committed; env SO_CONFIDENTIAL_NAMES_FILE overrides.)
  *   dispatcher:             (optional; host-local cross-repo dispatcher autonomy override — #679)
  *     autonomy: string      ('' = no override; resolver enum off | advisory | autonomous-gated;
  *                            precedence env SO_DISPATCHER_AUTONOMY > this > committed > off)
@@ -97,6 +102,7 @@ export function getDefaults() {
       'vault-dir': '',
       'baseline-path': '',
       'namespace-map-path': '',
+      'confidential-names-file': '',
     },
     dispatcher: {
       autonomy: '',
@@ -201,7 +207,7 @@ export function validateOwnerConfig(obj) {
     if (!isPlainObject(paths)) {
       errors.push('paths must be an object when present');
     } else {
-      for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path']) {
+      for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file']) {
         const v = paths[key];
         if (v !== undefined && v !== null && typeof v !== 'string') {
           errors.push(`paths.${key} must be a string`);

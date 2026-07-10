@@ -190,6 +190,46 @@ describe('skills/repo-audit — #215 ported skill', () => {
     });
   });
 
+  describe('SKILL.md — Category 6 settings-allowlist token guard (SEC-021, #728b)', () => {
+    // Throw-on-miss section extraction — gold standard: dispatchCoreBlock() in
+    // tests/skills/wave-executor-dispatch-batch.test.mjs. A vacuous '' fallback
+    // would let every assertion below silently pass against an empty string.
+    function category6Section(text) {
+      const start = text.indexOf('### Category 6: Security');
+      const end = text.indexOf('### Category 7:');
+      if (start === -1 || end === -1 || end <= start) {
+        throw new Error('could not locate Category 6: Security section boundaries in repo-audit SKILL.md');
+      }
+      return text.slice(start, end);
+    }
+
+    const body = readFileSync(SKILL_PATH, 'utf8');
+    const category6 = category6Section(body);
+
+    it('(a) documents a settings-allowlist token check row', () => {
+      expect(category6).toMatch(/PAT\/token in settings-allowlist entries/i);
+    });
+
+    it('(b) references settings.local.json (on-disk, untracked) as a scan target', () => {
+      expect(category6).toMatch(/settings\.local\.json/);
+    });
+
+    it('(c) frames the check as a hard fail, not a warn', () => {
+      // Isolate just the new row so a `warn` elsewhere in Category 6 (e.g. the
+      // existing "sk-" heuristic row) cannot produce a false positive.
+      const rowMatch = category6.match(/^\|.*PAT\/token in settings-allowlist entries[\s\S]*?\|$/m);
+      expect(rowMatch).not.toBeNull();
+      const row = rowMatch[0];
+      expect(row).toMatch(/\bfail\b/i);
+      expect(row).not.toMatch(/\bwarn\b/i);
+    });
+
+    it('(d) grep pattern includes at least the glpat- and ghp_ token prefixes', () => {
+      expect(category6).toMatch(/glpat-/);
+      expect(category6).toMatch(/ghp_/);
+    });
+  });
+
   describe('commands/repo-audit.md', () => {
     it('command file exists', () => {
       expect(existsSync(COMMAND_PATH)).toBe(true);

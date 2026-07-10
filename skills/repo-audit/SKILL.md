@@ -102,6 +102,7 @@ Commands resolved from Session Config per Phase 1.
 | Auth-at-boundary pattern (`requireAuth`) | `grep -r 'requireAuth' --include='*.ts' src/ 2>/dev/null \|\| echo "N/A (no src/)"` |
 | Zod validation on inputs | `grep -r 'z\.object\|z\.string\|z\.parse\|safeParse' --include='*.ts' src/ 2>/dev/null \|\| echo "N/A"` |
 | No hardcoded secrets (scan for API key patterns) | `grep -r 'sk-\|api_key\s*=\s*"' --include='*.ts' --include='*.mts' --exclude-dir=node_modules . 2>/dev/null` — warn if found |
+| No PAT/token in settings-allowlist entries (`.claude/settings.json`, `.claude/settings.local.json` — on-disk, incl. untracked) | `grep -nEo 'glpat-[A-Za-z0-9_-]{20,}\|ghp_[A-Za-z0-9]{36,}\|github_pat_[A-Za-z0-9_]{22,}\|sk-ant-[A-Za-z0-9_-]{20,}\|AKIA[0-9A-Z]{16}' .claude/settings.json .claude/settings.local.json 2>/dev/null \| grep -vE 'AKIAIOSFODNN7EXAMPLE\|-PLACEHOLDER'` — **fail** if any match (hard — unlike the `sk-` heuristic above, these 5 prefixes are high-signal; see SEC-021 in `.claude/rules/security.md`). This check is required because `check-owner-leakage.mjs` scans `git ls-files` only — `settings.local.json` is gitignored/untracked by convention and structurally invisible to it. |
 | `.env*` files not tracked | `git ls-files | grep '\.env'` — fail if any `.env` (not `.env.example`) tracked |
 | `.env.example` documents all secrets | `ls .env.example 2>/dev/null` |
 

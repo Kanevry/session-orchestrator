@@ -27,6 +27,7 @@ Every repo session runs with the same AI but a different project context. The Ow
 - Bootstrap appends `~/.config/session-orchestrator/owner.yaml` to the global `~/.gitignore` during first-run as a safety net, preventing accidental staging across all repos on the machine.
 - Generated soul.md content is resolved in-memory per session and **never written to disk**.
 - Repos are safe to be public. `owner.yaml` cannot appear in any repo commit under any normal or misconfigured workflow.
+- `paths.confidential-names-file` (#728a) follows the SAME committed-mechanism / host-local-data contract: only the PATH lives in `owner.yaml` (env `SO_CONFIDENTIAL_NAMES_FILE` overrides), while the confidential customer/repo names live in the referenced never-committed JSON file. The owner-leakage scanner's CP11 rule matches tracked files against that list and **redacts** any matched name from its output — so even a CP11 hit surfaced in the public CI log never prints the confidential name itself.
 
 ## See Also
 development.md · security.md · cli-design.md · mvp-scope.md · parallel-sessions.md

@@ -290,16 +290,36 @@ describe('paths: section (#653)', () => {
       'vault-dir': '',
       'baseline-path': '',
       'namespace-map-path': '',
+      'confidential-names-file': '',
     });
   });
 
   it('accepts a config with a valid paths object', () => {
     const cfg = validConfig({
-      paths: { 'vault-dir': '/v', 'baseline-path': '/b', 'namespace-map-path': '/m.json' },
+      paths: {
+        'vault-dir': '/v',
+        'baseline-path': '/b',
+        'namespace-map-path': '/m.json',
+        'confidential-names-file': '/names.json',
+      },
     });
     const result = validateOwnerConfig(cfg);
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it('accepts a paths object WITHOUT confidential-names-file (additive back-compat) (#728a)', () => {
+    const cfg = validConfig({ paths: { 'vault-dir': '/v' } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('rejects a non-string paths.confidential-names-file member (#728a)', () => {
+    const cfg = validConfig({ paths: { 'confidential-names-file': 42 } });
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('paths.confidential-names-file must be a string');
   });
 
   it('accepts a paths object WITHOUT namespace-map-path (additive back-compat)', () => {

@@ -164,6 +164,45 @@ describe('resolveHostPath — namespace-map-path (#725 D5)', () => {
   });
 });
 
+describe('resolveHostPath — confidential-names-file (#728a)', () => {
+  it('reads SO_CONFIDENTIAL_NAMES_FILE with highest precedence', () => {
+    const result = resolveHostPath('confidential-names-file', '', {
+      env: { SO_CONFIDENTIAL_NAMES_FILE: '/env-names.json' },
+      ownerConfig: { paths: { 'confidential-names-file': '/owner-names.json' } },
+    });
+    expect(result).toBe('/env-names.json');
+  });
+
+  it('owner override wins when no env-var is set', () => {
+    const result = resolveHostPath('confidential-names-file', '', {
+      env: {},
+      ownerConfig: { paths: { 'confidential-names-file': '/owner-names.json' } },
+    });
+    expect(result).toBe('/owner-names.json');
+  });
+
+  it('falls through to the committed default when unset at both tiers', () => {
+    const result = resolveHostPath('confidential-names-file', '', { env: {}, ownerConfig: {} });
+    expect(result).toBe('');
+  });
+
+  it('SO_CONFIDENTIAL_NAMES_FILE does NOT affect vault-dir resolution', () => {
+    const result = resolveHostPath('vault-dir', '/committed', {
+      env: { SO_CONFIDENTIAL_NAMES_FILE: '/env-names.json' },
+      ownerConfig: {},
+    });
+    expect(result).toBe('/committed');
+  });
+
+  it('SO_NAMESPACE_MAP does NOT affect confidential-names-file resolution', () => {
+    const result = resolveHostPath('confidential-names-file', '', {
+      env: { SO_NAMESPACE_MAP: '/env-map.json' },
+      ownerConfig: {},
+    });
+    expect(result).toBe('');
+  });
+});
+
 describe('loadHostPaths', () => {
   it('returns the loaded ownerConfig and the passed env', () => {
     const fakeEnv = { SO_VAULT_DIR: '/x' };

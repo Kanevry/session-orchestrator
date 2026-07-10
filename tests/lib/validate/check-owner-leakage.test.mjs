@@ -1176,3 +1176,162 @@ describe('#661 follow-up: Findings 4+5 — letter-decoding + fixpoint loop', () 
     expect(matchOwnerPath('cache%20dir is fine')).toBe(null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CP11: host-local confidential customer/repo names (#728a)
+//
+// The names list is HOST-LOCAL and never committed; the CLI resolves it via
+// resolveHostPath('confidential-names-file', …), whose highest-precedence tier
+// is the env-var SO_CONFIDENTIAL_NAMES_FILE. Tests inject a real temp names JSON
+// via that env-var, written OUTSIDE the scanned root so the names file itself is
+// never a scan subject. Fixture names are invented ('zenithcorp') — never a real
+// confidential name (confidentiality invariant).
+//
+// LOAD-BEARING assertion: a CP11 hit must REDACT the matched name from stdout,
+// because the checker runs in a PUBLIC GitHub-Actions mirror — the confidential
+// name must NOT appear in the CI log even when the guard fires.
+// ---------------------------------------------------------------------------
+
+describe('CP11: confidential-name leak (host-local list)', () => {
+  /**
+   * Run the check CLI with a host-local confidential-names file injected via env.
+   * The names file is written to a sibling tmpdir, never inside `root`.
+   * @param {string} root - scanned repo root
+   * @param {string[]} names - confidential names to write into the JSON list
+   */
+  function runCheckWithNames(root, names) {
+    const namesDir = mkdtempSync(join(os.tmpdir(), 'owner-leakage-names-'));
+    const namesFile = join(namesDir, 'confidential-names.json');
+    writeFileSync(namesFile, JSON.stringify(names));
+    return spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
+    });
+  }
+
+  it('exits 1 and FAILs when a tracked file contains a configured confidential name', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), '# Client work\nWe onboarded zenithcorp last week.\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('  FAIL:');
+    expect(result.stdout).toContain('CP11');
+  });
+
+  it('REDACTS the matched name from the FAIL output (load-bearing privacy invariant)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'Contract signed with zenithcorp GmbH.\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp']);
+    expect(result.status).toBe(1);
+    // The redaction sentinel is present …
+    expect(result.stdout).toContain('[REDACTED]');
+    // … and the confidential name itself NEVER reaches stdout.
+    expect(result.stdout).not.toContain('zenithcorp');
+  });
+
+  it('matches case-insensitively and redacts every occurrence on the line', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'ZenithCorp and zenithcorp are the same client.\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain('ZenithCorp');
+    expect(result.stdout).not.toContain('zenithcorp');
+    expect(result.stdout).toContain('[REDACTED]');
+  });
+
+  it('redacts ALL configured names on a line naming two DIFFERENT ones (multi-name leak)', () => {
+    // CRITICAL CP11 privacy invariant: a line mentioning TWO distinct confidential
+    // names must have BOTH redacted before its lineContent reaches the PUBLIC
+    // GitHub-Actions log. Redacting only the FIRST matching pattern (and breaking)
+    // echoes the SECOND NDA name verbatim to stdout — a worse leak than the one
+    // being guarded. Both names must be absent; [REDACTED] must be present.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'zenithcorp and apexglobal are both clients.\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp', 'apexglobal']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('CP11');
+    expect(result.stdout).toContain('[REDACTED]');
+    // NEITHER confidential name may reach stdout — the bug leaks at least one.
+    expect(result.stdout).not.toContain('zenithcorp');
+    expect(result.stdout).not.toContain('apexglobal');
+  });
+
+  it('PASSES a tracked file that contains no configured confidential name', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'We onboarded a new client this week.\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp']);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  // Fix 1 (architect): choke-point redaction — a confidential name that rides in on
+  // a CP1–CP10 hit (here CP8, an RFC1918 IP) must be scrubbed from THAT violation's
+  // lineContent too. Pre-fix RED: the CP8 FAIL line printed the name verbatim.
+  it('redacts a confidential name that co-occurs with a CP8 (RFC1918 IP) hit — choke-point (Fix 1)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'infra.md'), 'zenithcorp server runs at 10.1.2.3 internally\n');
+    });
+    const result = runCheckWithNames(root, ['zenithcorp']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('P8');
+    expect(result.stdout).not.toContain('zenithcorp');
+    expect(result.stdout).toContain('[REDACTED]');
+  });
+
+  // Fix 2 (security, PoC-confirmed): order-independent redaction — a name that is a
+  // PREFIX of another must not leak a suffix residue, in EITHER list order.
+  it('order-independent redaction, ORDER A [short,long] — no suffix residue (Fix 2)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'The acme-corp-secret-project launches soon.\n');
+    });
+    const result = runCheckWithNames(root, ['acme', 'acme-corp-secret-project']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('CP11');
+    expect(result.stdout).toContain('[REDACTED]');
+    expect(result.stdout).not.toContain('acme-corp-secret-project');
+    expect(result.stdout).not.toContain('-corp-secret-project');
+  });
+
+  it('order-independent redaction, ORDER B [long,short] — same input fully redacts (Fix 2)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'The acme-corp-secret-project launches soon.\n');
+    });
+    const result = runCheckWithNames(root, ['acme-corp-secret-project', 'acme']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('[REDACTED]');
+    expect(result.stdout).not.toContain('acme-corp-secret-project');
+    expect(result.stdout).not.toContain('-corp-secret-project');
+  });
+
+  it('is INACTIVE when the list is empty (configured but zero names)', () => {
+    const root = makeTmpRepo((r) => {
+      // A would-be confidential token — but the empty list means CP11 never fires.
+      writeFileSync(join(r, 'notes.md'), 'Mentions zenithcorp explicitly.\n');
+    });
+    const result = runCheckWithNames(root, []);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, 'CP11')).toBe(0);
+  });
+
+  it('is INACTIVE when no confidential-names file is configured (unconfigured default)', () => {
+    // No SO_CONFIDENTIAL_NAMES_FILE override → env tier explicitly unset → owner.yaml
+    // is unconfigured for this brand-new key on every host/CI this test runs on →
+    // CP11 inactive. The invented token below is never a real confidential name.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'A synthetic token zenithcorp-unconfigured appears here.\n');
+    });
+    const result = spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, 'CP11')).toBe(0);
+  });
+});

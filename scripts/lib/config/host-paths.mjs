@@ -27,6 +27,8 @@ const ENV_KEYS = /** @type {const} */ ({
   'baseline-path': 'SO_BASELINE_PATH',
   // #725 D5 — host-local pseudonym map for vault-mirror namespace resolution.
   'namespace-map-path': 'SO_NAMESPACE_MAP',
+  // #728a — host-local confidential customer/repo name list for CP11 leak scanning.
+  'confidential-names-file': 'SO_CONFIDENTIAL_NAMES_FILE',
 });
 
 /**
@@ -57,7 +59,7 @@ export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig
  * (fall through to the next tier). When no override is set, `committedDefault`
  * passes through unchanged — including `null`/`undefined`, preserving back-compat.
  *
- * @param {'vault-dir'|'baseline-path'|'namespace-map-path'} key — logical path key
+ * @param {'vault-dir'|'baseline-path'|'namespace-map-path'|'confidential-names-file'} key — logical path key
  * @param {string|null|undefined} committedDefault — value the committed Session Config produced
  * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [ctx] — from loadHostPaths()
  * @returns {string|null|undefined} resolved value
