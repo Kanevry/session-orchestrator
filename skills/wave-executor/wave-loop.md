@@ -79,6 +79,10 @@ After resolving `isolation`, compute the wave's enforcement via `resolveEnforcem
 
 Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
 
+#### Contract-Lock Serialization (Pattern A, #730/H1)
+
+When the session plan marks a wave task `contract-lock: true` (session-plan Step 3.5 step 6), dispatch that single agent ALONE as the first batch and WAIT for its tool-result before dispatching the disjoint fan-out batches. The lock agent freezes the shared contract (interfaces/schemas/shared types/constants) so the N follow-on agents build against a fixed surface instead of racing to invent it. Never place the contract-lock agent in the same batch as the impl agents — its output is an input to theirs. The contract file MUST NOT appear in any follow-on agent's allowedPaths (read-only reference). If the lock agent reports STATUS: partial/failed, PAUSE the fan-out and surface the choice via AskUserQuestion (proceed with partial contract / re-dispatch lock / abort wave).
+
 #### Dispatch Verification (fail-loud — #724)
 
 After each batch's Agent() tool-results return, and once all batches for the wave have been dispatched, **count the Agent tool-results received for this wave against the planned agent list** (the agents named in the session plan for this wave). This closes the silent-drop failure class that motivated the small-batch default above (a large fan-out drops calls with no error).
@@ -158,6 +162,22 @@ if (configIsolation === 'worktree' && newDirAgentCount > 0) {
 ```
 
 After running this detection block, call `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` with the (possibly overridden) `configIsolation`. Then call `resolveEnforcement({ isolation, configEnforcement })` as normal — when isolation resolved to `'none'` via Branch 2, enforcement auto-promotes `warn` → `strict`, which MUST be noted explicitly in the wave progress update.
+
+#### Pre-Dispatch: Path-Cousin-Guard Injection (#730.3)
+
+Before dispatching each agent whose fileScope contains a NEW (non-existent) file target, check for existing "cousin" files with a similar basename elsewhere in the repo — prevents the framing-wrong class where an agent creates `scripts/lib/foo/bar.mjs` while `scripts/lib/bar.mjs` already exists and serves the same purpose.
+
+**Detection (mechanical, reuses the new-file scan from #243 above):** for each not-yet-existing file target `<newPath>` in an agent's fileScope, take `basename(<newPath>)` minus extension; skip generic basenames (`index`, `utils`, `main`, `config`, or length ≤ 3 chars — false-positive control). Then:
+
+    git ls-files | grep -iE "(^|/)<basename>\.[a-z]+$"
+
+**If ≥1 candidate found**, prepend to the agent's prompt:
+
+    <PATH-COUSIN-GUARD>
+    Before creating <newPath>, verify it does not duplicate existing functionality — candidate file(s) with a similar name exist: <candidates>. Read each candidate first. If one already serves this purpose, extend/reuse it instead. Only proceed with the new file if you can state why the existing candidate(s) don't fit.
+    </PATH-COUSIN-GUARD>
+
+**If 0 candidates:** dispatch unchanged — same silent-no-op convention as Grounding Injection / Frontmatter-Guard above. Never blocks dispatch.
 
 #### Agent-Type Resolution
 
@@ -658,7 +678,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
      ```
    - Each reviewer writes its findings to `.orchestrator/audits/wave-reviewer-<wave>-<reviewer-name>.md`. The coordinator does NOT need to create this file — the reviewer agent writes it directly.
    - **Findings are ADVISORY**: reviewer output never blocks the subsequent wave. After all dispatched reviewers complete:
-     - If any reviewer reports **WARN**: surface the findings to the user in the wave progress summary. Feed actionable items into the next wave's agent assignments (step 3 — Adapt Plan).
+     - If any reviewer reports **WARN**: surface the findings to the user in the wave progress summary. Feed actionable items into the next wave's agent assignments (step 3 — Adapt Plan). If a WARN/FAIL finding is surfaced but NOT converted into a fix task for the next wave, append ONE line to `## Deviations` via `appendDeviationOnDisk(repoRoot, isoTimestamp, message)` (#730/H5): `- [<ISO 8601 UTC>] Wave N reviewer finding overridden (not actioned): <one-line finding>.` — session-end Phase 2.6 (Broken-Window Budget) walks these entries at close.
      - If any reviewer reports **FAIL**: surface the findings prominently in the wave progress summary with a `[REVIEWER FAIL]` prefix. Still proceed to step 5 (session-reviewer) — do not halt wave execution.
      - If all reviewers report **PASS** or produce no findings: log a one-line note and continue.
    - **Default behaviour unchanged**: when `wave-reviewers` is absent or `[]`, this step is a no-op and the wave loop proceeds exactly as before.
@@ -676,7 +696,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
      })
      ```
    - The session-reviewer checks changed files against the plan and reports PASS/WARN/FAIL per category (implementation, tests, TypeScript, security, silent failures, test depth, type design, issues).
-   - If the session-reviewer reports **WARN or FAIL** findings: add fix tasks to the next wave's agent assignments (feed into step 3 — Adapt Plan).
+   - If the session-reviewer reports **WARN or FAIL** findings: add fix tasks to the next wave's agent assignments (feed into step 3 — Adapt Plan). If a WARN/FAIL finding is surfaced but NOT converted into a fix task for the next wave, append ONE line to `## Deviations` via `appendDeviationOnDisk(repoRoot, isoTimestamp, message)` (#730/H5): `- [<ISO 8601 UTC>] Wave N reviewer finding overridden (not actioned): <one-line finding>.` — session-end Phase 2.6 (Broken-Window Budget) walks these entries at close.
    - After the **Quality** wave: dispatch the session-reviewer with **full session scope** (all files changed since session start, not just the current wave). Use `git diff --name-only $SESSION_START_REF..HEAD` to provide the complete changed files list.
    - Include `SESSION_START_REF` (captured in Pre-Wave 1) in the session-reviewer prompt so it can compute the full changed files list independently.
    - **Relationship to session-end Phase 1.8:** Wave-level session-reviewer runs provide incremental feedback during execution. Session-end Phase 1.8 runs a final comprehensive review of ALL changes. Both are complementary — wave reviews catch issues early, session-end review is the final quality gate.
@@ -709,6 +729,8 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    - `agent_count_started`: distinct agents that produced a tool-result, after any silent-drop re-dispatch (Dispatch Verification, #724). A gap `agent_count_planned > agent_count_started` after re-dispatch signals a persistent silent drop.
    - Per-agent results: `{description, status: done|partial|failed, files_changed_count}`
    - `files_changed`: total unique files changed this wave (from `git diff --stat --name-only`)
+   - `planned_files_count`: size of this wave's Planned set (union of agent file scopes) as computed in step 3c File-level grounding above. Reuse that value — do not recompute.
+   - `over_delivery_ratio`: files_changed / max(planned_files_count, 1), rounded to 2 decimals. > 1 = agents touched more files than briefed (under-sizing signal, #730/H4). Omit both fields when `grounding-check: false`.
    - `quality_check`: incremental check result (pass/fail/skipped)
    Append this wave record to the session metrics `waves` array.
 
@@ -751,9 +773,9 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 
 1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input)
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
-3. **`## Wave History`**: append an entry for the completed wave:
+3. **`## Wave History`**: append an entry for the completed wave (the `(planned … → actual …, over-delivery …)` parenthetical is omitted when `grounding-check: false`, since the counts are unavailable):
    ```
-   ### Wave N — <Role>
+   ### Wave N — <Role> (planned <P> files → actual <A>, over-delivery <R>)
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    ```

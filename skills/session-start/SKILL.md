@@ -944,6 +944,21 @@ Cross-reference: PRD F2.3 acceptance criteria (#505); `scripts/lib/memory-banner
 - Skip deep research — prioritize operational tasks
 - Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
 
+## Phase 7.1: Issue Premise Verification (#730/H3)
+
+> Skip for `housekeeping` sessions (Phase 7 already skips deep research there).
+> Runs on the shortlisted candidate issues from Phase 6 Pattern Recognition
+> (cap: 8 issues — cost control; prioritize the issues most likely to enter scope).
+
+Mechanizes the Phase 7 rule "ALWAYS verify current state in actual code" as a
+checklist: for each candidate issue, extract its core state-claims, verify
+each with exactly one grep/Read, and classify SHIPPED / GAP / FALSCH-PRÄMISSE / UNVERIFIED.
+Emits a `### Premise Verification Result (Phase 7.1)` block into context —
+consumed by Phase 8's AUQ (flag FALSCH-PRÄMISSE/SHIPPED issues before the
+user aligns on scope) and by session-plan Step 1 (re-scope before decomposing).
+
+**See `phase-7-1-premise-check.md` for full details.**
+
 ## Phase 7.5: Mode-Selector Pre-Pass (Epic #271 Phase B-2)
 
 > Skip this phase if `persistence` config is `false`, or if the entire Phase 6.6 block was skipped.
@@ -1013,5 +1028,6 @@ After user alignment:
 | (inline) Phase 2.7 | GitLab Portfolio Snapshot — dry-run aggregation banner; gated on `gitlab-portfolio.enabled: true` + `vault-integration.enabled: true`; dispatches `scripts/lib/gitlab-portfolio/cli.mjs --dry-run`; 8s timeout; never blocks session-start |
 | `phase-4-5-resource-health.md` | Phase 4.5 full procedural body — resource probe, adaptive thresholds table, AUQ presentation, session-plan cap handoff |
 | (inline) Phase 6.7 | Memory Banner — `renderMemoryBanner` from `scripts/lib/memory-banner.mjs` (#505); silent no-op when `memory.banner.enabled: false` or `persistence: false` |
+| `phase-7-1-premise-check.md` | Phase 7.1 full procedural body — claim extraction, one-grep-per-claim verification, verdict table, emission block format |
 | `phase-7-5-mode-selector.md` | Phase 7.5 full procedural body — buildLiveSignals, selectMode invocation, banner rendering, AUQ ordering protocol, graceful no-op rules, accuracy learning write |
 | `phase-8-5-express-path.md` | Phase 8.5 full procedural body — activation conditions, banner, coordinator-direct execution, STATE.md logging, condition examples table |

@@ -460,6 +460,10 @@ When an agent's task scope includes vault paths (`~/Projects/vault/` or vault su
 
 See `wave-loop.md` § Pre-Dispatch: Frontmatter-Guard Injection for the exact contract. The snippet generator is `scripts/lib/frontmatter-guard.mjs` (skill: `skills/frontmatter-guard/`).
 
+## Path-Cousin-Guard (#730.3)
+
+When a wave agent's file scope includes a NEW file target, the wave-executor injects a mechanical grep-based "cousin path" check into the agent's prompt before dispatch — preventing the recurring failure class where an agent creates a duplicate file at a nearby path instead of finding/extending the existing one. See `wave-loop.md` § Pre-Dispatch: Path-Cousin-Guard Injection for the exact contract.
+
 ## Worker-Pool Dispatch (#415)
 
 An opt-in bounded-concurrency cursor-based pull loop that replaces the default Promise.all() fan-out for agent dispatch. Controlled by three Session Config fields under the `worker-pool` object:
