@@ -171,11 +171,13 @@ const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 // For each SPIRAL/FAILED agent from the Wave History walk:
 await appendWhatNotToRetryOnDisk(repoRoot, {
   approach: '<agent task description from Wave History>',
-  why_failed: '<SPIRAL|FAILED> — <one-line context from Deviations / error>',
+  why_failed: '<SPIRAL|FAILED> — <one-line context> (evidence: <file:line or path>)',
   session_id: sessionId,
   date: today,
 });
 ```
+
+`why_failed` MUST cite at least one concrete file (and line, if applicable) that grounds the failure — a bare narrative reason without a file reference is not acceptable.
 
 The helper is lock-guarded (PSA-005) and prunes the section FIFO to the 10 most-recent entries on each append. **Optional coordinator entry:** if the session abandoned an approach for reasons NOT captured by a SPIRAL/FAILED agent (e.g. a design that proved unworkable mid-session), the coordinator MAY add a free-text entry through the SAME `appendWhatNotToRetryOnDisk` helper with a descriptive `approach` + `why_failed`. Recording is informational and does NOT block the close.
 

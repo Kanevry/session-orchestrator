@@ -68,4 +68,12 @@ describe('What Not To Retry populate wiring (#623, session-end)', () => {
     expect(region).toMatch(/SPIRAL/);
     expect(region).toMatch(/FAILED/);
   });
+
+  it('the populate step requires why_failed to cite file-level evidence (#730)', () => {
+    const idx166 = body.indexOf('#### 1.6.6');
+    const idx17 = body.indexOf('### 1.7 Metrics Collection', idx166);
+    const region = body.slice(idx166, idx17);
+    expect(region).toContain('evidence');
+    expect(region).toMatch(/file/i);
+  });
 });

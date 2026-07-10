@@ -47,6 +47,12 @@ if grep -q "^## Session Config" CLAUDE.md; then
   echo "Session Config block confirmed."
 else
   # Sentinel absent — claude init did NOT populate the file (or wrote minimal content).
+  # Fall back to plugin-template generation: append canonical Harte-Regeln block
+  # BEFORE the Session Config block (pattern: the templates/_shared/... cp steps
+  # in Step 3a below).
+  if ! grep -q "^## Harte Regeln" CLAUDE.md 2>/dev/null; then
+    cat "$PLUGIN_ROOT/templates/_shared/harte-regeln.md" >> CLAUDE.md
+  fi
   # Fall back to plugin-template generation: append canonical Session Config block
   # (issue #182: 7 mandatory fields enforced by scripts/lib/config-schema.mjs).
   cat >> CLAUDE.md <<'EOF'

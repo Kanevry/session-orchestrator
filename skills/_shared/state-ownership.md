@@ -49,8 +49,10 @@ A log of failed or abandoned approaches that future sessions should NOT re-attem
 ## What Not To Retry
 
 - **<approach>** (<session_id>, <date>)
-  - why: <why_failed>
+  - why: <SPIRAL|FAILED> — <one-line context> (evidence: <file:line or path>)
 ```
+
+`why_failed` MUST cite at least one concrete file (and line, if applicable) that grounds the failure — a bare narrative reason without a file reference is not acceptable.
 
 - **Writer:** session-end Phase 1.6 — for every SPIRAL/FAILED agent it appends one entry via `appendWhatNotToRetryOnDisk(repoRoot, entry)`; the coordinator MAY also add a free-text entry through the same helper.
 - **Reader:** session-start Phase 6.5.1 — surfaces the section as a forced-read block wrapped in the HISTORICAL guard banner (`scripts/lib/historical-guard.mjs`). It is a READER only and never mutates the slot.
@@ -76,6 +78,26 @@ A log of unresolved, user-facing questions surfaced by wave agents during a sess
 - **Idle-Reset preservation (load-bearing):** **`## Open Questions` SURVIVES the completed-branch Idle Reset** — unlike per-session `## Deviations` (which is emptied) and `## Wave History` (which is demoted into `## Previous Session`). Unanswered questions are exactly the ones that need to reach the NEXT session's operator, so session-start's Idle Reset MUST NOT clear, demote, or drop it — mirroring `## What Not To Retry` above (#623).
 
 Helpers: `readOpenQuestions` (pure), `appendOpenQuestion` (pure), `markOpenQuestionAnswered` (pure), `appendOpenQuestionOnDisk` (lock-guarded write), `markOpenQuestionAnsweredOnDisk` (lock-guarded write) — all exported from `scripts/lib/state-md.mjs`.
+
+## CCU-009 — Status = Index, Never History (#730/H6)
+
+> Adopted from an external-repo fleet-mining finding (2026-07-02): narrative
+> status content accreting into a project's primary instruction file, never
+> routed to a durable history channel.
+
+**The convention:** any status-bearing document — STATE.md, a CLAUDE.md
+"Current State" section, a dashboard file — MUST hold only the CURRENT
+(and optionally the immediately-PRIOR) state, never an append-only narrative
+log. This is not new here: `## Wave History` demotion to `## Previous Session`
+on Idle-Reset, the preserved single-slot `## What Not To Retry`, and session
+memory files already implement the split — CCU-009 is the explicit NAME of
+the pattern so it can be checked for, not just followed by convention.
+
+**Where narrative belongs instead (durable-history channels):**
+`.orchestrator/metrics/sessions.jsonl` (per-session record), session memory
+(`~/.claude/projects/<project>/memory/`), and vault-mirror `50-sessions/`
+notes. A CLAUDE.md "Current State" or STATE.md free-text block that keeps
+growing across sessions is the CCU-009 anti-pattern.
 
 ## Ownership Model
 
