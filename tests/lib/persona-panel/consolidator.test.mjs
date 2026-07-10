@@ -535,6 +535,17 @@ describe('diffGroundingSources', () => {
     expect(result.newly_derived).toEqual([]);
   });
 
+  it('normalises backslash paths before comparing — "foo\\bar.md" (author) confirms "foo/bar.md" (derived)', () => {
+    const authorSources = ['foo\\bar.md'];
+    const outputs = [
+      { persona_name: 'alpha', derived_sources: [{ path: 'foo/bar.md' }] },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result.unconfirmed_author_sources).toEqual([]);
+    expect(result.newly_derived).toEqual([]);
+    expect(result.personas_reporting).toBe(1);
+  });
+
   it('does not count a persona output with an empty/absent derived_sources toward personas_reporting', () => {
     const authorSources = ['docs/a.md'];
     const outputs = [

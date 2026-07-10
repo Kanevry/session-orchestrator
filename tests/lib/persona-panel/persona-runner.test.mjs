@@ -165,6 +165,20 @@ describe('buildPersonaPrompt — groundingMode', () => {
       /groundingMode must be one of/,
     );
   });
+
+  it('throws a TypeError (not the enum-validation Error) with a "must be a string" message when groundingMode is a non-string (e.g. a number)', () => {
+    // Distinct code path from the "unrecognised groundingMode" test above: a
+    // non-string value (42) must be rejected by the typeof guard BEFORE the
+    // GROUNDING_MODES.has() enum check ever runs — the two throw sites use
+    // different Error subclasses AND different messages, so only asserting
+    // BOTH the type and the message falsifies a future merge of the branches
+    // into a single plain Error (message-only survives that merge; type-only
+    // survives a message-string typo).
+    expect(() => buildPersonaPrompt(samplePersona, sampleTarget, 'body', 42)).toThrow(TypeError);
+    expect(() => buildPersonaPrompt(samplePersona, sampleTarget, 'body', 42)).toThrow(
+      /groundingMode must be a string/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

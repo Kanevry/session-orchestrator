@@ -62,8 +62,8 @@
             "pattern": "^[a-z0-9-]{1,64}$"
           },
           "version": {
-            "type": "integer",
-            "minimum": 1
+            "type": "string",
+            "minLength": 1
           },
           "model": {
             "type": "string",

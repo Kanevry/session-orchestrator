@@ -607,4 +607,24 @@ describe('createBrokenWindowIssue', () => {
     expect(res.error).toContain('missing item.title');
     expect(execFileSync).not.toHaveBeenCalled();
   });
+
+  // #794 GAP-4: the config-parsing path (`_parseBrokenWindow`) now rejects
+  // due-days above MAX_DUE_DAYS before it ever reaches this module — but
+  // `createBrokenWindowIssue` accepts `dueDays` directly as a call argument,
+  // a path the MAX-boundary guard does NOT cover (it lives only in the parser).
+  // `computeDueDate` overflows `Date#setUTCDate` for a wildly out-of-range
+  // value, and `.toISOString()` throws a RangeError — caught by the outer
+  // try/catch here and surfaced as a fail-open `skipped:'error'`, never a crash.
+  it('fails open (skipped:error) for a wildly out-of-range dueDays passed directly (#794 GAP-4)', async () => {
+    const res = await createBrokenWindowIssue({
+      item: { title: 'direct-API dueDays overflow', source: 'gap-4-direct' },
+      dueDays: 999999999,
+      vcs: 'gitlab',
+    });
+    expect(res.created).toBe(false);
+    expect(res.skipped).toBe('error');
+    expect(typeof res.error).toBe('string');
+    // Fails before the dedup lookup ever shells out (computeDueDate throws first).
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
 });

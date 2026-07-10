@@ -127,6 +127,7 @@ For each of the 9 built-in analyzer learning types, apply these heuristics:
 - Calculate average agents per wave for each session type
 - Subject = canonical identifier like `deep-session-sizing` or `feature-session-sizing`
 - Insight = "Deep sessions average X agents across Y waves" or "Feature sessions work well with X agents/wave"
+- **Over-delivery ratio aggregation (#730/H4, #794.7):** compute the MEDIAN of `waves[].over_delivery_ratio` across the last ~5 `sessions.jsonl` records of the same `session_type`, filtered to waves whose `role` is not `Discovery`/`Finalization` and which carry the field (skip records lacking the field — pre-#730; also skip Discovery/Finalization waves, whose planned set is empty by design). This exclusion clause is intentionally identical to `skills/session-plan/SKILL.md` Step 0.5 "Over-delivery sizing" — keep the two wordings in sync on edit. Fold the median into this candidate's `insight`/`evidence` fields — e.g. `evidence`: `"median_over_delivery_ratio: 1.4 (n=12 waves, session_type=deep)"` — so `session-plan` Step 0.5 can read the ratio from the `effective-sizing` learning first, falling back to its own direct `sessions.jsonl` scan only when no such learning exists.
 
 #### 3. recurring-issue (type: `recurring-issue`)
 

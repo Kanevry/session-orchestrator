@@ -85,7 +85,7 @@ function goodSidecar(overrides = {}) {
     personas_invoked: [
       {
         name: 'persona-alpha',
-        version: 1,
+        version: '1',
         model: 'claude-opus-4-7',
         prompt_hash: 'aabbccddeeff0011',
         timestamp_start: '2026-05-19T12-00-00Z',
@@ -365,6 +365,42 @@ describe('persona-panel-sidecar schema — token_usage nested shape', () => {
     expect(ok).toBe(false);
     expect(Array.isArray(validate.errors)).toBe(true);
     expect(validate.errors.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 9b (issue #794 ARCH-1 regression guard): personas_invoked[].version
+// is a STRING type per persona-format.md + catalog-loader.mjs — never an
+// integer. This guards against re-drifting the sidecar side back to the
+// integer shape that used to disagree with the frontmatter side.
+// ---------------------------------------------------------------------------
+
+describe('persona-panel-sidecar schema — version field type (issue #794 ARCH-1)', () => {
+  it('accepts a string version (matches persona-format.md + catalog-loader.mjs)', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    value.personas_invoked[0].version = '2';
+
+    expect(validate(value)).toBe(true);
+    expect(validate.errors).toBeFalsy();
+  });
+
+  it('rejects an integer version at the exact instancePath — regression guard against re-drift to integer', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    value.personas_invoked[0].version = 1; // integer, not string — must be rejected
+
+    const ok = validate(value);
+    expect(ok).toBe(false);
+    expect(Array.isArray(validate.errors)).toBe(true);
+
+    const versionTypeError = validate.errors.find(
+      (e) => e.instancePath === '/personas_invoked/0/version' && e.keyword === 'type',
+    );
+    expect(versionTypeError).toBeDefined();
+    expect(versionTypeError.params).toEqual({ type: 'string' });
   });
 });
 

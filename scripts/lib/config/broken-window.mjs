@@ -15,15 +15,22 @@
  * Consumer: `scripts/lib/config.mjs`, `skills/session-end/SKILL.md` Phase 2.6.
  */
 
+// Upper bound for due-days (~10 years). Guards against Date#setUTCDate
+// overflowing into an Invalid Date downstream (#794 GAP-4).
+const MAX_DUE_DAYS = 3650;
+
 /**
  * Parse the top-level `broken-window-budget:` YAML block from markdown content.
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
  *   enabled:  false (opt-in — the whole Phase 2.6 is silent when disabled)
- *   due-days: 7 (integer >= 1; the closure issue's hard due-date = today + this).
- *             Malformed, non-integer, or < 1 input falls back to 7 and emits a
- *             stderr WARN.
+ *   due-days: 7 (integer >= 1 and <= 3650 [~10 years]; the closure issue's hard
+ *             due-date = today + this). Malformed, non-integer, < 1, or > 3650
+ *             input falls back to 7 and emits a stderr WARN. The upper bound
+ *             guards against `Date#setUTCDate` overflowing into an Invalid Date
+ *             (RangeError on `.toISOString()` downstream in
+ *             `spiral-carryover.mjs` `computeDueDate` — #794 GAP-4).
  *
  * YAML shape:
  *   broken-window-budget:
@@ -79,13 +86,15 @@ export function _parseBrokenWindow(content) {
         break;
 
       case 'due-days': {
-        if (/^\d+$/.test(v) && parseInt(v, 10) >= 1) {
-          // Positive integer (>= 1 — a 0-day due-date is nonsensical for a
-          // hard-terminated closure issue).
-          dueDays = parseInt(v, 10);
+        const parsed = /^\d+$/.test(v) ? parseInt(v, 10) : NaN;
+        if (Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_DUE_DAYS) {
+          // Positive integer within bounds (>= 1 — a 0-day due-date is
+          // nonsensical for a hard-terminated closure issue; <= MAX_DUE_DAYS —
+          // guards against Date overflow downstream, #794 GAP-4).
+          dueDays = parsed;
         } else {
-          // Malformed (non-numeric, empty), non-integer, or < 1 — emit a
-          // stderr WARN on this fallback path (handover-gate parity).
+          // Malformed (non-numeric, empty), non-integer, < 1, or > MAX_DUE_DAYS
+          // — emit a stderr WARN on this fallback path (handover-gate parity).
           process.stderr.write(
             `⚠ broken-window-budget.due-days: '${v}' invalid — falling back to 7\n`
           );

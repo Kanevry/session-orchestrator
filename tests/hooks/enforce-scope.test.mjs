@@ -79,6 +79,31 @@ async function mkProjectTracked(scope) {
   return dir;
 }
 
+/**
+ * Create a temporary project directory whose .claude/wave-scope.json holds
+ * RAW (non-JSON-parseable) content, rather than a serialized scope object.
+ * Used to exercise the readJson() catch path (#794 GAP-5) — a corrupt scope
+ * file must fail closed, not crash or silently allow.
+ */
+async function mkProjectRawScope(rawContent) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-test-'));
+  await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
+  await fs.mkdir(path.join(dir, 'src'), { recursive: true });
+  await fs.writeFile(path.join(dir, '.claude/wave-scope.json'), rawContent);
+  // init git so project-root detection works the same as production
+  const { $ } = await import('zx');
+  $.verbose = false;
+  $.quiet = true;
+  await $`git -C ${dir} init -q`;
+  return dir;
+}
+
+async function mkProjectRawScopeTracked(rawContent) {
+  const dir = await mkProjectRawScope(rawContent);
+  tmpDirs.push(dir);
+  return dir;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build a preToolUse JSON payload for Edit/Write/MultiEdit
 // ---------------------------------------------------------------------------
@@ -643,6 +668,36 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Corrupt wave-scope.json — fail-closed on JSON.parse failure — #794 GAP-5
+// ---------------------------------------------------------------------------
+//
+// Defends the readJson() catch path in hooks/enforce-scope.mjs (~L96-101):
+//   try { scope = await readJson(scopePath); } catch { scope = {}; }
+//
+// A wave-scope.json that exists but fails to JSON.parse (truncated write,
+// concurrent-writer race, disk corruption) MUST fail closed, exactly like the
+// malformed-shape block above: scope = {} → enforcement defaults to 'strict'
+// (scope.enforcement ?? 'strict'), allowedPaths defaults to [] (Array.isArray
+// guard) → deny-all under strict enforcement, never a crash and never a
+// silent allow. Same structured-deny contract as #558: exit 2 + JSON
+// `permissionDecision: deny`, not an unhandled-rejection exit 1.
+// ---------------------------------------------------------------------------
+
+describe('corrupt wave-scope.json — fail-closed on JSON.parse failure (#794 GAP-5)', { timeout: 15000 }, () => {
+  it('denies an in-repo Edit when wave-scope.json is invalid (truncated) JSON', async () => {
+    const dir = await mkProjectRawScopeTracked('{ not valid');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
+    });
+    // readJson() throws SyntaxError → catch → scope = {} → enforcement
+    // defaults 'strict', allowedPaths defaults [] → Gate 7 denies (deny-all).
     expect(result.code).toBe(2);
     expect(result.stdout).toContain('"permissionDecision":"deny"');
   });

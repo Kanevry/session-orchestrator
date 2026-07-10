@@ -128,10 +128,79 @@ describe('_parseBrokenWindow — due-days validation falls back with a WARN', ()
     expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 7 });
   });
 
+  it('emits a stderr WARN for a negative value', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: -5', ''].join('\n');
+    _parseBrokenWindow(content);
+    const warns = stderrCapture.filter((m) => m.includes('due-days'));
+    expect(warns).toHaveLength(1);
+  });
+
   it('falls back to 7 for an empty value', () => {
     captureStderr();
     const content = ['broken-window-budget:', '  due-days: ', ''].join('\n');
     expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 7 });
+  });
+
+  it('emits a stderr WARN for an empty value', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: ', ''].join('\n');
+    _parseBrokenWindow(content);
+    const warns = stderrCapture.filter((m) => m.includes('due-days'));
+    expect(warns).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// due-days MAX-boundary — #794 GAP-4: a value with no upper bound reaches
+// `computeDueDate` in spiral-carryover.mjs, where `Date#setUTCDate` overflows
+// into an Invalid Date and `.toISOString()` throws a RangeError. The parser
+// must reject values above MAX_DUE_DAYS (3650, ~10 years) before they ever
+// leave this module.
+// ---------------------------------------------------------------------------
+
+describe('_parseBrokenWindow — due-days MAX-boundary (#794 GAP-4)', () => {
+  let stderrCapture = [];
+
+  const captureStderr = () => {
+    stderrCapture = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((msg) => {
+      stderrCapture.push(String(msg));
+      return true;
+    });
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to 7 for a wildly out-of-range value (999999999)', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: 999999999', ''].join('\n');
+    expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 7 });
+  });
+
+  it('emits exactly one stderr WARN naming due-days for 999999999', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: 999999999', ''].join('\n');
+    _parseBrokenWindow(content);
+    const warns = stderrCapture.filter((m) => m.includes('due-days'));
+    expect(warns).toHaveLength(1);
+  });
+
+  it('accepts the MAX boundary value (3650) with no WARN', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: 3650', ''].join('\n');
+    expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 3650 });
+    expect(stderrCapture).toHaveLength(0);
+  });
+
+  it('falls back to 7 for one past the MAX boundary (3651)', () => {
+    captureStderr();
+    const content = ['broken-window-budget:', '  due-days: 3651', ''].join('\n');
+    expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 7 });
+    const warns = stderrCapture.filter((m) => m.includes('due-days'));
+    expect(warns).toHaveLength(1);
   });
 });
 

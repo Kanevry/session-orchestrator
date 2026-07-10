@@ -289,6 +289,32 @@ describe('ssot-code-diff probe', () => {
     });
   });
 
+  describe('JSONL write failure — non-fatal (#794 Item 5b)', () => {
+    it('still returns the real findings/metrics when the JSONL target path is a directory (EISDIR write failure is caught, not rethrown)', async () => {
+      const root = tmp();
+      writeActivationMarker(root);
+      writeBlockedCommands(root, 9);
+      writeFile(root, 'CLAUDE.md', '# marker\n\nblocked-commands.json (5 rules) enforced.\n');
+
+      // Pre-create the JSONL write target AS A DIRECTORY so appendFileSync
+      // throws EISDIR. A type-mismatch failure (unlike a chmod-based EACCES
+      // probe) fails identically for root and non-root — CI runs as root,
+      // where chmod-based permission failures are silently bypassed (see
+      // .claude/rules/testing.md § Root-as-uid-0 test hazards).
+      mkdirSync(join(root, '.orchestrator', 'metrics', 'ssot-code-diff.jsonl'), { recursive: true });
+
+      const result = await runProbe(root, {});
+
+      // Load-bearing: proves the inner try/catch around appendFileSync
+      // swallows the write failure rather than letting it propagate to the
+      // outer top-level catch (which would discard findings/metrics and set
+      // skipped_reason instead — see Fake-Regression-Check note in the PR
+      // description / agent report).
+      expect(result.findings).toHaveLength(1);
+      expect(result.metrics).toEqual({ claims_checked: 1, mismatches: 1, docs_scanned: 1 });
+    });
+  });
+
   describe('no-throw discipline', () => {
     it('returns an object and does not throw when given a completely invalid root path', async () => {
       const result = await runProbe('/dev/null/not-a-dir', {});

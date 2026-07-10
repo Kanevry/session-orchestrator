@@ -257,7 +257,7 @@ partial writes).
   "personas_invoked": [
     {
       "name": "<persona name>",
-      "version": "<integer>",
+      "version": "<string>",
       "model": "<full model ID used>",
       "prompt_hash": "<sha256 of canonicalized prompt — see persona-format.md>",
       "timestamp_start": "<ISO 8601>",
