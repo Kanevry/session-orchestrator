@@ -31,8 +31,8 @@ if (!shouldRunHook('on-session-end')) process.exit(0);
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.mjs';
-import { isLockLive, readLock, release } from '../scripts/lib/session-lock.mjs';
-import { reapRepoLock } from '../scripts/lib/lock-reaper.mjs';
+import { readLock, release } from '../scripts/lib/session-lock.mjs';
+import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — SessionEnd hooks exit 0 always, never deny)
@@ -197,27 +197,15 @@ async function main() {
             });
           } catch { /* observability is best-effort */ }
         }
-      } else if (!isLockLive(lock)) {
+      } else {
         // Root-cause reconciliation fallback: neither the UUID nor the
-        // semantic id matched the recorded lock, but the lease is already
-        // dead. Reconcile now via the same reaper the SessionStart hook uses
-        // (Epic #724 C7), instead of leaving the orphaned lease for the next
-        // session-start to discover. Safe by construction: reapRepoLock()
-        // never touches a live lease, a cross-host lease, or a lease whose
-        // recorded PID is still alive on this host.
-        try {
-          const reapResult = await reapRepoLock({
-            repoRoot: projectRoot,
-            currentSessionId: sessionId,
-            dryRun: false,
-            reapMode: 'auto-session-end',
-          });
-          await emitEvent('orchestrator.session.lock.reconcile_attempted', {
-            session_id: sessionId,
-            action: reapResult?.action ?? 'unknown',
-            reason: reapResult?.reason ?? null,
-          });
-        } catch { /* best-effort — reconciliation must never block teardown */ }
+        // semantic id matched the recorded lock. attemptLockReconciliation()
+        // is the extracted, DI-testable seam (Issue #748) — it internally
+        // no-ops when the lease is still live (isLockLive), and is otherwise
+        // best-effort: reapRepoLock() never touches a live lease, a
+        // cross-host lease, or a lease whose recorded PID is still alive on
+        // this host.
+        await attemptLockReconciliation({ repoRoot: projectRoot, sessionId, lock });
       }
     }
   } catch { /* best-effort — never block teardown */ }

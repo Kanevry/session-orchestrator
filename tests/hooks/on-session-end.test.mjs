@@ -545,6 +545,42 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     // The reconciliation fallback archive-moved the dead orphaned lease even
     // though neither ownByUuid nor ownBySemantic matched.
     expect(await lockExists(dir)).toBe(false);
+    // #748: the reconcile_attempted breadcrumb payload records the ACTUAL
+    // reap outcome, not just that reconciliation was attempted.
+    const events = await readAllEvents(dir);
+    const reconcileEvent = events.find((e) => e.event === 'orchestrator.session.lock.reconcile_attempted');
+    expect(reconcileEvent).toBeDefined();
+    expect(reconcileEvent.action).toBe('reaped');
+  });
+
+  it('records action:"skipped" reason:"own-host-pid-alive" in the reconcile_attempted breadcrumb when the dead lease has a live PID (#748)', async () => {
+    const dir = await mkProject();
+    // Same rotated-UUID / no-semantic-bridge shape as the reap test above, but
+    // the recorded pid is overwritten to a real, currently-alive PID (this
+    // test process's own pid — a process can always signal itself) so
+    // reapRepoLock's own-host-pid-alive invariant (b) skips the reap.
+    await seedLock(dir, {
+      sessionId: 'old-rotated-uuid-pid-alive',
+      lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
+    });
+    const lockPath = path.join(dir, LOCK_REL);
+    const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+    lock.pid = process.pid;
+    await fs.writeFile(lockPath, JSON.stringify(lock, null, 2) + '\n');
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-rotated-uuid-pid-alive', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // Never reaped — the lease survives untouched.
+    expect(await lockExists(dir)).toBe(true);
+    const events = await readAllEvents(dir);
+    const reconcileEvent = events.find((e) => e.event === 'orchestrator.session.lock.reconcile_attempted');
+    expect(reconcileEvent).toBeDefined();
+    expect(reconcileEvent.action).toBe('skipped');
+    expect(reconcileEvent.reason).toBe('own-host-pid-alive');
   });
 
   it('does NOT reap a live lock that belongs to neither ownership check (reconciliation is dead-lease-only)', async () => {

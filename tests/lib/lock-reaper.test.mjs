@@ -156,6 +156,36 @@ describe('reapStaleLocks', () => {
     expect(payload.semantic_session_id).toBe('deep-99');
   });
 
+  it('emits the reaped event with current_session: {archived:false, reason:"no-file"} when no current-session.json exists (#748)', async () => {
+    const startDir = makeStartDir();
+    makeRepo(startDir, 'dead-no-cs', lockBody({ offsetHours: 5, sessionId: 'ghost-nofile' }));
+    const { deps, emit } = makeDeps({ pidAlive: false });
+
+    await reapStaleLocks({ startDir, now: NOW, dryRun: false, deps });
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    const [, payload] = emit.mock.calls[0];
+    expect(payload.current_session).toEqual({ archived: false, reason: 'no-file' });
+  });
+
+  it('emits the reaped event with current_session.archived=true and a reaped-locks archivePath for an orphaned current-session.json (#748)', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(
+      startDir,
+      'dead-with-cs',
+      lockBody({ offsetHours: 5, sessionId: 'ghost-cs', semantic: 'deep-cs-1' }),
+    );
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'ghost-cs', semantic: 'deep-cs-1', offsetHours: 5 }));
+    const { deps, emit } = makeDeps({ pidAlive: false });
+
+    await reapStaleLocks({ startDir, now: NOW, dryRun: false, deps });
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    const [, payload] = emit.mock.calls[0];
+    expect(payload.current_session.archived).toBe(true);
+    expect(payload.current_session.archivePath).toContain('reaped-locks');
+  });
+
   it('dry-run (default) mutates nothing and emits no event', async () => {
     const startDir = makeStartDir();
     const repo = makeRepo(startDir, 'dead', lockBody({ offsetHours: 5 }));
