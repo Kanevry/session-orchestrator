@@ -8,8 +8,8 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 41 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 21 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`) |
+| `skills/` | 43 user-facing skills (+ `_shared/` internal) |
+| `commands/` | 23 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
 | `hooks/` | Hook event matchers + handlers (14 matcher entries / 19 handler files, 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (13 rules) |
@@ -27,8 +27,8 @@
 
 ## Inventory (canonical)
 
-- **Skills:** 41 user-facing skills (`skills/` has 42 dirs but `_shared/` is internal docs, not a skill)
-- **Commands:** 21 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/dispatcher`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`)
+- **Skills:** 43 user-facing skills (`skills/` has 44 dirs but `_shared/` is internal docs, not a skill)
+- **Commands:** 23 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/dispatcher`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/reconcile`, `/spinout`)
 - **Agents:** 14 (`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`)
 - **Hook event matchers / handlers:** 14 matcher entries / 19 handler files. 10 distinct events: SessionStart, SessionEnd, PreToolUse (×2: Edit\|Write + Bash), PostToolUse, Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
 
