@@ -101,11 +101,12 @@ describe('probes-<category>.md existence & anatomy', () => {
     expect(probeHeadings.length).toBeLessThanOrEqual(10);
   });
 
-  it('probes-docs.md exists and has 1 probe (docs-staleness)', () => {
+  it('probes-docs.md exists and has 2 probes (docs-staleness, ssot-code-diff)', () => {
     const content = readFileSync(join(REPO_ROOT, 'skills/discovery/probes-docs.md'), 'utf8');
     const probeHeadings = content.match(/^### Probe:/gm) || [];
-    expect(probeHeadings.length).toBe(1);
+    expect(probeHeadings.length).toBe(2);
     expect(content).toContain('### Probe: docs-staleness');
+    expect(content).toContain('### Probe: ssot-code-diff');
   });
 
   it('skills/discovery/probes/docs-staleness.mjs exists and exports runProbe', () => {
