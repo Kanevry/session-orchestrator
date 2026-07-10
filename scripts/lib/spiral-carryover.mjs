@@ -1,9 +1,12 @@
 /**
- * SPIRAL/FAILED carryover issue creator (#261).
+ * SPIRAL/FAILED carryover issue creator (#261) + Broken-Window closure-issue
+ * filer (#730/H5) — session-end escalation issue filing.
  *
  * When wave-executor detects 2×SPIRAL on the same task or a FAILED agent with no
  * prior carryover, this module auto-creates a GitLab/GitHub issue so the escalated
- * work is tracked even if the user is inactive.
+ * work is tracked even if the user is inactive. Since #730/H5 it also hosts
+ * `createBrokenWindowIssue` — session-end Phase 2.6 files hard-due-date closure
+ * issues for knowingly-broken shipments through the same dedup/fail-open core.
  *
  * Session-end Phase 1.6 (Safety Review) also invokes this module as a fallback
  * safety net: it walks STATE.md Wave History and retro-creates a carryover for

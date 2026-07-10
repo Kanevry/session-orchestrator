@@ -382,6 +382,77 @@ describe('findExistingBrokenWindow (gitlab)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. github dedup-hit branch (W4-Q3 GAP-1) — the `gh issue list --json`
+//     hit-extraction path (number/url/body) is the idempotency guarantee on
+//     GitHub repos; a wrong field name would silently file duplicates.
+// ---------------------------------------------------------------------------
+
+describe('findExisting* (github dedup-hit — GAP-1)', () => {
+  it('findExistingCarryover extracts number/url from a gh list hit whose body carries the marker', async () => {
+    const taskHash = 'abc12345';
+    const fakeList = [
+      { number: 12, url: 'https://github.com/org/repo/issues/12', body: 'no marker' },
+      {
+        number: 34,
+        url: 'https://github.com/org/repo/issues/34',
+        body: `## Carryover\n<!-- task-hash: ${taskHash} -->\nbody`,
+      },
+    ];
+    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
+
+    const res = await findExistingCarryover({ taskHash, vcs: 'github' });
+
+    expect(res).toEqual({
+      exists: true,
+      issueId: 34,
+      issueUrl: 'https://github.com/org/repo/issues/34',
+    });
+    const [cmd, args] = execFileSync.mock.calls[0];
+    expect(cmd).toBe('gh');
+    expect(args).toContain('number,url,body');
+  });
+
+  it('findExistingBrokenWindow extracts number/url from a gh list hit', async () => {
+    const taskHash = 'cafe1234';
+    const fakeList = [
+      {
+        number: 91,
+        url: 'https://github.com/org/repo/issues/91',
+        body: `## [Broken-Window]\n<!-- task-hash: ${taskHash} -->\nbody`,
+      },
+    ];
+    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
+
+    const res = await findExistingBrokenWindow({ taskHash, vcs: 'github' });
+
+    expect(res).toEqual({
+      exists: true,
+      issueId: 91,
+      issueUrl: 'https://github.com/org/repo/issues/91',
+    });
+    const [cmd, args] = execFileSync.mock.calls[0];
+    expect(cmd).toBe('gh');
+    expect(args).toContain('broken-window');
+  });
+
+  it('gitlab id-fallback: uses hit.id when iid is absent (GAP-3)', async () => {
+    const taskHash = 'beef7777';
+    const fakeList = [
+      { id: 5, web_url: 'https://gitlab.example.com/g/p/-/issues/5', description: `<!-- task-hash: ${taskHash} -->` },
+    ];
+    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
+
+    const res = await findExistingCarryover({ taskHash, vcs: 'gitlab' });
+
+    expect(res).toEqual({
+      exists: true,
+      issueId: 5,
+      issueUrl: 'https://gitlab.example.com/g/p/-/issues/5',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. createBrokenWindowIssue (#730/H5)
 // ---------------------------------------------------------------------------
 

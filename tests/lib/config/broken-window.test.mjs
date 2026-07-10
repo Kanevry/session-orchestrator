@@ -9,14 +9,17 @@
  *   - partial blocks (one key present, the other defaulted)
  *   - formatting tolerance (inline comments, next top-level key stops the scan)
  *
- * NOTE: no parseSessionConfig integration test — the `broken-window-budget:`
- * block is not yet surfaced by scripts/lib/config.mjs (the connection is owned
- * by that file's scope; see W2-C4 report). The direct-parser coverage below is
- * the full behavioural contract of this module.
+ * Plus a `parseSessionConfig integration` block (#730/H5 — the W2-C4 wiring
+ * gap): scripts/lib/config.mjs now surfaces cfg['broken-window-budget']
+ * end-to-end, exercised here against inline fixtures AND the committed repo
+ * CLAUDE.md. The 3-line config.mjs wiring landed AFTER the C4 unit-suite, so
+ * these integration cases are the guard that the parser is actually reachable.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { _parseBrokenWindow } from '@lib/config/broken-window.mjs';
+import { parseSessionConfig } from '@lib/config.mjs';
 
 // ---------------------------------------------------------------------------
 // absent block
@@ -170,5 +173,73 @@ describe('_parseBrokenWindow — formatting tolerance', () => {
       '',
     ].join('\n');
     expect(_parseBrokenWindow(content)).toEqual({ enabled: false, 'due-days': 7 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseSessionConfig integration (#730/H5 — the W2-C4 wiring gap)
+//
+// scripts/lib/config.mjs wires _parseBrokenWindow into parseSessionConfig →
+// cfg['broken-window-budget']. These end-to-end cases guard the 3-line wiring
+// that the C4 unit-suite predated. Falsification: delete the config.mjs wiring
+// and cfg['broken-window-budget'] becomes undefined → every case below fails.
+// ---------------------------------------------------------------------------
+
+describe('parseSessionConfig integration (#730/H5)', () => {
+  // Hermetic ctx (issue #783): the default hostPaths tier reads the REAL
+  // owner.yaml on this host — injecting an empty ctx pins the COMMITTED default
+  // values for these assertions (mirrors handover-gate.test.mjs § integration).
+  const hermetic = { hostPaths: { env: {}, ownerConfig: undefined } };
+
+  it('surfaces cfg["broken-window-budget"] with explicit enabled:true + due-days override', () => {
+    const content = [
+      '# Project',
+      '',
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'broken-window-budget:',
+      '  enabled: true',
+      '  due-days: 14',
+      '',
+    ].join('\n');
+    const config = parseSessionConfig(content, hermetic);
+    expect(config['broken-window-budget']).toEqual({ enabled: true, 'due-days': 14 });
+  });
+
+  it('surfaces an explicit enabled:false with a non-default due-days', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'broken-window-budget:',
+      '  enabled: false',
+      '  due-days: 3',
+      '',
+    ].join('\n');
+    const config = parseSessionConfig(content, hermetic);
+    expect(config['broken-window-budget']).toEqual({ enabled: false, 'due-days': 3 });
+  });
+
+  it('defaults cfg["broken-window-budget"] to {enabled:false, due-days:7} when the block is absent', () => {
+    const content = ['# Project', '', '## Session Config', '', 'persistence: true', ''].join('\n');
+    const config = parseSessionConfig(content, hermetic);
+    expect(config['broken-window-budget']).toEqual({ enabled: false, 'due-days': 7 });
+  });
+
+  it('the committed repo CLAUDE.md surfaces broken-window-budget as opt-in disabled (enabled:false)', () => {
+    // readFileSync accepts a URL directly (Node) — three levels up from
+    // tests/lib/config/ reaches the repo root.
+    const claudeMd = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+    const config = parseSessionConfig(claudeMd, hermetic);
+    expect(config['broken-window-budget'].enabled).toBe(false);
+  });
+
+  it('the committed repo CLAUDE.md pins due-days to the default 7-day horizon', () => {
+    const claudeMd = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+    const config = parseSessionConfig(claudeMd, hermetic);
+    expect(config['broken-window-budget']['due-days']).toBe(7);
   });
 });
