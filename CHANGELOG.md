@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **CP11 Confidential-Names-Guard (#728).** `check-owner-leakage.mjs` scans tracked files against a host-local, never-committed name list (`owner.yaml` `paths.confidential-names-file` / `SO_CONFIDENTIAL_NAMES_FILE`; loader: `scripts/lib/validate/confidential-names.mjs`). Redaction is enforced at the print choke-point via order-independent span-merge (`redactSpans`) — a confidential name never reaches the public CI log, regardless of which CP rule fired or how names overlap. Inert when unconfigured or when helper modules are absent (standalone single-file vendoring keeps working). Plus repo-audit Category-6 token-grep row + SEC-021 rule.
+- **rules/ library activated (#743).** The 6 dead exemplar rules (backend, backend-data, frontend, swift, security-web, prompt-caching) moved verbatim from `.claude/rules/` into `rules/opt-in-stack/` + `rules/opt-in-domain/` with `[archetypes:]` tags and provenance headers — the opt-in buckets are no longer empty. See-Also refs and consumer citations repointed.
+- **lock-reconcile DI seam (#748).** Session-end lock reconciliation extracted from `hooks/on-session-end.mjs` into `hooks/_lib/lock-reconcile.mjs` (mirrors `lock-bootstrap.mjs`), making the best-effort swallow contract and `reconcile_attempted` payload in-process testable.
+- **/evolve over-delivery aggregation (#794.7).** The effective-sizing analyzer now specifies a median `over_delivery_ratio` aggregation (Discovery/Finalization excluded), activating session-plan Step 0.5's learnings-first read path.
+
+### Fixed
+
+- **broken-window due-days MAX-guard (#794).** `_parseBrokenWindow` rejects values > 3650 with a WARN instead of letting `computeDueDate` overflow into a RangeError; persona-panel sidecar `version` converged to string; W4 review-leftover test gaps closed (enforce-scope corrupt-JSON fail-closed, persona TypeError branch, grounding-diff backslash, ssot-code-diff EISDIR write-failure).
+- **loop-and-monitor LM-003 fact-fix.** On Bedrock/Vertex/Foundry a truly bare `/loop` (no prompt) prints the usage message and does not run at all — only prompt-only `/loop <prompt>` falls back to the fixed 10-minute schedule. Delta-sync footer v2.1.205→v2.1.206 (zero functional delta); monitor-patterns gains Pattern 6 (WebSocket source incl. silent >1 MiB termination warning).
+- **vault-mirror #740 (documented wontfix).** Learning coverage after a store recovery is restored by the next mirror run; the narrative-chars gate is sessions-only and never filters learnings — now documented and pinned by a regression test.
+
+### Testing
+
+- +40 targeted tests across 23 files: stale-mr-sweep `main()` CLI paths (#749), reap/reconcile event payloads (#748), `section()` throw-on-miss (#737), CP11 E2E through the real pre-commit hook (incl. inert-degrade), choke-point/prefix-overlap redaction regression pins.
+
 ## [3.12.0] - 2026-07-09
 
 Curation & handover release. Headline: the session handover becomes an **explicit, gated

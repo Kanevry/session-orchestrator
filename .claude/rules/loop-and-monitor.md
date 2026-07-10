@@ -235,11 +235,12 @@ upstream-normative; upstream does not itself prescribe cadence numbers.
 `CronCreate`'s built-in guidance.
 
 **Non-Anthropic providers (Bedrock/Vertex/Foundry).** Mirrors the Monitor
-unavailability noted above (LM-002): bare `/loop` (no explicit interval)
-runs on a fixed 10-minute schedule there instead of self-pacing via
-`ScheduleWakeup`, and neither `.claude/loop.md` nor `~/.claude/loop.md` is
-read. Always pass an explicit interval on these providers — do not rely on
-the project loop body.
+unavailability noted above (LM-002): a prompt-only `/loop <prompt>` (no
+interval) runs on a fixed 10-minute schedule there instead of self-pacing via
+`ScheduleWakeup`; a **truly bare `/loop` (no prompt) just prints the usage
+message** — the maintenance prompt does not run and neither `.claude/loop.md`
+nor `~/.claude/loop.md` is read. Always pass an explicit interval on these
+providers — do not rely on the project loop body.
 
 **Limits & kill-switches.** `CLAUDE_CODE_DISABLE_CRON=1` is the total
 kill-switch — it disables the cron scheduler AND `/loop` entirely, not just
@@ -407,3 +408,4 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 ---
 
 _Re-verified 2026-07-09 (Delta-Sync v2.1.197→v2.1.205: ScheduleWakeup stop:true, Workflows-OTel/Large-warning, workflow-size/effort-Flag, Channels-org-gate, /background-carryover; Routines-Seite re-verifiziert)._
+_Re-verified 2026-07-10 (Delta-Sync v2.1.205→v2.1.206: zero functional delta — 2.1.206 touches /cd, /doctor, /commit-push-pr, gateway-login, EnterWorktree, MCP/model/agents-view fixes only; no /loop, scheduled-tasks, ScheduleWakeup, /goal, Workflows, Monitor, or Channels change)._

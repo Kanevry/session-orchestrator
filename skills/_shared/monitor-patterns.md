@@ -55,6 +55,11 @@ done
 SHA — silence at the end means glab JSON parsing failed (the `||` fallbacks
 prevent the whole loop from dying).
 
+**GitHub-mirror equivalent.** When the pipeline is GitHub-Actions-native (PR
+checks rather than a GitLab pipeline), use `gh pr checks <pr> --watch --fail-fast`
+as the `command` source — it streams each check transition and exits non-zero on
+the first failure, so the terminal state is never silent.
+
 ---
 
 ## Pattern 2 — Long-running test suite (`npm test` ≥ 2700 cases)
@@ -91,7 +96,7 @@ a live dashboard in terminal B without building telemetry tooling.
 
 **Description.** `autopilot iteration + kill-switch tail`
 
-**timeout_ms.** `3600000` (1 h, the Monitor max)
+**timeout_ms.** `3600000` (1 h — the 1 h ceiling this file uses; repo-internal convention, upstream documents no explicit `timeout_ms` maximum)
 
 **persistent.** `true` (run for the lifetime of the session — autopilot
 runs can take hours)
@@ -162,7 +167,7 @@ parity bit the operator a day later.
 
 **Description.** `github mirror parity vs local main`
 
-**timeout_ms.** `300000` (5 min — push usually completes in seconds; this is the Monitor wall-clock ceiling, **not** the `/loop` cadence band that LM-003 in `.claude/rules/loop-and-monitor.md` warns against)
+**timeout_ms.** `300000` (5 min — push usually completes in seconds; this is the wall-clock ceiling **for this watch**, **not** the `/loop` cadence band that LM-003 in `.claude/rules/loop-and-monitor.md` warns against)
 
 **persistent.** `false`
 
@@ -191,6 +196,61 @@ Terminates only when remote SHA matches local — never silent. If the
 push was actually rejected by GitHub's secret scanner, the remote SHA
 never advances and the watcher keeps emitting the stale-SHA line every
 15 s until the operator notices.
+
+---
+
+## Pattern 6 — WebSocket event source (`ws://` / `wss://`, v2.1.195+)
+
+**When.** The upstream already speaks WebSocket (a CI relay, an error-tracker
+push socket, a daemon's `GET /events` upgraded to WS). Point Monitor's `ws`
+source at it directly — the server pushes each text frame as one notification,
+so there is no polling script and no `grep --line-buffered` line-buffering
+pitfall to get right. Prefer this over a `command` source whenever a socket is
+available.
+
+**Input shape.** Monitor takes a `ws` source *instead of* a `command` source —
+the two are mutually exclusive, never combined:
+
+```jsonc
+{
+  "ws": {
+    "url": "wss://relay.internal.example/ci-events",  // ws:// or wss:// only
+    "protocols": ["ci-events.v1"]                      // optional subprotocols
+  }
+}
+```
+
+The `url` must be a bare `ws://`/`wss://` URL — **no embedded credentials, no
+whitespace, ASCII-only**. Each inbound **text** message becomes one
+notification (multi-line frames included). A **binary** frame is surfaced as the
+placeholder `[binary frame, N bytes]` rather than decoded.
+
+**Coverage / termination.** Two clean terminations and one **silent** one — the
+silent case is the whole reason this pattern needs the silence-is-not-success
+discipline:
+
+- **Socket close** → the watch ends and reports the close code (a clean,
+  visible terminal state).
+- **Frame > 1 MiB → the watch ends SILENTLY.** No close code, no error line —
+  it just stops. Therefore **always subscribe to a filtered / compact feed**
+  (a pre-narrowed event topic), **never a raw feed** whose payloads can cross
+  1 MiB. A raw firehose that occasionally emits a large frame is
+  indistinguishable from a healthy-but-quiet socket, which is exactly the
+  crash-reads-as-success trap this file exists to prevent.
+
+**Caveats.**
+
+- **Own approval prompt.** A `ws` source raises its own connect-approval prompt
+  and has **no "skip future" affordance** — each armed socket is approved
+  explicitly.
+- **SSRF denials.** Monitor refuses `ws` URLs pointing at private,
+  link-local, or cloud-metadata hosts, and honours `sandbox.network.deniedDomains`
+  plus `allowManagedDomainsOnly`. Point it at a reachable, allow-listed relay,
+  not an internal-range host.
+- **When to stay on `command`.** If frames must be filtered or reshaped
+  shell-side before they are notification-worthy, keep the `command` (tail/grep)
+  source per `.claude/rules/loop-and-monitor.md` LM-002 — the `ws` source
+  delivers frames verbatim, with no shell-side filter seam.
 
 ---
 
