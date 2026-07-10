@@ -640,6 +640,25 @@ handover-gate:
 
 **Used by:** `scripts/lib/config/handover-gate.mjs`, session-end Phase 1.65.
 
+## Broken-Window Budget (#730/H5)
+
+Opt-in configuration for the Broken-Window Budget in `/close`. When enabled, session-end Phase 2.6 aggregates THIS session's "knowingly-broken shipments" — echo-stub findings that shipped under `enforcement: warn`, "Override and close" choices in Phase 2.3 / 2.5, MED/LOW review findings routed to "Unresolved Review Findings" (#617), and wave-level reviewer findings overridden without a fix task — and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority:high`, with a hard due-date). It also emits `orchestrator.finding.overridden` events feeding the `effectiveness.override_ratio` metric. Non-blocking and idempotent: a filing failure is a WARN and re-running a close never duplicates issues.
+
+All fields live under a top-level `broken-window-budget` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+broken-window-budget:
+  enabled: false
+  due-days: 7
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `broken-window-budget.enabled` | boolean | `false` | Master toggle for session-end Phase 2.6. When `false`, the phase is skipped silently — no closure issues are filed and no override-ratio events are emitted. Issue #730 (Epic H / H5). |
+| `broken-window-budget.due-days` | integer | `7` | Days from today used as the hard due-date on each filed closure issue. Bounds: integer ≥ 1. On GitLab this is passed to the native `--due-date` flag; on GitHub (no native due-date field) it is surfaced as a `Due: <date>` first body line. Malformed / non-integer / < 1 values fall back to 7 with a stderr WARN. Issue #730 (Epic H / H5). |
+
+**Used by:** `scripts/lib/config/broken-window.mjs`, session-end Phase 2.6, `scripts/lib/spiral-carryover.mjs` (`createBrokenWindowIssue`).
+
 ## Dialectic-Deriver (#506)
 
 Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to USER.md/AGENT.md peer cards (#503). The dry-run writes a sidecar at `.orchestrator/dialectic-pending.md`; the operator applies via `/evolve --dialectic --apply` in a subsequent session. Set `cadence: 0` as a kill-switch.

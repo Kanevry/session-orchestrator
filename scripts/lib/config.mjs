@@ -50,6 +50,7 @@ import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseHandoverGate } from './config/handover-gate.mjs';
+import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
@@ -256,6 +257,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // Handover-Alignment-Gate — Epic #724)
   const handoverGate = _parseHandoverGate(mdContent);
 
+  // broken-window-budget: parsed from full content (#730/H5 — session-end Phase 2.6)
+  const brokenWindow = _parseBrokenWindow(mdContent);
+
   // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
   const slopcheck = _parseSlopcheck(mdContent);
 
@@ -399,6 +403,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'handover-gate': handoverGate,
+    'broken-window-budget': brokenWindow,
     'slopcheck': slopcheck,
     'skill-evolution': skillEvolution,
     'dispatcher-autonomy': dispatcherAutonomy,

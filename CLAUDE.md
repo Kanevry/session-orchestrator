@@ -101,6 +101,9 @@ state-md-lock:
 handover-gate:
   enabled: true                  # #769 — interactive Handover-Alignment-Gate in /close before carryover filing (fail-open: skips when disabled/headless/autopilot)
   max-open-questions: 3          # integer ≥ 0 — max open questions surfaced in the gate's triage AUQ (0 = none; channel stays active)
+broken-window-budget:
+  enabled: false                 # #730/H5 — opt-in; session-end Phase 2.6 files hard-due-date closure issues for knowingly-broken shipments
+  due-days: 7                    # integer ≥ 1 — hard due-date horizon (glab native --due-date; gh Due: <date> body line)
 slopcheck:
   enabled: false                 # PRD gsd Pattern 2 (#520) — opt-in package legitimacy gate
   sources: [plan, discovery]     # where classifyPackages is invoked

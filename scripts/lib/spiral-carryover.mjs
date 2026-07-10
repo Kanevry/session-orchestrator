@@ -87,29 +87,28 @@ function parseIssueCreateOutput(stdout) {
 }
 
 /**
- * Check whether a carryover issue already exists for this task.
- * Searches open `type:carryover` issues for the `<!-- task-hash: <hash> -->`
- * marker in the body.
+ * Check whether an issue carrying `label` already exists for this task.
+ * Searches open issues for the `<!-- task-hash: <hash> -->` marker in the body.
  *
  * Returns `{ exists: false }` on any CLI failure — caller treats this as
  * "probably no duplicate" and proceeds with creation (fail-open).
  *
- * @param {{ taskHash: string, vcs?: 'gitlab' | 'github' }} opts
+ * @param {{ taskHash: string, label: string, vcs?: 'gitlab' | 'github' }} opts
  * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
  */
-export async function findExistingCarryover({ taskHash, vcs = 'gitlab' } = {}) {
+async function findExistingLabeledIssue({ taskHash, label, vcs = 'gitlab' } = {}) {
   if (!taskHash || typeof taskHash !== 'string') {
     return { exists: false };
   }
 
   try {
     if (vcs === 'github') {
-      // gh: search bodies via --search; keep per-page generous.
+      // gh: list open issues carrying the label; body match is done locally.
       const res = runCli('gh', [
         'issue',
         'list',
         '--label',
-        'type:carryover',
+        label,
         '--state',
         'open',
         '--limit',
@@ -138,7 +137,7 @@ export async function findExistingCarryover({ taskHash, vcs = 'gitlab' } = {}) {
       'issue',
       'list',
       '--label',
-      'type:carryover',
+      label,
       '--per-page',
       '100',
       '--output',
@@ -165,6 +164,28 @@ export async function findExistingCarryover({ taskHash, vcs = 'gitlab' } = {}) {
   } catch {
     return { exists: false };
   }
+}
+
+/**
+ * Check whether a carryover issue already exists for this task.
+ * Thin wrapper over `findExistingLabeledIssue` with the `type:carryover` label.
+ *
+ * @param {{ taskHash: string, vcs?: 'gitlab' | 'github' }} opts
+ * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
+ */
+export async function findExistingCarryover({ taskHash, vcs = 'gitlab' } = {}) {
+  return findExistingLabeledIssue({ taskHash, label: 'type:carryover', vcs });
+}
+
+/**
+ * Check whether a broken-window closure issue already exists for this task.
+ * Thin wrapper over `findExistingLabeledIssue` with the `broken-window` label.
+ *
+ * @param {{ taskHash: string, vcs?: 'gitlab' | 'github' }} opts
+ * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
+ */
+export async function findExistingBrokenWindow({ taskHash, vcs = 'gitlab' } = {}) {
+  return findExistingLabeledIssue({ taskHash, label: 'broken-window', vcs });
 }
 
 /**
@@ -291,6 +312,179 @@ export async function createSpiralCarryoverIssue({
       };
     }
     return { created: true, issueId, issueUrl };
+  } catch (err) {
+    const msg = err && err.message ? String(err.message) : 'unknown error';
+    return { created: false, skipped: 'error', error: msg };
+  }
+}
+
+/**
+ * Compute a `YYYY-MM-DD` due-date `days` days from today (UTC).
+ * `days` is clamped to a positive integer (>= 1); anything else falls back to 7.
+ *
+ * @param {number} days
+ * @param {Date} [now] — injectable clock for deterministic tests
+ * @returns {string} ISO date (YYYY-MM-DD)
+ */
+function computeDueDate(days, now = new Date()) {
+  const n = Number.isInteger(days) && days >= 1 ? days : 7;
+  const d = new Date(now.getTime());
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Build the markdown body for a broken-window closure issue. Embeds the
+ * `task-hash` marker used by `findExistingBrokenWindow` for dedup.
+ *
+ * GitHub has no native due-date field, so for `vcs === 'github'` the due-date
+ * is surfaced as the FIRST body line (`Due: <YYYY-MM-DD>`); on GitLab it lives
+ * in the native `--due-date` flag and is also echoed in the body for context.
+ *
+ * @param {{
+ *   item: { title?: string, source?: string, description?: string, sessionId?: string },
+ *   taskHash: string,
+ *   dueDate: string,
+ *   vcs: 'gitlab' | 'github'
+ * }} opts
+ * @returns {string}
+ */
+function buildBrokenWindowBody({ item, taskHash, dueDate, vcs }) {
+  const title = String(item?.title ?? '').trim() || '(untitled shipment)';
+  const source = String(item?.source ?? '').trim() || '(unspecified)';
+  const description = String(item?.description ?? '').trim() || '_(no description captured)_';
+  const sessionId = String(item?.sessionId ?? '').trim() || '(unknown session)';
+
+  const lines = [
+    `<!-- task-hash: ${taskHash} -->`,
+    '',
+    `## [Broken-Window] ${title}`,
+    '',
+    `**Source:** \`${source}\``,
+    `**Session:** \`${sessionId}\``,
+    `**Due:** ${dueDate}`,
+    '',
+    '### What shipped broken',
+    '',
+    description,
+    '',
+    '### Why this is tracked',
+    '',
+    '- This shipped under a documented exception (echo-stub, WARN-lint, or an',
+    '  overridden reviewer finding) despite a Full-Gate PASS.',
+    '- The due-date above is HARD — this closure issue exists to force the',
+    '  broken window shut before it normalises.',
+    '',
+    '_Auto-created by `scripts/lib/spiral-carryover.mjs` (session-end Phase 2.6, #730/H5)._',
+  ];
+
+  // GitHub has no native due-date field — surface it as the first body line.
+  if (vcs === 'github') {
+    return [`Due: ${dueDate}`, ...lines].join('\n');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * File a hard-terminated closure issue for a knowingly-broken shipment
+ * (session-end Phase 2.6, #730/H5).
+ *
+ * Behavior:
+ *   1. Compute a task hash from `<source>::<title>` and call
+ *      `findExistingBrokenWindow`. If one exists, return
+ *      `{ created: false, skipped: 'duplicate', issueId, issueUrl }`.
+ *   2. Build title `[Broken-Window] <truncated title>`.
+ *   3. Build body with embedded `<!-- task-hash: <hash> -->` marker.
+ *   4. Shell out to `glab issue create --due-date <date>` (gitlab, native) or
+ *      `gh issue create` (github; due-date lives in the body's first line).
+ *   5. Parse stdout for the issue URL and return `{ created: true, issueId, issueUrl, due }`.
+ *
+ * Never throws. On any CLI failure returns `{ created: false, skipped: 'error', error }`.
+ * `repoRoot` is accepted for signature symmetry with the caller but currently
+ * unused — `glab`/`gh` resolve the project from the invoking cwd.
+ *
+ * @param {{
+ *   item: { title?: string, source?: string, description?: string, sessionId?: string },
+ *   dueDays?: number,
+ *   repoRoot?: string,
+ *   vcs?: 'gitlab' | 'github'
+ * }} opts
+ * @returns {Promise<{
+ *   created: boolean,
+ *   issueId?: number,
+ *   issueUrl?: string,
+ *   due?: string,
+ *   skipped?: 'duplicate' | 'error',
+ *   error?: string
+ * }>}
+ */
+export async function createBrokenWindowIssue({
+  item,
+  dueDays = 7,
+  repoRoot: _repoRoot,
+  vcs = 'gitlab',
+} = {}) {
+  try {
+    const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
+    const title = String(item?.title ?? '').trim();
+    const source = String(item?.source ?? '').trim();
+    if (!title) {
+      return { created: false, skipped: 'error', error: 'missing item.title' };
+    }
+
+    const dueDate = computeDueDate(dueDays);
+
+    // Dedup key: (source, title) pair — two different sources with the same
+    // title are genuinely distinct broken windows and each file separately.
+    const taskHash = computeTaskHash(`${source}::${title}`);
+
+    const existing = await findExistingBrokenWindow({ taskHash, vcs: vcsResolved });
+    if (existing.exists) {
+      return {
+        created: false,
+        skipped: 'duplicate',
+        issueId: existing.issueId,
+        issueUrl: existing.issueUrl,
+      };
+    }
+
+    const issueTitle = `[Broken-Window] ${truncate(title, 80)}`;
+    const body = buildBrokenWindowBody({ item, taskHash, dueDate, vcs: vcsResolved });
+    const labels = 'broken-window,priority:high';
+
+    let cmd;
+    let args;
+    if (vcsResolved === 'github') {
+      cmd = 'gh';
+      args = ['issue', 'create', '--title', issueTitle, '--body', body, '--label', labels];
+    } else {
+      cmd = 'glab';
+      args = [
+        'issue',
+        'create',
+        '--title',
+        issueTitle,
+        '--description',
+        body,
+        '--label',
+        labels,
+        '--due-date',
+        dueDate,
+      ];
+    }
+
+    const res = runCli(cmd, args);
+    if (!res.ok) {
+      return { created: false, skipped: 'error', error: res.stderr.trim() || 'CLI invocation failed' };
+    }
+
+    const { issueId, issueUrl } = parseIssueCreateOutput(res.stdout);
+    if (issueId === undefined) {
+      // CLI succeeded but URL parse failed — still report created (with the due
+      // date) so the caller doesn't retry endlessly; include raw stdout.
+      return { created: true, issueUrl: res.stdout.trim(), due: dueDate };
+    }
+    return { created: true, issueId, issueUrl, due: dueDate };
   } catch (err) {
     const msg = err && err.message ? String(err.message) : 'unknown error';
     return { created: false, skipped: 'error', error: msg };

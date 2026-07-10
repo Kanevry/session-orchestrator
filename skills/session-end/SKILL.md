@@ -316,6 +316,12 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
      | Planned-carryover (item was in the plan, not finished) | Route as a carryover **candidate** per Phase 1.2 → the Phase 1.65 gate files it. Never forgotten: a no-origin/critical/high item auto-carries as a `[Carryover]` issue; a middle-band item with an origin issue is preselected=carry (and its origin issue stays open even if dropped). |
      | SPIRAL / FAILED agent carryover | Route as an **auto-carry** candidate per Phase 1.6 → filed via `createSpiralCarryoverIssue` in Phase 5 Step 3 (non-deselectable) |
 
+**Override-ratio telemetry (#730/H5):** whenever one or more MED/LOW review findings are routed to "Unresolved Review Findings" (rather than fixed), additionally emit a single event capturing how many findings were absorbed rather than resolved — feeding the `override_ratio` metric:
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.finding.overridden --payload '{"phase":"1.8","kind":"med-low-review-finding","count":N}'
+```
+
 ### 1.9 Mission-Status Classification (when `mission-status` present in STATE.md)
 
 > Skip if `persistence` is `false` in Session Config, or if `mission-status:` is absent from STATE.md frontmatter. When absent, fall back to binary checkbox detection in 1.1–1.4 unchanged — full backward compat.
@@ -434,6 +440,7 @@ totalFindings = projectStaleness.findings.length + narrativeStaleness.findings.l
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings carried over. Findings: <count> (projects: <N>, narratives: <M>) → issue #<IID>.`
       2. "Override and close" — proceed without a carryover issue, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings overridden by user. Findings: <count> (projects: <N>, narratives: <M>).`
+         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node scripts/emit-event.mjs --type orchestrator.finding.overridden --payload '{"phase":"2.3","kind":"vault-staleness-strict","count":N}'`.
     - On Codex CLI / Cursor IDE: same options as numbered Markdown list.
 
 #### Step 4 — Surface to closing report
@@ -474,6 +481,7 @@ For each kept phase:
       2. "Warn + carryover and close" — file a carryover issue (labels `carryover`, `priority:high`) titled `[Carryover] custom-phase '<name>' (mode=hard) exited <code>` capturing the phase name + captured summary for a follow-up session, log the Deviation entry, then continue the close.
       3. "Override and close" — proceed, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.5: custom-phase '<name>' (mode=hard) exited <code>, overridden by user.`
+         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node scripts/emit-event.mjs --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
       4. "Abort close" — exit close without writing.
     - On Codex CLI / Cursor IDE: same options as a numbered Markdown list.
 
@@ -482,6 +490,36 @@ A `hard`-fail (whether overridden or not) ALWAYS appends its result line to STAT
 #### Step 4 — Surface to closing report
 
 Pass each phase result `(name, mode, exitCode, summary, review?)` forward to the Phase 6 Final Report "Custom Phases" line (see Phase 6 below).
+
+## Phase 2.6: Broken-Window Budget (#730/H5)
+
+> Opt-in via `broken-window-budget.enabled` in Session Config (default `false`).
+> Skip silently when disabled.
+
+Assemble the in-memory "knowingly-broken shipment" list from THIS session's
+already-computed results — no new detection logic, only aggregation:
+
+1. Phase 2.0a stub findings (`result.stubbed`) that shipped anyway under `enforcement: warn`.
+2. Phase 2.3 / 2.5 "Override and close" choices (reuse each entry's Deviation-log payload verbatim).
+3. Phase 1.8 MED/LOW findings routed to "Unresolved Review Findings" (#617).
+4. Wave-level reviewer findings overridden without a fix task (`## Deviations` entries matching `reviewer finding overridden` — written by wave-executor §5/5a).
+
+For EACH item: file a hard-terminated closure issue via `createBrokenWindowIssue()`
+from `scripts/lib/spiral-carryover.mjs` — labels `broken-window` + `priority:high`,
+due-date = today + `broken-window-budget.due-days` (default 7; `glab` native
+`--due-date`, `gh` fallback: `Due: <date>` as first body line — GitHub has no
+native due-date field). Idempotent per task-hash — re-running a close never
+duplicates issues.
+
+Emit ONE event per filed issue (note: event-name segments use underscores, never hyphens):
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.broken_window.filed --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({source:'<2.0a|2.3|2.5|1.8|wave-override>', issue:<IID>, due:'<YYYY-MM-DD>'}))")"
+```
+
+Non-blocking: a filing failure is a WARN, never blocks the close (same fail-open
+discipline as `createSpiralCarryoverIssue`).
 
 ## Phase 3: Documentation Updates
 

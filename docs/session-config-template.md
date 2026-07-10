@@ -282,6 +282,18 @@ handover-gate:
 
 Read by: `scripts/lib/config/handover-gate.mjs`, `skills/session-end/SKILL.md` Phase 1.65.
 
+## Broken-Window Budget
+
+Opt-in gate in `/close` (session-end Phase 2.6). When enabled, it aggregates THIS session's "knowingly-broken shipments" (echo-stubs shipped under `enforcement: warn`, Phase 2.3/2.5 "Override and close" choices, MED/LOW findings routed to "Unresolved Review Findings", wave-level overridden findings) and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority:high`, hard due-date). Non-blocking and idempotent (issue #730, Epic H / H5).
+
+```yaml
+broken-window-budget:
+  enabled: false                 # opt-in; session-end Phase 2.6 files hard-due-date closure issues for knowingly-broken shipments
+  due-days: 7                    # integer ≥ 1 — hard due-date horizon (glab native --due-date; gh Due: <date> body line)
+```
+
+Read by: `scripts/lib/config/broken-window.mjs`, `skills/session-end/SKILL.md` Phase 2.6.
+
 ## Slopcheck (Package Legitimacy Gate)
 
 Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When enabled, `classifyPackages(pkgs)` consults the registry and returns `LEGITIMATE` / `ASSUMED` / `SUS` / `SLOP` per package. Hooked into `/plan` PRD generation and `/discovery` supply-chain probes. PRD gsd Pattern 2 / issue #520.
@@ -712,6 +724,11 @@ state-md-lock:
 handover-gate:
   enabled: true
   max-open-questions: 3
+
+# Broken-Window Budget (#730/H5)
+broken-window-budget:
+  enabled: false
+  due-days: 7
 
 # Slopcheck (PRD gsd Pattern 2 / #520)
 slopcheck:

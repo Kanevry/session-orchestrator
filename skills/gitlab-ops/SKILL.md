@@ -121,8 +121,9 @@ done
 
 ### Type Labels
 - `bug` | `feature` | `enhancement` | `refactor`
-- `chore` | `documentation` | `epic` | `discovery` | `carryover`
+- `chore` | `documentation` | `epic` | `discovery` | `carryover` | `broken-window`
 - `carryover` — auto-created for 2×SPIRAL or FAILED agent tasks; see `scripts/lib/spiral-carryover.mjs`.
+- `broken-window` — knowingly-broken shipment, hard due-date, filed by session-end Phase 2.6 (#730/H5); see `scripts/lib/spiral-carryover.mjs` (`createBrokenWindowIssue`).
 
 ### Provenance Labels
 - `from:<agent>` — SHOULD be applied to any issue/MR created by an automated agent (e.g. `from:discovery`, `from:reconcile`), so operators can filter agent-authored items from human-authored ones. Single-colon form, per the taxonomy convention above.

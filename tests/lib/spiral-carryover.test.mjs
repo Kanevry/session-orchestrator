@@ -35,7 +35,9 @@ const { execFileSync } = await import('node:child_process');
 const {
   computeTaskHash,
   findExistingCarryover,
+  findExistingBrokenWindow,
   createSpiralCarryoverIssue,
+  createBrokenWindowIssue,
 } = await import('@lib/spiral-carryover.mjs');
 
 // ---------------------------------------------------------------------------
@@ -345,6 +347,193 @@ describe('createSpiralCarryoverIssue', () => {
     expect(res.created).toBe(false);
     expect(res.skipped).toBe('error');
     expect(res.error).toContain('invalid kind');
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. findExistingBrokenWindow — greps the `broken-window` label
+// ---------------------------------------------------------------------------
+
+describe('findExistingBrokenWindow (gitlab)', () => {
+  it('lists issues with the broken-window label and matches the task-hash marker', async () => {
+    const taskHash = 'cafe1234';
+    const fakeList = [
+      {
+        iid: 91,
+        web_url: 'https://gitlab.example.com/g/p/-/issues/91',
+        description: `## [Broken-Window]\n<!-- task-hash: ${taskHash} -->\nbody`,
+      },
+    ];
+    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
+
+    const res = await findExistingBrokenWindow({ taskHash, vcs: 'gitlab' });
+
+    expect(res).toEqual({
+      exists: true,
+      issueId: 91,
+      issueUrl: 'https://gitlab.example.com/g/p/-/issues/91',
+    });
+    const [cmd, args] = execFileSync.mock.calls[0];
+    expect(cmd).toBe('glab');
+    expect(args).toContain('broken-window');
+    expect(args).not.toContain('type:carryover');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. createBrokenWindowIssue (#730/H5)
+// ---------------------------------------------------------------------------
+
+describe('createBrokenWindowIssue', () => {
+  // Deterministic clock so the computed due-date is a hardcoded literal.
+  // 2026-07-10 + 7 days (default) = 2026-07-17.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-10T00:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('creates a gitlab issue with the [Broken-Window] title, labels, and native --due-date', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/50\n' },
+    ]);
+
+    const res = await createBrokenWindowIssue({
+      item: {
+        title: 'echo-stub shipped in Phase 2.0a',
+        source: 'phase-2.0a-stub',
+        description: 'Stubbed migration guard shipped under enforcement: warn.',
+        sessionId: 'main-2026-07-10-deep-1',
+      },
+      vcs: 'gitlab',
+    });
+
+    expect(res).toEqual({
+      created: true,
+      issueId: 50,
+      issueUrl: 'https://gitlab.example.com/g/p/-/issues/50',
+      due: '2026-07-17',
+    });
+
+    expect(execFileSync).toHaveBeenCalledTimes(2);
+    const [createCmd, createArgs] = execFileSync.mock.calls[1];
+    expect(createCmd).toBe('glab');
+    expect(createArgs[0]).toBe('issue');
+    expect(createArgs[1]).toBe('create');
+
+    const title = createArgs[createArgs.indexOf('--title') + 1];
+    expect(title).toBe('[Broken-Window] echo-stub shipped in Phase 2.0a');
+
+    const labels = createArgs[createArgs.indexOf('--label') + 1];
+    expect(labels).toContain('broken-window');
+    expect(labels).toContain('priority:high');
+
+    const dueIdx = createArgs.indexOf('--due-date');
+    expect(dueIdx).toBeGreaterThan(-1);
+    expect(createArgs[dueIdx + 1]).toBe('2026-07-17');
+
+    // Body carries the dedup marker and the source.
+    const body = createArgs[createArgs.indexOf('--description') + 1];
+    const expectedHash = computeTaskHash('phase-2.0a-stub::echo-stub shipped in Phase 2.0a');
+    expect(body).toContain(`<!-- task-hash: ${expectedHash} -->`);
+    expect(body).toContain('phase-2.0a-stub');
+  });
+
+  it('honours a custom due-days (14) in the gitlab --due-date flag', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/51\n' },
+    ]);
+
+    const res = await createBrokenWindowIssue({
+      item: { title: 'overridden reviewer finding', source: 'wave-override' },
+      dueDays: 14,
+      vcs: 'gitlab',
+    });
+
+    expect(res.due).toBe('2026-07-24');
+    const createArgs = execFileSync.mock.calls[1][1];
+    const dueIdx = createArgs.indexOf('--due-date');
+    expect(createArgs[dueIdx + 1]).toBe('2026-07-24');
+  });
+
+  it('routes to gh with no --due-date flag and a "Due:" first body line (github fallback)', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://github.com/org/repo/issues/8\n' },
+    ]);
+
+    const res = await createBrokenWindowIssue({
+      item: { title: 'WARN-lint shipped', source: 'lint-warn', sessionId: 's1' },
+      vcs: 'github',
+    });
+
+    expect(res.created).toBe(true);
+    expect(res.issueId).toBe(8);
+    expect(res.due).toBe('2026-07-17');
+
+    const [createCmd, createArgs] = execFileSync.mock.calls[1];
+    expect(createCmd).toBe('gh');
+    expect(createArgs).toContain('--body');
+    expect(createArgs).not.toContain('--description');
+    expect(createArgs).not.toContain('--due-date');
+
+    const body = createArgs[createArgs.indexOf('--body') + 1];
+    expect(body.split('\n')[0]).toBe('Due: 2026-07-17');
+  });
+
+  it('returns skipped:duplicate on a re-run (idempotent per task-hash) without a second create', async () => {
+    const item = { title: 'dup broken window', source: 'override-2.3' };
+    const hash = computeTaskHash('override-2.3::dup broken window');
+    const fakeList = [
+      {
+        iid: 60,
+        web_url: 'https://gitlab.example.com/g/p/-/issues/60',
+        description: `body\n<!-- task-hash: ${hash} -->\nmore`,
+      },
+    ];
+    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
+
+    const res = await createBrokenWindowIssue({ item, vcs: 'gitlab' });
+
+    expect(res).toEqual({
+      created: false,
+      skipped: 'duplicate',
+      issueId: 60,
+      issueUrl: 'https://gitlab.example.com/g/p/-/issues/60',
+    });
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open (skipped:error, does not throw) when the create CLI invocation fails', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: false, stderr: 'glab: rate limited' },
+    ]);
+
+    const res = await createBrokenWindowIssue({
+      item: { title: 'flaky broken window', source: 'override-2.5' },
+      vcs: 'gitlab',
+    });
+
+    expect(res.created).toBe(false);
+    expect(res.skipped).toBe('error');
+    expect(res.error).toContain('rate limited');
+  });
+
+  it('returns skipped:error when item.title is missing (does not shell out)', async () => {
+    const res = await createBrokenWindowIssue({
+      item: { source: 'unresolved-1.8' },
+      vcs: 'gitlab',
+    });
+    expect(res.created).toBe(false);
+    expect(res.skipped).toBe('error');
+    expect(res.error).toContain('missing item.title');
     expect(execFileSync).not.toHaveBeenCalled();
   });
 });
