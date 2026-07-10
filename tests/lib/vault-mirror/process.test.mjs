@@ -966,6 +966,72 @@ describe('quality gate', () => {
   });
 });
 
+// ── #740 narrative-chars gate is sessions-only, never applied to learnings ───
+//
+// Regression guard against a future "symmetry" edit that wires the
+// sessions-only qualityMinNarrativeChars gate into processLearning. The
+// field is already destructured (as `_qualityMinNarrativeChars`, unused) in
+// processLearning's ctx — see process.mjs — so the trap is real: a well-
+// intentioned refactor could "complete the symmetry" and start gating
+// learnings on insight length too. This test pins that it must not.
+
+describe('processLearning #740: narrative-chars gate is sessions-only, never applied to learnings', () => {
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function getProcessLearning() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processLearning;
+  }
+
+  it('short insight (< qualityMinNarrativeChars) with confidence >= min still emits created, never skipped-quality-low', async () => {
+    const processLearning = await getProcessLearning();
+    // 350-char insight — deliberately shorter than the qualityMinNarrativeChars
+    // value passed below (1000). If a future edit wires the sessions-only
+    // narrative-length gate into processLearning, this entry would wrongly
+    // flip to skipped-quality-low and this assertion would fail.
+    const shortInsight = 'x'.repeat(350);
+    const entry = {
+      id: 'a1b2c3d4-0001-4000-8000-000000000740',
+      type: 'gotcha',
+      subject: 'short-insight-probe',
+      insight: shortInsight,
+      evidence: 'unit test',
+      confidence: 0.6,
+      source_session: 'session-2026-07-10',
+      created_at: '2026-07-10T10:00:00Z',
+    };
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, {
+        vaultDir: '/vault',
+        dryRun: false,
+        kind: 'learning',
+        qualityMinNarrativeChars: 1000, // would fail the (sessions-only) narrative gate if it were ever wired
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+  });
+});
+
 // ── #635 slug-length cap (ENAMETOOLONG guard) ────────────────────────────────
 
 describe('processLearning slug-length cap (#635)', () => {
