@@ -108,8 +108,8 @@ Sidecar: .orchestrator/persona-panel/2026-05-20T14-30-00Z-a1b2c3d4.json
   "run_id": "a1b2c3d4",
   "target": "/abs/path/docs/research/wfk-2.1.5.md",
   "personas_invoked": [
-    { "name": "klima-physicist", "version": 2, "model": "claude-opus-4-7", ... },
-    { "name": "klima-ai-expert",  "version": 1, "model": "claude-opus-4-7", ... }
+    { "name": "klima-physicist", "version": "2", "model": "claude-opus-4-7", ... },
+    { "name": "klima-ai-expert",  "version": "1", "model": "claude-opus-4-7", ... }
   ],
   "consolidation": {
     "mode": "voting-quorum",
@@ -235,7 +235,7 @@ Full specification: `skills/persona-panel/persona-format.md`. Minimum shape:
 ---
 name: my-reviewer
 schema_version: 1
-version: 1
+version: "1"
 role: "Domain expert in [field] — evaluates [aspect] of the target"
 model: claude-opus-4-7
 tier: domain-expert

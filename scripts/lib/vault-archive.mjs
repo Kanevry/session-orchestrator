@@ -27,7 +27,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import YAML from 'js-yaml';
 
 import { expandTilde } from './common.mjs';
@@ -358,7 +358,19 @@ export function archiveFileToVault({
   // owner.yaml/SO_VAULT_DIR writes into a literal `./~` directory instead of
   // the real home-relative vault (single seam covers both the
   // archive-closed-prds CLI and the docs-Public-Split corpus mover).
-  const targetAbs = join(expandTilde(vaultDir), targetSubdir, filename);
+  const vaultRoot = expandTilde(vaultDir);
+  const targetAbs = join(vaultRoot, targetSubdir, filename);
+
+  // #793 GAP-3: containment guard — a caller-supplied targetSubdir (e.g.
+  // `../../etc`) must not resolve outside the vault root. relative()-based,
+  // not a bare startsWith(vaultRoot) prefix check — a sibling directory that
+  // merely shares a string prefix (`/vault-evil` vs `/vault`) would otherwise
+  // slip past a naive check. Runs before any write AND before the dry-run
+  // report, so a planned escape is refused rather than silently manifested.
+  const relToVault = relative(vaultRoot, targetAbs);
+  if (relToVault.startsWith('..') || isAbsolute(relToVault)) {
+    throw new Error(`vault-archive: targetSubdir '${targetSubdir}' escapes vault root`);
+  }
 
   const raw = readFileSync(sourcePath, 'utf8');
   const { frontmatter: existing, body } = splitFrontmatter(raw);

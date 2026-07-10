@@ -258,6 +258,11 @@ describe('generateSessionNoteV2', () => {
     expect(out).not.toMatch(/^repo: /m);
   });
 
+  it('#793: falls back to "n/a" (not "0") when effectiveness.carryover is absent', () => {
+    const out = generateSessionNoteV2(makeV2Entry({ effectiveness: { completion_rate: 1.0 } }));
+    expect(out).toContain('carryover=n/a');
+  });
+
   it('aggregates total agents from wave.agents fields', () => {
     const entry = makeV2Entry({
       waves: [

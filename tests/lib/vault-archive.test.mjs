@@ -300,6 +300,68 @@ describe('archiveFileToVault', () => {
   });
 });
 
+describe('archiveFileToVault — containment guard (#793 GAP-3)', () => {
+  // The escape target must stay inside OUR OWN mkTmp sandbox (cleaned up via
+  // the `cleanups` afterEach) rather than pointing at an uncontrolled location
+  // several directories above the OS tmp root — asserting on state outside a
+  // sandbox we own is unreliable (parallel sessions / stray prior runs may
+  // already have created something at an arbitrary shared path).
+  it('throws and writes NOTHING when targetSubdir escapes the vault root (--apply)', () => {
+    const sandbox = mkTmp('va-sandbox-');
+    const vaultDir = join(sandbox, 'vaultroot');
+    const src = writeFile(sandbox, 'src/note.md', '# Escape Note\n\nbody\n');
+
+    expect(() =>
+      archiveFileToVault({
+        repoRoot: sandbox,
+        vaultDir,
+        sourcePath: src,
+        targetSubdir: '../escape',
+        dryRun: false,
+        now: FIXED_NOW,
+      }),
+    ).toThrow(/escapes vault root/);
+
+    // The escape target (one level up from vaultDir, i.e. sandbox/escape) was
+    // never created — the guard fired before any mkdirSync/writeFileSync.
+    expect(existsSync(join(sandbox, 'escape', 'note.md'))).toBe(false);
+  });
+
+  it('throws BEFORE producing a manifest entry when dryRun is true (guard precedes the dry-run report)', () => {
+    const sandbox = mkTmp('va-sandbox-');
+    const vaultDir = join(sandbox, 'vaultroot');
+    const src = writeFile(sandbox, 'src/note.md', '# Escape Note\n\nbody\n');
+
+    expect(() =>
+      archiveFileToVault({
+        repoRoot: sandbox,
+        vaultDir,
+        sourcePath: src,
+        targetSubdir: '../escape',
+        dryRun: true,
+        now: FIXED_NOW,
+      }),
+    ).toThrow(/escapes vault root/);
+  });
+
+  it('does not throw for a normal, contained targetSubdir', () => {
+    const vault = mkTmp('va-vault-');
+    const src = writeFile(vault, 'src/note.md', '# Fine Note\n\nbody\n');
+
+    const entry = archiveFileToVault({
+      repoRoot: vault,
+      vaultDir: vault,
+      sourcePath: src,
+      targetSubdir: '01-projects/x',
+      dryRun: false,
+      now: FIXED_NOW,
+    });
+
+    expect(entry.action).toBe('archived');
+    expect(existsSync(join(vault, '01-projects/x/note.md'))).toBe(true);
+  });
+});
+
 describe('archiveFileToVault — tilde-expansion (architect finding, #774 follow-up)', () => {
   afterEach(() => {
     mockedHomedir.mockReset();

@@ -207,7 +207,7 @@ export function generateSessionNoteV2(entry, options = {}) {
 
   const completionRate = effectiveness.completion_rate;
   const ratePercent = typeof completionRate === 'number' ? Math.round(completionRate * 100) + '%' : 'n/a';
-  const carryover = effectiveness.carryover ?? 0;
+  const carryover = effectiveness.carryover ?? 'n/a';
 
   const titleValue = `Session ${created} — ${session_type}`;
   const title = `"${titleValue}"`;
