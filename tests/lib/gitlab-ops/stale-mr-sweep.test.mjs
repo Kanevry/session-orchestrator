@@ -12,7 +12,7 @@
  *   - main(): --help, bad-flag rejection, happy path, system-error exit code
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   DEFAULT_THRESHOLD_DAYS,
   filterStaleMRs,
@@ -402,5 +402,208 @@ describe('main — system error propagation', () => {
     const mockExec = vi.fn().mockRejectedValue(new Error('glab not found'));
     const result = await main([], { exec: mockExec, now: FIXED_NOW });
     expect(result.exitCode).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// main() — output-shape coverage (stdout/stderr captured via spy)
+// ---------------------------------------------------------------------------
+
+/**
+ * Spy on a stream's `write` and collect every chunk written to it, joined
+ * into a single string via `.text()`. Mirrors the `written.push(chunk)`
+ * pattern already used in tests/lib/io.test.mjs's emitSystemMessage suite.
+ */
+function captureWrite(stream) {
+  const chunks = [];
+  vi.spyOn(stream, 'write').mockImplementation((chunk) => {
+    chunks.push(chunk);
+    return true;
+  });
+  return { text: () => chunks.join('') };
+}
+
+describe('main — --all-vault vaultDir resolution', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('expands the default vaultDir from homedir() when --vault-dir is not passed', async () => {
+    let captured;
+    const discoverRepos = vi.fn(async ({ vaultDir }) => {
+      captured = vaultDir;
+      return [];
+    });
+
+    await main(['--all-vault'], {
+      discoverRepos,
+      homedir: () => '/Users/fixture',
+      exec: vi.fn(),
+      now: FIXED_NOW,
+    });
+
+    expect(captured).toBe('/Users/fixture/Projects/vault');
+  });
+
+  it('--vault-dir overrides the homedir()-derived default and homedir() is never called', async () => {
+    let captured;
+    const discoverRepos = vi.fn(async ({ vaultDir }) => {
+      captured = vaultDir;
+      return [];
+    });
+    const homedirSpy = vi.fn(() => '/Users/fixture');
+
+    await main(['--all-vault', '--vault-dir', '/custom/vault'], {
+      discoverRepos,
+      homedir: homedirSpy,
+      exec: vi.fn(),
+      now: FIXED_NOW,
+    });
+
+    expect(captured).toBe('/custom/vault');
+    expect(homedirSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('main — --all-vault --json output shape', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('prints a JSON array of per-repo results tagged with slug', async () => {
+    const discoverRepos = vi.fn().mockResolvedValue([
+      { slug: 'proj-a', repo: 'group/proj-a', vcs: 'gitlab' },
+      { slug: 'proj-b', repo: 'someorg/proj-b', vcs: 'github' },
+    ]);
+    const mockExec = vi.fn().mockImplementation((cmd) => {
+      if (cmd === 'glab') return Promise.resolve({ stdout: GITLAB_MRS_JSON, stderr: '' });
+      return Promise.resolve({ stdout: GITHUB_PRS_JSON, stderr: '' });
+    });
+    const out = captureWrite(process.stdout);
+
+    const result = await main(['--all-vault', '--json'], {
+      discoverRepos,
+      exec: mockExec,
+      now: FIXED_NOW,
+      homedir: () => '/Users/fixture',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(out.text());
+    expect(parsed).toEqual([
+      {
+        slug: 'proj-a',
+        ok: true,
+        repo: 'group/proj-a',
+        vcs: 'gitlab',
+        total: 2,
+        stale: [
+          {
+            iid: 101,
+            title: 'Old MR',
+            updated_at: '2026-06-01T12:00:00.000Z',
+            created_at: '2026-06-01T12:00:00.000Z',
+            web_url: 'https://gitlab.example.com/-/mr/101',
+          },
+        ],
+      },
+      {
+        slug: 'proj-b',
+        ok: true,
+        repo: 'someorg/proj-b',
+        vcs: 'github',
+        total: 2,
+        stale: [
+          {
+            number: 55,
+            title: 'Stale PR',
+            url: 'https://github.com/org/repo/pull/55',
+            createdAt: '2026-05-01T00:00:00.000Z',
+            updatedAt: '2026-05-15T00:00:00.000Z',
+            author: { login: 'alice' },
+            headRefName: 'feat/old',
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe('main — --all-vault human summary', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('WARNs on stderr for a failed repo and prints the stale/open summary on stdout for a succeeding sibling', async () => {
+    const discoverRepos = vi.fn().mockResolvedValue([
+      { slug: 'repo-a', repo: 'group/repo-a', vcs: 'gitlab' },
+      { slug: 'repo-b', repo: 'group/repo-b', vcs: 'gitlab' },
+    ]);
+    const mockExec = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ stdout: GITLAB_MRS_JSON, stderr: '' });
+
+    const out = captureWrite(process.stdout);
+    const err = captureWrite(process.stderr);
+
+    const result = await main(['--all-vault'], {
+      discoverRepos,
+      exec: mockExec,
+      now: FIXED_NOW,
+      homedir: () => '/Users/fixture',
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(err.text()).toContain('stale-mr-sweep: WARN: repo-a — boom');
+    expect(out.text()).toContain('repo-b (gitlab): 1 stale / 2 open');
+  });
+});
+
+describe('main — single-repo human summary output', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('prints the stale MR and omits the fresh one', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: GITLAB_MRS_JSON, stderr: '' });
+    const out = captureWrite(process.stdout);
+
+    const result = await main([], { exec: mockExec, now: FIXED_NOW, repoRoot: '/fixture/repo' });
+
+    expect(result.exitCode).toBe(0);
+    expect(out.text()).toContain('  !101 — Old MR');
+    expect(out.text()).not.toContain('!102');
+  });
+});
+
+describe('main — single-repo --json output shape', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('prints the full findStaleMRs result envelope as JSON', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: GITLAB_MRS_JSON, stderr: '' });
+    const out = captureWrite(process.stdout);
+
+    const result = await main(['--json'], { exec: mockExec, now: FIXED_NOW, repoRoot: '/fixture/repo' });
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(out.text());
+    expect(parsed).toEqual({
+      ok: true,
+      repo: '/fixture/repo',
+      vcs: 'gitlab',
+      total: 2,
+      stale: [
+        {
+          iid: 101,
+          title: 'Old MR',
+          updated_at: '2026-06-01T12:00:00.000Z',
+          created_at: '2026-06-01T12:00:00.000Z',
+          web_url: 'https://gitlab.example.com/-/mr/101',
+        },
+      ],
+    });
   });
 });
