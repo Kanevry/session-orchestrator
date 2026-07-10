@@ -33,11 +33,43 @@ beforeAll(() => {
   drift = readFileSync(DRIFT, 'utf8');
 });
 
-/** Slice a section from `start` heading up to the next `end` heading. */
+/**
+ * Slice a section from `start` heading up to the next `end` heading.
+ *
+ * Throws when `start` cannot be located. The prior implementation returned
+ * `''` on a miss, which made every downstream `.not.toContain(...)`
+ * absence-guard pass vacuously against an empty string instead of actually
+ * exercising the intended window (Issue #737 pt.1 — see gateA in group C,
+ * which asserts `.not.toContain('Abort close')` against this slice: a
+ * silent '' would mask a real anchor-heading rename/removal). Mirrors the
+ * `dispatchCoreBlock()` guard in
+ * tests/skills/wave-executor-dispatch-batch.test.mjs, which throws under
+ * the equivalent condition.
+ *
+ * When `end` is explicitly passed but genuinely not found after `start`,
+ * this ALSO throws — chosen (over silently slicing to EOF) for consistency
+ * with `dispatchCoreBlock()`, which throws on the equivalent end-miss too.
+ * An unbounded slice-to-EOF on a real end-heading miss would silently widen
+ * an absence-guard's search window into unrelated downstream sections,
+ * which is the same vacuous-risk class as the start-miss case above.
+ *
+ * When `end` is omitted entirely (no end search requested — not exercised
+ * by any current call-site, but kept for API symmetry), slicing to EOF is
+ * the deliberate, non-miss default and is preserved as-is.
+ */
 function section(content, start, end) {
   const a = content.indexOf(start);
-  const b = end ? content.indexOf(end, a + 1) : content.length;
-  return a === -1 ? '' : content.slice(a, b === -1 ? content.length : b);
+  if (a === -1) {
+    throw new Error(`section(): could not locate start heading "${start}"`);
+  }
+  if (end === undefined) {
+    return content.slice(a);
+  }
+  const b = content.indexOf(end, a + 1);
+  if (b === -1) {
+    throw new Error(`section(): could not locate end heading "${end}" after start "${start}"`);
+  }
+  return content.slice(a, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,5 +249,33 @@ describe('E — Phase 0.6 skill-invocation self-report emit (C4)', () => {
     const s = section(skill, '## Phase 0.6', '## Phase 1:');
     expect(s).toContain('try {');
     expect(s).toContain('} catch');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F — section() helper: throw-on-miss guard (Issue #737 pt.1)
+// ---------------------------------------------------------------------------
+//
+// Permanent regression pin for the section() fix above. RED-check performed
+// live during implementation (not just reasoned about): with the prior
+// body — `return a === -1 ? '' : content.slice(...)` — the two `.toThrow()`
+// assertions below FAILED (section() returned '' instead of throwing);
+// restoring the throw-on-miss body turned them green again. See git history
+// of this file / the session transcript for the revert-and-rerun evidence.
+
+describe('F — section() helper throws on a start/end heading miss (no silent vacuous slice)', () => {
+  it('throws when the start heading does not exist in the content', () => {
+    expect(() => section(skill, '### NICHT-EXISTENTES-HEADING-XYZ')).toThrow(/could not locate start heading/);
+  });
+
+  it('throws when an explicit end heading does not exist after a found start', () => {
+    expect(() =>
+      section(skill, '### 2.3 Vault Staleness Check', '### NICHT-EXISTENTES-END-HEADING-XYZ')
+    ).toThrow(/could not locate end heading/);
+  });
+
+  it('still returns a non-empty slice for a real, existing start/end pair', () => {
+    const s = section(skill, '### 2.3 Vault Staleness Check', '## Phase 2.5:');
+    expect(s.length).toBeGreaterThan(0);
   });
 });
