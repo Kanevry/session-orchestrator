@@ -137,15 +137,24 @@ Dispatch one Agent per persona from the active catalog set.
 Agent({
   subagent_type: "general-purpose",
   model: <resolved model ID>,
-  prompt: <buildPersonaPrompt(persona, $TARGET)>,
+  prompt: <buildPersonaPrompt(persona, $TARGET, targetContent, groundingMode)>,
   tools: ["Read", "Grep", "Glob"]
 })
 ```
 
-Use `buildPersonaPrompt(persona, target)` from `scripts/lib/persona-panel/persona-runner.mjs`
-to compose the prompt. The runner wraps `evaluation_criteria` entries in
-`<persona-criteria>...</persona-criteria>` delimiters (security M1: persona body is treated as
-data, not free-form instructions; see `persona-format.md` for the full rationale).
+Use `buildPersonaPrompt(persona, target, targetContent, groundingMode)` from
+`scripts/lib/persona-panel/persona-runner.mjs` to compose the prompt. The runner wraps
+`evaluation_criteria` entries in `<persona-criteria>...</persona-criteria>` delimiters (security
+M1: persona body is treated as data, not free-form instructions; see `persona-format.md` for the
+full rationale).
+
+**Grounding Mode (optional, `--grounding <off|re-derive>`, default `off`, #730 Epic H):** when
+`re-derive`, `groundingMode='re-derive'` is passed to `buildPersonaPrompt`, which inserts a
+`<grounding-instruction>` block before `<target-content>` instructing the persona to
+independently re-derive supporting sources via Read/Grep/Glob rather than trusting a "Sources"
+section the target may already assert, and to report them as `derived_sources` in its JSON
+output. See `persona-format.md` § "Grounding Mode (optional)" for the full contract. v1 is
+advisory-only: `diffGroundingSources()` in `consolidator.mjs` never influences `final_verdict`.
 
 **Concurrency cap (security M2):** Maximum 20 personas per panel run. If the active set exceeds
 20, emit a warning and truncate to the first 20 alphabetically:
@@ -266,7 +275,10 @@ partial writes).
       "persona_name": "<string>",
       "verdict": "<pass|fail|warn>",
       "rationale": "<string, max 4096 chars>",
-      "recommendations": ["<string>"]
+      "recommendations": ["<string>"],
+      "derived_sources": [
+        { "path": "<string, optional — only when groundingMode='re-derive'>", "supports_claim": "<string, optional>" }
+      ]
     }
   ],
   "consolidation": {
@@ -277,7 +289,12 @@ partial writes).
     "warn_count": "<integer>",
     "dissenting_personas": ["<name>"],
     "audit_reason": "<string>",
-    "aggregator_warning": "<string | null>"
+    "aggregator_warning": "<string | null>",
+    "grounding_diff": {
+      "unconfirmed_author_sources": ["<string, optional — only when authorSources was supplied>"],
+      "newly_derived": ["<string>"],
+      "personas_reporting": "<integer>"
+    }
   }
 }
 ```

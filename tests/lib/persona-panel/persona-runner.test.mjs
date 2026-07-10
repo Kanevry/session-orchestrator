@@ -127,6 +127,47 @@ describe('buildPersonaPrompt', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildPersonaPrompt — groundingMode (#730 Epic H — Grounding-Review-Variante)
+// ---------------------------------------------------------------------------
+
+describe('buildPersonaPrompt — groundingMode', () => {
+  it('defaults to "off": the 4-arg call with no groundingMode is byte-identical to the 3-arg call', () => {
+    const targetContent = 'Some markdown body to evaluate.';
+    const threeArg = buildPersonaPrompt(samplePersona, sampleTarget, targetContent);
+    const fourArgOff = buildPersonaPrompt(samplePersona, sampleTarget, targetContent, 'off');
+    expect(fourArgOff).toBe(threeArg);
+    expect(threeArg).not.toContain('<grounding-instruction>');
+  });
+
+  it('inserts a <grounding-instruction> block with the re-derive/derived_sources instruction when groundingMode is "re-derive"', () => {
+    const targetContent = 'Some markdown body to evaluate.';
+    const prompt = buildPersonaPrompt(samplePersona, sampleTarget, targetContent, 're-derive');
+
+    expect(prompt).toContain('<grounding-instruction>');
+    expect(prompt).toContain('</grounding-instruction>');
+    expect(prompt).toContain('derived_sources');
+    expect(prompt).toContain('Read/Grep/Glob');
+
+    // The grounding block must precede the <target-content> OPENING TAG line
+    // (instructs BEFORE the agent reads the target, per #730 Epic H spec). The
+    // literal string "<target-content>" also appears earlier, inline, inside the
+    // intro sentence ("...content inside <target-content>;") — searching for the
+    // tag on its own line disambiguates the real block boundary from that mention.
+    const groundingAt = prompt.indexOf('<grounding-instruction>');
+    const targetContentTagAt = prompt.indexOf('\n<target-content>\n');
+    expect(groundingAt).toBeGreaterThan(-1);
+    expect(targetContentTagAt).toBeGreaterThan(-1);
+    expect(groundingAt).toBeLessThan(targetContentTagAt);
+  });
+
+  it('throws a descriptive Error for an unrecognised groundingMode value (fail-fast, mirrors threshold.mjs enum idiom)', () => {
+    expect(() => buildPersonaPrompt(samplePersona, sampleTarget, 'body', 'bogus-mode')).toThrow(
+      /groundingMode must be one of/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // computePromptHash
 // ---------------------------------------------------------------------------
 

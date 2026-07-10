@@ -40,6 +40,7 @@ import {
   consolidate,
   CONSOLIDATION_MODES,
   FINAL_VERDICTS,
+  diffGroundingSources,
 } from '../../../scripts/lib/persona-panel/consolidator.mjs';
 
 // ---------------------------------------------------------------------------
@@ -463,5 +464,86 @@ describe('consolidate — coord-direct boundary fold-ins (W4-Q4)', () => {
     expect(result.votes.pass).toBe(0);
     expect(result.votes.fail).toBe(1);
     expect(result.threshold_met).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// diffGroundingSources (#730 Epic H — Grounding-Review-Variante, v1, advisory-only)
+// ---------------------------------------------------------------------------
+
+describe('diffGroundingSources', () => {
+  it('returns all-empty result with personas_reporting=0 for empty authorSources and empty outputs', () => {
+    const result = diffGroundingSources([], []);
+    expect(result).toEqual({
+      unconfirmed_author_sources: [],
+      newly_derived: [],
+      personas_reporting: 0,
+    });
+  });
+
+  it('returns no unconfirmed/newly_derived when every author source is confirmed by a persona (full confirmation)', () => {
+    const authorSources = ['docs/a.md', 'docs/b.md'];
+    const outputs = [
+      {
+        persona_name: 'alpha',
+        derived_sources: [
+          { path: 'docs/a.md', supports_claim: 'claim 1' },
+          { path: 'docs/b.md', supports_claim: 'claim 2' },
+        ],
+      },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result).toEqual({
+      unconfirmed_author_sources: [],
+      newly_derived: [],
+      personas_reporting: 1,
+    });
+  });
+
+  it('lists an author-claimed source as unconfirmed when no persona derived it', () => {
+    const authorSources = ['docs/a.md', 'docs/b.md'];
+    const outputs = [
+      { persona_name: 'alpha', derived_sources: [{ path: 'docs/a.md' }] },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result.unconfirmed_author_sources).toEqual(['docs/b.md']);
+    expect(result.newly_derived).toEqual([]);
+    expect(result.personas_reporting).toBe(1);
+  });
+
+  it('lists a persona-derived source as newly_derived when it was not in the author-claimed list', () => {
+    const authorSources = ['docs/a.md'];
+    const outputs = [
+      {
+        persona_name: 'alpha',
+        derived_sources: [{ path: 'docs/a.md' }, { path: 'docs/c.md' }],
+      },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result.unconfirmed_author_sources).toEqual([]);
+    expect(result.newly_derived).toEqual(['docs/c.md']);
+    expect(result.personas_reporting).toBe(1);
+  });
+
+  it('normalises paths before comparing — "./docs/x.md" (author) confirms "docs/x.md" (derived)', () => {
+    const authorSources = ['./docs/x.md'];
+    const outputs = [
+      { persona_name: 'alpha', derived_sources: [{ path: 'docs/x.md' }] },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result.unconfirmed_author_sources).toEqual([]);
+    expect(result.newly_derived).toEqual([]);
+  });
+
+  it('does not count a persona output with an empty/absent derived_sources toward personas_reporting', () => {
+    const authorSources = ['docs/a.md'];
+    const outputs = [
+      { persona_name: 'alpha', derived_sources: [{ path: 'docs/a.md' }] },
+      { persona_name: 'beta' }, // no derived_sources at all (groundingMode='off' persona)
+      { persona_name: 'gamma', derived_sources: [] },
+    ];
+    const result = diffGroundingSources(authorSources, outputs);
+    expect(result.personas_reporting).toBe(1);
+    expect(result.unconfirmed_author_sources).toEqual([]);
   });
 });

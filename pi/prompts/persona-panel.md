@@ -1,6 +1,6 @@
 ---
 description: Run a parallel multi-persona domain-expert review panel against a file, directory, or output range
-argument-hint: "<target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--dry-run]"
+argument-hint: "<target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--grounding <off|re-derive>] [--dry-run]"
 ---
 
 # /persona-panel

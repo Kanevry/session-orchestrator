@@ -1,6 +1,6 @@
 ---
 description: Run a parallel multi-persona domain-expert review panel against a file, directory, or output range
-argument-hint: "<target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--dry-run]"
+argument-hint: "<target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--grounding <off|re-derive>] [--dry-run]"
 disable-model-invocation: false
 ---
 
@@ -24,14 +24,16 @@ Parse `$ARGUMENTS` before doing anything else.
   - `hard-gate` — all N personas must PASS; deterministic. `--threshold all` is the default; `--threshold N-of-N` is also accepted.
   - `summary` — coordinator LLM-aggregate of heterogeneous outputs. Emits an explicit WARN that this mode adds one additional LLM call.
 - `--threshold <spec>` — quorum spec. Accepted forms: `M-of-N` where M and N are integers 1..20, `all`, or `any`. Parsed by `scripts/lib/persona-panel/threshold.mjs::parseThreshold()`. Default: `all`.
+- `--grounding <off|re-derive>` — Grounding-Review mode (#730 Epic H). `off` (default): personas evaluate the target as-is. `re-derive`: each persona is instructed to independently re-derive supporting sources via Read/Grep/Glob instead of trusting a "Sources" section the target may already assert, and reports them as `derived_sources`. Advisory-only in v1 — never influences `final_verdict`. See `skills/persona-panel/persona-format.md` § "Grounding Mode (optional)".
 - `--dry-run` — resolve catalog, print dispatch plan, do NOT call `Agent()`, do NOT write sidecar. Exit 0 on success.
 
 **Validation errors (all exit 1):**
 
 - Missing `<target>`: `missing required arg <target>`.
-- Unknown flag (starts with `--` but not in the list above): `unknown flag: --<name>. Valid: --personas, --mode, --threshold, --dry-run`.
+- Unknown flag (starts with `--` but not in the list above): `unknown flag: --<name>. Valid: --personas, --mode, --threshold, --grounding, --dry-run`.
 - `--mode` value not in enum: `invalid --mode value: '<value>'. Valid: voting, hard-gate, summary`.
 - `--threshold` value fails `parseThreshold()`: echo the parser error verbatim, e.g., `invalid threshold 'foo': expected M-of-N (M,N integers 1..20), 'all', or 'any'`.
+- `--grounding` value not in enum: `invalid --grounding value: '<value>'. Valid: off, re-derive`.
 - `<target>` outside project root: `target path outside project: <path>`.
 
 If `<target>` is missing, print the usage line and exit 1 without invoking the skill.
@@ -102,6 +104,14 @@ All resolved personas must return PASS. A single FAIL produces a final FAIL verd
 ```
 
 Resolves catalog and target, prints the planned dispatch list (persona names, models, target), exits 0 without calling `Agent()` or writing a sidecar.
+
+**5. Grounding-review mode — personas re-derive their own sources:**
+
+```
+/persona-panel docs/design-doc.md --grounding re-derive
+```
+
+Each dispatched persona is instructed to independently re-derive supporting sources via Read/Grep/Glob rather than trusting a "Sources" section already present in `docs/design-doc.md`, and reports them as `derived_sources`. Advisory-only — `final_verdict` is unaffected.
 
 ## Related
 

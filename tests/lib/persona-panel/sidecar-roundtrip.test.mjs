@@ -382,3 +382,70 @@ describe('writeJsonAtomic path-confinement docs canary (Q1-LOW-6)', () => {
     expect(skillContent).toContain('validatePathInsideProject');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Grounding-review v1 schema extension (#730 Epic H): derived_sources on
+// outputs[] + grounding_diff on consolidation — both optional, additive.
+// ---------------------------------------------------------------------------
+
+describe('persona-panel-sidecar schema — grounding-review fields (#730 Epic H)', () => {
+  it('accepts a sidecar WITH outputs[].derived_sources and consolidation.grounding_diff', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    value.outputs[0].derived_sources = [
+      { path: 'docs/my-prd.md', supports_claim: 'primary source for the claim' },
+    ];
+    value.consolidation.grounding_diff = {
+      unconfirmed_author_sources: ['docs/stale-ref.md'],
+      newly_derived: ['docs/other-evidence.md'],
+      personas_reporting: 1,
+    };
+
+    const ok = validate(value);
+    expect(ok).toBe(true);
+    expect(validate.errors).toBeFalsy();
+  });
+
+  it('still accepts a sidecar WITHOUT derived_sources/grounding_diff (regression — v1 default flow)', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    expect(value.outputs[0].derived_sources).toBeUndefined();
+    expect(value.consolidation.grounding_diff).toBeUndefined();
+
+    const ok = validate(value);
+    expect(ok).toBe(true);
+    expect(validate.errors).toBeFalsy();
+  });
+
+  it('rejects a derived_sources entry missing the required "path" field', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    value.outputs[0].derived_sources = [{ supports_claim: 'no path here' }];
+
+    const ok = validate(value);
+    expect(ok).toBe(false);
+    expect(Array.isArray(validate.errors)).toBe(true);
+    expect(validate.errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a grounding_diff object with an unrecognised extra field (additionalProperties:false)', async () => {
+    const validate = await getValidator();
+
+    const value = goodSidecar();
+    value.consolidation.grounding_diff = { totally_unknown_field: 'nope' };
+
+    const ok = validate(value);
+    expect(ok).toBe(false);
+    expect(Array.isArray(validate.errors)).toBe(true);
+
+    const additionalPropError = validate.errors.find(
+      (e) =>
+        e.keyword === 'additionalProperties' ||
+        String(e.params?.additionalProperty ?? '').includes('totally_unknown_field'),
+    );
+    expect(additionalPropError).toBeDefined();
+  });
+});

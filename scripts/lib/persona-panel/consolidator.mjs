@@ -42,6 +42,8 @@
  *   }
  */
 
+import path from 'node:path';
+
 import { thresholdMet } from './threshold.mjs';
 
 /**
@@ -283,5 +285,86 @@ export function consolidate(outputs, mode, config) {
     dissenting_personas: dissentingFrom(outputs, 'pass'),
     tie_break_applied: false,
     notes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// diffGroundingSources (#730 Epic H — Grounding-Review-Variante, v1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a source-path string for grounding-diff comparison. Pure string
+ * operation — no filesystem access, no existence check. Backslashes become
+ * forward slashes, `.`/`..` segments are lexically collapsed, and a leading
+ * `./` is stripped so `./foo/bar.md`, `foo/bar.md`, and `foo\bar.md` all
+ * compare equal.
+ *
+ * @param {unknown} p
+ * @returns {string} normalised path, or '' when `p` is not a non-empty string
+ */
+function normalizeSourcePath(p) {
+  if (typeof p !== 'string' || p.trim() === '') return '';
+  const slashed = p.trim().replace(/\\/g, '/');
+  return path.posix.normalize(slashed).replace(/^\.\//, '');
+}
+
+/**
+ * @typedef {Object} GroundingDiffResult
+ * @property {string[]} unconfirmed_author_sources — sources the target author claimed
+ *   (`authorSources`) that NO persona's `derived_sources` independently confirmed.
+ * @property {string[]} newly_derived — sources at least one persona independently
+ *   derived that were NOT in the author's claimed list.
+ * @property {number} personas_reporting — count of `outputs` entries that reported at
+ *   least one `derived_sources` entry.
+ */
+
+/**
+ * Diff an author's claimed source list against what reviewing personas
+ * independently re-derived (`derived_sources` on each output, populated when
+ * a persona was dispatched with `groundingMode: 're-derive'` —
+ * see `buildPersonaPrompt` in `persona-runner.mjs`).
+ *
+ * Pure and advisory-only: this diff is NEVER consumed by `consolidate()` or
+ * `tally()` and has NO influence on `final_verdict`. It is signal for the
+ * caller (skill/report layer) to surface to the operator, never a gate.
+ *
+ * v1 scope: only meaningful when the caller explicitly supplies
+ * `authorSources` (e.g. a "Sources" section the coordinator parsed out of the
+ * target). When `authorSources` is empty/absent, `unconfirmed_author_sources`
+ * is trivially `[]` and the diff degrades to reporting `newly_derived` +
+ * `personas_reporting` only.
+ *
+ * @param {string[]} authorSources — paths the target itself claims as sources
+ * @param {Array<{derived_sources?: Array<{path?: string, supports_claim?: string}>}>} outputs
+ *   — persona outputs (same shape consolidate() consumes; only `derived_sources` is read)
+ * @returns {GroundingDiffResult}
+ */
+export function diffGroundingSources(authorSources, outputs) {
+  const authorSet = new Set(
+    (Array.isArray(authorSources) ? authorSources : [])
+      .map(normalizeSourcePath)
+      .filter((p) => p !== ''),
+  );
+
+  const derivedSet = new Set();
+  let personasReporting = 0;
+
+  for (const out of Array.isArray(outputs) ? outputs : []) {
+    const derived = Array.isArray(out?.derived_sources) ? out.derived_sources : [];
+    if (derived.length === 0) continue;
+    personasReporting += 1;
+    for (const entry of derived) {
+      const normalized = normalizeSourcePath(entry?.path);
+      if (normalized !== '') derivedSet.add(normalized);
+    }
+  }
+
+  const unconfirmedAuthorSources = [...authorSet].filter((p) => !derivedSet.has(p)).sort();
+  const newlyDerived = [...derivedSet].filter((p) => !authorSet.has(p)).sort();
+
+  return {
+    unconfirmed_author_sources: unconfirmedAuthorSources,
+    newly_derived: newlyDerived,
+    personas_reporting: personasReporting,
   };
 }

@@ -142,6 +142,26 @@
             "items": {
               "type": "object"
             }
+          },
+          "derived_sources": {
+            "type": "array",
+            "maxItems": 50,
+            "description": "Grounding-review v1 (#730 Epic H): sources this persona independently re-derived via Read/Grep/Glob when dispatched with groundingMode='re-derive', instead of trusting a source list already present in the target. Optional — absent when groundingMode='off' (default).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "supports_claim": {
+                  "type": "string",
+                  "maxLength": 1024
+                }
+              }
+            }
           }
         }
       }
@@ -196,6 +216,27 @@
           "items": {
             "type": "string",
             "maxLength": 512
+          }
+        },
+        "grounding_diff": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Grounding-review v1 (#730 Epic H): advisory diff between the target's claimed sources and what personas independently re-derived. Shape of scripts/lib/persona-panel/consolidator.mjs::diffGroundingSources() return value. Signal only — never influences final_verdict.",
+          "properties": {
+            "unconfirmed_author_sources": {
+              "type": "array",
+              "maxItems": 100,
+              "items": { "type": "string", "maxLength": 4096 }
+            },
+            "newly_derived": {
+              "type": "array",
+              "maxItems": 100,
+              "items": { "type": "string", "maxLength": 4096 }
+            },
+            "personas_reporting": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       }
