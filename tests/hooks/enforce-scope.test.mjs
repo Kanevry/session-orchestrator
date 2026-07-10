@@ -647,3 +647,159 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
     expect(result.stdout).toContain('"permissionDecision":"deny"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Absolute out-of-repo allowlist — #792
+// ---------------------------------------------------------------------------
+//
+// Root cause (W1-D6): Gate 6 (`isPathInside(resolvedPath, projectRoot)`) denied
+// every out-of-repo path BEFORE Gate 7 ever consulted allowedPaths, and Gate 7
+// only matches the ROOT-RELATIVE candidate — so an absolute entry could never
+// match. A deliberate coordinator grant like "/Users/x/Projects/vault/**" was
+// therefore structurally unreachable.
+//
+// Fix: a pre-Gate-6 `matchesAbsoluteAllowlist` step honours EXPLICIT absolute
+// allowedPaths entries against the fully realpath-resolved candidate. The four
+// security invariants below MUST all hold:
+//   (a) RELATIVE entries (`**`, `../**`) can NEVER match an out-of-repo path.
+//   (b) With no absolute entry the pre-gate is inert (byte-identical to before).
+//   (c) ../.. traversal stays blocked (realpath + Gate 6).
+//   (d) A symlink cannot smuggle out-of-repo writes — realpath makes the
+//       canonical target authoritative.
+//
+// GOTCHA: on macOS /tmp (and /var) is a symlink to /private/... — every tmpdir
+// path used here is passed through fs.realpath so the absolute allowedPaths
+// pattern matches the realpath-resolved candidate the hook actually computes.
+// ---------------------------------------------------------------------------
+
+describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
+  /**
+   * Create a realpath-resolved tmpdir that stands in for an out-of-repo "vault".
+   * Realpath is load-bearing (macOS /tmp → /private/tmp): the hook realpath-
+   * resolves the candidate, so the absolute allowedPaths pattern must be built
+   * from the canonical path or it can never match.
+   */
+  async function mkVault() {
+    const v = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-vault-')));
+    tmpDirs.push(v);
+    return v;
+  }
+
+  it('(i) allows an Edit to an EXPLICIT absolute out-of-repo allowedPaths entry', async () => {
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', `${vault}/**`],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(vault, 'note.md')),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+  });
+
+  it('(ii) denies the SAME out-of-repo path when no absolute grant is present', async () => {
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(vault, 'note.md')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expect(result.stdout).toContain('path outside project root');
+  });
+
+  it('(iii) invariant (a): relative `**` and `../**` entries can NOT match out-of-repo', async () => {
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['**', '../**'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(vault, 'note.md')),
+    });
+    // Both entries are RELATIVE → filtered out by path.isAbsolute → helper false
+    // → Gate 6 denies. A relative glob must never become a repo-escape hatch.
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('(iv) invariant (c): ../../etc/passwd traversal stays denied under allowedPaths [src/]', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, '..', '..', 'etc', 'passwd')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('scopes the grant to its OWN subtree — a sibling ungranted vault is still denied', async () => {
+    // An absolute entry matches ONLY its literal subtree, never "any out-of-repo".
+    const grantedVault = await mkVault();
+    const otherVault = await mkVault();
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', `${grantedVault}/**`],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(otherVault, 'note.md')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('invariant (b): with NO absolute entry an in-repo out-of-scope path denies exactly as before', async () => {
+    // Regression lock: the pre-gate must be inert when abs=[] — an in-repo path
+    // outside allowedPaths still fails Gate 7, unchanged from pre-#792 behaviour.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expect(result.stdout).toContain('not in allowed paths');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    '(d) a symlink to an UNGRANTED out-of-repo target is denied (realpath is authoritative)',
+    async () => {
+      // src/ is allowed, but a symlink under src/ points at an out-of-repo vault
+      // that is NOT granted. realpath resolves the canonical target → out-of-repo
+      // → deny. Proves an in-repo allowed prefix cannot be used to smuggle writes
+      // to an out-of-repo location through a symlink.
+      const vault = await mkVault();
+      const dir = await mkProjectTracked({
+        enforcement: 'strict',
+        allowedPaths: ['src/'],
+      });
+      const linkPath = path.join(dir, 'src', 'vlink');
+      try {
+        await fs.symlink(vault, linkPath);
+      } catch {
+        // Symlink creation not permitted on this runner — skip gracefully.
+        return;
+      }
+      const result = await runHook({
+        projectDir: dir,
+        stdin: editPayload(path.join(linkPath, 'note.md')),
+      });
+      expect(result.code).toBe(2);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+    },
+  );
+});

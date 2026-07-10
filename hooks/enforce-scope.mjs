@@ -5,12 +5,17 @@
  * Replaces enforce-scope.sh (87-line Bash). Part of v3.0.0 Windows-native migration.
  * Issue: github.com/Kanevry/session-orchestrator/issues/137
  *
- * Decision flow (8 gates, early-exit):
+ * Decision flow (8 gates + one pre-gate, early-exit):
  *   G1  tool filter — only Edit/Write/MultiEdit are gated
  *   G2  file_path present + string
  *   G3  wave-scope.json exists
  *   G4  path-guard gate enabled
  *   G5  enforcement != "off"
+ *   G5b (#792) allowlist-first: an EXPLICIT absolute allowedPaths entry that
+ *       matches the fully realpath-resolved candidate → allow, BEFORE G6.
+ *       Runs before G6 so a deliberate out-of-repo grant (e.g. a vault path)
+ *       is reachable at all — G6 would otherwise deny every out-of-repo path
+ *       without ever consulting allowedPaths. See matchesAbsoluteAllowlist.
  *   G6  resolved path inside project root
  *   G7  relative path matches an allowedPaths pattern
  *   G8  (all passed) → allow
@@ -24,6 +29,13 @@
  *   REQ-05  normalize path separators to "/" before pathMatchesPattern (Windows compat)
  *   REQ-06  relative file_path resolved against projectRoot, not process.cwd()
  *   REQ-08  wave-scope.json read once; parsed object passed to all gate checks
+ *   REQ-09  (#792) G5b out-of-repo carveout is structurally safe: RELATIVE
+ *           allowedPaths entries can NEVER match an out-of-repo path (the
+ *           isAbsolute filter drops them), so `**` / `../**` cannot be used to
+ *           escape the repo; only entries that are themselves absolute match,
+ *           and only against their own literal (canonical/realpath) subtree.
+ *           Empty absolute set → the pre-gate is inert (byte-identical to the
+ *           pre-#792 behaviour).
  *
  * Coordinator carveout (#245): a short, explicit list of harness-owned files
  * bypasses Gate 7 (allowedPaths glob) — specifically STATE.md across all platform
@@ -151,6 +163,14 @@ async function main() {
     }
   }
 
+  // Gate 5b (#792): allowlist-first for explicit absolute (out-of-repo) grants.
+  // An EXPLICIT absolute allowedPaths entry (e.g. a coordinator-granted vault
+  // path) is structurally unreachable under Gate 6, which denies every
+  // out-of-repo path before allowedPaths is ever consulted. Honour such grants
+  // here — matching ONLY absolute entries against the fully realpath-resolved
+  // candidate, so relative entries can never be used to escape the repo (REQ-09).
+  if (matchesAbsoluteAllowlist(resolvedPath, allowedPaths)) return emitAllow();
+
   // Gate 6: path must be inside the project root
   if (!isPathInside(resolvedPath, projectRoot)) {
     const reason = `Scope violation: path outside project root`;
@@ -217,6 +237,31 @@ function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
   const scopeRel = relativeFromRoot(projectRoot, scopePath);
   if (scopeRel === null) return false;
   return scopeRel.split(path.sep).join('/') === normalizedRel;
+}
+
+/**
+ * #792: Honour EXPLICIT absolute allowedPaths entries that point OUTSIDE the repo
+ * (a deliberate coordinator grant, e.g. "/Users/x/Projects/vault/**").
+ * Such entries are structurally unreachable under the default relative-only
+ * matcher because Gate 6 denies out-of-repo paths first, and Gate 7 only ever
+ * matches the ROOT-RELATIVE candidate (an absolute pattern can never match it).
+ *
+ * SECURITY (REQ-09): matches ONLY entries that are themselves absolute, against
+ * the fully realpath-resolved candidate — so RELATIVE entries (`**`, `../**`)
+ * can NEVER be used to escape the repo. When no absolute entry exists the helper
+ * returns false and the caller falls through to Gate 6 unchanged (inert pre-gate).
+ * An absolute entry matches only its own literal (canonical/realpath) subtree;
+ * the operator is responsible for supplying a canonical absolute path.
+ *
+ * @param {string} resolvedPath — fully realpath-resolved candidate (absolute)
+ * @param {string[]} allowedPaths — raw allowedPaths array from wave-scope.json
+ * @returns {boolean}
+ */
+function matchesAbsoluteAllowlist(resolvedPath, allowedPaths) {
+  const abs = allowedPaths.filter((p) => typeof p === 'string' && path.isAbsolute(p));
+  if (abs.length === 0) return false;
+  const normalizedAbs = resolvedPath.split(path.sep).join('/');
+  return abs.some((pat) => pathMatchesPattern(normalizedAbs, pat.split(path.sep).join('/')));
 }
 
 // SECURITY-REQ-01 (fail-closed): any unhandled rejection → structured deny, never bare exit 1
