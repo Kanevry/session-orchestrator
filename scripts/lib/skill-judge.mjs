@@ -9,7 +9,7 @@
  * module never writes files; the COORDINATOR (session-end Phase 3.6.6) writes
  * each returned judgment to the sidecar via appendSkillJudgment().
  *
- * Constitutional constraint — `.claude/rules/prompt-caching.md:3`:
+ * Constitutional constraint — `rules/opt-in-domain/prompt-caching.md:3`:
  *   "Out of scope: session-orchestrator itself (no SDK use; backend.md
  *   § 'AI Provider Abstraction' already forbids direct SDK imports in business
  *   logic, and the orchestrator runs inside Claude Code's harness which manages

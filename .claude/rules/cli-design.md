@@ -67,4 +67,4 @@ The plugin uses a single shared module library — `scripts/lib/common.mjs` — 
 There is no longer a Bash sourcing convention to follow. Cross-cutting CLI flag parsing (`--verbose`, `--json`, `--dry-run`, `--help`, `--version`) is the responsibility of each `.mjs` orchestrator using either `parseArgs` from `node:util` or a small helper in `common.mjs`.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md
+development.md · security.md · testing.md · mvp-scope.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md

@@ -120,7 +120,7 @@ function buildWarning(findings, relPath) {
   return (
     `⚠ frontend-slop: ${total} finding(s) in ${relPath} — ` +
     `${shown.join(', ')}${more} (fpRisk: ${fpRisks.join('/')}). ` +
-    `See .claude/rules/frontend.md`
+    `See rules/opt-in-stack/frontend.md`
   );
 }
 

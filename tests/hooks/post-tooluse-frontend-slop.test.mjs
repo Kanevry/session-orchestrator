@@ -170,7 +170,7 @@ describe('post-tooluse-frontend-slop hook', () => {
     expect(out.hookSpecificOutput.additionalContext).toContain('frontend-slop');
     expect(out.hookSpecificOutput.additionalContext).toContain('gradient-text');
     expect(out.hookSpecificOutput.additionalContext).toContain('styles.css');
-    expect(out.hookSpecificOutput.additionalContext).toContain('.claude/rules/frontend.md');
+    expect(out.hookSpecificOutput.additionalContext).toContain('rules/opt-in-stack/frontend.md');
 
     const events = readEvents().filter((e) => e.event === 'orchestrator.frontend_slop.warning');
     expect(events).toHaveLength(1);
@@ -295,7 +295,7 @@ describe('post-tooluse-frontend-slop hook', () => {
     expect(ctx).toContain('+3 more');
     // The three fpRisk tiers present (high/low/medium) are joined with "/".
     expect(ctx).toContain('(fpRisk: high/low/medium)');
-    expect(ctx).toContain('.claude/rules/frontend.md');
+    expect(ctx).toContain('rules/opt-in-stack/frontend.md');
   });
 
   it('(j) event payload carries the full by_rule breakdown + high-severity count', () => {

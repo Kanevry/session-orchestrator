@@ -4,7 +4,7 @@
  * Reasons over top-N learnings + last-K sessions + existing peer cards + project
  * steering to derive a unified ```diff block per peer-card target (USER.md / AGENT.md).
  *
- * Constitutional constraint — `.claude/rules/prompt-caching.md:3`:
+ * Constitutional constraint — `rules/opt-in-domain/prompt-caching.md:3`:
  *   "Out of scope: session-orchestrator itself (no SDK use; backend.md
  *   § 'AI Provider Abstraction' already forbids direct SDK imports in business
  *   logic, and the orchestrator runs inside Claude Code's harness which manages

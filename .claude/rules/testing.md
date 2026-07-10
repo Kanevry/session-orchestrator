@@ -419,7 +419,7 @@ test("createInvoice returns VALIDATION_ERROR on bad input", async () => {
 });
 ```
 
-See `backend.md` BE-012 for the wrapper contract the test must verify against.
+See `rules/opt-in-stack/backend.md` BE-012 for the wrapper contract the test must verify against.
 
 ### Negative-Assertion Fake-Regression Check
 
@@ -483,4 +483,4 @@ expect(exportCount).toBeLessThanOrEqual(500);
 - learning `count-drift-recurrence` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9)
 
 ## See Also
-development.md · security.md · security-web.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md
+development.md · security.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md

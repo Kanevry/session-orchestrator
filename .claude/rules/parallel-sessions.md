@@ -233,4 +233,4 @@ The git index and stash are **shared resources of the working copy**, not a priv
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · "Native-Overlap Verdicts" research (#665; archived in the private Meta-Vault) § PSA re-scope
+development.md · security.md · testing.md · mvp-scope.md · cli-design.md · receiving-review.md · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · "Native-Overlap Verdicts" research (#665; archived in the private Meta-Vault) § PSA re-scope

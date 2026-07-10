@@ -1,3 +1,4 @@
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend.md) -->
 ---
 globs:
   - src/app/**

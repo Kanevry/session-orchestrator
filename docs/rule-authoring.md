@@ -86,14 +86,16 @@ Degraded loading is always preferable to silently missing a security or architec
 
 ## Vendored Rules (issue #722 Epic A)
 
-Rules sourced from this repo's `rules/` library (`rules/always-on/*.md`, and future `rules/opt-in-stack/*.md` / `rules/opt-in-domain/*.md`) and copied into a consumer repo's `.claude/rules/` via `/bootstrap --sync-rules` are a third rule category, alongside hand-authored and FA2 auto-generated rules. The sync pipeline (`scripts/lib/rules-sync.mjs`) has its own authoring contract, documented here.
+Rules sourced from this repo's `rules/` library (`rules/always-on/*.md`, `rules/opt-in-stack/*.md`, and `rules/opt-in-domain/*.md`) and copied into a consumer repo's `.claude/rules/` via `/bootstrap --sync-rules` are a third rule category, alongside hand-authored and FA2 auto-generated rules. The sync pipeline (`scripts/lib/rules-sync.mjs`) has its own authoring contract, documented here.
+
+Since issue #743, `rules/opt-in-stack/{backend,backend-data,frontend,swift,security-web}.md` and `rules/opt-in-domain/prompt-caching.md` are the live worked example of the provenance-header + frontmatter shape described below — they were lifted verbatim (content unchanged) out of this repo's own `.claude/rules/`, which had been carrying them as dead exemplar content never vendored anywhere.
 
 ### Provenance header + frontmatter coexistence (issue #722)
 
 Vendored rule sources carry a mandatory single-line provenance header **before** any frontmatter block — `rules-sync.mjs` uses that header (`PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin ...'`) to tell "plugin-owned, safe to overwrite on re-sync" apart from "local override, preserve". The recommended shape for a vendored rule with `globs:` frontmatter:
 
 ```markdown
-<!-- source: session-orchestrator plugin vX.Y.Z (canonical: rules/opt-in-stack/foo.md) -->
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/foo.md) -->
 ---
 globs:
   - src/**/*.tsx

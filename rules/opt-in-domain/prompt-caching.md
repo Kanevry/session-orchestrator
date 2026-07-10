@@ -1,3 +1,4 @@
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-domain/prompt-caching.md) -->
 ---
 globs:
   - "**/lib/ai/**"

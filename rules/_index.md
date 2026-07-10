@@ -36,11 +36,15 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 
 ## opt-in-stack (vendored on match)
 
-(none yet — add as patterns emerge from advanced-repo observation)
+- `opt-in-stack/backend.md` — server actions, API routes, Express services, AI provider abstraction, observability [archetypes: nextjs-saas, express-service, docker-service]
+- `opt-in-stack/backend-data.md` — Supabase/Postgres, RLS performance, migrations, caching, N+1 prevention [archetypes: nextjs-saas]
+- `opt-in-stack/frontend.md` — React/Next.js, component design, styling, accessibility, forms [archetypes: nextjs-saas, nextjs-minimal]
+- `opt-in-stack/swift.md` — Swift 5.9+/SwiftUI, Swift Testing, networking, error handling, SPM [archetypes: swift-app, swift-menubar-app]
+- `opt-in-stack/security-web.md` — CSRF, CSP/security headers, rate limiting, output encoding [archetypes: nextjs-saas, nextjs-minimal, express-service]
 
 ## opt-in-domain (vendored on match)
 
-(none yet)
+- `opt-in-domain/prompt-caching.md` — Anthropic prompt caching (breakpoint placement, TTL selection, pre-warming, verification) [archetypes: nextjs-saas, express-service, docker-service, monorepo-oss, cli-tool]
 
 ## Sync mechanism
 

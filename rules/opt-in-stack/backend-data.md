@@ -1,3 +1,4 @@
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend-data.md) -->
 ---
 globs:
   - src/lib/db/**

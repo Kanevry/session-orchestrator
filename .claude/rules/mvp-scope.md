@@ -39,4 +39,4 @@ tier: coordinator-only
 - Missing time-box: starting work without appetite/deadline defined.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · cli-design.md · parallel-sessions.md
+development.md · security.md · testing.md · cli-design.md · parallel-sessions.md

@@ -94,4 +94,4 @@ category-split fix.)
 - **Changesets + publishing**: tool-driven via `pnpm changeset`. Access control: all packages publish `access: restricted` to GitLab Package Registry (project 52). Never publish to public npm. `package.json` versions managed exclusively by `pnpm changeset version`.
 
 ## See Also
-security.md · security-web.md · testing.md · frontend.md · backend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md
+security.md · testing.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md

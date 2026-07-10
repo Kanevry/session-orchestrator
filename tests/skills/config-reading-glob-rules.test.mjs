@@ -6,17 +6,32 @@
  * These tests invoke loadApplicableRules against the ACTUAL .claude/rules/
  * directory and assert on real-world rule-loading behavior.
  *
- * Rules with globs: frontmatter in .claude/rules/ (at time of writing):
- *   - backend.md       globs: src/app/actions/**, src/app/api/**, src/routes/**, …
- *   - backend-data.md  globs: src/lib/db/**, supabase/**, migrations/**, …
+ * Rules with globs: frontmatter in .claude/rules/ (at time of writing, post
+ * #743 Option A — backend.md, backend-data.md, frontend.md, swift.md, and
+ * security-web.md were hoisted out of .claude/rules/ into the opt-in library
+ * at rules/opt-in-stack/ — see .claude/rules/README or CLAUDE.md for the
+ * rationale. Only two stable glob-scoped rules remain in .claude/rules/):
  *   - cli-design.md    globs: scripts/**, bin/**, cli/**, …
- *   - security-web.md  globs: src/app/api/**, src/middleware.*, …
- *   - test-quality.md  globs: **\/*.test.*, tests/**, …
  *   - testing.md       globs: **\/*.test.*, tests/**, vitest.config.*, …
  *
  * Always-on rules (no globs frontmatter): ask-via-tool.md, development.md,
  *   loop-and-monitor.md, mvp-scope.md, owner-persona.md, parallel-sessions.md,
  *   security.md
+ *
+ * Design note (Wave 3 fix-pass, #743 follow-up): these tests intentionally
+ * still assert against the LIVE .claude/rules/ directory rather than a
+ * synthetic tmp fixture. A fixture rewrite was considered (mkdtemp + 2-3
+ * synthetic rule files) for structural immunity to future curation, but
+ * every describe block in this file already pins live rule names/paths —
+ * a fixture conversion would rewrite ~100% of the file, not a targeted
+ * subset. Given the narrow Wave-3 fix-pass scope, the minimal fix was
+ * chosen instead: swap the two hoisted-out rule names (backend.md,
+ * security-web.md) for the two glob-scoped rules that still live in
+ * .claude/rules/ (cli-design.md, testing.md), preserving the same
+ * multi-rule-overlap assertions this file exists to cover. A future
+ * broader test-hardening pass MAY still want the fixture approach (see
+ * testing.md's floor/ceiling guidance for the same "don't pin to live
+ * inventory" principle) — tracked as a follow-up, not done here.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -28,34 +43,34 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RULES_DIR = join(REPO_ROOT, '.claude', 'rules');
 
 // ---------------------------------------------------------------------------
-// Test 1: narrow scopePaths matching backend.md but NOT cli-design.md
+// Test 1: narrow scopePaths matching cli-design.md but NOT testing.md
 // ---------------------------------------------------------------------------
 
-describe('narrow scope — src/app/api/route.ts', () => {
-  it('loads backend.md (its globs match src/app/api/**)', () => {
+describe('narrow scope — scripts/lib/foo.mjs', () => {
+  it('loads cli-design.md (its globs match scripts/**)', () => {
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
-      scopePaths: ['src/app/api/route.ts'],
+      scopePaths: ['scripts/lib/foo.mjs'],
     });
 
     const names = results.map((r) => r.path.split('/').pop());
-    expect(names).toContain('backend.md');
+    expect(names).toContain('cli-design.md');
   });
 
-  it('does NOT load cli-design.md (its globs do not match src/app/api/**)', () => {
+  it('does NOT load testing.md (its globs do not match a non-test scripts/ file)', () => {
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
-      scopePaths: ['src/app/api/route.ts'],
+      scopePaths: ['scripts/lib/foo.mjs'],
     });
 
     const names = results.map((r) => r.path.split('/').pop());
-    expect(names).not.toContain('cli-design.md');
+    expect(names).not.toContain('testing.md');
   });
 
   it('loads always-on rules regardless of scope', () => {
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
-      scopePaths: ['src/app/api/route.ts'],
+      scopePaths: ['scripts/lib/foo.mjs'],
     });
 
     const names = results.map((r) => r.path.split('/').pop());
@@ -83,19 +98,15 @@ describe('empty scopePaths', () => {
     }
   });
 
-  it('does not include backend.md, cli-design.md, or test-quality.md', () => {
+  it('does not include cli-design.md or testing.md', () => {
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
       scopePaths: [],
     });
 
     const names = results.map((r) => r.path.split('/').pop());
-    expect(names).not.toContain('backend.md');
     expect(names).not.toContain('cli-design.md');
-    expect(names).not.toContain('test-quality.md');
     expect(names).not.toContain('testing.md');
-    expect(names).not.toContain('security-web.md');
-    expect(names).not.toContain('backend-data.md');
   });
 
   it('still loads the 7 always-on rules', () => {
@@ -142,15 +153,19 @@ describe('scope path matching multiple rules', () => {
     expect(names).toContain('testing.md');
   });
 
-  it('loads backend.md and security-web.md for an API route', () => {
+  it('loads cli-design.md and testing.md for a scripts/ test file (glob overlap)', () => {
+    // #743 Option A hoisted backend.md/security-web.md out of .claude/rules/ —
+    // this scope now exercises overlap between the two remaining glob-scoped
+    // rules instead: `scripts/**` (cli-design.md) intersects `**/*.test.*`
+    // (testing.md) at a path like scripts/foo.test.mjs.
     const results = loadApplicableRules({
       rulesDir: RULES_DIR,
-      scopePaths: ['src/app/api/users/route.ts'],
+      scopePaths: ['scripts/foo.test.mjs'],
     });
 
     const names = results.map((r) => r.path.split('/').pop());
-    expect(names).toContain('backend.md');
-    expect(names).toContain('security-web.md');
+    expect(names).toContain('cli-design.md');
+    expect(names).toContain('testing.md');
   });
 
   it('loads cli-design.md and always-on rules for a scripts/ path', () => {
