@@ -7,7 +7,7 @@
   },
   "metadata": {
     "description": "Session-level orchestration for Claude Code — wave planning, VCS integration, quality gates, persistence, and safety checks",
-    "version": "3.12.0"
+    "version": "3.13.0"
   },
   "plugins": [
     {

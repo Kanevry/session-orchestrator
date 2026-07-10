@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.12.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.13.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Turn ad-hoc agent sessions into a repeatable loop with verification gates — loop engineering for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
@@ -133,17 +133,17 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.12.0)
+## Recent highlights (v3.13.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.12.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.13.0 line:
 
-- **Gated session handover** — `/close` collects carryover candidates and routes them through an operator-triaged alignment gate instead of filing them scattered across phases; a new `## Open Questions` STATE.md channel carries a wave agent's unresolved questions across the session boundary, surfaced as a forced-read at the next session-start.
-- **Fail-loud wave dispatch** — small-batch `Agent()` dispatch by default (large fan-outs drop calls silently), planned-vs-started dispatch verification with re-dispatch, and git-diff edit-persistence evidence before any agent's `done` is accepted.
-- **Curated public docs** — 68 process records moved to the operator's private vault behind a sensitivity gate; three permanent guards (docs-parity drift check, docs-staleness probe, epic-close PRD archive routine) keep the public tree user-facing.
-- **Session-lock reliability** — heartbeat-first liveness ends the live-session-hijack incident class, a lock reaper sweeps orphaned registry claims, and STATE.md writes are size-guarded.
-- **Portable hooks** — all hook commands route through a node-resolver shim, fixing per-tool-call failures on nvm/volta/asdf/Homebrew setups where hook shells never source `~/.zshrc`.
+- **Issue premise verification** — session-start checks each candidate issue's state-claims against the actual code before you align on scope; stale premises get flagged SHIPPED or FALSE-PREMISE instead of turning into planned dead work.
+- **Broken-window budget** — knowingly-broken shipments (stubs, overridden review findings, unresolved MED/LOW) file hard-due-date closure issues at session close, so "we'll fix it later" gets a deadline instead of drifting (opt-in).
+- **Confidential-names guard** — a host-local, never-committed name list is enforced at the leakage scanner's print choke-point; customer or repo names cannot reach a public mirror's CI log, no matter which rule fired.
+- **PM toolkit complete** — `/grill` pre-mortem + kill-assumption tactics, `/brainstorm` Mom-Test grounding, `/plan` Opportunity Score + job-story PRDs, `/discovery` feature-request clustering with an explicit evidence-vs-judgment fork.
+- **Rules library activated** — six exemplar rule-packs (backend, frontend, swift, security-web, …) now live in installable opt-in buckets with archetype tags and provenance headers.
 
-Previous line (v3.11.0): self-healing session ledger, learning-store backup + expiry sweep, hardened CI mirror, tier-aware rule loading.
+Previous line (v3.12.0): gated session handover, fail-loud wave dispatch, curated public docs, session-lock reliability, portable hooks.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 

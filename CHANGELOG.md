@@ -5,24 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.13.0] - 2026-07-10
+
+Fleet-patterns & PM-toolkit release. Headline: eleven fleet-validated orchestration
+patterns from the July fleet-mining wave land as first-class mechanisms (contract-lock
+serialization, issue premise verification, over-delivery sizing signal, broken-window
+budget, path-cousin guard), the PM-skills adoption completes across `/grill`,
+`/brainstorm`, `/plan`, and `/discovery` (Epic #750), and a host-local
+confidential-names guard (CP11) keeps customer/repo names out of the public mirror —
+enforced at the scanner's print choke-point, never committed. Everything is additive and
+backward-compatible; new config keys are opt-in or fail-open.
 
 ### Added
 
+- **Fleet patterns: contract-lock, premise-check, over-delivery signal, path-cousin guard (Epic #730).** Wave dispatch serializes on a contract-lock before fan-out (wave-executor + session-plan Step 6); session-start Phase 7.1 verifies each candidate issue's core state-claims against the code (SHIPPED / GAP / FALSE-PREMISE) before scope alignment; planned-vs-actual file counts persist as an `over_delivery_ratio` sizing signal; a pre-dispatch path-cousin guard plus a code-implementer grep-before-create backstop prevent near-duplicate file creation.
+- **Broken-window budget (#730).** Session-end Phase 2.6 aggregates knowingly-broken shipments (stubs, overridden findings, unresolved MED/LOW) and files hard-due-date closure issues (`glab` native `--due-date`, `gh` body-line fallback, task-hash idempotent, fail-open). Override events at three existing decision points feed a new `effectiveness.override_ratio` metric. New opt-in `broken-window-budget` Session Config block (default off).
 - **CP11 Confidential-Names-Guard (#728).** `check-owner-leakage.mjs` scans tracked files against a host-local, never-committed name list (`owner.yaml` `paths.confidential-names-file` / `SO_CONFIDENTIAL_NAMES_FILE`; loader: `scripts/lib/validate/confidential-names.mjs`). Redaction is enforced at the print choke-point via order-independent span-merge (`redactSpans`) — a confidential name never reaches the public CI log, regardless of which CP rule fired or how names overlap. Inert when unconfigured or when helper modules are absent (standalone single-file vendoring keeps working). Plus repo-audit Category-6 token-grep row + SEC-021 rule.
 - **rules/ library activated (#743).** The 6 dead exemplar rules (backend, backend-data, frontend, swift, security-web, prompt-caching) moved verbatim from `.claude/rules/` into `rules/opt-in-stack/` + `rules/opt-in-domain/` with `[archetypes:]` tags and provenance headers — the opt-in buckets are no longer empty. See-Also refs and consumer citations repointed.
+- **PM-cribs S4–S6 (Epic #750 complete).** `/grill` gains kill-assumption operationalization (Fails-if / Evidence-this-week / Kill-criterion / Cheapest-test), steelman-then-attack, and a new pre-mortem Tactic 6 with Tiger/Paper-Tiger/Elephant taxonomy plus a VUVF coverage sweep (#754); `/brainstorm` gains three-lens GENERATE + Mom-Test grounding (#755); `/plan` gains Opportunity Score, 2×2 effort/impact triage, and job-story PRD format incl. reviewer/template parity (#756).
+- **Discovery probes: feature-request-cluster + ssot-code-diff.** Feature-request clustering with Opportunity-Solution-Tree framing and an explicit evidence-vs-judgment fork (#757–#759); a conservative 4-entry claim registry diffs doc count-claims against live code/FS values — docs are never canonical, code is (#730).
+- **persona-panel: bundled 3-lens preset + grounding re-derive.** PM/Designer/Engineer preset ships in the catalog (#760); opt-in `--grounding` re-derive mode has personas independently re-derive supporting sources with an advisory grounding-diff in the consolidator — never gating the verdict (#730, #793).
+- **`/spinout` skill (#730).** Guided 5-phase venture-spinout / sanitized-fork runbook: target + sphere AUQ, confidentiality HARD-GATE, copy + fresh-init, SNAPSHOT-FREEZE marker in the source repo, remotes + registration.
+- **Handover-gate telemetry (#773).** New `orchestrator.handover.gated` event covering all four gate paths (incl. fail-open and continue-working); carryover counting re-anchored to the Phase-1.65 gate carry-list, fixing a blind spot; additive `open_questions_asked/answered/deferred` session metrics.
+- **plans-archive custom phase (#786).** `archive-closed-plans` reuses the generalized `archive-closed-prds.mjs` CLI (`--prd-dir docs/plans`) to move closed features' plan artifacts to the operator vault — zero new production code, same fail-closed epic-state check.
+- **Bootstrap hard-rules fast-tier scaffold (#730).** The canonical hard-rules table is wired into both fast-tier CLAUDE.md generation paths; What-Not-To-Retry entries now require a concrete file citation as evidence.
+- **First `/reconcile` dogfood rules.** The learning→rule pipeline produced its first two auto-generated, operator-approved rules from 0.9-confidence learnings — glob-scoped and TTL-bounded, never always-on.
 - **lock-reconcile DI seam (#748).** Session-end lock reconciliation extracted from `hooks/on-session-end.mjs` into `hooks/_lib/lock-reconcile.mjs` (mirrors `lock-bootstrap.mjs`), making the best-effort swallow contract and `reconcile_attempted` payload in-process testable.
 - **/evolve over-delivery aggregation (#794.7).** The effective-sizing analyzer now specifies a median `over_delivery_ratio` aggregation (Discovery/Finalization excluded), activating session-plan Step 0.5's learnings-first read path.
 
 ### Fixed
 
-- **broken-window due-days MAX-guard (#794).** `_parseBrokenWindow` rejects values > 3650 with a WARN instead of letting `computeDueDate` overflow into a RangeError; persona-panel sidecar `version` converged to string; W4 review-leftover test gaps closed (enforce-scope corrupt-JSON fail-closed, persona TypeError branch, grounding-diff backslash, ssot-code-diff EISDIR write-failure).
+- **enforce-scope allowlist-first for absolute out-of-repo grants (#792).** Gate 6 (project-root containment) structurally shadowed Gate 7 — an explicit absolute out-of-repo `allowedPaths` entry could never match. A new pre-gate honours only `path.isAbsolute` entries against the realpath-resolved candidate; relative entries can never escape the repo and traversal stays blocked.
+- **auto-dream stale-index refuse-guard (#788).** `applyPendingDream` no longer clobbers interim MEMORY.md edits: `mtime(MEMORY.md) > sidecar generated_at` → refuse with `{applied:false, reason:'stale-index'}` (APFS sub-ms mtime resolution handled via `Math.floor`).
+- **vault containment guard (#793).** `archiveFileToVault` refuses any target outside the vault root — throws before write and before the dry-run report; v2 session renderer carryover fallback aligned to `n/a`; persona `version` documented and converged as string.
+- **broken-window due-days MAX-guard (#794).** `_parseBrokenWindow` rejects values > 3650 with a WARN instead of letting `computeDueDate` overflow into a RangeError; W4 review-leftover test gaps closed (enforce-scope corrupt-JSON fail-closed, persona TypeError branch, grounding-diff backslash, ssot-code-diff EISDIR write-failure).
 - **loop-and-monitor LM-003 fact-fix.** On Bedrock/Vertex/Foundry a truly bare `/loop` (no prompt) prints the usage message and does not run at all — only prompt-only `/loop <prompt>` falls back to the fixed 10-minute schedule. Delta-sync footer v2.1.205→v2.1.206 (zero functional delta); monitor-patterns gains Pattern 6 (WebSocket source incl. silent >1 MiB termination warning).
 - **vault-mirror #740 (documented wontfix).** Learning coverage after a store recovery is restored by the next mirror run; the narrative-chars gate is sessions-only and never filters learnings — now documented and pinned by a regression test.
+
+### Documentation
+
+- **Setup docs + CONTRIBUTING realigned (#789–#791).** USER-GUIDE, codex-setup, and cursor-setup gain the missing `npm install` first-run step and aligned Session Config examples; CONTRIBUTING reframed multi-harness with live component-count links; a 24-test drift guard runs every fenced config example through the real parser plus in-process schema validation (the CLI exit code is not a schema gate under `enforcement:warn`).
+- **gitlab-ops hardening notes (#746, #763).** 403 `relates_to` fallback for non-Premium GitLab instances, close-keyword negation footgun, and the shared-file single-writer defer rule in state-ownership.
+- **loop-and-monitor delta-sync v2.1.197 → v2.1.206 (#764).** ScheduleWakeup `stop:true` + 20-min fallback, Workflows OTel attributes + Large-workflow advisory warning, workflow-size setting and `--effort ultracode` on-ramps, Channels org-gate, `/background` loop-carryover.
+- **pm-skills marketplace companion (#761).** Install-alongside guidance for the external PM-skills marketplace instead of bulk-vendoring 68 skills into the roster.
+- **Fleet rule kleinteile (#730).** Corpus-freeze marker convention, guard/threshold category-separation principle, Unfaithful-Double test anti-pattern #8, file-disjoint `isolation:none` invariant; `.git-blame-ignore-revs` seeded with the two alias-rollout sweeps.
 
 ### Testing
 
 - +40 targeted tests across 23 files: stale-mr-sweep `main()` CLI paths (#749), reap/reconcile event payloads (#748), `section()` throw-on-miss (#737), CP11 E2E through the real pre-commit hook (incl. inert-degrade), choke-point/prefix-overlap redaction regression pins.
+- +58 W4 fleet-pattern guards: broken-window `parseSessionConfig` integration, premise-check/contract-lock/path-cousin prose-wiring, GitHub dedup-hit branches, over-delivery cross-file prose contract; bundled persona presets now schema-validated; discovery scope-enum test derives from the SKILL.md SSOT marker (#762).
 
 ## [3.12.0] - 2026-07-09
 
