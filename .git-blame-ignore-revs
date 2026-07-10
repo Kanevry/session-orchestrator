@@ -1,0 +1,5 @@
+# Mechanical sweeps — skip in git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs)
+# refactor(tests): #407 — @lib alias rollout (124 test files)
+f03cc1eec78992575129eece98a796721294afd4
+# feat(orchestrator): #402-#407 — validatePathInsideProject + @lib alias rollout
+a758fdbe78ad5744e5d36418656a9f27ed77b49f

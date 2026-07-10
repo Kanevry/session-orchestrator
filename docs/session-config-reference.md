@@ -281,6 +281,13 @@ The graduated default implements `scripts/lib/wave-sizing.mjs::resolveIsolation`
 
 **Config-level override:** setting `isolation: worktree` or `isolation: none` in Session Config disables the graduation entirely for every wave.
 
+**File-disjoint invariant (cross-repo confirmed, conf 1.0):** the ≥5-agent
+`worktree` graduation is a collision-avoidance default, not a hard rule — when
+a wave's file scopes are explicitly disjoint (per session-plan's file-ownership
+mapping), `isolation: none` remains the proven default even above 5 agents
+(confirmed externally at 5 waves × 6 agents, 0 merge conflicts — matching this
+repo's own `waves: 5` / `agents-per-wave: 6` defaults).
+
 **Enforcement auto-promote (#194):** when isolation resolves to `none`, `enforcement: warn` auto-promotes to `strict` for that wave — the scope hook becomes the only barrier once worktrees are absent, so it must be hard. Explicit `enforcement: off` is respected (user opt-out).
 
 Rationale: the verified learning `coordinator-over-worktree-on-shared-files` (confidence 0.75) showed that small waves on partitioned scopes merge cleaner in-place than under worktree isolation. Two consecutive deep sessions (2026-04-20 07:30, 09:00) hit worktree base-ref staleness on ≤2-agent waves — the graduated default eliminates that hot path.

@@ -381,6 +381,13 @@ test("throws on invalid JSON", () => {
 });
 ```
 
+#### 8. Unfaithful Double
+A fake/mock returns data or state that could never occur in production (e.g. a
+fake `ownerConfig` populated with entries when the real default is empty). The
+test passes against invented data and misses the bug the real state triggers.
+Doubles MUST mirror a real, reachable state — verify against the actual
+default/schema, not a convenient fixture.
+
 ### Quality Checklist (Apply Before Writing Every Test)
 
 1. **Bug detection**: Would this test catch a real bug? If not, don't write it.

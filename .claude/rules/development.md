@@ -62,6 +62,23 @@ Enforced by ESLint flat config (`eslint.config.mjs`) + Prettier. Notable behavio
 - API docs via JSDoc/TSDoc on public functions.
 - No README.md bloat — keep it minimal, link to docs.
 
+## Corpus Freeze Marker (FROZEN-MANIFEST)
+
+When a spinout/snapshot leaves a dead copy behind in the source repo (e.g. a
+discovery kit forked into a new standalone repo), mark the retained copy with a
+`FORK-NOTES.md` / `SNAPSHOT.md` at its root stating: frozen date, new SSOT
+location, and "do not edit — see <SSOT>". Prevents silent double-maintenance of
+a corpus whose canonical copy has moved. See `skills/spinout/SKILL.md` Phase 4.
+
+## Guard & Threshold Design
+
+When a counter-based guard (loop-guard, kill-switches, …) produces false
+positives, the fix is category separation — split into distinct counters per
+call-class — NOT raising the shared threshold. Raising a threshold weakens
+detection for the true-positive class the counter was built to catch.
+(Fleet-confirmed conf 0.95: 4 failed threshold-patches vs. 1 structural
+category-split fix.)
+
 ## Local Tool Versioning
 - `.nvmrc` is required for CI compatibility (Docker images use it). Keep in all repos.
 - `.mise.toml` (mise-en-place) is optional for local dev — manages Node, pnpm, and other tools with a single file.

@@ -86,6 +86,12 @@ The user workflow is:
 
 There is no build or compilation step — edit the files, reload the harness, and test. Dependency installation (`npm install`) is required once after cloning and again whenever `package-lock.json` changes.
 
+### Git Blame Hygiene
+
+Run once after cloning: `git config blame.ignoreRevsFile .git-blame-ignore-revs`
+Skips large mechanical sweeps (import-alias rollouts, mass migrations) in
+`git blame` — see `.git-blame-ignore-revs` for the current list.
+
 ## Plugin Architecture
 
 The plugin has four component types, each in its own directory:
