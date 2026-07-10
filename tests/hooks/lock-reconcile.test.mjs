@@ -17,7 +17,11 @@ import { describe, it, expect, vi } from 'vitest';
 
 import { attemptLockReconciliation } from '../../hooks/_lib/lock-reconcile.mjs';
 
-const NOW = new Date('2026-07-10T12:00:00Z').getTime();
+// Fixture timestamps MUST be relative to the real clock: the SUT's liveness
+// check (isLockLive) compares last_heartbeat against Date.now(). A pinned
+// absolute NOW is a time bomb — liveLock() expires ttl_hours after the pinned
+// instant and the suite goes red forever (observed 2026-07-10 16:00 UTC).
+const NOW = Date.now();
 
 /** A dead lock — heartbeat well past its TTL, eligible for reconciliation. */
 function deadLock({ sessionId = 'ghost', semantic = 'sem-ghost', ttlHours = 4 } = {}) {
