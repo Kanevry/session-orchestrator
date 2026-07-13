@@ -142,6 +142,88 @@ export function pathMatchesPattern(relPath, pattern) {
 }
 
 /**
+ * Is this fileScope entry a glob/prefix pattern (vs. a concrete file path)?
+ * A `*` metachar OR a trailing `/` (directory prefix) marks it as a glob.
+ * @param {string} entry
+ * @returns {boolean}
+ */
+function isGlobScopeEntry(entry) {
+  return entry.includes('*') || entry.endsWith('/');
+}
+
+/**
+ * Literal prefix of a glob entry — the segment before the first `*`
+ * metachar (or the whole entry when it has none). `src/**` → `src/`,
+ * `src/lib/*.mjs` → `src/lib/`, `tests/` → `tests/`.
+ * @param {string} entry
+ * @returns {string}
+ */
+function literalScopePrefix(entry) {
+  const star = entry.indexOf('*');
+  return star === -1 ? entry : entry.slice(0, star);
+}
+
+/**
+ * Assert that every entry of an agent's declared file scope is covered by the
+ * wave's `allowedPaths` union — the mechanical form of the "allowedPaths is the
+ * UNION of all agent file scopes" contract (wave-loop.md § Scope Manifest #3).
+ *
+ * Motivation (#796): `.claude/wave-scope.json` is GLOBAL per wave — one
+ * allowedPaths union gates every agent in the wave (hooks/enforce-scope.mjs
+ * Gate 7). A coordinator that (re)writes the union for only ONE agent of a
+ * multi-agent batch silently denies its siblings' legitimate writes (observed
+ * fix-pass incident). Running this assertion for EVERY agent before dispatch
+ * catches that class before an agent is blocked mid-run.
+ *
+ * Semantics:
+ *   - CONCRETE fileScope entry (no `*`, not a `dir/` prefix): covered iff it
+ *     matches ≥1 allowedPaths pattern via `pathMatchesPattern` (the same matcher
+ *     the enforcement hook uses at check time). `src/a.ts` ⊆ `src/**` → covered.
+ *   - GLOB fileScope entry (`*` present, or a `dir/` prefix): covered iff it is
+ *     present verbatim in allowedPaths, OR its literal prefix (the segment
+ *     before the first glob metachar) matches an allowedPaths pattern.
+ *
+ * GLOB-vs-GLOB LIMITATION (deliberate design boundary): this is NOT a full
+ * glob-⊆-glob subset calculus. For a glob fileScope entry the check reduces to
+ * verbatim presence + literal-prefix coverage; it does not prove that e.g.
+ * `src/**\/*.ts` ⊆ `src/**\/*.js` is false. The concrete-path branch above is
+ * exact and carries the incident-relevant load (the union the coordinator
+ * actually writes is verbatim, deduplicated agent scopes). Erring toward
+ * over-approximating coverage keeps a legitimate union from being rejected on a
+ * glob technicality rather than pretending to a precision this matcher lacks.
+ *
+ * Fail-closed & no-throw (module convention): a non-array `fileScope` or
+ * `allowedPaths` returns `{ ok: false, missing: [] }` — "cannot assert → treat
+ * as failure". An empty `fileScope` is a trivial subset → `{ ok: true }`.
+ * Non-string / empty-string entries are skipped (the CLI caller validates the
+ * array-of-strings shape upstream). Never throws.
+ *
+ * @param {string[]} fileScope — one agent's declared file scope entries
+ * @param {string[]} allowedPaths — the wave's allowedPaths union
+ * @returns {{ ok: boolean, missing: string[] }} missing = uncovered fileScope entries
+ */
+export function assertFileScopeSubset(fileScope, allowedPaths) {
+  if (!Array.isArray(fileScope) || !Array.isArray(allowedPaths)) {
+    return { ok: false, missing: [] };
+  }
+  const missing = [];
+  for (const entry of fileScope) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    let covered;
+    if (isGlobScopeEntry(entry)) {
+      // GLOB entry: verbatim presence OR literal-prefix coverage.
+      const prefix = literalScopePrefix(entry);
+      covered = allowedPaths.some((p) => p === entry || pathMatchesPattern(prefix, p));
+    } else {
+      // CONCRETE entry: must match ≥1 allowedPaths pattern.
+      covered = allowedPaths.some((p) => pathMatchesPattern(entry, p));
+    }
+    if (!covered) missing.push(entry);
+  }
+  return { ok: missing.length === 0, missing };
+}
+
+/**
  * Build an actionable suggestion string for a scope violation.
  *
  * @param {string} relPath — the relative path that was blocked

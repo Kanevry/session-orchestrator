@@ -88,7 +88,7 @@ When the session plan marks a wave task `contract-lock: true` (session-plan Step
 After each batch's Agent() tool-results return, and once all batches for the wave have been dispatched, **count the Agent tool-results received for this wave against the planned agent list** (the agents named in the session plan for this wave). This closes the silent-drop failure class that motivated the small-batch default above (a large fan-out drops calls with no error).
 
 - If every planned agent produced a tool-result → proceed to `### 2. Review Agent Outputs`.
-- If any planned agent produced **NO** tool-result (silent drop) → **re-dispatch ONLY the missing agents in a fresh batch** (3–4 per message) before proceeding to Review. Do NOT re-dispatch agents that already returned — that would duplicate their file writes.
+- If any planned agent produced **NO** tool-result (silent drop) → **re-dispatch ONLY the missing agents in a fresh batch** (3–4 per message) before proceeding to Review. Do NOT re-dispatch agents that already returned — that would duplicate their file writes. **Before dispatching any re-dispatch (or fix-pass) batch, re-run the Pre-Dispatch Scope-Union Assertion (§ Scope Manifest #3, #796) for each re-dispatched agent** — `allowedPaths` MUST NOT shrink while sibling agents of this wave are still running, or the re-dispatched agent's legitimate writes will be denied by Gate 7.
 - Record `agent_count_planned` (from the plan) and `agent_count_started` (distinct agents that produced a tool-result, after any re-dispatch) in the wave metrics (see § Capture wave metrics). A persistent gap after re-dispatch is a deviation — log it to STATE.md `## Deviations`.
 
 #### Pre-Dispatch New-Directory Detection (#243)
@@ -1016,6 +1016,15 @@ Before each wave dispatch:
 2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. `allowedPaths` is the UNION of all agent file scopes for this wave
    To compute `allowedPaths`: read each agent's specification from the session plan. Each agent lists its "Files:" scope (e.g., `skills/session-end/SKILL.md`, `scripts/*.sh`). Collect all file paths and glob patterns from all agents in this wave into a single flat array. Deduplicate entries. If an agent's scope uses globs (e.g., `scripts/*.sh`), include the glob pattern as-is — the enforcement hook resolves globs at check time.
+
+   **Pre-Dispatch Scope-Union Assertion (#796):** `wave-scope.json` is GLOBAL per wave — `hooks/enforce-scope.mjs` Gate 7 checks EVERY agent against the same `allowedPaths` union, so a union that (re)written for only ONE agent silently denies its siblings' legitimate writes. Before each `Agent()` batch, mechanically assert — for EVERY agent in the batch — that its fileScope ⊆ `wave-scope.allowedPaths`. Write the agent's "Files:" scope as a JSON array of strings to a temp file (`$AGENT_FILESCOPE_JSON`) and run:
+
+   ```bash
+   node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs" \
+     --assert-subset "$AGENT_FILESCOPE_JSON" < <state-dir>/wave-scope.json
+   ```
+
+   On exit 1 (`agent fileScope not ⊆ allowedPaths — missing: [...]`): re-union `allowedPaths` across ALL agents that will be in-flight — **including still-running siblings from this wave** — re-write `wave-scope.json`, then re-run the assertion before dispatching. `allowedPaths` MUST NEVER shrink while sibling agents of the same wave are still running. This applies to EVERY batch — including fix-pass and re-dispatch batches, the incident class that motivated #796 (a fix-pass batch rewrote the union for a single agent and denied a sibling's legitimate writes). The assertion runs uniformly, even for single-agent waves — cost is negligible and the invariant is the same.
 4. Read `enforcement` from Session Config (default: `warn`). The `enforcement` field is REQUIRED in `wave-scope.json` — always write it explicitly. The hooks default to `warn` if the field is missing, which would silently degrade strict enforcement. If jq was confirmed missing in Pre-Execution Check step 4, set `enforcement` to `off` and include a comment in the progress update noting that enforcement is disabled.
 5. For **Discovery** role waves, set `allowedPaths` to `[]` (empty array) — Discovery agents are read-only and must not modify files. Also add to each Discovery agent prompt: "You are READ-ONLY. Do NOT use Edit or Write tools."
    > **Defense in depth:** The empty `allowedPaths` enforcement hook is the PRIMARY barrier (blocks Write/Edit at the tool level). The prompt instruction is a SECONDARY safeguard. If jq is unavailable (enforcement set to `off`), the prompt instruction becomes the ONLY barrier — log a warning in this case.

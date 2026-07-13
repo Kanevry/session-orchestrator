@@ -8,15 +8,23 @@
  * Usage:
  *   node scripts/validate-wave-scope.mjs <path-to-wave-scope.json>
  *   cat wave-scope.json | node scripts/validate-wave-scope.mjs
+ *   node scripts/validate-wave-scope.mjs --assert-subset <agent-filescope.json> < wave-scope.json
+ *
+ * Flags:
+ *   --assert-subset <path>  After schema validation passes, read the agent
+ *                           fileScope file (a JSON array of strings) and assert
+ *                           it is a subset of wave-scope.allowedPaths (#796).
+ *                           Fails (exit 1) with "missing: [...]" on violation.
  *
  * Exit codes:
  *   0 — valid (validated JSON echoed to stdout)
  *   1 — invalid input / validation failure (error messages written to stderr)
- *   2 — I/O error (file not found, unreadable stdin)
+ *   2 — I/O error (file not found, unreadable stdin, unreadable --assert-subset file)
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { warn } from './lib/common.mjs';
+import { assertFileScopeSubset } from './lib/scope-gate.mjs';
 
 /**
  * Write an error to stderr and exit with the given code.
@@ -30,17 +38,44 @@ function die(msg, code = 1) {
 }
 
 /**
+ * Parse CLI flags out of argv, leaving positional args behind.
+ *
+ * Recognised: `--assert-subset <path>` (#796). Everything else is treated as a
+ * positional argument (the wave-scope.json file path), preserving legacy
+ * behaviour where argv[2] is the input file.
+ *
+ * @param {string[]} argv - full process.argv
+ * @returns {{ assertSubset: string|null, positionals: string[] }}
+ */
+function parseArgs(argv) {
+  const positionals = [];
+  let assertSubset = null;
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--assert-subset') {
+      assertSubset = argv[i + 1];
+      if (assertSubset === undefined) {
+        die('--assert-subset requires a file-path argument', 1);
+      }
+      i++; // consume the value
+    } else {
+      positionals.push(a);
+    }
+  }
+  return { assertSubset, positionals };
+}
+
+/**
  * Read raw input: from a file path arg or from stdin (fd 0).
  *
  * Exit codes used here:
  *   1 — bad argument (file path argument given but file not found)
  *   2 — unexpected I/O error (file exists but cannot be read, stdin failure)
  *
- * @param {string[]} argv
+ * @param {string|undefined} arg - the positional wave-scope.json file path (or undefined for stdin)
  * @returns {string}
  */
-function readInput(argv) {
-  const arg = argv[2];
+function readInput(arg) {
   if (arg) {
     // Exit 1: file not found is a user/argument error
     if (!existsSync(arg) || !statSync(arg).isFile()) {
@@ -179,10 +214,48 @@ function validateGates(obj, errors) {
 }
 
 /**
+ * Read the agent fileScope sidecar file and assert it is a subset of the
+ * wave's allowedPaths union (#796). Exits on failure; returns on success.
+ *
+ * Exit codes:
+ *   1 — fileScope file is not valid JSON, is not an array of strings, or the
+ *       subset assertion fails (validation error)
+ *   2 — fileScope file is missing / not a regular file / unreadable (I/O error)
+ *
+ * @param {Record<string, unknown>} obj - the already schema-validated wave-scope object
+ * @param {string} fileScopePath - path to the agent fileScope JSON file
+ */
+function assertSubsetOrDie(obj, fileScopePath) {
+  if (!existsSync(fileScopePath) || !statSync(fileScopePath).isFile()) {
+    die(`Cannot read --assert-subset file: ${fileScopePath}`, 2);
+  }
+  let raw;
+  try {
+    raw = readFileSync(fileScopePath, 'utf8');
+  } catch (err) {
+    die(`Cannot read --assert-subset file ${fileScopePath}: ${err.message}`, 2);
+  }
+  let fileScope;
+  try {
+    fileScope = JSON.parse(raw);
+  } catch {
+    die(`--assert-subset file is not valid JSON: ${fileScopePath}`, 1);
+  }
+  if (!Array.isArray(fileScope) || !fileScope.every((e) => typeof e === 'string')) {
+    die('--assert-subset file must be a JSON array of strings', 1);
+  }
+  const { ok, missing } = assertFileScopeSubset(fileScope, obj.allowedPaths);
+  if (!ok) {
+    die(`agent fileScope not ⊆ allowedPaths — missing: [${missing.join(', ')}]`, 1);
+  }
+}
+
+/**
  * Main validation entry point. Reads input, validates, exits with appropriate code.
  * @param {string} input - raw JSON string
+ * @param {string|null} [assertSubsetPath] - optional agent fileScope file for the #796 subset assertion
  */
-function validate(input) {
+function validate(input, assertSubsetPath = null) {
   const obj = parseJson(input);
   const errors = [];
   const warnings = [];
@@ -203,8 +276,14 @@ function validate(input) {
     process.exit(1);
   }
 
+  // #796 — optional dispatch-time subset assertion (runs only after schema validation passes)
+  if (assertSubsetPath) {
+    assertSubsetOrDie(obj, assertSubsetPath);
+  }
+
   // Echo validated JSON to stdout (trailing newline normalised)
   process.stdout.write(input.endsWith('\n') ? input : input + '\n');
 }
 
-validate(readInput(process.argv));
+const { assertSubset, positionals } = parseArgs(process.argv);
+validate(readInput(positionals[0]), assertSubset);

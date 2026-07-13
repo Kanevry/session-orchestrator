@@ -180,3 +180,86 @@ describe('validate-wave-scope.mjs — stdin pipe (shebang/runnable)', () => {
     expect(parsed.enforcement).toMatch(/^(strict|warn|off)$/);
   });
 });
+
+describe('validate-wave-scope.mjs — --assert-subset (#796)', () => {
+  // Runs the validator with the #796 subset flag: wave-scope.json piped via
+  // stdin, the agent fileScope passed as a --assert-subset <file> argument.
+  function runSubset(waveScope, fileScope) {
+    const dir = mkdtempSync(join(tmpdir(), 'vws-subset-'));
+    const fsPath = join(dir, 'agent-filescope.json');
+    writeFileSync(fsPath, JSON.stringify(fileScope));
+    try {
+      return spawnSync('node', [SCRIPT, '--assert-subset', fsPath], {
+        input: JSON.stringify(waveScope),
+        encoding: 'utf8',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('exits 0 when the agent fileScope is a subset of allowedPaths', () => {
+    // VALID.allowedPaths = ['src/**', 'tests/**'] — src/a.ts ⊆ src/**.
+    const r = runSubset(VALID, ['src/a.ts', 'tests/a.test.ts']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('exits 1 with a missing: list when the fileScope is not a subset', () => {
+    const r = runSubset(VALID, ['docs/x.md']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/agent fileScope not ⊆ allowedPaths/);
+    expect(r.stderr).toMatch(/missing: \[docs\/x\.md\]/);
+  });
+
+  it('exits 2 when the --assert-subset file is unreadable (a directory)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vws-subset-dir-'));
+    try {
+      // Pass the DIRECTORY path itself — statSync(dir).isFile() is false for
+      // every uid (root and non-root alike), so this is an I/O error (exit 2).
+      const r = spawnSync('node', [SCRIPT, '--assert-subset', dir], {
+        input: JSON.stringify(VALID),
+        encoding: 'utf8',
+      });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/Cannot read --assert-subset file/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exits 1 when the --assert-subset file is not a JSON array of strings', () => {
+    const r = runSubset(VALID, { not: 'an array' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/must be a JSON array of strings/);
+  });
+
+  it('exits 1 with the exact die() message when --assert-subset is given no value', () => {
+    // parseArgs: `--assert-subset` is the last argv token, so argv[i+1] is
+    // undefined and die() fires before any stdin/file read happens.
+    const r = spawnSync('node', [SCRIPT, '--assert-subset'], {
+      input: JSON.stringify(VALID),
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe('ERROR: --assert-subset requires a file-path argument\n');
+  });
+
+  it('exits 1 with the exact die() message when the --assert-subset file has malformed JSON', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vws-subset-malformed-'));
+    const fsPath = join(dir, 'agent-filescope.json');
+    // Not valid JSON (missing closing brace) — hits JSON.parse's catch branch
+    // in assertSubsetOrDie, distinct from the "not an array" shape-check above.
+    writeFileSync(fsPath, '{ not valid');
+    try {
+      const r = spawnSync('node', [SCRIPT, '--assert-subset', fsPath], {
+        input: JSON.stringify(VALID),
+        encoding: 'utf8',
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toBe(`ERROR: --assert-subset file is not valid JSON: ${fsPath}\n`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
