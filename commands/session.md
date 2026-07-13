@@ -1,6 +1,6 @@
 ---
 description: Start a development session (housekeeping, feature, deep)
-argument-hint: [housekeeping|feature|deep]
+argument-hint: "[housekeeping|feature|deep]"
 ---
 
 # Session Start

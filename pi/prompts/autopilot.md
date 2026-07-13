@@ -1,6 +1,6 @@
 ---
 description: Autonomous session-orchestration loop with kill-switches (Phase C-1.b — all 10 kill-switches shipped)
-argument-hint: [--headless] [--verbose] [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
+argument-hint: "[--headless] [--verbose] [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]"
 ---
 
 # /autopilot
