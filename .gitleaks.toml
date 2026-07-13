@@ -254,8 +254,8 @@ severity = "CRITICAL"
 tags = ["vault", "secrets"]
 
   [rules.allowlist]
-  description = "FP: JS member access like deps.validatePathInsideProject or args.skipGeneratedRuleStaleness reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag), never secrets."
-  regexes = ['''validatePathInsideProject''', '''skipGeneratedRuleStaleness''']
+  description = "FP: JS member access like deps.validatePathInsideProject, args.skipGeneratedRuleStaleness, or opts.throwOnFrontmatterUnsafe reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag; the writeStateMd frontmatter-safe-guard option from #747), never secrets."
+  regexes = ['''validatePathInsideProject''', '''skipGeneratedRuleStaleness''', '''throwOnFrontmatterUnsafe''']
 
 # Twilio API Key
 [[rules]]
