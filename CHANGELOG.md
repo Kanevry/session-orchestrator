@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] - 2026-07-13
+
+Hardening release. Headline: the STATE.md yaml-parser becomes a true parse/serialize
+inverse and the frontmatter-safe write guard switches on (#747), wave dispatch gains a
+pre-dispatch scope-union subset assertion (#796), and three sharp-edge fixes land —
+peer-discovery self-exclusion (#798), a `paths:` rule-frontmatter alias (#795), and a
+memory-proposals write guard with archive-before-clear (#797). `/loop` cadence guidance
+is re-derived for the 1-hour prompt-cache TTL. Everything is additive and
+backward-compatible.
+
+### Added
+
+- **Pre-dispatch scope-union subset assertion (#796).** `assertFileScopeSubset()` (pure, hook-safe, in `scope-gate.mjs`) verifies every wave agent's declared file-scope is a subset of the wave's scope-union before fan-out; `validate-wave-scope --assert-subset` exits 1 with the missing-list on violation (exit 2 on I/O errors). The wave-loop gains the pre-dispatch assertion plus a re-union rule for fix-pass/re-dispatch batches; the F1 incident is pinned as a fake-regression proof and the glob-vs-glob comparison limitation is documented + test-pinned. The Bash-heredoc bypass (sub-problem 2) is split out as follow-up #800.
+
+### Fixed
+
+- **STATE.md yaml-parser is now a parse/serialize inverse — and the frontmatter-safe write guard is active (#747).** `parseScalar` JSON-unescapes the double-quoted branch (try/catch fallback, never-throw contract kept) and `serializeScalar` force-quotes coercible strings (bare only when `parseScalar(s) === s`) — killing the silent type-flip class. With the asymmetry closed, `evaluateFrontmatterSafe` now runs inside `writeStateMd` (frontmatter-block-scoped, refuse+WARN, `opts.throwOnFrontmatterUnsafe` opt-in throw) — catching future serializer/parser drift at the write choke-point instead of the symptom layer. Round-trip convergence is pinned as a regression test; a gitleaks FP-allowlist entry covers the guard's option identifier (third precedent in the JS-member-access FP class).
+
+- **findPeers self-exclusion for `source=discovered` peers (#798).** Both discovery surfaces now filter the caller's own registry entry (`s.sessionId !== mySessionId`, mirroring the detectPeers/on-session-start prior art) — a session no longer reports itself as a parallel peer. JSDoc pins the UUID-space contract for `mySessionId`; dead-PID stale-marking is deliberately excluded (Epic #583 D2-regression risk) and tracked as follow-up #799.
+
+- **rule-loader accepts `paths:` as frontmatter alias for `globs:` (#795).** `parseGlobsFrontmatter` generalizes block/inline sequence parsing via `activeSeqKey`; `globs:` wins silently when both keys are present. The instruction-budget guard is transitively fixed (it delegates to `loadApplicableRules`); a budget-layer regression test pins that a `paths:`-scoped rule is excluded from the always-on directive count.
+
+- **memory-proposals `writeApproved` arg-typo guard + archive-before-clear (#797).** `writeApproved` throws `TypeError` on unknown-key/non-array shapes (the `proposals:` vs `approved:` typo class previously wrote nothing, silently); `clearProposalsJsonl` archives pre-clear content to `.orchestrator/runtime/proposals-archive.jsonl` for best-effort recovery; session-end Phase 3.6.3 enforces the ordering invariant — write before clear, clear only when `written === approved.length`.
+
+### Testing
+
+- **stale-mr-sweep mixed-envelope hardening (#749).** The mixed `ok:true/false` JSON envelope of the stale-MR sweep is now pinned by tests across the CLI paths.
+
+### Documentation
+
+- **`/loop` cadence re-derived for the 1-hour prompt-cache TTL + v2.1.207 delta-sync (#764).** LM-003 cadence selection is now observation-rate-primary: on a Claude subscription the main conversation gets the 1-hour prompt-cache TTL automatically, so there is no cache cliff anywhere in the [60s, 3600s] wakeup range — the classic 300s trap is scoped to 5-minute-TTL configs (usage overage, API-key/Bedrock/Vertex/Foundry auth). v2.1.207 itself is zero functional delta for the `/loop` family; the full re-verify fixed three pre-existing doc gaps (Skill deny-rule in the dispatch gate, Workflows monorepo save-location nuance, usage-view version-gate precision). `.claude/loop.md` gains host-detection instead of a hardcoded flag plus the `ScheduleWakeup stop:true` note; monitor-patterns Pattern-4 rationale reworded.
+
 ## [3.13.0] - 2026-07-10
 
 Fleet-patterns & PM-toolkit release. Headline: eleven fleet-validated orchestration

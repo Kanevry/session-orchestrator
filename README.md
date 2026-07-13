@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.13.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.14.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Turn ad-hoc agent sessions into a repeatable loop with verification gates — loop engineering for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
@@ -133,17 +133,18 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.13.0)
+## Recent highlights (v3.14.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.13.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.14.0 line:
 
-- **Issue premise verification** — session-start checks each candidate issue's state-claims against the actual code before you align on scope; stale premises get flagged SHIPPED or FALSE-PREMISE instead of turning into planned dead work.
-- **Broken-window budget** — knowingly-broken shipments (stubs, overridden review findings, unresolved MED/LOW) file hard-due-date closure issues at session close, so "we'll fix it later" gets a deadline instead of drifting (opt-in).
-- **Confidential-names guard** — a host-local, never-committed name list is enforced at the leakage scanner's print choke-point; customer or repo names cannot reach a public mirror's CI log, no matter which rule fired.
-- **PM toolkit complete** — `/grill` pre-mortem + kill-assumption tactics, `/brainstorm` Mom-Test grounding, `/plan` Opportunity Score + job-story PRDs, `/discovery` feature-request clustering with an explicit evidence-vs-judgment fork.
-- **Rules library activated** — six exemplar rule-packs (backend, frontend, swift, security-web, …) now live in installable opt-in buckets with archetype tags and provenance headers.
+- **STATE.md write safety, closed-loop** — the yaml-parser is now a true parse/serialize inverse (no more silent type flips on round-trip), which made it safe to activate the frontmatter-safe write guard inside `writeStateMd`: future serializer/parser drift is refused at the write choke-point instead of ballooning the file.
+- **Scope-union subset assertion** — before a wave fans out, every agent's declared file-scope is asserted to be a subset of the wave's scope-union (`validate-wave-scope --assert-subset`); scope-manifest gaps fail loud pre-dispatch instead of surfacing as blocked edits mid-wave.
+- **Peer-discovery self-exclusion** — a session no longer reports its own registry entry as a parallel peer, removing a false-positive from the parallel-session machinery.
+- **`paths:` rule-frontmatter alias** — path-scoped rules written with `paths:` instead of `globs:` now scope correctly (and stop inflating the always-on instruction budget).
+- **Memory-proposals write guard** — argument-shape typos throw instead of silently writing nothing, and the proposals queue is archived before it is cleared, so approved learnings can no longer vanish.
+- **`/loop` cadence re-derivation** — wakeup-cadence guidance now reflects the 1-hour prompt-cache TTL on subscription main conversations: no cache cliff in the [60s, 3600s] range; pick cadence by observation-rate.
 
-Previous line (v3.12.0): gated session handover, fail-loud wave dispatch, curated public docs, session-lock reliability, portable hooks.
+Previous line (v3.13.0): issue premise verification, broken-window budget, confidential-names guard, PM toolkit complete, rules library activated.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
