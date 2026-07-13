@@ -140,17 +140,36 @@ export function resolveStateMdPath(repoRoot) {
 // leaving the last-known-good on-disk contents intact.
 //
 // A DEEPER fix — a frontmatter-safe round-trip verification
-// (`serializeStateMd(parseStateMd(after)) === after`) — was evaluated and
-// deliberately NOT shipped as a rejection gate. Verified against both the
-// live repo's `.claude/STATE.md` (clean fixpoint) AND a legitimate fixture
-// whose scalar merely CONTAINS a literal double-quote character (e.g.
-// `goal: "investigate the \"leak\" in the serializer"`): the round-trip
-// check flags that fixture as a non-fixpoint on its very FIRST write, before
-// any corruption has occurred — i.e. it false-positives on ordinary content,
-// not just on already-ballooning content. Shipping it as a hard reject would
-// block legitimate operator-authored strings. Left as a follow-up: the real
-// fix is closing the parseScalar/serializeScalar asymmetry (unescape on
-// parse, not just strip-quotes), not gating on the symptom.
+// (`serializeStateMd(parseStateMd(after)) === after`) — was evaluated at the
+// time and deliberately NOT shipped as a rejection gate, because the
+// yaml-parser asymmetry it would have been checking FOR (parseScalar
+// stripping quotes without unescaping the interior) made it false-positive on
+// ordinary operator-authored content on its very first write, before any
+// corruption had occurred.
+//
+// #747 (this session) closed that root-cause asymmetry directly in
+// yaml-parser.mjs (parseScalar now unescapes via `JSON.parse`; serializeScalar
+// force-quotes coercible strings) — see that module's docstring for the
+// inverse-property contract. With the asymmetry gone, the round-trip verify
+// is now SAFE to ship as an active guard: `evaluateFrontmatterSafe` below
+// re-verifies it, scoped to the FRONTMATTER BLOCK only (not the full
+// document). Scoping choice, empirically derived: `after` is always the
+// TRANSFORMER's return value, and every transformer in this module family
+// (`updateFrontmatterFields`, `touchUpdatedField`, and every body-section /
+// mission-status writer) produces `after` via `serializeStateMd(...)` as its
+// final step — so `after` is itself always fresh serializer output, and a
+// full-document `serializeStateMd(parseStateMd(after)) === after` check DOES
+// hold for it (verified against the live repo's `.claude/STATE.md` and a
+// battery of quote/umlaut/array/block-seq fixtures). However, an EARLIER,
+// weaker probe against the raw ON-DISK file (not transformer output) showed a
+// body-only blank-line normalization difference — a pre-existing, unrelated
+// serializeStateMd behaviour (it always emits a blank line between the
+// closing `---` and the body) that has nothing to do with the frontmatter
+// asymmetry this guard exists to catch. Scoping the check to the frontmatter
+// block alone sidesteps that unrelated body-formatting difference entirely,
+// keeps the guard's blast radius precisely matched to its name, and remains
+// the narrower, safer gate for a mechanism whose whole history is "shipped
+// too eagerly once already flagged legitimate content."
 
 /** Absolute ceiling (bytes) above which a STATE.md write is refused outright. */
 export const DEFAULT_STATE_MD_SIZE_CEILING_BYTES = 262144; // 256 KB
@@ -192,6 +211,62 @@ function evaluateSizeCeiling(before, after, ceilingBytes) {
     }
   }
   return { breached: false, reason: null, afterBytes };
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter-safe round-trip guard (issue #747 follow-up)
+// ---------------------------------------------------------------------------
+
+/** Matches the raw `---\n<frontmatter>\n---` block, mirroring yaml-parser.mjs's FRONTMATTER_RE. */
+const FRONTMATTER_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+/**
+ * Extracts the raw frontmatter block text (the bytes between the opening and
+ * closing `---` fences, exclusive) from a STATE.md-shaped string. Returns
+ * `null` when `text` has no matching frontmatter fence.
+ *
+ * @param {string} text
+ * @returns {string|null}
+ */
+function extractFrontmatterBlock(text) {
+  const match = FRONTMATTER_BLOCK_RE.exec(text);
+  return match ? match[1] : null;
+}
+
+/**
+ * Evaluates whether `after`'s frontmatter block is a byte-fixpoint under a
+ * further `serializeStateMd(parseStateMd(...))` round-trip.
+ *
+ * Scoped to the frontmatter block only (see the "Frontmatter-safe round-trip
+ * guard" comment above `DEFAULT_STATE_MD_SIZE_CEILING_BYTES` for the scoping
+ * rationale). Content with no parseable frontmatter (`parseStateMd(after) ===
+ * null`) is treated as SAFE — there is nothing frontmatter-shaped to verify,
+ * and this keeps non-STATE.md-shaped writes (e.g. arbitrary test fixtures)
+ * ungated by this check, matching `evaluateSizeCeiling`'s content-agnostic
+ * posture for that case.
+ *
+ * Never throws — mirrors the never-throw contract of yaml-parser.mjs.
+ *
+ * @param {string} after
+ * @returns {{ unsafe: boolean, reason: string|null }}
+ */
+export function evaluateFrontmatterSafe(after) {
+  const parsed = parseStateMd(after);
+  if (parsed === null) {
+    return { unsafe: false, reason: null };
+  }
+  const reserialized = serializeStateMd(parsed);
+  const beforeBlock = extractFrontmatterBlock(after);
+  const afterBlock = extractFrontmatterBlock(reserialized);
+  if (beforeBlock !== afterBlock) {
+    return {
+      unsafe: true,
+      reason:
+        `frontmatter block is not a serialize(parse(after)) byte-fixpoint ` +
+        `(${Buffer.byteLength(beforeBlock ?? '', 'utf8')}B -> ${Buffer.byteLength(afterBlock ?? '', 'utf8')}B)`,
+    };
+  }
+  return { unsafe: false, reason: null };
 }
 
 /**
@@ -237,6 +312,21 @@ function writeFileAtomic(filePath, contents) {
  * hard throw here could wedge a session mid-wave. Pass
  * `opts.throwOnCeiling: true` to opt into a thrown Error instead.
  *
+ * Frontmatter-safe round-trip guard (issue #747 follow-up): after the
+ * size-ceiling check passes, `after`'s frontmatter block is independently
+ * verified to be a byte-fixpoint under a further
+ * `serializeStateMd(parseStateMd(after))` round-trip (see
+ * `evaluateFrontmatterSafe`). This is now ACTIVE (it was evaluated and
+ * deliberately left unshipped when issue #739 first landed, because the
+ * yaml-parser asymmetry it exists to catch made it false-positive on ordinary
+ * content at the time) — #747 closed that asymmetry in yaml-parser.mjs, so
+ * the check is safe to enforce. It catches FUTURE serializer/parser drift
+ * that reintroduces a non-idempotent frontmatter round-trip — the exact
+ * incident class behind #739 — rather than the symptom (file size) the
+ * size-ceiling guard was limited to. Same non-throw, WARN-then-refuse
+ * contract as the size-ceiling guard: pass `opts.throwOnFrontmatterUnsafe:
+ * true` to opt into a thrown Error instead.
+ *
  * @param {string|undefined} repoRoot
  * @param {(contents: string) => string|null|undefined|Promise<string|null|undefined>} transformer
  * @param {object} [opts]
@@ -249,6 +339,10 @@ function writeFileAtomic(filePath, contents) {
  * @param {boolean} [opts.throwOnCeiling]  — when true, a size-ceiling breach
  *   throws an `Error` (`.code === 'STATE_MD_SIZE_CEILING'`) instead of
  *   returning a no-op result. Default `false`.
+ * @param {boolean} [opts.throwOnFrontmatterUnsafe]  — when true, a
+ *   frontmatter-unsafe breach throws an `Error`
+ *   (`.code === 'STATE_MD_FRONTMATTER_UNSAFE'`) instead of returning a no-op
+ *   result. Default `false`.
  * @returns {Promise<{ written: boolean, path: string, contents: string|null, reason?: string }>}
  */
 export async function writeStateMd(repoRoot, transformer, opts = {}) {
@@ -286,6 +380,19 @@ export async function writeStateMd(repoRoot, transformer, opts = {}) {
           throw err;
         }
         return { written: false, path: statePath, contents: before, reason: 'size-ceiling' };
+      }
+
+      const frontmatterCheck = evaluateFrontmatterSafe(after);
+      if (frontmatterCheck.unsafe) {
+        process.stderr.write(
+          `⚠ writeStateMd: refusing write to ${statePath} (reason: frontmatter-unsafe) — ${frontmatterCheck.reason}\n`
+        );
+        if (opts.throwOnFrontmatterUnsafe === true) {
+          const err = new Error(`writeStateMd: frontmatter-unsafe breach — ${frontmatterCheck.reason}`);
+          err.code = 'STATE_MD_FRONTMATTER_UNSAFE';
+          throw err;
+        }
+        return { written: false, path: statePath, contents: before, reason: 'frontmatter-unsafe' };
       }
 
       writeFileAtomic(statePath, after);

@@ -414,3 +414,194 @@ body
     expect(reparsed.frontmatter.rationale).toBe('hello world');
   });
 });
+
+// ─── parseScalar ↔ serializeScalar inverse property (#747) ───────────────────
+//
+// Root-fix for the 6.3-MB balloon incident (#739): parseScalar's double-quoted
+// branch stripped quotes WITHOUT unescaping, while serializeScalar JSON-escapes
+// on emit — so a scalar containing a literal `"` or `\` gained an extra
+// backslash layer on every parse→serialize round-trip (compounding growth). A
+// second, orthogonal asymmetry (type-coercion) let a bool/null/number-SHAPED
+// string like `"true"`/`"1.0"` re-parse to a boolean/number.
+//
+// The inverse contract established here:
+//   - serialize∘parse is a BYTE-fixpoint for files the serializer itself
+//     produced (double-quoted, JSON-escaped).
+//   - parse∘serialize preserves the VALUE (and its runtime type) exactly.
+//   - KNOWN non-byte-fixpoint: single-quoted source lines normalise to
+//     double-quoted on first serialize (content identical, bytes differ),
+//     then converge to a byte-fixpoint after one cycle.
+
+describe('parseScalar ↔ serializeScalar inverse property (#747)', () => {
+  it('is a byte-fixpoint for a double-quoted scalar with an escaped inner quote', () => {
+    // The exact fixture from the size-ceiling guard incident note.
+    const x = `---
+schema-version: 1
+goal: "investigate the \\"leak\\" in the serializer"
+---
+
+## Body
+`;
+    expect(serializeStateMd(parseStateMd(x))).toBe(x);
+    // Value carries the real (unescaped) inner quotes.
+    expect(parseStateMd(x).frontmatter.goal).toBe('investigate the "leak" in the serializer');
+  });
+
+  it('is a byte-fixpoint for a backslash-bearing Windows path (both directions on the value)', () => {
+    const x = `---
+schema-version: 1
+path: "C:\\\\path\\\\to\\\\file"
+---
+
+## Body
+`;
+    // serialize∘parse — byte-fixpoint of the serializer-produced file.
+    expect(serializeStateMd(parseStateMd(x))).toBe(x);
+    const value = parseStateMd(x).frontmatter.path;
+    // The parsed value has single backslashes (escapes resolved).
+    expect(value).toBe('C:\\path\\to\\file');
+    // parse∘serialize on the value-level — re-parsing the re-serialized value
+    // yields the identical value.
+    const reparsed = parseStateMd(serializeStateMd(parseStateMd(x)));
+    expect(reparsed.frontmatter.path).toBe(value);
+  });
+
+  it('is a byte-fixpoint for a scalar with an escaped newline', () => {
+    const x = `---
+schema-version: 1
+note: "line1\\nline2"
+---
+
+## Body
+`;
+    expect(serializeStateMd(parseStateMd(x))).toBe(x);
+    // The value carries a REAL newline (escape resolved on parse).
+    expect(parseStateMd(x).frontmatter.note).toBe('line1\nline2');
+  });
+
+  it('is a byte-fixpoint for a scalar mixing quotes and backslashes', () => {
+    const x = `---
+schema-version: 1
+mixed: "a \\"b\\" c\\\\d"
+---
+
+## Body
+`;
+    expect(serializeStateMd(parseStateMd(x))).toBe(x);
+    expect(parseStateMd(x).frontmatter.mixed).toBe('a "b" c\\d');
+  });
+
+  it('regression: a Unicode scalar with no escapes stays a byte-fixpoint (already correct pre-fix)', () => {
+    const x = `---
+schema-version: 1
+note: "Zürich café — naïve"
+---
+
+## Body
+`;
+    expect(serializeStateMd(parseStateMd(x))).toBe(x);
+    expect(parseStateMd(x).frontmatter.note).toBe('Zürich café — naïve');
+  });
+
+  it('single-quoted source is a KNOWN non-byte-fixpoint but preserves value and converges after one cycle', () => {
+    const x = `---
+schema-version: 1
+rationale: 'hat "Bug"'
+---
+
+## Body
+`;
+    const parsed = parseStateMd(x);
+    // Value is preserved exactly across parse (single-quote strip).
+    expect(parsed.frontmatter.rationale).toBe('hat "Bug"');
+    const firstSerialize = serializeStateMd(parsed);
+    // Bytes DIFFER from the source: single-quoted normalises to double-quoted.
+    expect(firstSerialize).not.toBe(x);
+    // ...but re-parsing yields the identical value.
+    const reparsed = parseStateMd(firstSerialize);
+    expect(reparsed.frontmatter.rationale).toBe('hat "Bug"');
+    // Convergence: after the first normalisation, it is a byte-fixpoint.
+    expect(serializeStateMd(reparsed)).toBe(firstSerialize);
+  });
+
+  it('type-coercion guard: bool/null/number-shaped strings survive the round-trip AS strings', () => {
+    const x = `---
+flag: "true"
+disabled: "false"
+version: "1.0"
+nothing: "null"
+count: "42"
+---
+
+## Body
+`;
+    const parsed = parseStateMd(x);
+    // Every value is a string with the expected content...
+    expect(parsed.frontmatter.flag).toBe('true');
+    expect(parsed.frontmatter.disabled).toBe('false');
+    expect(parsed.frontmatter.version).toBe('1.0');
+    expect(parsed.frontmatter.nothing).toBe('null');
+    expect(parsed.frontmatter.count).toBe('42');
+    // ...and typeof stays 'string' after a full serialize→parse cycle
+    // (serializeScalar force-quotes rather than emitting a coercible bare form).
+    const reparsed = parseStateMd(serializeStateMd(parsed));
+    expect(typeof reparsed.frontmatter.flag).toBe('string');
+    expect(typeof reparsed.frontmatter.disabled).toBe('string');
+    expect(typeof reparsed.frontmatter.version).toBe('string');
+    expect(typeof reparsed.frontmatter.nothing).toBe('string');
+    expect(typeof reparsed.frontmatter.count).toBe('string');
+    // Bytes are stable too (serializer-produced file → byte-fixpoint).
+    expect(serializeStateMd(reparsed)).toBe(serializeStateMd(parsed));
+  });
+
+  // Adversarial table — each value round-trips through serialize→parse with its
+  // VALUE preserved, and the serializer-produced text is a byte-fixpoint.
+  it.each([
+    ['embedded double-quote', 'a"b'],
+    ['embedded single-quote', "a'b"],
+    ['embedded backslash', 'a\\b'],
+    ['embedded tab', 'a\tb'],
+    ['empty string', ''],
+    ['punctuation only', '!!!'],
+    ['digit string', '007'],
+    ['bool string true', 'true'],
+    ['bool string false', 'false'],
+    ['null string', 'null'],
+    ['tilde string', '~'],
+    ['float string', '3.14'],
+  ])('adversarial value round-trips losslessly: %s', (_label, value) => {
+    const serialized = serializeStateMd({ frontmatter: { k: value }, body: 'x\n' });
+    const parsed = parseStateMd(serialized);
+    // serialize∘parse preserves the value AND its string type.
+    expect(parsed.frontmatter.k).toBe(value);
+    expect(typeof parsed.frontmatter.k).toBe('string');
+    // parse∘serialize is a byte-fixpoint (the serializer produced `serialized`).
+    expect(serializeStateMd(parsed)).toBe(serialized);
+  });
+});
+
+// ─── parseScalar — malformed double-quoted interior (JSON.parse fallback) ────
+//
+// The double-quoted branch of parseScalar tries JSON.parse first; a raw
+// double-quoted interior with UNESCAPED inner quotes (the pre-#747
+// hand-authored / migration shape, not something this serializer emits) is
+// not valid JSON, so the catch branch falls back to a naive slice(1, -1)
+// quote-strip instead of throwing.
+
+describe('parseScalar — malformed double-quoted interior falls back to naive strip', () => {
+  it('does not throw and returns the naive-strip value for raw unescaped inner quotes', () => {
+    const x = `---
+schema-version: 1
+k: "has "raw" quotes"
+---
+
+## Body
+`;
+    expect(() => parseStateMd(x)).not.toThrow();
+    const result = parseStateMd(x);
+    expect(result).not.toBeNull();
+    // Naive slice(1, -1) on the raw interior `"has "raw" quotes"` — the
+    // outermost quotes are stripped, inner unescaped quotes pass through as-is.
+    expect(result.frontmatter.k).toBe('has "raw" quotes');
+  });
+});

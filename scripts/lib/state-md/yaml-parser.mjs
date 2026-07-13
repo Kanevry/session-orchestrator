@@ -11,6 +11,22 @@
  *
  * Never throws. Returns null for unparseable input rather than raising.
  *
+ * Inverse property (#747 — root-fix for the 6.3-MB balloon incident #739):
+ * `parseScalar` and `serializeScalar` are mutually inverse for scalars the
+ * SERIALIZER produced. Concretely:
+ *   - serialize∘parse is a BYTE-fixpoint for any file this serializer emitted:
+ *     double-quoted scalars are JSON-escaped on emit and JSON.parse-unescaped
+ *     on read, so a literal `"` / `\` / newline no longer accretes an extra
+ *     backslash layer per round-trip (the compounding-growth mechanism).
+ *   - parse∘serialize preserves the VALUE and its runtime type exactly:
+ *     bool/null/number-SHAPED strings ('true', 'null', '42', '1.0') are
+ *     force-quoted on emit so they survive as strings instead of coercing to a
+ *     boolean/null/number on the next parse.
+ *   - KNOWN non-byte-fixpoint: a SINGLE-quoted source line normalises to
+ *     double-quoted on first serialize (content identical, bytes differ), then
+ *     converges to a byte-fixpoint after one cycle. The serializer never emits
+ *     single-quoted, so this only affects hand-authored input.
+ *
  * Leaf module — no imports from peer state-md submodules (avoids circular deps).
  */
 
@@ -155,10 +171,22 @@ function parseScalar(raw) {
     if (inner === '') return [];
     return inner.split(',').map((s) => parseScalar(s.trim()));
   }
-  if (
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-  ) {
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    // Double-quoted: the serializer emits these via JSON.stringify, so JSON.parse
+    // is the exact inverse (unescapes `\"`, `\\`, `\n`, `\t`, `\uXXXX`, …). Fall
+    // back to a naive quote-strip if the interior is not valid JSON (hand-authored
+    // or already-corrupt content) — this module's never-throw contract holds.
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw.slice(1, -1);
+    }
+  }
+  if (raw.startsWith("'") && raw.endsWith("'")) {
+    // Single-quoted: the serializer never emits this form (it always uses
+    // double-quotes via JSON.stringify), so a plain quote-strip is correct and
+    // no unescaping is defined. Sources like this normalise to double-quoted on
+    // the next serialize — a KNOWN non-byte-fixpoint (value preserved).
     return raw.slice(1, -1);
   }
   return raw;
@@ -186,12 +214,21 @@ function serializeBlockSeqEntry(entry, fmLines) {
   }
 }
 
+/** Characters permitted in an unquoted (bare) scalar emission. */
+const BARE_SCALAR_RE = /^[\w\-./:+@]+$/;
+
 function serializeScalar(v) {
   if (v === null || v === undefined) return 'null';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);
   if (Array.isArray(v)) return `[${v.map(serializeScalar).join(', ')}]`;
   const s = String(v);
-  if (/^[\w\-./:+@]+$/.test(s)) return s;
+  // Emit bare ONLY when the value would round-trip back to the identical STRING.
+  // `parseScalar(s) === s` force-quotes bool/null/number-shaped strings
+  // ('true'/'false'/'null'/'42'/'1.0'), which would otherwise re-parse to a
+  // boolean/null/number — the silent type-coercion asymmetry (#747). Otherwise
+  // JSON.stringify, whose exact inverse is the JSON.parse branch in parseScalar.
+  // (parseScalar is a hoisted function declaration — safe to reference here.)
+  if (BARE_SCALAR_RE.test(s) && parseScalar(s) === s) return s;
   return JSON.stringify(s);
 }

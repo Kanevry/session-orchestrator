@@ -27,6 +27,7 @@ import {
   STATE_MD_SIZE_CEILING_RATIO,
 } from '@lib/state-md/frontmatter-mutators.mjs';
 import { appendDeviationOnDisk } from '@lib/state-md/body-sections.mjs';
+import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 
 // ─── Fixtures & helpers ──────────────────────────────────────────────────────
 
@@ -172,21 +173,39 @@ describe('writeStateMd — size-ceiling guard: fake-regression (guard disabled)'
   });
 });
 
-// ─── Compounding regression ──────────────────────────────────────────────────
+// ─── #747 convergence regression (serializer asymmetry fixed) ───────────────
+//
+// Prior to #747, this exact fixture — a frontmatter scalar containing a
+// literal embedded double-quote — ballooned exponentially across repeated
+// updateFrontmatterFieldsOnDisk cycles (parseScalar stripped quotes WITHOUT
+// unescaping the interior, so serializeScalar's JSON-escaping compounded on
+// every parse→serialize round-trip). This describe block used to force a
+// small ceiling and assert the size-ceiling guard eventually refused a write
+// to stop the runaway growth.
+//
+// #747 fixed the actual asymmetry (parseScalar now unescapes via JSON.parse;
+// serializeScalar force-quotes coercible strings) at the yaml-parser layer.
+// Empirically (see PR discussion / node -e probe), the SAME fixture now
+// normalizes ONCE on the very first write (92 → 94 bytes — the embedded
+// quote gains its correct single layer of escaping) and then holds a byte
+// EXACT fixpoint (94 bytes) across every subsequent cycle — no compounding,
+// no refusal ever needed. This test now asserts that convergence directly:
+// every write succeeds, size plateaus after cycle 1, and the parsed `goal`
+// value never drifts. If the yaml-parser asymmetry regresses, this test goes
+// red again (a write starts failing and/or sizes start climbing) — the
+// forced low ceiling is kept so a reintroduced regression is caught within a
+// handful of iterations rather than needing ~16 to cross the 256KB default.
 
-describe('writeStateMd — size-ceiling guard: compounding regression (real serializer asymmetry)', () => {
-  it('bounds file size across repeated updateFrontmatterFieldsOnDisk calls on a quote-bearing fixture', async () => {
+describe('writeStateMd — size-ceiling guard: #747 convergence regression (serializer asymmetry fixed — no compounding)', () => {
+  it('holds a byte-fixpoint and lands every write across repeated updateFrontmatterFieldsOnDisk calls on a quote-bearing fixture', async () => {
     const root = makeTmpRepo();
     const statePath = seedState(root, QUOTE_FIXTURE);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    // A small forced ceiling makes the real exponential growth (driven by
-    // the yaml-parser round-trip asymmetry on the `goal` field, which this
-    // loop never itself touches) trip deterministically within a handful of
-    // iterations instead of needing ~16 iterations to cross the 256KB default.
     const forcedCeiling = 2000;
     const sizes = [];
     const results = [];
+    const goals = [];
 
     for (let i = 0; i < 12; i++) {
       const result = await updateFrontmatterFieldsOnDisk(
@@ -195,25 +214,24 @@ describe('writeStateMd — size-ceiling guard: compounding regression (real seri
         { _ceilingBytes: forcedCeiling }
       );
       results.push(result);
-      sizes.push(Buffer.byteLength(readFileSync(statePath, 'utf8'), 'utf8'));
+      const onDisk = readFileSync(statePath, 'utf8');
+      sizes.push(Buffer.byteLength(onDisk, 'utf8'));
+      goals.push(parseStateMd(onDisk).frontmatter.goal);
     }
 
-    // The guard must actually have tripped at least once — this is the
-    // meaningful regression assertion: without the guard, sizes keep growing
-    // past the forced ceiling instead of ever refusing.
-    expect(results.some((r) => r.written === false && r.reason === 'size-ceiling')).toBe(true);
+    // (b) every write succeeds — no size-ceiling refusal anywhere in the run.
+    expect(results.every((r) => r.written === true)).toBe(true);
+    expect(results.every((r) => r.reason === undefined)).toBe(true);
 
-    // Every on-disk size after every iteration stays under the forced
-    // ceiling — a write only ever lands when it already passed the check, so
-    // this proves growth cannot run away no matter how many iterations pass.
-    expect(sizes.every((s) => s < forcedCeiling)).toBe(true);
+    // (a) size plateaus after the first cycle — a byte-fixpoint, not merely
+    // "stays under the forced ceiling". size(n) === size(1) for every n >= 1.
+    expect(sizes.every((s) => s === sizes[0])).toBe(true);
 
-    // Once tripped, the file size plateaus (no further growth) — the guard
-    // keeps refusing the same oversized candidate against the same
-    // last-known-good `before` on every subsequent call.
-    const lastSize = sizes[sizes.length - 1];
-    const secondLastSize = sizes[sizes.length - 2];
-    expect(lastSize).toBe(secondLastSize);
+    // (c) the parsed `goal` value is stable (identical string, not merely
+    // identical byte-length) across every cycle — content never drifts even
+    // though bytes are stable, and it matches the literal source value.
+    expect(goals.every((g) => g === goals[0])).toBe(true);
+    expect(goals[0]).toBe('has "quote" inside');
   });
 });
 
