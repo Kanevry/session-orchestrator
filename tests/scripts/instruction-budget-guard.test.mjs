@@ -210,6 +210,80 @@ describe('computeInstructionBudget — directive counting', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #795 — `paths:` alias membership (regression at the budget layer).
+//
+// scripts/lib/rule-loader.mjs now recognises `paths:` frontmatter as an
+// alias for `globs:` (globs: wins when both are present). computeInstructionBudget
+// delegates always-on membership to loadApplicableRules with scopePaths: [],
+// so a `paths:`-scoped rule must be excluded from the always-on total exactly
+// like a `globs:`-scoped rule already is (see GAMMA above).
+// ---------------------------------------------------------------------------
+
+// scoped: `paths:`-scoped body (no `globs:` key at all).
+//   ## Scoped Heading  -> heading depth 2   (1)
+//   - scoped bullet one -> bullet          (2)
+//   - scoped bullet two -> bullet          (3)
+//   - scoped bullet three -> bullet        (4)
+// => 4 directives IF (wrongly) counted as always-on; 0 when properly excluded.
+const PATHS_SCOPED_BODY = `## Scoped Heading
+
+- scoped bullet one
+- scoped bullet two
+- scoped bullet three
+`;
+const PATHS_SCOPED_BODY_COUNT = 4;
+
+const PATHS_SCOPED = `---
+paths:
+  - "**/*.ts"
+---
+
+${PATHS_SCOPED_BODY}`;
+
+// unscoped: no frontmatter at all — always-on regardless of the #795 fix.
+//   ## Unscoped Heading -> heading depth 2  (1)
+//   - unscoped bullet   -> bullet           (2)
+// => 2 directives
+const UNSCOPED_ALWAYS_ON = `## Unscoped Heading
+
+- unscoped bullet
+`;
+const UNSCOPED_ALWAYS_ON_COUNT = 2;
+
+describe('#795 paths:-scoped rules excluded from always-on budget', () => {
+  it('excludes a paths:-scoped rule from the always-on total, counting only the unscoped rule', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'scoped.md', PATHS_SCOPED);
+    writeRule(dir, 'unscoped.md', UNSCOPED_ALWAYS_ON);
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // scoped.md's 4 directives must NOT be counted — only unscoped.md's 2.
+    expect(result.totalDirectives).toBe(2);
+    expect(result.perFile).toEqual([{ file: 'unscoped.md', count: 2 }]);
+  });
+
+  it('fake-regression control: the SAME rule body WITHOUT the paths: key counts as always-on (proves the exclusion above is real, not a naming fluke)', () => {
+    const dir = makeTmpRulesDir();
+    // Same body as PATHS_SCOPED, but with the paths: frontmatter stripped —
+    // this file is now always-on and MUST count. If the paths: alias were
+    // broken (e.g. reverted to pre-#795 behaviour), the PRIOR test would
+    // ALSO count scoped.md's 4 directives, making totalDirectives 6 there
+    // instead of 2 — that is exactly the regression this pair of tests catches.
+    writeRule(dir, 'scoped.md', PATHS_SCOPED_BODY);
+    writeRule(dir, 'unscoped.md', UNSCOPED_ALWAYS_ON);
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.totalDirectives).toBe(6);
+    expect(result.perFile).toEqual([
+      { file: 'scoped.md', count: PATHS_SCOPED_BODY_COUNT },
+      { file: 'unscoped.md', count: UNSCOPED_ALWAYS_ON_COUNT },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ceiling boundary
 // ---------------------------------------------------------------------------
 

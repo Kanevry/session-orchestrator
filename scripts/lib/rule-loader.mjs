@@ -1,13 +1,23 @@
 /**
- * Rule Loader — issue #336 glob-scoped rules + #694 rule-activation foundation.
+ * Rule Loader — issue #336 glob-scoped rules + #694 rule-activation foundation
+ * + #795 `paths:` alias.
  *
  * Reads `.claude/rules/*.md` files, parses optional YAML frontmatter, and
  * returns the subset of rules applicable to a given set of file paths and
  * activation axes.
  *
- * Rules with no `globs:` frontmatter are always-on (loaded for every wave).
- * Rules with `globs:` load only when at least one `scopePath` matches at least
- * one glob pattern.
+ * Rules with no `globs:`/`paths:` frontmatter are always-on (loaded for every
+ * wave). Rules with `globs:` (or the `paths:` alias — issue #795) load only
+ * when at least one `scopePath` matches at least one glob pattern.
+ *
+ * `paths:` is a same-shape alias for `globs:` (issue #795) — some repos use a
+ * `paths:` frontmatter convention instead of `globs:` (e.g. projects-baseline:
+ * 26 rule files, all `paths:`, 0 `globs:`). Before #795 these repos'
+ * path-scoped rules were silently misclassified as always-on, inflating the
+ * `instruction-budget-guard.mjs` (#687) always-on count with a false positive.
+ * `paths:` supports the identical inline-array and block-list forms as
+ * `globs:`. Precedence when BOTH keys are present on the same rule: `globs:`
+ * wins (silently — no merge, no warning) and `paths:` is ignored entirely.
  *
  * A rule file MAY carry a leading single-line provenance header before its
  * frontmatter block — the vendoring pipeline (`scripts/rules-sync.mjs`)
@@ -177,16 +187,20 @@ const SCALAR_META_KEYS = new Set([
 ]);
 
 /**
- * Parses the YAML frontmatter block for the `globs:` field (issue #336) and the
- * scalar activation keys (issue #694).
+ * Parses the YAML frontmatter block for the `globs:` field (issue #336),
+ * its `paths:` alias (issue #795), and the scalar activation keys (issue #694).
  *
  * Returns:
  *   - `{ globs: string[] | null, meta: object }` on success
  *   - throws `Error` on malformed frontmatter so the caller can fall back
  *
- * `globs` is `null` when no frontmatter or no `globs:` key is present
- * (always-on). `meta` carries only the recognised scalar keys that were
- * present, with type coercion applied:
+ * `globs` is `null` when no frontmatter, and neither `globs:` nor `paths:` is
+ * present (always-on). `paths:` is parsed with the identical inline-array and
+ * block-list forms as `globs:`; when BOTH keys are present on the same rule,
+ * `globs:` wins silently and `paths:` is discarded (no merge, no warning —
+ * see module doc). The returned shape is unchanged either way — callers never
+ * see which key produced the value. `meta` carries only the recognised scalar
+ * keys that were present, with type coercion applied:
  *   - `alwaysApply`, `auto-generated` → boolean ('true'/'false')
  *   - `confidence` → number (undefined when NaN)
  *   - all other recognised keys → quote-stripped strings
@@ -208,7 +222,10 @@ export function parseGlobsFrontmatter(contents) {
   const lines = fmText.split(/\r?\n/);
 
   let globsValue = null;
-  let inGlobs = false;
+  let pathsValue = null;
+  // Which sequence-value key ('globs' | 'paths') is currently accumulating
+  // block-style `  - value` lines, or null when not inside either block.
+  let activeSeqKey = null;
   /** @type {Record<string, unknown>} */
   const meta = {};
 
@@ -217,23 +234,28 @@ export function parseGlobsFrontmatter(contents) {
 
     // Skip blank lines and comments
     if (rstripped === '' || /^\s*#/.test(rstripped)) {
-      // If inside a `globs:` block, a blank line ends the sequence only if
-      // the next non-blank line is at col 0 (a new key). We just keep inGlobs
-      // until we hit a non-indented non-blank line.
+      // If inside a `globs:`/`paths:` block, a blank line ends the sequence
+      // only if the next non-blank line is at col 0 (a new key). We just keep
+      // activeSeqKey set until we hit a non-indented non-blank line.
       continue;
     }
 
-    if (inGlobs) {
-      // Inside a `globs:` block — expect `  - value` indented lines
+    if (activeSeqKey) {
+      // Inside a `globs:`/`paths:` block — expect `  - value` indented lines
       const seqMatch = rstripped.match(/^(\s+)-\s+(.*)/);
       if (seqMatch) {
         const raw = seqMatch[2].trim().replace(/^["']|["']$/g, '');
-        if (!Array.isArray(globsValue)) globsValue = [];
-        globsValue.push(raw);
+        if (activeSeqKey === 'globs') {
+          if (!Array.isArray(globsValue)) globsValue = [];
+          globsValue.push(raw);
+        } else {
+          if (!Array.isArray(pathsValue)) pathsValue = [];
+          pathsValue.push(raw);
+        }
         continue;
       }
-      // Non-indented line — end of globs block
-      inGlobs = false;
+      // Non-indented line — end of the sequence block
+      activeSeqKey = null;
     }
 
     // Top-level key detection
@@ -250,21 +272,24 @@ export function parseGlobsFrontmatter(contents) {
     const key = rstripped.slice(0, colonIdx).trim();
     const valuePart = rstripped.slice(colonIdx + 1).trim();
 
-    if (key === 'globs') {
+    if (key === 'globs' || key === 'paths') {
+      let parsedValue;
       if (valuePart === '') {
         // Block-style list follows
-        inGlobs = true;
-        globsValue = [];
+        activeSeqKey = key;
+        parsedValue = [];
       } else if (valuePart.startsWith('[') && valuePart.endsWith(']')) {
-        // Flow-style: globs: ["src/**", "lib/**"]
+        // Flow-style: globs: ["src/**", "lib/**"] (or paths: [...])
         const inner = valuePart.slice(1, -1).trim();
-        globsValue = inner === ''
+        parsedValue = inner === ''
           ? []
           : inner.split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''));
       } else {
         // Single inline value (unusual but handle gracefully)
-        globsValue = [valuePart.replace(/^["']|["']$/g, '')];
+        parsedValue = [valuePart.replace(/^["']|["']$/g, '')];
       }
+      if (key === 'globs') globsValue = parsedValue;
+      else pathsValue = parsedValue;
     } else if (SCALAR_META_KEYS.has(key)) {
       // Scalar activation key (issue #694). Strip surrounding quotes, then
       // apply per-key coercion. Empty values are skipped (key not present).
@@ -284,7 +309,10 @@ export function parseGlobsFrontmatter(contents) {
     // Ignore all other keys
   }
 
-  return { globs: globsValue, meta };
+  // Precedence (issue #795): `globs:` wins silently when both keys are present.
+  const globs = globsValue !== null ? globsValue : pathsValue;
+
+  return { globs, meta };
 }
 
 /**
@@ -376,8 +404,9 @@ function applyGates(meta, filePath, mode, hostClass, now, context = null) {
  * @typedef {object} RuleEntry
  * @property {string} path - absolute path to the rule file
  * @property {string} content - raw file contents (byte-identical to disk)
- * @property {boolean} alwaysOn - true when no `globs:` frontmatter is present
- *   (UNCHANGED semantics; DISTINCT from the `alwaysApply` frontmatter key)
+ * @property {boolean} alwaysOn - true when neither `globs:` nor its `paths:`
+ *   alias (issue #795) frontmatter is present (UNCHANGED semantics; DISTINCT
+ *   from the `alwaysApply` frontmatter key)
  * @property {string[]} matchedGlobs - globs that matched; empty when alwaysOn
  * @property {true} [_parseError] - present only on frontmatter parse-error entries
  * @property {string} [description] - frontmatter `description` (issue #694), when present
@@ -395,9 +424,9 @@ function applyGates(meta, filePath, mode, hostClass, now, context = null) {
  * Loads rule files from `rulesDir` and returns those applicable to the given
  * `scopePaths` and activation axes.
  *
- * Rules without `globs:` frontmatter are always included (alwaysOn: true).
- * Rules with `globs:` are included only when at least one scopePath matches at
- * least one glob pattern.
+ * Rules without `globs:` (or its `paths:` alias — issue #795) frontmatter are
+ * always included (alwaysOn: true). Rules with `globs:`/`paths:` are included
+ * only when at least one scopePath matches at least one glob pattern.
  *
  * After a successful frontmatter parse, deterministic gates (issue #694) are
  * applied to BOTH always-on and glob-matched rules — a rule must pass ALL

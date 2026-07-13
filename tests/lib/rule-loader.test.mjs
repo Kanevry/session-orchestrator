@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadApplicableRules } from '@lib/rule-loader.mjs';
+import { loadApplicableRules, parseGlobsFrontmatter } from '@lib/rule-loader.mjs';
 
 // ---------------------------------------------------------------------------
 // Temp directory management
@@ -1065,5 +1065,108 @@ describe('tier gate composes with glob matching (#692)', () => {
     });
 
     expect(results).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// #795 — `paths:` frontmatter alias for `globs:` (path-scoping detection)
+// ===========================================================================
+
+describe('paths: frontmatter alias (#795)', () => {
+  it('is loaded as glob-scoped (not always-on) when paths: is a block-style list', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'paths-rule.md', '---\npaths:\n  - src/**\n---\n\n# Paths Rule\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/api/route.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].matchedGlobs).toContain('src/**');
+  });
+
+  it('is excluded when scopePaths do not match any paths: entry', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'paths-rule.md', '---\npaths:\n  - src/**\n---\n\n# Paths Rule\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['docs/readme.md'] });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('supports multiple paths: entries, matching on any one of them', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'multi-paths.md',
+      '---\npaths:\n  - src/app/api/**\n  - src/routes/**\n---\n\n# Multi Paths Rule\n',
+    );
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/routes/health.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].matchedGlobs).toEqual(['src/routes/**']);
+  });
+
+  it('supports flow-style (inline array) paths:', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'inline-paths.md', '---\npaths: ["src/**", "lib/**"]\n---\n\n# Inline Paths\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['lib/util.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].matchedGlobs).toContain('lib/**');
+  });
+
+  it('globs: wins silently when both globs: and paths: are present', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(
+      dir,
+      'both-keys.md',
+      '---\nglobs:\n  - src/**\npaths:\n  - docs/**\n---\n\n# Both Keys Rule\n',
+    );
+
+    // scopePath matches globs: (src/**) — globs wins, so it's included.
+    const resultsMatchingGlobs = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
+    expect(resultsMatchingGlobs).toHaveLength(1);
+    expect(resultsMatchingGlobs[0].matchedGlobs).toEqual(['src/**']);
+
+    // scopePath matches paths: (docs/**) but NOT globs: (src/**) — globs wins, so excluded.
+    const resultsMatchingPaths = loadApplicableRules({ rulesDir: dir, scopePaths: ['docs/readme.md'] });
+    expect(resultsMatchingPaths).toHaveLength(0);
+  });
+
+  it('an empty paths: array excludes the rule from every scope (mirrors globs: [])', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'empty-paths.md', '---\npaths: []\n---\n\n# Empty Paths\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/anything.ts'] });
+
+    expect(results).toHaveLength(0);
+  });
+
+  it('a rule with neither globs: nor paths: remains always-on (regression guard)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'plain.md', '---\ndescription: no scoping key at all\n---\n\n# Plain\n');
+
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/x.ts'] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+  });
+});
+
+describe('parseGlobsFrontmatter — paths: alias (#795)', () => {
+  it('returns globs populated from paths: when globs: is absent', () => {
+    const result = parseGlobsFrontmatter('---\npaths:\n  - src/**\n  - lib/**\n---\n');
+
+    expect(result.globs).toEqual(['src/**', 'lib/**']);
+  });
+
+  it('globs: wins over paths: when both keys are present', () => {
+    const result = parseGlobsFrontmatter('---\nglobs:\n  - a/**\npaths:\n  - b/**\n---\n');
+
+    expect(result.globs).toEqual(['a/**']);
   });
 });

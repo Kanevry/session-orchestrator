@@ -4,10 +4,12 @@
  * Lightweight directive-budget guard for always-on `.claude/rules/*.md`.
  *
  * Sums the always-on directive count across the rule files that the
- * rule-loader classifies as always-on (no `globs:` frontmatter) and warns
- * when the total exceeds a ceiling. "Mechanism over discipline" — the
- * #668 instruction-budget audit recommends this as a silent-now growth
- * ratchet that only fires when NEW always-on directives are added.
+ * rule-loader classifies as always-on (no `globs:` frontmatter, and no
+ * `paths:` alias either — issue #795: `paths:`-scoped rules are NOT
+ * always-on and must not inflate this count) and warns when the total
+ * exceeds a ceiling. "Mechanism over discipline" — the #668 instruction-
+ * budget audit recommends this as a silent-now growth ratchet that only
+ * fires when NEW always-on directives are added.
  *
  * Plain-JS — no Zod dependency. Never throws.
  *   - `computeInstructionBudget` always returns the full shape (never null).
