@@ -637,3 +637,94 @@ describe('Group G — LOW R3-2: reason field threaded onto state-md peer entry',
     expect(discoveredPeer.reason).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group H — self-exclusion (#798)
+//
+// Root cause: findPeers extracts `mySessionId` and threads it into Surface C
+// (checkPeerStateMd, correctly self-excluding), but the Surface A+B loop
+// (discoverActiveSessions results) never compares `s.sessionId` against
+// `mySessionId` — every discovered entry, INCLUDING the caller's own
+// session.lock / registry heartbeat, is unconditionally pushed as a
+// source:'discovered' peer. Live repro: a session's own SessionStart-hook
+// heartbeat comes back as a peer of itself.
+//
+// Prior art for the same guard elsewhere in the repo:
+//   - session-registry.mjs detectPeers(): `if (sessionId && e.session_id ===
+//     sessionId) return false;`
+//   - hooks/on-session-start.mjs: `allActive.filter((s) => s.sessionId !==
+//     sessionId)`
+// ---------------------------------------------------------------------------
+
+describe('Group H — self-exclusion (#798)', () => {
+  const MY_SESSION_ID = 'dd3ebe61-6095-409f-8f60-6581dee998b9';
+
+  it('H1: lock-sourced entry with session_id === mySessionId (live pid, fresh heartbeat) → excluded from peers', async () => {
+    writeLock(repoRoot, lockBody({ session_id: MY_SESSION_ID, pid: process.pid }));
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: MY_SESSION_ID,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    // No STATE.md written, no foreign entries — self-lock must not surface as a peer.
+    expect(result.peers).toEqual([]);
+  });
+
+  it('H2: registry-only entry with session_id === mySessionId (exact #798 repro shape) → excluded from peers', async () => {
+    // No lock written — registry is the sole discovered-surface contributor,
+    // matching the live #798 repro (own registry heartbeat, source:'discovered').
+    const result = await findPeers(repoRoot, {
+      mySessionId: MY_SESSION_ID,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [regEntry({ session_id: MY_SESSION_ID })],
+    });
+
+    expect(result.peers).toEqual([]);
+  });
+
+  it('H3 (regression guard): a foreign live peer via lock AND via registry remains present (no over-filtering)', async () => {
+    writeLock(repoRoot, lockBody({ session_id: 'sess-foreign-lock-H3', pid: process.pid }));
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: MY_SESSION_ID,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [regEntry({ session_id: 'sess-foreign-reg-H3' })],
+    });
+
+    expect(result.peers).toHaveLength(2);
+    const discoveredIds = result.peers
+      .filter((p) => p.source === 'discovered')
+      .map((p) => p.sessionId)
+      .sort();
+    expect(discoveredIds).toEqual(['sess-foreign-lock-H3', 'sess-foreign-reg-H3'].sort());
+  });
+
+  it('H4: lock and registry entries both share session_id === mySessionId → 0 discovered self-entries in the result', async () => {
+    writeLock(repoRoot, lockBody({ session_id: MY_SESSION_ID, pid: process.pid }));
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: MY_SESSION_ID,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [regEntry({ session_id: MY_SESSION_ID })],
+    });
+
+    expect(result.peers.filter((p) => p.source === 'discovered')).toHaveLength(0);
+    expect(result.peers).toEqual([]);
+  });
+
+  it('H5: mySessionId: null → a foreign discovered entry comes back unfiltered (guard against over-eager null handling)', async () => {
+    writeLock(repoRoot, lockBody({ session_id: 'sess-foreign-H5', pid: process.pid }));
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: null,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(result.peers).toHaveLength(1);
+    expect(result.peers[0].source).toBe('discovered');
+    expect(result.peers[0].sessionId).toBe('sess-foreign-H5');
+  });
+});
