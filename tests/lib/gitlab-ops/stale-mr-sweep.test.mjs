@@ -529,6 +529,62 @@ describe('main — --all-vault --json output shape', () => {
   });
 });
 
+describe('main — --all-vault --json output shape (mixed ok:true/false)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('prints a JSON array with one ok:false envelope (failed repo) and one ok:true envelope (succeeding sibling), exit code 0', async () => {
+    const discoverRepos = vi.fn().mockResolvedValue([
+      { slug: 'repo-a', repo: 'group/repo-a', vcs: 'gitlab' },
+      { slug: 'repo-b', repo: 'group/repo-b', vcs: 'gitlab' },
+    ]);
+    const mockExec = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ stdout: GITLAB_MRS_JSON, stderr: '' });
+
+    const out = captureWrite(process.stdout);
+
+    const result = await main(['--all-vault', '--json'], {
+      discoverRepos,
+      exec: mockExec,
+      now: FIXED_NOW,
+      homedir: () => '/Users/fixture',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(out.text());
+    expect(parsed).toEqual([
+      {
+        slug: 'repo-a',
+        ok: false,
+        error: 'boom',
+        repo: 'group/repo-a',
+        vcs: 'gitlab',
+        total: 0,
+        stale: [],
+      },
+      {
+        slug: 'repo-b',
+        ok: true,
+        repo: 'group/repo-b',
+        vcs: 'gitlab',
+        total: 2,
+        stale: [
+          {
+            iid: 101,
+            title: 'Old MR',
+            updated_at: '2026-06-01T12:00:00.000Z',
+            created_at: '2026-06-01T12:00:00.000Z',
+            web_url: 'https://gitlab.example.com/-/mr/101',
+          },
+        ],
+      },
+    ]);
+  });
+});
+
 describe('main — --all-vault human summary', () => {
   afterEach(() => {
     vi.restoreAllMocks();
