@@ -8,7 +8,8 @@
  * Responsibilities:
  *  - writeApproved:      promote approved ProposalRecords → learnings.jsonl
  *  - archiveRejected:    append rejected ProposalRecords → proposals.rejected.log
- *  - clearProposalsJsonl: atomically clear proposals.jsonl (tmp + rename) AND
+ *  - clearProposalsJsonl: atomically clear proposals.jsonl (tmp + rename),
+ *    archiving the pre-clear content to a recovery sidecar first, AND
  *    reset every per-wave proposals-summary-*.json sidecar in the same
  *    metrics directory (issue #723 B3 — see function docstring for the
  *    fleet-wide desync bug this closes).
@@ -19,12 +20,23 @@
  *    (from ../path-utils.mjs) with canonicalizeRoot:true on every write target.
  *  - Use the appendLearning() atomic-append pattern from learnings/io.mjs.
  *
+ * writeApproved additionally guards against a caller-mistake class (#797):
+ * calling `writeApproved({ proposals: [...] })` instead of
+ * `writeApproved({ approved: [...] })` previously returned a silent
+ * `{ written: 0, errors: [] }` no-op — indistinguishable from "nothing was
+ * approved". A subsequent `clearProposalsJsonl()` then drained the queue
+ * anyway, permanently losing the approved proposals. `writeApproved` now
+ * throws a `TypeError` when `approved` is `undefined` but the caller passed
+ * OTHER (unrecognised) keys — the signature that fingerprints an arg-name
+ * typo rather than a legitimate no-op call.
+ *
  * Issue: #501 (F2.1 Memory-Proposals); #544 M3 (path-utils canonicalization);
- * #723 B3 (clearProposalsJsonl atomicity + summary-reset fix).
+ * #723 B3 (clearProposalsJsonl atomicity + summary-reset fix); #797
+ * (writeApproved fail-silent guard + clearProposalsJsonl archive-before-clear).
  */
 
 import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
-import { writeFileSync, renameSync } from 'node:fs';
+import { writeFileSync, renameSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { appendLearning } from '../learnings/io.mjs';
@@ -37,6 +49,10 @@ import { validatePathInsideProject } from '../path-utils.mjs';
 const LEARNINGS_REL = path.join('.orchestrator', 'metrics', 'learnings.jsonl');
 const PROPOSALS_REL = path.join('.orchestrator', 'metrics', 'proposals.jsonl');
 const REJECTED_LOG_REL = path.join('.orchestrator', 'proposals.rejected.log');
+// #797 recovery sidecar: pre-clear proposals.jsonl content is appended here
+// before every truncate, so a downstream clear that follows a botched
+// writeApproved call (or any other pre-clear mistake) is recoverable.
+const PROPOSALS_ARCHIVE_REL = path.join('.orchestrator', 'runtime', 'proposals-archive.jsonl');
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -93,17 +109,47 @@ function _proposalToLearning(proposal, sessionId) {
  * Individual record errors are collected into errors[] — the function never
  * throws on a per-record basis.
  *
+ * Argument contract (#797 fail-silent guard):
+ *  - `approved` is an array (possibly empty) → normal path / legitimate no-op.
+ *  - `approved` is `undefined` and no OTHER (unrecognised) key was passed →
+ *    legitimate no-op (e.g. an empty-selection AUQ round) → `{written:0, errors:[]}`.
+ *  - `approved` is `undefined` BUT the caller passed unrecognised key(s)
+ *    (e.g. `{ proposals: [...] }` instead of `{ approved: [...] }`) → throws
+ *    `TypeError`, since this is almost certainly an arg-name typo that would
+ *    otherwise silently no-op and lose the proposals on the next
+ *    `clearProposalsJsonl()` call.
+ *  - `approved` is defined but not an array → throws `TypeError` (clear
+ *    contract violation, not a legitimate call shape).
+ *
  * @param {object}   opts
- * @param {object[]} opts.approved   - ProposalRecord[] selected by user via AUQ
+ * @param {object[]} [opts.approved] - ProposalRecord[] selected by user via AUQ
  * @param {string}   opts.repoRoot   - absolute project root path
  * @param {string}   opts.sessionId  - e.g. 'main-2026-05-23-1249-deep'
  * @returns {Promise<{ written: number, errors: string[] }>}
+ * @throws {TypeError} When `approved` is missing alongside unrecognised keys,
+ *   or when `approved` is present but not an array.
  */
-export async function writeApproved({ approved, repoRoot, sessionId }) {
+export async function writeApproved({ approved, repoRoot, sessionId, ...rest }) {
   const errors = [];
   let written = 0;
 
-  if (!Array.isArray(approved) || approved.length === 0) {
+  if (approved === undefined) {
+    const unknownKeys = Object.keys(rest);
+    if (unknownKeys.length > 0) {
+      throw new TypeError(
+        `writeApproved: missing "approved" — got unknown key(s): ${unknownKeys.join(', ')}. Did you mean approved:?`
+      );
+    }
+    return { written: 0, errors: [] };
+  }
+
+  if (!Array.isArray(approved)) {
+    throw new TypeError(
+      `writeApproved: "approved" must be an array of ProposalRecord objects (got ${typeof approved})`
+    );
+  }
+
+  if (approved.length === 0) {
     return { written: 0, errors: [] };
   }
 
@@ -199,7 +245,17 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  * session-end after the first non-empty cycle reported a stale
  * `queued > 0` count against a genuinely empty (0-byte) proposals.jsonl.
  *
- * Two-step fix:
+ * Three-step fix:
+ *  0. (#797) Archive the pre-clear content of proposals.jsonl (if non-empty)
+ *     by appending it verbatim to `.orchestrator/runtime/proposals-archive.jsonl`
+ *     BEFORE truncating. This is the recovery path for the drain-after-
+ *     fail-silent-write class of bug: `clearProposalsJsonl()` unconditionally
+ *     drains the queue regardless of whether the preceding `writeApproved()`
+ *     call actually wrote anything, so a caller-side mistake (wrong arg name,
+ *     partial write failure) no longer means the queued proposals are gone
+ *     for good — they are recoverable from the archive sidecar. Best-effort:
+ *     an archive failure never blocks the clear itself, and an empty/missing
+ *     proposals.jsonl produces no archive append (nothing to preserve).
  *  1. Clear proposals.jsonl via tmp-file + rename (POSIX-atomic on the same
  *     filesystem) instead of an in-place `writeFileSync` truncate — this also
  *     brings the implementation in line with the documented contract in
@@ -229,6 +285,27 @@ export async function clearProposalsJsonl({ repoRoot }) {
   }
   const proposalsPath = proposalsResult.realPath ?? proposalsResult.lexicalPath;
   const metricsDirPath = path.dirname(proposalsPath);
+
+  // Step 0 (#797): archive pre-clear content before truncating. Best-effort
+  // — never lets an archive-side failure block the clear (same never-throw
+  // contract as the rest of this function).
+  if (existsSync(proposalsPath)) {
+    try {
+      const preClearContent = readFileSync(proposalsPath, 'utf8');
+      if (preClearContent.length > 0) {
+        const archiveResult = validatePathInsideProject(PROPOSALS_ARCHIVE_REL, repoRoot, { canonicalizeRoot: true });
+        if (archiveResult.ok) {
+          const archivePath = archiveResult.realPath ?? archiveResult.lexicalPath;
+          await mkdir(path.dirname(archivePath), { recursive: true });
+          const normalized = preClearContent.endsWith('\n') ? preClearContent : `${preClearContent}\n`;
+          await appendFile(archivePath, normalized, 'utf8');
+        }
+      }
+    } catch {
+      // Best-effort — a read/append failure on the archive sidecar must not
+      // block the clear itself (function-level never-throw contract).
+    }
+  }
 
   try {
     // Ensure parent directory exists before clear/create.
