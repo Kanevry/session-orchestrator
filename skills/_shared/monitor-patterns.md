@@ -153,8 +153,9 @@ done
 **Coverage.** Emits **only on change** to keep the stream quiet during
 idle work. A drop to zero is also reported (e.g. when session-end runs
 mirror-commit). Silence = no drift, which is the desired idle state. The
-30-min sleep matches the `1200s+` cadence band from
-`.claude/rules/loop-and-monitor.md` LM-003.
+30-min sleep matches the `1200s+` idle-tick band from
+`.claude/rules/loop-and-monitor.md` LM-003 (idle observation-rate; under the
+1-hour subscription cache TTL there is no cache penalty here anyway).
 
 ---
 

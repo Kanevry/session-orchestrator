@@ -153,11 +153,11 @@ Constraints (cite https://code.claude.com/docs/en/workflows):
 - **Caps:** **16 concurrent** / **1000 total** agents per run — agent-count bounds, not stop-conditions.
 - **Kill-switch:** `disableWorkflows` (settings), `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env), or the `/config` toggle.
 - **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
-- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root — not unconditionally the repo-root one. Verify the actual write target before assuming root-level placement in a monorepo.
+- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root, falling back to the repo root only if none exists yet along that path. Project workflows load from every `.claude/workflows/` on that path; if two define the same name, the one closest to the working directory runs (and if a project and a personal workflow share a name, the project one wins). Verify the actual write target before assuming root-level placement in a monorepo.
 - **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`). Since v2.1.203, `claude --effort ultracode` at launch is an additional on-ramp alongside `/effort ultracode` and the inline keyword.
 - **Dynamic workflow size (v2.1.202+):** a `/config` setting — `unrestricted` / `small` / `medium` / `large` — controls the agent count Claude targets when planning a run. Tune it down for a tighter/cheaper fan-out, up when the objective genuinely needs the full 16/1000 headroom.
 - **`args` global:** a workflow script receives its parameters via the structured-data global `args` — `undefined` when the workflow is invoked without any parameters passed.
-- **Usage view (v2.1.186+):** `/workflows` exposes a per-phase breakdown of agent counts and token totals, keyed `p`/`x`/`r`/`s`/`f` — use it to see where a run spent its budget before re-tuning the script.
+- **Usage view:** `/workflows` exposes a per-phase breakdown of agent counts and token totals, with per-run controls keyed `p` (pause/resume) / `x` (stop) / `r` (restart) / `s` (save); only the `f` status filter carries an explicit version gate (v2.1.186+) — use the view to see where a run spent its budget before re-tuning the script.
 - **Per-stage model routing:** the `agent()` call in a workflow script accepts `model`/`effort` options, so different stages of the same run can route to different models/effort levels rather than one model for the whole workflow.
 - **Resume (`resumeFromRunId`) is same-session only** — it cannot resume a run that was started in a different session.
 
@@ -206,7 +206,7 @@ Claude Code plans one fallback wakeup ~20 minutes later and then ends the loop
 that Claude itself is permitted to invoke. Everything else arrives as inert
 plain text, not a run: built-in commands (`/permissions`, `/model`,
 `/clear`), skills declared `disable-model-invocation: true`, skills withheld
-via `skillOverrides`, and MCP prompts. Practical corollary: the
+via `skillOverrides` or a `Skill` deny rule, and MCP prompts. Practical corollary: the
 `.claude/loop.md` body must only INSTRUCT the fire to invoke model-invokable
 skills — a reference to a built-in command or a non-invokable skill as
 something the run itself should execute silently no-ops (the text lands in
@@ -215,19 +215,36 @@ the transcript, nothing fires). Recommending such a command to the
 prose read by a human, not a dispatch attempted by the run
 (code.claude.com/docs/en/scheduled-tasks).
 
-**Cadence selection** (matters for token cost — Anthropic prompt cache
-TTL is ~5 min):
+**Cadence selection — pick by observation-rate; cache is secondary.** Choose the
+interval from *how fast the watched thing changes*, then sanity-check against
+the cache TTL. The runtime clamps a self-paced wakeup to **[60s, 3600s]**
+(code.claude.com/docs/en/scheduled-tasks; /docs/en/tools-reference#schedulewakeup).
 
-| Range | When |
+| Range | When (by observation-rate) |
 |---|---|
-| `60s` – `270s` | Cache stays warm. Use for active work — checking a build, polling state about to change. |
-| `300s` | **Avoid.** Worst-of-both: pay the cache miss without amortising it. |
-| `1200s` – `3600s` (20 – 60 min) | Idle ticks, maintenance loops, vault-staleness re-banner. One cache miss buys a long wait. |
-| `> 3600s` | Use `/schedule` or Routines instead — `/loop`'s 7-day expiry is the ceiling, not the design point. |
+| `60s` – `270s` | The watched thing is changing now or imminently — a build finishing, a PR actively churning, a state transition about to land. Catch it on the next tick. |
+| `300s` – `~1200s` | Steady-state polling where a few-minutes-stale read is fine — mid-session backlog snapshot, inter-wave re-check. |
+| `1200s` – `3600s` (20 – 60 min) | Idle ticks / maintenance loops — vault-staleness re-banner, branch-tending while waiting on review. Nothing is expected to change fast. |
+| `> 3600s` | Out of range — `/loop` clamps self-paced wakeups to ≤ 1 h, and the 7-day expiry is the ceiling, not the design point. Use `/schedule` or Routines. |
 
-The cutoffs above are repo-internal best practice derived from the ~5-min
-Anthropic prompt-cache TTL — consistent with upstream docs, not
-upstream-normative; upstream does not itself prescribe cadence numbers.
+**Cache TTL is a secondary factor, and no longer a `300s` cliff by default.** On
+a Claude subscription, Claude Code's **main conversation** — where a `/loop`
+body runs — requests the **1-hour** prompt-cache TTL automatically at no extra
+cost, so **there is no cache cliff anywhere in the [60s, 3600s] range**; every
+allowed delay wakes with context still cached
+(code.claude.com/docs/en/prompt-caching § Cache lifetime). Two carve-outs
+re-introduce the 5-minute TTL and with it the classic `300s` worst-of-both
+trap: **(1)** usage overage (drawing on usage credits drops the TTL to five
+minutes); **(2)** API-key / Bedrock / Vertex / Foundry / AWS auth (5 min unless
+`ENABLE_PROMPT_CACHING_1H=1`). `FORCE_PROMPT_CACHING_5M=1` forces 5 min
+regardless of auth. **Under a 5-minute TTL the old rule still holds:** stay
+under ~270s to keep the cache warm, avoid ~300s (you pay the miss without
+amortising it), or commit to 1200s+ so one miss buys a long wait. Upstream
+itself prescribes no cadence numbers — the breakpoints above are repo-internal
+best practice; the cache-driven ones bind only under a 5-minute-TTL config.
+(The automatic 1-hour TTL is main-conversation-only; dispatched subagents
+always use the 5-minute TTL — irrelevant to `/loop`, but do not carry this
+reasoning into subagent fan-out.)
 
 **Off-minutes hygiene.** Cron jitter penalises `:00` and `:30` for one-shots
 (fire up to 90 s early). For recurring jobs, prefer minutes other than 0/30:
@@ -324,7 +341,7 @@ it as you would any coordinator action:
 - `/loop 1d …` for a daily note — use Routines or Desktop tasks; `/loop` dies with the session (LM-004).
 - Monitor filter matching only the success marker — silence from a crash is indistinguishable from success (LM-002 coverage rule).
 - `/loop` wrapping `/autopilot` — duplicates loop semantics and hides the kill-switches (LM-005).
-- Cadence at `300s` — cache miss without buying a longer wait; pick `270s` or `1200s+` (LM-003).
+- Cadence at `300s` **under a 5-minute cache TTL** (API-key auth, or a subscription in usage overage) — you pay the cache miss without amortising it; pick `270s` or `1200s+`. Moot under the 1-hour subscription default, where cadence follows the observation-rate, not the cache (LM-003).
 - Using `/goal` as a quality gate — the evaluator reads the transcript only; pair `/goal` with a deterministic exit-code gate (LM-008).
 - Unbounded `/goal` with no turn/time-bound clause — always embed "or stop after N turns / M minutes" (LM-008).
 - Hand-rolling a one-shot fan-out as a `/loop` body — use the `Workflow` tool (LM-002b).
@@ -409,3 +426,7 @@ See `docs/adr/0010-native-autonomy-commands.md` for the full verdict on how
 
 _Re-verified 2026-07-09 (Delta-Sync v2.1.197→v2.1.205: ScheduleWakeup stop:true, Workflows-OTel/Large-warning, workflow-size/effort-Flag, Channels-org-gate, /background-carryover; Routines-Seite re-verifiziert)._
 _Re-verified 2026-07-10 (Delta-Sync v2.1.205→v2.1.206: zero functional delta — 2.1.206 touches /cd, /doctor, /commit-push-pr, gateway-login, EnterWorktree, MCP/model/agents-view fixes only; no /loop, scheduled-tasks, ScheduleWakeup, /goal, Workflows, Monitor, or Channels change)._
+
+_Re-verified 2026-07-12 (Delta-Sync v2.1.206→v2.1.207: zero functional delta for the /loop family — 2.1.207 touches Auto-mode Bedrock/Vertex/Foundry opt-in default, terminal rendering, worktree config, agent-teams mailbox crash-loop, Remote-Control status sync, Deep-research chip labeling, Bedrock SSO refresh, plugin `${user_config.*}` shell-injection fix, `/usage-credits` validation only; no LM-001…LM-008 claim changed. Full doc re-verify surfaced 3 pre-existing gaps fixed this round: LM-003 Skill-Dispatch-Gate `Skill` deny rule, LM-002b monorepo-nuance load-order, LM-002b usage-view version-gate precision. Routines/`/schedule` not re-verified this round; last check 2026-07-09)._
+
+_Re-verified 2026-07-12 (LM-003 cadence re-derivation: Claude Code subscription main-conversation uses the 1-hour prompt-cache TTL automatically — code.claude.com/docs/en/prompt-caching; the 300s trap now bites only under 5-min-TTL configs (usage overage / API-key / FORCE_PROMPT_CACHING_5M). Cadence = f(observation-rate), cache secondary. Subagents always 5-min TTL)._

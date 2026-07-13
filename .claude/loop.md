@@ -25,10 +25,16 @@ If `<state-dir>/STATE.md` exists (`.claude/` on Claude Code, `.codex/` on Codex 
 
 If `git rev-parse --abbrev-ref HEAD` is not `main`:
 
-- Run `glab mr list -R infrastructure/session-orchestrator --source-branch "$(git rev-parse --abbrev-ref HEAD)" --output json` (or `gh pr list --head "$(git rev-parse --abbrev-ref HEAD)"`).
+- Detect the host from `git remote -v`: a GitLab remote → use `glab`, a GitHub
+  remote → use `gh`. Let the CLI infer the project from the remote — do **not**
+  pass `-R`/owner flags.
+  - GitLab: `glab mr list --source-branch "$(git rev-parse --abbrev-ref HEAD)" --output json`
+  - GitHub: `gh pr list --head "$(git rev-parse --abbrev-ref HEAD)"`
 - For the matching MR/PR: pipeline status, unresolved review threads, merge conflicts.
 - If a pipeline is running, prefer **Monitor** over re-polling next iteration —
   see `.claude/rules/loop-and-monitor.md`.
+- If the CLI errors or is unavailable, skip this check silently — never fail the
+  iteration on a tooling error.
 
 If on `main`: list any commits ahead of `origin/main` via `git log origin/main..HEAD --oneline`. Mention only — do **not** push.
 
@@ -47,9 +53,12 @@ If that directory exists:
 
 ## 4. Top-3 priority:high backlog
 
-Run `glab issue list -R infrastructure/session-orchestrator --label priority:high --state opened --per-page 3 --output json` and surface `iid` + `title`. Up to three lines.
+Detect the host from `git remote -v` (as in check 2) and query, without `-R`/owner flags:
 
-Skip silently only when the query returns zero results — surface any `priority:high` issue that exists, even a single one.
+- GitLab: `glab issue list --label priority:high --state opened --per-page 3 --output json`
+- GitHub: `gh issue list --label priority:high --state open --limit 3`
+
+Surface the issue id + title — up to three lines. Skip silently when the query returns zero results or the CLI errors. Surface any `priority:high` issue that exists, even a single one.
 
 ## 5. Idle path
 
@@ -61,6 +70,10 @@ If checks 1–4 produced nothing: emit one line — `Everything quiet on main; n
 - **Read-only by default.** When unsure, observe and report — let the operator decide.
 - **PSA-003 applies.** This file is loaded into a coordinator session that may run in parallel with other sessions. Do not touch files you do not own.
 - **Token discipline.** One short summary per iteration. No headers, no bullet lists in the output unless a check found ≥ 2 distinct items.
+- **Self-paced loop termination.** This bare `/loop` runs on its own adaptive
+  cadence; since v2.1.202 it can end itself by calling
+  `ScheduleWakeup({ stop: true })` when there is nothing left to babysit —
+  distinct from just skipping a wakeup when a check briefly finds nothing.
 
 ## See also
 
