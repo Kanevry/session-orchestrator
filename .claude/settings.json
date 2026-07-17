@@ -52,7 +52,6 @@
       "Bash(DROP TABLE *)",
       "Bash(TRUNCATE TABLE *)",
       "Bash(docker system prune)",
-      "Bash(vercel *)",
       "Bash(supabase *)"
     ]
   },

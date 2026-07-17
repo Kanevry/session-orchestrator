@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>session-orchestrator — structured multi-agent sessions for Claude Code</title>
+<meta name="description" content="A session-orchestration plugin for Claude Code and Codex CLI: wave-based multi-agent execution, mechanical guardrails, persistent memory, and honest self-measurement via the aiat-llm-eval standard.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎯</text></svg>">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb;
+    --card: #f6f7f9; --border: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --fg: #e7e9ee; --muted: #9aa1ad; --accent: #7aa2ff; --card: #171a21; --border: #262b35; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 44rem; margin: 0 auto; padding: 4.5rem 1.5rem 3rem; }
+  h1 { font-size: 2rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h1 code { font: inherit; }
+  .tagline { color: var(--muted); margin: 0 0 2.2rem; font-size: 1.06rem; }
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; letter-spacing: .01em; }
+  p { margin: .5rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .cards { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: .9rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1rem; }
+  .card b { display: block; margin-bottom: .25rem; }
+  .card span { color: var(--muted); font-size: .92rem; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; overflow-x: auto; font-size: .88rem; }
+  .soon { display: inline-block; font-size: .72rem; border: 1px solid var(--border); border-radius: 999px; padding: .05rem .55rem; color: var(--muted); vertical-align: middle; margin-left: .4rem; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1><code>session-orchestrator</code></h1>
+  <p class="tagline">Structured multi-agent development sessions for Claude Code &amp; Codex CLI — wave-based execution, mechanical guardrails, persistent memory, and honest self-measurement.</p>
+
+  <div class="cards">
+    <div class="card"><b>Wave execution</b><span>Discovery → Impl → Quality → Finalization with parallel sub-agents, scope enforcement, and inter-wave quality gates.</span></div>
+    <div class="card"><b>Guardrails, not vibes</b><span>Destructive-command guard, file-scope hooks, circuit breakers, verification-before-completion discipline.</span></div>
+    <div class="card"><b>Memory that persists</b><span>Session records, learnings, and agent-proposed insights — carried across sessions, mirrored to your knowledge vault.</span></div>
+    <div class="card"><b>Honest eval<span class="soon">aiat-llm-eval v1</span></b><span>Every session can be scored against a pre-registered rubric — deterministic first, per-dimension, no global score, offline re-verifiable.</span></div>
+  </div>
+
+  <h2>Get it</h2>
+  <pre>/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry</pre>
+  <p>Source, docs, and issues: <a href="https://github.com/Kanevry/session-orchestrator">github.com/Kanevry/session-orchestrator</a></p>
+
+  <h2>The eval standard</h2>
+  <p><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/eval/aiat-llm-eval-v1.md">aiat-llm-eval v1</a> — an open standard for honest LLM session evaluation: pre-registration, deterministic-before-judge, three-state verdicts with explicit abstention, full version provenance, and reproducibility as an executable proof (<code>--verify</code>), never a claim.</p>
+  <p>Leaderboard <span class="soon">coming later</span> — the record schema is ready; the site is deliberately not.</p>
+
+  <footer>MIT-licensed open source · built in Austria · this page is a static placeholder — the plugin lives on GitHub.</footer>
+</main>
+</body>
+</html>
