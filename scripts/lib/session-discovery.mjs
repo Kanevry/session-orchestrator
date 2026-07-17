@@ -12,6 +12,13 @@
  *     alive (D2 defect from Epic #583 audit).
  *   - `isPidAliveOnHost` is preserved in session-lock.mjs as a forensic helper
  *     but is not called from the discovery decision tree.
+ *   - #799 evaluated (2026-07-17): dead-PID stale-marking for source=discovered
+ *     registry entries is an explicit NO-GO — the recorded PID is the ephemeral
+ *     hook-subprocess PID (see above), so a same-host dead-PID filter would
+ *     misclassify nearly every entry as stale seconds after write; even a
+ *     corroborating PID *label* adds zero detection power over heartbeat
+ *     freshness (it could only ever annotate entries the heartbeat gate has
+ *     already excluded). Do not re-attempt without new evidence.
  *
  * Cross-host policy:
  *   - Same-host: heartbeat freshness rules.
