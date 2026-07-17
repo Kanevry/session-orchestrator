@@ -56,6 +56,7 @@ import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
+import { _parseEval } from './config/eval.mjs';
 import { _parseMemory } from './config/memory.mjs';
 import { _parseReconcile } from './config/reconcile.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
@@ -289,6 +290,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // dialectic: parsed from full content (issue #506)
   const dialectic = _parseDialectic(mdContent);
 
+  // eval: parsed from full content (Standard v1 eval harness, #809 / Epic #803)
+  const evalConfig = _parseEval(mdContent);
+
   // memory: parsed from full content (issue #505 — banner opt-out)
   const memory = _parseMemory(mdContent);
 
@@ -411,6 +415,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,
+    'eval': evalConfig,
     'memory': memory,
     'reconcile': reconcile,
     'vault-sync': vaultSync,

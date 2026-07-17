@@ -7,9 +7,9 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>43 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>23 slash-cmds]
-    COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
+    COORD -->|reads| SK[Skills<br/>44 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>24 slash-cmds]
+    COORD -->|dispatches| AG[Agents<br/>15 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
     AG -.-> W3[security-reviewer]
@@ -18,26 +18,26 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (43 user-facing)
+## Skills (44 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`
 - **Planning & discovery:** `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`
 - **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
-- **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`
+- **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `spinout`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (23)
+## Commands (24)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`.
 
-## Agents (14 typed sub-agents)
+## Agents (15 typed sub-agents)
 
-`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`.
+`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`, `eval-judge`.
 
 Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markdown with YAML frontmatter. The authoring spec — required fields, body conventions, validation commands — is in [`agents/AGENTS.md`](../agents/AGENTS.md), following the canonical [code.claude.com/sub-agents](https://code.claude.com/docs/en/sub-agents) contract.
 
@@ -67,6 +67,6 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE + Pi (4) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
 | VCS integration | GitLab + GitHub (auto-detected); hook events + commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries surfaced at session-start; opt-in `/evolve` review | Session archival without explicit learning extraction |
-| Specialist agents | 14 typed agents | 39 specialist agents across design/impl/review/debugging/security/compliance |
+| Specialist agents | 15 typed agents | 39 specialist agents across design/impl/review/debugging/security/compliance |
 
 The two plugins are complementary rather than competing: session-orchestrator focuses on a single wave-based lifecycle with VCS + learning integration, while maestro-orchestrate optimises for multi-runtime parallel specialist delivery.

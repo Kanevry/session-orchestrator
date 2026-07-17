@@ -693,6 +693,33 @@ dialectic:
 
 **Token cost:** With defaults (cadence: 5, budget-tokens: 8000, output 4000, model haiku), ~12k tokens every 5 sessions. At haiku pricing this is ~$0.02/run. Surfaced in Final Report.
 
+## Eval (#803)
+
+Opt-in configuration for the Standard v1 evaluation harness (aiat-llm-eval PRD, `docs/prd/2026-07-16-aiat-llm-eval.md` §S6) and the forthcoming `/eval` skill (Session-Prozess-Eval — lands in a later wave of Epic #803). This section documents the config surface only; the skill that reads it is not yet shipped as of this parser's introduction.
+
+All fields live under a top-level `eval` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+eval:
+  enabled: false           # opt-in
+  mode: warn               # warn | off
+  judge: off               # off | haiku | sonnet
+  report: html             # html | none
+  handle:                  # optional string — null/absent → null
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `eval.enabled` | boolean | `false` | Master toggle for the eval harness. Non-boolean / garbage values silently collapse to `false` — no throw, no warning (mirrors `docs-orchestrator.enabled`). |
+| `eval.mode` | string | `warn` | Gate severity. Must be one of `warn`, `off`. **Fail-fast**: an unknown value throws `eval.mode must be warn|off, got '<value>'` at parse time — NOT silently ignored. |
+| `eval.judge` | string | `off` | LLM-judge tier used by the harness. Must be one of `off`, `haiku`, `sonnet`. **Fail-fast** on an unknown value, same as `eval.mode`. |
+| `eval.report` | string | `html` | Report artifact format. Must be one of `html`, `none`. **Fail-fast** on an unknown value, same as `eval.mode`. |
+| `eval.handle` | string \| `null` | `null` | Optional free-text handle/label for the eval run. Absent, empty, or whitespace-only values all collapse to `null` (never an empty string). |
+
+**Parser gotcha (learning confidence 0.9 — mirrors `custom-phases:` and `dialectic:`):** the `eval:` key-line itself MUST NOT carry an inline comment. The block-open scan uses the strict regex `/^eval:\s*$/`; a trailing `# comment` on that exact line fails the match, so the parser never enters the block and ALL fields silently fall back to their defaults — no error, no warning surfaces anywhere. Sub-key lines (`enabled:`, `mode:`, …) tolerate inline comments without issue.
+
+**Used by:** `scripts/lib/config/eval.mjs` (`_parseEval`), `scripts/lib/config.mjs`. Skill consumer (`skills/eval/SKILL.md`) is a follow-up wave of Epic #803 — not yet implemented as of this parser.
+
 ## Vault Staleness
 
 Opt-in configuration for vault-drift discovery probes. Detects stale vault projects and narratives. Used by `/discovery vault` (on-demand probe execution) and session-end Phase 2.3 (automatic gate at close time). Projects without a vault leave these fields unset and are unaffected.

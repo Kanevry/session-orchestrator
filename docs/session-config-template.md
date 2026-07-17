@@ -423,6 +423,23 @@ dialectic:
 
 Read by: `scripts/lib/config/dialectic.mjs`, `scripts/lib/auto-dialectic.mjs`, `skills/session-end/SKILL.md` Phase 3.6.7, `skills/evolve/SKILL.md` Phase 6.
 
+## Eval (#803)
+
+Opt-in configuration for the Standard v1 evaluation harness and the forthcoming `/eval` skill (Session-Prozess-Eval — PRD `docs/prd/2026-07-16-aiat-llm-eval.md` §S6, follow-up wave of Epic #803). This section documents the config surface only; the skill consumer lands in a later wave.
+
+```yaml
+eval:
+  enabled: false           # opt-in
+  mode: warn               # warn | off
+  judge: off               # off | haiku | sonnet
+  report: html             # html | none
+  handle:                  # optional string — null/absent → null
+```
+
+**Gotcha:** the `eval:` key-line itself must carry NO inline comment (strict `/^eval:\s*$/` block-open match — same restriction as `dialectic:` and `custom-phases:` above). A trailing `# comment` on that exact line silently disables the whole block; defaults apply with no warning.
+
+Read by: `scripts/lib/config/eval.mjs`. Skill consumer: `skills/eval/SKILL.md` (not yet shipped as of this parser).
+
 ## Vault Staleness
 
 Vault-drift discovery probes. Used by `/discovery vault` and (when `enabled`) session-end Phase 2.3.
@@ -779,6 +796,14 @@ dialectic:
   cadence: 5              # integer ≥ 0; 0 = kill-switch (no critique dispatches)
   model: haiku            # haiku | sonnet | opus — fail-fast on unknown value
   budget-tokens: 8000     # integer ≥ 0 — input token budget per critique call
+
+# Eval — Standard v1 harness config surface (#809 / Epic #803)
+eval:
+  enabled: false           # opt-in
+  mode: warn               # warn | off — fail-fast on unknown value
+  judge: off               # off | haiku | sonnet — fail-fast on unknown value
+  report: html             # html | none — fail-fast on unknown value
+  handle:                  # optional string — null/absent → null
 
 # Vault staleness
 vault-staleness:

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "record_kind": "session-eval",
+  "run_id": "sample-session-2-eval-20260101T000000000Z",
+  "session_id": "sample-session-2",
+  "standard_version": "aiat-llm-eval/1.0",
+  "rubric_version": "rubric-v1",
+  "provenance": {
+    "rubric_sha256": "3b8f0aa1cd42e77b19ce",
+    "engine_commit": "90fdf09"
+  },
+  "model": {
+    "id": "claude-opus-4-8",
+    "source": "self-report"
+  },
+  "harness": {
+    "plugin_version": "3.14.0",
+    "platform": "claude-code",
+    "host_class": "macos-arm64",
+    "hostname_hash": "a1b2c3d4e5f6a7b8",
+    "hostname": "secret-laptop.local"
+  },
+  "kpis": {
+    "duration_seconds": 1800,
+    "total_waves": 5,
+    "total_agents": 18,
+    "token_input": 120000,
+    "token_output": 45000,
+    "carryover": 0
+  },
+  "dimensions": [
+    {
+      "id": "verification-evidence",
+      "method": "deterministic",
+      "status": "pass",
+      "evidence": "checked /Users/secret/agent/workdir/file.mjs inside super-secret-customer-repo",
+      "score": null
+    }
+  ],
+  "handle": null,
+  "anonymized": true,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "cwd": "/Users/secret/agent/workdir",
+  "repo": "super-secret-customer-repo",
+  "prompt": "internal confidential system prompt text"
+}

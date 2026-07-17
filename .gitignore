@@ -46,6 +46,9 @@ Thumbs.db
 # Debug-skill artifacts (session-transient investigation output)
 .orchestrator/debug/
 
+# Eval HTML run-reports — derived views, rebuildable from eval.jsonl (#803/#808)
+.orchestrator/eval/
+
 # Vitest coverage artifacts (#263)
 coverage/
 

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aiat-llm-eval Run Report — sample-session-1-eval-20260101T000000000Z</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; padding: 2rem; background: #f8fafc; color: #1e293b; line-height: 1.5;
+  }
+  header, section, footer { max-width: 960px; margin: 0 auto 2rem auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.15rem; border-bottom: 1px solid #cbd5e1; padding-bottom: 0.25rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 0.75rem 1rem; border-radius: 6px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  header pre { background: #1e293b; }
+  table { border-collapse: collapse; width: 100%; background: #ffffff; }
+  th, td { text-align: left; padding: 0.4rem 0.75rem; border-bottom: 1px solid #e2e8f0; font-size: 0.92rem; }
+  th { width: 40%; color: #475569; font-weight: 600; }
+  details.dimension {
+    background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px;
+    margin-bottom: 0.6rem; padding: 0.5rem 0.9rem;
+  }
+  details.dimension summary { cursor: pointer; font-size: 0.95rem; }
+  .dimension-body { margin-top: 0.6rem; }
+  .badge {
+    display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; margin-right: 0.35rem; text-transform: uppercase;
+  }
+  .badge-pass { background: #d1fae5; color: #065f46; }
+  .badge-fail { background: #fee2e2; color: #991b1b; }
+  .badge-not-applicable { background: #e2e8f0; color: #334155; }
+  .badge-cannot-determine { background: #fef9c3; color: #854d0e; }
+  .badge-method-deterministic { background: #e0e7ff; color: #3730a3; }
+  .badge-method-judge { background: #ede9fe; color: #5b21b6; }
+  .badge-advisory { background: #fed7aa; color: #7c2d12; }
+  ul { padding-left: 1.25rem; }
+  .limits { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px; padding: 0.5rem 1rem 1rem; }
+  footer { color: #64748b; font-size: 0.85rem; }
+
+</style>
+</head>
+<body>
+
+  <header>
+    <h1>aiat-llm-eval Run Report</h1>
+    <p><strong>Run ID:</strong> sample-session-1-eval-20260101T000000000Z</p>
+    <p><strong>Session ID:</strong> sample-session-1</p>
+    <p><strong>Re-verify this run:</strong></p>
+    <pre><code>node scripts/eval-session.mjs --verify sample-session-1-eval-20260101T000000000Z</code></pre>
+  </header>
+
+  <section class="provenance">
+    <h2>Provenance</h2>
+    <table>
+      <tbody>
+        <tr><th>Model ID</th><td>claude-opus-4-8</td></tr>
+        <tr><th>Model source</th><td>self-report</td></tr>
+        <tr><th>Plugin version</th><td>3.14.0</td></tr>
+        <tr><th>Platform</th><td>claude-code</td></tr>
+        <tr><th>Host class</th><td>macos-arm64</td></tr>
+        <tr><th>Standard version</th><td>aiat-llm-eval/1.0</td></tr>
+        <tr><th>Rubric version</th><td>rubric-v1</td></tr>
+        <tr><th>Rubric SHA-256</th><td>3b8f0aa1cd42e77b19ce</td></tr>
+        <tr><th>Engine commit</th><td>90fdf09</td></tr>
+        <tr><th>Hostname hash</th><td>a1b2c3d4e5f6a7b8</td></tr>
+        <tr><th>Timestamp</th><td>2026-01-01T00:00:00.000Z</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="kpis">
+    <h2>KPIs</h2>
+    <table>
+      <tbody>
+        <tr><th>Duration (seconds)</th><td>1800</td></tr>
+        <tr><th>Total waves</th><td>5</td></tr>
+        <tr><th>Total agents</th><td>18</td></tr>
+        <tr><th>Token input</th><td>120000</td></tr>
+        <tr><th>Token output</th><td>45000</td></tr>
+        <tr><th>Carryover</th><td>0</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="dimensions">
+    <h2>Dimensions</h2>
+    
+    <details class="dimension">
+      <summary>
+        <span class="badge badge-pass">pass</span>
+        <span class="badge badge-method-deterministic">deterministic</span>
+        
+        <strong>verification-evidence</strong>
+      </summary>
+      <div class="dimension-body">
+        <p><strong>Evidence:</strong></p>
+        <pre>quality-gate ran with exit 0</pre>
+        <p><strong>Score:</strong> not recorded</p>
+      </div>
+    </details>
+
+    <details class="dimension">
+      <summary>
+        <span class="badge badge-pass">pass</span>
+        <span class="badge badge-method-judge">judge</span>
+        <span class="badge badge-advisory">ADVISORY — uncalibrated</span>
+        <strong>instruction-adherence</strong>
+      </summary>
+      <div class="dimension-body">
+        <p><strong>Evidence:</strong></p>
+        <pre>coordinator followed the wave plan</pre>
+        <p><strong>Score:</strong> 0.9</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="triage">
+    <h2>Abstention / Triage</h2>
+    <p><strong>cannot-determine dimensions:</strong> 0 of 2 (0.0%)</p>
+    <p>No dimensions abstained (no cannot-determine status recorded).</p>
+  </section>
+
+  <section class="limits">
+    <h2>What this report does not prove</h2>
+    <ul>
+      <li>This is a single run (n=1) — no confidence intervals, no statistical significance.</li>
+      <li>This run includes 1 judge dimension(s) (instruction-adherence) — judge scoring is advisory and uncalibrated; v1 has no calibration stage.</li>
+      <li>The model identity in this report is self-reported by the coordinator (model.source = "self-report") — not read from a deterministic harness source.</li>
+      <li>Reproducibility here means an evidence + scoring replay via <code>--verify</code> — never a claim of deterministic model outputs.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Report generated at: 2026-07-16T12:00:00.000Z</p>
+  </footer>
+</body>
+</html>
