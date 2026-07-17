@@ -11,15 +11,17 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-destructive-guard.mjs');
+const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
 
 /** Minimal policy fixture used by most tests (13 rules mirroring the spec). */
 const FIXTURE_POLICY = {
@@ -190,6 +192,17 @@ function bashPayload(command) {
 
 function nonBashPayload() {
   return JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' } });
+}
+
+/** Read + parse a project's events.jsonl records (skips blank lines). */
+function readEvents(projectDir) {
+  const p = path.join(projectDir, EVENTS_REL);
+  if (!existsSync(p)) return [];
+  return readFileSync(p, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
 }
 
 // ---------------------------------------------------------------------------
@@ -822,5 +835,59 @@ describe('policy cache mtime-invalidation — #250', { timeout: 15000 }, () => {
     const json = JSON.parse(second.stdout);
     expect(json.permissionDecision).toBe('deny');
     expect(second.stdout).toContain('foo-marker');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guard-event telemetry (Epic #803 process-safety dimension)
+// ---------------------------------------------------------------------------
+
+describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked/warned', { timeout: 15000 }, () => {
+  it('emits exactly one orchestrator.destructive_guard.blocked event with rule + command_hash, no raw command', async () => {
+    const dir = await mkProjectTracked();
+    const command = 'git reset --hard HEAD~1';
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(2);
+
+    const events = readEvents(dir).filter((e) => e.event === 'orchestrator.destructive_guard.blocked');
+    expect(events).toHaveLength(1);
+    expect(events[0].rule).toBe('git-reset-hard');
+    expect(events[0].command_hash).toMatch(/^[0-9a-f]{16}$/);
+
+    // The raw command text must never appear anywhere in the events.jsonl file.
+    const raw = readFileSync(path.join(dir, EVENTS_REL), 'utf8');
+    expect(raw).not.toContain(command);
+    expect(raw).not.toContain('reset --hard');
+  });
+
+  it('emits exactly one orchestrator.destructive_guard.warned event with rule + command_hash, no raw command', async () => {
+    const dir = await mkProjectTracked();
+    const command = 'git revert HEAD';
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expect(result.code).toBe(0);
+
+    const events = readEvents(dir).filter((e) => e.event === 'orchestrator.destructive_guard.warned');
+    expect(events).toHaveLength(1);
+    expect(events[0].rule).toBe('git-revert-commit');
+    expect(events[0].command_hash).toMatch(/^[0-9a-f]{16}$/);
+
+    const raw = readFileSync(path.join(dir, EVENTS_REL), 'utf8');
+    expect(raw).not.toContain(command);
+  });
+
+  it('still blocks (exit 2) when the events.jsonl destination is unwritable', async () => {
+    const dir = await mkProjectTracked();
+    // Route SO_PROJECT_DIR (events.mjs resolution) at an unwritable path so
+    // emitEvent's fs.mkdir throws — the block-decision path (found via
+    // resolvePolicyPath's process.cwd() candidate, unaffected by this env
+    // override) must still fire.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard HEAD~1'),
+      env: { CLAUDE_PROJECT_DIR: unwritablePath('destructive-guard-events') },
+    });
+    expect(result.code).toBe(2);
+    const json = JSON.parse(result.stdout);
+    expect(json.permissionDecision).toBe('deny');
   });
 });

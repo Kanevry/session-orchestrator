@@ -39,11 +39,18 @@ import { join } from 'node:path';
 // ships with the session-orchestrator package), NOT relative to the git
 // repo it is protecting. The two diverge when the hook is invoked from a
 // consumer repo or a test tmp-dir.
-import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
+import { pathMatchesPattern, findScopeFile } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 
 const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
-const scopePath = join(repoRoot, '.orchestrator', 'wave-scope.json');
+// #801: resolve wave-scope.json via the same precedence every other reader
+// uses (.pi/.cursor/.codex/.claude — scope-gate.mjs findScopeFile). The prior
+// hardcoded `.orchestrator/wave-scope.json` path was DEAD — the coordinator
+// writes wave-scope.json to the state dir (.claude/ on Claude Code; see
+// skills/wave-executor/wave-loop.md), so this guard never fired. findScopeFile
+// returns null when no scope file exists at any precedence dir, preserving
+// the "no active wave → exit 0" semantics below.
+const scopePath = findScopeFile(repoRoot);
 const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 
 // ---------------------------------------------------------------------------
@@ -53,7 +60,7 @@ const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 const stagedOutput = execSync('git diff --cached --name-only', { encoding: 'utf8' });
 const stagedFiles = stagedOutput.split('\n').filter(Boolean);
 
-if (existsSync(scopePath)) {
+if (scopePath) {
   let scope;
   try {
     scope = JSON.parse(readFileSync(scopePath, 'utf8'));

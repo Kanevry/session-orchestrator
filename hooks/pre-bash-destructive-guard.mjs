@@ -22,6 +22,13 @@
  *        git-stash-any: only warn when stash is non-empty
  *        rm-rf-destructive: path exception for .orchestrator/tmp and node_modules
  *   G6 no match → exit 0
+ *
+ * Telemetry (Epic #803 process-safety dimension): best-effort
+ * `orchestrator.destructive_guard.blocked` / `orchestrator.destructive_guard.warned`
+ * events are appended to events.jsonl on the block/warn paths. Payload never
+ * includes the raw command — only a truncated sha256 `command_hash`. Emission
+ * is wrapped in try/catch and happens BEFORE the block/warn outcome is
+ * finalized; a telemetry failure never changes the guard's decision.
  */
 
 import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
@@ -29,9 +36,11 @@ import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mj
 import { commandMatchesBlocked, tokenizeCommand } from '../scripts/lib/hardening.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
+import { emitEvent } from '../scripts/lib/events.mjs';
 import fs, { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
@@ -75,17 +84,64 @@ async function loadPolicyCached(policyPath) {
 // ---------------------------------------------------------------------------
 
 /**
+ * sha256(command) truncated to 16 hex chars — mirrors loop-guard.mjs
+ * hashArgs(). Never emit the raw command into telemetry (privacy).
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function hashCommand(command) {
+  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+}
+
+/**
+ * Resolve a session id for event payloads. Precedence mirrors
+ * loop-guard.mjs resolveSessionKey(): session_id → parent_session_id →
+ * null (field omitted from the payload when unavailable).
+ *
+ * @param {object|null} input
+ * @returns {string|null}
+ */
+function resolveSessionId(input) {
+  if (input) {
+    if (typeof input.session_id === 'string' && input.session_id.length > 0) {
+      return input.session_id;
+    }
+    if (typeof input.parent_session_id === 'string' && input.parent_session_id.length > 0) {
+      return input.parent_session_id;
+    }
+  }
+  return null;
+}
+
+/**
  * Block a command: write structured deny JSON to stdout + exit 2.
  * Uses raw process.exit(2) rather than emitDeny to emit the exact
  * multi-line message format required by the spec.
+ *
+ * Emits a best-effort `orchestrator.destructive_guard.blocked` telemetry
+ * event BEFORE exiting. Emission failure (e.g. unwritable events.jsonl path)
+ * must NEVER change the block outcome — the guard's block-decision is
+ * strictly independent of telemetry success.
  */
-function blockCommand(pattern, ruleId, rationale) {
+async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
   const reason = [
     `Destructive command blocked: '${pattern}' (rule: ${ruleId})`,
     `Reason: ${rationale}`,
     `Override: Set \`allow-destructive-ops: true\` in Session Config if intentional.`,
     `See: issue #155, .claude/rules/parallel-sessions.md (PSA-003)`,
   ].join('\n');
+
+  try {
+    await emitEvent('orchestrator.destructive_guard.blocked', {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      rule: ruleId,
+      command_hash: hashCommand(command),
+    });
+  } catch {
+    // Best-effort — telemetry must never block or alter the guard decision.
+  }
+
   // Structured deny for Claude Code hook protocol
   process.stdout.write(JSON.stringify({ permissionDecision: 'deny', reason }) + '\n');
   process.exit(2);
@@ -334,6 +390,7 @@ async function main() {
   if (typeof command !== 'string' || command.length === 0) return emitAllow();
 
   const projectDir = resolveProjectDir();
+  const sessionId = resolveSessionId(input);
 
   // G3 — bypass: allow-destructive-ops: true in Session Config
   // Note: parseSessionConfig only returns known fields; allow-destructive-ops is
@@ -409,6 +466,16 @@ async function main() {
       process.stderr.write(
         `⚠ pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}\n`
       );
+      // Best-effort telemetry — must never affect the warn/allow outcome.
+      try {
+        await emitEvent('orchestrator.destructive_guard.warned', {
+          ...(sessionId ? { session_id: sessionId } : {}),
+          rule: id,
+          command_hash: hashCommand(command),
+        });
+      } catch {
+        // Best-effort — telemetry must never block or alter the guard decision.
+      }
       // warn → allow (exit 0), continue checking remaining rules
       continue;
     }
@@ -429,9 +496,9 @@ async function main() {
           // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;
         }
-        blockCommand(pattern, id, rationale);
+        await blockCommand(pattern, id, rationale, command, sessionId);
       }
-      blockCommand(pattern, id, rationale);
+      await blockCommand(pattern, id, rationale, command, sessionId);
     }
     // Unknown severity → skip (conservative allow for unknown future severities)
   }

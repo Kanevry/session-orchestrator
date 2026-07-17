@@ -66,9 +66,24 @@ async function mkRepo() {
 }
 
 /**
- * Write a wave-scope.json under .orchestrator/ inside the repo.
+ * Write a wave-scope.json under .claude/ inside the repo — the actual
+ * resolution path per scope-gate.mjs findScopeFile() precedence
+ * (.pi/.cursor/.codex/.claude), matching where the coordinator writes it
+ * (skills/wave-executor/wave-loop.md). #801: the hook previously read a
+ * hardcoded (dead) .orchestrator/wave-scope.json path — see the dedicated
+ * legacy-path test below that pins the fix.
  */
 async function writeScope(repoDir, scope) {
+  const dir = path.join(repoDir, '.claude');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'wave-scope.json'), scope);
+}
+
+/**
+ * Write a wave-scope.json under the LEGACY .orchestrator/ path — the dead
+ * path #801 fixed. Used only by the dedicated legacy-path regression test.
+ */
+async function writeLegacyOrchestratorScope(repoDir, scope) {
   const dir = path.join(repoDir, '.orchestrator');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'wave-scope.json'), scope);
@@ -156,6 +171,33 @@ describe('wave-scope-commit-guard — PSA-004 sub-mode B', { timeout: 15000 }, (
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('wave-scope-commit-guard');
     expect(result.stderr).toContain('failed to parse wave-scope.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #801 — wave-scope path resolution (findScopeFile precedence, dead-path fix)
+// ---------------------------------------------------------------------------
+
+describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeout: 15000 }, () => {
+  it('exits 1 (guard fires) when wave-scope.json is under .claude/ (findScopeFile precedence)', async () => {
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ allowedPaths: ['src/'] }));
+    await stageFile(dir, 'tests/foreign.test.ts');
+    const result = await runHook(dir);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('tests/foreign.test.ts');
+  });
+
+  it('exits 0 (guard does NOT fire) when wave-scope.json is under the legacy .orchestrator/ path', async () => {
+    // Documents the #801 dead path: the hook no longer reads
+    // .orchestrator/wave-scope.json at all, so an out-of-scope staged file
+    // is silently allowed through when only the legacy location is populated.
+    const dir = await mkRepoTracked();
+    await writeLegacyOrchestratorScope(dir, JSON.stringify({ allowedPaths: ['src/'] }));
+    await stageFile(dir, 'tests/foreign.test.ts');
+    const result = await runHook(dir);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
   });
 });
 
