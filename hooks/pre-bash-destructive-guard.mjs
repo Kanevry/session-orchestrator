@@ -496,7 +496,6 @@ async function main() {
           // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;
         }
-        await blockCommand(pattern, id, rationale, command, sessionId);
       }
       await blockCommand(pattern, id, rationale, command, sessionId);
     }
