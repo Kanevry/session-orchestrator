@@ -35,6 +35,7 @@ export {
   getEnforcementLevel,
   gateEnabled,
   pathMatchesPattern,
+  extractBashWriteTargets,
   suggestForScopeViolation,
 } from './scope-gate.mjs';
 

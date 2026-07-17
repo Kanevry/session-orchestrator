@@ -16,6 +16,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { extractBashWriteTargets } from '../../scripts/lib/scope-gate.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -33,6 +35,37 @@ async function runHook({ projectDir, stdin }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(stdin);
+  });
+}
+
+/**
+ * Spawn the hook with an ISOLATED child env (learning 0.85 — clear inherited
+ * gate/profile env vars so an outer gate run cannot suppress the hook or leak
+ * config into it). Forces SO_HOOK_PROFILE=full and strips SO_DISABLED_HOOKS +
+ * the quality-gate wrapper vars. Used by the bash-write-guard (#800) tests whose
+ * assertions hinge on the hook actually running.
+ */
+async function runHookIsolated({ projectDir, stdin }) {
+  const env = { ...process.env };
+  for (const k of [
+    'SO_DISABLED_HOOKS',
+    'TYPECHECK_CMD', 'TEST_CMD', 'LINT_CMD', 'FILES', 'SESSION_START_REF',
+  ]) {
+    delete env[k];
+  }
+  env.SO_HOOK_PROFILE = 'full';
+  env.CLAUDE_PROJECT_DIR = projectDir;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [HOOK], {
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -387,5 +420,168 @@ describe('F-01 regression — shell-operator bypass', { timeout: 15000 }, () => 
       stdin: bashPayload('$(rm -rf /)'),
     });
     expect(result.code).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-write-guard (#800) — extractBashWriteTargets unit contract
+//
+// Pure-function tests for the shell write-target extractor. Conservative,
+// under-match posture: positives cover the 5 write channels; negatives cover
+// the documented skip traps (quoted operators, variables, temp sinks, procsub).
+// ---------------------------------------------------------------------------
+
+describe('extractBashWriteTargets — positive channels', () => {
+  it('extracts a plain `>` redirect target', () => {
+    expect(extractBashWriteTargets('echo x > foo.txt')).toEqual(['foo.txt']);
+  });
+
+  it('extracts a heredoc redirect target (`cat > p <<EOF`)', () => {
+    expect(extractBashWriteTargets('cat > a/b.mjs <<EOF')).toEqual(['a/b.mjs']);
+  });
+
+  it('extracts a `tee -a` file argument', () => {
+    expect(extractBashWriteTargets('tee -a log.txt')).toEqual(['log.txt']);
+  });
+
+  it('extracts every non-flag file arg of a piped `tee` command-head', () => {
+    expect(extractBashWriteTargets('build | tee a.txt b.txt')).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('extracts the last non-flag arg of a BSD `sed -i \'\'` command', () => {
+    expect(extractBashWriteTargets("sed -i '' file.mjs")).toEqual(['file.mjs']);
+  });
+
+  it('extracts the file (not the script) from a GNU `sed -i` command', () => {
+    expect(extractBashWriteTargets("sed -i 's/a/b/' target.mjs")).toEqual(['target.mjs']);
+  });
+
+  it('extracts a `dd of=` target', () => {
+    expect(extractBashWriteTargets('dd if=/dev/zero of=out.bin')).toEqual(['out.bin']);
+  });
+
+  it('de-duplicates a target written twice (`>` then `>>`)', () => {
+    expect(extractBashWriteTargets('echo a > x.txt; echo b >> x.txt')).toEqual(['x.txt']);
+  });
+
+  it('extracts an fd-prefixed redirect (`2> err.log`)', () => {
+    expect(extractBashWriteTargets('run 2> err.log')).toEqual(['err.log']);
+  });
+});
+
+describe('extractBashWriteTargets — documented skips (negatives)', () => {
+  it('does NOT treat a quoted `>` as a redirect operator', () => {
+    expect(extractBashWriteTargets("echo '>' quoted")).toEqual([]);
+  });
+
+  it('skips a variable/expansion target (`> $VAR`)', () => {
+    expect(extractBashWriteTargets('echo x > $VAR')).toEqual([]);
+  });
+
+  it('skips a `${TMPDIR}` expansion target', () => {
+    expect(extractBashWriteTargets('echo x > ${TMPDIR}/scratch')).toEqual([]);
+  });
+
+  it('skips a /tmp/ temp-sink target', () => {
+    expect(extractBashWriteTargets('echo x > /tmp/x')).toEqual([]);
+  });
+
+  it('skips a /dev/ device target', () => {
+    expect(extractBashWriteTargets('echo x > /dev/null')).toEqual([]);
+  });
+
+  it('skips process substitution `>(proc)`', () => {
+    expect(extractBashWriteTargets('diff a b > >(cat)')).toEqual([]);
+  });
+
+  it('does NOT treat fd duplication `2>&1` as a file target', () => {
+    expect(extractBashWriteTargets('run 2>&1')).toEqual([]);
+  });
+
+  it('returns [] for a non-string / empty command', () => {
+    expect(extractBashWriteTargets('')).toEqual([]);
+    expect(extractBashWriteTargets(null)).toEqual([]);
+    expect(extractBashWriteTargets(undefined)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-write-guard (#800) — gate wiring in enforce-commands.mjs
+//
+// The gate INVERTS the default-enabled convention: it runs ONLY when
+// gates['bash-write-guard'] === true. It is warn-only (stderr line, exit 0);
+// it never denies. allowedPaths coverage decides whether a target warns.
+// ---------------------------------------------------------------------------
+
+const BWG_MARKER = 'bash-write-guard:';
+
+describe('bash-write-guard — gate wiring', { timeout: 15000 }, () => {
+  it('default OFF: no gates entry → no WARN even for an out-of-scope redirect', async () => {
+    // FAKE-REGRESSION (testing.md): this fixture with `gates:{'bash-write-guard':true}`
+    // added — and the SAME out-of-scope command — DOES emit the WARN; that ON case is
+    // the immediately-following test. Verified live once during authoring:
+    //   printf '{"tool_name":"Bash","tool_input":{"command":"echo x > secrets.txt"}}' \
+    //     | (gates:{'bash-write-guard':true}) → stderr:
+    //       "bash-write-guard: secrets.txt outside wave scope (warn-only, #800)", exit 0.
+    // Flipping the gate back to absent (this test) turns the WARN off → proves the
+    // guard bites only on explicit opt-in, not by accident.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: [],
+      allowedPaths: ['hooks/**'],
+    });
+    const result = await runHookIsolated({
+      projectDir: dir,
+      stdin: bashPayload('echo x > secrets.txt'),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain(BWG_MARKER);
+  });
+
+  it('ON + out-of-scope target → WARN on stderr, still exit 0 (never denies)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: [],
+      allowedPaths: ['hooks/**'],
+      gates: { 'bash-write-guard': true },
+    });
+    const result = await runHookIsolated({
+      projectDir: dir,
+      stdin: bashPayload('echo x > secrets.txt'),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain(
+      'bash-write-guard: secrets.txt outside wave scope (warn-only, #800)',
+    );
+  });
+
+  it('ON + in-scope target → no WARN', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: [],
+      allowedPaths: ['hooks/**'],
+      gates: { 'bash-write-guard': true },
+    });
+    const result = await runHookIsolated({
+      projectDir: dir,
+      stdin: bashPayload('echo x > hooks/foo.mjs'),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain(BWG_MARKER);
+  });
+
+  it('ON but enforcement:off → guard is inert (no WARN)', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'off',
+      blockedCommands: [],
+      allowedPaths: ['hooks/**'],
+      gates: { 'bash-write-guard': true },
+    });
+    const result = await runHookIsolated({
+      projectDir: dir,
+      stdin: bashPayload('echo x > secrets.txt'),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain(BWG_MARKER);
   });
 });

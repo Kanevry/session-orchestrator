@@ -26,12 +26,16 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('enforce-commands')) process.exit(0);
 
+import path from 'node:path';
+
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import {
   findScopeFile,
   commandMatchesBlocked,
   suggestForCommandBlock,
+  extractBashWriteTargets,
+  pathMatchesPattern,
 } from '../scripts/lib/hardening.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 
@@ -79,6 +83,20 @@ async function main() {
     : [];
   const gateOn = scope?.gates?.['command-guard'] !== false;
 
+  // bash-write-guard (#800) — OPT-IN, WARN-ONLY, default OFF.
+  //
+  // INVERTED DEFAULT (deliberate divergence from the command-guard convention
+  // above, where a MISSING gates entry means ENABLED): this gate runs ONLY when
+  // `gates['bash-write-guard'] === true` is EXPLICITLY set. Conservative shell-
+  // write parsing carries a real false-positive risk (quoting, `>$VAR`, process
+  // substitution, pipes), so it stays off unless a wave opts in. It never denies
+  // and never changes the exit path — it only writes advisory stderr lines — so
+  // it is safe to run before the command-guard gate/enforcement early-returns.
+  // Skipped under enforcement:off (nothing is enforced there). See #800.
+  if (enforcement !== 'off' && scope?.gates?.['bash-write-guard'] === true) {
+    runBashWriteGuard(command, scope, projectRoot);
+  }
+
   // G4 — gate disabled → allow
   if (!gateOn) return emitAllow();
   // G5 — enforcement "off" → allow
@@ -104,6 +122,55 @@ async function main() {
 
   // G7 — no match → allow
   return emitAllow();
+}
+
+/**
+ * bash-write-guard (#800) — advisory, side-effecting stderr warner.
+ *
+ * Extracts likely Bash write targets from `command`, relativises each against the
+ * project root where possible, and WARNS (stderr only) for every target that is
+ * NOT covered by the wave's allowedPaths. NEVER denies, NEVER changes the exit
+ * code — v1 is warn-only by design (#800). No event infra is pulled in: this hook
+ * has no emitEvent import, so warnings are plain stderr lines per the #800 contract.
+ *
+ * @param {string} command — raw Bash command string
+ * @param {object} scope — parsed wave-scope.json
+ * @param {string} projectRoot — absolute project root
+ */
+function runBashWriteGuard(command, scope, projectRoot) {
+  const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
+  const targets = extractBashWriteTargets(command);
+  for (const target of targets) {
+    if (!targetInWaveScope(target, allowedPaths, projectRoot)) {
+      process.stderr.write(`bash-write-guard: ${target} outside wave scope (warn-only, #800)\n`);
+    }
+  }
+}
+
+/**
+ * Is a write target covered by the wave's allowedPaths? Reuses the same
+ * `pathMatchesPattern` matcher the enforce-scope path gate uses (no bespoke
+ * matching). Absolute targets inside the project root are relativised first;
+ * both the relative and raw forms are tried so an in-scope target never warns.
+ *
+ * @param {string} target — verbatim write target from extractBashWriteTargets
+ * @param {string[]} allowedPaths — wave allowedPaths union
+ * @param {string} projectRoot — absolute project root
+ * @returns {boolean}
+ */
+function targetInWaveScope(target, allowedPaths, projectRoot) {
+  if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) return false;
+  let rel = target;
+  if (path.isAbsolute(target)) {
+    const fromRoot = path.relative(projectRoot, target);
+    if (fromRoot && !fromRoot.startsWith('..') && !path.isAbsolute(fromRoot)) {
+      rel = fromRoot;
+    }
+  }
+  const norm = rel.split(path.sep).join('/').replace(/^\.\//, '');
+  return allowedPaths.some(
+    (p) => pathMatchesPattern(norm, p) || pathMatchesPattern(target, p),
+  );
 }
 
 // SECURITY-REQ-01 (F-03): top-level try/catch — never let exit 1 leak.

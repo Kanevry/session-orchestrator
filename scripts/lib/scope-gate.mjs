@@ -224,6 +224,258 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
 }
 
 /**
+ * Extract likely file-write TARGETS from a Bash command string (#800).
+ *
+ * Motivation: `hooks/enforce-scope.mjs` Gate 1 only gates the Edit/Write/MultiEdit
+ * tools — Bash write channels (heredocs, `>`/`>>` redirects, `tee`, `sed -i`,
+ * `dd of=`) bypass the wave-scope gate structurally. This function is the parsing
+ * half of the opt-in, WARN-ONLY `bash-write-guard` (wired in enforce-commands.mjs).
+ *
+ * DESIGN POSTURE — conservative, under- rather than over-match (v1 is warn-only):
+ * a false NEGATIVE (missed write) is a silent no-warn; a false POSITIVE (spurious
+ * warn on a benign command) is operator noise that erodes trust in the guard. When
+ * in doubt we DROP the candidate. This is deliberately NOT a full shell parser.
+ *
+ * MATCHED write channels:
+ *   (a) redirects `> p`, `>> p`, `2> p`, `2>> p`, `&> p`, `&>> p` (fd/`&` prefix ok)
+ *   (b) `tee [-a] p [p2 …]` (all non-flag file args of a `tee` command-head)
+ *   (c) `sed -i[.bak] … p` (the LAST non-flag argument of a `sed` command-head
+ *       carrying an in-place `-i*` flag; the `sed` SCRIPT arg is not the target)
+ *   (d) `dd of=p` (the `of=` argument of a `dd` command-head)
+ *   (e) heredocs `cat > p <<EOF` — covered by the redirect part `(a)`; the `<<`
+ *       delimiter itself is an INPUT redirect, never a write target.
+ *
+ * Deliberately NOT matched (documented skip rules — each is a false-positive trap):
+ *   - targets beginning with `$` or `~`, or containing ANY `$` (variable /
+ *     expansion — the concrete path is unknowable at parse time; e.g. `> $LOG`,
+ *     `>> ${TMPDIR}/x`)
+ *   - `/dev/…`, `/tmp/…`, `/private/tmp/…` (device + temp sinks — never wave scope)
+ *   - process substitution `>(…)` (an operator, not a file; the `(` breaks it)
+ *   - fd duplication `>&`, `2>&1` (dup, not a file target)
+ *   - input redirects `<`, `<<` (reads, not writes)
+ *   - quoted targets containing a space (best-effort — a spaced path is far more
+ *     likely a quoting artefact than a real wave-scoped file)
+ *   - a `>` / `tee` / `sed` / `dd` that appears INSIDE quotes (e.g. `echo '>' x`)
+ *     — the tokenizer tracks quote state, so a quoted `>` is a word, not an op.
+ *
+ * Targets are returned VERBATIM (repo-relative where the command wrote them
+ * relatively, absolute where the command used an absolute path) and de-duplicated
+ * in first-seen order. The caller relativises + matches against allowedPaths.
+ *
+ * Hook-safe: pure, deterministic, no I/O. Never throws — a non-string / empty
+ * input returns `[]`.
+ *
+ * @param {string} command — the raw Bash command string
+ * @returns {string[]} de-duplicated list of likely write targets (may be empty)
+ */
+export function extractBashWriteTargets(command) {
+  if (typeof command !== 'string' || command.length === 0) return [];
+
+  const tokens = tokenizeShellForWrites(command);
+
+  const out = [];
+  const seen = new Set();
+  const add = (value, hadSpace) => {
+    if (shouldSkipWriteTarget(value, hadSpace)) return;
+    const v = value.replace(/^\.\//, '');
+    if (!v || seen.has(v)) return;
+    seen.add(v);
+    out.push(v);
+  };
+
+  // Second pass: interpret the token stream. `mode` tracks a command-head that
+  // owns following args (tee/sed/dd); `pendingRedirect` marks that the NEXT word
+  // token is a redirect target.
+  let mode = null; // null | 'tee' | 'sed' | 'dd'
+  let pendingRedirect = false;
+  let expectCommand = true; // next word is the command head of this segment
+  let sedArgs = []; // { value } collected for a `sed` head
+  let sedInPlace = false;
+
+  const flushSed = () => {
+    if (mode === 'sed' && sedInPlace) {
+      for (let i = sedArgs.length - 1; i >= 0; i--) {
+        if (!isShellFlag(sedArgs[i].value)) {
+          add(sedArgs[i].value, sedArgs[i].hadSpace);
+          break;
+        }
+      }
+    }
+    sedArgs = [];
+    sedInPlace = false;
+  };
+
+  for (const tk of tokens) {
+    if (tk.type === 'redirect') {
+      pendingRedirect = true;
+      continue;
+    }
+    if (tk.type === 'in') {
+      // input redirect / heredoc delimiter — not a write target
+      pendingRedirect = false;
+      continue;
+    }
+    if (tk.type === 'sep') {
+      flushSed();
+      mode = null;
+      pendingRedirect = false;
+      expectCommand = true;
+      continue;
+    }
+    // word token
+    if (pendingRedirect) {
+      add(tk.value, tk.hadSpace);
+      pendingRedirect = false;
+      continue;
+    }
+    if (expectCommand) {
+      expectCommand = false;
+      flushSed(); // flush any prior sed segment defensively
+      if (tk.value === 'tee') { mode = 'tee'; continue; }
+      if (tk.value === 'sed') { mode = 'sed'; continue; }
+      if (tk.value === 'dd') { mode = 'dd'; continue; }
+      mode = null;
+      continue;
+    }
+    // subsequent argument words, interpreted per active command-head mode
+    if (mode === 'tee') {
+      if (!isShellFlag(tk.value)) add(tk.value, tk.hadSpace);
+    } else if (mode === 'sed') {
+      if (/^-i/.test(tk.value)) sedInPlace = true;
+      sedArgs.push(tk);
+    } else if (mode === 'dd') {
+      if (tk.value.startsWith('of=')) add(tk.value.slice(3), tk.hadSpace);
+    }
+  }
+  flushSed();
+
+  return out;
+}
+
+/**
+ * Is this token a CLI flag (starts with `-`)? Used to skip flags when picking
+ * file arguments for tee/sed. `-` alone (stdin) also counts as a flag.
+ * @param {string} v
+ * @returns {boolean}
+ */
+function isShellFlag(v) {
+  return typeof v === 'string' && v.startsWith('-');
+}
+
+/**
+ * Skip-rule gate for a candidate write target — see the documented skip list on
+ * {@link extractBashWriteTargets}. Returns true when the candidate must be dropped.
+ * @param {string} value — unquoted target text
+ * @param {boolean} hadSpace — true if the source token was quoted AND contained a space
+ * @returns {boolean}
+ */
+function shouldSkipWriteTarget(value, hadSpace) {
+  if (typeof value !== 'string' || value.length === 0) return true;
+  if (hadSpace || value.includes(' ')) return true; // quoted-with-space (best-effort)
+  if (value.startsWith('$') || value.startsWith('~')) return true; // variable / expansion
+  if (value.includes('$')) return true; // any embedded expansion (covers ${TMPDIR})
+  if (value.includes('(') || value.includes(')')) return true; // process-sub remnants
+  if (value.startsWith('/dev/')) return true; // device sink
+  if (value.startsWith('/tmp/') || value.startsWith('/private/tmp/')) return true; // temp sink
+  return false;
+}
+
+/**
+ * Minimal quote-aware tokenizer for write-target extraction. Walks the command
+ * left-to-right tracking single/double quote state; recognises redirect / input /
+ * separator operators ONLY outside quotes, and emits everything else as `word`
+ * tokens with the quotes stripped. Not a general shell tokenizer — it captures
+ * exactly what {@link extractBashWriteTargets} needs.
+ *
+ * Token shapes: { type: 'redirect' } | { type: 'in' } | { type: 'sep' }
+ *             | { type: 'word', value: string, hadSpace: boolean }
+ *
+ * @param {string} command
+ * @returns {Array<{type:string, value?:string, hadSpace?:boolean}>}
+ */
+function tokenizeShellForWrites(command) {
+  const tokens = [];
+  const n = command.length;
+  let i = 0;
+  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+  while (i < n) {
+    const c = command[i];
+    const next = command[i + 1];
+
+    if (isWs(c)) { i++; continue; }
+
+    // `&>` / `&>>` — redirect stdout+stderr to a file (write target follows)
+    if (c === '&' && next === '>') {
+      i += 2;
+      if (command[i] === '>') i++;
+      tokens.push({ type: 'redirect' });
+      continue;
+    }
+    // `&&` / `&` — command separators
+    if (c === '&') {
+      i += next === '&' ? 2 : 1;
+      tokens.push({ type: 'sep' });
+      continue;
+    }
+    // `>&` — fd duplication (NOT a file target); consume the dup + trailing fd/`-`
+    if (c === '>' && next === '&') {
+      i += 2;
+      while (i < n && (/[0-9]/.test(command[i]) || command[i] === '-')) i++;
+      continue; // no token — dup carries no write target
+    }
+    // `>(` — process substitution: leave the `>` inert; `(` is emitted as a sep
+    if (c === '>' && next === '(') { i++; continue; }
+    // `>>` / `>` — write redirects
+    if (c === '>') {
+      i += next === '>' ? 2 : 1;
+      tokens.push({ type: 'redirect' });
+      continue;
+    }
+    // `<<` / `<` — input redirects / heredoc delimiters (never a write target)
+    if (c === '<') {
+      i += next === '<' ? 2 : 1;
+      tokens.push({ type: 'in' });
+      continue;
+    }
+    // `||` / `|` / `;` / `(` / `)` — separators (break the current command)
+    if (c === '|') { i += next === '|' ? 2 : 1; tokens.push({ type: 'sep' }); continue; }
+    if (c === ';') { i++; tokens.push({ type: 'sep' }); continue; }
+    if (c === '(' || c === ')') { i++; tokens.push({ type: 'sep' }); continue; }
+
+    // Otherwise: read a WORD, honouring single/double quotes (quotes stripped).
+    let value = '';
+    let quoted = false;
+    let hadSpace = false;
+    while (i < n) {
+      const ch = command[i];
+      if (ch === "'") {
+        quoted = true;
+        i++;
+        while (i < n && command[i] !== "'") { if (command[i] === ' ') hadSpace = true; value += command[i]; i++; }
+        i++; // closing quote (or EOF)
+        continue;
+      }
+      if (ch === '"') {
+        quoted = true;
+        i++;
+        while (i < n && command[i] !== '"') { if (command[i] === ' ') hadSpace = true; value += command[i]; i++; }
+        i++; // closing quote (or EOF)
+        continue;
+      }
+      if (isWs(ch)) break;
+      // unquoted operator chars end the word
+      if (ch === '>' || ch === '<' || ch === '|' || ch === ';' || ch === '&' || ch === '(' || ch === ')') break;
+      value += ch;
+      i++;
+    }
+    tokens.push({ type: 'word', value, hadSpace, quoted });
+  }
+
+  return tokens;
+}
+
+/**
  * Build an actionable suggestion string for a scope violation.
  *
  * @param {string} relPath — the relative path that was blocked
