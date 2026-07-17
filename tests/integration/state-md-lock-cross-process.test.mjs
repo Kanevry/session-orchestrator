@@ -29,6 +29,18 @@ import { spawn } from 'node:child_process';
 // alive past the test boundary by an orphan under CPU starvation.
 const CHILD_SPAWN_TIMEOUT_MS = 25000;
 
+// Test-local lock-acquire timeout passed into withStateMdLock's opts.timeoutMs —
+// scoped to THIS fixture only; DEFAULT_STATE_LOCK_TIMEOUT_MS (10000ms) in
+// scripts/lib/locks/state-md-lock.mjs stays untouched for every other caller (#813).
+// Headroom arithmetic: LOCK_ACQUIRE_TIMEOUT_MS (18000) < CHILD_SPAWN_TIMEOUT_MS
+// (25000) < each it()'s own timeout (30000 / 30000) — a sibling that legitimately
+// waits out the full lock-acquire window still has margin before the spawn
+// watchdog or the vitest test timeout fires. The second it() sits at 30000 too:
+// equal to CHILD_SPAWN_TIMEOUT_MS would give the outer vitest timeout zero race
+// margin against the spawn watchdog, burying the speaking per-sibling diagnostic
+// this fixture exists to surface (W2 session-reviewer finding, #813).
+const LOCK_ACQUIRE_TIMEOUT_MS = 18000;
+
 // ---------------------------------------------------------------------------
 // Per-test isolated tmp root
 // ---------------------------------------------------------------------------
@@ -108,7 +120,7 @@ await withStateMdLock(
     await new Promise((r) => setTimeout(r, 30));
     writeFileSync(counterPath, String(current + 1), 'utf8');
   },
-  { timeoutMs: 10000 },
+  { timeoutMs: ${LOCK_ACQUIRE_TIMEOUT_MS} },
 );
 `;
 }
@@ -129,10 +141,12 @@ describe('cross-process withStateMdLock — mutex contract', () => {
       Array.from({ length: N }, () => runChild(workerPath)),
     );
 
-    // All children must exit cleanly.
-    for (const r of results) {
-      expect(r.code).toBe(0);
-    }
+    // All children must exit cleanly. Speaking message surfaces stderr (e.g.
+    // STATE_LOCK_TIMEOUT from withStateMdLock's acquire-failed throw) instead
+    // of a bare "expected 0, got 1" that hides WHY a sibling died (#813).
+    results.forEach((r, i) => {
+      expect(r.code, `sibling #${i} exited ${r.code} (expected 0) — stderr:\n${r.stderr}`).toBe(0);
+    });
 
     // Final counter must reflect N serialised increments.
     const finalValue = parseInt(readFileSync(counterPath, 'utf8'), 10);
@@ -144,7 +158,14 @@ describe('cross-process withStateMdLock — mutex contract', () => {
     writeFileSync(counterPath, '0', 'utf8');
     writeFileSync(workerPath, buildWorkerScript({ repoRoot, counterPath }), 'utf8');
 
-    await Promise.all([runChild(workerPath), runChild(workerPath), runChild(workerPath)]);
+    const results = await Promise.all([runChild(workerPath), runChild(workerPath), runChild(workerPath)]);
+
+    // All children must exit cleanly — same speaking-message pattern as the
+    // first it() so a sibling's STATE_LOCK_TIMEOUT (or any other acquire
+    // failure) surfaces instead of being silently discarded (#813).
+    results.forEach((r, i) => {
+      expect(r.code, `sibling #${i} exited ${r.code} (expected 0) — stderr:\n${r.stderr}`).toBe(0);
+    });
 
     const lockPath = join(repoRoot, '.orchestrator', 'state.lock');
     expect(existsSync(lockPath)).toBe(false);
@@ -154,5 +175,5 @@ describe('cross-process withStateMdLock — mutex contract', () => {
     const entries = readdirSync(join(repoRoot, '.orchestrator'));
     const tmpFiles = entries.filter((name) => name.includes('.tmp.'));
     expect(tmpFiles).toHaveLength(0);
-  }, 20000);
+  }, 30000); // headroom above CHILD_SPAWN_TIMEOUT_MS (25000ms) — equal values would race the spawn watchdog vs. the vitest timeout and bury the speaking per-sibling diagnostic (W2 review, #813)
 });
