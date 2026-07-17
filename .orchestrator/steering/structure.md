@@ -11,7 +11,7 @@
 | `skills/` | 44 user-facing skills (+ `_shared/` internal) |
 | `commands/` | 24 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 15 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
-| `hooks/` | Hook event matchers + handlers (14 matcher entries / 19 handler files, 10 distinct events) |
+| `hooks/` | Hook event matchers + handlers (15 matcher entries / 20 wired handler files [21 on-disk — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (13 rules) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
@@ -30,7 +30,7 @@
 - **Skills:** 44 user-facing skills (`skills/` has 45 dirs but `_shared/` is internal docs, not a skill)
 - **Commands:** 24 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/dispatcher`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/reconcile`, `/eval`, `/spinout`)
 - **Agents:** 15 (`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`, `eval-judge`)
-- **Hook event matchers / handlers:** 14 matcher entries / 19 handler files. 10 distinct events: SessionStart, SessionEnd, PreToolUse (×2: Edit\|Write + Bash), PostToolUse, Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
+- **Hook event matchers / handlers:** 15 matcher entries / 20 wired handler files (21 on-disk — `hooks/wave-scope-commit-guard.mjs` exists on disk but is not yet wired into `hooks/hooks.json`, per #801). Counting basis: "wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "on-disk" = `ls hooks/*.mjs`. 10 distinct events: SessionStart, SessionEnd, PreToolUse (×3: Skill + Edit\|Write\|MultiEdit + Bash), PostToolUse (×3: Edit\|Write + Edit\|Write\|MultiEdit + `*`), Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
 
 ## Key Skills (frequently referenced)
 
@@ -58,15 +58,18 @@
 |-------|---------|-----------------|
 | SessionStart | `startup\|clear\|compact` | `hooks/on-session-start.mjs` |
 | SessionEnd | `""` | `hooks/on-session-end.mjs` |
-| PreToolUse | `Edit\|Write` | `hooks/enforce-scope.mjs` |
-| PreToolUse | `Bash` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/enforce-commands.mjs` |
+| PreToolUse | `Skill` | `hooks/skill-invocation-telemetry.mjs` |
+| PreToolUse | `Edit\|Write\|MultiEdit` | `hooks/enforce-scope.mjs` + `hooks/config-protection.mjs` |
+| PreToolUse | `Bash` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/pre-bash-staging-fence.mjs` + `hooks/pre-bash-memory-propose-audit.mjs` + `hooks/pre-bash-templates-first.mjs` + `hooks/enforce-commands.mjs` |
 | PostToolUse | `Edit\|Write` | `hooks/post-edit-validate.mjs` |
+| PostToolUse | `Edit\|Write\|MultiEdit` | `hooks/post-tooluse-frontend-slop.mjs` |
+| PostToolUse | `*` | `hooks/loop-guard.mjs` |
 | Stop | `""` | `hooks/on-stop.mjs` |
-| SubagentStop | `""` | `hooks/on-stop.mjs` + `hooks/subagent-telemetry.mjs` |
+| SubagentStop | `""` | `hooks/on-stop.mjs` + `hooks/subagent-telemetry.mjs` + `hooks/post-subagent-discovery-validator.mjs` |
 | PostToolUseFailure | `""` | `hooks/post-tool-failure-corrective-context.mjs` |
 | PostToolBatch | `""` | `hooks/post-tool-batch-wave-signal.mjs` |
 | PostToolBatch | `""` | `hooks/operator-steer.mjs` |
 | SubagentStart | `""` | `hooks/subagent-telemetry.mjs` |
 | CwdChanged | `""` | `hooks/cwd-change-restore.mjs` |
 
-> Table shows the primary matcher→handler mapping. The full manifest is **14 matcher entries / 19 handler files** across these 10 events — see `hooks/hooks.json` (SSOT).
+> Table is exhaustive: one row per matcher entry — **15 matcher entries / 20 wired handler files** across these 10 events — see `hooks/hooks.json` (SSOT). `hooks/wave-scope-commit-guard.mjs` is on-disk (21 total `.mjs` files under `hooks/`) but not wired into `hooks/hooks.json` as of this writing (#801). Counting basis: "wired" counts distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "on-disk" counts `ls hooks/*.mjs`.
