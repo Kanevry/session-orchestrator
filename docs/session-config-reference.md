@@ -309,7 +309,7 @@ This guard converts the manual post-copy `git diff` check (used to rescue the 07
 |-------|------|---------|-------------|
 | `baseline-ref` | string (git ref) or null | null | Git ref (branch, tag, or SHA) on the baseline GitLab project from which to fetch canonical `.claude/rules/*.md` and `.claude/agents/*.md` during `/bootstrap`. When null, rules arrive via Clank's weekly baseline sync MRs (legacy path). See [baseline-ref](#baseline-ref) below. |
 | `baseline-project-id` | string or number | `"52"` | GitLab project ID of the baseline repository. Defaults to `"52"` (`infrastructure/projects-baseline`). Has no effect when `baseline-ref` is unset. See [baseline-project-id](#baseline-project-id) below. |
-| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Previously required for `/plan new` repo scaffolding; now only required if you want to scaffold from your own baseline. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Previously required for `/plan new` repo scaffolding; now only required if you want to scaffold from your own baseline. Host-locally resolved through an extended precedence chain — a host can additionally declare per-context `baselines:` entries in `owner.yaml`, matched by directory prefix against the current repo's path (#819); see the Vault Integration § host-local override callout below for the full chain. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
@@ -442,7 +442,7 @@ vault-integration:
   vault-name:                # optional (#660) — per-project vault namespace override
 ```
 
-> **Host-local override (#653).** `vault-dir` (and `plan-baseline-path`) resolve host-locally with precedence: env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > `owner.yaml` `paths:` section (`vault-dir` / `baseline-path`) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolver: `scripts/lib/config/host-paths.mjs`.
+> **Host-local override (#653; extended #819).** `vault-dir` resolves host-locally with precedence: env-var (`SO_VAULT_DIR`) > `owner.yaml` `paths.vault-dir` > the committed default. `plan-baseline-path` resolves with an extra per-context tier in between: `SO_BASELINE_PATH` env > `owner.yaml` `baselines:` directory-prefix match against cwd > `owner.yaml` `paths.baseline-path` (legacy scalar) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolvers: `scripts/lib/config/host-paths.mjs` (both keys) and `scripts/lib/named-baseline-resolver.mjs` (the `baselines:` match tier).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

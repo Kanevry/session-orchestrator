@@ -36,6 +36,18 @@ function validConfigWithVaults(vaultEntries, extraOverrides = {}) {
   };
 }
 
+/** Minimal valid config WITH a baselines: list (used in baselines tests, #819). */
+function validConfigWithBaselines(baselineEntries, extraOverrides = {}) {
+  return {
+    owner: { name: 'Test User', language: 'en' },
+    tone: { style: 'neutral', tonality: 'concise' },
+    efficiency: { 'output-level': 'full', preamble: 'minimal' },
+    'hardware-sharing': { enabled: false, 'hash-salt': '' },
+    baselines: baselineEntries,
+    ...extraOverrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -614,5 +626,127 @@ describe('vaults: section (#700) — validation rejects malformed entries', () =
     const result = validateOwnerConfig(cfg);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('vaults[0]'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// baselines: section (#819) — named plan-baseline list validation
+// ---------------------------------------------------------------------------
+
+describe('baselines: section (#819) — absent/null is backward-compat no-op', () => {
+  it('legacy owner.yaml WITHOUT a baselines: key still loads without error', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    const cfg = validConfig();          // no baselines key
+    expect(cfg.baselines).toBeUndefined();
+    writeOwnerConfig(cfg, { path: filePath });
+
+    const result = loadOwnerConfig({ path: filePath });
+    expect(result.source).toBe('file');
+    expect(result.errors).toHaveLength(0);
+    expect(result.config.baselines).toBeUndefined();
+  });
+
+  it('baselines: null accepted by validateOwnerConfig without errors', () => {
+    const cfg = { ...validConfig(), baselines: null };
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
+describe('baselines: section (#819) — valid list', () => {
+  it('accepts a single well-formed baseline entry', () => {
+    const cfg = validConfigWithBaselines([
+      { name: 'private', path: '~/Projects/private-world/projects-baseline', match: { 'path-prefix': '~/Projects/private-world' } },
+    ]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('preserves name, path, match.path-prefix through write→load round-trip', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    const cfg = validConfigWithBaselines([
+      { name: 'private', path: '~/Projects/private-world/projects-baseline', match: { 'path-prefix': '~/Projects/private-world' } },
+    ]);
+    writeOwnerConfig(cfg, { path: filePath });
+
+    const loaded = loadOwnerConfig({ path: filePath });
+    expect(loaded.source).toBe('file');
+    expect(loaded.errors).toHaveLength(0);
+    expect(loaded.config.baselines).toHaveLength(1);
+    expect(loaded.config.baselines[0].name).toBe('private');
+    expect(loaded.config.baselines[0].path).toBe('~/Projects/private-world/projects-baseline');
+    expect(loaded.config.baselines[0].match['path-prefix']).toBe('~/Projects/private-world');
+  });
+
+  it('accepts multiple baseline entries (private + aiat)', () => {
+    const cfg = validConfigWithBaselines([
+      { name: 'private', path: '~/Projects/private-world/projects-baseline', match: { 'path-prefix': '~/Projects/private-world' } },
+      { name: 'aiat', path: '~/Projects/intern/projects-baseline', match: { 'path-prefix': '~/Projects/intern' } },
+    ]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
+describe('baselines: section (#819) — validation rejects malformed entries', () => {
+  it('rejects baselines: as a string (not an array)', () => {
+    const cfg = { ...validConfig(), baselines: 'oops' };
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('baselines must be an array when present');
+  });
+
+  it('rejects an entry missing name field', () => {
+    const cfg = validConfigWithBaselines([{ path: '~/p', match: { 'path-prefix': '~/x' } }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].name'))).toBe(true);
+  });
+
+  it('rejects an entry with empty string name', () => {
+    const cfg = validConfigWithBaselines([{ name: '', path: '~/p', match: { 'path-prefix': '~/x' } }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].name'))).toBe(true);
+  });
+
+  it('rejects an entry missing path field', () => {
+    const cfg = validConfigWithBaselines([{ name: 'p', match: { 'path-prefix': '~/x' } }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].path'))).toBe(true);
+  });
+
+  it('rejects an entry missing match sub-object', () => {
+    const cfg = validConfigWithBaselines([{ name: 'p', path: '~/p' }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].match'))).toBe(true);
+  });
+
+  it('rejects an entry whose match lacks a path-prefix string', () => {
+    const cfg = validConfigWithBaselines([{ name: 'p', path: '~/p', match: {} }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].match.path-prefix'))).toBe(true);
+  });
+
+  it('rejects an entry where match is not an object', () => {
+    const cfg = validConfigWithBaselines([{ name: 'p', path: '~/p', match: 'not-an-object' }]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0].match'))).toBe(true);
+  });
+
+  it('rejects baselines[0] as null', () => {
+    const cfg = validConfigWithBaselines([null]);
+    const result = validateOwnerConfig(cfg);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('baselines[0]'))).toBe(true);
   });
 });

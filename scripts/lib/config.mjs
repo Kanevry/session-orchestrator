@@ -64,6 +64,7 @@ import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
 import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
+import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -88,12 +89,13 @@ export { readConfigFile } from './config/io.mjs';
  * Parse ## Session Config block from markdown content.
  * Applies all defaults for missing keys.
  * @param {string} mdContent — full CLAUDE.md content
- * @param {{ hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object } }} [opts]
+ * @param {{ hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string } }} [opts]
  *   — `hostPaths` injects the host-local resolution context (issue #653). Tests MUST pass a
  *   hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when asserting COMMITTED values:
  *   the default reads the real `owner.yaml`, so a host-local `paths:` override would otherwise
  *   bleed into fixture assertions (incident: 2026-07-03 Full-Gate red after the operator set
- *   `paths.baseline-path` host-locally).
+ *   `paths.baseline-path` host-locally). `cwd` feeds the `baselines:` match tier (#819) — a
+ *   test-only DI seam; production always resolves it from `process.cwd()`.
  * @returns {object} config object with EXACT same shape as parse-config.sh stdout
  * @throws if any enum value is invalid
  */
@@ -118,11 +120,35 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const lintCommand = _coerceString(kv, 'lint-command', 'npm run lint');
   const baselineRef = _coerceString(kv, 'baseline-ref', undefined);
   const baselineProjectId = _coerceString(kv, 'baseline-project-id', undefined);
-  const planBaselinePath = resolveHostPath(
-    'baseline-path',
-    _coerceString(kv, 'plan-baseline-path', undefined),
-    hostCtx
-  );
+  // plan-baseline-path precedence (#819, extending #653):
+  //   1. SO_BASELINE_PATH env  (highest — resolveNamedBaseline yields to it, so
+  //      resolveHostPath's env tier below returns it)
+  //   2. baselines: match against cwd  (per-context — the new tier)
+  //   3. owner.yaml paths.baseline-path (legacy — resolveHostPath)
+  //   4. committed Session Config value (fallback — resolveHostPath)
+  // Hosts WITHOUT a `baselines:` array behave byte-identically to pre-#819: the
+  // resolver returns the null-fallback and resolution falls straight through to
+  // resolveHostPath's env > owner.yaml > committed chain. `hostCtx.cwd` is only
+  // ever set by tests; production reads process.cwd().
+  const planBaselinePath = (() => {
+    const baselineMatch = resolveNamedBaseline({
+      cwd: hostCtx.cwd ?? process.cwd(),
+      ownerConfig: hostCtx.ownerConfig,
+      env: hostCtx.env,
+    });
+    if (
+      baselineMatch.source === 'match' &&
+      typeof baselineMatch.path === 'string' &&
+      baselineMatch.path.trim() !== ''
+    ) {
+      return baselineMatch.path;
+    }
+    return resolveHostPath(
+      'baseline-path',
+      _coerceString(kv, 'plan-baseline-path', undefined),
+      hostCtx,
+    );
+  })();
   const planDefaultVisibility = _coerceString(kv, 'plan-default-visibility', 'internal');
   const planPrdLocation = _coerceString(kv, 'plan-prd-location', 'docs/prd/');
   const planRetroLocation = _coerceString(kv, 'plan-retro-location', 'docs/retro/');

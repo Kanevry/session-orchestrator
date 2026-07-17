@@ -275,6 +275,48 @@ export function validateOwnerConfig(obj) {
     }
   }
 
+  // ── baselines (optional; N named plan-baselines for per-context resolution — #819) ──
+  // Cousin of vaults: above. Drop-and-WARN on malformed entries is handled by
+  // parseBaselines() in named-baseline-resolver.mjs; here we validate the container
+  // + entry shape to prevent clearly invalid config from passing silently.
+  // Divergences from vaults: the match key is `path-prefix` (a local FILESYSTEM
+  // directory tree, not a git-remote org slug), `path` replaces root+suffix, and
+  // `match` is REQUIRED (a baseline with no path-prefix can never be selected).
+  // Absent or null → backward-compat no-op (no validation errors).
+  const baselines = obj.baselines;
+  if (baselines !== undefined && baselines !== null) {
+    if (!Array.isArray(baselines)) {
+      errors.push('baselines must be an array when present');
+    } else {
+      for (let i = 0; i < baselines.length; i++) {
+        const entry = baselines[i];
+        if (entry === null || entry === undefined) {
+          errors.push(`baselines[${i}] must not be null`);
+          continue;
+        }
+        if (!isPlainObject(entry)) {
+          errors.push(`baselines[${i}] must be an object`);
+          continue;
+        }
+        // Required string fields: name, path
+        for (const field of ['name', 'path']) {
+          if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
+            errors.push(`baselines[${i}].${field} must be a non-empty string`);
+          }
+        }
+        // Required match sub-object with a non-empty path-prefix string.
+        if (!isPlainObject(entry.match)) {
+          errors.push(`baselines[${i}].match must be an object`);
+        } else if (
+          typeof entry.match['path-prefix'] !== 'string' ||
+          entry.match['path-prefix'].trim() === ''
+        ) {
+          errors.push(`baselines[${i}].match.path-prefix must be a non-empty string`);
+        }
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
