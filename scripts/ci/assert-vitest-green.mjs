@@ -96,7 +96,7 @@ export function verifyVitestResult(result, opts = {}) {
     return { ok: false, reason: `success is ${JSON.stringify(success)} (expected true)`, summary };
   }
   // Floor guard: a suspiciously small run signals a truncated/partial/empty
-  // execution masquerading as green. The real suite is ~9870 tests.
+  // execution masquerading as green. The real suite is ~12.1k tests (2026-07-17).
   if (numTotalTests < minTests) {
     return {
       ok: false,

@@ -244,8 +244,8 @@ test:
   <<: *node-setup
   stage: test
   interruptible: true
-  parallel: 4    # 4 shards — GitLab injects CI_NODE_INDEX (1-based) + CI_NODE_TOTAL=4
-  timeout: 20m   # per-shard ceiling over the inner 900s per-shard vitest cap
+  parallel: 2    # 2 shards — GitLab injects CI_NODE_INDEX (1-based) + CI_NODE_TOTAL=2
+  timeout: 10m   # per-shard ceiling over the inner 600s per-shard vitest cap
   script:
     # Pass/fail is read from vitest's machine-readable JSON result via a
     # FAIL-CLOSED verifier — never by grepping stdout markers. The old
@@ -256,12 +256,12 @@ test:
     # failures with `×`). Same silent-regression class as the 8-pipeline incident
     # (CLAUDE.md Critical Gotchas). See scripts/ci/assert-vitest-green.mjs.
     #
-    # SHARDED (4 shards × 900s) on the Hetzner Linux autoscaler (tags: hetzner-auto,
-    # Docker node:24 — runs as ROOT). The full ~10008-test suite is slow on a small
-    # autoscaled instance; a single un-sharded job's inner `timeout` killed vitest
+    # SHARDED (2 shards × 600s) on the Hetzner Linux autoscaler (tags: hetzner-auto,
+    # Docker node:24 — runs as ROOT). The full ~12.1k-test suite (2026-07-17) is slow on
+    # a small autoscaled instance; a single un-sharded job's inner `timeout` killed vitest
     # before it wrote the onFinished JSON, so the verifier (correctly) failed CLOSED
     # on the missing file even though the code was green locally. The fix is to SHARD
-    # the suite, NOT to widen blindly: `parallel: 4` splits the ~450 files into four
+    # the suite, NOT to widen blindly: `parallel: 2` splits the ~450 files into two
     # independent shards via vitest's `--shard=i/n`, each on its own autoscaled runner.
     # Each shard self-verifies its own JSON with a per-shard floor.
     #
@@ -273,23 +273,28 @@ test:
     # failure tests are guarded with skipIf(isRoot) (tests/_helpers/perms.mjs) — root
     # bypasses permission bits, which previously surfaced as real shard failures.
     #
+    # 2026-07-17 (#702): 4→2 shards — the 4-way split was a #685-era workaround; real
+    # green times ~70-85s/shard made 4 spin-ups pure overhead. Floor 1500→3000 (~50% of
+    # the 6.0k even split), inner cap 900s→600s.
+    #
     # The JSON file is written by vitest at onFinished — after all tests run:
     #   - real failures            → JSON success:false  → verifier exits 1
     #   - run truncated/killed      → JSON absent/partial → verifier fails CLOSED
     #   - post-completion exit-hang → JSON success:true   → verifier passes (the
     #                                 hung non-zero exit is swallowed by `|| true`)
-    # The inner per-shard `timeout` (900s) must EXCEED a single shard's true runtime
+    # The inner per-shard `timeout` (600s) must EXCEED a single shard's true runtime
     # so vitest reaches onFinished and writes the JSON. Per-shard result/log files are
     # suffixed with $CI_NODE_INDEX so concurrent shards never clobber one another.
     #
-    # Per-shard floor --min-tests=1500: ~10008/4 ≈ 2502 real tests per shard, so 1500
-    # still clears the genuine subset while catching a truncated/empty shard. On a hang
-    # the verifier is passed --log so it names the test files that were in-flight at the
-    # kill (self-diagnosing) instead of a bare ENOENT.
+    # Per-shard floor --min-tests=3000: ~12.1k/2 ≈ 6.0k real tests per shard, so 3000
+    # (~50% of the even split — the prior 4-shard floor of 1500 was ~50% of that split's
+    # ~3021) still clears the genuine subset while catching a truncated/empty shard. On a
+    # hang the verifier is passed --log so it names the test files that were in-flight at
+    # the kill (self-diagnosing) instead of a bare ENOENT.
     - 'rm -f /tmp/vitest-result-$CI_NODE_INDEX.json'   # stale-file guard on reused shell-executor hosts
-    - 'timeout --preserve-status 900s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
+    - 'timeout --preserve-status 600s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
     - 'tail -40 /tmp/vitest-$CI_NODE_INDEX.log'
-    - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result-$CI_NODE_INDEX.json --min-tests=1500 --log=/tmp/vitest-$CI_NODE_INDEX.log'
+    - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result-$CI_NODE_INDEX.json --min-tests=3000 --log=/tmp/vitest-$CI_NODE_INDEX.log'
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
