@@ -1,6 +1,6 @@
 # Submission Kit — Externe Distribution-Kanäle
 
-Dieses Kit macht jeden externen Submission-Schritt zu einem 5-Minuten-Browser-Task: pro Kanal eine nummerierte Ablauf-Checkliste plus ein copy-paste-fertiger Text, den der Operator ohne eigene Formulierungsarbeit absenden kann. Stand 2026-07-18 — basiert ausschließlich auf der fetch-verifizierten Recherche in [`.orchestrator/research/2026-07-18-distribution-options.md`](../../.orchestrator/research/2026-07-18-distribution-options.md) (6 Research-Agents, alle Kanal-Fakten heute gegen die jeweilige Plattform geprüft). Sektionen sind nach Priorität sortiert (P1 = größter/dringendster Hebel zuerst); jede Sektion nennt Prio, URL, Voraussetzungen, Ablauf-Checkliste, den absendbaren Text und wie das Ergebnis verifiziert wird.
+Dieses Kit macht jeden externen Submission-Schritt zu einem 5-Minuten-Browser-Task: pro Kanal eine nummerierte Ablauf-Checkliste plus ein copy-paste-fertiger Text, den der Operator ohne eigene Formulierungsarbeit absenden kann. Stand 2026-07-18 — basiert ausschließlich auf der fetch-verifizierten Recherche in [`2026-07-18-distribution-options.md`](./2026-07-18-distribution-options.md) (6 Research-Agents, alle Kanal-Fakten heute gegen die jeweilige Plattform geprüft). Sektionen sind nach Priorität sortiert (P1 = größter/dringendster Hebel zuerst); jede Sektion nennt Prio, URL, Voraussetzungen, Ablauf-Checkliste, den absendbaren Text und wie das Ergebnis verifiziert wird.
 
 **Kanonische Tagline** (wortgleich in den Copy-Paste-Texten verwendet, wo passend): "Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi."
 
@@ -406,6 +406,6 @@ Diese Kanäle sind laut Recherche entweder later-stage (keine Self-Serve-Submiss
 
 ## See Also
 
-- [`.orchestrator/research/2026-07-18-distribution-options.md`](../../.orchestrator/research/2026-07-18-distribution-options.md) — vollständige Optionsmatrix mit Aufwand/Reichweite/Fit-Bewertung
+- [`2026-07-18-distribution-options.md`](./2026-07-18-distribution-options.md) — vollständige Optionsmatrix mit Aufwand/Reichweite/Fit-Bewertung
 - [`docs/distribution/npm-publish-checklist.md`](npm-publish-checklist.md) — Operator-Runbook für den npm-Publish (Voraussetzung für B7)
 - [`docs/codex-setup.md`](../codex-setup.md) · [`docs/pi-setup.md`](../pi-setup.md) — Plattform-Setup-Guides, referenziert in den Copy-Paste-Texten oben

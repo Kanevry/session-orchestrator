@@ -16,6 +16,8 @@
     "node": ">=24.0.0"
   },
   "files": [
+    ".mcp.json",
+    "CHANGELOG.md",
     "pi/",
     "skills/",
     "agents/",

@@ -6,14 +6,14 @@
     "email": "office@gotzendorfer.at"
   },
   "metadata": {
-    "description": "Session-level orchestration for Claude Code — wave planning, VCS integration, quality gates, persistence, and safety checks",
+    "description": "Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.",
     "version": "3.14.0"
   },
   "plugins": [
     {
       "name": "session-orchestrator",
       "source": "./",
-      "description": "Wave planning, parallel subagent execution, GitLab/GitHub integration, quality gates — replaces manual session prompts with /session, /go, /close",
+      "description": "Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.",
       "author": {
         "name": "Bernhard Goetzendorfer",
         "email": "office@gotzendorfer.at"
