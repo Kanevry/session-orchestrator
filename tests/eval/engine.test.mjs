@@ -316,6 +316,57 @@ describe('session resolution cascade', () => {
     expect(record.session_id).toBe('b');
     expect(resolvedVia).toBe('cascade-fallback');
   });
+
+  it('#822: newest-wins single backward scan — a newer no-status record wins over an older status:completed record', () => {
+    // Pins the #822 fix: the cascade must walk newest-to-oldest and return the
+    // FIRST qualifying record, rather than exhausting the status:'completed'
+    // tier across the WHOLE array first (which would wrongly pick the much
+    // older 'old-completed' record here and skip 'fresh-deep' entirely).
+    const base = Date.now();
+    const records = [
+      {
+        session_id: 'old-completed',
+        status: 'completed',
+        started_at: new Date(base - 10000).toISOString(),
+        completed_at: new Date(base - 5000).toISOString(),
+        agent_summary: { complete: 5 },
+      },
+      {
+        session_id: 'housekeeping',
+        status: 'abandoned',
+        completed_at: new Date(base - 3000).toISOString(),
+      },
+      {
+        session_id: 'fresh-deep',
+        completed_at: new Date(base - 1000).toISOString(),
+        agent_summary: { complete: 9 },
+        effectiveness: { completion_rate: 1 },
+      },
+    ];
+    const { record, resolvedVia } = resolveSession(records);
+    expect(record.session_id).toBe('fresh-deep');
+    expect(resolvedVia).toBe('cascade-fallback');
+  });
+
+  it('#822: newest record IS status:completed → returns it with resolvedVia "cascade-completed" (label preservation)', () => {
+    const base = Date.now();
+    const records = [
+      {
+        session_id: 'old-fallback',
+        completed_at: new Date(base - 10000).toISOString(),
+        agent_summary: { complete: 5 },
+      },
+      {
+        session_id: 'newest-completed',
+        status: 'completed',
+        started_at: new Date(base - 3000).toISOString(),
+        completed_at: new Date(base - 1000).toISOString(),
+      },
+    ];
+    const { record, resolvedVia } = resolveSession(records);
+    expect(record.session_id).toBe('newest-completed');
+    expect(resolvedVia).toBe('cascade-completed');
+  });
 });
 
 describe('findPeerOverlap', () => {

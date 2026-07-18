@@ -6,8 +6,9 @@
  * answered deterministically and honestly before any dimension is graded:
  *
  *   1. WHICH session? — resolveSession() implements the operator-approved
- *      cascade (Decision #2): explicit id > last `completed` > last non-abandoned
- *      record that actually did work. Abandoned records are ALWAYS skipped.
+ *      cascade (Decision #2, revised #822): explicit id > newest record (source
+ *      order) that is either status:'completed' or non-abandoned with completed
+ *      work. Abandoned records are ALWAYS skipped.
  *
  *   2. WHOSE events? — quality_gate events in events.jsonl carry NO session_id,
  *      so they are attributed to a session by its wall-clock window
@@ -58,22 +59,23 @@ export function resolveSession(records, sessionId) {
     return { record: match, resolvedVia: 'explicit' };
   }
 
-  // Cascade (a): last record with status === 'completed'.
-  for (let i = records.length - 1; i >= 0; i--) {
-    const r = records[i];
-    if (isPlainObject(r) && r.status === 'completed') {
-      return { record: r, resolvedVia: 'cascade-completed' };
-    }
-  }
-
-  // Cascade (b): last record that is NOT abandoned, has completed_at set, AND
-  // shows evidence of work (agent_summary.complete > 0 OR completion_rate != null).
-  // status may be absent (34/60 records) — absent !== 'abandoned', so those
-  // qualify when they otherwise did work.
+  // Cascade (#822 — single backward scan, newest-wins): walk records from
+  // newest to oldest and return the FIRST one that qualifies via either tier,
+  // rather than exhausting tier (a) — status:'completed' — over the WHOLE
+  // array before ever considering tier (b). status:'completed' is a sparse
+  // legacy field (absent from every record written after 2026-07-04 by the
+  // current Phase-3.7 writer), so exhausting it first could select an
+  // arbitrarily old record and skip many newer valid ones. Both resolvedVia
+  // labels are preserved for downstream callers/tests.
   for (let i = records.length - 1; i >= 0; i--) {
     const r = records[i];
     if (!isPlainObject(r)) continue;
     if (r.status === 'abandoned') continue;
+    if (r.status === 'completed') {
+      return { record: r, resolvedVia: 'cascade-completed' };
+    }
+    // status may be absent (absent !== 'abandoned') — qualifies when it
+    // otherwise shows evidence of completed work.
     if (!r.completed_at) continue;
     const complete = isPlainObject(r.agent_summary) ? r.agent_summary.complete ?? 0 : 0;
     const rate = isPlainObject(r.effectiveness) ? r.effectiveness.completion_rate : undefined;

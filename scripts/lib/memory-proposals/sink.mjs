@@ -13,6 +13,11 @@
  *    reset every per-wave proposals-summary-*.json sidecar in the same
  *    metrics directory (issue #723 B3 — see function docstring for the
  *    fleet-wide desync bug this closes).
+ *  - promoteAndClear:    compose writeApproved + clearProposalsJsonl into a
+ *    single verified-write-then-clear call (issue #828 — see function
+ *    docstring for the incident class this closes: a caller that ran
+ *    writeApproved() then clearProposalsJsonl() unconditionally could drain
+ *    the queue even when writeApproved returned written:0).
  *
  * All three exported functions:
  *  - Never throw on individual record errors — collect into errors[] and continue.
@@ -32,7 +37,8 @@
  *
  * Issue: #501 (F2.1 Memory-Proposals); #544 M3 (path-utils canonicalization);
  * #723 B3 (clearProposalsJsonl atomicity + summary-reset fix); #797
- * (writeApproved fail-silent guard + clearProposalsJsonl archive-before-clear).
+ * (writeApproved fail-silent guard + clearProposalsJsonl archive-before-clear);
+ * #828 (promoteAndClear — clear the queue ONLY after a verified write).
  */
 
 import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
@@ -346,4 +352,156 @@ export async function clearProposalsJsonl({ repoRoot }) {
   }
 
   return { cleared: true, summariesCleared };
+}
+
+/**
+ * Promote approved proposals AND clear the queue — but ONLY when the write
+ * is verified complete. Composes writeApproved() + clearProposalsJsonl()
+ * behind a single mechanical guard so a caller can no longer reproduce the
+ * incident class this closes (#828, 2nd occurrence 2026-07-18): a caller
+ * ran writeApproved() (which returned `written: 0` — e.g. every record
+ * failed round-trip validation because `sessionId` was missing/wrong) and
+ * then ran clearProposalsJsonl() anyway, unconditionally draining the queue
+ * even though nothing had actually been promoted.
+ *
+ * writeApproved() and clearProposalsJsonl() themselves are untouched by this
+ * function — both keep their existing signatures and never-throw-per-record
+ * contracts. promoteAndClear() is a NEW, additive orchestration layer; it
+ * does not replace direct calls to either lower-level function for callers
+ * that need finer-grained control (e.g. archiveRejected() must still run as
+ * a separate, caller-driven step between writeApproved() and this call — see
+ * below).
+ *
+ * Guard (mechanical, not semantic): the clear proceeds if and only if
+ * `writeApproved()` wrote exactly as many records as were requested
+ * (`written === expected`) AND reported zero per-record errors. This is a
+ * purely mechanical count/error check — it does NOT distinguish "operator
+ * approved nothing this cycle" from "operator approved everything and it all
+ * wrote cleanly". Both are `expected === 0` or `written === expected` with no
+ * errors, and BOTH legitimately clear the queue. The only case the guard
+ * blocks is a MISMATCH — some or all approved records failed to write — which
+ * is precisely the #828 incident class.
+ *
+ * `approved: []` (or `approved` omitted) is a legitimate clear-with-nothing-
+ * approved call: `expected` computes to 0, `writeApproved()` returns
+ * `{written: 0, errors: []}` without touching the filesystem, the guard
+ * evaluates `0 === 0 && no errors` → true, and the clear proceeds. This is
+ * intentional — a cycle where the operator approved nothing must still be
+ * able to drain a queue of now-rejected/stale proposals once the caller has
+ * separately archived them via archiveRejected().
+ *
+ * archiveRejected() is INTENTIONALLY NOT folded into this function — it
+ * operates on a disjoint subset of proposals (the rejected ones) and has no
+ * bearing on whether the write of the APPROVED subset succeeded. Callers
+ * should sequence: writeApproved-relevant work → archiveRejected(rejected) →
+ * promoteAndClear(approved) (or call promoteAndClear() first, then
+ * archiveRejected() — order between the two does not matter, since
+ * archiveRejected() never reads or clears proposals.jsonl itself).
+ *
+ * Own argument-typo guard (own-level #797 mirror; fixes a reintroduction
+ * found by session-reviewer): the original implementation destructured only
+ * its three known keys and forwarded a FRESH `{ approved, repoRoot,
+ * sessionId }` literal to writeApproved() — so a caller typo like
+ * `promoteAndClear({ proposals: [...], sessionId, repoRoot })` silently
+ * dropped the unrecognised `proposals` key. writeApproved() then received
+ * `approved: undefined` with NO unknown keys (the fresh literal has none),
+ * so writeApproved()'s OWN #797 rest-based typo guard could never fire —
+ * it took the legitimate-no-op branch and returned `{written: 0, errors:
+ * []}`, `expected` computed to 0, the mechanical guard evaluated
+ * `0 === 0 && no errors` → true, and the queue was drained with
+ * `cleared: true, skippedReason: null`. That is the exact #828 incident
+ * class, reintroduced one layer up. Fix: promoteAndClear() now captures
+ * `...rest` itself and throws its OWN `TypeError` when `approved ===
+ * undefined` alongside unrecognised key(s) — before ever calling
+ * writeApproved() — using the same detection shape and message wording as
+ * writeApproved()'s guard (lines ~136-144 above). An explicit local guard
+ * was chosen over forwarding `...rest` into writeApproved() so the typo is
+ * caught (and named) at the layer the caller actually invoked, rather than
+ * relying on an internal delegate to surface it.
+ *
+ * @param {object}   opts
+ * @param {object[]} [opts.approved] - ProposalRecord[] selected by user via
+ *   AUQ. Same contract as writeApproved()'s `approved` param:
+ *   omitted/`undefined` WITH NO other (unrecognised) keys present is a
+ *   legitimate no-op batch (computes `expected: 0`, clear proceeds — mirrors
+ *   writeApproved()'s own no-op semantics exactly, see the guard above);
+ *   omitted/`undefined` WITH unrecognised key(s) present throws `TypeError`
+ *   (arg-name-typo detection, see above); present-but-not-an-array is a
+ *   caller-mistake and is NOT pre-checked here — it is left to propagate as
+ *   the `TypeError` writeApproved() already throws for that shape (avoids
+ *   duplicating that validation in two places).
+ * @param {string}   opts.sessionId - e.g. 'main-2026-05-23-1249-deep'. MUST be
+ *   a non-empty string — this function throws `TypeError` immediately
+ *   (before calling writeApproved()) when it is not, since a missing/blank
+ *   sessionId is a caller bug (every record would fail writeApproved's
+ *   round-trip validation with "missing required field: source_session",
+ *   guaranteeing the write-verification guard below blocks the clear anyway
+ *   — this throws earlier and louder rather than silently skipping to a
+ *   `skippedReason`).
+ * @param {string}   opts.repoRoot  - absolute project root path
+ * @returns {Promise<{
+ *   written: number,
+ *   expected: number,
+ *   errors: string[],
+ *   cleared: boolean,
+ *   summariesCleared: number,
+ *   skippedReason: string|null,
+ * }>}
+ * @throws {TypeError} When `approved` is missing alongside unrecognised
+ *   key(s) (own-level arg-typo guard), when `sessionId` is not a non-empty
+ *   string, or (propagated) when `approved` is present but not an array.
+ */
+export async function promoteAndClear({ approved, sessionId, repoRoot, ...rest }) {
+  if (approved === undefined) {
+    const unknownKeys = Object.keys(rest);
+    if (unknownKeys.length > 0) {
+      throw new TypeError(
+        `promoteAndClear: missing "approved" — got unknown key(s): ${unknownKeys.join(', ')}. Did you mean approved:?`
+      );
+    }
+  }
+
+  if (typeof sessionId !== 'string' || sessionId.trim().length === 0) {
+    throw new TypeError(
+      `promoteAndClear: "sessionId" must be a non-empty string (got ${typeof sessionId})`
+    );
+  }
+
+  // `expected` mirrors writeApproved()'s own no-op semantics: a non-array
+  // `approved` (including `undefined`, already guarded above against the
+  // arg-typo shape) computes as 0 here. When `approved` is present but
+  // genuinely not an array, writeApproved() below throws its own TypeError
+  // before this value is ever consulted by the guard.
+  const expected = Array.isArray(approved) ? approved.length : 0;
+
+  const w = await writeApproved({ approved, repoRoot, sessionId });
+
+  const ok = w.written === expected && w.errors.length === 0;
+
+  if (!ok) {
+    const skippedReason =
+      w.errors.length > 0
+        ? 'write-errors'
+        : `partial-write: ${w.written}/${expected} written`;
+    // Clear is SKIPPED entirely — proposals.jsonl (and its summary sidecars)
+    // remain untouched on this path. This is the mechanical fix for #828:
+    // the queue is never drained on an unverified/incomplete write.
+    return {
+      ...w,
+      expected,
+      cleared: false,
+      summariesCleared: 0,
+      skippedReason,
+    };
+  }
+
+  const c = await clearProposalsJsonl({ repoRoot });
+
+  return {
+    ...w,
+    expected,
+    cleared: c.cleared,
+    summariesCleared: c.summariesCleared,
+    skippedReason: null,
+  };
 }

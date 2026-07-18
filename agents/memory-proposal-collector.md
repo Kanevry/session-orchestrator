@@ -91,26 +91,39 @@ For each batch of up to 4 proposals, call `AskUserQuestion` with the template do
 After all batches are resolved:
 
 ```js
-import { writeApproved, archiveRejected, clearProposalsJsonl }
+import { promoteAndClear, archiveRejected }
   from '../scripts/lib/memory-proposals/sink.mjs';
 
 // sessionId is read by the coordinator from STATE.md frontmatter (e.g. session_id field),
 // NOT returned by collectProposals — see Step 1 note above.
 const sessionId = parseStateMd(repoRoot).session_id;
 
-await sink.writeApproved({ approved, repoRoot, sessionId });
+const writeResult = await sink.promoteAndClear({ approved, sessionId, repoRoot });
 await sink.archiveRejected({ rejected, repoRoot, reason: 'user-declined' });
-await sink.clearProposalsJsonl({ repoRoot });
 ```
 
-`clearProposalsJsonl` performs an **atomic clear** (write empty content to a tmp file, then
-rename over the target) so a concurrent hook invocation cannot read a partially-cleared file.
-It ALSO removes every `proposals-summary-<wave-id>.json` sidecar in the same metrics
-directory — those per-wave summaries are what `collectProposals()` sums into `stats.queued`
-(see `scripts/lib/memory-proposals/collector.mjs` `accumulateSummaryStats()`), so leaving
-them behind after a JSONL-only clear caused a stale `queued > 0` count against a genuinely
-empty proposals.jsonl on every subsequent session-end (issue #723 B3). The function returns
-`{ cleared, summariesCleared }` and never throws — see `sink.mjs` for the full contract.
+`promoteAndClear()` composes `writeApproved()` + `clearProposalsJsonl()` behind a single
+mechanical guard (#797/#828): it calls `writeApproved({ approved, repoRoot, sessionId })`
+first, computes `expected` from `approved.length`, and clears `proposals.jsonl` — via
+`clearProposalsJsonl()` internally — ONLY when `written === expected && errors.length === 0`.
+There is no separate write-then-clear call sequence for the coordinator to reorder or forget
+to gate; the guard is now IN-CODE. The coordinator's job is to inspect the returned
+`{ written, expected, errors, cleared, summariesCleared, skippedReason }` and warn when
+`cleared === false` (see [Clear the queue](#clear-the-queue) below). `promoteAndClear()`
+throws a `TypeError` before ever calling `writeApproved()` when `sessionId` is missing/blank,
+or when `approved` is omitted alongside an unrecognised key (arg-name-typo guard, mirroring
+`writeApproved()`'s own #797 guard one layer up).
+
+`clearProposalsJsonl()` — invoked internally by `promoteAndClear()` on the success path —
+performs an **atomic clear** (write empty content to a tmp file, then rename over the target)
+so a concurrent hook invocation cannot read a partially-cleared file. It ALSO removes every
+`proposals-summary-<wave-id>.json` sidecar in the same metrics directory — those per-wave
+summaries are what `collectProposals()` sums into `stats.queued` (see
+`scripts/lib/memory-proposals/collector.mjs` `accumulateSummaryStats()`), so leaving them
+behind after a JSONL-only clear caused a stale `queued > 0` count against a genuinely empty
+proposals.jsonl on every subsequent session-end (issue #723 B3). `promoteAndClear()` never
+throws on the write/clear path itself (only on the two argument guards above) — see
+`sink.mjs` for the full contract.
 
 ---
 
@@ -186,7 +199,8 @@ coordinator maps selections back to `ProposalRecord` objects by matching label s
 
 ### Approved proposals
 
-Proposals whose label appears in the selection are passed to `sink.writeApproved()`. The sink:
+Proposals whose label appears in the selection are passed to `sink.promoteAndClear()`, which
+delegates the write half to `writeApproved()` internally:
 
 1. Converts each `ProposalRecord` to a `LearningRecord` (strips proposal-specific fields,
    keeps `type`, `subject`, `insight`, `evidence`, `confidence`, `tags`).
@@ -199,13 +213,20 @@ Proposals whose label appears in the selection are passed to `sink.writeApproved
 
 Proposals NOT selected are passed to `sink.archiveRejected()` with `reason: 'user-declined'`.
 The sink appends each rejected record (with timestamp + reason) to
-`.orchestrator/proposals.rejected.log`.
+`.orchestrator/proposals.rejected.log`. This call is independent of `promoteAndClear()` — order
+between the two does not matter.
 
 ### Clear the queue
 
-`sink.clearProposalsJsonl()` atomically truncates `.orchestrator/metrics/proposals.jsonl` to
-zero bytes after all approved/rejected writes complete. This prevents the same proposals
-from appearing again at the next session-end.
+`promoteAndClear()` clears `.orchestrator/metrics/proposals.jsonl` itself — via an internal
+`clearProposalsJsonl()` call — but ONLY when the write half fully succeeded
+(`written === expected && errors.length === 0`). On success this atomically truncates
+`proposals.jsonl` to zero bytes, preventing the same proposals from appearing again at the
+next session-end. On a partial write, the clear is SKIPPED entirely: `promoteAndClear()`
+returns `cleared: false` with a `skippedReason` (`'write-errors'` or a
+`'partial-write: <written>/<expected> written'` string), the queue is left intact, and the
+coordinator surfaces a warning so the discrepancy carries over to the next session's
+Phase 3.6.3 pass instead of silently losing the un-written proposals (#828).
 
 ---
 
@@ -251,7 +272,7 @@ resolver, which is the correct failure mode.
 | `scripts/lib/memory-proposals/schema.mjs` | `ProposalRecord` and `LearningRecord` type definitions |
 | `scripts/lib/memory-proposals/store.mjs` | Low-level JSONL read/write for proposals queue |
 | `scripts/lib/memory-proposals/collector.mjs` | `collectProposals()` — loads and validates the queue |
-| `scripts/lib/memory-proposals/sink.mjs` | `writeApproved()`, `archiveRejected()`, `clearProposalsJsonl()` |
+| `scripts/lib/memory-proposals/sink.mjs` | `promoteAndClear()` (composes `writeApproved()` + `clearProposalsJsonl()` behind the write-before-clear guard, #797/#828), `archiveRejected()` |
 | `agents/dialectic-deriver.md` | Similar coordinator-invoked pattern (compare: deriver dispatches as a subagent because it only reads files; this flow does not dispatch because it calls AUQ) |
 | `.claude/rules/ask-via-tool.md` §AUQ-004 | Authoritative rule prohibiting AUQ inside subagents |
 | `.claude/STATE.md` Wave History — D3 | Locked decisions: pagination=4, FIFO order, label format, decision tree |

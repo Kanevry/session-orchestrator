@@ -103,7 +103,7 @@ export function resolveSoul(templateContent, ownerConfig) {
  *
  * @param {string} soulPath                    Absolute path to the soul.md template.
  * @param {{ ownerConfigPath?: string }} [opts]
- * @returns {{ resolved: string, warnings: string[], source: 'file'|'defaults' }}
+ * @returns {{ resolved: string, warnings: string[], source: 'file'|'defaults'|'partial' }}
  */
 export function loadAndResolveSoul(soulPath, opts = {}) {
   const templateContent = readFileSync(soulPath, 'utf8');

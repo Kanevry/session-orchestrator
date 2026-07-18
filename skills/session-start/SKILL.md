@@ -704,7 +704,14 @@ Group issues by:
 
    Non-blocking. Cross-reference: `scripts/lib/session-lock.mjs` (`readLock`, `DEFAULT_TTL_HOURS` — the current session's lock `started_at` is the self-exclusion cutoff), `scripts/backfill-abandoned-sessions.mjs` (the backfill CLI the message recommends) and issue #724.
 
-   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install) or `sessions-staleness-banner.mjs` is absent (pre-#724 plugin install), skip silently.
+   Additionally, invoke the owner-config probe (`scripts/lib/owner-config-banner.mjs`) via `checkOwnerConfig()` (synchronous — no await, no `repoRoot` argument: the probe reads the host-wide `owner.yaml`, not a per-repo file). The helper returns `null` (silent no-op) on a clean load, when `owner.yaml` is simply absent, or on any internal read/parse error. When a non-null result is returned (`{ severity: 'warn', message, droppedSections?, sectionWarnings?, discarded? }`), render `result.message` alongside the other banners:
+   - **Optional section(s) dropped to defaults** (`droppedSections` present): an OPTIONAL object section (`paths`, `dispatcher`) was malformed and replaced by its default value.
+   - **Whole file discarded** (`discarded: true`): a REQUIRED section (`owner`, `tone`, `efficiency`, `hardware-sharing`) was invalid, so the entire file was discarded and defaults are in effect.
+   - **Lenient-consumer warnings** (`sectionWarnings` present, nothing dropped): an OPTIONAL list section (`vaults`, `baselines`) has invalid entries that lenient consumers will drop at point-of-use.
+
+   Non-blocking. Cross-reference: `.claude/rules/owner-persona.md` (host-wide `owner.yaml` schema + privacy contract) and issue #820.
+
+   All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install) or `sessions-staleness-banner.mjs` is absent (pre-#724 plugin install) or `owner-config-banner.mjs` is absent (pre-#820 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
 
