@@ -3,58 +3,215 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>session-orchestrator — structured multi-agent sessions for Claude Code</title>
-<meta name="description" content="A session-orchestration plugin for Claude Code and Codex CLI: wave-based multi-agent execution, mechanical guardrails, persistent memory, and honest self-measurement via the aiat-llm-eval standard.">
+<title>session-orchestrator — loop engineering for AI coding agents</title>
+<meta name="description" content="Loop engineering for AI coding agents. Turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎯</text></svg>">
 <style>
   :root {
-    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb;
-    --card: #f6f7f9; --border: #e5e7eb;
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb; --accent-contrast: #ffffff;
+    --card: #f6f7f9; --border: #e5e7eb; --code-fg: #1a1a1a;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #0f1115; --fg: #e7e9ee; --muted: #9aa1ad; --accent: #7aa2ff; --card: #171a21; --border: #262b35; }
+    :root {
+      --bg: #0f1115; --fg: #e7e9ee; --muted: #9aa1ad; --accent: #7aa2ff; --accent-contrast: #0f1115;
+      --card: #171a21; --border: #262b35; --code-fg: #e7e9ee;
+    }
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 44rem; margin: 0 auto; padding: 4.5rem 1.5rem 3rem; }
-  h1 { font-size: 2rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
-  h1 code { font: inherit; }
-  .tagline { color: var(--muted); margin: 0 0 2.2rem; font-size: 1.06rem; }
-  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; letter-spacing: .01em; }
-  p { margin: .5rem 0; }
+  .wrap { max-width: 50rem; margin: 0 auto; padding: 0 1.5rem; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .cards { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: .9rem; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1rem; }
-  .card b { display: block; margin-bottom: .25rem; }
-  .card span { color: var(--muted); font-size: .92rem; }
-  pre { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; overflow-x: auto; font-size: .88rem; }
-  .soon { display: inline-block; font-size: .72rem; border: 1px solid var(--border); border-radius: 999px; padding: .05rem .55rem; color: var(--muted); vertical-align: middle; margin-left: .4rem; }
-  footer { color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1.2rem; }
+  a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  .skip-link {
+    position: absolute; left: -999px; top: auto; width: 1px; height: 1px; overflow: hidden;
+    background: var(--accent); color: var(--accent-contrast); padding: .6rem 1rem; border-radius: 6px; z-index: 10;
+  }
+  .skip-link:focus { position: fixed; left: 1rem; top: 1rem; width: auto; height: auto; }
+
+  header.hero { padding: 4rem 0 3rem; border-bottom: 1px solid var(--border); }
+  .eyebrow { color: var(--muted); font-size: .85rem; letter-spacing: .06em; text-transform: uppercase; margin: 0 0 .8rem; font-weight: 600; }
+  h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; margin: 0 0 1rem; letter-spacing: -.02em; }
+  .tagline { color: var(--muted); margin: 0 0 1.8rem; font-size: 1.08rem; max-width: 42rem; }
+  .tagline strong { color: var(--fg); font-weight: 600; }
+  .cta-row { display: flex; flex-wrap: wrap; gap: .75rem; }
+  .btn { display: inline-block; padding: .65rem 1.15rem; border-radius: 8px; font-size: .95rem; font-weight: 600; border: 1px solid transparent; }
+  .btn:hover { text-decoration: none; }
+  .btn-primary { background: var(--accent); color: var(--accent-contrast); }
+  .btn-primary:hover { opacity: .9; }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+  main { padding: 3rem 0 1rem; }
+  section { margin: 0 0 3.2rem; }
+  h2 { font-size: 1.3rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+  .section-lede { color: var(--muted); margin: 0 0 1.2rem; font-size: .95rem; }
+
+  .cards { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem 1.2rem; }
+  .card h3 { margin: 0 0 .4rem; font-size: 1rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .92rem; }
+
+  .install-grid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+  .install-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem 1.1rem; }
+  .install-card h3 { margin: 0 0 .6rem; font-size: .98rem; display: flex; align-items: center; gap: .5rem; }
+  .install-card p { margin: .5rem 0 0; color: var(--muted); font-size: .85rem; }
+  .cmd-row { position: relative; }
+  pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .75rem 3.2rem .75rem .85rem; overflow-x: auto; font-size: .82rem; margin: 0; color: var(--code-fg); }
+  pre code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+  .copy-btn {
+    position: absolute; top: .45rem; right: .45rem; font-size: .72rem; font-weight: 600;
+    background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+    padding: .3rem .55rem; cursor: pointer; line-height: 1;
+  }
+  .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .copy-btn[data-copied="true"] { color: var(--accent); border-color: var(--accent); }
+  .link-only { font-size: .92rem; }
+
+  .soon { display: inline-block; font-size: .68rem; border: 1px solid var(--border); border-radius: 999px; padding: .05rem .5rem; color: var(--muted); vertical-align: middle; font-weight: 500; }
+
+  footer { border-top: 1px solid var(--border); padding: 1.6rem 0 3rem; color: var(--muted); font-size: .85rem; }
+  footer nav { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-bottom: .8rem; }
+  footer nav a { color: var(--fg); font-weight: 500; }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 </style>
 </head>
 <body>
-<main>
-  <h1><code>session-orchestrator</code></h1>
-  <p class="tagline">Structured multi-agent development sessions for Claude Code &amp; Codex CLI — wave-based execution, mechanical guardrails, persistent memory, and honest self-measurement.</p>
+<a class="skip-link" href="#main">Skip to content</a>
 
-  <div class="cards">
-    <div class="card"><b>Wave execution</b><span>Discovery → Impl → Quality → Finalization with parallel sub-agents, scope enforcement, and inter-wave quality gates.</span></div>
-    <div class="card"><b>Guardrails, not vibes</b><span>Destructive-command guard, file-scope hooks, circuit breakers, verification-before-completion discipline.</span></div>
-    <div class="card"><b>Memory that persists</b><span>Session records, learnings, and agent-proposed insights — carried across sessions, mirrored to your knowledge vault.</span></div>
-    <div class="card"><b>Honest eval<span class="soon">aiat-llm-eval v1</span></b><span>Every session can be scored against a pre-registered rubric — deterministic first, per-dimension, no global score, offline re-verifiable.</span></div>
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">session-orchestrator</p>
+    <h1>Loop engineering for AI coding agents</h1>
+    <p class="tagline">Turn ad-hoc sessions into a repeatable <strong>research → plan → wave-execute → close</strong> loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/Kanevry/session-orchestrator">View on GitHub</a>
+      <a class="btn btn-secondary" href="#install">Install</a>
+    </div>
   </div>
+</header>
 
-  <h2>Get it</h2>
-  <pre>/plugin marketplace add Kanevry/session-orchestrator
-/plugin install session-orchestrator@kanevry</pre>
-  <p>Source, docs, and issues: <a href="https://github.com/Kanevry/session-orchestrator">github.com/Kanevry/session-orchestrator</a></p>
+<main id="main" class="wrap">
+  <section aria-labelledby="pillars-h">
+    <h2 id="pillars-h">Why this design</h2>
+    <p class="section-lede">Four things it does that ad-hoc agent sessions don't.</p>
+    <div class="cards">
+      <article class="card">
+        <h3>Verification gates, not vibes</h3>
+        <p>Every close runs a Full Gate — typecheck, test, lint — before anything ships. No completion claims without fresh evidence.</p>
+      </article>
+      <article class="card">
+        <h3>Wave orchestration</h3>
+        <p>research → plan → wave-execute → close, in five typed waves. Parallel subagents with declared file-scope enforcement and a quality gate between every wave.</p>
+      </article>
+      <article class="card">
+        <h3>Memory that compounds</h3>
+        <p>Sessions write learnings; a reconciliation engine turns confidence-scored patterns into rule proposals you review — never auto-applied.</p>
+      </article>
+      <article class="card">
+        <h3>Runs where you work</h3>
+        <p>The same skills and commands on Claude Code, Codex CLI, Cursor IDE, and Pi — with platform-adapted hooks and enforcement.</p>
+      </article>
+    </div>
+  </section>
 
-  <h2>The eval standard</h2>
-  <p><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/eval/aiat-llm-eval-v1.md">aiat-llm-eval v1</a> — an open standard for honest LLM session evaluation: pre-registration, deterministic-before-judge, three-state verdicts with explicit abstention, full version provenance, and reproducibility as an executable proof (<code>--verify</code>), never a claim.</p>
-  <p>Leaderboard <span class="soon">coming later</span> — the record schema is ready; the site is deliberately not.</p>
+  <section id="install" aria-labelledby="install-h">
+    <h2 id="install-h">Install</h2>
+    <p class="section-lede">One command to get started, per harness.</p>
+    <div class="install-grid">
 
-  <footer>MIT-licensed open source · built in Austria · this page is a static placeholder — the plugin lives on GitHub.</footer>
+      <div class="install-card">
+        <h3>Claude Code</h3>
+        <div class="cmd-row">
+          <pre><code id="cmd-claude">/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry</code></pre>
+          <button type="button" class="copy-btn" data-target="cmd-claude" aria-label="Copy Claude Code install command">Copy</button>
+        </div>
+        <p>Plugin marketplace — run both lines inside Claude Code.</p>
+      </div>
+
+      <div class="install-card">
+        <h3>Codex CLI</h3>
+        <div class="cmd-row">
+          <pre><code id="cmd-codex">git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator && npm install
+node scripts/codex-install.mjs</code></pre>
+          <button type="button" class="copy-btn" data-target="cmd-codex" aria-label="Copy Codex CLI install command">Copy</button>
+        </div>
+        <p>Registers the plugin in your local Codex plugin catalog. Details: <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md">Codex setup guide</a>.</p>
+      </div>
+
+      <div class="install-card">
+        <h3>Cursor IDE</h3>
+        <p class="link-only">Rules-based install (.mdc), sequential execution — see the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md">Cursor setup guide</a>.</p>
+      </div>
+
+      <div class="install-card">
+        <h3>Pi</h3>
+        <div class="cmd-row">
+          <pre><code id="cmd-pi">git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator && npm install
+node scripts/pi-install.mjs /path/to/your/project --settings-only</code></pre>
+          <button type="button" class="copy-btn" data-target="cmd-pi" aria-label="Copy Pi install command">Copy</button>
+        </div>
+        <p><code>pi install npm:session-orchestrator</code> <span class="soon">coming soon</span> — once published to npm.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section aria-labelledby="eval-h">
+    <h2 id="eval-h">The eval standard</h2>
+    <p><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/eval/aiat-llm-eval-v1.md">aiat-llm-eval v1</a> — an open standard for honest LLM session evaluation: pre-registration, deterministic-before-judge, three-state verdicts with explicit abstention, full version provenance, and reproducibility as an executable proof (<code>--verify</code>), never a claim.</p>
+    <p>Leaderboard <span class="soon">coming later</span> — the record schema is ready; the site is deliberately not.</p>
+  </section>
 </main>
+
+<footer class="wrap">
+  <nav aria-label="Footer">
+    <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    <a href="https://github.com/Kanevry/session-orchestrator#readme">Docs</a>
+    <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/eval/aiat-llm-eval-v1.md">aiat-llm-eval standard</a>
+  </nav>
+  <p>MIT-licensed open source · built in Austria · this page is a static file — the plugin lives on GitHub.</p>
+</footer>
+
+<script>
+(function () {
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.getAttribute('data-target'));
+      if (!target) return;
+      var text = target.textContent;
+      var done = function () {
+        var original = btn.textContent;
+        btn.textContent = 'Copied';
+        btn.setAttribute('data-copied', 'true');
+        setTimeout(function () {
+          btn.textContent = original === 'Copied' ? 'Copy' : original;
+          btn.removeAttribute('data-copied');
+        }, 1800);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          btn.textContent = 'Select & copy';
+        });
+      } else {
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        done();
+      }
+    });
+  });
+})();
+</script>
 </body>
 </html>

@@ -1,14 +1,41 @@
 {
   "name": "session-orchestrator",
   "version": "3.14.0",
-  "description": "Session Orchestrator — Claude Code plugin for structured development sessions",
+  "description": "Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.",
   "type": "module",
+  "homepage": "https://session-orchestrator.com",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "claude-code",
+    "codex",
+    "cursor",
+    "ai-agents",
+    "orchestration"
   ],
   "engines": {
     "node": ">=24.0.0"
   },
+  "files": [
+    "pi/",
+    "skills/",
+    "agents/",
+    "commands/",
+    "hooks/",
+    "scripts/",
+    "rules/",
+    "templates/",
+    "output-styles/",
+    "monitors/",
+    "assets/",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    ".cursor/",
+    "docs/*.md",
+    "NOTICE",
+    "SECURITY.md",
+    "!**/node_modules/**",
+    "!**/.DS_Store"
+  ],
   "scripts": {
     "test": "node scripts/check-package-manager.mjs && vitest --run",
     "test:coverage": "node scripts/check-package-manager.mjs && vitest --run --coverage",

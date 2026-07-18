@@ -2,16 +2,16 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-orchestrator",
   "version": "3.14.0",
-  "description": "Session-level orchestration — wave planning, VCS integration, quality gates, persistence, and safety checks",
+  "description": "Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi.",
   "author": {
     "name": "Bernhard Goetzendorfer",
     "email": "office@gotzendorfer.at",
     "url": "https://gotzendorfer.at"
   },
-  "homepage": "https://gotzendorfer.at/en/session-orchestrator",
+  "homepage": "https://session-orchestrator.com",
   "repository": "https://github.com/Kanevry/session-orchestrator",
   "license": "MIT",
-  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates"],
+  "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates", "verification-gates", "multi-agent", "codex", "cursor", "pi"],
   "experimental": {
     "monitors": "./monitors/monitors.json"
   }
