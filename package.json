@@ -7,10 +7,16 @@
   "keywords": [
     "pi-package",
     "claude-code",
+    "claude-code-plugin",
     "codex",
     "cursor",
     "ai-agents",
-    "orchestration"
+    "agentic-coding",
+    "subagents",
+    "orchestration",
+    "developer-tools",
+    "mcp",
+    "llm"
   ],
   "engines": {
     "node": ">=24.0.0"
@@ -79,6 +85,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Kanevry/session-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kanevry/session-orchestrator/issues"
   },
   "pi": {
     "extensions": [
