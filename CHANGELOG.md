@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.0] - 2026-07-19
+
+Feature release. Headline: an honest, deterministic-first **session-process evaluation**
+(`/eval`, standard `aiat-llm-eval/1.0`, Epic #803) lands, `owner.yaml` gains **per-context
+baseline paths** (#819), a new **`bash-harness-pitfalls`** path-scoped rule (#818) codifies
+four false-green shell failure classes, and the **distribution foundation** ships
+(`session-orchestrator.com` landing page + Vercel, plus a fetch-verified channel-research +
+submission kit). An opt-in out-of-scope shell-write guard and a parser/config hardening
+bundle round it out. Everything is additive and backward-compatible.
+
+### Added
+
+- **Session-process evaluation — `/eval`, standard v1 (#803).** A deterministic-first scoring of the last completed orchestrator session against the pre-registered `rubric-v1` dimensions (`aiat-llm-eval/1.0`), with an optional advisory LLM judge (`eval.judge: off|haiku|sonnet`, uncalibrated) and a rebuildable HTML run-report under `.orchestrator/eval/reports/` (gitignored). Wired as session-end Phase 3.7d (advisory — never blocks close). Ships the `/eval` skill, the `eval-judge` agent, and the deterministic `session-eval` engine.
+- **Opt-in out-of-scope shell-write guard (#684-adjacent).** A warn-only, non-blocking PostToolUse hook flags Bash writes that land outside a wave agent's declared file-scope, complementing the Edit/Write scope gate. Off by default.
+- **Per-context baseline paths — `baselines:` array in `owner.yaml` (#819).** Resolve a different `baseline-path` per repo/context instead of a single host-wide default. Host-local, never committed; lenient consumers drop invalid entries at point-of-use.
+- **`bash-harness-pitfalls` path-scoped rule (#818).** Four anonymized false-green failure classes — `grep -c || echo 0` double-print, stdout-capture pollution in value-returning bash functions, aggregate-verdict-from-file discipline, and `perl -pi` multi-line script surgery — codified as a review checklist.
+- **Distribution foundation.** `session-orchestrator.com` landing page + Vercel deploy setup, plus a fetch-verified channel-research + submission kit (official-marketplace SHA-pin refresh, npm publish prep, per-harness install matrix).
+
+### Fixed
+
+- **Parser & config hardening bundle (#823, #828, #820, #822).** Bold-key parse fix in `parseSessionConfig` (the `- **key:**` discriminator; class follow-up filed as #830), a `promoteAndClear` drain guard closing an argument-typo silent-drain, `owner.yaml` optional-section tolerance + an `owner-config-banner` surface (#820), and an eval newest-wins record selector (#822).
+- **`wave-scope-commit-guard` precedence + destructive-guard event emission.** The commit guard now reads `findScopeFile` precedence correctly and the destructive-guard emits its event on block.
+- **Distribution review findings.** `files[]` npm-whitelist completeness (`.mcp.json` inclusion), canonical catalog descriptions, and submission-kit link targets corrected.
+
+### Changed
+
+- **CI resharded 4 → 2 shards (#702).** `min-tests 3000`, inner cap `600s`, outer `10m` — rebalanced so no shard crowds its inner timeout under the Hetzner autoscaler.
+- **`js-yaml` moved from `devDependencies` to `dependencies`.** Runtime `owner.yaml`/config parsing needs it at install time, not only in dev.
+
+### Testing
+
+- **`state-md-lock` cross-process flake fixed (#813).** Test-local acquire timeout + speaking assertions.
+- **Dialectic parser backfill + guard-event E2E chain (#816).** Dead `blockCommand` call removed.
+
+### Documentation
+
+- **`/loop` & monitor delta-syncs (v2.1.211 → v2.1.212).** ultracode-keyword human-origin scope, Routines per-account cap, and a zero-delta re-verify at v2.1.212.
+- **Steering hook-count sync (#814)** — 15 matcher / 20 wired (21 on-disk) + the full phase chain.
+- **Dead-PID stale-marking documented as an explicit no-go (#799).**
+- **aiat-llm-eval PRD** authored, linked to Epic #803, and archived to the Meta-Vault on close.
+
 ## [3.14.0] - 2026-07-13
 
 Hardening release. Headline: the STATE.md yaml-parser becomes a true parse/serialize

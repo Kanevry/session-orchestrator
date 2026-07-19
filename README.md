@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.14.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.15.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor, and [Pi](docs/pi-setup.md)**.
@@ -126,18 +126,18 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.14.0)
+## Recent highlights (v3.15.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.14.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.15.0 line:
 
-- **STATE.md write safety, closed-loop** — the yaml-parser is now a true parse/serialize inverse (no more silent type flips on round-trip), which made it safe to activate the frontmatter-safe write guard inside `writeStateMd`: future serializer/parser drift is refused at the write choke-point instead of ballooning the file.
-- **Scope-union subset assertion** — before a wave fans out, every agent's declared file-scope is asserted to be a subset of the wave's scope-union (`validate-wave-scope --assert-subset`); scope-manifest gaps fail loud pre-dispatch instead of surfacing as blocked edits mid-wave.
-- **Peer-discovery self-exclusion** — a session no longer reports its own registry entry as a parallel peer, removing a false-positive from the parallel-session machinery.
-- **`paths:` rule-frontmatter alias** — path-scoped rules written with `paths:` instead of `globs:` now scope correctly (and stop inflating the always-on instruction budget).
-- **Memory-proposals write guard** — argument-shape typos throw instead of silently writing nothing, and the proposals queue is archived before it is cleared, so approved learnings can no longer vanish.
-- **`/loop` cadence re-derivation** — wakeup-cadence guidance now reflects the 1-hour prompt-cache TTL on subscription main conversations: no cache cliff in the [60s, 3600s] range; pick cadence by observation-rate.
+- **Session-process evaluation (`/eval`, standard v1)** — an honest, deterministic-first scoring of a completed orchestrator session against a pre-registered rubric (`aiat-llm-eval/1.0`), with an optional advisory LLM judge and a rebuildable HTML run-report. Never produces a global score; blocks close never.
+- **Opt-in out-of-scope shell-write guard** — a warn-only PostToolUse hook that flags Bash writes landing outside a wave agent's declared file-scope, complementing the Edit/Write scope gate.
+- **Per-context baseline paths (`baselines:` in `owner.yaml`)** — resolve a different baseline-path per repo/context instead of one host-wide default; host-local, never committed.
+- **`bash-harness-pitfalls` path-scoped rule** — four anonymized false-green failure classes (`grep -c || echo 0` double-print, stdout-capture pollution, verdict-from-file discipline, `perl -pi` script surgery) codified as a review checklist.
+- **Distribution foundation** — `session-orchestrator.com` landing page + Vercel deploy, plus a fetch-verified channel-research + submission kit (official-marketplace refresh, npm publish prep).
+- **Parser & config hardening** — bold-key parse fix (#823), `promoteAndClear` drain guard (#828), `owner.yaml` optional-section tolerance + banner (#820), and an eval newest-wins record selector (#822).
 
-Previous line (v3.13.0): issue premise verification, broken-window budget, confidential-names guard, PM toolkit complete, rules library activated.
+Previous line (v3.14.0): STATE.md write-safety closed loop, scope-union subset assertion, peer-discovery self-exclusion, `paths:` rule alias, memory-proposals write guard, `/loop` cadence re-derivation.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
