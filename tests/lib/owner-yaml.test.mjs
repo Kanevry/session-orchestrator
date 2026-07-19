@@ -7,7 +7,7 @@
  * Uses a tmp dir for all I/O tests to avoid touching the real ~/.config/.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import {
   OWNER_YAML_PATH,
   validateOwnerConfig,
+  validateOwnerSections,
   loadOwnerConfig,
   writeOwnerConfig,
   getDefaults,
@@ -748,5 +749,110 @@ describe('baselines: section (#819) — validation rejects malformed entries', (
     const result = validateOwnerConfig(cfg);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('baselines[0]'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #820 per-section tolerance
+// ---------------------------------------------------------------------------
+
+describe('#820 per-section tolerance', () => {
+  it('malformed OPTIONAL object section (paths) with valid required sections → source "partial", drops paths to defaults, preserves other file values', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    // Write raw YAML directly (bypassing writeOwnerConfig's own validation,
+    // which would reject this) so the malformed `paths: 42` reaches the loader.
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "direct"\n  tonality: "terse"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths: 42\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('partial');
+    expect(result.droppedSections).toEqual([
+      { section: 'paths', errors: ['paths must be an object when present'] },
+    ]);
+    expect(result.config.paths).toEqual(getDefaults().paths);
+    // Other file values survive the partial-drop.
+    expect(result.config.owner.name).toBe('Bernhard');
+    expect(result.config.tone.style).toBe('direct');
+  });
+
+  it('malformed baselines entry with valid required sections → source "file", raw baselines array passed through untouched, sectionWarnings names baselines, paths.vault-dir preserved (#820 motivating case)', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    // Written as raw YAML (not via writeOwnerConfig, which would itself reject
+    // this malformed baselines entry pre-write): a baselines entry missing the
+    // required match.path-prefix, alongside a valid paths.vault-dir.
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "direct"\n  tonality: "terse"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths:\n  vault-dir: "/real/vault"\nbaselines:\n  - name: "typo"\n    path: "~/p"\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('file');
+    expect(result.config.baselines).toEqual([{ name: 'typo', path: '~/p' }]);
+    expect(result.sectionWarnings).toEqual([
+      {
+        section: 'baselines',
+        errors: ['baselines[0].match must be an object'],
+      },
+    ]);
+    // The motivating #820 case: a baselines typo must NOT blank vault-dir.
+    expect(result.config.paths['vault-dir']).toBe('/real/vault');
+  });
+
+  it('invalid REQUIRED section (tone.style) → legacy whole-file discard unchanged: source "defaults", full defaults, errors populated', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "nonsense"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('defaults');
+    expect(result.config).toEqual(getDefaults());
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes('tone.style'))).toBe(true);
+  });
+
+  it('validateOwnerSections returns per-section buckets keyed by section name, each with valid/errors', () => {
+    const cfg = validConfig({ paths: 'oops' });
+    const result = validateOwnerSections(cfg);
+    expect(result.sections.owner).toEqual({ valid: true, errors: [] });
+    expect(result.sections.paths).toEqual({
+      valid: false,
+      errors: ['paths must be an object when present'],
+    });
+    expect(result.errors).toContain('paths must be an object when present');
+  });
+
+  it('validateOwnerConfig contract is unchanged: flat { valid, errors } shape (no sections key)', () => {
+    const result = validateOwnerConfig(validConfig());
+    expect(Object.keys(result).sort()).toEqual(['errors', 'valid']);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('emits a stderr WARN via console.warn when an OPTIONAL section is dropped', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "direct"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths: 42\n',
+      'utf8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadOwnerConfig({ path: filePath });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dropping owner.yaml section "paths"'));
+    warnSpy.mockRestore();
   });
 });

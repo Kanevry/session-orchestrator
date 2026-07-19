@@ -42,7 +42,7 @@ import { join } from 'node:path';
 
 import { createProposalRecord } from '@lib/memory-proposals/schema.mjs';
 import { appendProposal } from '@lib/memory-proposals/store.mjs';
-import { writeApproved, clearProposalsJsonl } from '@lib/memory-proposals/sink.mjs';
+import { writeApproved, clearProposalsJsonl, promoteAndClear } from '@lib/memory-proposals/sink.mjs';
 
 const SESSION_ID = 'test-session-2026-07-12';
 
@@ -290,6 +290,135 @@ describe('sink.mjs — #797 writeApproved fail-silent guard + clear-archive', ()
       expect(archived).toHaveLength(1);
       expect(archived[0].subject).toBe('recoverable');
       expect(readJsonlLines(learningsJsonlPath)).toHaveLength(1);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // promoteAndClear — #828: clear the queue ONLY after a verified write
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('promoteAndClear (#828) — happy path clears the queue after a verified write', () => {
+    it('writes every approved proposal, clears the queue, and returns the verified-write summary', async () => {
+      for (let i = 1; i <= 3; i++) {
+        await appendProposal({
+          record: makeRecord({ subject: `promote-${i}` }),
+          repoRoot: tmpRepo,
+          waveId: 'W1',
+        });
+      }
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      expect(proposals).toHaveLength(3); // guard: seeding worked
+
+      const result = await promoteAndClear({
+        approved: proposals,
+        sessionId: SESSION_ID,
+        repoRoot: tmpRepo,
+      });
+
+      expect(result).toEqual({
+        written: 3,
+        expected: 3,
+        errors: [],
+        cleared: true,
+        summariesCleared: 1,
+        skippedReason: null,
+      });
+      expect(readJsonlLines(learningsJsonlPath)).toHaveLength(3);
+      expect(readRaw(proposalsJsonlPath)).toBe('');
+      expect(
+        existsSync(join(tmpRepo, '.orchestrator', 'metrics', 'proposals-summary-W1.json')),
+      ).toBe(false);
+    });
+  });
+
+  describe('promoteAndClear (#828) — missing sessionId throws and leaves the queue untouched', () => {
+    it('throws a TypeError naming "sessionId" when omitted', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      const before = readRaw(proposalsJsonlPath);
+      expect(before.length).toBeGreaterThan(0); // guard: queue seeded
+
+      await expect(
+        promoteAndClear({ approved: proposals, repoRoot: tmpRepo }),
+      ).rejects.toThrow(TypeError);
+
+      await expect(
+        promoteAndClear({ approved: proposals, repoRoot: tmpRepo }),
+      ).rejects.toThrow(/sessionId/);
+
+      expect(readRaw(proposalsJsonlPath)).toBe(before);
+    });
+  });
+
+  describe('promoteAndClear (#828) — arg-name typo guard (own-level #797 mirror)', () => {
+    it('promoteAndClear({ proposals: [...] }) throws a TypeError naming "approved"', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      const before = readRaw(proposalsJsonlPath);
+      expect(before.length).toBeGreaterThan(0); // guard: queue seeded
+
+      // FALSIFICATION: pre-fix, promoteAndClear forwarded a FRESH
+      // { approved, repoRoot, sessionId } literal to writeApproved(), so the
+      // unrecognised `proposals` key here was silently dropped. writeApproved
+      // then received approved:undefined with NO unknown keys, took the
+      // legitimate no-op branch, and the mechanical guard drained the queue
+      // anyway — the exact #828 incident, reintroduced one layer up.
+      await expect(
+        promoteAndClear({ proposals, sessionId: SESSION_ID, repoRoot: tmpRepo }),
+      ).rejects.toThrow(TypeError);
+
+      await expect(
+        promoteAndClear({ proposals, sessionId: SESSION_ID, repoRoot: tmpRepo }),
+      ).rejects.toThrow(/approved/i);
+
+      expect(readRaw(proposalsJsonlPath)).toBe(before);
+    });
+  });
+
+  describe('promoteAndClear (#828) — partial write blocks the clear', () => {
+    it('a schema-invalid proposal mixed with a valid one skips the clear with write-errors', async () => {
+      await appendProposal({ record: makeRecord({ subject: 'valid-one' }), repoRoot: tmpRepo, waveId: 'W1' });
+      await appendProposal({ record: makeRecord({ subject: 'will-be-broken' }), repoRoot: tmpRepo, waveId: 'W1' });
+      const [validProposal, brokenSeed] = readJsonlLines(proposalsJsonlPath);
+
+      const invalidProposal = { ...brokenSeed };
+      delete invalidProposal.subject; // schema-invalid: missing required field
+
+      const before = readRaw(proposalsJsonlPath);
+      expect(before.length).toBeGreaterThan(0); // guard: queue seeded
+
+      const result = await promoteAndClear({
+        approved: [validProposal, invalidProposal],
+        sessionId: SESSION_ID,
+        repoRoot: tmpRepo,
+      });
+
+      expect(result.written).toBe(1);
+      expect(result.expected).toBe(2);
+      expect(result.errors).toHaveLength(1);
+      expect(result.cleared).toBe(false);
+      expect(result.skippedReason).toBe('write-errors');
+
+      // FALSIFICATION: if the mechanical write-verified guard were removed,
+      // the queue would be drained here even though only 1/2 records wrote.
+      expect(readRaw(proposalsJsonlPath)).toBe(before);
+    });
+  });
+
+  describe('promoteAndClear (#828) — legitimate no-op call shape (no approved key)', () => {
+    it('{ sessionId, repoRoot } with no approved key clears an already-empty queue', async () => {
+      expect(existsSync(proposalsJsonlPath)).toBe(false); // guard: nothing ever queued
+
+      const result = await promoteAndClear({ sessionId: SESSION_ID, repoRoot: tmpRepo });
+
+      expect(result).toEqual({
+        written: 0,
+        expected: 0,
+        errors: [],
+        cleared: true,
+        summariesCleared: 0,
+        skippedReason: null,
+      });
     });
   });
 });

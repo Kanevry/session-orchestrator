@@ -366,6 +366,44 @@ describe('_parseVaultIntegration', () => {
       });
     });
   });
+
+  // Issue #823: bold-bullet markdown rendering of vault-integration (both
+  // inline and block forms). The optional `**` markdown-bold wrapper around
+  // the `vault-integration:` key token at line-start is stripped; the value
+  // portion is untouched.
+  describe('#823 bold-bullet form', () => {
+    it('parses bold inline-flow form (`- **vault-integration:** { ... }`)', () => {
+      const content =
+        `- **vault-integration:** { enabled: true, vault-dir: ~/Projects/vault, mode: warn }\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/Projects/vault',
+        mode: 'warn',
+        'vault-name': null,
+      });
+    });
+
+    it('parses bold block-header form (`- **vault-integration:**` + indented body)', () => {
+      const content =
+        `- **vault-integration:**\n  enabled: true\n  vault-dir: ~/Projects/vault\n  mode: warn\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: true,
+        'vault-dir': '~/Projects/vault',
+        mode: 'warn',
+        'vault-name': null,
+      });
+    });
+
+    it('a bullet with a different bold key does not populate vault-integration', () => {
+      const content = `- **vault-sync:** { enabled: true, vault-dir: ~/X, mode: strict }\n`;
+      expect(_parseVaultIntegration(content)).toEqual({
+        enabled: false,
+        'vault-dir': null,
+        mode: 'warn',
+        'vault-name': null,
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

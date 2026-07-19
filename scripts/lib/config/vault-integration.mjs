@@ -48,6 +48,12 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  *
  * The inline form takes precedence when both are present.
  *
+ * Accepted forms: the bold-bullet markdown rendering of either shape above —
+ * `- **vault-integration:** { ... }` or a `- **vault-integration:**` header
+ * followed by an indented block — is also accepted (#823). The optional `**`
+ * is stripped only immediately around the `key:` token at line start; the
+ * value portion (including any literal `**` inside it) is untouched.
+ *
  * Defaults:
  *   enabled:    false
  *   vault-dir:  null
@@ -67,7 +73,7 @@ export function _parseVaultIntegration(content) {
   // without a leading `- ` (baseline list-item form per #497).
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
-    const inlineMatch = line.match(/^(?:-\s+)?vault-integration:\s*(\{[^}]*\})\s*(?:#.*)?$/);
+    const inlineMatch = line.match(/^(?:-\s+)?(?:\*\*)?vault-integration:(?:\*\*)?\s*(\{[^}]*\})\s*(?:#.*)?$/);
     if (inlineMatch) {
       return _parseInlineObject(inlineMatch[1]);
     }
@@ -81,7 +87,7 @@ export function _parseVaultIntegration(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^(?:-\s+)?vault-integration:\s*$/.test(line)) inBlock = true;
+      if (/^(?:-\s+)?(?:\*\*)?vault-integration:(?:\*\*)?\s*$/.test(line)) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

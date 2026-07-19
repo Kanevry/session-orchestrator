@@ -10,7 +10,15 @@ Guide for using Session Orchestrator with [Pi](https://pi.dev/docs/latest).
 
 ## Installation
 
-### Option 1: Project-local registration
+### Option 1: npm package (primary, once published)
+
+```bash
+pi install npm:session-orchestrator
+```
+
+This is the primary install path once the package has been published to npm and indexed by the [Pi packages gallery](https://pi.dev/packages) via its `pi-package` keyword — no local checkout required. Not yet available: the package has not been published to npm yet (see `docs/distribution/npm-publish-checklist.md` for the operator publish runbook). Until then, use one of the dev-fallback options below.
+
+### Option 2: Project-local registration (dev fallback)
 
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
@@ -28,7 +36,7 @@ cd /path/to/your/project
 pi install ~/Projects/session-orchestrator -l
 ```
 
-### Option 2: Global registration
+### Option 3: Global registration (dev fallback)
 
 ```bash
 cd ~/Projects/session-orchestrator

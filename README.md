@@ -1,12 +1,39 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.14.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.15.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
-Turn ad-hoc agent sessions into a repeatable loop with verification gates — loop engineering for software work. You design the loop (`research → plan → execute in waves → close`); Session Orchestrator runs it on top of your existing agent, with the guards, telemetry, and cross-session memory that keep a long agent run honest. Inter-wave reviews catch regressions before they ship; carryover issues mean loose ends get tracked, not lost.
+Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor, and [Pi](docs/pi-setup.md)**.
 
-Works with **Claude Code, Codex CLI, Cursor IDE, and [Pi](docs/pi-setup.md)** — the same skills and commands across all four, with platform-adapted hooks and enforcement (see [Platform support](#platform-support)). Community plugin (MIT, community-maintained) for solo devs and small teams.
+The same skills and commands run across all four, with platform-adapted hooks and enforcement (see [Platform support](#platform-support)). Community plugin (MIT, community-maintained) for solo devs and small teams.
+
+## Install
+
+> **Prerequisite:** Node.js 24 or later (`node --version`). v3.x runs as ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/).
+
+| Platform | Install |
+|---|---|
+| **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (run both inside Claude Code). Also listed on the official community catalog: `/plugin install session-orchestrator@claude-community` (that catalog can lag HEAD). |
+| **Codex CLI** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs` |
+| **Cursor IDE** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/cursor-install.mjs /path/to/your/project` |
+| **Pi** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` (npm path `pi install npm:session-orchestrator` lands once published — not yet available) |
+
+For Claude Code, also install Node dependencies **once** (hooks import `zx`) and restart Claude Code:
+
+```bash
+cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugins/session-orchestrator)"
+npm install
+```
+
+Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md) · [Pi](docs/pi-setup.md). Per-IDE notes on `CLAUDE.md` vs `AGENTS.md`: [instruction-file-resolution](skills/_shared/instruction-file-resolution.md).
+
+## What makes it different
+
+- **Verification gates** — every wave ends at a typecheck/lint/test gate; a confidence-filtered session-reviewer catches regressions between waves, not only at the end.
+- **Wave orchestration** — five typed roles (Discovery → Impl-Core → Impl-Polish → Quality → Finalization), parallel subagents inside each wave, not one big batch.
+- **Persistent memory & learnings** — `STATE.md` survives crashes and resumes the next session; `/evolve` extracts confidence-scored patterns across sessions, nothing hidden.
+- **Multi-harness** — the same skills and commands run on Claude Code, Codex CLI, Cursor IDE, and Pi, with platform-adapted hooks and enforcement.
 
 ## A session in three commands
 
@@ -17,49 +44,6 @@ Works with **Claude Code, Codex CLI, Cursor IDE, and [Pi](docs/pi-setup.md)** �
 ```
 
 That is the whole loop. `/plan` and `/evolve` extend it (see [Lifecycle](#lifecycle-at-a-glance)), but you can start with just these three.
-
-## Install
-
-> **Prerequisite:** Node.js 24 or later (`node --version`). v3.x runs as ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/).
-
-The platforms share the same skills and commands, but each harness has its own supported install lifecycle.
-
-### Claude Code (plugin marketplace)
-
-Run these two slash commands **inside** Claude Code (not in a shell):
-
-```text
-/plugin marketplace add Kanevry/session-orchestrator
-/plugin install session-orchestrator@kanevry
-```
-
-Then install Node dependencies **once** (hooks import `zx`) and restart Claude Code:
-
-```bash
-cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugins/session-orchestrator)"
-npm install
-```
-
-### Codex CLI (public plugin lifecycle)
-
-```bash
-git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
-cd ~/Projects/session-orchestrator && npm install
-node scripts/codex-install.mjs
-codex plugin list --available --json
-```
-
-The installer drives Codex's public `plugin marketplace add` and `plugin add` commands, then verifies the installed and enabled state. Start a fresh task (or restart Codex), run `/hooks`, and review the bundle: marketplace configuration, plugin installation, and hook trust are separate states, and the installer never bypasses operator-controlled trust. Rerun the installer after pulling changes; its every-run `plugin add` refreshes the bundle, while the committed `+codex.<UTC timestamp>` manifest suffix provides explicit cache invalidation without installer-side manifest edits.
-
-### Cursor IDE & Pi (git clone)
-
-```bash
-cd ~/Projects/session-orchestrator
-node scripts/cursor-install.mjs /path/to/your/project
-node scripts/pi-install.mjs    /path/to/your/project --settings-only
-```
-
-Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md) · [Pi](docs/pi-setup.md). Per-IDE notes on `CLAUDE.md` vs `AGENTS.md`: [instruction-file-resolution](skills/_shared/instruction-file-resolution.md).
 
 ## Quick Start
 
@@ -142,18 +126,18 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.14.0)
+## Recent highlights (v3.15.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.14.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.15.0 line:
 
-- **STATE.md write safety, closed-loop** — the yaml-parser is now a true parse/serialize inverse (no more silent type flips on round-trip), which made it safe to activate the frontmatter-safe write guard inside `writeStateMd`: future serializer/parser drift is refused at the write choke-point instead of ballooning the file.
-- **Scope-union subset assertion** — before a wave fans out, every agent's declared file-scope is asserted to be a subset of the wave's scope-union (`validate-wave-scope --assert-subset`); scope-manifest gaps fail loud pre-dispatch instead of surfacing as blocked edits mid-wave.
-- **Peer-discovery self-exclusion** — a session no longer reports its own registry entry as a parallel peer, removing a false-positive from the parallel-session machinery.
-- **`paths:` rule-frontmatter alias** — path-scoped rules written with `paths:` instead of `globs:` now scope correctly (and stop inflating the always-on instruction budget).
-- **Memory-proposals write guard** — argument-shape typos throw instead of silently writing nothing, and the proposals queue is archived before it is cleared, so approved learnings can no longer vanish.
-- **`/loop` cadence re-derivation** — wakeup-cadence guidance now reflects the 1-hour prompt-cache TTL on subscription main conversations: no cache cliff in the [60s, 3600s] range; pick cadence by observation-rate.
+- **Session-process evaluation (`/eval`, standard v1)** — an honest, deterministic-first scoring of a completed orchestrator session against a pre-registered rubric (`aiat-llm-eval/1.0`), with an optional advisory LLM judge and a rebuildable HTML run-report. Never produces a global score; blocks close never.
+- **Opt-in out-of-scope shell-write guard** — a warn-only PostToolUse hook that flags Bash writes landing outside a wave agent's declared file-scope, complementing the Edit/Write scope gate.
+- **Per-context baseline paths (`baselines:` in `owner.yaml`)** — resolve a different baseline-path per repo/context instead of one host-wide default; host-local, never committed.
+- **`bash-harness-pitfalls` path-scoped rule** — four anonymized false-green failure classes (`grep -c || echo 0` double-print, stdout-capture pollution, verdict-from-file discipline, `perl -pi` script surgery) codified as a review checklist.
+- **Distribution foundation** — `session-orchestrator.com` landing page + Vercel deploy, plus a fetch-verified channel-research + submission kit (official-marketplace refresh, npm publish prep).
+- **Parser & config hardening** — bold-key parse fix (#823), `promoteAndClear` drain guard (#828), `owner.yaml` optional-section tolerance + banner (#820), and an eval newest-wins record selector (#822).
 
-Previous line (v3.13.0): issue premise verification, broken-window budget, confidential-names guard, PM toolkit complete, rules library activated.
+Previous line (v3.14.0): STATE.md write-safety closed loop, scope-union subset assertion, peer-discovery self-exclusion, `paths:` rule alias, memory-proposals write guard, `/loop` cadence re-derivation.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -253,7 +237,7 @@ The plugin is free and MIT. The courses are for going deeper, not a requirement 
 
 ## Links
 
-- [Homepage](https://gotzendorfer.at/en/session-orchestrator) · [Privacy Policy](https://gotzendorfer.at/en/session-orchestrator/privacy)
+- [Homepage](https://session-orchestrator.com) · [Privacy Policy](https://gotzendorfer.at/en/session-orchestrator/privacy)
 
 ## License
 

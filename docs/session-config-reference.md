@@ -444,6 +444,8 @@ vault-integration:
 
 > **Host-local override (#653; extended #819).** `vault-dir` resolves host-locally with precedence: env-var (`SO_VAULT_DIR`) > `owner.yaml` `paths.vault-dir` > the committed default. `plan-baseline-path` resolves with an extra per-context tier in between: `SO_BASELINE_PATH` env > `owner.yaml` `baselines:` directory-prefix match against cwd > `owner.yaml` `paths.baseline-path` (legacy scalar) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolvers: `scripts/lib/config/host-paths.mjs` (both keys) and `scripts/lib/named-baseline-resolver.mjs` (the `baselines:` match tier).
 
+> **Parser accepts three key-line renderings (#823).** The `vault-integration:` key line is recognized in plain form (`vault-integration:`), dash-bullet form (`- vault-integration:`), and bold-bullet form (`- **vault-integration:**`) — each paired with either the inline-object shape (`{ enabled: true, ... }` on the same line) or the indented block shape shown above. Parser: `scripts/lib/config/vault-integration.mjs` (`_parseVaultIntegration`).
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `vault-integration.enabled` | boolean | `false` | If true, session-end and evolve skills invoke `vault-mirror.mjs` to sync learnings and sessions into the vault. When false (or missing), mirroring is skipped silently. |

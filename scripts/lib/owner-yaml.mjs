@@ -38,11 +38,13 @@
  *
  * ── Exports ───────────────────────────────────────────────────────────────────
  *
- *   OWNER_YAML_PATH          — default file path on disk
- *   validateOwnerConfig(obj) — pure validation, no I/O
- *   loadOwnerConfig({path?}) — reads file, returns defaults if missing/invalid
+ *   OWNER_YAML_PATH            — default file path on disk
+ *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
+ *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
+ *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
+ *                                sections (paths/dispatcher/vaults/baselines) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
- *   getDefaults()            — returns sensible default config object
+ *   getDefaults()              — returns sensible default config object
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -61,6 +63,34 @@ const VALID_LANGUAGES = /** @type {const} */ (['de', 'en']);
 const VALID_TONE_STYLES = /** @type {const} */ (['direct', 'neutral', 'friendly']);
 const VALID_OUTPUT_LEVELS = /** @type {const} */ (['lite', 'full', 'ultra']);
 const VALID_PREAMBLE_LEVELS = /** @type {const} */ (['minimal', 'verbose']);
+
+/**
+ * REQUIRED sections (#820) — an invalid entry here keeps the legacy
+ * whole-file-discard behaviour of `loadOwnerConfig` unchanged.
+ */
+const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 'hardware-sharing']);
+
+/**
+ * OPTIONAL object sections (#820) — a malformed entry is replaced by its
+ * `getDefaults()` value and reported via `droppedSections` + a stderr WARN,
+ * but does NOT discard the rest of the file.
+ */
+const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (['paths', 'dispatcher']);
+
+/**
+ * OPTIONAL list sections (#820) — malformed entries are passed through
+ * UNTOUCHED (their consumers run a lenient parse-at-point-of-use pass —
+ * `parseNamedVaults`/`parseBaselines` — that already drops bad entries with
+ * its own WARN). Surfaced here only via `sectionWarnings`, never dropped.
+ */
+const OPTIONAL_LIST_SECTIONS = /** @type {const} */ (['vaults', 'baselines']);
+
+/** Canonical validation-order — MUST match the pre-#820 inline validation order. */
+const SECTION_ORDER = /** @type {const} */ ([
+  ...REQUIRED_SECTIONS,
+  ...OPTIONAL_OBJECT_SECTIONS,
+  ...OPTIONAL_LIST_SECTIONS,
+]);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,105 +145,128 @@ export function getDefaults() {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate a raw owner config object. Pure function — never throws, never reads
- * or writes any file.
+ * Validate a raw owner config object, bucketed per top-level section (#820).
+ * Pure function — never throws, never reads or writes any file. Reuses the
+ * EXACT validation rules `validateOwnerConfig` has always applied; only the
+ * bucketing is new, so error message text and (within a section) ordering
+ * are unchanged.
  *
  * @param {unknown} obj
- * @returns {{ valid: boolean, errors: string[] }}
+ * @returns {{ sections: Record<string, { valid: boolean, errors: string[] }>, errors: string[] }}
  */
-export function validateOwnerConfig(obj) {
-  const errors = [];
-
+export function validateOwnerSections(obj) {
   if (!isPlainObject(obj)) {
-    return { valid: false, errors: ['config must be a plain object'] };
+    return { sections: {}, errors: ['config must be a plain object'] };
   }
 
+  const sections = {};
+
   // ── owner ──────────────────────────────────────────────────────────────────
-  const owner = obj.owner;
-  if (!isPlainObject(owner)) {
-    errors.push('owner must be an object');
-  } else {
-    if (typeof owner.name !== 'string' || owner.name.trim().length === 0) {
-      errors.push('owner.name is required and must be a non-empty string');
+  {
+    const errors = [];
+    const owner = obj.owner;
+    if (!isPlainObject(owner)) {
+      errors.push('owner must be an object');
+    } else {
+      if (typeof owner.name !== 'string' || owner.name.trim().length === 0) {
+        errors.push('owner.name is required and must be a non-empty string');
+      }
+      if (!VALID_LANGUAGES.includes(owner.language)) {
+        errors.push(
+          `owner.language must be one of ${VALID_LANGUAGES.join(', ')}, got: ${JSON.stringify(owner.language)}`,
+        );
+      }
     }
-    if (!VALID_LANGUAGES.includes(owner.language)) {
-      errors.push(
-        `owner.language must be one of ${VALID_LANGUAGES.join(', ')}, got: ${JSON.stringify(owner.language)}`,
-      );
-    }
+    sections.owner = { valid: errors.length === 0, errors };
   }
 
   // ── tone ───────────────────────────────────────────────────────────────────
-  const tone = obj.tone;
-  if (!isPlainObject(tone)) {
-    errors.push('tone must be an object');
-  } else {
-    if (!VALID_TONE_STYLES.includes(tone.style)) {
-      errors.push(
-        `tone.style must be one of ${VALID_TONE_STYLES.join(', ')}, got: ${JSON.stringify(tone.style)}`,
-      );
+  {
+    const errors = [];
+    const tone = obj.tone;
+    if (!isPlainObject(tone)) {
+      errors.push('tone must be an object');
+    } else {
+      if (!VALID_TONE_STYLES.includes(tone.style)) {
+        errors.push(
+          `tone.style must be one of ${VALID_TONE_STYLES.join(', ')}, got: ${JSON.stringify(tone.style)}`,
+        );
+      }
+      // tonality is optional; if present must be a string
+      if (tone.tonality !== undefined && tone.tonality !== null && typeof tone.tonality !== 'string') {
+        errors.push('tone.tonality must be a string or absent');
+      }
     }
-    // tonality is optional; if present must be a string
-    if (tone.tonality !== undefined && tone.tonality !== null && typeof tone.tonality !== 'string') {
-      errors.push('tone.tonality must be a string or absent');
-    }
+    sections.tone = { valid: errors.length === 0, errors };
   }
 
   // ── efficiency ─────────────────────────────────────────────────────────────
-  const efficiency = obj.efficiency;
-  if (!isPlainObject(efficiency)) {
-    errors.push('efficiency must be an object');
-  } else {
-    if (!VALID_OUTPUT_LEVELS.includes(efficiency['output-level'])) {
-      errors.push(
-        `efficiency.output-level must be one of ${VALID_OUTPUT_LEVELS.join(', ')}, got: ${JSON.stringify(efficiency['output-level'])}`,
-      );
+  {
+    const errors = [];
+    const efficiency = obj.efficiency;
+    if (!isPlainObject(efficiency)) {
+      errors.push('efficiency must be an object');
+    } else {
+      if (!VALID_OUTPUT_LEVELS.includes(efficiency['output-level'])) {
+        errors.push(
+          `efficiency.output-level must be one of ${VALID_OUTPUT_LEVELS.join(', ')}, got: ${JSON.stringify(efficiency['output-level'])}`,
+        );
+      }
+      if (!VALID_PREAMBLE_LEVELS.includes(efficiency.preamble)) {
+        errors.push(
+          `efficiency.preamble must be one of ${VALID_PREAMBLE_LEVELS.join(', ')}, got: ${JSON.stringify(efficiency.preamble)}`,
+        );
+      }
     }
-    if (!VALID_PREAMBLE_LEVELS.includes(efficiency.preamble)) {
-      errors.push(
-        `efficiency.preamble must be one of ${VALID_PREAMBLE_LEVELS.join(', ')}, got: ${JSON.stringify(efficiency.preamble)}`,
-      );
-    }
+    sections.efficiency = { valid: errors.length === 0, errors };
   }
 
   // ── hardware-sharing ───────────────────────────────────────────────────────
-  const hw = obj['hardware-sharing'];
-  if (!isPlainObject(hw)) {
-    errors.push('hardware-sharing must be an object');
-  } else {
-    if (typeof hw.enabled !== 'boolean') {
-      errors.push(`hardware-sharing.enabled must be a boolean, got: ${typeof hw.enabled}`);
-    }
-    // hash-salt is required when enabled=true
-    if (hw.enabled === true) {
-      if (typeof hw['hash-salt'] !== 'string' || hw['hash-salt'].length === 0) {
-        errors.push('hardware-sharing.hash-salt is required (non-empty string) when hardware-sharing.enabled is true');
+  {
+    const errors = [];
+    const hw = obj['hardware-sharing'];
+    if (!isPlainObject(hw)) {
+      errors.push('hardware-sharing must be an object');
+    } else {
+      if (typeof hw.enabled !== 'boolean') {
+        errors.push(`hardware-sharing.enabled must be a boolean, got: ${typeof hw.enabled}`);
+      }
+      // hash-salt is required when enabled=true
+      if (hw.enabled === true) {
+        if (typeof hw['hash-salt'] !== 'string' || hw['hash-salt'].length === 0) {
+          errors.push('hardware-sharing.hash-salt is required (non-empty string) when hardware-sharing.enabled is true');
+        }
+      }
+      // if present and non-empty, must be a string
+      if (
+        hw['hash-salt'] !== undefined &&
+        hw['hash-salt'] !== null &&
+        hw['hash-salt'] !== '' &&
+        typeof hw['hash-salt'] !== 'string'
+      ) {
+        errors.push('hardware-sharing.hash-salt must be a string');
       }
     }
-    // if present and non-empty, must be a string
-    if (
-      hw['hash-salt'] !== undefined &&
-      hw['hash-salt'] !== null &&
-      hw['hash-salt'] !== '' &&
-      typeof hw['hash-salt'] !== 'string'
-    ) {
-      errors.push('hardware-sharing.hash-salt must be a string');
-    }
+    sections['hardware-sharing'] = { valid: errors.length === 0, errors };
   }
 
   // ── paths (optional; host-local path overrides — #653) ───────────────────────
-  const paths = obj.paths;
-  if (paths !== undefined && paths !== null) {
-    if (!isPlainObject(paths)) {
-      errors.push('paths must be an object when present');
-    } else {
-      for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file']) {
-        const v = paths[key];
-        if (v !== undefined && v !== null && typeof v !== 'string') {
-          errors.push(`paths.${key} must be a string`);
+  {
+    const errors = [];
+    const paths = obj.paths;
+    if (paths !== undefined && paths !== null) {
+      if (!isPlainObject(paths)) {
+        errors.push('paths must be an object when present');
+      } else {
+        for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file']) {
+          const v = paths[key];
+          if (v !== undefined && v !== null && typeof v !== 'string') {
+            errors.push(`paths.${key} must be a string`);
+          }
         }
       }
     }
+    sections.paths = { valid: errors.length === 0, errors };
   }
 
   // ── dispatcher (optional; host-local dispatcher autonomy override — #679) ─────
@@ -221,17 +274,21 @@ export function validateOwnerConfig(obj) {
   // value (resolveDispatcherAutonomy in config/dispatcher-autonomy.mjs), so an
   // invalid string here falls through to the next precedence tier rather than
   // failing the whole owner.yaml load.
-  const dispatcher = obj.dispatcher;
-  if (dispatcher !== undefined && dispatcher !== null) {
-    if (!isPlainObject(dispatcher)) {
-      errors.push('dispatcher must be an object when present');
-    } else if (
-      dispatcher.autonomy !== undefined &&
-      dispatcher.autonomy !== null &&
-      typeof dispatcher.autonomy !== 'string'
-    ) {
-      errors.push('dispatcher.autonomy must be a string');
+  {
+    const errors = [];
+    const dispatcher = obj.dispatcher;
+    if (dispatcher !== undefined && dispatcher !== null) {
+      if (!isPlainObject(dispatcher)) {
+        errors.push('dispatcher must be an object when present');
+      } else if (
+        dispatcher.autonomy !== undefined &&
+        dispatcher.autonomy !== null &&
+        typeof dispatcher.autonomy !== 'string'
+      ) {
+        errors.push('dispatcher.autonomy must be a string');
+      }
     }
+    sections.dispatcher = { valid: errors.length === 0, errors };
   }
 
   // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────
@@ -239,40 +296,44 @@ export function validateOwnerConfig(obj) {
   // named-vault-resolver.mjs. Here we only validate the container shape to
   // prevent clearly invalid config from passing silently.
   // Absent or null → backward-compat no-op (no validation errors).
-  const vaults = obj.vaults;
-  if (vaults !== undefined && vaults !== null) {
-    if (!Array.isArray(vaults)) {
-      errors.push('vaults must be an array when present');
-    } else {
-      for (let i = 0; i < vaults.length; i++) {
-        const entry = vaults[i];
-        if (entry === null || entry === undefined) {
-          errors.push(`vaults[${i}] must not be null`);
-          continue;
-        }
-        if (!isPlainObject(entry)) {
-          errors.push(`vaults[${i}] must be an object`);
-          continue;
-        }
-        // Required string fields: name, suffix, root
-        for (const field of ['name', 'suffix', 'root']) {
-          if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
-            errors.push(`vaults[${i}].${field} must be a non-empty string`);
+  {
+    const errors = [];
+    const vaults = obj.vaults;
+    if (vaults !== undefined && vaults !== null) {
+      if (!Array.isArray(vaults)) {
+        errors.push('vaults must be an array when present');
+      } else {
+        for (let i = 0; i < vaults.length; i++) {
+          const entry = vaults[i];
+          if (entry === null || entry === undefined) {
+            errors.push(`vaults[${i}] must not be null`);
+            continue;
           }
-        }
-        // Optional match sub-object
-        if (entry.match !== undefined && entry.match !== null) {
-          if (!isPlainObject(entry.match)) {
-            errors.push(`vaults[${i}].match must be an object when present`);
-          } else if (
-            entry.match['org-prefix'] !== undefined &&
-            typeof entry.match['org-prefix'] !== 'string'
-          ) {
-            errors.push(`vaults[${i}].match.org-prefix must be a string`);
+          if (!isPlainObject(entry)) {
+            errors.push(`vaults[${i}] must be an object`);
+            continue;
+          }
+          // Required string fields: name, suffix, root
+          for (const field of ['name', 'suffix', 'root']) {
+            if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
+              errors.push(`vaults[${i}].${field} must be a non-empty string`);
+            }
+          }
+          // Optional match sub-object
+          if (entry.match !== undefined && entry.match !== null) {
+            if (!isPlainObject(entry.match)) {
+              errors.push(`vaults[${i}].match must be an object when present`);
+            } else if (
+              entry.match['org-prefix'] !== undefined &&
+              typeof entry.match['org-prefix'] !== 'string'
+            ) {
+              errors.push(`vaults[${i}].match.org-prefix must be a string`);
+            }
           }
         }
       }
     }
+    sections.vaults = { valid: errors.length === 0, errors };
   }
 
   // ── baselines (optional; N named plan-baselines for per-context resolution — #819) ──
@@ -283,40 +344,58 @@ export function validateOwnerConfig(obj) {
   // directory tree, not a git-remote org slug), `path` replaces root+suffix, and
   // `match` is REQUIRED (a baseline with no path-prefix can never be selected).
   // Absent or null → backward-compat no-op (no validation errors).
-  const baselines = obj.baselines;
-  if (baselines !== undefined && baselines !== null) {
-    if (!Array.isArray(baselines)) {
-      errors.push('baselines must be an array when present');
-    } else {
-      for (let i = 0; i < baselines.length; i++) {
-        const entry = baselines[i];
-        if (entry === null || entry === undefined) {
-          errors.push(`baselines[${i}] must not be null`);
-          continue;
-        }
-        if (!isPlainObject(entry)) {
-          errors.push(`baselines[${i}] must be an object`);
-          continue;
-        }
-        // Required string fields: name, path
-        for (const field of ['name', 'path']) {
-          if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
-            errors.push(`baselines[${i}].${field} must be a non-empty string`);
+  {
+    const errors = [];
+    const baselines = obj.baselines;
+    if (baselines !== undefined && baselines !== null) {
+      if (!Array.isArray(baselines)) {
+        errors.push('baselines must be an array when present');
+      } else {
+        for (let i = 0; i < baselines.length; i++) {
+          const entry = baselines[i];
+          if (entry === null || entry === undefined) {
+            errors.push(`baselines[${i}] must not be null`);
+            continue;
           }
-        }
-        // Required match sub-object with a non-empty path-prefix string.
-        if (!isPlainObject(entry.match)) {
-          errors.push(`baselines[${i}].match must be an object`);
-        } else if (
-          typeof entry.match['path-prefix'] !== 'string' ||
-          entry.match['path-prefix'].trim() === ''
-        ) {
-          errors.push(`baselines[${i}].match.path-prefix must be a non-empty string`);
+          if (!isPlainObject(entry)) {
+            errors.push(`baselines[${i}] must be an object`);
+            continue;
+          }
+          // Required string fields: name, path
+          for (const field of ['name', 'path']) {
+            if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
+              errors.push(`baselines[${i}].${field} must be a non-empty string`);
+            }
+          }
+          // Required match sub-object with a non-empty path-prefix string.
+          if (!isPlainObject(entry.match)) {
+            errors.push(`baselines[${i}].match must be an object`);
+          } else if (
+            typeof entry.match['path-prefix'] !== 'string' ||
+            entry.match['path-prefix'].trim() === ''
+          ) {
+            errors.push(`baselines[${i}].match.path-prefix must be a non-empty string`);
+          }
         }
       }
     }
+    sections.baselines = { valid: errors.length === 0, errors };
   }
 
+  const errors = SECTION_ORDER.flatMap((name) => sections[name].errors);
+  return { sections, errors };
+}
+
+/**
+ * Validate a raw owner config object. Pure function — never throws, never reads
+ * or writes any file. Thin wrapper over `validateOwnerSections` (#820) —
+ * preserves the original `{ valid, errors }` contract unchanged.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: boolean, errors: string[] }}
+ */
+export function validateOwnerConfig(obj) {
+  const { errors } = validateOwnerSections(obj);
   return { valid: errors.length === 0, errors };
 }
 
@@ -328,10 +407,27 @@ export function validateOwnerConfig(obj) {
  * Load owner.yaml from disk. Returns defaults when the file is absent or
  * contains invalid content, populating `errors` in the latter case.
  *
+ * Per-section tolerance (#820): an invalid REQUIRED section (owner, tone,
+ * efficiency, hardware-sharing) still discards the whole file (legacy
+ * behaviour, unchanged). An invalid OPTIONAL object section (paths,
+ * dispatcher) is instead replaced by its default value — the rest of the
+ * file survives, `source` becomes `'partial'`, and the drop is reported via
+ * `droppedSections` + a stderr WARN. OPTIONAL list sections (vaults,
+ * baselines) are passed through UNTOUCHED even when strict-invalid — their
+ * consumers already run a lenient parse-at-point-of-use pass — and are
+ * surfaced only via `sectionWarnings` (never dropped, never counted towards
+ * `'partial'`).
+ *
  * Defensive — never throws.
  *
  * @param {{ path?: string }} [opts]
- * @returns {{ config: object, source: 'file'|'defaults', errors: string[] }}
+ * @returns {{
+ *   config: object,
+ *   source: 'file'|'defaults'|'partial',
+ *   errors: string[],
+ *   droppedSections?: Array<{ section: string, errors: string[] }>,
+ *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
+ * }}
  */
 export function loadOwnerConfig(opts = {}) {
   const filePath = opts.path ?? OWNER_YAML_PATH;
@@ -370,16 +466,59 @@ export function loadOwnerConfig(opts = {}) {
     };
   }
 
-  const validation = validateOwnerConfig(parsed);
-  if (!validation.valid) {
+  const { sections, errors: allErrors } = validateOwnerSections(parsed);
+
+  // Any REQUIRED section invalid → legacy whole-file-discard, unchanged (#820).
+  const requiredInvalid = REQUIRED_SECTIONS.some((name) => !sections[name]?.valid);
+  if (requiredInvalid) {
     return {
       config: getDefaults(),
       source: 'defaults',
-      errors: validation.errors,
+      errors: allErrors,
     };
   }
 
-  return { config: parsed, source: 'file', errors: [] };
+  // All REQUIRED sections valid — tolerate malformed OPTIONAL sections instead
+  // of discarding the whole file (#820).
+  const defaults = getDefaults();
+  const config = { ...parsed };
+  const droppedSections = [];
+  const sectionWarnings = [];
+
+  for (const name of OPTIONAL_OBJECT_SECTIONS) {
+    const sec = sections[name];
+    if (sec && !sec.valid) {
+      config[name] = defaults[name];
+      droppedSections.push({ section: name, errors: sec.errors });
+      const firstError = sec.errors[0] ?? 'invalid section';
+      console.warn(
+        `WARN owner-yaml: dropping owner.yaml section "${name}" (${firstError}); using defaults`,
+      );
+    }
+  }
+
+  for (const name of OPTIONAL_LIST_SECTIONS) {
+    const sec = sections[name];
+    if (sec && !sec.valid) {
+      // Raw pass-through — deliberate defense-in-depth; parseNamedVaults()/
+      // parseBaselines() run their own lenient drop-and-WARN at point-of-use.
+      sectionWarnings.push({ section: name, errors: sec.errors });
+      const firstError = sec.errors[0] ?? 'invalid entries';
+      console.warn(
+        `WARN owner-yaml: owner.yaml section "${name}" has invalid entries (${firstError}); ` +
+          'lenient consumers will drop bad entries at point-of-use',
+      );
+    }
+  }
+
+  const result = {
+    config,
+    source: droppedSections.length > 0 ? 'partial' : 'file',
+    errors: allErrors,
+  };
+  if (droppedSections.length > 0) result.droppedSections = droppedSections;
+  if (sectionWarnings.length > 0) result.sectionWarnings = sectionWarnings;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

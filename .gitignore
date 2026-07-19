@@ -77,6 +77,9 @@ coverage/
 .orchestrator/session-artifacts/
 .orchestrator/metrics/test-runs/
 
+# Per-session research scratch (canonical copies live under docs/); never committed
+.orchestrator/research/
+
 # Auto-Fix diagnostics bundles may contain secrets — never commit
 .orchestrator/metrics/verification-failures/
 
