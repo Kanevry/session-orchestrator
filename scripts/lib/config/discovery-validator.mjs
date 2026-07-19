@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * discovery-validator.mjs — Parser for the top-level `discovery-validator:`
  * YAML block (PSA-006 mechanical enforcement / issue #567).
@@ -36,7 +38,7 @@ export function _parseDiscoveryValidator(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^discovery-validator:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'discovery-validator')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

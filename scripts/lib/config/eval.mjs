@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * eval.mjs — Parser for the top-level `eval:` YAML block (#809, Epic #803).
  *
@@ -13,8 +15,10 @@
  *
  * PARSER GOTCHA (learning conf 0.9 — mirrors custom-phases.mjs / dialectic.mjs):
  * the `eval:` key-line itself MUST NOT carry an inline comment. The block-open
- * regex is the strict `/^eval:\s*$/` — a trailing `# comment` on that exact
- * line fails the match, so the block is never entered and ALL defaults apply
+ * matcher is the shared `matchBlockHeader(line, 'eval')` (block-header.mjs) — it
+ * tolerates the bold-bullet `- **eval:**` rendering (#830) but a trailing
+ * `# comment` on the header line STILL fails the match, so the block is never
+ * entered and ALL defaults apply
  * silently (no error, no warning surfaced anywhere). Sub-key lines tolerate
  * inline comments fine (stripped via `replace(/\s*#.*$/, '')` below, same as
  * every other block parser in this directory).
@@ -54,7 +58,7 @@ export function _parseEval(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^eval:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'eval')) inBlock = true;
       continue;
     }
     // Stop at next column-0 non-empty line (sibling top-level key or heading)

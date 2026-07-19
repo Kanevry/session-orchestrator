@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * dialectic.mjs — Parser for top-level `dialectic:` YAML block (#506).
  *
@@ -35,7 +37,7 @@ export function _parseDialectic(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^dialectic:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'dialectic')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

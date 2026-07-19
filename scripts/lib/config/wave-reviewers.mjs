@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * wave-reviewers.mjs — Parser for the `wave-reviewers` / `persona-reviewers` sub-block.
  *
@@ -63,7 +65,7 @@ function _extractBlock(content, key) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (new RegExp(`^${key}:\\s*$`).test(line)) {
+      if (matchBlockHeader(line, key)) {
         inBlock = true;
       }
       continue;

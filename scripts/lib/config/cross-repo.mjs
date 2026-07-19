@@ -19,6 +19,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readConfigFile } from './io.mjs';
+import { matchBlockHeader } from './block-header.mjs';
 
 /**
  * Resolve the cross-repo confinement root. Defaults to ~/Projects.
@@ -53,7 +54,7 @@ export function _parseCrossRepo(content) {
     const line = rawLine.replace(/\r$/, '');
 
     if (!inBlock) {
-      if (/^cross-repo:\s*$/.test(line)) { inBlock = true; }
+      if (matchBlockHeader(line, 'cross-repo')) { inBlock = true; }
       continue;
     }
 

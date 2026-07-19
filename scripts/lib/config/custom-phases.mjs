@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * custom-phases.mjs — Parser for the `custom-phases:` Session Config block (#637).
  *
@@ -72,7 +74,7 @@ export function _parseCustomPhases(content) {
 
     if (!inBlock) {
       // Detect `custom-phases:` at column 0 with optional trailing spaces.
-      if (/^custom-phases:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'custom-phases')) inBlock = true;
       continue;
     }
 

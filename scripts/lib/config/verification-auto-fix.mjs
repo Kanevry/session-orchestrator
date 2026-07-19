@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * verification-auto-fix.mjs — Parser for the top-level `verification-auto-fix:`
  * YAML block (PRD gsd Pattern Adoption Quick-Wins — Pattern 4 / issues #517, #521).
@@ -36,7 +38,7 @@ export function _parseVerificationAutoFix(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^verification-auto-fix:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'verification-auto-fix')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

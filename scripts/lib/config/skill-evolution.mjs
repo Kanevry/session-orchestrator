@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * skill-evolution.mjs — Parser for the top-level `skill-evolution:` YAML block
  * (Epic #643 Skill Self-Evolution Foundation / issue #646 C1-config).
@@ -44,7 +46,7 @@ export function _parseSkillEvolution(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^skill-evolution:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'skill-evolution')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

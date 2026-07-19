@@ -21,6 +21,7 @@
  */
 
 import { _coerceBoolean, _coerceInteger } from './coercers.mjs';
+import { matchBlockHeader } from './block-header.mjs';
 
 // ---------------------------------------------------------------------------
 // vault-integration
@@ -87,7 +88,7 @@ export function _parseVaultIntegration(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^(?:-\s+)?(?:\*\*)?vault-integration:(?:\*\*)?\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'vault-integration')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

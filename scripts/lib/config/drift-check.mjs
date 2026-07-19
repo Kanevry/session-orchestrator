@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * drift-check.mjs — Parser for the top-level `drift-check:` YAML block.
  *
@@ -44,7 +46,7 @@ export function _parseDriftCheck(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^drift-check:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'drift-check')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

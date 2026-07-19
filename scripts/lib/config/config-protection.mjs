@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * config-protection.mjs — Parser for the top-level `config-protection:` YAML
  * block (ecc-analysis / issue #622).
@@ -49,7 +51,7 @@ export function _parseConfigProtection(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^config-protection:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'config-protection')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

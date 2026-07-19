@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * reconcile.mjs — Parser for the top-level `reconcile:` YAML block.
  *
@@ -89,7 +91,7 @@ export function _parseReconcile(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^reconcile:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'reconcile')) inBlock = true;
       continue;
     }
     // Stop at next column-0 non-empty line (sibling top-level key or H2 heading)

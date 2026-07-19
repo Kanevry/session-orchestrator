@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * gitlab-portfolio.mjs — Parser for the top-level `gitlab-portfolio:` YAML block.
  */
@@ -71,7 +73,7 @@ export function _parseGitlabPortfolio(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^gitlab-portfolio:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'gitlab-portfolio')) inBlock = true;
       continue;
     }
     // A non-empty line without leading whitespace signals end of block

@@ -19,6 +19,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { SO_PROJECT_DIR } from '../platform.mjs';
+import { matchBlockHeader } from './block-header.mjs';
 
 /**
  * Parse the top-level `frontend-slop-hook:` YAML block from markdown content.
@@ -41,7 +42,7 @@ export function _parseFrontendSlopHook(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^frontend-slop-hook:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'frontend-slop-hook')) inBlock = true;
       continue;
     }
     // A column-0 (non-indented) non-blank line ends the block.

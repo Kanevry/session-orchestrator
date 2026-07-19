@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * handover-gate.mjs — Parser for the top-level `handover-gate:` YAML block
  * (PRD 2026-07-07 /close Handover-Alignment-Gate — Epic #724).
@@ -48,7 +50,7 @@ export function _parseHandoverGate(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^handover-gate:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'handover-gate')) inBlock = true;
       continue;
     }
     // Stop at next column-0 non-empty line (sibling top-level key or H2 heading)

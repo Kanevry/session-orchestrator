@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * auto-dream.mjs — Parser for the top-level `auto-dream:` YAML block (issue #566).
  *
@@ -37,7 +39,7 @@ export function _parseAutoDream(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^auto-dream:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'auto-dream')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

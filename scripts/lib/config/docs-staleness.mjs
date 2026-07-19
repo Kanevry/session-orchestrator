@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * docs-staleness.mjs — Parser for the top-level `docs-staleness:` YAML block.
  *
@@ -34,7 +36,7 @@ export function _parseDocsStaleness(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^docs-staleness:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'docs-staleness')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

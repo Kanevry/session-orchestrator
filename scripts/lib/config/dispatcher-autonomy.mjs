@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * dispatcher-autonomy.mjs — Parser + resolver for the top-level
  * `dispatcher-autonomy:` YAML block (Epic #673 / issue #679).
@@ -45,7 +47,7 @@ export function _parseDispatcherAutonomy(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^dispatcher-autonomy:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'dispatcher-autonomy')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

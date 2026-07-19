@@ -19,6 +19,7 @@
 
 import { parseThreshold } from '../persona-panel/threshold.mjs';
 import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
+import { matchBlockHeader } from './block-header.mjs';
 
 const ALLOWED_AFTER = new Set(['quality', 'impl-polish']);
 const ALLOWED_MODE = new Set(['off', 'warn', 'strict']);
@@ -175,7 +176,7 @@ function _extractBlock(content, key) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (new RegExp(`^${key}:\\s*$`).test(line)) {
+      if (matchBlockHeader(line, key)) {
         inBlock = true;
       }
       continue;

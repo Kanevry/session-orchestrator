@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * docs-orchestrator.mjs — Parser for the top-level `docs-orchestrator:` YAML block.
  */
@@ -18,7 +20,7 @@ export function _parseDocsOrchestrator(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^docs-orchestrator:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'docs-orchestrator')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

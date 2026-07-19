@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * memory.mjs — Parser for the top-level `memory:` YAML block.
  *
@@ -60,7 +62,7 @@ export function _parseMemory(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^memory:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'memory')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

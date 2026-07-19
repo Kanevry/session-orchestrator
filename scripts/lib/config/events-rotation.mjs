@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * events-rotation.mjs — Parser for the top-level `events-rotation:` YAML block.
  *
@@ -22,7 +24,7 @@ export function _parseEventsRotation(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^events-rotation:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'events-rotation')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

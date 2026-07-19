@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * vault-mirror-quality.mjs — Parser for the top-level `vault-mirror:` YAML block,
  * extracting the nested `quality:` sub-block (PRD F1.2 / issue #504).
@@ -35,7 +37,7 @@ export function _parseVaultMirrorQuality(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^vault-mirror:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'vault-mirror')) inBlock = true;
       continue;
     }
     // Stop at next top-level (non-indented, non-empty) key

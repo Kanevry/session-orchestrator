@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * vault-staleness.mjs — Parser for the top-level `vault-staleness:` YAML block.
  */
@@ -22,7 +24,7 @@ export function _parseVaultStaleness(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^vault-staleness:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'vault-staleness')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

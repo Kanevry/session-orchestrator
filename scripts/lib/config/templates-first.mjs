@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * templates-first.mjs — Parser for the top-level `templates-first:` YAML block
  * (PRD gsd Pattern Adoption Quick-Wins — Pattern 3 / issues #517, #519).
@@ -39,7 +41,7 @@ export function _parseTemplatesFirst(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^templates-first:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'templates-first')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

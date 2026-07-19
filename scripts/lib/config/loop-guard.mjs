@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * loop-guard.mjs — Parser for the top-level `loop-guard:` YAML block
  * (ecc-analysis / issue #619).
@@ -62,7 +64,7 @@ export function _parseLoopGuard(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^loop-guard:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'loop-guard')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

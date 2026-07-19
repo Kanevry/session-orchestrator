@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * vault-sync.mjs — Parser for the top-level `vault-sync:` YAML block.
  *
@@ -23,7 +25,7 @@ export function _parseVaultSync(content) {
 
     if (!inBlock) {
       // Detect `vault-sync:` at column 0 with optional trailing spaces
-      if (/^vault-sync:\s*$/.test(line)) {
+      if (matchBlockHeader(line, 'vault-sync')) {
         inBlock = true;
       }
       continue;

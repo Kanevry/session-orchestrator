@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * slopcheck.mjs — Parser for the top-level `slopcheck:` YAML block
  * (PRD gsd Pattern Adoption Quick-Wins — Pattern 2 / issues #517, #520).
@@ -41,7 +43,7 @@ export function _parseSlopcheck(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^slopcheck:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'slopcheck')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

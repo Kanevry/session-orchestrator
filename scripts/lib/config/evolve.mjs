@@ -34,6 +34,8 @@
 
 import pathModule from 'node:path';
 
+import { matchBlockHeader } from './block-header.mjs';
+
 /** Per-entry defaults (none beyond the required field-set; documented for symmetry). */
 export const EVOLVE_EXTRA_SOURCE_DEFAULTS = Object.freeze({
   kind: 'regression-flags',
@@ -75,7 +77,7 @@ export function _parseEvolve(content) {
 
     if (!inEvolve) {
       // Detect `evolve:` at column 0 with optional trailing spaces.
-      if (/^evolve:\s*$/.test(line)) inEvolve = true;
+      if (matchBlockHeader(line, 'evolve')) inEvolve = true;
       continue;
     }
 
@@ -259,7 +261,7 @@ export function _parseEvolveDecay(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inEvolve) {
-      if (/^evolve:\s*$/.test(line)) inEvolve = true;
+      if (matchBlockHeader(line, 'evolve')) inEvolve = true;
       continue;
     }
     // Terminate at the first non-indented, non-empty line (next top-level key).

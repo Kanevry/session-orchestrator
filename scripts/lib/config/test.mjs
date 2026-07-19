@@ -7,6 +7,7 @@
  */
 
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { matchBlockHeader } from './block-header.mjs';
 
 /**
  * Parse the top-level `test:` YAML block from markdown content.
@@ -34,7 +35,7 @@ export function _parseTest(content) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
       // Match top-level `test:` key (not indented, no inline value after colon)
-      if (/^test:\s*$/.test(line)) {
+      if (matchBlockHeader(line, 'test')) {
         inBlock = true;
       }
       continue;

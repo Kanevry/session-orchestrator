@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * state-md-lock.mjs — Parser for the top-level `state-md-lock:` YAML block
  * (PRD gsd Pattern Adoption Quick-Wins — Pattern 1 / issues #517, #518).
@@ -35,7 +37,7 @@ export function _parseStateMdLock(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^state-md-lock:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'state-md-lock')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

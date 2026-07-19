@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * cold-start.mjs — Parser for the top-level `cold-start:` YAML block (PRD F1.3 /
  * issue #500). Drives the cold-start detector that nudges operators about long
@@ -35,7 +37,7 @@ export function _parseColdStart(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^cold-start:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'cold-start')) inBlock = true;
       continue;
     }
     if (line.length > 0 && !/^\s/.test(line)) break;

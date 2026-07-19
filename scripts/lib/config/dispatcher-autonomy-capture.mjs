@@ -12,7 +12,8 @@
  * `_parseDispatcherAutonomy()` returns `autonomy: 'off'` for BOTH "block absent"
  * AND "block present with autonomy: off" — so the resolved value cannot
  * distinguish first-run from a deliberate `off`. This module therefore detects
- * presence via the same `/^dispatcher-autonomy:\s*$/m` regex the parser uses.
+ * presence via the shared bold-tolerant `hasBlockHeader()` helper
+ * (block-header.mjs) — the same matcher the parser now uses (#830).
  * Block presence IS the never-re-ask marker — there is no separate state file.
  *
  * The committed instruction file is `CLAUDE.md` on Claude Code / Cursor IDE and
@@ -37,11 +38,10 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
+import { hasBlockHeader } from './block-header.mjs';
+
 const ALLOWED_AUTONOMY = ['off', 'advisory', 'autonomous-gated'];
 const DEFAULT_CONFIDENCE_FLOOR = 0.5;
-
-// Raw presence guard — mirrors the parser's block-header regex exactly.
-const BLOCK_HEADER_RE = /^dispatcher-autonomy:\s*$/m;
 
 /**
  * Coordinator-facing AUQ question definition for the one-time capture.
@@ -86,9 +86,10 @@ export function getDispatcherAutonomyQuestion() {
  * absent → ask, present → never re-ask.
  *
  * SOURCE-OF-TRUTH ALIGNMENT: this guard mirrors the block-header detection of
- * `_parseDispatcherAutonomy()` in dispatcher-autonomy.mjs EXACTLY. The parser
- * iterates lines and tests `/^dispatcher-autonomy:\s*$/` per line; `\s` includes
- * `\r`, so `BLOCK_HEADER_RE`'s `m`-flag form matches the identical set of inputs.
+ * `_parseDispatcherAutonomy()` in dispatcher-autonomy.mjs EXACTLY — both now call
+ * the shared `matchBlockHeader()` matcher (block-header.mjs). `hasBlockHeader()`
+ * splits on `/\r?\n/` and tests each line, so `\r` and trailing whitespace are
+ * eaten by the `\s*$` tail and the identical set of inputs matches.
  * Verified-equivalent edge cases:
  *   - CRLF line endings (`dispatcher-autonomy:\r\n`) → PRESENT (`\s*$` eats the `\r`).
  *   - Trailing spaces / tabs on the header line → PRESENT (`\s*$`).
@@ -114,7 +115,7 @@ export function getDispatcherAutonomyQuestion() {
  */
 export function isDispatcherAutonomyBlockPresent(claudeMdContent) {
   if (typeof claudeMdContent !== 'string' || claudeMdContent.length === 0) return false;
-  return BLOCK_HEADER_RE.test(claudeMdContent);
+  return hasBlockHeader(claudeMdContent, 'dispatcher-autonomy');
 }
 
 /**

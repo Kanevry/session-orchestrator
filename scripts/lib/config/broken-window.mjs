@@ -1,3 +1,5 @@
+import { matchBlockHeader } from './block-header.mjs';
+
 /**
  * broken-window.mjs — Parser for the top-level `broken-window-budget:` YAML block
  * (#730 Epic H / H5 — "Broken-Window Budget").
@@ -53,7 +55,7 @@ export function _parseBrokenWindow(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
-      if (/^broken-window-budget:\s*$/.test(line)) inBlock = true;
+      if (matchBlockHeader(line, 'broken-window-budget')) inBlock = true;
       continue;
     }
     // Stop at next column-0 non-empty line (sibling top-level key or H2 heading)
