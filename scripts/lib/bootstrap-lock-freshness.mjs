@@ -90,6 +90,22 @@ export function classifyVersionMismatch(lockVer, currentVer) {
  * Backward compat (#290): if the lock file predates the `plugin-version` field,
  * a soft informational message is added to details but severity is NOT raised.
  *
+ * Refresh awareness (#57): `refreshed-at` / `refreshed-plugin-version`
+ * (written by `scripts/lib/bootstrap-lock-refresh.mjs`) take precedence over
+ * `bootstrapped-at`/`timestamp` and `plugin-version` respectively when present
+ * — a refresh resets the freshness clock and acknowledges the current plugin
+ * version without disturbing the lock's original bootstrap provenance
+ * (`details.bootstrappedAt`/`details.pluginVersion` always report the
+ * ORIGINAL values, unchanged by a refresh).
+ *
+ * `details.reason` names the single highest-severity contributor driving the
+ * returned severity: `'missing-repoRoot' | 'missing' | 'read-error' |
+ * 'stale-age' | 'unparseable-timestamp' | 'version-mismatch-major' |
+ * 'version-mismatch-unparseable' | null` (null when severity is `'info'`).
+ * When both age and version-drift would independently raise severity, the
+ * higher-ranked contributor wins (alert > warn > info); a tie is broken in
+ * favor of the age reason.
+ *
  * @param {{repoRoot: string, currentPluginVersion?: string, now?: number}} opts
  * @returns {{ok: boolean, severity: 'info'|'warn'|'alert', message: string, details: object}}
  */
@@ -130,50 +146,97 @@ export function checkBootstrapLockFreshness({
     };
   }
 
-  // Fall back to legacy `timestamp` field for pre-#186 locks.
+  // Fall back to legacy `timestamp` field for pre-#186 locks. `bootstrappedAt`
+  // and `pluginVersion` report the ORIGINAL bootstrap provenance and are never
+  // overwritten by a later refresh (#57 provenance-honesty guarantee).
   const bootstrappedAt = parsed['bootstrapped-at'] || parsed['timestamp'] || null;
   const pluginVersion = parsed['plugin-version'] || null;
 
+  // #57 — refresh-writer fields (scripts/lib/bootstrap-lock-refresh.mjs).
+  // Raw, possibly null; absent on every pre-#57 lock and on any lock that has
+  // never been refreshed.
+  const refreshedAt = parsed['refreshed-at'] || null;
+  const refreshedPluginVersion = parsed['refreshed-plugin-version'] || null;
+
+  // Age-source precedence (#57): refreshed-at → bootstrapped-at → timestamp.
+  // A refresh resets the freshness clock without touching bootstrappedAt.
+  const ageSourceAt = refreshedAt || bootstrappedAt;
+
   let ageDays = null;
-  if (bootstrappedAt) {
-    const ts = Date.parse(bootstrappedAt);
+  if (ageSourceAt) {
+    const ts = Date.parse(ageSourceAt);
     if (!Number.isNaN(ts)) {
       ageDays = Math.floor((now - ts) / MS_PER_DAY);
     }
   }
 
+  // Version-drift source precedence (#57): refreshed-plugin-version → plugin-version.
+  // A refresh acknowledges the current plugin version without touching pluginVersion.
+  const effectivePluginVersion = refreshedPluginVersion || pluginVersion;
+
   // Backward compat (#290): lock predates plugin-version field — soft signal only.
+  // #57: a refresh that stamps refreshed-plugin-version resolves this (the
+  // effective version is now comparable), so this check uses the same
+  // refreshed-plugin-version → plugin-version precedence as the mismatch check.
   const legacyLockNoPluinVersion =
-    typeof currentPluginVersion === 'string' && pluginVersion === null;
+    typeof currentPluginVersion === 'string' && effectivePluginVersion === null;
 
   let versionMismatch = false;
   let versionMismatchSeverity = null; // 'info' | 'warn' | 'alert' — null when no mismatch
 
   if (
     typeof currentPluginVersion === 'string' &&
-    typeof pluginVersion === 'string' &&
-    pluginVersion !== currentPluginVersion
+    typeof effectivePluginVersion === 'string' &&
+    effectivePluginVersion !== currentPluginVersion
   ) {
     versionMismatch = true;
-    versionMismatchSeverity = classifyVersionMismatch(pluginVersion, currentPluginVersion);
+    versionMismatchSeverity = classifyVersionMismatch(effectivePluginVersion, currentPluginVersion);
   }
 
   let severity = 'info';
 
+  // #57 — reason-aware tiering. `reason` names the single HIGHEST-severity
+  // contributor (age vs. version-drift) so downstream prose can recommend the
+  // right remediation instead of always pointing at --retroactive. Rank:
+  // alert=2, warn=1, info=0, none=-1. `considerReason` only replaces the
+  // current pick on a STRICT rank increase, so calling the age contributor
+  // before the version contributor implements "tie → age reason".
+  let reason = null;
+  let reasonRank = -1;
+  const rank = (s) => (s === 'alert' ? 2 : s === 'warn' ? 1 : s === 'info' ? 0 : -1);
+  const considerReason = (candidateSeverity, candidateReason) => {
+    const r = rank(candidateSeverity);
+    if (r > reasonRank) {
+      reasonRank = r;
+      reason = candidateReason;
+    }
+  };
+
   // Age-based escalation.
-  if (ageDays !== null && ageDays >= 30) severity = 'warn';
-  if (ageDays !== null && ageDays >= 90) severity = 'alert';
-  if (ageDays === null) severity = 'alert';
+  if (ageDays !== null && ageDays >= 30) {
+    severity = 'warn';
+    considerReason('warn', 'stale-age');
+  }
+  if (ageDays !== null && ageDays >= 90) {
+    severity = 'alert';
+    considerReason('alert', 'stale-age');
+  }
+  if (ageDays === null) {
+    severity = 'alert';
+    considerReason('alert', 'unparseable-timestamp');
+  }
 
   // Version-mismatch escalation (only when mismatch detected).
   if (versionMismatch && versionMismatchSeverity === 'warn') {
     if (severity === 'info') severity = 'warn';
+    considerReason('warn', 'version-mismatch-unparseable');
   }
   if (versionMismatch && versionMismatchSeverity === 'alert') {
     severity = 'alert';
+    considerReason('alert', 'version-mismatch-major');
   }
   // 'info'-classified mismatches (minor/patch) do NOT raise severity beyond
-  // whatever age already determined.
+  // whatever age already determined, and do not contribute a reason.
 
   return {
     ok: severity === 'info',
@@ -184,11 +247,14 @@ export function checkBootstrapLockFreshness({
       pluginVersion,
       currentPluginVersion: currentPluginVersion ?? null,
       bootstrappedAt,
+      refreshedAt,
+      refreshedPluginVersion,
       versionMismatch,
       versionMismatchSeverity,
       legacyLock: legacyLockNoPluinVersion
-        ? 'lock predates plugin-version field; consider /bootstrap --retroactive'
+        ? 'lock predates plugin-version field; consider /bootstrap --refresh-lock to stamp a current plugin-version reference'
         : null,
+      reason,
     },
   };
 }
