@@ -25,8 +25,16 @@ function run(pluginRoot) {
 function makeFixture() {
   const dir = mkdtempSync(path.join(tmpdir(), 'check-commands-'));
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
-  writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'test-plugin', version: '1.0.0' }));
+  writeFileSync(
+    path.join(dir, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'test-plugin', version: '1.0.0' }),
+  );
   return dir;
+}
+
+function writeCommand(dir, filename, frontmatter) {
+  mkdirSync(path.join(dir, 'commands'), { recursive: true });
+  writeFileSync(path.join(dir, 'commands', filename), `---\n${frontmatter}\n---\n# Command body\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +84,9 @@ describe('check-commands.mjs — missing argument', () => {
 
 describe('check-commands.mjs — missing commands directory', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
 
   it('exits 1 when no commands/ directory exists', () => {
     dir = makeFixture();
@@ -88,7 +98,9 @@ describe('check-commands.mjs — missing commands directory', () => {
   it('emits FAIL line when commands/ directory is absent', () => {
     dir = makeFixture();
     const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: commands directory not found at conventional location: ./commands');
+    expect(r.stdout).toContain(
+      '  FAIL: commands directory not found at conventional location: ./commands',
+    );
   });
 });
 
@@ -98,7 +110,9 @@ describe('check-commands.mjs — missing commands directory', () => {
 
 describe('check-commands.mjs — empty commands directory', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
 
   it('exits 1 when commands/ directory has no .md files', () => {
     dir = makeFixture();
@@ -122,7 +136,9 @@ describe('check-commands.mjs — empty commands directory', () => {
 
 describe('check-commands.mjs — commands dir with non-.md files only', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
 
   it('exits 1 when commands/ only contains non-.md files', () => {
     dir = makeFixture();
@@ -141,22 +157,128 @@ describe('check-commands.mjs — commands dir with non-.md files only', () => {
 
 describe('check-commands.mjs — valid commands directory fixture', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
 
   it('exits 0 when commands/ contains at least one .md file', () => {
     dir = makeFixture();
-    mkdirSync(path.join(dir, 'commands'), { recursive: true });
-    writeFileSync(path.join(dir, 'commands', 'session.md'), '# /session command\n');
+    writeCommand(dir, 'session.md', 'description: Session command');
     const r = run(dir);
     expect(r.status).toBe(0);
   });
 
   it('emits PASS line reporting the count of .md files found', () => {
     dir = makeFixture();
-    mkdirSync(path.join(dir, 'commands'), { recursive: true });
-    writeFileSync(path.join(dir, 'commands', 'session.md'), '# /session command\n');
-    writeFileSync(path.join(dir, 'commands', 'discovery.md'), '# /discovery command\n');
+    writeCommand(dir, 'session.md', 'description: Session command');
+    writeCommand(dir, 'discovery.md', 'description: Discovery command');
     const r = run(dir);
     expect(r.stdout).toContain('  PASS: commands directory contains 2 .md files');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Semantic argument-hint frontmatter validation
+// ---------------------------------------------------------------------------
+
+describe('check-commands.mjs — semantic argument-hint validation', () => {
+  let dir;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts a quoted argument-hint string', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'quoted.md', 'description: Quoted hint\nargument-hint: "[mode: deep]"');
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('keeps a date-like argument-hint as a string under CORE_SCHEMA', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'core-schema.md', 'description: Date-like hint\nargument-hint: 2026-01-01');
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('accepts an empty argument-hint string', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'empty.md', 'description: Empty hint\nargument-hint: ""');
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('accepts frontmatter that omits argument-hint', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'omitted.md', 'description: Optional hint omitted');
+    const r = run(dir);
+    expect(r.status).toBe(0);
+  });
+
+  it('rejects a synthetic array through the real checker path (negative fake-regression)', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'array-argument.md', 'description: Invalid array\nargument-hint: [one, two]');
+    const r = run(dir);
+    expect(r).toMatchObject({
+      status: 1,
+      stdout: expect.stringContaining('  FAIL: array-argument.md: argument-hint must be a string'),
+    });
+  });
+
+  it('rejects malformed YAML with the filename and parser error', () => {
+    dir = makeFixture();
+    writeCommand(
+      dir,
+      'malformed-command.md',
+      'description: Broken YAML\nargument-hint: [unterminated',
+    );
+    const r = run(dir);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('  FAIL: malformed-command.md: invalid YAML frontmatter:');
+    expect(r.stdout).toContain('unexpected end of the stream within a flow collection');
+  });
+
+  it.each([
+    {
+      name: 'null',
+      filename: 'null-argument.md',
+      frontmatter: 'description: Null hint\nargument-hint: null',
+      diagnostic: '  FAIL: null-argument.md: argument-hint must be a string',
+    },
+    {
+      name: 'object',
+      filename: 'object-argument.md',
+      frontmatter: 'description: Object hint\nargument-hint:\n  mode: deep',
+      diagnostic: '  FAIL: object-argument.md: argument-hint must be a string',
+    },
+    {
+      name: 'number',
+      filename: 'number-argument.md',
+      frontmatter: 'description: Number hint\nargument-hint: 42',
+      diagnostic: '  FAIL: number-argument.md: argument-hint must be a string',
+    },
+    {
+      name: 'boolean',
+      filename: 'boolean-argument.md',
+      frontmatter: 'description: Boolean hint\nargument-hint: true',
+      diagnostic: '  FAIL: boolean-argument.md: argument-hint must be a string',
+    },
+  ])('rejects an argument-hint parsed as $name', ({ filename, frontmatter, diagnostic }) => {
+    dir = makeFixture();
+    writeCommand(dir, filename, frontmatter);
+    const r = run(dir);
+    expect(r).toMatchObject({ status: 1, stdout: expect.stringContaining(diagnostic) });
+  });
+
+  it('rejects a non-mapping frontmatter root with an actionable filename', () => {
+    dir = makeFixture();
+    writeCommand(dir, 'sequence-root.md', '- first\n- second');
+    const r = run(dir);
+    expect(r).toMatchObject({
+      status: 1,
+      stdout: expect.stringContaining(
+        '  FAIL: sequence-root.md: YAML frontmatter must be a non-null mapping/object',
+      ),
+    });
   });
 });

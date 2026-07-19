@@ -27,7 +27,7 @@ Session Orchestrator is a **multi-harness local orchestration plugin** that adds
 
 How it works:
 
-- The plugin is loaded by the harness at startup (Claude Code loads it natively; Codex CLI, Cursor IDE, and Pi use the installers under `scripts/`). There is no build or compilation step.
+- The plugin is loaded by the harness at startup. Claude Code uses its marketplace flow; Codex uses the public `codex plugin marketplace add` / `codex plugin add` lifecycle through `scripts/codex-install.mjs`; Cursor IDE and Pi use their installers under `scripts/`. There is no build or compilation step.
 - Skill, command, and agent surfaces are **Markdown or JSON files** the harness reads directly. Scripts, hooks, installers, and tests are **Node ESM (`.mjs`)** and run on Node.js 24+.
 - You extend the plugin by editing or adding files. Changes take effect the next time the harness loads the plugin.
 
@@ -71,7 +71,7 @@ The user workflow is:
 
    Use the absolute path to your clone. After the install confirmation, reload Claude Code so the commands register.
 
-   For Codex CLI, Cursor IDE, or Pi, use the installers instead: `node scripts/codex-install.mjs`, `node scripts/cursor-install.mjs /path/to/project`, `node scripts/pi-install.mjs /path/to/project --settings-only` (setup guides under `docs/`).
+   For Codex CLI, run `node scripts/codex-install.mjs`; it validates the tracked contract, drives the public marketplace/add/list commands, and leaves hook trust to a fresh task plus `/hooks`. Use `node scripts/cursor-install.mjs /path/to/project` for Cursor IDE and `node scripts/pi-install.mjs /path/to/project --settings-only` for Pi (setup guides under `docs/`).
 
 5. **Test your changes:**
 
@@ -193,10 +193,14 @@ Hooks fire on specific harness events. The plugin currently wires 10 hook event 
 }
 ```
 
-**Current hook wiring** (excerpt — the full 10-event-type inventory is in [docs/components.md](docs/components.md)):
+**Current hook wiring** (excerpt — the full 10-event-type Claude inventory is in [docs/components.md](docs/components.md)):
 - `SessionStart` — version banner + session initialization (`hooks/on-session-start.mjs`)
 - `PreToolUse` (Edit/Write) — scope enforcement via `hooks/enforce-scope.mjs`
 - `PreToolUse` (Bash) — destructive-command guard (`hooks/pre-bash-destructive-guard.mjs`), command restrictions (`hooks/enforce-commands.mjs`), templates-first gate, staging fence, and more
+
+Codex deliberately exposes only the six validated project event slots in `hooks/hooks-codex.json`: `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, and `Stop`. Claude-only events are absent because Codex does not support them as project events. The Claude Edit/Write handlers are also absent because Codex supplies canonical `apply_patch` payloads; do not wire those handlers until a real adapter translates that payload into the contract they enforce.
+
+Codex hook commands must use native `${PLUGIN_ROOT}` and the exact wrapper shape validated by `scripts/lib/codex/plugin-contract.mjs`: set `SO_PLATFORM=codex`, export `CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}"` for shared compatibility code, then invoke `hooks/run-node.sh`. Plugin installation and hook trust are independent: contributors must test in a fresh Codex task and review `/hooks`; installers must never write or bypass trust state.
 
 ## Skill Anatomy
 
@@ -321,7 +325,7 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
    ---
    description: One-line description shown in Claude Code's command list
    allowed-tools: Bash, Read, Glob, Grep, Agent
-   argument-hint: [arg1|arg2]
+   argument-hint: "[arg1|arg2]"
    ---
    ```
 
@@ -339,7 +343,7 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
    ---
    description: Run ecosystem health checks
    allowed-tools: Bash, Read, Glob, Grep
-   argument-hint: [all|services|pipelines]
+   argument-hint: "[all|services|pipelines]"
    ---
 
    # Ecosystem Health
@@ -465,7 +469,7 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 | Skills | `skills/` | Shared — one SKILL.md serves all platforms |
 | Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md, Cursor via rules |
 | Hooks (Claude Code) | `hooks/hooks.json` | Uses `$CLAUDE_PLUGIN_ROOT` |
-| Hooks (Codex) | `hooks/hooks-codex.json` | Uses `$CODEX_PLUGIN_ROOT` |
+| Hooks (Codex) | `hooks/hooks-codex.json` | Uses native `${PLUGIN_ROOT}`; wrapper exports `CODEX_PLUGIN_ROOT` and `SO_PLATFORM=codex` |
 | Hooks (Cursor) | `hooks/hooks-cursor.json` | Reference; configure in Cursor Settings |
 | Hooks (Pi) | `hooks/hooks-pi.json` | Installed via `scripts/pi-install.mjs` |
 | Extension (Pi) | `pi/extensions/session-orchestrator.ts` | Pi manifest lives in the `package.json` `pi` key |
@@ -486,10 +490,11 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 
 ### Writing Platform-Portable Scripts (Node.js)
 
-1. **Import from `platform.mjs`**: `import { detectPlatform } from '../lib/platform.mjs'` — returns `{ platform, stateDir, configFile, pluginRoot }`
-2. **Use the returned object** instead of `$SO_*` env vars. Node.js scripts get platform state via function call, not environment.
-3. **Never hardcode `.claude/`** — derive the state directory from the platform detection helper.
-4. **Check all three env vars** for project root: `CLAUDE_PROJECT_DIR`, `CODEX_PROJECT_DIR`, `CURSOR_PROJECT_DIR` (via `process.env`).
+1. **Import the actual exports from `platform.mjs`**: `detectPlatform()` returns the platform string; `SO_PLATFORM`, `SO_STATE_DIR`, `SO_CONFIG_FILE`, and `SO_PLUGIN_ROOT` are module constants computed at load time.
+2. **Honor explicit hook context.** Codex wrappers set `SO_PLATFORM=codex` and `CODEX_PLUGIN_ROOT` from native `${PLUGIN_ROOT}`. Code that receives an explicit platform override must prefer it over ambient multi-harness detection.
+3. **Never hardcode `.claude/`** — use `resolveStateDir(platform)` or `SO_STATE_DIR`.
+4. **Use the shared project resolver** rather than inventing a new env chain. It supports `CLAUDE_PROJECT_DIR`, `CODEX_PROJECT_DIR`, `CURSOR_PROJECT_DIR`, and `PI_PROJECT_DIR`.
+5. **Resolve plugin roots through shared helpers.** Native `PLUGIN_ROOT` wins first; a valid `SO_PLATFORM` then promotes its matching compatibility variable; remaining compatibility roots retain Claude → Codex → Cursor → Pi order before filesystem walk. Shell snippets should follow the same precedence.
 
 ## Scripts & Testing
 
@@ -501,8 +506,9 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 | `scripts/run-quality-gate.mjs` | Run quality gate checks (4 variants: baseline, incremental, full-gate, per-file) |
 | `scripts/validate-wave-scope.mjs` | Validate wave-scope.json before enforcement hooks consume it |
 | `scripts/token-audit.sh` | Cross-project token efficiency audit |
+| `scripts/codex-install.mjs` | Validate and install through Codex's public marketplace/add/list lifecycle |
 | `scripts/cursor-install.mjs` | Install Cursor rules via symlinks |
-| `scripts/lib/platform.mjs` | Platform detection — returns platform + stateDir + configFile + pluginRoot |
+| `scripts/lib/platform.mjs` | Platform detection and platform-specific root/state/config resolvers |
 | `scripts/lib/common.mjs` | Shared ESM utilities — die(), warn(), findProjectRoot(), resolvePluginRoot(), makeTmpPath(), utcTimestamp() |
 | `scripts/lib/worktree.mjs` | Git worktree helpers for isolated agent work |
 
@@ -517,11 +523,17 @@ Test files are in `tests/`. Add new tests as `tests/<area>/<name>.test.mjs` foll
 
 ### Platform Variables
 
-`scripts/lib/platform.mjs` exports these as **module constants** (computed at load time via `detectPlatform()` — they are not environment variables; import them, don't read `process.env`):
+`scripts/lib/platform.mjs` exports these as **module constants** computed at load time via `detectPlatform()`:
 - `SO_PLATFORM`: `claude` | `codex` | `cursor` | `pi`
 - `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor` | `.pi`
 - `SO_CONFIG_FILE`: `CLAUDE.md` (Claude Code, Cursor) | `AGENTS.md` (Codex, Pi)
 - `SO_SHARED_DIR`: `.orchestrator` (all platforms)
+
+Do not confuse the exported `SO_PLATFORM` constant with the `SO_PLATFORM` environment override used by hook wrappers. Codex sets the environment value explicitly so downstream handlers can prefer Codex semantics even in a process that also exposes another harness variable.
+
+### Codex Refresh and Versioning
+
+`node scripts/codex-install.mjs` intentionally calls `codex plugin add session-orchestrator@kanevry` on every run. This refreshes the installed bundle after local edits or a pull. For an explicit cache identity change, commit a new UTC suffix in `.codex-plugin/plugin.json` using `<package-version>+codex.<YYYYMMDDHHmmss>`. The installer only validates this tracked value; it must never generate or write the manifest version during installation.
 
 ## Pull Request Guidelines
 

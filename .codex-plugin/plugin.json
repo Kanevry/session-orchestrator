@@ -1,15 +1,7 @@
 {
   "name": "session-orchestrator",
-  "version": "3.14.0",
+  "version": "3.14.0+codex.20260717175716",
   "description": "Session-level orchestration for structured planning, wave execution, quality gates, and clean session close-out",
-  "author": {
-    "name": "Bernhard Goetzendorfer",
-    "email": "office@gotzendorfer.at",
-    "url": "https://gotzendorfer.at"
-  },
-  "homepage": "https://gotzendorfer.at/en/session-orchestrator",
-  "repository": "https://github.com/Kanevry/session-orchestrator",
-  "license": "MIT",
   "keywords": [
     "session",
     "orchestration",

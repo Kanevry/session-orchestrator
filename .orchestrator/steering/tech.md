@@ -6,7 +6,7 @@
 
 ## Runtime Stack
 
-- **Node.js:** 20+ (engine-strict enforced via `.npmrc`)
+- **Node.js:** 24+ (`package.json` engines; engine-strict enforced via `.npmrc`)
 - **Test runner:** vitest 4.1.5
 - **Linter:** ESLint 10 (flat config `eslint.config.mjs`)
 - **Package manager:** npm (plugin uses npm, not pnpm — `npm ci` after cloning)
@@ -43,7 +43,10 @@ vitest coverage enforces four gates (fail build if below):
   - `tools` field MUST be a comma-separated string, NOT a JSON array
   - `description` MUST be a single-line inline string, NOT a block scalar (`>` or `|`)
   - All 4 fields (`name`, `description`, `model`, `color`) are required; `tools` is optional
-- **`CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT`:** 4-level fallback chain for plugin root resolution.
+- **Plugin roots:** Claude uses `CLAUDE_PLUGIN_ROOT`; Codex hook manifests use native `${PLUGIN_ROOT}` and export `CODEX_PLUGIN_ROOT` for compatibility; Cursor uses `CURSOR_RULES_DIR`; Pi uses `PI_PLUGIN_ROOT`. Codex wrappers also set `SO_PLATFORM=codex` so explicit hook context wins over ambient detection.
+- **Codex install state:** marketplace configured, plugin installed+enabled, and hooks trusted/executing are separate. `scripts/codex-install.mjs` uses public marketplace/add/list commands and never writes hook trust.
+- **Codex refresh/versioning:** every installer run repeats `plugin add`; explicit invalidation is the committed `<base>+codex.<YYYYMMDDHHmmss>` manifest version, which the installer validates but never mutates.
+- **Codex hooks:** curated project surface is `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, and `Stop`; Claude-only events and Edit/Write handlers remain absent until a real `apply_patch` adapter exists.
 - **Vitest snapshot pollution:** fixture files in `tests/fixtures/` must be isolated; avoid shared mutable state.
 
 ## CI / Quality Gates

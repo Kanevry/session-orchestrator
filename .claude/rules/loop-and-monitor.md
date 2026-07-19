@@ -19,9 +19,9 @@ referenced in the transcript pass, drain a worklist, reach a state you
 can describe in ≤ 4000 chars)?
 │
 ├─ Yes → /goal.
-│        Continuation across turns until the condition is confirmed.
+│        Continuation across turns until the condition is model-evaluated.
 │        (Completion-condition axis — see LM-008.)
-│        Pair with deterministic gates — /goal continues, it never judges.
+│        Pair with deterministic gates — /goal judges; it never verifies.
 │        NOT: "until CI goes green" — that is an EXTERNAL stream the
 │        evaluator cannot see → Monitor (next branch).
 │
@@ -50,15 +50,15 @@ can describe in ≤ 4000 chars)?
                            ├─ Yes → Monitor.
                            │        Each stdout line = one notification. Zero polling tokens.
                            │
-                           └─ No  → Is the watched thing PERIODIC and bounded by THIS session
-                                    (≤ 7 days, in-memory acceptable)?
+                           └─ No  → Is the watched thing PERIODIC and bounded by THIS conversation
+                                    (≤ 7 days, resume/continue restoration acceptable)?
                                     │
                                     ├─ Yes → /loop.
                                     │        Use dynamic mode unless the cadence is genuinely fixed.
                                     │
                                     └─ No  → Routines (cloud) or Desktop scheduled tasks.
                                              Daily notes, weekly audits, cross-repo sweeps.
-                                             /loop CANNOT cover these — it dies with the session.
+                                             /loop CANNOT cover these — it fires only while Claude Code runs.
 ```
 
 ### Crosswalk — Anthropic's four loop archetypes
@@ -107,11 +107,12 @@ when `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set
 (code.claude.com/docs/en/tools-reference#monitor-tool).
 
 **WebSocket source (v2.1.195+).** Monitor also accepts a `ws://`/`wss://`
-source directly — the server pushes each text frame as one notification, no
-polling script and no `grep --line-buffered` line-buffering pitfall to get
-right. Prefer it over a `command` source whenever the upstream already
-speaks WebSocket; keep `command` (tail/grep) when frames still need
-shell-side filtering before they're notification-worthy.
+source directly. Each complete text message is one event; a binary message
+emits a placeholder event; a message larger than 1 MiB ends the watch. This
+needs no polling script and avoids the `grep --line-buffered` pitfall. Prefer
+it over a `command` source whenever the upstream already speaks WebSocket;
+keep `command` (tail/grep) when messages still need shell-side filtering
+before they're notification-worthy.
 
 For vetted snippets, see `skills/_shared/monitor-patterns.md`.
 
@@ -124,7 +125,8 @@ chat). Zero polling, and it reacts while you are away from the keyboard.
 
 Constraints (cite https://code.claude.com/docs/en/channels):
 
-- **Anthropic-auth only** — unavailable on Bedrock/Vertex/Foundry.
+- **Auth:** claude.ai authentication or a Claude Console API key; unavailable
+  on Bedrock, Google Cloud Agent Platform, or Microsoft Foundry.
 - **Per-session opt-in** via the `--channels` flag.
 - **Org-gated on Team/Enterprise** — the org owner must additionally turn on
   `channelsEnabled` (a master switch) before any member can use Channels; on
@@ -154,7 +156,7 @@ Constraints (cite https://code.claude.com/docs/en/workflows):
 - **Kill-switch:** `disableWorkflows` (settings), `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env), or the `/config` toggle.
 - **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
 - **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root, falling back to the repo root only if none exists yet along that path. Project workflows load from every `.claude/workflows/` on that path; if two define the same name, the one closest to the working directory runs (and if a project and a personal workflow share a name, the project one wins). Verify the actual write target before assuming root-level placement in a monorepo.
-- **Trigger:** `/effort ultracode` is one on-ramp; the inline keyword `ultracode` in the prompt itself is an independent on-ramp too (pre-v2.1.160 this keyword was `workflow`). Also: the `/workflows` management command, and re-invoking a workflow saved as a reusable command (optionally parameterised via `args`). Since v2.1.203, `claude --effort ultracode` at launch is an additional on-ramp alongside `/effort ultracode` and the inline keyword.
+- **Creation/trigger:** ask Claude in natural language to create or run a Workflow; use the eligible human-origin literal `ultracode` (pre-v2.1.160 this keyword was `workflow`); select `/effort ultracode`; or launch with `claude --effort ultracode` (v2.1.203+). `/workflows` only lists and manages Workflow runs — it does not create one.
 - **Keyword scope (v2.1.210+).** The inline `ultracode` keyword only opts in from human-typed input — the interactive prompt, an IDE panel, a Remote Control client, or an Agent SDK call stamped `origin: { kind: "human" }`. It does NOT trigger from a `-p` prompt, an unstamped Agent SDK call, **a scheduled task prompt** (relevant to `.claude/loop.md` fires — LM-003), or a webhook payload / relayed PR comment. Before v2.1.210 it fired from all of those routes too — do not assume a scheduled `/loop` body containing the literal word "ultracode" spawns a Workflow on current versions (code.claude.com/docs/en/workflows § Where the keyword works).
 - **Dynamic workflow size (v2.1.202+):** a `/config` setting — `unrestricted` / `small` / `medium` / `large` — controls the agent count Claude targets when planning a run. Tune it down for a tighter/cheaper fan-out, up when the objective genuinely needs the full 16/1000 headroom.
 - **`args` global:** a workflow script receives its parameters via the structured-data global `args` — `undefined` when the workflow is invoked without any parameters passed.
@@ -174,20 +176,20 @@ experimental `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` flag (off-by-default,
 in-run multi-agent coordination within a single live session) — see
 `parallel-sessions.md` § PSA Scope Axes and ADR-0002 / #484 for that boundary.
 
-## LM-003: Use `/loop` When … (requires v2.1.72+)
+## LM-003: Use `/loop` When … (requires v2.1.71+)
 
-Scheduled tasks (the `/loop` family as a whole) need **v2.1.72+** — cite this
-as the base gate before any of the finer-grained version gates below
+Scheduled tasks (the `/loop` and Cron family as a whole) need **v2.1.71+** —
+cite this as the base gate before any of the finer-grained version gates below
 (code.claude.com/docs/en/scheduled-tasks).
 
 - The check is genuinely periodic (no streamable trigger): vault-staleness
   during a multi-hour deep session, top-priority backlog snapshot during
   long-running work, branch-tending while waiting on review.
-- The work fits inside a single Claude session and the operator is at the
-  keyboard (or will resume with `claude --resume` within 7 days). Backgrounding
-  the session (`/background`) carries its `/loop` tasks into a background
-  session that keeps running without a terminal attached — the 7-day expiry
-  is still the outer bound (code.claude.com/docs/en/scheduled-tasks#limitations).
+- Scheduled tasks fire only while Claude Code is running. Unexpired tasks
+  restore when the conversation is reopened with `claude --resume` or
+  `claude --continue`; the 7-day expiry remains the outer bound. Backgrounding
+  the session (`/background`) keeps it running without a terminal attached
+  (code.claude.com/docs/en/scheduled-tasks#limitations).
 - A custom maintenance loop is wanted at session-start — wire it into
   `.claude/loop.md` (project) or `~/.claude/loop.md` (user).
 
@@ -203,18 +205,23 @@ Claude Code plans one fallback wakeup ~20 minutes later and then ends the loop
 (before v2.1.202, not rescheduling was the only self-termination path)
 (code.claude.com/docs/en/scheduled-tasks#stop-a-loop).
 
+**Scheduled-task prompt trust (v2.1.214).** When a scheduled task fires, its
+configured prompt becomes Claude's assigned task. That trust applies to task
+assignment only: it does not bypass the skill invocation controls below, and
+it does not make the prompt human-origin for Workflows' literal `ultracode`
+trigger (LM-002b).
+
 **Skill-Dispatch-Gate (v2.1.196+).** A scheduled fire only EXECUTES skills
-that Claude itself is permitted to invoke. Everything else arrives as inert
-plain text, not a run: built-in commands (`/permissions`, `/model`,
-`/clear`), skills declared `disable-model-invocation: true`, skills withheld
-via `skillOverrides` or a `Skill` deny rule, and MCP prompts. Practical corollary: the
-`.claude/loop.md` body must only INSTRUCT the fire to invoke model-invokable
-skills — a reference to a built-in command or a non-invokable skill as
-something the run itself should execute silently no-ops (the text lands in
-the transcript, nothing fires). Recommending such a command to the
-**operator** ("consider running `/permissions`") is still fine — that is
-prose read by a human, not a dispatch attempted by the run
-(code.claude.com/docs/en/scheduled-tasks).
+that Claude itself is permitted to invoke. References to built-in commands
+(`/permissions`, `/model`, `/clear`), skills declared
+`disable-model-invocation: true`, skills withheld via `skillOverrides` or a
+`Skill` deny rule, and MCP prompts remain plain text and do not invoke those
+commands or skills. Practical corollary: the `.claude/loop.md` body must only
+INSTRUCT the fire to invoke model-invokable skills — a reference to a built-in
+command or a non-invokable skill as something the run itself should execute
+silently no-ops. Recommending such a command to the **operator** ("consider
+running `/permissions`") is still fine — that is prose read by a human, not a
+dispatch attempted by the run (code.claude.com/docs/en/scheduled-tasks).
 
 **Cadence selection — pick by observation-rate; cache is secondary.** Choose the
 interval from *how fast the watched thing changes*, then sanity-check against
@@ -231,8 +238,8 @@ the cache TTL. The runtime clamps a self-paced wakeup to **[60s, 3600s]**
 **Cache TTL is a secondary factor, and no longer a `300s` cliff by default.** On
 a Claude subscription, Claude Code's **main conversation** — where a `/loop`
 body runs — requests the **1-hour** prompt-cache TTL automatically at no extra
-cost, so **there is no cache cliff anywhere in the [60s, 3600s] range**; every
-allowed delay wakes with context still cached
+cost. Delays below 3600s remain inside that nominal TTL; **3600s exactly is the
+boundary and must not be assumed to produce a cache hit**
 (code.claude.com/docs/en/prompt-caching § Cache lifetime). Two carve-outs
 re-introduce the 5-minute TTL and with it the classic `300s` worst-of-both
 trap: **(1)** usage overage (drawing on usage credits drops the TTL to five
@@ -275,8 +282,9 @@ its tail rather than erroring.
   (cross-repo readiness watcher, baseline-MR drift detection).
 - The artefact must persist across machine restarts (`/daily` rollover).
 
-`/loop` is the wrong tool here — its session-scoped lifetime guarantees
-the work will eventually be missed.
+`/loop` is the wrong tool here — it fires only while Claude Code is running.
+Unexpired tasks can restore on `--resume`/`--continue`, but this is not durable
+unattended scheduling.
 
 **Routines (research preview)** run in Anthropic's cloud, not on the local
 host — this requires a claude.ai account (Pro/Max/Team/Enterprise) and
@@ -341,7 +349,7 @@ it as you would any coordinator action:
 ## LM-007: Anti-Patterns
 
 - Fixed `/loop 5m …` to babysit a CI run — use Monitor on `glab ci status` or `gh pr checks --watch` instead (LM-002).
-- `/loop 1d …` for a daily note — use Routines or Desktop tasks; `/loop` dies with the session (LM-004).
+- `/loop 1d …` for a daily note — use Routines or Desktop tasks; `/loop` does not fire while Claude Code is stopped (LM-004).
 - Monitor filter matching only the success marker — silence from a crash is indistinguishable from success (LM-002 coverage rule).
 - `/loop` wrapping `/autopilot` — duplicates loop semantics and hides the kill-switches (LM-005).
 - Cadence at `300s` **under a 5-minute cache TTL** (API-key auth, or a subscription in usage overage) — you pay the cache miss without amortising it; pick `270s` or `1200s+`. Moot under the 1-hour subscription default, where cadence follows the observation-rate, not the cache (LM-003).
@@ -387,16 +395,17 @@ https://code.claude.com/docs/en/goal.
   `--continue` restores the goal too, and doing so RESETS the turn/timer/token
   baseline the evaluator measures against.
 
-**The load-bearing caveat — `/goal` provides CONTINUATION, never JUDGMENT.**
-The evaluator is a transcript reader, not a verifier. Deterministic quality
-gates remain the source of truth: `npm test`, `npm run typecheck`,
-`npm run lint` and their **exit codes** decide whether work is correct. Never
-replace an exit-code gate with a Haiku vote. The two compose cleanly: `/goal`
-keeps the loop alive across turns, the gate decides whether the loop is done.
-The correct pattern is a goal whose condition references freshly-run gate
-output ("…until `npm test` prints 0 failures **in this turn's output**"),
-backed by an actual gate run each turn — not a goal that asserts success on
-its own.
+**The load-bearing caveat — `/goal` provides CONTINUATION plus model-evaluated
+JUDGMENT, never deterministic VERIFICATION.** The evaluator judges the
+condition from the transcript; it does not run verification tools.
+Deterministic quality gates remain the source of truth: `npm test`,
+`npm run typecheck`, `npm run lint` and their **exit codes** decide whether
+work is correct. Never replace an exit-code gate with a Haiku vote. The two
+compose cleanly: `/goal` keeps the loop alive and judges surfaced evidence,
+while the gate authoritatively verifies whether the work is done. The correct
+pattern is a goal whose condition references freshly-run gate output ("…until
+`npm test` prints 0 failures **in this turn's output**"), backed by an actual
+gate run each turn — not a goal that asserts success on its own.
 
 **Availability constraints:** requires Claude Code v2.1.139+; one active goal
 per session; UNAVAILABLE when `disableAllHooks` or `allowManagedHooksOnly` is
@@ -437,3 +446,5 @@ _Re-verified 2026-07-12 (LM-003 cadence re-derivation: Claude Code subscription 
 _Re-verified 2026-07-16 (Delta-Sync v2.1.207→v2.1.211 via ref-MCP: 2 Deltas — LM-002b ultracode-keyword human-origin-only scope (v2.1.210, new bullet added); LM-004 Routines daily-cap corrected per-Routine→per-ACCOUNT + branch-push default framing (live-docs mismatch predating this window, drive-by fix). All other LM-001…LM-008 claims zero-delta incl. Monitor/WS, Channels, Workflows caps/kill-switches, ScheduleWakeup stop:true, Skill-Dispatch-Gate, 1h-TTL cadence, /goal clauses, /schedule gating)._
 
 _Re-verified 2026-07-17 (Delta-Sync v2.1.211→v2.1.212 via WebFetch full-doc sweep: **zero functional delta** for the /loop family — 2.1.212 touches /fork background-session transformation, WebSearch limits, and subagent spawning limits only. All LM-001…LM-008 areas re-verified MATCH incl. Monitor/WS, Channels org-gate, Workflows 16/1000-caps + ultracode human-origin scope, ScheduleWakeup [60s,3600s] + stop:true, Skill-Dispatch-Gate, 1h-TTL cadence + 5-min carve-outs, /goal clauses + availability gates, Routines per-account cap + claude/-branch guard. LM-004a note: the /schedule v2.1.81+ version gate is no longer restated in current docs — historical claim, kept unchanged)._
+
+_Re-verified 2026-07-18 (Delta-Sync v2.1.212→v2.1.214 via official release notes + scheduled-tasks/tools/goal/channels/workflows/prompt-caching docs: one relevant scheduled-task fix — a fired prompt becomes the assigned task — and **zero contract delta elsewhere**)._

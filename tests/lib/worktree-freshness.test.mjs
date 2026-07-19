@@ -68,6 +68,15 @@ async function makeTempRepo() {
   return repoDir;
 }
 
+async function removeTree(targetPath) {
+  await fs.rm(targetPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 3,
+    retryDelay: 100,
+  });
+}
+
 /**
  * Write a file (creating parent dirs) and commit it.
  * Returns the commit sha.
@@ -119,7 +128,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness integration tests'
 
   afterEach(async () => {
     process.chdir(origCwd);
-    await fs.rm(repoDir, { recursive: true, force: true });
+    await removeTree(repoDir);
   });
 
   // -------------------------------------------------------------------------
@@ -365,7 +374,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness integration tests'
         expect(result.decision).toBe('warn');
         expect(result.overlap).toEqual([]);
       } finally {
-        await fs.rm(iterRepo, { recursive: true, force: true });
+        await removeTree(iterRepo);
       }
     }
   }, 15000);
@@ -447,7 +456,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness integration tests'
       expect(result.fresh).toBe(false);
       expect(result.message).toMatch(/no meta for suffix 'cwd-mismatch'/);
     } finally {
-      await fs.rm(otherRepo, { recursive: true, force: true });
+      await removeTree(otherRepo);
     }
   }, 15000);
 
@@ -509,7 +518,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness roundtrip (createW
 
   afterAll(async () => {
     process.chdir(origCwd2);
-    await fs.rm(roundtripRepo, { recursive: true, force: true });
+    await removeTree(roundtripRepo);
   });
 
   it('roundtrip: createWorktree persists meta → checkWorktreeBaseRefFresh returns pass', async () => {
@@ -538,7 +547,7 @@ describe.skipIf(!gitAvailable).sequential('worktree-freshness roundtrip (createW
         await removeWorktree(wtPath).catch(() => {});
       }
       if (tmpDir) {
-        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+        await removeTree(tmpDir).catch(() => {});
       }
     }
   }, 30000);

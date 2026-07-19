@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +21,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../scripts/validate-plugin.mjs');
 const CHECK_CODEX_PLUGIN = resolve(__dirname, '../../scripts/lib/validate/check-codex-plugin.mjs');
 const REPO_ROOT = resolve(__dirname, '../../');
+const EXPECTED_CODEX_VERSION = JSON.parse(
+  readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'),
+).version;
 
 /**
  * Run scripts/validate-plugin.mjs with the given argument list.
@@ -224,15 +227,10 @@ describe('validate-plugin.mjs — nonexistent plugin root', () => {
 });
 
 // ---------------------------------------------------------------------------
-// check-codex-plugin.mjs — composerIcon check (R6)
+// check-codex-plugin.mjs — canonical contract reporter
 // ---------------------------------------------------------------------------
 
-/**
- * Run check-codex-plugin.mjs directly against a given plugin root.
- * @param {string} pluginRoot
- * @returns {import('node:child_process').SpawnSyncReturns<string>}
- */
-function runComposerIconCheck(pluginRoot) {
+function runCodexContractCheck(pluginRoot) {
   return spawnSync('node', [CHECK_CODEX_PLUGIN, pluginRoot], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
@@ -240,157 +238,153 @@ function runComposerIconCheck(pluginRoot) {
   });
 }
 
-describe('check-codex-plugin.mjs — composerIcon passes on real repo', () => {
-  // Spawn once per describe — all five it()s use identical args (REPO_ROOT).
+const REQUIRED_CODEX_EVENTS = [
+  'SessionStart',
+  'PreToolUse',
+  'PostToolUse',
+  'SubagentStart',
+  'SubagentStop',
+  'Stop',
+];
+
+function codexWrapper(handler) {
+  return `SO_PLATFORM=codex CODEX_PLUGIN_ROOT="${'${PLUGIN_ROOT}'}" sh "${'${PLUGIN_ROOT}'}/hooks/run-node.sh" "${'${PLUGIN_ROOT}'}/hooks/${handler}"`;
+}
+
+function makeCodexContractFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'vp-codex-contract-'));
+  for (const directory of ['.codex-plugin', 'skills', 'hooks', 'assets']) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: EXPECTED_CODEX_VERSION }));
+  writeFileSync(join(root, '.mcp.json'), '{"mcpServers":{}}');
+  writeFileSync(join(root, 'assets', 'icon.svg'), '<svg/>');
+  writeFileSync(join(root, 'hooks', 'run-node.sh'), '#!/bin/sh\n');
+  writeFileSync(join(root, 'hooks', 'on-session-start.mjs'), '// fixture\n');
+  writeFileSync(join(root, 'hooks', 'on-stop.mjs'), '// fixture\n');
+
+  writeFileSync(
+    join(root, '.codex-plugin', 'plugin.json'),
+    JSON.stringify({
+      name: 'session-orchestrator',
+      version: `${EXPECTED_CODEX_VERSION}+codex.20260717175716`,
+      description: 'Fixture Codex plugin',
+      keywords: ['codex'],
+      skills: './skills/',
+      hooks: './hooks/hooks-codex.json',
+      mcpServers: './.mcp.json',
+      interface: {
+        displayName: 'Session Orchestrator',
+        composerIcon: './assets/icon.svg',
+      },
+    }),
+  );
+
+  const hooks = Object.fromEntries(REQUIRED_CODEX_EVENTS.map((event) => [event, []]));
+  hooks.SessionStart = [
+    {
+      matcher: 'startup|resume|clear|compact',
+      hooks: [
+        {
+          type: 'command',
+          command: `echo '🎯 Session Orchestrator v${EXPECTED_CODEX_VERSION} — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'`,
+        },
+        { type: 'command', command: codexWrapper('on-session-start.mjs') },
+      ],
+    },
+  ];
+  hooks.Stop = [
+    { matcher: '', hooks: [{ type: 'command', command: codexWrapper('on-stop.mjs') }] },
+  ];
+  writeFileSync(
+    join(root, 'hooks', 'hooks-codex.json'),
+    JSON.stringify({ description: 'Fixture Codex hooks', hooks }),
+  );
+
+  return root;
+}
+
+function mutateCodexManifest(root, mutate) {
+  const manifestPath = join(root, '.codex-plugin', 'plugin.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  mutate(manifest);
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+}
+
+describe('check-codex-plugin.mjs — canonical contract', () => {
   let r;
   beforeAll(() => {
-    r = runComposerIconCheck(REPO_ROOT);
+    r = runCodexContractCheck(REPO_ROOT);
   });
 
-  it('exits 0 against the current repo (icon file exists and is valid SVG)', () => {
+  it('exits 0 against the current repository', () => {
     expect(r.status).toBe(0);
   });
 
-  it('emits PASS for composerIcon field present', () => {
-    expect(r.stdout).toContain('PASS: interface.composerIcon field is present');
-  });
-
-  it('emits PASS for composerIcon file exists', () => {
-    expect(r.stdout).toContain('PASS: composerIcon file exists at');
-  });
-
-  it('emits PASS for valid XML/SVG root', () => {
-    expect(r.stdout).toContain('PASS: composerIcon file is valid XML/SVG');
-  });
-
-  it('reports 3 passed, 0 failed', () => {
-    expect(r.stdout).toContain('3 passed, 0 failed');
+  it('reports the canonical manifest and hooks contract as passing', () => {
+    expect(r.stdout).toContain(
+      'PASS: .codex-plugin/plugin.json and hooks/hooks-codex.json satisfy the Codex contract',
+    );
+    expect(r.stdout).toContain('Results: 1 passed, 0 failed');
   });
 });
 
-describe('check-codex-plugin.mjs — composerIcon field missing', () => {
-  it('exits 1 when interface.composerIcon field is absent', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-no-icon-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    mkdirSync(codexPluginDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { displayName: 'Test' } }),
-    );
+describe('check-codex-plugin.mjs — composerIcon contract mutations', () => {
+  it('rejects a missing composerIcon field', () => {
+    const root = makeCodexContractFixture();
     try {
-      const r = runComposerIconCheck(tmpDir);
+      mutateCodexManifest(root, (manifest) => delete manifest.interface.composerIcon);
+      const r = runCodexContractCheck(root);
+
       expect(r.status).toBe(1);
+      expect(r.stdout).toContain('[required] $.manifest.interface.composerIcon');
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('reports FAIL with "field not set" message when composerIcon is absent', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-no-icon-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    mkdirSync(codexPluginDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { displayName: 'Test' } }),
-    );
+  it('rejects a missing composerIcon file', () => {
+    const root = makeCodexContractFixture();
     try {
-      const r = runComposerIconCheck(tmpDir);
-      expect(r.stdout).toContain('interface.composerIcon field not set');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
+      mutateCodexManifest(root, (manifest) => {
+        manifest.interface.composerIcon = './assets/missing.svg';
+      });
+      const r = runCodexContractCheck(root);
 
-describe('check-codex-plugin.mjs — composerIcon file does not exist', () => {
-  it('exits 1 when composerIcon references a nonexistent file', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-missing-icon-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    mkdirSync(codexPluginDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { composerIcon: './assets/nonexistent.svg' } }),
-    );
-    try {
-      const r = runComposerIconCheck(tmpDir);
       expect(r.status).toBe(1);
+      expect(r.stdout).toContain('[exists] $.manifest.interface.composerIcon');
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('reports FAIL with "does not exist" when composerIcon path is missing', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-missing-icon-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    mkdirSync(codexPluginDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { composerIcon: './assets/nonexistent.svg' } }),
-    );
+  it('rejects composerIcon content that is not SVG', () => {
+    const root = makeCodexContractFixture();
     try {
-      const r = runComposerIconCheck(tmpDir);
-      expect(r.stdout).toContain('does not exist');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
+      writeFileSync(join(root, 'assets', 'icon.svg'), 'not svg content');
+      const r = runCodexContractCheck(root);
 
-describe('check-codex-plugin.mjs — composerIcon file is not valid XML/SVG', () => {
-  it('exits 1 when composerIcon file does not start with <?xml or <svg', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-bad-svg-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    const assetsDir = join(tmpDir, 'assets');
-    mkdirSync(codexPluginDir, { recursive: true });
-    mkdirSync(assetsDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { composerIcon: './assets/icon.svg' } }),
-    );
-    writeFileSync(join(assetsDir, 'icon.svg'), 'not xml content here');
-    try {
-      const r = runComposerIconCheck(tmpDir);
       expect(r.status).toBe(1);
+      expect(r.stdout).toContain('[svg-content] $.manifest.interface.composerIcon');
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('reports FAIL with "does not start with" when file is not valid XML/SVG', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-bad-svg-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    const assetsDir = join(tmpDir, 'assets');
-    mkdirSync(codexPluginDir, { recursive: true });
-    mkdirSync(assetsDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { composerIcon: './assets/icon.svg' } }),
-    );
-    writeFileSync(join(assetsDir, 'icon.svg'), 'not xml content here');
+  it.each([
+    ['a direct SVG root', '  <svg xmlns="http://www.w3.org/2000/svg"/>'],
+    ['an XML declaration', '\n<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>'],
+  ])('accepts %s after trimming', (_case, content) => {
+    const root = makeCodexContractFixture();
     try {
-      const r = runComposerIconCheck(tmpDir);
-      expect(r.stdout).toContain('does not start with <?xml or <svg root');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
+      writeFileSync(join(root, 'assets', 'icon.svg'), content);
+      const r = runCodexContractCheck(root);
 
-  it('exits 0 when composerIcon file starts with <?xml declaration', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'vp-xml-decl-'));
-    const codexPluginDir = join(tmpDir, '.codex-plugin');
-    const assetsDir = join(tmpDir, 'assets');
-    mkdirSync(codexPluginDir, { recursive: true });
-    mkdirSync(assetsDir, { recursive: true });
-    writeFileSync(
-      join(codexPluginDir, 'plugin.json'),
-      JSON.stringify({ name: 'test-plugin', interface: { composerIcon: './assets/icon.svg' } }),
-    );
-    writeFileSync(join(assetsDir, 'icon.svg'), '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>');
-    try {
-      const r = runComposerIconCheck(tmpDir);
       expect(r.status).toBe(0);
+      expect(r.stdout).toContain('Results: 1 passed, 0 failed');
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

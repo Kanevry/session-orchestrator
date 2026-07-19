@@ -67,9 +67,12 @@ git clone https://github.com/Kanevry/session-orchestrator.git
 cd session-orchestrator
 npm install
 node scripts/codex-install.mjs
+codex plugin list --available --json
 ```
 
-Then fully restart Codex and open a new session. The commands become available in the restarted app. For desktop-specific details and troubleshooting, see `docs/codex-setup.md`.
+The installer uses Codex's public `plugin marketplace add` and `plugin add` lifecycle. Marketplace configuration only makes the plugin discoverable; the list output must separately show `session-orchestrator@kanevry` as installed and enabled. Next, fully restart Codex or start a fresh task, run `/hooks`, and review the bundle before approving it. Hook trust is operator-controlled and is never written or bypassed by the installer.
+
+Rerun the installer after pulling changes. It performs `plugin add` on every run to refresh the installed bundle. The committed `.codex-plugin/plugin.json` version uses `+codex.<UTC timestamp>` as an explicit invalidation marker; the installer validates that tracked version but never rewrites it. For the full lifecycle, hook subset, and troubleshooting steps, see [`docs/codex-setup.md`](codex-setup.md).
 
 ### Add Session Config to your project
 
@@ -1336,26 +1339,21 @@ This usually means the CLI tool is not authenticated or is pointing at the wrong
 
 ### Plugin not loading
 
-Verify the plugin structure is intact:
+For Codex, start with the public state view:
 
 ```bash
-ls /path/to/session-orchestrator/.codex-plugin/plugin.json
+codex plugin list --available --json
 ```
 
-The plugin manifest must exist and contain valid JSON with `name`, `version`, and `description` fields. If you installed from a local path, try reinstalling.
+Confirm that `session-orchestrator@kanevry` appears exactly once with `installed: true`, `enabled: true`, and the version committed in `.codex-plugin/plugin.json`. If it is only available, run `codex plugin add session-orchestrator@kanevry`. If it is missing or stale, run `codex plugin marketplace list --json`, remove the exact target with `codex plugin remove session-orchestrator@kanevry` when present, and rerun `node scripts/codex-install.mjs` from the clone. A healthy install still needs a fresh task plus operator review in `/hooks`; installation does not grant hook trust.
 
-Claude Code (run inside a Claude Code session, not in your shell):
+The installer removes only the allowlisted legacy IDs `session-orchestrator@openai-curated` and `session-orchestrator@local`; those exact IDs can also be removed through `codex plugin remove`. For a conflicting `kanevry` source, use `codex plugin marketplace remove kanevry` and rerun the installer from the intended clone. Any other pre-public plugin/config/cache/hook-state residue is unsupported: do not modify private Codex files; file an issue with `codex --version` plus the public plugin and marketplace list output.
+
+For Claude Code, run these commands inside a Claude Code session, not in your shell:
 
 ```text
 /plugin marketplace add /absolute/path/to/session-orchestrator
 /plugin install session-orchestrator@kanevry
-```
-
-Codex:
-
-```bash
-cd /path/to/session-orchestrator
-node scripts/codex-install.mjs
 ```
 
 ### "tsgo: command not found"

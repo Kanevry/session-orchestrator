@@ -20,13 +20,17 @@ Target audience: anyone writing a new hook, adding a shared lib, or extending a 
 │   Shared helpers — io, platform, path-utils, config,        │
 │   events, worktree, hardening, common                       │
 ├─────────────────────────────────────────────────────────────┤
-│ Node 20+ stdlib  +  zx 8                                    │
+│ Node 24+ stdlib  +  zx 8                                    │
 │   fs.promises, path, os, url, crypto, fetch,                │
-│   AbortSignal.timeout — NO jq, NO bash                      │
+│   application logic in ESM; POSIX shell only for run-node   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 Skills (`skills/**/*.md`) sit outside this stack — they are instructions for the agent, not code. When a skill needs logic (config parsing, file I/O, subprocess spawning), it invokes a `scripts/lib/*.mjs` module via `node -e` or delegates to a hook.
+
+Codex installation is also layered through public APIs rather than private files. `scripts/codex-install.mjs` validates the tracked manifest and hook contract, calls `codex plugin marketplace add`, calls `codex plugin add`, and verifies the result with `codex plugin list --available --json`. A configured marketplace, an installed+enabled plugin, and trusted/executing hooks are separate postconditions; only the operator can grant the last one in a fresh task through `/hooks`.
+
+The installer repeats `plugin add` on every run so the installed bundle refreshes after local changes. Explicit invalidation comes from the committed `.codex-plugin/plugin.json` version format `<package-version>+codex.<YYYYMMDDHHmmss>`. The contract validator checks the base and UTC timestamp; the installer never mutates the tracked version.
 
 ## 2. Hook Anatomy
 
@@ -86,7 +90,22 @@ Edit `hooks/hooks.json`. Each entry maps an event matcher to the Node command, r
 }
 ```
 
-Use `$CLAUDE_PLUGIN_ROOT` (or `$CODEX_PLUGIN_ROOT` / `$CURSOR_RULES_DIR`) — these are set by the editor. Never hard-code absolute paths, and never register a bare `node ...` command (the wiring guard in `tests/hooks/run-node-shim.test.mjs` fails on it).
+Use the harness-native root variable: `$CLAUDE_PLUGIN_ROOT` for Claude Code, `${PLUGIN_ROOT}` inside Codex hook manifests, `$CURSOR_RULES_DIR` for Cursor, and `$PI_PLUGIN_ROOT` for Pi. Never hard-code absolute paths, and never register a bare `node ...` command (the wiring guard in `tests/hooks/run-node-shim.test.mjs` fails on it).
+
+Codex's validated wrapper is intentionally exact:
+
+```json
+{
+  "type": "command",
+  "command": "SO_PLATFORM=codex CODEX_PLUGIN_ROOT=\"${PLUGIN_ROOT}\" sh \"${PLUGIN_ROOT}/hooks/run-node.sh\" \"${PLUGIN_ROOT}/hooks/on-session-start.mjs\""
+}
+```
+
+`${PLUGIN_ROOT}` is Codex-native. `CODEX_PLUGIN_ROOT` is a compatibility export for shared root resolution, and `SO_PLATFORM=codex` takes precedence in handlers that receive multiple harness signals.
+
+`hooks/hooks-codex.json` is not a copy of the Claude hook file. It contains the six Codex project event slots (`SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`). `SessionEnd`, `PostToolUseFailure`, `PostToolBatch`, and `CwdChanged` are Claude-only and rejected by the Codex contract. Edit-related Claude handlers are also rejected because they do not understand Codex's canonical `apply_patch` payload; keep them absent until a real adapter exists.
+
+Hook registration still does not establish trust. After install or refresh, test in a fresh Codex task and use `/hooks` to inspect and approve the bundle. No installer or validation script may write or bypass that operator decision.
 
 ## 3. Shared Lib Catalog
 

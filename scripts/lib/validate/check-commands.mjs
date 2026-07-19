@@ -6,6 +6,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
 
 const [, , pluginRoot] = process.argv;
 
@@ -28,6 +29,65 @@ function pass(msg) {
 function fail(msg) {
   console.log(`  FAIL: ${msg}`);
   failed++;
+}
+
+/**
+ * Extract the YAML block at the beginning of a command file.
+ *
+ * @param {string} content
+ * @returns {{ ok: true, yamlText: string } | { ok: false, diagnostic: string }}
+ */
+function extractInitialFrontmatter(content) {
+  const lines = content.split(/\r?\n/);
+  if (lines[0] !== '---') {
+    return { ok: false, diagnostic: 'missing YAML frontmatter opening delimiter' };
+  }
+
+  const closingDelimiter = lines.indexOf('---', 1);
+  if (closingDelimiter === -1) {
+    return { ok: false, diagnostic: 'missing YAML frontmatter closing delimiter' };
+  }
+
+  return { ok: true, yamlText: lines.slice(1, closingDelimiter).join('\n') };
+}
+
+/**
+ * Parse and validate the frontmatter contract for one command file.
+ *
+ * @param {string} commandsDir
+ * @param {string} filename
+ */
+function validateCommandFrontmatter(commandsDir, filename) {
+  const content = readFileSync(join(commandsDir, filename), 'utf8');
+  const extracted = extractInitialFrontmatter(content);
+  if (!extracted.ok) {
+    fail(`${filename}: ${extracted.diagnostic}`);
+    return;
+  }
+
+  let frontmatter;
+  try {
+    frontmatter = yaml.load(extracted.yamlText, { schema: yaml.CORE_SCHEMA });
+  } catch (error) {
+    const reason = error?.reason ?? error?.message ?? String(error);
+    const location = error?.mark
+      ? ` at line ${error.mark.line + 1}, column ${error.mark.column + 1}`
+      : '';
+    fail(`${filename}: invalid YAML frontmatter: ${reason}${location}`);
+    return;
+  }
+
+  if (frontmatter === null || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
+    fail(`${filename}: YAML frontmatter must be a non-null mapping/object`);
+    return;
+  }
+
+  if (
+    Object.hasOwn(frontmatter, 'argument-hint') &&
+    typeof frontmatter['argument-hint'] !== 'string'
+  ) {
+    fail(`${filename}: argument-hint must be a string`);
+  }
 }
 
 // ============================================================================
@@ -64,10 +124,13 @@ if (existsSync(commandsDir)) {
   } catch {
     entries = [];
   }
-  const mdFiles = entries.filter((f) => f.endsWith('.md'));
+  const mdFiles = entries.filter((f) => f.endsWith('.md')).sort();
 
   if (mdFiles.length > 0) {
     pass(`commands directory contains ${mdFiles.length} .md files`);
+    for (const filename of mdFiles) {
+      validateCommandFrontmatter(commandsDir, filename);
+    }
   } else {
     fail('commands directory is empty (no .md files)');
   }

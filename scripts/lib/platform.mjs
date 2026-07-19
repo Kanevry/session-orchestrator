@@ -10,10 +10,9 @@
 
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
-import {
-  resolvePluginRoot as _resolvePluginRootRobust,
-  PluginRootResolutionError,
-} from './plugin-root.mjs';
+import { resolvePluginRoot as _resolvePluginRootRobust } from './plugin-root.mjs';
+
+const VALID_PLATFORMS = new Set(['claude', 'codex', 'cursor', 'pi']);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -25,6 +24,21 @@ function _isFile(p) {
 
 function _isDir(p) {
   try { return statSync(p).isDirectory(); } catch { return false; }
+}
+
+/**
+ * @param {string|undefined} value
+ * @returns {"claude"|"codex"|"cursor"|"pi"|null}
+ */
+function _validPlatform(value) {
+  const platform = (value || '').trim();
+  if (!VALID_PLATFORMS.has(platform)) return null;
+  return /** @type {"claude"|"codex"|"cursor"|"pi"} */ (platform);
+}
+
+/** @param {string} envName */
+function _hasEnvValue(envName) {
+  return (process.env[envName] || '').trim() !== '';
 }
 
 /**
@@ -68,21 +82,25 @@ function walkUpFor(startDir, marker, kind) {
 /**
  * Detect the host IDE/CLI platform.
  *
- * Detection order (mirrors platform.sh):
- * 1. Env-var fast path: CLAUDE_PLUGIN_ROOT → "claude", CODEX_PLUGIN_ROOT → "codex",
+ * Detection order:
+ * 1. Trimmed allowlisted SO_PLATFORM explicit override
+ * 2. Compatibility env vars: CLAUDE_PLUGIN_ROOT → "claude", CODEX_PLUGIN_ROOT → "codex",
  *    CURSOR_RULES_DIR → "cursor", PI_PLUGIN_ROOT → "pi"
- * 2. Filesystem walk from CWD looking for marker dirs:
+ * 3. Filesystem walk from CWD looking for marker dirs:
  *    .claude-plugin → "claude", .codex-plugin → "codex", .cursor/rules → "cursor",
  *    .pi → "pi"
- * 3. Default: "claude"
+ * 4. Default: "claude"
  *
  * @returns {"claude"|"codex"|"cursor"|"pi"}
  */
 export function detectPlatform() {
-  if (process.env.CLAUDE_PLUGIN_ROOT) return 'claude';
-  if (process.env.CODEX_PLUGIN_ROOT)  return 'codex';
-  if (process.env.CURSOR_RULES_DIR)   return 'cursor';
-  if (process.env.PI_PLUGIN_ROOT)      return 'pi';
+  const explicitPlatform = _validPlatform(process.env.SO_PLATFORM);
+  if (explicitPlatform) return explicitPlatform;
+
+  if (_hasEnvValue('CLAUDE_PLUGIN_ROOT')) return 'claude';
+  if (_hasEnvValue('CODEX_PLUGIN_ROOT')) return 'codex';
+  if (_hasEnvValue('CURSOR_RULES_DIR')) return 'cursor';
+  if (_hasEnvValue('PI_PLUGIN_ROOT')) return 'pi';
 
   const cwd = process.cwd();
 
@@ -101,10 +119,9 @@ export function detectPlatform() {
 /**
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
- * Delegates to `scripts/lib/plugin-root.mjs` which implements the layered fallback
- * (CLAUDE_PLUGIN_ROOT → CODEX_PLUGIN_ROOT → PI_PLUGIN_ROOT → walk from import.meta.url →
- * walk from cwd). The platform-specific CURSOR_RULES_DIR path is handled here
- * as an additional level before falling back to the robust resolver.
+ * Delegates to `scripts/lib/plugin-root.mjs` which implements native PLUGIN_ROOT,
+ * explicit-platform compatibility precedence, remaining compatibility roots, and
+ * import-meta/cwd walking. The optional platform argument retains the legacy Cursor fast path.
  *
  * Returns empty string (never throws) to preserve backward compat with callers
  * that check for a falsy return value.
@@ -115,19 +132,12 @@ export function detectPlatform() {
 export function resolvePluginRoot(platform) {
   const plt = platform ?? detectPlatform();
 
-  // Cursor: platform-specific env var not covered by plugin-root.mjs
-  if (plt === 'cursor' && process.env.CURSOR_RULES_DIR &&
-      _isDir(process.env.CURSOR_RULES_DIR)) {
-    return process.env.CURSOR_RULES_DIR;
-  }
+  // Preserve the legacy explicit Cursor fast path without changing Claude/Codex/Pi ordering.
+  const compatibilityHint = plt === 'cursor' ? plt : undefined;
 
-  // Delegate to the robust layered resolver (#212 + Pi adapter)
   try {
-    return _resolvePluginRootRobust();
-  } catch (err) {
-    if (err instanceof PluginRootResolutionError) {
-      return '';
-    }
+    return _resolvePluginRootRobust(compatibilityHint);
+  } catch {
     return '';
   }
 }

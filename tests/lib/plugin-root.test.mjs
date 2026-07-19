@@ -5,19 +5,20 @@
  * Issue #212 — layered plugin root fallback
  *
  * Test IDs (AC 5):
- *   env-claude              — Level 1 fast path: CLAUDE_PLUGIN_ROOT set + dir exists
- *   env-codex               — Level 2 fast path: CODEX_PLUGIN_ROOT set + dir exists
- *   env-pi                  — Level 3 fast path: PI_PLUGIN_ROOT set + dir exists
- *   walk-from-import-meta   — Level 4: walk up from this file's location
- *   walk-from-cwd           — Level 5: walk up from cwd
- *   all-fail-throws         — all levels fail → PluginRootResolutionError
- *   env-precedence          — CLAUDE_PLUGIN_ROOT wins over CODEX_PLUGIN_ROOT
+ *   env-native              — native PLUGIN_ROOT precedence
+ *   env-claude/codex/cursor/pi — legacy compatibility fallbacks
+ *   env-precedence          — explicit SO_PLATFORM matching + legacy order
+ *   walk-from-import-meta   — walk up from this file's location
+ *   walk-from-cwd           — walk up from cwd
+ *   all-fail-throws         — all levels fail → PluginRootResolutionError diagnostics
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +47,23 @@ function makeTmpPluginDir(name = 'session-orchestrator') {
 // Dynamically import so ESM module cache is shared; env stubs apply per-call.
 const { resolvePluginRoot, PluginRootResolutionError } = await import('@lib/plugin-root.mjs');
 
+const ROOT_ENV_KEYS = [
+  'SO_PLATFORM',
+  'PLUGIN_ROOT',
+  'CLAUDE_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'CURSOR_RULES_DIR',
+  'PI_PLUGIN_ROOT',
+];
+
+beforeEach(() => {
+  for (const key of ROOT_ENV_KEYS) vi.stubEnv(key, '');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 // ---------------------------------------------------------------------------
 // Test suites
 // ---------------------------------------------------------------------------
@@ -60,7 +78,41 @@ describe('PluginRootResolutionError', () => {
   });
 });
 
-describe('resolvePluginRoot — env-claude (Level 1)', () => {
+describe('resolvePluginRoot — native PLUGIN_ROOT', () => {
+  let nativeDir;
+  let claudeDir;
+  let codexDir;
+  let cursorDir;
+  let piDir;
+
+  beforeEach(() => {
+    nativeDir = makeTmpPluginDir('session-orchestrator');
+    claudeDir = makeTmpPluginDir('session-orchestrator');
+    codexDir = makeTmpPluginDir('session-orchestrator');
+    cursorDir = makeTmpPluginDir('session-orchestrator');
+    piDir = makeTmpPluginDir('session-orchestrator');
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('PLUGIN_ROOT', `  ${nativeDir}  `);
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', claudeDir);
+    vi.stubEnv('CODEX_PLUGIN_ROOT', codexDir);
+    vi.stubEnv('CURSOR_RULES_DIR', cursorDir);
+    vi.stubEnv('PI_PLUGIN_ROOT', piDir);
+  });
+
+  afterEach(() => {
+    rmSync(nativeDir, { recursive: true, force: true });
+    rmSync(claudeDir, { recursive: true, force: true });
+    rmSync(codexDir, { recursive: true, force: true });
+    rmSync(cursorDir, { recursive: true, force: true });
+    rmSync(piDir, { recursive: true, force: true });
+  });
+
+  it('returns the trimmed native root before simultaneous explicit-platform roots', () => {
+    expect(resolvePluginRoot()).toBe(nativeDir);
+  });
+});
+
+describe('resolvePluginRoot — env-claude compatibility fallback', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -88,7 +140,7 @@ describe('resolvePluginRoot — env-claude (Level 1)', () => {
   });
 });
 
-describe('resolvePluginRoot — env-codex (Level 2)', () => {
+describe('resolvePluginRoot — env-codex compatibility fallback', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -109,7 +161,24 @@ describe('resolvePluginRoot — env-codex (Level 2)', () => {
   });
 });
 
-describe('resolvePluginRoot — env-pi (Level 3)', () => {
+describe('resolvePluginRoot — env-cursor', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpPluginDir('session-orchestrator');
+    vi.stubEnv('CURSOR_RULES_DIR', `  ${tmpDir}  `);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns the trimmed CURSOR_RULES_DIR legacy fallback', () => {
+    expect(resolvePluginRoot()).toBe(tmpDir);
+  });
+});
+
+describe('resolvePluginRoot — env-pi compatibility fallback', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -133,29 +202,67 @@ describe('resolvePluginRoot — env-pi (Level 3)', () => {
 describe('resolvePluginRoot — env-precedence', () => {
   let claudeDir;
   let codexDir;
+  let cursorDir;
   let piDir;
 
   beforeEach(() => {
     claudeDir = makeTmpPluginDir('session-orchestrator');
-    codexDir  = makeTmpPluginDir('session-orchestrator');
-    piDir     = makeTmpPluginDir('session-orchestrator');
+    codexDir = makeTmpPluginDir('session-orchestrator');
+    cursorDir = makeTmpPluginDir('session-orchestrator');
+    piDir = makeTmpPluginDir('session-orchestrator');
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', claudeDir);
     vi.stubEnv('CODEX_PLUGIN_ROOT', codexDir);
+    vi.stubEnv('CURSOR_RULES_DIR', cursorDir);
     vi.stubEnv('PI_PLUGIN_ROOT', piDir);
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     rmSync(claudeDir, { recursive: true, force: true });
     rmSync(codexDir, { recursive: true, force: true });
+    rmSync(cursorDir, { recursive: true, force: true });
     rmSync(piDir, { recursive: true, force: true });
   });
 
-  it('returns CLAUDE_PLUGIN_ROOT over CODEX_PLUGIN_ROOT and PI_PLUGIN_ROOT when all are set', () => {
-    const result = resolvePluginRoot();
-    expect(result).toBe(claudeDir);
-    expect(result).not.toBe(codexDir);
-    expect(result).not.toBe(piDir);
+  it('preserves Claude-first legacy precedence without explicit SO_PLATFORM', () => {
+    expect(resolvePluginRoot()).toBe(claudeDir);
+  });
+
+  it.each([
+    ['claude', () => claudeDir],
+    ['codex', () => codexDir],
+    ['cursor', () => cursorDir],
+    ['pi', () => piDir],
+  ])('prefers the %s compatibility root for matching explicit SO_PLATFORM', (platform, expectedDir) => {
+    vi.stubEnv('SO_PLATFORM', `  ${platform}  `);
+    expect(resolvePluginRoot()).toBe(expectedDir());
+  });
+
+  it('ignores invalid explicit SO_PLATFORM and preserves legacy precedence', () => {
+    vi.stubEnv('SO_PLATFORM', 'vscode');
+    expect(resolvePluginRoot()).toBe(claudeDir);
+  });
+
+  it('ignores whitespace-only explicit SO_PLATFORM and preserves legacy precedence', () => {
+    vi.stubEnv('SO_PLATFORM', '   ');
+    expect(resolvePluginRoot()).toBe(claudeDir);
+  });
+
+  it.each([
+    ['whitespace-only', '   '],
+    ['non-directory', '/definitely/missing/session-orchestrator-plugin-root'],
+  ])('falls back from a %s native root to the explicit Codex root', (_case, nativeRoot) => {
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('PLUGIN_ROOT', nativeRoot);
+
+    expect(resolvePluginRoot()).toBe(codexDir);
+  });
+
+  it('continues to legacy precedence when the explicit-platform root is invalid', () => {
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('PLUGIN_ROOT', '   ');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', path.join(codexDir, 'missing'));
+
+    expect(resolvePluginRoot()).toBe(claudeDir);
   });
 });
 
@@ -254,31 +361,54 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
     expect(err.triedPaths[4]).toContain('cwd');
   });
 
-  it('throws PluginRootResolutionError when env vars point to non-directories', () => {
-    // Set both env vars to paths that definitely do not exist as directories
-    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/abcdef');
-    vi.stubEnv('CODEX_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/ghijkl');
-    vi.stubEnv('PI_PLUGIN_ROOT', '/this/path/absolutely/does/not/exist/ever/mnopqr');
+  it('reports trimmed invalid and whitespace-only env paths before throwing', () => {
+    const isolatedDir = path.join(
+      os.tmpdir(),
+      `plugin-root-isolated-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(isolatedDir, { recursive: true });
 
-    // Levels 1+2+3 skip (paths not directories). Levels 4+5 will still find the
-    // real repo via walk. This proves the guard condition correctly skips bad paths
-    // and falls through without erroring on them.
-    // We can only truly get the throw if we run outside the repo — assert the type.
-    let threw = false;
     try {
-      resolvePluginRoot();
-    } catch (err) {
-      threw = true;
-      expect(err).toBeInstanceOf(PluginRootResolutionError);
-      expect(err.name).toBe('PluginRootResolutionError');
-      expect(err.message).toContain('session-orchestrator');
-    }
+      const isolatedModule = path.join(isolatedDir, 'plugin-root.mjs');
+      copyFileSync(fileURLToPath(new URL('../../scripts/lib/plugin-root.mjs', import.meta.url)), isolatedModule);
+      const missingNative = path.join(isolatedDir, 'missing-native');
+      const missingCodex = path.join(isolatedDir, 'missing-codex');
+      const script = `
+        import { resolvePluginRoot } from ${JSON.stringify(pathToFileURL(isolatedModule).href)};
+        try {
+          resolvePluginRoot();
+          process.exit(2);
+        } catch (error) {
+          console.log(JSON.stringify({
+            name: error.name,
+            message: error.message,
+            triedPaths: error.triedPaths,
+          }));
+        }
+      `;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: isolatedDir,
+        env: {
+          ...process.env,
+          SO_PLATFORM: 'codex',
+          PLUGIN_ROOT: `  ${missingNative}  `,
+          CLAUDE_PLUGIN_ROOT: '   ',
+          CODEX_PLUGIN_ROOT: missingCodex,
+          CURSOR_RULES_DIR: '',
+          PI_PLUGIN_ROOT: '',
+        },
+        encoding: 'utf8',
+      });
 
-    // If we didn't throw (because walk found the real repo), that's also valid —
-    // it means the fallback worked correctly.
-    if (!threw) {
-      // Pass — the test demonstrates that non-directory env vars are skipped cleanly
-      expect(true).toBe(true);
+      expect(result.status).toBe(0);
+      const error = JSON.parse(result.stdout.trim());
+      expect(error.name).toBe('PluginRootResolutionError');
+      expect(error.message).toContain('PLUGIN_ROOT');
+      expect(error.triedPaths).toContain(`PLUGIN_ROOT=${missingNative} (not a directory)`);
+      expect(error.triedPaths).toContain(`CODEX_PLUGIN_ROOT=${missingCodex} (not a directory)`);
+      expect(error.triedPaths).toContain('CLAUDE_PLUGIN_ROOT (empty after trim)');
+    } finally {
+      rmSync(isolatedDir, { recursive: true, force: true });
     }
   });
 

@@ -10,7 +10,7 @@
  * missing. All command-shaped hook configs must route through the shim.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import {
   readFileSync,
   writeFileSync,
@@ -18,21 +18,39 @@ import {
   mkdirSync,
   chmodSync,
   existsSync,
+  rmSync,
   symlinkSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { parseCodexHookWrapperCommand } from '../../scripts/lib/codex/plugin-contract.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SHIM = path.join(REPO_ROOT, 'hooks', 'run-node.sh');
 
 const COMMAND_CONFIGS = ['hooks/hooks.json', 'hooks/hooks-codex.json', 'hooks/hooks-pi.json'];
 
+const TRUSTED_CLAUDE_PI_WRAPPER =
+  /^sh "\$(CLAUDE|PI)_PLUGIN_ROOT\/hooks\/run-node\.sh" "\$\1_PLUGIN_ROOT\/hooks\/[\w-]+(?:\/[\w-]+)*\.mjs"$/;
+
+function isTrustedWrapper(platform, command) {
+  if (platform === 'Codex') return parseCodexHookWrapperCommand(command) !== null;
+  return TRUSTED_CLAUDE_PI_WRAPPER.test(command);
+}
+
+const sandboxRoots = new Set();
+
+afterEach(() => {
+  for (const root of sandboxRoots) rmSync(root, { recursive: true, force: true });
+  sandboxRoots.clear();
+});
+
 /** Build an isolated sandbox: empty PATH dir, HOME, TMPDIR, no-node search dir. */
 function makeSandbox() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'run-node-shim-'));
+  sandboxRoots.add(root);
   const dirs = {
     root,
     emptyBin: path.join(root, 'emptybin'),
@@ -78,14 +96,22 @@ function unwrappedNodeCommands(cfg) {
 }
 
 describe('run-node.sh — node resolution (GH#53)', () => {
-  it('resolves node from PATH and passes argv + exit code through unchanged', () => {
+  it('passes argv, stdout, stderr, and exit code through unchanged', () => {
     const dirs = makeSandbox();
     const hook = path.join(dirs.root, 'hook.mjs');
-    writeFileSync(hook, 'console.log("ran:" + process.argv[2]); process.exit(3);');
-    // Expose the real node via a symlink on the sandbox PATH.
+    writeFileSync(
+      hook,
+      'process.stdout.write("out:" + process.argv[2]); process.stderr.write("err:" + process.argv[3]); process.exit(3);',
+    );
     symlinkSync(process.execPath, path.join(dirs.fakeBin, 'node'));
-    const res = runShim(nodelessEnv(dirs, { PATH: dirs.fakeBin }), [hook, 'extra-arg']);
-    expect(res.stdout).toContain('ran:extra-arg');
+
+    const res = runShim(
+      nodelessEnv(dirs, { PATH: dirs.fakeBin }),
+      [hook, 'stdout-arg', 'stderr-arg'],
+    );
+
+    expect(res.stdout).toBe('out:stdout-arg');
+    expect(res.stderr).toBe('err:stderr-arg');
     expect(res.status).toBe(3);
   });
 
@@ -94,7 +120,7 @@ describe('run-node.sh — node resolution (GH#53)', () => {
     const hook = path.join(dirs.root, 'stdin.mjs');
     writeFileSync(
       hook,
-      'let d = ""; process.stdin.on("data", (c) => (d += c)); process.stdin.on("end", () => process.stdout.write("got:" + d));'
+      'let d = ""; process.stdin.on("data", (c) => (d += c)); process.stdin.on("end", () => process.stdout.write("got:" + d));',
     );
     symlinkSync(process.execPath, path.join(dirs.fakeBin, 'node'));
     const res = runShim(nodelessEnv(dirs, { PATH: dirs.fakeBin }), [hook], '{"tool":"Bash"}');
@@ -158,7 +184,9 @@ describe('hook configs route through run-node.sh (wiring guard, GH#53)', () => {
         PreToolUse: [
           {
             matcher: 'Bash',
-            hooks: [{ type: 'command', command: 'node "$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs"' }],
+            hooks: [
+              { type: 'command', command: 'node "$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs"' },
+            ],
           },
         ],
       },
@@ -173,11 +201,65 @@ describe('hook configs route through run-node.sh (wiring guard, GH#53)', () => {
         for (const m of matchers) {
           for (const h of m.hooks ?? []) {
             if (typeof h.command === 'string' && h.command.includes('run-node.sh')) {
-              expect(h.command).toMatch(/^sh "\$(CLAUDE|CODEX|PI)_PLUGIN_ROOT\/hooks\/run-node\.sh" "\$(CLAUDE|CODEX|PI)_PLUGIN_ROOT\/hooks\/[\w/-]+\.mjs"$/);
+              if (rel === 'hooks/hooks-codex.json') {
+                expect(parseCodexHookWrapperCommand(h.command)).not.toBeNull();
+              } else {
+                expect(h.command).toMatch(TRUSTED_CLAUDE_PI_WRAPPER);
+              }
             }
           }
         }
       }
     }
+  });
+
+  it.each([
+    [
+      'Claude',
+      'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs"',
+    ],
+    ['Pi', 'sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"'],
+    [
+      'Codex',
+      'SO_PLATFORM=codex CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}" sh "${PLUGIN_ROOT}/hooks/run-node.sh" "${PLUGIN_ROOT}/hooks/on-stop.mjs"',
+    ],
+  ])('accepts the trusted %s wrapper contract', (platform, command) => {
+    expect(isTrustedWrapper(platform, command)).toBe(true);
+  });
+
+  it.each([
+    [
+      'an arbitrary command prefix',
+      'Codex',
+      'DEBUG=1 SO_PLATFORM=codex CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}" sh "${PLUGIN_ROOT}/hooks/run-node.sh" "${PLUGIN_ROOT}/hooks/on-stop.mjs"',
+    ],
+    [
+      'a missing Codex environment prefix',
+      'Codex',
+      'sh "${PLUGIN_ROOT}/hooks/run-node.sh" "${PLUGIN_ROOT}/hooks/on-stop.mjs"',
+    ],
+    [
+      'a mismatched Codex root variable',
+      'Codex',
+      'SO_PLATFORM=codex CODEX_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT}" sh "${PLUGIN_ROOT}/hooks/run-node.sh" "${PLUGIN_ROOT}/hooks/on-stop.mjs"',
+    ],
+    [
+      'a legacy Codex root wrapper',
+      'Codex',
+      'sh "$CODEX_PLUGIN_ROOT/hooks/run-node.sh" "$CODEX_PLUGIN_ROOT/hooks/on-stop.mjs"',
+    ],
+    [
+      'mismatched Claude and Pi root variables',
+      'Claude',
+      'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"',
+    ],
+    [
+      'a wrapper with no concrete handler',
+      'Codex',
+      'SO_PLATFORM=codex CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}" sh "${PLUGIN_ROOT}/hooks/run-node.sh"',
+    ],
+    ['a bare-node handler command', 'Codex', 'node "${PLUGIN_ROOT}/hooks/on-stop.mjs"'],
+  ])('rejects %s', (_case, platform, command) => {
+    expect(isTrustedWrapper(platform, command)).toBe(false);
   });
 });

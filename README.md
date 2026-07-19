@@ -22,7 +22,7 @@ That is the whole loop. `/plan` and `/evolve` extend it (see [Lifecycle](#lifecy
 
 > **Prerequisite:** Node.js 24 or later (`node --version`). v3.x runs as ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/).
 
-The two paths below differ only by **install mechanism**, not capability or tier: Claude Code pulls from the plugin marketplace; every other platform clones the repo. The same skills and commands ship to all four.
+The platforms share the same skills and commands, but each harness has its own supported install lifecycle.
 
 ### Claude Code (plugin marketplace)
 
@@ -40,14 +40,23 @@ cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugi
 npm install
 ```
 
-### Codex CLI, Cursor IDE & Pi (git clone)
+### Codex CLI (public plugin lifecycle)
 
 ```bash
 git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
 cd ~/Projects/session-orchestrator && npm install
-node scripts/codex-install.mjs                          # Codex CLI
-node scripts/cursor-install.mjs /path/to/your/project   # Cursor IDE
-node scripts/pi-install.mjs    /path/to/your/project --settings-only   # Pi
+node scripts/codex-install.mjs
+codex plugin list --available --json
+```
+
+The installer drives Codex's public `plugin marketplace add` and `plugin add` commands, then verifies the installed and enabled state. Start a fresh task (or restart Codex), run `/hooks`, and review the bundle: marketplace configuration, plugin installation, and hook trust are separate states, and the installer never bypasses operator-controlled trust. Rerun the installer after pulling changes; its every-run `plugin add` refreshes the bundle, while the committed `+codex.<UTC timestamp>` manifest suffix provides explicit cache invalidation without installer-side manifest edits.
+
+### Cursor IDE & Pi (git clone)
+
+```bash
+cd ~/Projects/session-orchestrator
+node scripts/cursor-install.mjs /path/to/your/project
+node scripts/pi-install.mjs    /path/to/your/project --settings-only
 ```
 
 Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md) · [Pi](docs/pi-setup.md). Per-IDE notes on `CLAUDE.md` vs `AGENTS.md`: [instruction-file-resolution](skills/_shared/instruction-file-resolution.md).
@@ -170,13 +179,15 @@ The design goal is engineering quality: every wave exits verified, every unfinis
 | All 24 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) | Prompt templates |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only | Sequential (parallel planned) |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` | `.pi/STATE.md` |
-| Scope enforcement | PreToolUse hooks | Hooks (experimental) | `afterFileEdit` (post-hoc) | `tool_call` bridge |
+| Scope enforcement | PreToolUse hooks | Unavailable — pending a real `apply_patch` adapter | `afterFileEdit` (post-hoc) | `tool_call` bridge |
 | AskUserQuestion | Native tool | Numbered-list fallback | Numbered-list fallback | Numbered-list fallback |
 | Quality gates | Full | Full | Full | Full |
 
-All platforms share the same skills, commands, hooks, and scripts; platform-specific adaptation lives in `scripts/lib/platform.mjs`. **OS:** macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows runs natively (all paths via `path.join`, tmp via `os.tmpdir()`) but is **not** covered by CI — treat it as best-effort and run smoke tests locally when changing OS-sensitive code. Cursor and Pi have known event-coverage caveats — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
+All platforms share the same skills, commands, and scripts; hooks use platform-specific adapters and event subsets. Codex intentionally wires only its six supported project event slots and omits Claude-only events plus Edit/Write payload handlers until a real Codex `apply_patch` adapter exists, so scope enforcement is currently unavailable there. Platform detection and adaptation live in `scripts/lib/platform.mjs`. **OS:** macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows runs natively (all paths via `path.join`, tmp via `os.tmpdir()`) but is **not** covered by CI — treat it as best-effort and run smoke tests locally when changing OS-sensitive code. Cursor and Pi have known event-coverage caveats — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
 ## Troubleshooting
+
+**Codex plugin or hooks not loading.** Start with `codex plugin list --available --json`. Confirm `session-orchestrator@kanevry` is installed, enabled, unique, and at the tracked manifest version; then start a fresh task and review `/hooks`. Remove only the two allowlisted legacy IDs through `codex plugin remove`, and resolve marketplace conflicts through the public marketplace remove/add lifecycle before reinstalling. Any other pre-public plugin/config/cache/hook-state residue is unsupported: do not modify private Codex files; file an issue with `codex --version` plus the public plugin and marketplace list output. The full decision tree is in [`docs/codex-setup.md`](docs/codex-setup.md#troubleshooting).
 
 **"'node' not found on the hook PATH — plugin hooks are skipped."** The harness executes hook commands via `/bin/sh -c` with its own PATH — that shell does not source `~/.zshrc`/`~/.bashrc`, so Node installed via Homebrew (`/opt/homebrew/bin`), nvm, volta, or asdf can be invisible to hooks even though `node` works fine in your terminal. All hook commands route through [`hooks/run-node.sh`](hooks/run-node.sh), which resolves Node via `$SO_NODE_BIN` → PATH → well-known install dirs → nvm and degrades gracefully when nothing is found: hooks are skipped with **one** warning per 6 hours instead of a shell error on every tool call. Fixes, in order of preference: launch the harness from a shell where `node` resolves; export `SO_NODE_BIN=/abs/path/to/node`; or install Node 24+ to a standard location.
 

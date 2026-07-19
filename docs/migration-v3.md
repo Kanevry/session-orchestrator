@@ -1,6 +1,6 @@
 # Migrating to Session Orchestrator v3.0.0
 
-v3.0.0 swaps the Bash/zx runtime for Node.js 20+ and adds native Windows support without WSL. This guide walks through the upgrade step-by-step for each supported platform (Claude Code, Codex, Cursor IDE) and each OS (macOS, Linux, Windows).
+v3.0.0 swaps the Bash/zx runtime for Node.js 24+ and adds native Windows support without WSL. This guide walks through the upgrade step-by-step for each supported platform (Claude Code, Codex, Cursor IDE) and each OS (macOS, Linux, Windows).
 
 Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/124). Full change list: [CHANGELOG.md](../CHANGELOG.md).
 
@@ -8,19 +8,19 @@ Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/12
 
 | Area | v2.x | v3.0.0 |
 |------|------|--------|
-| Runtime | Bash + `jq` + zx via Bash | Node.js 20+ + zx (native `import`) |
+| Runtime | Bash + `jq` + zx via Bash | Node.js 24+ + zx (native `import`) |
 | Hooks | `.sh` files in `hooks/` | `.mjs` files (ES modules) |
 | Install step | `git clone` only | `git clone` **then** `npm install` |
 | Windows support | Implicit via WSL / Git-Bash | Native (no wrapper shell) |
 | CI | Ubuntu-only | Ubuntu + macOS matrix |
 | Test framework | `bats` shell harness | `vitest` |
-| Dependencies | `jq`, `bash`, `git` hard deps | Node 20+, `git`; `jq` optional |
+| Dependencies | `jq`, `bash`, `git` hard deps | Node 24+, `git`; `jq` optional |
 
-Nothing about skills, commands, or session flow changes. `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, and 15 more (see [`docs/components.md`](./components.md#commands-22)) work the same.
+Nothing about skills, commands, or session flow changes. `/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, and 17 more (see [`docs/components.md`](./components.md#commands-24)) work the same.
 
 ## 2. Prerequisites
 
-- **Node.js 20 or later.** Check with `node --version`. Install from [nodejs.org](https://nodejs.org/) or via your package manager (`brew install node`, `winget install OpenJS.NodeJS`, `apt install nodejs`).
+- **Node.js 24 or later.** Check with `node --version`. Install from [nodejs.org](https://nodejs.org/) or via your package manager (`brew install node`, `winget install OpenJS.NodeJS`, `apt install nodejs`).
 - **Git.** Any recent version.
 - **`jq` (optional, recommended).** The scope and command enforcement policies are edited as JSON — `jq` makes that easier. No hook invokes `jq` at runtime in v3.
 
@@ -50,9 +50,13 @@ If you installed via `/plugin marketplace add Kanevry/session-orchestrator`, the
 cd ~/Projects/session-orchestrator
 git pull
 npm install
-node scripts/codex-install.mjs     # re-syncs the codex plugin catalog
-# Restart Codex
+node scripts/codex-install.mjs
+codex plugin list --available --json
 ```
+
+The installer now uses Codex's public marketplace/add/list lifecycle; it does not rewrite private catalogs, configuration, caches, or hook state. It repeats `codex plugin add` on every run to refresh the installed bundle. Explicit invalidation comes from the committed `.codex-plugin/plugin.json` version suffix `+codex.<YYYYMMDDHHmmss>`, which the installer validates but never mutates.
+
+After the list shows `session-orchestrator@kanevry` installed and enabled, start a fresh task or restart Codex, run `/hooks`, and review the bundle. Marketplace configuration, plugin installation, and hook trust remain separate states.
 
 ### 3c. Cursor IDE
 
@@ -76,7 +80,7 @@ None of the following change in v3. Existing data migrates transparently.
 - **`<state-dir>/STATE.md`** — schema v1 frontmatter unchanged.
 - **Session memory** (`~/.claude/projects/<project>/memory/`) — untouched.
 - **Session Config** in `CLAUDE.md` / `AGENTS.md` / Cursor rules — same field names and defaults. New optional fields (`resource-awareness`, `resource-thresholds`, `allow-destructive-ops`, `worktree-exclude`) default to safe values.
-- **All 22 slash commands** — same arguments, same flow. See [`docs/components.md`](./components.md#commands-22) for the full list.
+- **All 24 slash commands** — same arguments, same flow. See [`docs/components.md`](./components.md#commands-24) for the full list.
 - **Skill Markdown** — skills are still pure Markdown with YAML frontmatter; no build step.
 - **VCS integration** — `glab` / `gh` commands, label taxonomy, issue templates.
 
@@ -84,7 +88,7 @@ None of the following change in v3. Existing data migrates transparently.
 
 ### `npm install` fails with `ERESOLVE` or peer-dep warnings
 
-Use Node 20 or 22 LTS. Odd-numbered Node releases (23, 25) and very old versions (< 20) have both produced peer-dep resolution quirks. If the error persists:
+Use Node.js 24 or later, matching `package.json` (`engines.node: ">=24.0.0"`). Confirm `node --version` reports a supported runtime before retrying. If the error persists:
 
 ```bash
 npm install --legacy-peer-deps
@@ -94,7 +98,7 @@ npm install --legacy-peer-deps
 
 Make sure `node` is on your `PATH` inside the editor process (not just in your terminal). On Windows, Claude Code inherits PATH from the launching shell — if you installed Node via nvm-windows or fnm, relaunch the editor from a shell that has the runtime on PATH.
 
-Verify from inside Claude Code: `!node --version` should print `v20.x` or later.
+Verify from inside Claude Code: `!node --version` should print `v24.x` or later.
 
 ### EOL issues on Windows (autocrlf)
 
@@ -118,7 +122,7 @@ Run `npm install` from the plugin root. The `zx` package is listed under `depend
 
 ### Hooks report `SyntaxError: Cannot use import statement outside a module`
 
-Your Node version is < 20 or your `package.json` is missing `"type": "module"`. Verify with `node --version` and `jq '.type' package.json`. Both must be present.
+Your Node version is below 24 or your `package.json` is missing `"type": "module"`. Verify that `node --version` satisfies `engines.node >=24` and that `jq '.type' package.json` returns `"module"`.
 
 ## 6. Rollback
 

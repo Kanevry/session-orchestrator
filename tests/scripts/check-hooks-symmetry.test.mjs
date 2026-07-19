@@ -1,710 +1,496 @@
-/**
- * tests/scripts/check-hooks-symmetry.test.mjs
- *
- * Integration tests for scripts/lib/validate/check-hooks-symmetry.mjs.
- * Spawns the script as a child process and verifies exit codes + stdout shape.
- *
- * Non-happy-path tests use synthetic fixture directories built with mkdtempSync.
- * Only the "real plugin" test exercises the actual hooks/ directory.
- */
-
-import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
 
 const SCRIPT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../scripts/lib/validate/check-hooks-symmetry.mjs',
 );
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const REQUIRED_CODEX_EVENTS = [
+  'SessionStart',
+  'PreToolUse',
+  'PostToolUse',
+  'SubagentStart',
+  'SubagentStop',
+  'Stop',
+];
+const REQUIRED_PI_HANDLER_FILES = [
+  'pre-bash-destructive-guard.mjs',
+  'enforce-commands.mjs',
+  'enforce-scope.mjs',
+  'config-protection.mjs',
+];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+let fixtureRoot;
 
-// Normalize CRLF → LF so Windows spawnSync output matches Linux/macOS in
-// string assertions (.toContain / .split('\n') / regex match). No-op on LF.
-const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
+const norm = (value) => (value ?? '').replace(/\r\n/g, '\n');
+
+afterEach(() => {
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+  fixtureRoot = undefined;
+});
 
 function runValidator(pluginRoot) {
-  const r = spawnSync(process.execPath, [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
-  // Normalize stdout/stderr in-place so all downstream string assertions
-  // (`.toContain` / `.split('\n')` / regex) are CRLF-safe on Windows.
-  return { ...r, stdout: norm(r.stdout), stderr: norm(r.stderr) };
+  const result = spawnSync(process.execPath, [SCRIPT, pluginRoot], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  return { ...result, stdout: norm(result.stdout), stderr: norm(result.stderr) };
 }
 
-/**
- * Creates a temp dir with a hooks/ subdir.
- * Returns the temp dir path; caller is responsible for cleanup.
- */
-function makeFixtureDir() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'check-hooks-symmetry-'));
-  mkdirSync(path.join(dir, 'hooks'), { recursive: true });
-  return dir;
+function makeFixture() {
+  fixtureRoot = mkdtempSync(path.join(tmpdir(), 'hooks-symmetry-'));
+  mkdirSync(path.join(fixtureRoot, 'hooks'), { recursive: true });
+  return fixtureRoot;
 }
 
-/**
- * Writes hooks/hooks.json, hooks/hooks-codex.json, and optionally hooks/hooks-cursor.json
- * into a fixture directory using the Claude/Codex event-object shape.
- *
- * Each event key maps to an array of matchers, each with a hooks array whose
- * command references hooks/<handler>.
- */
-function writeHooksJsons(dir, { claude, codex, cursor } = {}) {
-  const hooksDir = path.join(dir, 'hooks');
+function commandHook(rootVar, handler) {
+  return { type: 'command', command: `node "$${rootVar}/hooks/${handler}"` };
+}
 
-  if (claude !== undefined) {
+function handlerGroup(rootVar = 'CLAUDE_PLUGIN_ROOT', handler = 'handler.mjs') {
+  return [{ matcher: '*', hooks: [commandHook(rootVar, handler)] }];
+}
+
+function claudeHooks(extraEvents = {}) {
+  const hooks = Object.fromEntries(
+    [
+      'SessionStart',
+      'SessionEnd',
+      'PreToolUse',
+      'PostToolUse',
+      'Stop',
+      'SubagentStart',
+      'SubagentStop',
+      'PostToolUseFailure',
+      'PostToolBatch',
+      'CwdChanged',
+    ].map((event) => [event, handlerGroup()]),
+  );
+  return { hooks: { ...hooks, ...extraEvents } };
+}
+
+function codexHooks() {
+  return {
+    description: 'Codex fixture',
+    hooks: Object.fromEntries(
+      REQUIRED_CODEX_EVENTS.map((event) => [event, handlerGroup('PLUGIN_ROOT')]),
+    ),
+  };
+}
+
+function cursorHooks(events = {}) {
+  return {
+    hooks: Object.fromEntries(
+      Object.entries(events).map(([event, handler]) => [
+        event,
+        { script: `hooks/${handler}` },
+      ]),
+    ),
+  };
+}
+
+function piToolEntry(toolName, handlers) {
+  return {
+    matcher: toolName,
+    hooks: handlers.map((handler) => commandHook('PI_PLUGIN_ROOT', handler)),
+  };
+}
+
+function validPiHooks() {
+  return {
+    hooks: {
+      session_start: handlerGroup('PI_PLUGIN_ROOT'),
+      session_shutdown: handlerGroup('PI_PLUGIN_ROOT'),
+      tool_call: [
+        piToolEntry('bash', [
+          'pre-bash-destructive-guard.mjs',
+          'enforce-commands.mjs',
+        ]),
+        piToolEntry('edit', ['enforce-scope.mjs', 'config-protection.mjs']),
+        piToolEntry('write', ['enforce-scope.mjs', 'config-protection.mjs']),
+      ],
+      tool_result: handlerGroup('PI_PLUGIN_ROOT'),
+      agent_end: handlerGroup('PI_PLUGIN_ROOT'),
+    },
+  };
+}
+
+function writeHandlerFiles(handlers) {
+  for (const handler of handlers) {
+    writeFileSync(path.join(fixtureRoot, 'hooks', handler), '// fixture');
+  }
+}
+
+function writeBaseFiles({
+  claude = claudeHooks(),
+  codex = codexHooks(),
+  cursor,
+  pi,
+  packageJson = { name: 'fixture' },
+  handlers = [],
+} = {}) {
+  const hooksDir = path.join(fixtureRoot, 'hooks');
+  writeFileSync(path.join(fixtureRoot, 'package.json'), JSON.stringify(packageJson));
+  writeHandlerFiles(['handler.mjs', ...handlers]);
+  if (claude !== null) {
     writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify(claude));
   }
-  if (codex !== undefined) {
+  if (codex !== null) {
     writeFileSync(path.join(hooksDir, 'hooks-codex.json'), JSON.stringify(codex));
   }
   if (cursor !== undefined) {
     writeFileSync(path.join(hooksDir, 'hooks-cursor.json'), JSON.stringify(cursor));
   }
-}
-
-/**
- * Builds a minimal valid Claude/Codex hooks JSON object whose events point at
- * the given handler filenames (relative, e.g. 'my-handler.mjs').
- */
-function buildClaudeHooks(events) {
-  const hooks = {};
-  for (const [eventName, handler] of Object.entries(events)) {
-    hooks[eventName] = [
-      {
-        matcher: 'startup',
-        hooks: [
-          {
-            type: 'command',
-            command: `node "$CLAUDE_PLUGIN_ROOT/hooks/${handler}"`,
-          },
-        ],
-      },
-    ];
+  if (pi !== undefined) {
+    writeFileSync(path.join(hooksDir, 'hooks-pi.json'), JSON.stringify(pi));
   }
-  return { hooks };
 }
 
-/**
- * Builds a minimal valid Cursor hooks JSON object.
- */
-function buildCursorHooks(events) {
-  const hooks = {};
-  for (const [eventName, handler] of Object.entries(events)) {
-    hooks[eventName] = { script: `hooks/${handler}` };
-  }
-  return { hooks };
+function removePiToolHandler(pi, toolName, handlerName) {
+  const entry = pi.hooks.tool_call.find(({ matcher }) => matcher === toolName);
+  entry.hooks = entry.hooks.filter(({ command }) => !command.includes(`/hooks/${handlerName}`));
 }
 
-/**
- * Builds a minimal valid Pi hooks JSON object using Pi-native event names.
- */
-function buildPiHooks(events) {
-  const hooks = {};
-  for (const [eventName, handler] of Object.entries(events)) {
-    hooks[eventName] = [
-      {
-        matcher: '*',
-        hooks: [
-          {
-            type: 'command',
-            command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"`,
-          },
-        ],
-      },
-    ];
-  }
-  return { hooks };
-}
+describe('check-hooks-symmetry.mjs', () => {
+  describe('real repository', () => {
+    it('passes against the current plugin repository', () => {
+      const result = runValidator(PLUGIN_ROOT);
 
-function writePiPackageJson(dir) {
-  writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', pi: {} }));
-}
-
-// ---------------------------------------------------------------------------
-// Real-plugin happy path
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — real plugin root', () => {
-  it('exits 0 against the current plugin repo', () => {
-    const r = runValidator(PLUGIN_ROOT);
-    expect(r.status).toBe(0);
-  });
-
-  it('emits at least 4 PASS lines (one per check)', () => {
-    const r = runValidator(PLUGIN_ROOT);
-    const passLines = r.stdout.split('\n').filter((l) => l.startsWith('  PASS:'));
-    expect(passLines.length).toBeGreaterThanOrEqual(4);
-  });
-
-  it('reports 0 failed checks', () => {
-    const r = runValidator(PLUGIN_ROOT);
-    const match = r.stdout.match(/Results:\s+\d+\s+passed,\s+(\d+)\s+failed/);
-    expect(match).not.toBeNull();
-    expect(parseInt(match[1], 10)).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Check 1: claude ↔ codex event-key parity
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — claude/codex extra event in claude only', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when hooks.json has an event that hooks-codex.json does not', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const claude = buildClaudeHooks({ SharedEvent: handler, FakeEvent: handler });
-    const codex  = buildClaudeHooks({ SharedEvent: handler });
-    writeHooksJsons(dir, { claude, codex });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions the extra event name', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const claude = buildClaudeHooks({ SharedEvent: handler, FakeEvent: handler });
-    const codex  = buildClaudeHooks({ SharedEvent: handler });
-    writeHooksJsons(dir, { claude, codex });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('FakeEvent');
-    expect(r.stdout).toContain('  FAIL:');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — codex has extra event not in claude', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when hooks-codex.json has an event missing from hooks.json', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const claude = buildClaudeHooks({ SharedEvent: handler });
-    const codex  = buildClaudeHooks({ SharedEvent: handler, ExtraOnCodex: handler });
-    writeHooksJsons(dir, { claude, codex });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions ExtraOnCodex', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const claude = buildClaudeHooks({ SharedEvent: handler });
-    const codex  = buildClaudeHooks({ SharedEvent: handler, ExtraOnCodex: handler });
-    writeHooksJsons(dir, { claude, codex });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('ExtraOnCodex');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — claude and codex have identical event sets', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when claude.json and codex.json share the same event keys and same handlers', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SomeEvent: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('PASS line confirms identical event-key sets', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SomeEvent: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  PASS: hooks.json and hooks-codex.json have identical event-key sets');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Check 2: cursor asymmetries
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — cursor missing only documented events', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when cursor is missing only documented events (SessionStart, PostToolUse)', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    // claude+codex have SessionStart and PostToolUse — both in cursorMissingFromMain
-    const both = buildClaudeHooks({ SessionStart: handler, PostToolUse: handler });
-    // cursor has only Cursor-specific events
-    const cursor = buildCursorHooks({ afterFileEdit: handler });
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('PASS line confirms missing events are documented', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler, PostToolUse: handler });
-    const cursor = buildCursorHooks({ afterFileEdit: handler });
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  PASS: hooks-cursor.json missing events are all documented');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — cursor missing an UNDOCUMENTED event', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when cursor is missing an event not in cursorMissingFromMain', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    // BrandNewEvent is NOT in DOCUMENTED_ASYMMETRIES.cursorMissingFromMain
-    const both   = buildClaudeHooks({ BrandNewEvent: handler });
-    const cursor = buildCursorHooks({ afterFileEdit: handler });
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions UNDOCUMENTED and the missing event name', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both   = buildClaudeHooks({ BrandNewEvent: handler });
-    const cursor = buildCursorHooks({ afterFileEdit: handler });
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('UNDOCUMENTED');
-    expect(r.stdout).toContain('BrandNewEvent');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — cursor has UNDOCUMENTED extra event', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when cursor.json has an extra event not in cursorOnly', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    // SharedEvent is in both claude+codex, cursor has SharedEvent (not extra) + WeirdCursorEvent (undocumented extra)
-    const both   = buildClaudeHooks({ SharedEvent: handler });
-    // WeirdCursorEvent is NOT in DOCUMENTED_ASYMMETRIES.cursorOnly
-    const cursor = buildCursorHooks({ SharedEvent: handler, WeirdCursorEvent: handler });
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions UNDOCUMENTED extra and the offending event name', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both   = buildClaudeHooks({ SharedEvent: handler });
-    const cursor = buildCursorHooks({ SharedEvent: handler, WeirdCursorEvent: handler });
-    writeHooksJsons(dir, { claude: both, codex: both, cursor });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('UNDOCUMENTED extra');
-    expect(r.stdout).toContain('WeirdCursorEvent');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Check 3: pi documented native-event mappings
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — pi mapped events', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when Pi native events cover the mapped main events', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-    for (const required of [
-      'pre-bash-destructive-guard.mjs',
-      'enforce-commands.mjs',
-      'enforce-scope.mjs',
-      'config-protection.mjs',
-    ]) {
-      writeFileSync(path.join(dir, 'hooks', required), '// stub');
-    }
-
-    const both = buildClaudeHooks({
-      SessionStart: handler,
-      SessionEnd: handler,
-      PreToolUse: handler,
-      PostToolUse: handler,
-      Stop: handler,
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Results: \d+ passed, 0 failed/);
     });
-    const pi = {
-      hooks: {
-        session_start: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
-        session_shutdown: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
-        tool_call: [
-          {
-            matcher: 'bash',
-            hooks: [
-              { command: 'node "$PI_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs"' },
-              { command: 'node "$PI_PLUGIN_ROOT/hooks/enforce-commands.mjs"' },
-            ],
-          },
-          {
-            matcher: 'edit|write',
-            hooks: [
-              { command: 'node "$PI_PLUGIN_ROOT/hooks/enforce-scope.mjs"' },
-              { command: 'node "$PI_PLUGIN_ROOT/hooks/config-protection.mjs"' },
-            ],
-          },
-        ],
-        tool_result: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
-        agent_end: [{ matcher: '*', hooks: [{ command: `node "$PI_PLUGIN_ROOT/hooks/${handler}"` }] }],
+
+    it('reports the required Codex six-event subset', () => {
+      const result = runValidator(PLUGIN_ROOT);
+
+      expect(result.stdout).toContain(
+        'required Codex event subset is present (SessionStart, PreToolUse, PostToolUse, SubagentStart, SubagentStop, Stop)',
+      );
+    });
+  });
+
+  describe('Codex event subset', () => {
+    it('allows Claude to expose supported events outside the Codex subset', () => {
+      makeFixture();
+      writeBaseFiles();
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+    });
+
+    it.each([
+      ['SessionStart', 'missing required events: SessionStart'],
+      ['PreToolUse', 'missing required events: PreToolUse'],
+      ['PostToolUse', 'missing required events: PostToolUse'],
+      ['SubagentStart', 'missing required events: SubagentStart'],
+      ['SubagentStop', 'missing required events: SubagentStop'],
+      ['Stop', 'missing required events: Stop'],
+    ])('fails when Codex omits required event %s', (event, expectedMessage) => {
+      makeFixture();
+      const codex = codexHooks();
+      delete codex.hooks[event];
+      writeBaseFiles({ codex });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(expectedMessage);
+    });
+
+    it.each([
+      ['SessionEnd', 'forbidden unsupported events: SessionEnd'],
+      ['PostToolUseFailure', 'forbidden unsupported events: PostToolUseFailure'],
+      ['PostToolBatch', 'forbidden unsupported events: PostToolBatch'],
+      ['CwdChanged', 'forbidden unsupported events: CwdChanged'],
+    ])('fails when Codex includes forbidden Claude-only event %s', (event, expectedMessage) => {
+      makeFixture();
+      const codex = codexHooks();
+      codex.hooks[event] = handlerGroup('PLUGIN_ROOT');
+      writeBaseFiles({ codex });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(expectedMessage);
+    });
+
+    it('fails when a Codex event references a missing handler', () => {
+      makeFixture();
+      const codex = codexHooks();
+      codex.hooks.Stop = handlerGroup('PLUGIN_ROOT', 'missing-codex.mjs');
+      writeBaseFiles({ codex });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('handler files referenced but missing: missing-codex.mjs');
+    });
+
+    it('fails when hooks-codex.json is missing', () => {
+      makeFixture();
+      writeBaseFiles({ codex: null });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks-codex.json:');
+    });
+
+    it('fails when hooks-codex.json contains malformed JSON', () => {
+      makeFixture();
+      writeBaseFiles();
+      writeFileSync(path.join(fixtureRoot, 'hooks', 'hooks-codex.json'), '{ broken codex');
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks-codex.json:');
+    });
+  });
+
+  describe('Cursor asymmetries and parsing', () => {
+    it('passes when Cursor is missing only documented main events', () => {
+      makeFixture();
+      writeBaseFiles({
+        cursor: cursorHooks({
+          afterFileEdit: 'handler.mjs',
+          beforeShellExecution: 'handler.mjs',
+        }),
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('hooks-cursor.json missing events are all documented');
+    });
+
+    it('fails when Cursor is missing an undocumented main event', () => {
+      makeFixture();
+      const claude = claudeHooks({ BrandNewEvent: handlerGroup() });
+      writeBaseFiles({ claude, cursor: cursorHooks({ afterFileEdit: 'handler.mjs' }) });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('missing UNDOCUMENTED events: BrandNewEvent');
+    });
+
+    it('passes when Cursor contains only documented Cursor-native events', () => {
+      makeFixture();
+      writeBaseFiles({
+        cursor: cursorHooks({
+          afterFileEdit: 'handler.mjs',
+          beforeShellExecution: 'handler.mjs',
+        }),
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('cursor-only events are all documented (2 events');
+    });
+
+    it('fails when Cursor contains an undocumented native event', () => {
+      makeFixture();
+      writeBaseFiles({ cursor: cursorHooks({ WeirdCursorEvent: 'handler.mjs' }) });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('UNDOCUMENTED extra events: WeirdCursorEvent');
+    });
+
+    it('treats an absent hooks-cursor.json as optional', () => {
+      makeFixture();
+      writeBaseFiles();
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('hooks-cursor.json absent (optional config)');
+    });
+
+    it('fails when hooks-cursor.json contains malformed JSON', () => {
+      makeFixture();
+      writeBaseFiles();
+      writeFileSync(path.join(fixtureRoot, 'hooks', 'hooks-cursor.json'), '{ broken cursor');
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks-cursor.json:');
+    });
+  });
+
+  describe('Pi mappings and required tool handlers', () => {
+    it('passes when Pi native events cover every mapped main event', () => {
+      makeFixture();
+      writeBaseFiles({ pi: validPiHooks(), handlers: REQUIRED_PI_HANDLER_FILES });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('hooks-pi.json covers mapped main events');
+      expect(result.stdout).toContain(
+        'hooks-pi.json wires required tool_call handlers for bash, edit, and write',
+      );
+    });
+
+    it('fails when Pi is missing a documented main-event mapping implementation', () => {
+      makeFixture();
+      const pi = validPiHooks();
+      delete pi.hooks.tool_result;
+      writeBaseFiles({ pi, handlers: REQUIRED_PI_HANDLER_FILES });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('missing UNDOCUMENTED main-event mappings: PostToolUse');
+    });
+
+    it('fails when Pi contains an undocumented Pi-native event', () => {
+      makeFixture();
+      const pi = validPiHooks();
+      pi.hooks.strange_pi_event = handlerGroup('PI_PLUGIN_ROOT');
+      writeBaseFiles({ pi, handlers: REQUIRED_PI_HANDLER_FILES });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('UNDOCUMENTED pi-native events: strange_pi_event');
+    });
+
+    it('fails when a Pi package omits hooks-pi.json', () => {
+      makeFixture();
+      writeBaseFiles({ packageJson: { name: 'fixture', pi: {} } });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks-pi.json:');
+    });
+
+    it('fails when hooks-pi.json contains malformed JSON', () => {
+      makeFixture();
+      writeBaseFiles({ pi: validPiHooks(), handlers: REQUIRED_PI_HANDLER_FILES });
+      writeFileSync(path.join(fixtureRoot, 'hooks', 'hooks-pi.json'), '{ broken pi');
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks-pi.json:');
+    });
+
+    it.each([
+      [
+        'bash',
+        'pre-bash-destructive-guard.mjs',
+        'bash → pre-bash-destructive-guard.mjs',
+      ],
+      ['bash', 'enforce-commands.mjs', 'bash → enforce-commands.mjs'],
+      ['edit', 'enforce-scope.mjs', 'edit → enforce-scope.mjs'],
+      ['edit', 'config-protection.mjs', 'edit → config-protection.mjs'],
+      ['write', 'enforce-scope.mjs', 'write → enforce-scope.mjs'],
+      ['write', 'config-protection.mjs', 'write → config-protection.mjs'],
+    ])(
+      'fails when Pi %s omits required handler %s',
+      (toolName, handlerName, expectedGap) => {
+        makeFixture();
+        const pi = validPiHooks();
+        removePiToolHandler(pi, toolName, handlerName);
+        writeBaseFiles({ pi, handlers: REQUIRED_PI_HANDLER_FILES });
+
+        const result = runValidator(fixtureRoot);
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('missing required tool_call handlers');
+        expect(result.stdout).toContain(expectedGap);
       },
-    };
-    writeHooksJsons(dir, { claude: both, codex: both });
-    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-    expect(r.stdout).toContain('hooks-pi.json covers mapped main events');
+    );
   });
 
-  it('exits 1 when Pi is missing an undocumented main-event mapping', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ PreToolUse: handler });
-    const pi = buildPiHooks({ session_start: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('PreToolUse');
-  });
-
-  it('exits 1 when Pi has an undocumented native event', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    const pi = buildPiHooks({ session_start: handler, strange_pi_event: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('strange_pi_event');
-  });
-
-  it('exits 1 when a Pi package omits hooks-pi.json', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-    writePiPackageJson(dir);
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('hooks-pi.json');
-  });
-
-  it('exits 1 when required Pi tool_call handlers are missing', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ PreToolUse: handler });
-    const pi = buildPiHooks({ tool_call: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-    writeFileSync(path.join(dir, 'hooks', 'hooks-pi.json'), JSON.stringify(pi));
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('missing required tool_call handlers');
-    expect(r.stdout).toContain('bash');
-    expect(r.stdout).toContain('edit');
-    expect(r.stdout).toContain('write');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — hooks-cursor.json absent', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when hooks-cursor.json is absent (it is optional)', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    // Do not write cursor JSON
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('PASS line reports cursor absent as optional', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  PASS: hooks-cursor.json absent (optional config)');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Check 3: handler files exist on disk
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — referenced handler missing from disk', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when a handler referenced in hooks.json does not exist on disk', () => {
-    dir = makeFixtureDir();
-    // Write JSON but NOT the handler file
-    const both = buildClaudeHooks({ SessionStart: 'missing.mjs' });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions the missing handler filename', () => {
-    dir = makeFixtureDir();
-    const both = buildClaudeHooks({ SessionStart: 'missing.mjs' });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('missing.mjs');
-    expect(r.stdout).toContain('  FAIL:');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — all referenced handlers exist on disk', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when all handler files referenced in JSON exist on disk', () => {
-    dir = makeFixtureDir();
-    const handler = 'on-start.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('PASS line confirms all handler files exist', () => {
-    dir = makeFixtureDir();
-    const handler = 'on-start.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  PASS: all');
-    expect(r.stdout).toContain('handler files exist on disk');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Check 4: orphan .mjs files (informational PASS)
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — orphan .mjs file in hooks/ is informational PASS', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when hooks/ contains an .mjs file not referenced in any JSON', () => {
-    dir = makeFixtureDir();
-    const handler = 'referenced.mjs';
-    const orphan  = 'orphan.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-    writeFileSync(path.join(dir, 'hooks', orphan), '// orphan stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('PASS line mentions unreferenced files', () => {
-    dir = makeFixtureDir();
-    const handler = 'referenced.mjs';
-    const orphan  = 'orphan.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-    writeFileSync(path.join(dir, 'hooks', orphan), '// orphan stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  PASS:');
-    expect(r.stdout).toContain('unreferenced');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Malformed / missing JSON files
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — malformed hooks.json', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when hooks.json contains invalid JSON', () => {
-    dir = makeFixtureDir();
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), '{ not valid json !!');
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions hooks.json when it is malformed', () => {
-    dir = makeFixtureDir();
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), '{ not valid json !!');
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  FAIL: hooks.json:');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — hooks-codex.json missing entirely', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when hooks-codex.json is absent (it is required)', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    // Write only claude, omit codex
-    const claude = buildClaudeHooks({ SessionStart: handler });
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), JSON.stringify(claude));
-    // hooks-codex.json intentionally NOT written
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions hooks-codex.json when it is missing', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const claude = buildClaudeHooks({ SessionStart: handler });
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), JSON.stringify(claude));
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  FAIL: hooks-codex.json:');
-  });
-});
-
-describe('check-hooks-symmetry.mjs — malformed hooks-cursor.json', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when hooks-cursor.json exists but contains invalid JSON', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-    // Now overwrite cursor with garbage
-    writeFileSync(path.join(dir, 'hooks', 'hooks-cursor.json'), '{ broken !!');
-
-    const r = runValidator(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('FAIL line mentions hooks-cursor.json when it is malformed', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-    writeFileSync(path.join(dir, 'hooks', 'hooks-cursor.json'), '{ broken !!');
-
-    const r = runValidator(dir);
-    expect(r.stdout).toContain('  FAIL: hooks-cursor.json:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Final Results line format
-// ---------------------------------------------------------------------------
-
-describe('check-hooks-symmetry.mjs — Results line always present', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('always emits a Results: N passed, M failed line', () => {
-    dir = makeFixtureDir();
-    const handler = 'handler.mjs';
-    writeFileSync(path.join(dir, 'hooks', handler), '// stub');
-
-    const both = buildClaudeHooks({ SessionStart: handler });
-    writeHooksJsons(dir, { claude: both, codex: both });
-
-    const r = runValidator(dir);
-    expect(r.stdout).toMatch(/Results: \d+ passed, \d+ failed/);
+  describe('main parser and handler existence', () => {
+    it('fails when hooks.json contains malformed JSON', () => {
+      makeFixture();
+      writeBaseFiles();
+      writeFileSync(path.join(fixtureRoot, 'hooks', 'hooks.json'), '{ broken main');
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('FAIL: hooks.json:');
+    });
+
+    it('fails when hooks.json references a missing handler', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        SessionStart: handlerGroup('CLAUDE_PLUGIN_ROOT', 'missing-main.mjs'),
+      });
+      writeBaseFiles({ claude });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('handler files referenced but missing: missing-main.mjs');
+    });
+
+    it('fails when hooks-cursor.json references a missing handler', () => {
+      makeFixture();
+      writeBaseFiles({ cursor: cursorHooks({ afterFileEdit: 'missing-cursor.mjs' }) });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('handler files referenced but missing: missing-cursor.mjs');
+    });
+
+    it('fails when hooks-pi.json references a missing handler', () => {
+      makeFixture();
+      const pi = validPiHooks();
+      pi.hooks.agent_end = handlerGroup('PI_PLUGIN_ROOT', 'missing-pi.mjs');
+      writeBaseFiles({ pi, handlers: REQUIRED_PI_HANDLER_FILES });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('handler files referenced but missing: missing-pi.mjs');
+    });
+
+    it('passes when every referenced handler exists on disk', () => {
+      makeFixture();
+      writeBaseFiles();
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('handler files exist on disk');
+    });
+
+    it('reports an unreferenced hook file without failing', () => {
+      makeFixture();
+      writeBaseFiles();
+      writeHandlerFiles(['orphan.mjs']);
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('unreferenced .mjs files');
+      expect(result.stdout).toContain('orphan.mjs');
+    });
+
+    it('always emits a Results summary for a complete fixture', () => {
+      makeFixture();
+      writeBaseFiles();
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.stdout).toMatch(/Results: \d+ passed, \d+ failed/);
+    });
   });
 });

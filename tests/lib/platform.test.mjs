@@ -5,7 +5,7 @@
  * Runs on Ubuntu, macOS, and Windows via CI matrix.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,6 +25,27 @@ import {
   resolveStateDir,
   resolveConfigFile,
 } from '@lib/platform.mjs';
+
+const ENV_KEYS = [
+  'SO_PLATFORM',
+  'PLUGIN_ROOT',
+  'CLAUDE_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'CURSOR_RULES_DIR',
+  'PI_PLUGIN_ROOT',
+  'CLAUDE_PROJECT_DIR',
+  'CODEX_PROJECT_DIR',
+  'CURSOR_PROJECT_DIR',
+  'PI_PROJECT_DIR',
+];
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) vi.stubEnv(key, '');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // 1. Module loads without error — all exports are defined
@@ -186,8 +207,39 @@ describe('SO_SHARED_DIR', () => {
 // ---------------------------------------------------------------------------
 
 describe('detectPlatform', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+  it.each(['claude', 'codex', 'cursor', 'pi'])(
+    'honors trimmed explicit SO_PLATFORM=%s before compatibility env vars',
+    (platform) => {
+      vi.stubEnv('SO_PLATFORM', `  ${platform}  `);
+      vi.stubEnv('CLAUDE_PLUGIN_ROOT', '/claude/compatibility/root');
+      expect(detectPlatform()).toBe(platform);
+    },
+  );
+
+  it('returns explicit codex when Claude compatibility env variables are also set', () => {
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '/claude/compatibility/root');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/codex/root');
+    expect(detectPlatform()).toBe('codex');
+  });
+
+  it('ignores an invalid explicit platform and uses compatibility detection', () => {
+    vi.stubEnv('SO_PLATFORM', 'vscode');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/codex/root');
+    expect(detectPlatform()).toBe('codex');
+  });
+
+  it('ignores whitespace-only explicit and compatibility values', () => {
+    vi.stubEnv('SO_PLATFORM', '   ');
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '   ');
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/codex/root');
+    expect(detectPlatform()).toBe('codex');
+  });
+
+  it('does not infer platform identity from PLUGIN_ROOT', () => {
+    vi.stubEnv('PLUGIN_ROOT', '/native/codex/plugin/root');
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', '/claude/compatibility/root');
+    expect(detectPlatform()).toBe('claude');
   });
 
   it('returns "claude" when CLAUDE_PLUGIN_ROOT is set', () => {
@@ -259,9 +311,45 @@ describe('resolvePluginRoot', () => {
     const scriptsDir = path.resolve(fileURLToPath(new URL('../../scripts', import.meta.url)));
     vi.stubEnv('CLAUDE_PLUGIN_ROOT', scriptsDir);
     const result = resolvePluginRoot('claude');
-    vi.unstubAllEnvs();
     expect(path.isAbsolute(result)).toBe(true);
     expect(result).toBe(scriptsDir);
+  });
+
+  it('uses the Codex compatibility root selected by explicit SO_PLATFORM', () => {
+    const repoDir = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+    const scriptsDir = path.join(repoDir, 'scripts');
+    vi.stubEnv('SO_PLATFORM', ' codex ');
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', scriptsDir);
+    vi.stubEnv('CODEX_PLUGIN_ROOT', repoDir);
+    expect(resolvePluginRoot()).toBe(repoDir);
+  });
+
+  it('prefers native PLUGIN_ROOT over simultaneous explicit and compatibility roots', () => {
+    const repoDir = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+    const scriptsDir = path.join(repoDir, 'scripts');
+    const hooksDir = path.join(repoDir, 'hooks');
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('PLUGIN_ROOT', `  ${hooksDir}  `);
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', scriptsDir);
+    vi.stubEnv('CODEX_PLUGIN_ROOT', repoDir);
+    vi.stubEnv('CURSOR_RULES_DIR', scriptsDir);
+    vi.stubEnv('PI_PLUGIN_ROOT', scriptsDir);
+
+    expect(resolvePluginRoot()).toBe(hooksDir);
+  });
+
+  it.each([
+    ['whitespace-only', '   '],
+    ['nonexistent', '/definitely/missing/session-orchestrator-plugin-root'],
+  ])('falls back from a %s native root to explicit Codex compatibility', (_case, nativeRoot) => {
+    const repoDir = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+    const scriptsDir = path.join(repoDir, 'scripts');
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('PLUGIN_ROOT', nativeRoot);
+    vi.stubEnv('CLAUDE_PLUGIN_ROOT', scriptsDir);
+    vi.stubEnv('CODEX_PLUGIN_ROOT', repoDir);
+
+    expect(resolvePluginRoot()).toBe(repoDir);
   });
 
   it('SO_PLUGIN_ROOT constant is either empty or an absolute path', () => {

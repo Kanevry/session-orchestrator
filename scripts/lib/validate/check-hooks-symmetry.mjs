@@ -34,6 +34,21 @@ const DOCUMENTED_ASYMMETRIES = {
   },
 };
 
+const REQUIRED_CODEX_EVENTS = [
+  'SessionStart',
+  'PreToolUse',
+  'PostToolUse',
+  'SubagentStart',
+  'SubagentStop',
+  'Stop',
+];
+const FORBIDDEN_CODEX_EVENTS = [
+  'SessionEnd',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'CwdChanged',
+];
+
 const REQUIRED_PI_TOOL_HANDLERS = {
   bash: ['pre-bash-destructive-guard.mjs', 'enforce-commands.mjs'],
   edit: ['enforce-scope.mjs', 'config-protection.mjs'],
@@ -70,15 +85,20 @@ const codexEvents  = new Set(Object.keys(codexJson.hooks || {}));
 const cursorEvents = cursorJson ? new Set(Object.keys(cursorJson.hooks || {})) : new Set();
 const piEvents = piJson ? new Set(Object.keys(piJson.hooks || {})) : new Set();
 
-// Step 3: claude vs codex must match exactly (no documented asymmetries between them)
-console.log('--- Check 1: hooks.json ↔ hooks-codex.json event-key parity ---');
-const claudeOnly = [...claudeEvents].filter((e) => !codexEvents.has(e));
-const codexOnly  = [...codexEvents].filter((e) => !claudeEvents.has(e));
-if (claudeOnly.length === 0 && codexOnly.length === 0) {
-  pass(`hooks.json and hooks-codex.json have identical event-key sets (${claudeEvents.size} events)`);
+// Step 3: Codex exposes a deliberate subset of the broader Claude event surface.
+console.log('--- Check 1: hooks-codex.json required/forbidden event surface ---');
+const missingRequiredCodex = REQUIRED_CODEX_EVENTS.filter((event) => !codexEvents.has(event));
+if (missingRequiredCodex.length === 0) {
+  pass(`required Codex event subset is present (${REQUIRED_CODEX_EVENTS.join(', ')})`);
 } else {
-  if (claudeOnly.length > 0) fail(`events in hooks.json but missing in hooks-codex.json: ${claudeOnly.join(', ')}`);
-  if (codexOnly.length > 0)  fail(`events in hooks-codex.json but missing in hooks.json: ${codexOnly.join(', ')}`);
+  fail(`hooks-codex.json missing required events: ${missingRequiredCodex.join(', ')}`);
+}
+
+const forbiddenCodex = FORBIDDEN_CODEX_EVENTS.filter((event) => codexEvents.has(event));
+if (forbiddenCodex.length === 0) {
+  pass('hooks-codex.json excludes all forbidden Claude-only events');
+} else {
+  fail(`hooks-codex.json has forbidden unsupported events: ${forbiddenCodex.join(', ')}`);
 }
 
 // Step 4: cursor asymmetries must be documented

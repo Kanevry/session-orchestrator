@@ -43,13 +43,15 @@ Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markd
 
 ## Hook event types (10)
 
-`SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation + opt-in frontend-slop detection + loop-guard), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record).
+The full Claude wiring uses: `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation + opt-in frontend-slop detection + loop-guard), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record).
+
+Codex uses the curated six-event project subset `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, and `Stop`. Claude-only events are not exposed there, and Claude Edit/Write handlers remain unwired until a real adapter translates Codex's canonical `apply_patch` payload. The manifest uses native `${PLUGIN_ROOT}` while exporting `CODEX_PLUGIN_ROOT` plus `SO_PLATFORM=codex` for shared compatibility code.
 
 ## Other surfaces
 
 - **Output Styles (3):** `session-report`, `wave-summary`, `finding-report`.
 - **Policy & rules:** `.orchestrator/policy/blocked-commands.json` (destructive-command rules); `.claude/rules/parallel-sessions.md` (PSA-001..PSA-004).
-- **Codex:** `.codex-plugin/plugin.json` (manifest), compatibility config, agent role definitions.
+- **Codex:** `.codex-plugin/plugin.json` (tracked `+codex.<UTC timestamp>` version), compatibility config, agent role definitions, and the public marketplace/add/list lifecycle implemented by `scripts/codex-install.mjs`. Every run refreshes via `plugin add`; hook trust remains an operator decision in a fresh task through `/hooks`.
 - **Pi:** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, `scripts/pi-install.mjs`.
 - **Scripts:** deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib under `scripts/lib/*.mjs`, all covered by the vitest suite.
 

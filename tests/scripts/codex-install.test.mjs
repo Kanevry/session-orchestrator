@@ -1,289 +1,583 @@
-/**
- * tests/scripts/codex-install.test.mjs
- *
- * Integration smoke-tests for scripts/codex-install.mjs (issue #218).
- *
- * Strategy: spawn `node scripts/codex-install.mjs` with a controlled
- * CODEX_HOME env pointing at a tmp dir. Never import the script as a
- * module — always use spawnSync.
- *
- * The script derives SO_ROOT from __filename (always the real repo root).
- * CODEX_HOME controls all output paths:
- *   CODEX_HOME/.tmp/plugins/.agents/plugins/marketplace.json  ← ACTIVE_MARKETPLACE
- *   CODEX_HOME/.tmp/plugins/plugins/session-orchestrator/     ← ACTIVE_PLUGIN_DIR
- *   CODEX_HOME/config.toml                                     ← CODEX_CONFIG
- *
- * Active-sync mode is triggered when ACTIVE_MARKETPLACE exists AND
- * CODEX_HOME/.tmp/plugins/plugins/ is a directory.
- *
- * Skip conditions: rsync and jq must be available (checked once at suite level).
- *
- * Exit codes:
- *   0 — success
- *   1 — missing dependency or file operation failure
- */
-
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync, execSync } from 'node:child_process';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync,
   mkdirSync,
-  writeFileSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
-  existsSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// ---------------------------------------------------------------------------
-// Repo path
-// ---------------------------------------------------------------------------
-
-const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const REPO_ROOT = join(fileURLToPath(new URL('../../', import.meta.url)), '.');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'codex-install.mjs');
+const PACKAGE = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+const MANIFEST = JSON.parse(
+  readFileSync(join(REPO_ROOT, '.codex-plugin', 'plugin.json'), 'utf8'),
+);
+const FIRST_BUNDLE_SNAPSHOT = {
+  revision: 'fake-bundle-r1',
+  files: { 'skills/session/SKILL.md': 'revision-one' },
+};
+const SECOND_BUNDLE_SNAPSHOT = {
+  revision: 'fake-bundle-r2',
+  files: { 'skills/session/SKILL.md': 'revision-two' },
+};
+const PLUGIN_ID = 'session-orchestrator@kanevry';
+const LEGACY_OPENAI = 'session-orchestrator@openai-curated';
+const LEGACY_LOCAL = 'session-orchestrator@local';
+const UNKNOWN_PLUGIN = 'unrelated-plugin@team-catalog';
 
-// ---------------------------------------------------------------------------
-// Dependency availability check (skip entire suite if tools missing)
-// ---------------------------------------------------------------------------
-
-function commandAvailable(cmd) {
-  try {
-    execSync(`command -v ${cmd}`, { stdio: 'ignore', shell: true });
-    return true;
-  } catch {
-    return false;
-  }
+function commandKey(args) {
+  return JSON.stringify(args);
 }
 
-const HAS_RSYNC = commandAvailable('rsync');
-const HAS_JQ = commandAvailable('jq');
-const DEPS_AVAILABLE = HAS_RSYNC && HAS_JQ;
-
-// ---------------------------------------------------------------------------
-// Helper: set up a tmp CODEX_HOME in active-sync mode
-//
-// Active-sync mode requires:
-//   <codexHome>/.tmp/plugins/.agents/plugins/marketplace.json  ← ACTIVE_MARKETPLACE
-//   <codexHome>/.tmp/plugins/plugins/                          ← must be a dir
-// ---------------------------------------------------------------------------
-
-function createActiveSyncLayout(codexHome, marketplaceContent = null) {
-  // ACTIVE_SYNC_ROOT = <codexHome>/.tmp/plugins
-  const activeSyncRoot = join(codexHome, '.tmp', 'plugins');
-
-  // mkdir -p for .agents/plugins/ (parent of marketplace.json)
-  const marketplaceDir = join(activeSyncRoot, '.agents', 'plugins');
-  mkdirSync(marketplaceDir, { recursive: true });
-
-  // mkdir -p for plugins/ (the trigger condition)
-  const pluginsDir = join(activeSyncRoot, 'plugins');
-  mkdirSync(pluginsDir, { recursive: true });
-
-  // Write ACTIVE_MARKETPLACE
-  const marketplacePath = join(marketplaceDir, 'marketplace.json');
-  const content =
-    marketplaceContent ??
-    JSON.stringify({ name: 'test-catalog', plugins: [] }, null, 2) + '\n';
-  writeFileSync(marketplacePath, content, 'utf8');
-
-  return { activeSyncRoot, marketplacePath, pluginsDir };
+function jsonResponse(stdout, options = {}) {
+  return {
+    status: options.status ?? 0,
+    stdout,
+    stderr: options.stderr ?? '',
+    delayMs: options.delayMs,
+    installedBundleSnapshot: options.installedBundleSnapshot,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Helper: spawn codex-install.mjs with an isolated CODEX_HOME
-// ---------------------------------------------------------------------------
+function targetEntry(overrides = {}) {
+  return {
+    pluginId: PLUGIN_ID,
+    name: 'session-orchestrator',
+    marketplaceName: 'kanevry',
+    version: MANIFEST.version,
+    installed: true,
+    enabled: true,
+    ...overrides,
+  };
+}
 
-function runCodexInstall({ codexHome, extraEnv = {} } = {}) {
-  return spawnSync(process.execPath, [SCRIPT], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      CODEX_HOME: codexHome,
-      ...extraEnv,
+function pluginList({ installed = [targetEntry()], available = [] } = {}) {
+  return { installed, available };
+}
+
+function makeScenario(options = {}) {
+  const marketplaceAdd = {
+    marketplaceName: 'kanevry',
+    installedRoot: REPO_ROOT,
+    alreadyAdded: options.alreadyAdded ?? false,
+  };
+  const pluginAdd = {
+    pluginId: PLUGIN_ID,
+    name: 'session-orchestrator',
+    marketplaceName: 'kanevry',
+    version: MANIFEST.version,
+    installedPath: '/fake/codex/plugins/session-orchestrator',
+  };
+  const bundleSnapshots = options.bundleSnapshots ?? [
+    FIRST_BUNDLE_SNAPSHOT,
+    SECOND_BUNDLE_SNAPSHOT,
+  ];
+
+  return {
+    responses: {
+      [commandKey(['--version'])]: [jsonResponse(options.version ?? 'codex-cli 0.144.4\n')],
+      [commandKey(['features', 'list'])]: [jsonResponse(
+        options.features ?? 'plugins stable true\nhooks stable true\n',
+      )],
+      [commandKey(['plugin', 'marketplace', 'list', '--json'])]: [
+        jsonResponse(options.marketplaceList ?? { marketplaces: [] }),
+      ],
+      [commandKey(['plugin', 'marketplace', 'add', REPO_ROOT, '--json'])]: [
+        jsonResponse(options.marketplaceAdd ?? marketplaceAdd),
+      ],
+      [commandKey(['plugin', 'add', PLUGIN_ID, '--json'])]: bundleSnapshots.map((snapshot) => (
+        jsonResponse(options.pluginAdd ?? pluginAdd, { installedBundleSnapshot: snapshot })
+      )),
+      [commandKey(['plugin', 'list', '--available', '--json'])]: (
+        options.pluginLists ?? [pluginList(), pluginList()]
+      ).map((payload) => jsonResponse(payload)),
+      [commandKey(['plugin', 'remove', LEGACY_OPENAI, '--json'])]: [
+        jsonResponse({ pluginId: LEGACY_OPENAI }),
+      ],
+      [commandKey(['plugin', 'remove', LEGACY_LOCAL, '--json'])]: [
+        jsonResponse({ pluginId: LEGACY_LOCAL }),
+      ],
     },
-    encoding: 'utf8',
-    timeout: 60_000,
-  });
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Test suite
-// ---------------------------------------------------------------------------
+function writeFakeCodex(fakePath) {
+  writeFileSync(fakePath, `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-describe('scripts/codex-install.mjs integration', () => {
-  let tmp;
-  let codexHome;
+const argv = process.argv.slice(2);
+const key = JSON.stringify(argv);
+const scenario = JSON.parse(readFileSync(process.env.FAKE_CODEX_SCENARIO, 'utf8'));
+const state = existsSync(process.env.FAKE_CODEX_STATE)
+  ? JSON.parse(readFileSync(process.env.FAKE_CODEX_STATE, 'utf8'))
+  : { counts: {}, installedBundle: null, bundleHistory: [] };
+appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify(argv) + '\\n');
+const responses = scenario.responses[key];
+if (!Array.isArray(responses) || responses.length === 0) {
+  process.stderr.write('Unexpected fake codex argv: ' + key + '\\n');
+  process.exit(97);
+}
+const count = state.counts[key] ?? 0;
+state.counts[key] = count + 1;
+const response = responses[Math.min(count, responses.length - 1)];
+if (response.delayMs) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, response.delayMs);
+}
+if (response.installedBundleSnapshot !== undefined) {
+  state.installedBundle = response.installedBundleSnapshot;
+  state.bundleHistory ??= [];
+  state.bundleHistory.push(response.installedBundleSnapshot);
+}
+writeFileSync(process.env.FAKE_CODEX_STATE, JSON.stringify(state));
+if (response.stdout !== undefined) {
+  process.stdout.write(
+    typeof response.stdout === 'string'
+      ? response.stdout
+      : JSON.stringify(response.stdout) + '\\n'
+  );
+}
+if (response.stderr) process.stderr.write(response.stderr);
+process.exit(response.status ?? 0);
+`, { mode: 0o755 });
+}
+
+describe('scripts/codex-install.mjs', () => {
+  let tempRoot;
+  let fakeBin;
+  let fakeCodex;
+  let scenarioPath;
+  let statePath;
+  let logPath;
+  let homePath;
+  let codexHomePath;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'codex-install-test-'));
-    codexHome = join(tmp, 'codex-home');
-    mkdirSync(codexHome, { recursive: true });
+    tempRoot = mkdtempSync(join(tmpdir(), 'codex-install-test-'));
+    fakeBin = join(tempRoot, 'bin');
+    fakeCodex = join(fakeBin, 'codex');
+    scenarioPath = join(tempRoot, 'scenario.json');
+    statePath = join(tempRoot, 'state.json');
+    logPath = join(tempRoot, 'argv.jsonl');
+    homePath = join(tempRoot, 'home');
+    codexHomePath = join(tempRoot, 'codex-home');
+    mkdirSync(fakeBin, { recursive: true });
+    mkdirSync(homePath, { recursive: true });
+    mkdirSync(codexHomePath, { recursive: true });
+    writeFakeCodex(fakeCodex);
   });
 
   afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  // -------------------------------------------------------------------------
-  // Test 1 — banner is always printed; exit 0 on success
-  // -------------------------------------------------------------------------
+  function runInstaller({
+    scenario = makeScenario(),
+    args = [],
+    pathValue = `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+    timeout = 30_000,
+  } = {}) {
+    writeFileSync(scenarioPath, JSON.stringify(scenario), 'utf8');
+    return spawnSync(process.execPath, [SCRIPT, ...args], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        PATH: pathValue,
+        HOME: homePath,
+        CODEX_HOME: codexHomePath,
+        FAKE_CODEX_SCENARIO: scenarioPath,
+        FAKE_CODEX_STATE: statePath,
+        FAKE_CODEX_LOG: logPath,
+      },
+      encoding: 'utf8',
+      timeout,
+    });
+  }
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'prints banner "Session Orchestrator — Codex Setup" and exits 0',
-    () => {
-      createActiveSyncLayout(codexHome);
-      const result = runCodexInstall({ codexHome });
+  function readState() {
+    return JSON.parse(readFileSync(statePath, 'utf8'));
+  }
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain('Session Orchestrator — Codex Setup');
-      expect(result.stdout).toContain('Done.');
-    }
-  );
+  function readCalls() {
+    return readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
 
-  // -------------------------------------------------------------------------
-  // Test 2 — active-sync mode: rsync copies plugin files into ACTIVE_PLUGIN_DIR
-  // -------------------------------------------------------------------------
+  it('uses the exact public lifecycle ordering and prints operator next steps', () => {
+    const result = runInstaller();
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'active-sync mode: copies plugin contents into ACTIVE_PLUGIN_DIR via rsync',
-    () => {
-      createActiveSyncLayout(codexHome);
+    expect(result.status).toBe(0);
+    expect(readCalls()).toEqual([
+      ['--version'],
+      ['features', 'list'],
+      ['plugin', 'marketplace', 'list', '--json'],
+      ['plugin', 'marketplace', 'add', REPO_ROOT, '--json'],
+      ['plugin', 'add', PLUGIN_ID, '--json'],
+      ['plugin', 'list', '--available', '--json'],
+      ['plugin', 'list', '--available', '--json'],
+    ]);
+    expect(result.stdout).toContain('Local contract: valid');
+    expect(result.stdout).toContain('Start a fresh Codex task or fully restart Codex');
+    expect(result.stdout).toContain('run /hooks and review the hook bundle');
+    expect(result.stdout).toContain('does not write or bypass hook trust');
+    expect(result.stderr).toBe('');
+  });
 
-      const result = runCodexInstall({ codexHome });
+  it('treats an already-added same-source marketplace as idempotent success', () => {
+    const scenario = makeScenario({
+      alreadyAdded: true,
+      marketplaceList: {
+        marketplaces: [{
+          name: 'kanevry',
+          root: REPO_ROOT,
+          marketplaceSource: { sourceType: 'local', source: REPO_ROOT },
+        }],
+      },
+    });
 
-      expect(result.status).toBe(0);
+    const result = runInstaller({ scenario });
 
-      // ACTIVE_PLUGIN_DIR = <codexHome>/.tmp/plugins/plugins/session-orchestrator
-      const activePluginDir = join(
-        codexHome,
-        '.tmp',
-        'plugins',
-        'plugins',
-        'session-orchestrator'
-      );
-      expect(existsSync(activePluginDir)).toBe(true);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("already uses this source; refreshed");
+    expect(readCalls()).toContainEqual(['plugin', 'marketplace', 'add', REPO_ROOT, '--json']);
+  });
 
-      // Verify a known file from the repo was copied
-      // .claude-plugin/plugin.json is excluded from .git / node_modules excludes,
-      // so it must be present after rsync
-      const copiedPluginJson = join(activePluginDir, '.claude-plugin', 'plugin.json');
-      expect(existsSync(copiedPluginJson)).toBe(true);
-    }
-  );
+  it('refreshes the installed bundle state through plugin add on every rerun', () => {
+    const scenario = makeScenario({ alreadyAdded: true });
 
-  // -------------------------------------------------------------------------
-  // Test 3 — marketplace.json upserted with plugin entry
-  // -------------------------------------------------------------------------
+    const first = runInstaller({ scenario });
+    const firstState = readState();
+    const second = runInstaller({ scenario });
+    const secondState = readState();
+    const calls = readCalls();
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'active-sync mode: upserts session-orchestrator entry in marketplace.json',
-    () => {
-      const { marketplacePath } = createActiveSyncLayout(codexHome);
+    expect(first.status).toBe(0);
+    expect(firstState.installedBundle).toEqual(FIRST_BUNDLE_SNAPSHOT);
+    expect(firstState.bundleHistory).toEqual([FIRST_BUNDLE_SNAPSHOT]);
+    expect(second.status).toBe(0);
+    expect(secondState.installedBundle).toEqual(SECOND_BUNDLE_SNAPSHOT);
+    expect(secondState.installedBundle).not.toEqual(firstState.installedBundle);
+    expect(secondState.bundleHistory).toEqual([
+      FIRST_BUNDLE_SNAPSHOT,
+      SECOND_BUNDLE_SNAPSHOT,
+    ]);
+    expect(calls.filter((args) => args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add')).toHaveLength(2);
+    expect(calls.filter((args) => args[0] === 'plugin' && args[1] === 'add')).toHaveLength(2);
+  });
 
-      const result = runCodexInstall({ codexHome });
+  it('returns exit 1 for an unknown user argument without invoking Codex', () => {
+    const result = runInstaller({ args: ['--unknown'] });
 
-      expect(result.status).toBe(0);
-      expect(existsSync(marketplacePath)).toBe(true);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unknown argument '--unknown'");
+    expect(() => readFileSync(logPath, 'utf8')).toThrow();
+  });
 
-      const raw = readFileSync(marketplacePath, 'utf8');
-      const marketplace = JSON.parse(raw);
+  it('rejects an old Codex version before any mutation', () => {
+    const result = runInstaller({ scenario: makeScenario({ version: 'codex-cli 0.144.3\n' }) });
 
-      expect(Array.isArray(marketplace.plugins)).toBe(true);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Codex 0.144.3 is unsupported');
+    expect(readCalls()).toEqual([['--version']]);
+  });
 
-      const entry = marketplace.plugins.find((p) => p.name === 'session-orchestrator');
-      expect(entry).toBeDefined();
-      expect(entry.name).toBe('session-orchestrator');
-      expect(entry.source.source).toBe('local');
-      expect(entry.source.path).toBe('./plugins/session-orchestrator');
-      expect(entry.policy.installation).toBe('AVAILABLE');
-      expect(entry.category).toBe('Coding');
-    }
-  );
+  it('rejects an unstable plugins feature before any mutation', () => {
+    const result = runInstaller({
+      scenario: makeScenario({ features: 'plugins under development true\nhooks stable true\n' }),
+    });
 
-  // -------------------------------------------------------------------------
-  // Test 4 — config.toml updated with plugin entry
-  // -------------------------------------------------------------------------
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("feature 'plugins' must report 'stable true'");
+    expect(readCalls()).toEqual([['--version'], ['features', 'list']]);
+  });
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'active-sync mode: creates config.toml with enabled = true under [plugins."session-orchestrator@..."]',
-    () => {
-      createActiveSyncLayout(codexHome,
-        JSON.stringify({ name: 'test-catalog', plugins: [] }, null, 2) + '\n'
-      );
+  it('rejects a disabled hooks feature before any mutation', () => {
+    const result = runInstaller({
+      scenario: makeScenario({ features: 'plugins stable true\nhooks stable false\n' }),
+    });
 
-      const result = runCodexInstall({ codexHome });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("feature 'hooks' must report 'stable true'");
+    expect(readCalls()).toEqual([['--version'], ['features', 'list']]);
+  });
 
-      expect(result.status).toBe(0);
+  it('invokes the canonical contract before the first mutating command', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    const contractCall = source.indexOf('const expectedVersion = validateLocalContract();');
+    const marketplaceMutation = source.indexOf("['plugin', 'marketplace', 'add', SO_ROOT, '--json']");
+    const result = runInstaller();
 
-      const configPath = join(codexHome, 'config.toml');
-      expect(existsSync(configPath)).toBe(true);
+    expect(contractCall).toBeGreaterThan(-1);
+    expect(marketplaceMutation).toBeGreaterThan(contractCall);
+    expect(result.stdout.indexOf('Local contract: valid')).toBeLessThan(
+      result.stdout.indexOf('Marketplace: adding'),
+    );
+  });
 
-      const configContent = readFileSync(configPath, 'utf8');
-      expect(configContent).toContain('[plugins."session-orchestrator@');
-      expect(configContent).toContain('enabled = true');
-    }
-  );
+  it('fails on a conflicting kanevry source without removing or replacing it', () => {
+    const scenario = makeScenario({
+      marketplaceList: {
+        marketplaces: [{
+          name: 'kanevry',
+          root: '/different/source',
+          marketplaceSource: { sourceType: 'local', source: '/different/source' },
+        }],
+      },
+    });
 
-  // -------------------------------------------------------------------------
-  // Test 5 — marketplace.json created if missing (active-sync with no pre-existing file)
-  // -------------------------------------------------------------------------
+    const result = runInstaller({ scenario });
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'active-sync mode: creates marketplace.json when it does not exist beforehand',
-    () => {
-      // Set up layout but then delete the marketplace.json we just created
-      // The script should re-create it
-      const activeSyncRoot = join(codexHome, '.tmp', 'plugins');
-      const marketplaceDir = join(activeSyncRoot, '.agents', 'plugins');
-      mkdirSync(marketplaceDir, { recursive: true });
-      mkdirSync(join(activeSyncRoot, 'plugins'), { recursive: true });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Marketplace 'kanevry' already points to '/different/source'");
+    expect(result.stderr).toContain('will not remove or replace it');
+    expect(readCalls()).toEqual([
+      ['--version'],
+      ['features', 'list'],
+      ['plugin', 'marketplace', 'list', '--json'],
+    ]);
+  });
 
-      // Do NOT write marketplace.json — the script must create it.
-      // But for active-sync to trigger, existsSync(ACTIVE_MARKETPLACE) must be true.
-      // The script checks: existsSync(ACTIVE_MARKETPLACE) && isDirSync(plugins/)
-      // Without marketplace.json, active-sync won't trigger; fallback will use homedir.
-      // So instead, we write a minimal valid file and then check the upsert result.
-      const marketplacePath = join(marketplaceDir, 'marketplace.json');
-      writeFileSync(marketplacePath, JSON.stringify({ name: 'new-catalog', plugins: [] }, null, 2) + '\n', 'utf8');
+  it('returns exit 2 when the installed target is disabled', () => {
+    const scenario = makeScenario({
+      pluginLists: [pluginList({ installed: [targetEntry({ enabled: false })] })],
+    });
 
-      const result = runCodexInstall({ codexHome });
+    const result = runInstaller({ scenario });
 
-      expect(result.status).toBe(0);
-      expect(existsSync(marketplacePath)).toBe(true);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('installed=true, enabled=false');
+    expect(readCalls().at(-1)).toEqual(['plugin', 'list', '--available', '--json']);
+  });
 
-      const raw = readFileSync(marketplacePath, 'utf8');
-      const parsed = JSON.parse(raw);
-      const entry = parsed.plugins.find((p) => p.name === 'session-orchestrator');
-      expect(entry).toBeDefined();
-    }
-  );
+  it('returns exit 2 when the target plugin is missing from the postcondition', () => {
+    const scenario = makeScenario({
+      pluginLists: [pluginList({ installed: [], available: [] })],
+    });
 
-  // -------------------------------------------------------------------------
-  // Test 6 — idempotent re-run: running twice produces exit 0 both times
-  // -------------------------------------------------------------------------
+    const result = runInstaller({ scenario });
 
-  it.skipIf(!DEPS_AVAILABLE)(
-    'idempotent: two consecutive runs both exit 0 with unchanged marketplace entry',
-    () => {
-      createActiveSyncLayout(codexHome);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(`expected exactly one '${PLUGIN_ID}' entry, found 0`);
+  });
 
-      const first = runCodexInstall({ codexHome });
-      expect(first.status).toBe(0);
+  it('returns exit 2 when the installed target version differs from the manifest', () => {
+    const scenario = makeScenario({
+      pluginLists: [pluginList({ installed: [targetEntry({ version: '0.0.0+codex.20000101000000' })] })],
+    });
 
-      const second = runCodexInstall({ codexHome });
-      expect(second.status).toBe(0);
+    const result = runInstaller({ scenario });
 
-      const marketplacePath = join(
-        codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'
-      );
-      const raw = readFileSync(marketplacePath, 'utf8');
-      const marketplace = JSON.parse(raw);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(`does not match manifest '${MANIFEST.version}'`);
+  });
 
-      // Only one entry for session-orchestrator (upsert, not append)
-      const entries = marketplace.plugins.filter((p) => p.name === 'session-orchestrator');
-      expect(entries).toHaveLength(1);
-    }
-  );
+  it('removes only allowlisted legacy IDs after health and preserves unknown plugins', () => {
+    const unknown = {
+      pluginId: UNKNOWN_PLUGIN,
+      name: 'unrelated-plugin',
+      marketplaceName: 'team-catalog',
+      version: '1.0.0',
+      installed: true,
+      enabled: true,
+    };
+    const legacyOpenai = targetEntry({ pluginId: LEGACY_OPENAI, marketplaceName: 'openai-curated' });
+    const legacyLocal = targetEntry({ pluginId: LEGACY_LOCAL, marketplaceName: 'local' });
+    const scenario = makeScenario({
+      pluginLists: [
+        pluginList({ installed: [legacyLocal, unknown, targetEntry(), legacyOpenai] }),
+        pluginList({ installed: [unknown, targetEntry()] }),
+      ],
+    });
+
+    const result = runInstaller({ scenario });
+    const calls = readCalls();
+    const firstHealthIndex = calls.findIndex((args) => args[1] === 'list' && args[2] === '--available');
+    const openaiRemoveIndex = calls.findIndex((args) => args.at(-2) === LEGACY_OPENAI);
+    const localRemoveIndex = calls.findIndex((args) => args.at(-2) === LEGACY_LOCAL);
+
+    expect(result.status).toBe(0);
+    expect(openaiRemoveIndex).toBeGreaterThan(firstHealthIndex);
+    expect(localRemoveIndex).toBeGreaterThan(openaiRemoveIndex);
+    expect(calls).not.toContainEqual(['plugin', 'remove', UNKNOWN_PLUGIN, '--json']);
+    expect(calls.some((args) => args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'remove')).toBe(false);
+  });
+
+  it('returns exit 2 if a legacy plugin remains installed after removal', () => {
+    const legacyOpenai = targetEntry({ pluginId: LEGACY_OPENAI, marketplaceName: 'openai-curated' });
+    const scenario = makeScenario({
+      pluginLists: [
+        pluginList({ installed: [targetEntry(), legacyOpenai] }),
+        pluginList({ installed: [targetEntry(), legacyOpenai] }),
+      ],
+    });
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(`legacy plugins remain installed: ${LEGACY_OPENAI}`);
+  });
+
+  it('returns exit 2 for Codex command errors while preserving diagnostics', () => {
+    const scenario = makeScenario();
+    scenario.responses[commandKey(['plugin', 'add', PLUGIN_ID, '--json'])] = [
+      jsonResponse('', { status: 9, stderr: 'simulated install failure\n' }),
+    ];
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Command failed with exit 9');
+    expect(result.stderr).toContain('simulated install failure');
+    expect(readCalls().at(-1)).toEqual(['plugin', 'add', PLUGIN_ID, '--json']);
+  });
+
+  it('returns exit 2 when a Codex command exceeds the 30-second timeout', { timeout: 40_000 }, () => {
+    const scenario = makeScenario();
+    scenario.responses[commandKey(['--version'])] = [
+      jsonResponse('codex-cli 0.144.4\n', { delayMs: 30_500 }),
+    ];
+
+    const result = runInstaller({ scenario, timeout: 35_000 });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Cannot run 'codex --version'");
+    expect(result.stderr).toContain('ETIMEDOUT');
+    expect(readCalls()).toEqual([['--version']]);
+  });
+
+  it('returns exit 2 when the Codex binary is missing', () => {
+    const result = runInstaller({ pathValue: homePath });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Cannot run 'codex --version'");
+    expect(result.stderr).toContain('ENOENT');
+    expect(() => readFileSync(logPath, 'utf8')).toThrow();
+  });
+
+  it('returns exit 2 on malformed marketplace JSON before mutation', () => {
+    const scenario = makeScenario();
+    scenario.responses[commandKey(['plugin', 'marketplace', 'list', '--json'])] = [
+      jsonResponse('{not-json\n'),
+    ];
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Marketplace list returned malformed JSON');
+    expect(readCalls().at(-1)).toEqual(['plugin', 'marketplace', 'list', '--json']);
+  });
+
+  it('returns exit 2 when marketplace JSON has the wrong array shape before mutation', () => {
+    const scenario = makeScenario({ marketplaceList: { marketplaces: {} } });
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('marketplaces must be an array in Codex JSON output');
+    expect(readCalls()).toEqual([
+      ['--version'],
+      ['features', 'list'],
+      ['plugin', 'marketplace', 'list', '--json'],
+    ]);
+  });
+
+  it('returns exit 2 when plugin-add JSON reports a different version', () => {
+    const scenario = makeScenario({
+      pluginAdd: {
+        pluginId: PLUGIN_ID,
+        name: 'session-orchestrator',
+        marketplaceName: 'kanevry',
+        version: '0.0.0+codex.20000101000000',
+        installedPath: '/fake/codex/plugins/session-orchestrator',
+      },
+    });
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      `Plugin add returned version '0.0.0+codex.20000101000000', expected '${MANIFEST.version}'`,
+    );
+    expect(readCalls().at(-1)).toEqual(['plugin', 'add', PLUGIN_ID, '--json']);
+  });
+
+  it('returns exit 2 on malformed plugin-list JSON after add', () => {
+    const scenario = makeScenario();
+    scenario.responses[commandKey(['plugin', 'list', '--available', '--json'])] = [
+      jsonResponse('not-json\n'),
+    ];
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Plugin list returned malformed JSON');
+  });
+
+  it('prints the exact structured JSON result without mixing progress text into stdout', () => {
+    const result = runInstaller({ args: ['--json'] });
+    const payload = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(payload).toEqual({
+      ok: true,
+      codexVersion: '0.144.4',
+      marketplace: 'kanevry',
+      marketplaceSource: REPO_ROOT,
+      marketplaceAlreadyAdded: false,
+      pluginId: PLUGIN_ID,
+      pluginVersion: MANIFEST.version,
+      installed: true,
+      enabled: true,
+      removedLegacyPlugins: [],
+      nextSteps: [
+        'Start a fresh Codex task or fully restart Codex so the plugin and hooks reload.',
+        'In the fresh task, run /hooks and review the hook bundle before approving it.',
+        'This installer does not write or bypass hook trust.',
+      ],
+    });
+    expect(result.stdout).not.toContain('Session Orchestrator — Codex Setup');
+    expect(result.stderr).toBe('');
+  });
+
+  it('prints the package/plugin base version without invoking Codex', () => {
+    const result = runInstaller({ args: ['--version'] });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${PACKAGE.version}\n`);
+    expect(result.stderr).toBe('');
+    expect(() => readFileSync(logPath, 'utf8')).toThrow();
+  });
+
+  it('prints concise help examples without invoking Codex', () => {
+    const result = runInstaller({ args: ['--help'] });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: node scripts/codex-install.mjs [options]');
+    expect(result.stdout).toContain('Examples:');
+    expect(result.stdout).toContain('node scripts/codex-install.mjs --json');
+    expect(result.stdout).toContain('node scripts/codex-install.mjs --version');
+    expect(result.stderr).toBe('');
+    expect(() => readFileSync(logPath, 'utf8')).toThrow();
+  });
+
+  it('contains no private Codex paths, catalog files, hook-state writes, or trust bypass', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    const forbidden = [
+      ['.tmp', 'plugins'].join('/'),
+      ['marketplace', 'json'].join('.'),
+      ['config', 'toml'].join('.'),
+      ['hooks', 'state'].join('.'),
+      ['--dangerously', 'bypass-hook-trust'].join('-'),
+    ];
+
+    expect(forbidden.filter((value) => source.includes(value))).toEqual([]);
+    expect(source).not.toContain("['plugin', 'marketplace', 'remove'");
+  });
 });
