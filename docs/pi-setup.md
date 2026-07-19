@@ -16,7 +16,7 @@ Guide for using Session Orchestrator with [Pi](https://pi.dev/docs/latest).
 pi install npm:session-orchestrator
 ```
 
-This is the primary install path once the package has been published to npm and indexed by the [Pi packages gallery](https://pi.dev/packages) via its `pi-package` keyword — no local checkout required. Not yet available: the package has not been published to npm yet (see `docs/distribution/npm-publish-checklist.md` for the operator publish runbook). Until then, use one of the dev-fallback options below.
+This is the primary install path — the package is published to npm (since v3.16.0, 2026-07-19) and carries the `pi-package` keyword for the [Pi packages gallery](https://pi.dev/packages) index; no local checkout required. The dev-fallback options below remain available for working against a local checkout.
 
 ### Option 2: Project-local registration (dev fallback)
 

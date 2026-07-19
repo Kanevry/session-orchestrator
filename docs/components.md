@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (44 user-facing)
+## Skills (45 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -26,7 +26,7 @@ flowchart LR
 - **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`
-- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `spinout`
+- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
