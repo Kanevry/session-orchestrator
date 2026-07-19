@@ -25,7 +25,7 @@
  *   mirrorNarrative        — convenience: read STATE.md, resolve vault-dir from config, write (no-op when vault disabled)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -391,6 +391,70 @@ export function writeNarrative(opts) {
   return { action: 'written', path: outputPath };
 }
 
+// ── Loose-slug folder matching (issue #829 Finding 3) ────────────────────────────
+
+/**
+ * Fold a slug candidate to a comparison-only form: lowercase, every
+ * non-alphanumeric character stripped. Used purely for equality comparison —
+ * never as a slug value itself. `subjectToSlug` (vault-mirror/utils.mjs) does
+ * NOT insert a hyphen at a camelCase boundary, so `GotzendorferV2` mints
+ * `gotzendorferv2` — a DIFFERENT folder than a hand-created `gotzendorfer-v2`.
+ * `looseSlug('gotzendorfer-v2') === looseSlug('gotzendorferv2')`, so the two
+ * forms can be reconciled without changing `subjectToSlug` itself.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function looseSlug(s) {
+  return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Loose-match a freshly-minted candidate slug against EXISTING `01-projects/`
+ * folder names before falling back to minting a new one (issue #829 Finding
+ * 3). When EXACTLY ONE existing folder's {@link looseSlug} equals the
+ * candidate's, that folder's EXACT on-disk name is reused (auto-resolving
+ * casing/punctuation drift, e.g. `GotzendorferV2` → `gotzendorfer-v2`,
+ * `LeadPipeDACH` → `leadpipe-dach`). Zero or MORE THAN ONE matches are
+ * ambiguous (or there is genuinely no match) — the caller's `subjectToSlug`
+ * candidate is returned unchanged, preserving current behaviour.
+ *
+ * Best-effort by design: any read failure (missing `01-projects/` dir,
+ * permission error, first-ever write for this vault, …) falls through to the
+ * candidate slug rather than throwing — a listing failure must never block a
+ * narrative write.
+ *
+ * @param {string} vaultDir
+ * @param {string} candidateSlug
+ * @param {{ readdirSync?: Function }} [fsSeam] — injectable `readdirSync` (test seam).
+ * @returns {string}
+ */
+function resolveLooseSlug(vaultDir, candidateSlug, fsSeam = {}) {
+  const readdir = fsSeam.readdirSync ?? readdirSync;
+  let entries;
+  try {
+    entries = readdir(path.join(vaultDir, '01-projects'), { withFileTypes: true });
+  } catch {
+    return candidateSlug;
+  }
+  if (!Array.isArray(entries)) return candidateSlug;
+
+  const candidateLoose = looseSlug(candidateSlug);
+  const matches = [];
+  for (const entry of entries) {
+    // Accept either a Dirent (real fs) or a plain string (a simplified test
+    // seam) — only Dirents that report as non-directories are excluded; a
+    // plain string is assumed to already denote a project folder.
+    const isDirent = entry && typeof entry === 'object' && typeof entry.name === 'string';
+    const name = isDirent ? entry.name : entry;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    if (isDirent && typeof entry.isDirectory === 'function' && !entry.isDirectory()) continue;
+    if (looseSlug(name) === candidateLoose) matches.push(name);
+  }
+
+  return matches.length === 1 ? matches[0] : candidateSlug;
+}
+
 // ── Convenience orchestration ────────────────────────────────────────────────────
 
 /**
@@ -451,7 +515,11 @@ export async function mirrorNarrative(opts) {
   }
 
   const vaultDir = path.resolve(expandHome(rawVaultDir));
-  const repoSlug = subjectToSlug(repoName) || 'unknown';
+  const candidateSlug = subjectToSlug(repoName) || 'unknown';
+  // Loose-match against existing 01-projects/ folders before minting a new
+  // slug (issue #829 Finding 3) — see resolveLooseSlug for the ambiguity
+  // rules. Falls through to `candidateSlug` unchanged on any read failure.
+  const repoSlug = resolveLooseSlug(vaultDir, candidateSlug, { readdirSync: injectedFs?.readdirSync });
   const outputPath = resolveNarrativePath(vaultDir, repoSlug);
 
   // Defense-in-depth: ensure the resolved file stays inside the vault root.

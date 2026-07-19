@@ -31,6 +31,7 @@ import {
 
 import { repoPathHash } from '../../../scripts/lib/session-registry.mjs';
 import { parseFrontmatter } from '../../../scripts/lib/vault-mirror/utils.mjs';
+import { DEFAULT_TTL_HOURS } from '../../../scripts/lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
@@ -879,5 +880,158 @@ describe('mirrorBoard — hostPaths forwarding (load-bearing, #783 falsification
     expect(result.action).toBe('dry-run');
     expect(result.path).toBe(resolveBoardPath(fakeVaultDir));
     expect(result.path).not.toBe(resolveBoardPath(committedVaultDir));
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — TTL-staleness re-derivation on PRESERVED rows (issue #829
+// Finding 2, also self-heals Finding 1 leftovers)
+// ===========================================================================
+
+describe('mirrorBoard — TTL-staleness re-derivation on preserved rows (#829)', () => {
+  it('flips preserved in-progress rows past DEFAULT_TTL_HOURS to force-closed, at multiple ages, while leaving a fresh row and an unparseable-heartbeat row unchanged', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const staleHb5h = new Date(FIXED_NOW.getTime() - (DEFAULT_TTL_HOURS + 1) * 3600 * 1000).toISOString();
+    const staleHb10d = new Date(FIXED_NOW.getTime() - 10 * 24 * 3600 * 1000).toISOString();
+    const freshHb = new Date(FIXED_NOW.getTime() - 1 * 3600 * 1000).toISOString();
+
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'stale-5h-repo', status: 'in-progress', session: 'sess-5h', branch: 'main', mode: 'deep', heartbeat: staleHb5h },
+        { repo: 'stale-10d-repo', status: 'in-progress', session: 'sess-10d', branch: 'main', mode: 'deep', heartbeat: staleHb10d },
+        { repo: 'fresh-repo', status: 'in-progress', session: 'sess-fresh', branch: 'main', mode: 'deep', heartbeat: freshHb },
+        { repo: 'unparseable-hb-repo', status: 'in-progress', session: 'sess-bad-hb', branch: 'main', mode: 'deep' },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-ttl-a', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      // None of the four seeded repos appear in this update — every one of
+      // their rows is genuinely PRESERVED, not freshly re-derived.
+      repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-ttl' }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const byRepo = Object.fromEntries(rows.map((r) => [r.repo, r]));
+
+    expect(byRepo['stale-5h-repo'].status).toBe('force-closed');
+    expect(byRepo['stale-5h-repo'].session).toBe('sess-5h'); // fields preserved, only status flips
+    expect(byRepo['stale-10d-repo'].status).toBe('force-closed');
+    expect(byRepo['stale-10d-repo'].session).toBe('sess-10d');
+    expect(byRepo['fresh-repo'].status).toBe('in-progress');
+    expect(byRepo['unparseable-hb-repo'].status).toBe('in-progress');
+  });
+
+  it('boundary: a preserved in-progress row whose heartbeat is EXACTLY DEFAULT_TTL_HOURS old flips to force-closed (>= semantics pinned)', async () => {
+    // board-writer.mjs's staleness check is `(nowMs - heartbeatMs) >= ttlMs`
+    // (~line 609) — an age exactly equal to the TTL counts as stale, not live.
+    // This pins the >= boundary itself; a future accidental `>` regression
+    // would leave this exact-age row wrongly `in-progress` and fail here.
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
+    const exactlyStaleHb = new Date(FIXED_NOW.getTime() - ttlMs).toISOString();
+
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'exactly-ttl-repo', status: 'in-progress', session: 'sess-exact', branch: 'main', mode: 'deep', heartbeat: exactlyStaleHb },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-ttl-boundary-exact', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-ttl-boundary-exact' }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const row = rows.find((r) => r.repo === 'exactly-ttl-repo');
+    expect(row.status).toBe('force-closed');
+    expect(row.session).toBe('sess-exact');
+  });
+
+  it('boundary: a preserved in-progress row whose heartbeat is (DEFAULT_TTL_HOURS - 1s) old stays in-progress', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
+    const justUnderStaleHb = new Date(FIXED_NOW.getTime() - (ttlMs - 1000)).toISOString();
+
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'just-under-ttl-repo', status: 'in-progress', session: 'sess-under', branch: 'main', mode: 'deep', heartbeat: justUnderStaleHb },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-ttl-boundary-under', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-ttl-boundary-under' }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const row = rows.find((r) => r.repo === 'just-under-ttl-repo');
+    expect(row.status).toBe('in-progress');
+    expect(row.session).toBe('sess-under');
+  });
+
+  it('is idempotent: a second mirrorBoard run over an already-TTL-flipped board is skipped-noop', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const staleHb = new Date(FIXED_NOW.getTime() - (DEFAULT_TTL_HOURS + 1) * 3600 * 1000).toISOString();
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'stale-idem-repo', status: 'in-progress', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-ttl-b', vaultDir);
+    const repos = [{ repoRoot: thisRepoRoot, repoName: 'unrelated-active-repo-ttl-b' }];
+
+    const first = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(first.action).toBe('written');
+    const afterFirst = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    expect(afterFirst.find((r) => r.repo === 'stale-idem-repo').status).toBe('force-closed');
+
+    const second = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(second.action).toBe('skipped-noop');
+
+    const afterSecond = readFileSync(boardPath, 'utf8');
+    expect(normalizeUpdated(afterSecond)).toBe(normalizeUpdated(readFileSync(boardPath, 'utf8')));
+    // Byte-identical run-twice guarantee: re-parsing after the noop-skipped
+    // second run still shows exactly one force-closed row, unchanged.
+    const rows = parseBoardRows(afterSecond);
+    expect(rows.filter((r) => r.repo === 'stale-idem-repo')).toEqual([
+      { repo: 'stale-idem-repo', status: 'force-closed', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
+    ]);
   });
 });

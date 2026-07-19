@@ -24,6 +24,10 @@
  * Idempotent merge: writeBoard's caller passes a fully-rendered board, but
  * {@link collectRows} preserves rows for repos NOT in the current update by
  * reading the EXISTING generator-owned board first, so repeated writes are stable.
+ * PRESERVED `in-progress` rows are additionally re-derived for TTL staleness
+ * (issue #829 Finding 2) inside {@link mirrorBoard} — a preserved row whose
+ * heartbeat has aged past {@link DEFAULT_TTL_HOURS} flips to `force-closed`
+ * instead of being copied forward unboundedly.
  *
  * CRITICAL SAFETY (Epic #673 #1 risk — never clobber hand-authored vault notes):
  *   1. The `_generator` marker guard refuses any file we did not author.
@@ -37,7 +41,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isLockLive, readLock } from '../session-lock.mjs';
+import { isLockLive, readLock, DEFAULT_TTL_HOURS } from '../session-lock.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-registry.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
@@ -580,13 +584,44 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
 
   const rows = await collectRows({ repos: repoList, now, priorStatusByRepo });
 
-  // Idempotent merge: keep prior rows for repos NOT in this update, then upsert
-  // the freshly-derived rows over them so repeated writes stay stable. Both the
-  // seed (`preservedRows`) and the upsert key below are folded via {@link
-  // foldKey} (issue #719) — a freshly-derived row ALWAYS wins over a preserved
-  // row sharing its folded key, which is what collapses a live `Some-Repo`
-  // row over a stale preserved `some-repo` row on the next board write.
-  const merged = new Map(preservedRows);
+  // TTL-staleness re-derivation for PRESERVED rows (issue #829 Finding 2).
+  // Without this pass, a preserved `in-progress` row (a repo NOT in this
+  // update) is copied forward FOREVER — a crashed/never-closed session's row
+  // never flips even after its heartbeat has aged well past the lock's TTL,
+  // because `collectRows` only re-derives status for repos actually IN
+  // `repoList`. Re-derive staleness for every preserved row here, BEFORE the
+  // freshly-derived `rows` are upserted over it below (fresh data always
+  // wins regardless of this pass — a live lock or an explicit-closed update
+  // always takes precedence over the TTL flip).
+  //
+  // Board rows carry only a raw `heartbeat` string, never the lock's own
+  // `ttl_hours` (that field is not part of the rendered board) — so this
+  // reuses the shared {@link DEFAULT_TTL_HOURS} constant rather than the
+  // per-lock TTL {@link isLockLive} uses when a live lock object is in hand.
+  // Rows with an unparseable/absent heartbeat are left UNCHANGED (fail-open,
+  // never crash on a malformed prior board).
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
+  const staleRederivedRows = new Map();
+  for (const [key, row] of preservedRows) {
+    if (row.status === STATUS_IN_PROGRESS) {
+      const heartbeatMs = Date.parse(row.heartbeat ?? '');
+      if (Number.isFinite(heartbeatMs) && (nowMs - heartbeatMs) >= ttlMs) {
+        staleRederivedRows.set(key, { ...row, status: STATUS_FORCE_CLOSED });
+        continue;
+      }
+    }
+    staleRederivedRows.set(key, row);
+  }
+
+  // Idempotent merge: keep prior (TTL-rederived) rows for repos NOT in this
+  // update, then upsert the freshly-derived rows over them so repeated
+  // writes stay stable. Both the seed (`staleRederivedRows`) and the upsert
+  // key below are folded via {@link foldKey} (issue #719) — a
+  // freshly-derived row ALWAYS wins over a preserved row sharing its folded
+  // key, which is what collapses a live `Some-Repo` row over a stale
+  // preserved `some-repo` row on the next board write.
+  const merged = new Map(staleRederivedRows);
   for (const row of rows) merged.set(foldKey(row.repo), row);
 
   const content = renderBoard([...merged.values()], { now, createdIso });

@@ -474,12 +474,16 @@ describe('mirrorNarrative', () => {
   });
 
   it('returns skipped-vault-disabled when repoRoot is empty', async () => {
-    const result = await mirrorNarrative({ repoRoot: '' });
+    // hostPaths is inert here (the empty-repoRoot guard returns before any
+    // config read) but is passed anyway — hostpaths-guard.test.mjs pins
+    // EVERY mirrorNarrative call site to carry an explicit hostPaths key,
+    // belt-and-suspenders against the #783 incident class.
+    const result = await mirrorNarrative({ repoRoot: '', hostPaths: HERMETIC_HOST_PATHS });
     expect(result).toEqual({ action: 'skipped-vault-disabled' });
   });
 
   it('returns skipped-vault-disabled when repoRoot is missing', async () => {
-    const result = await mirrorNarrative({});
+    const result = await mirrorNarrative({ hostPaths: HERMETIC_HOST_PATHS });
     expect(result).toEqual({ action: 'skipped-vault-disabled' });
   });
 
@@ -522,5 +526,92 @@ describe('mirrorNarrative', () => {
     expect(result.action).toBe('dry-run');
     expect(result.path).toBe(resolveNarrativePath(fakeVaultDir, repoSlug));
     expect(result.path).not.toBe(resolveNarrativePath(vaultDir, repoSlug));
+  });
+
+  // =========================================================================
+  // mirrorNarrative — loose-slug matching against existing 01-projects/
+  // folders (issue #829 Finding 3)
+  // =========================================================================
+
+  describe('loose-slug matching (#829 Finding 3)', () => {
+    it('reuses the EXACT existing folder name when its loose-slug matches the candidate (GotzendorferV2 -> gotzendorfer-v2)', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'gotzendorfer-repo-a' });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'gotzendorfer-v2'), { recursive: true });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'GotzendorferV2',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorfer-v2'));
+    });
+
+    it('reuses the EXACT existing folder name for a second real-world drift case (LeadPipeDACH -> leadpipe-dach)', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'leadpipe-repo-a' });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'leadpipe-dach'), { recursive: true });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'LeadPipeDACH',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'leadpipe-dach'));
+    });
+
+    it('falls back to subjectToSlug when the loose match is AMBIGUOUS (two existing folders share the same loose-slug)', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'gotzendorfer-repo-b' });
+      // Two DIFFERENT on-disk folder names (hyphen vs underscore) that both
+      // loose-slug to 'gotzendorferv2'. Deliberately NOT a pure case variant
+      // (e.g. 'Gotzendorfer-V2') — macOS APFS is case-insensitive-preserving,
+      // so a second mkdirSync differing only by case silently resolves to the
+      // SAME physical directory as the first, which would defeat this test's
+      // "two existing folders" precondition.
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'gotzendorfer-v2'), { recursive: true });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'gotzendorfer_v2'), { recursive: true });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'GotzendorferV2',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      // Ambiguous -> falls through to the unmodified subjectToSlug candidate,
+      // not either of the two colliding on-disk folders.
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorferv2'));
+    });
+
+    it('falls back to subjectToSlug when 01-projects/ does not exist yet (first-ever narrative write for this vault)', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'gotzendorfer-repo-c' });
+      // Deliberately do NOT create vaultDir/01-projects — mirrors a brand-new vault.
+      expect(fs.existsSync(path.join(vaultDir, '01-projects'))).toBe(false);
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'GotzendorferV2',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorferv2'));
+    });
+
+    it('does not loose-match an UNRELATED existing folder (no false positive)', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'gotzendorfer-repo-d' });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'some-totally-different-repo'), { recursive: true });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'GotzendorferV2',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorferv2'));
+    });
   });
 });
