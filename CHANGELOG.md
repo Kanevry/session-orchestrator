@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.0] - 2026-07-19
+
+Hardening release. Headline: the **bold-key parser fix goes class-wide** — a shared
+`matchBlockHeader` helper closes the `- **key:**` blind spot across all 34 Session-Config
+block parsers (#830) — plus the **vault-namespace de-collapse** (`VAULT_CLEAR_SLUGS`
+carve-out) that ends the shared `redacted-repo/` bucket without weakening the public-mirror
+leakage scanner, a **TTL staleness pass** for the vault live-status board (#829), and a
+**provenance-honest `/bootstrap --refresh-lock`** that finally makes the freshness banner's
+recommendation actionable. Everything is additive and backward-compatible.
+
+### Added
+
+- **`scripts/lib/config/block-header.mjs` (#830)** — zero-import `matchBlockHeader(line, key)` + `hasBlockHeader(content, key)`: bold-bullet-tolerant block-header detection (`key:`, `- key:`, `**key:**`, `- **key:**`), adopted at 30 literal parser sites, both dynamic-key sites (fixing their latent unescaped-key bug), and the dispatcher-autonomy-capture presence guard. Inline-comment headers still reject (documented gotcha preserved); drift-check raw-parity holds by construction. Guarded by a helper contract matrix, a 6-parser bold-adoption regression suite, and a drift-check parity test.
+- **`/bootstrap --refresh-lock` (Kanevry#57)** — new `scripts/lib/bootstrap-lock-refresh.mjs`: upserts only `refreshed-at` + `refreshed-plugin-version` (newline-sanitized, atomic tmp+rename), every original provenance line byte-identical. `checkBootstrapLockFreshness` gains refresh-aware precedence tiers and a `details.reason` enum on every return path; session-start/discovery banners now name the RIGHT remediation per reason instead of the no-op `--retroactive` for valid locks.
+- **`tests/lib/vault-status/hostpaths-guard.test.mjs` (#829)** — meta-test pinning the #783 hermetic-`hostPaths` hardening: any vault-status test calling `mirrorBoard`/`sweepBoard`/`mirrorNarrative` without explicit `hostPaths` fails the suite.
+
+### Fixed
+
+- **Vault-namespace de-collapse (Kanevry#59)** — `VAULT_CLEAR_SLUGS` carve-out in `check-owner-leakage.mjs`: the 5 already-public slugs regain distinct per-repo vault namespaces (provenance restored, no more mixed `redacted-repo/` bucket re-pollution), while `runScan`'s tracked-file CP6 scanner keeps blocking all 7 private slugs in the public mirror. A subset-invariant test guards against dead carve-out entries.
+- **Vault live-status board staleness (#829)** — `mirrorBoard` re-derives PRESERVED in-progress rows against `DEFAULT_TTL_HOURS` (exact `>=` boundary pinned by tests, fail-open on unparseable heartbeats, idempotent): dead leases and historical fixture rows now self-heal to `force-closed` instead of rendering in-progress forever. `narrative-mirror` loose-matches candidate slugs against existing `01-projects/` folders (exactly-one-match guard) so `GotzendorferV2`-style names stop minting duplicate folders.
+
+### Changed
+
+- **`.claude/rules/loop-and-monitor.md`** — re-verified against Claude Code v2.1.215 (zero functional delta for the /loop family).
+
 ## [3.15.0] - 2026-07-19
 
 Feature release. Headline: an honest, deterministic-first **session-process evaluation**

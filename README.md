@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.15.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.16.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/tests-10%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor, and [Pi](docs/pi-setup.md)**.
@@ -126,18 +126,16 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.15.0)
+## Recent highlights (v3.16.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.15.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.16.0 line:
 
-- **Session-process evaluation (`/eval`, standard v1)** — an honest, deterministic-first scoring of a completed orchestrator session against a pre-registered rubric (`aiat-llm-eval/1.0`), with an optional advisory LLM judge and a rebuildable HTML run-report. Never produces a global score; blocks close never.
-- **Opt-in out-of-scope shell-write guard** — a warn-only PostToolUse hook that flags Bash writes landing outside a wave agent's declared file-scope, complementing the Edit/Write scope gate.
-- **Per-context baseline paths (`baselines:` in `owner.yaml`)** — resolve a different baseline-path per repo/context instead of one host-wide default; host-local, never committed.
-- **`bash-harness-pitfalls` path-scoped rule** — four anonymized false-green failure classes (`grep -c || echo 0` double-print, stdout-capture pollution, verdict-from-file discipline, `perl -pi` script surgery) codified as a review checklist.
-- **Distribution foundation** — `session-orchestrator.com` landing page + Vercel deploy, plus a fetch-verified channel-research + submission kit (official-marketplace refresh, npm publish prep).
-- **Parser & config hardening** — bold-key parse fix (#823), `promoteAndClear` drain guard (#828), `owner.yaml` optional-section tolerance + banner (#820), and an eval newest-wins record selector (#822).
+- **Class-wide bold-key parser fix (`matchBlockHeader`)** — the `- **key:**` blind spot #823 fixed for one parser is now closed across all 34 Session-Config block parsers via a shared zero-import helper, with the inline-comment gotcha and drift-check raw-parity preserved.
+- **Vault-namespace de-collapse (`VAULT_CLEAR_SLUGS`)** — already-public repo slugs regain distinct vault namespaces (no more shared `redacted-repo/` bucket) while the public-mirror tracked-file scanner keeps blocking all private slugs.
+- **Vault board TTL self-healing** — preserved in-progress rows past the heartbeat TTL now flip to `force-closed`; narrative folders loose-match existing `01-projects/` folders instead of minting duplicates.
+- **Actionable freshness remediation (`/bootstrap --refresh-lock`)** — reason-aware banners plus a provenance-honest lock refresher (only two refresh fields written, original bootstrap provenance byte-identical).
 
-Previous line (v3.14.0): STATE.md write-safety closed loop, scope-union subset assertion, peer-discovery self-exclusion, `paths:` rule alias, memory-proposals write guard, `/loop` cadence re-derivation.
+Previous line (v3.15.0): `/eval` session-process evaluation (standard v1), out-of-scope shell-write guard, per-context `baselines:` in owner.yaml, `bash-harness-pitfalls` rule, distribution foundation (landing page + submission kit), parser/config hardening bundle.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
