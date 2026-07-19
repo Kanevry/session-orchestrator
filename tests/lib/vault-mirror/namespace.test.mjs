@@ -96,9 +96,20 @@ describe('resolveRepoNamespace — vaultName override', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveRepoNamespace — owner-privacy leak redaction', () => {
-  it('CP6: private slug "launchpad-ai-factory" is redacted to "redacted-repo"', () => {
-    // isOwnerLeakySegment('launchpad-ai-factory') returns 'CP6'
-    expect(resolveRepoNamespace({ vaultName: 'launchpad-ai-factory' })).toBe('redacted-repo');
+  // CP6 in-process guard now uses the VAULT_CLEAR_SLUGS carve-out (issue #59,
+  // owner decision 2026-07-18): only Codex-Hackathon + aiat-pmo-module still
+  // redact in-process; the other 5 slugs resolve to their own vault namespace
+  // (the tracked-file scanner, runScan, still blocks ALL 7 from the public
+  // mirror — proven by check-owner-leakage.test.mjs Positive-3/3b staying green).
+  it('CP6 (retained): private slug "Codex-Hackathon" is redacted to "redacted-repo"', () => {
+    // isOwnerLeakySegment('Codex-Hackathon') returns 'CP6' (NOT carved out)
+    expect(resolveRepoNamespace({ vaultName: 'Codex-Hackathon' })).toBe('redacted-repo');
+  });
+
+  it('CP6 (retained): private slug "aiat-pmo-module" is redacted to "redacted-repo"', () => {
+    // isOwnerLeakySegment('aiat-pmo-module') returns 'CP6' (NOT carved out) —
+    // proves the in-process CP6 guard still bites for retained slugs.
+    expect(resolveRepoNamespace({ vaultName: 'aiat-pmo-module' })).toBe('redacted-repo');
   });
 
   it('CP1: personal home path "/Users/bernhardg/x" is redacted to "redacted-repo"', () => {
@@ -109,6 +120,40 @@ describe('resolveRepoNamespace — owner-privacy leak redaction', () => {
   it('CP10: personal Projects path "~/Projects/Bernhard" is redacted to "redacted-repo"', () => {
     // isOwnerLeakySegment('~/Projects/Bernhard') returns 'CP10'
     expect(resolveRepoNamespace({ vaultName: '~/Projects/Bernhard' })).toBe('redacted-repo');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAULT_CLEAR_SLUGS carve-out (issue #59, owner decision 2026-07-18)
+//
+// These 5 slugs stay in the tracked-file scanner's PRIVATE_SLUGS (public-mirror
+// leak guard is UNCHANGED) but are cleared for in-process vault namespacing, so
+// resolveRepoNamespace returns each slug's own namespace instead of collapsing
+// to the shared 'redacted-repo' bucket. Values are hardcoded literals verified
+// empirically against resolveRepoNamespace (see isOwnerLeakySegment).
+// ---------------------------------------------------------------------------
+
+describe('resolveRepoNamespace — VAULT_CLEAR_SLUGS carve-out (#59)', () => {
+  it('carved slug "buchhaltgenie" resolves to its own namespace (not redacted)', () => {
+    expect(resolveRepoNamespace({ vaultName: 'buchhaltgenie' })).toBe('buchhaltgenie');
+  });
+
+  it('carved slug "mail-assistant" resolves to its own namespace (not redacted)', () => {
+    expect(resolveRepoNamespace({ vaultName: 'mail-assistant' })).toBe('mail-assistant');
+  });
+
+  it('carved slug "wien-forschungsfragen-klima" resolves to its own namespace (not redacted)', () => {
+    expect(resolveRepoNamespace({ vaultName: 'wien-forschungsfragen-klima' })).toBe('wien-forschungsfragen-klima');
+  });
+
+  it('carved slug "launchpad-ai-factory" resolves to its own namespace (not redacted)', () => {
+    // Flipped from the pre-#59 redaction pin: launchpad-ai-factory is now carved out.
+    expect(resolveRepoNamespace({ vaultName: 'launchpad-ai-factory' })).toBe('launchpad-ai-factory');
+  });
+
+  it('carved slug "AngebotsChecker" resolves to its lowercased slug (not redacted)', () => {
+    // subjectToSlug lowercases the clean value once it is no longer CP6-leaky.
+    expect(resolveRepoNamespace({ vaultName: 'AngebotsChecker' })).toBe('angebotschecker');
   });
 });
 

@@ -43,13 +43,13 @@ function identityResolver({ vaultName }) {
  * Resolver that maps known vault names to short slugs;
  * throws for unknowns so misfires are detected.
  * 'session-orchestrator' → 'session-orchestrator'
- * 'BuchhaltGenie' / 'buchhaltgenie' → 'redacted-repo'
+ * 'aiat-pmo-module' → 'redacted-repo' (a RETAINED CP6 slug post-#59 carve-out —
+ *   the real resolveRepoNamespace still fires CP6 for it, so this mock is faithful)
  */
 function mappingResolver({ vaultName }) {
   const table = {
     'session-orchestrator': 'session-orchestrator',
-    buchhaltgenie: 'redacted-repo',
-    BuchhaltGenie: 'redacted-repo',
+    'aiat-pmo-module': 'redacted-repo',
     'foo-repo': 'foo-repo',
     'my-slug': 'my-slug',
   };
@@ -264,11 +264,14 @@ describe('namespaceForSession — repo: field', () => {
     expect(result.source).toBe('repo');
   });
 
-  it('repo with private CP6 slug (BuchhaltGenie) → resolver returns "redacted-repo"', () => {
-    // The REAL resolver (resolveRepoNamespace) would fire CP6 guard.
+  it('repo with private CP6 slug (aiat-pmo-module) → resolver returns "redacted-repo"', () => {
+    // The REAL resolver (resolveRepoNamespace) would fire the CP6 guard for
+    // aiat-pmo-module — a RETAINED slug after the #59 VAULT_CLEAR_SLUGS carve-out
+    // (buchhaltgenie/etc. now resolve to their own namespace in-process, so a
+    // retained slug is required to keep this comment faithful).
     // We simulate it here with the mapping resolver for unit isolation.
     _setResolverForTest(mappingResolver);
-    const result = namespaceForSession({ repo: 'products/BuchhaltGenie' });
+    const result = namespaceForSession({ repo: 'products/aiat-pmo-module' });
     expect(result.namespace).toBe('redacted-repo');
     expect(result.source).toBe('repo');
   });

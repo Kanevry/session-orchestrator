@@ -35,7 +35,12 @@ import os from 'node:os';
 // #661: the scanner now exports its canonicalization helpers; the script is
 // import-guarded (the top-level scan + process.exit only run when invoked as the
 // CLI entry point), so importing these does NOT trigger a scan.
-import { canonicalizeLine, matchOwnerPath } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
+import {
+  canonicalizeLine,
+  matchOwnerPath,
+  isOwnerLeakySegment,
+  VAULT_CLEAR_SLUGS,
+} from '../../../scripts/lib/validate/check-owner-leakage.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -1333,5 +1338,119 @@ describe('CP11: confidential-name leak (host-local list)', () => {
     });
     expect(result.status).toBe(0);
     expect(countOccurrences(result.stdout, 'CP11')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAULT_CLEAR_SLUGS carve-out — in-process guard vs tracked-file scan (#59)
+//
+// The SPLIT (owner decision 2026-07-18): five slugs are cleared for use as an
+// IN-PROCESS vault-namespace segment (isOwnerLeakySegment returns null) while
+// STILL being blocked from leaking into TRACKED public-mirror files (runScan /
+// the CLI still exits 1). isOwnerLeakySegment returns null when clean, or the
+// pattern id string ('CP1'|'CP6'|'CP10') when leaky — asserted on that shape.
+// ---------------------------------------------------------------------------
+describe('VAULT_CLEAR_SLUGS carve-out — isOwnerLeakySegment (in-process guard)', () => {
+  it('carved-out slug "buchhaltgenie" is NOT owner-leaky in-process (returns null)', () => {
+    expect(isOwnerLeakySegment('buchhaltgenie')).toBe(null);
+  });
+
+  it('retained slug "aiat-pmo-module" IS still owner-leaky in-process (returns "CP6")', () => {
+    // Proves the in-process CP6 guard still bites for the non-carved slugs — the
+    // carve-out did not blanket-disable CP6.
+    expect(isOwnerLeakySegment('aiat-pmo-module')).toBe('CP6');
+    expect(isOwnerLeakySegment('Codex-Hackathon')).toBe('CP6');
+  });
+
+  it('carve-out is case-insensitive (BuchhaltGenie / MAIL-ASSISTANT → null)', () => {
+    expect(isOwnerLeakySegment('BuchhaltGenie')).toBe(null);
+    expect(isOwnerLeakySegment('MAIL-ASSISTANT')).toBe(null);
+    expect(isOwnerLeakySegment('AngebotsChecker')).toBe(null);
+  });
+
+  it('all five VAULT_CLEAR_SLUGS members are cleared in-process', () => {
+    // VAULT_CLEAR_SLUGS values are lowercased; each must be non-leaky in-process.
+    for (const slug of VAULT_CLEAR_SLUGS) {
+      expect(isOwnerLeakySegment(slug)).toBe(null);
+    }
+    expect(VAULT_CLEAR_SLUGS.size).toBe(5);
+  });
+});
+
+describe('VAULT_CLEAR_SLUGS carve-out — tracked-file scanner UNCHANGED (#59 split proof)', () => {
+  it('a carved-out slug ("mail-assistant") in a TRACKED file STILL fails the CLI scan (exit 1)', () => {
+    // The load-bearing proof that the carve-out did NOT leak into runScan: the
+    // public-mirror guard must still block every one of the 7 PRIVATE_SLUGS.
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'Deploy notes for mail-assistant service.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, 'CP6')).toBeGreaterThan(0);
+  });
+
+  it('another carved-out slug ("launchpad-ai-factory") in a TRACKED file STILL fails the CLI scan (exit 1)', () => {
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'notes.md'), 'See launchpad-ai-factory for the epic.\n');
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(1);
+    expect(countOccurrences(result.stdout, 'CP6')).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subset invariant: VAULT_CLEAR_SLUGS ⊆ PRIVATE_SLUGS
+//
+// PRIVATE_SLUGS itself is not exported from the scanner module (it is the
+// CLOSED, audit-reviewed source list — see the module's own "list is CLOSED"
+// comment), so this invariant is checked WITHOUT importing it: the
+// tracked-file CLI scan's CP6 rule is built DIRECTLY from PRIVATE_SLUGS
+// (`CP6_PATTERNS = PRIVATE_SLUGS.map(...)`), so "does the CLI flag this slug
+// as CP6 when planted in a tracked file" is ground truth for "is this slug a
+// member of PRIVATE_SLUGS" — the same CLI harness every other test in this
+// file already relies on.
+//
+// Why this matters: `isOwnerLeakySegment(slug) === null` (asserted elsewhere
+// in the "carved-out slug is NOT owner-leaky in-process" tests) is
+// TAUTOLOGICAL for a typo'd/dead VAULT_CLEAR_SLUGS entry — ANY string that
+// was never in PRIVATE_SLUGS ALSO returns null from isOwnerLeakySegment, so a
+// bogus carve-out entry (e.g. "buchhaltgeni" instead of "buchhaltgenie")
+// would silently pass review with zero test failure. This test instead
+// asserts the actual SUBSET RELATIONSHIP the carve-out promises (#59): every
+// VAULT_CLEAR_SLUGS member must be a REAL PRIVATE_SLUGS entry, i.e. the
+// tracked-file scanner must still catch it as CP6. No slug value is
+// hardcoded here — the loop drives entirely off the exported VAULT_CLEAR_SLUGS
+// set, so the test survives future legitimate edits to either list.
+// ---------------------------------------------------------------------------
+
+describe('Subset invariant: VAULT_CLEAR_SLUGS ⊆ PRIVATE_SLUGS (#59)', () => {
+  it('every VAULT_CLEAR_SLUGS entry is a real PRIVATE_SLUGS member — CP6 still catches it in a tracked file', () => {
+    for (const slug of VAULT_CLEAR_SLUGS) {
+      const root = makeTmpRepo((r) => {
+        writeFileSync(join(r, 'membership-check.md'), `Reference to ${slug} here.\n`);
+      });
+      const result = runCheck(root);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('CP6');
+    }
+  });
+
+  // Fake-regression demonstration (per PSA-006 / testing.md negative-assertion
+  // discipline): a slug that was NEVER added to PRIVATE_SLUGS is NOT caught by
+  // CP6 — proving that if a typo'd/dead entry were ever (accidentally) added to
+  // the real VAULT_CLEAR_SLUGS export, the primary loop above would fail at
+  // that exact slug (status !== 1 / no 'CP6' in stdout) instead of passing
+  // tautologically. This is the same invariant-check logic as the primary
+  // assertion, run against a synthetic value known to be OUTSIDE PRIVATE_SLUGS,
+  // rather than a permanent mutation of VAULT_CLEAR_SLUGS itself.
+  it('fake-regression control: a bogus slug NOT in PRIVATE_SLUGS is NOT flagged — the invariant check has teeth', () => {
+    const bogusSlug = 'totally-bogus-slug-never-in-private-slugs-xyz';
+    const root = makeTmpRepo((r) => {
+      writeFileSync(join(r, 'bogus-membership-check.md'), `Reference to ${bogusSlug} here.\n`);
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(countOccurrences(result.stdout, 'CP6')).toBe(0);
   });
 });

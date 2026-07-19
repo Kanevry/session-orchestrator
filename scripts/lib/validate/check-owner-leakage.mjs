@@ -27,7 +27,12 @@
  *   CP3  private events domain `events.gotzendorfer.at`
  *   CP4  private package scope `@goetzendorfer/…`
  *   CP5  DEFAULT_GITLAB_HOST on line with 'gotzendorfer' OR as exported const
- *   CP6  private project slugs (see PRIVATE_SLUGS constant below)
+ *   CP6  private project slugs (see PRIVATE_SLUGS constant below). Two scopes:
+ *        the tracked-file scan (runScan) uses the FULL 7-slug PRIVATE_SLUGS list;
+ *        the in-process vault-namespace guard (isOwnerLeakySegment) uses the
+ *        narrower CP6_INPROCESS_PATTERNS — PRIVATE_SLUGS minus VAULT_CLEAR_SLUGS,
+ *        leaving only 2 retained slugs. See the VAULT_CLEAR_SLUGS carve-out
+ *        (issue #59 owner decision 2026-07-18).
  *   CP7  catch-all `gotzendorfer.at` not matching an allowlisted exclusion
  *   CP8  full RFC1918 private dotted-quad (10.x.x.x / 192.168.x.x / 172.16-31.x.x)
  *        — internal IP leak. Placeholder `.x` forms and CIDR/range notation are NOT
@@ -109,6 +114,28 @@ const PRIVATE_SLUGS = [
   'aiat-pmo-module',
   'mail-assistant',
 ];
+
+// ---------------------------------------------------------------------------
+// VAULT_CLEAR_SLUGS carve-out (issue #59, owner decision 2026-07-18)
+// ---------------------------------------------------------------------------
+//
+// Slugs that must STILL be blocked from leaking into TRACKED public-mirror files
+// (so they remain in PRIVATE_SLUGS / CP6_PATTERNS, which runScan uses) but are
+// CLEARED for use as an IN-PROCESS vault-namespace segment — the vault is a
+// host-local, gitignored corpus, so collapsing these to the shared 'redacted-repo'
+// bucket needlessly de-isolates per-repo notes without any public-leak benefit.
+// isOwnerLeakySegment iterates the narrower CP6_INPROCESS_PATTERNS (PRIVATE_SLUGS
+// minus these), so a carved-out slug resolves to its own namespace while the
+// tracked-file scanner is UNCHANGED. Comparison is case-insensitive: values are
+// lowercased here and every CP6_INPROCESS_PATTERNS filter lowercases before
+// membership test.
+export const VAULT_CLEAR_SLUGS = new Set([
+  'buchhaltgenie',
+  'mail-assistant',
+  'wien-forschungsfragen-klima',
+  'launchpad-ai-factory',
+  'angebotschecker',
+]);
 
 // ---------------------------------------------------------------------------
 // Canonicalization (issue #661)
@@ -384,8 +411,25 @@ const CP4 = /@goetzendorfer\/[A-Za-z0-9*_-]+/;
 const CP5_WITH_GOTZ = /DEFAULT_GITLAB_HOST/;
 const CP5_EXPORT = /\bexport\b.*\bconst\b.*\bDEFAULT_GITLAB_HOST\b/;
 
-/** CP6: private project slugs (word-boundary anchored, case-insensitive — #483 W4-Q6 caught "Buchhaltgenie" capitalized) */
+/**
+ * CP6 (tracked-file scan): private project slugs (word-boundary anchored,
+ * case-insensitive — #483 W4-Q6 caught "Buchhaltgenie" capitalized).
+ * The FULL 7-slug list — runScan uses this so the public-mirror guard is UNCHANGED.
+ */
 const CP6_PATTERNS = PRIVATE_SLUGS.map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`, 'i'));
+
+/**
+ * CP6 (in-process vault-namespace guard): PRIVATE_SLUGS minus VAULT_CLEAR_SLUGS
+ * (issue #59 owner decision 2026-07-18). isOwnerLeakySegment iterates THIS list,
+ * so carved-out slugs resolve to their own vault namespace instead of collapsing
+ * to 'redacted-repo', while the tracked-file scanner (CP6_PATTERNS) still blocks
+ * all 7 from leaking into the public mirror. Effectively only the 2 retained
+ * slugs (Codex-Hackathon, aiat-pmo-module). Case-insensitive: filter lowercases
+ * before the VAULT_CLEAR_SLUGS membership test, matching the 'i'-flag regex.
+ */
+const CP6_INPROCESS_PATTERNS = PRIVATE_SLUGS
+  .filter((slug) => !VAULT_CLEAR_SLUGS.has(slug.toLowerCase()))
+  .map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`, 'i'));
 
 /** CP7: catch-all gotzendorfer.at (must not match allowlist) */
 const CP7 = /gotzendorfer\.at/;
@@ -910,6 +954,12 @@ process.exit(failed === 0 ? 0 : 1);
  * Projects path) checks against the raw value. Returns the matched pattern id
  * string or null when clean.
  *
+ * CP6 here uses the NARROWER CP6_INPROCESS_PATTERNS (PRIVATE_SLUGS minus
+ * VAULT_CLEAR_SLUGS — issue #59 owner decision 2026-07-18), so carved-out slugs
+ * (buchhaltgenie, mail-assistant, wien-forschungsfragen-klima, launchpad-ai-factory,
+ * angebotschecker) resolve to their own vault namespace here while the tracked-file
+ * scanner (runScan, full CP6_PATTERNS) still blocks them from the public mirror.
+ *
  * This is the single source of truth for in-process leak detection — do NOT
  * reimplement these pattern checks outside this module. The `namespace.mjs`
  * resolver uses this to guard vault path segments before any filesystem write.
@@ -930,8 +980,10 @@ export function isOwnerLeakySegment(value) {
   // segment would otherwise slip through into a committed vault path (#660 Q3-LOW-1).
   if (/^[bB][eE][rR][nN][hH][aA][rR][dD][gG][a-z]*$/.test(value)) return 'CP1';
 
-  // CP6: private project slugs (word-boundary, case-insensitive).
-  for (const re of CP6_PATTERNS) {
+  // CP6: private project slugs (word-boundary, case-insensitive). In-process
+  // guard uses the VAULT_CLEAR_SLUGS-carved list, NOT the full CP6_PATTERNS the
+  // tracked-file scanner uses (issue #59).
+  for (const re of CP6_INPROCESS_PATTERNS) {
     if (re.test(value)) return 'CP6';
   }
 
