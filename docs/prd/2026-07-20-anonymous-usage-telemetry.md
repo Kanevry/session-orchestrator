@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-20
 **Author:** Bernhard + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Approved (plan-session 2026-07-20)
+**Epic:** #841 (S1–S9: #842–#850)
 **Appetite:** 2w (Medium Batch)
 **Parent Project:** session-orchestrator
 
