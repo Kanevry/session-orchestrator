@@ -26,6 +26,8 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { filterRealSessions } from '../session-schema.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -132,6 +134,18 @@ function mean(values) {
  * whose autopilot_run_id matches a known run). For the skeleton it is used
  * only as a non-emptiness signal.
  *
+ * Abandoned-session filtering (#834): `sessions` is filtered to REAL (non-
+ * phantom) records via `filterRealSessions()` before bucketing. Phantom
+ * `status: 'abandoned'` stubs are legitimate DATA but not legitimate SIGNAL —
+ * they must not inflate `n_manual`/`n_autopilot` or dilute the
+ * completion/carryover averages. See `scripts/lib/session-schema/filters.mjs`.
+ *
+ * Mode resolution (#834): `mode` is a LEGACY alias for the canonical
+ * `session_type` field (`session-schema/constants.mjs` `SESSION_KEY_ALIASES`).
+ * `session_type` is read first; `mode` is a fallback for legacy records that
+ * predate the rename (production ledgers overwhelmingly carry `session_type`,
+ * not `mode` — reading `mode` alone left this analyzer largely inert).
+ *
  * @param {Array} autopilotRuns
  * @param {Array} sessions
  * @returns {Map<string, {n_manual:number, n_autopilot:number,
@@ -141,6 +155,9 @@ function mean(values) {
 export function groupByMode(autopilotRuns, sessions) {
   const out = new Map();
   if (!Array.isArray(sessions) || sessions.length === 0) return out;
+
+  const realSessions = filterRealSessions(sessions);
+  if (realSessions.length === 0) return out;
 
   // Optional: known autopilot_run_id set for stricter pairing. Empty set means
   // accept any session with a non-empty autopilot_run_id field.
@@ -156,9 +173,14 @@ export function groupByMode(autopilotRuns, sessions) {
 
   // Bucket: mode → {manual: [], autopilot: []}
   const buckets = new Map();
-  for (const s of sessions) {
+  for (const s of realSessions) {
     if (!s || typeof s !== 'object') continue;
-    const mode = typeof s.mode === 'string' ? s.mode : null;
+    const mode =
+      typeof s.session_type === 'string'
+        ? s.session_type
+        : typeof s.mode === 'string'
+          ? s.mode
+          : null;
     if (!mode) continue;
     const apId = typeof s.autopilot_run_id === 'string' ? s.autopilot_run_id : null;
     const isAutopilot =

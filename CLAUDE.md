@@ -52,7 +52,7 @@ vault-integration:
   enabled: true
   vault-dir: ~/Projects/vault    # host-local override: SO_VAULT_DIR > owner.yaml paths.vault-dir > this default (#653)
   mode: warn               # strict | warn | off
-  vault-name:              # optional (#660) — overrides git-derived repo slug for per-project vault namespacing; null/absent → deriveRepo()
+  vault-name:              # optional (#660) — overrides git-derived repo slug for 40-learnings/, 50-sessions/ (namespace.mjs) and the per-repo narrative mirror (narrative-mirror.mjs, #832 item 2); board rows NOT yet covered (tracked in #832); null/absent → deriveRepo()
 docs-orchestrator:
   enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
   audiences: [user, dev, vault]

@@ -69,3 +69,4 @@ export { ValidationError, validateSession } from './session-schema/validator.mjs
 export { normalizeSession } from './session-schema/normalizer.mjs';
 export { clampTimestampsMonotonic } from './session-schema/timestamps.mjs';
 export { aliasLegacyEndedAt } from './session-schema/aliases.mjs';
+export { isRealSession, filterRealSessions, tailRealSessions } from './session-schema/filters.mjs';

@@ -489,13 +489,6 @@ export async function mirrorNarrative(opts) {
     return { action: 'skipped-vault-disabled' };
   }
 
-  // Defense-in-depth: when the caller omits (or passes an empty) `repo`, derive
-  // it from the repoRoot basename rather than mis-filing the narrative under the
-  // 'unknown' slug. A missing repo name must never silently mis-file (#675 review).
-  const repoName = (typeof repo === 'string' && repo.trim().length > 0)
-    ? repo
-    : path.basename(path.resolve(repoRoot));
-
   // Read Session Config (CLAUDE.md / AGENTS.md) and resolve vault settings.
   let config;
   try {
@@ -509,6 +502,19 @@ export async function mirrorNarrative(opts) {
   if (!vaultIntegration || vaultIntegration.enabled !== true) {
     return { action: 'skipped-vault-disabled' };
   }
+
+  // Defense-in-depth: when the caller omits (or passes an empty) `repo`, derive
+  // it from the operator-configured `vault-name` override (#660/#832) when set,
+  // else the repoRoot basename — never silently mis-file under 'unknown' (#675
+  // review). Precedence: explicit `repo` opt > `vault-name` > basename.
+  const vaultNameOverride =
+    typeof vaultIntegration['vault-name'] === 'string' && vaultIntegration['vault-name'].trim()
+      ? vaultIntegration['vault-name'].trim()
+      : null;
+  const repoName = (typeof repo === 'string' && repo.trim().length > 0)
+    ? repo
+    : vaultNameOverride ?? path.basename(path.resolve(repoRoot));
+
   const rawVaultDir = vaultIntegration['vault-dir'];
   if (!rawVaultDir || typeof rawVaultDir !== 'string') {
     return { action: 'skipped-vault-disabled' };

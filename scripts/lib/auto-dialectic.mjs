@@ -22,6 +22,8 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { filterRealSessions } from './session-schema.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -121,13 +123,20 @@ export async function readDialecticSignals({ repoRoot } = {}) {
     try {
       const raw = await readFile(sessionsPath, 'utf8');
       const lines = raw.split('\n').filter((l) => l.length > 0);
+      const entries = [];
       for (const line of lines) {
-        let entry;
         try {
-          entry = JSON.parse(line);
+          entries.push(JSON.parse(line));
         } catch {
           continue; // malformed line — skip silently
         }
+      }
+      // Abandoned-session filter (#834): mirrors auto-dream.mjs
+      // readDreamSignals() — phantom `status: 'abandoned'` stubs are
+      // legitimate DATA but not legitimate SIGNAL, and must not fire the
+      // /evolve --dialectic cadence off zero real work.
+      const realEntries = filterRealSessions(entries);
+      for (const entry of realEntries) {
         const startedAt = entry.started_at;
         if (typeof startedAt !== 'string' || startedAt.length === 0) continue;
         if (lastRunAt === null || startedAt > lastRunAt) {

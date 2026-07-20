@@ -80,6 +80,33 @@ function makeSession(sessionType, completionRate = 0.8) {
   });
 }
 
+/**
+ * Session JSONL line with an explicit session_id and optional status (#834 —
+ * abandoned-phantom filtering tests need to identify individual records by id
+ * and control their status independently of makeSession()'s random id).
+ */
+function makeSessionWithId(sessionId, status) {
+  const record = {
+    session_id: sessionId,
+    session_type: 'feature',
+    started_at: '2026-04-25T08:00:00Z',
+    completed_at: '2026-04-25T09:00:00Z',
+    total_waves: 3,
+    waves: [
+      { wave: 1, role: 'impl' },
+      { wave: 2, role: 'test' },
+      { wave: 3, role: 'review' },
+    ],
+    agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
+    total_agents: 2,
+    total_files_changed: 5,
+    completion_rate: 0.8,
+    schema_version: 1,
+  };
+  if (status !== undefined) record.status = status;
+  return JSON.stringify(record);
+}
+
 /** Bootstrap lock content. */
 const LOCK_CONTENTS = `# bootstrap.lock
 version: 1
@@ -520,6 +547,91 @@ describe('defaults and options', () => {
     });
 
     expect(capturedOpts.limit).toBe(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #834 — abandoned-phantom filtering: sessionTailN means "last N REAL
+// sessions", not "last N LINES". Fake-regression-verified (see PR/commit
+// notes) against the pre-fix `lines.slice(-sessionTailN)` behaviour.
+// ---------------------------------------------------------------------------
+
+describe('#834 — sessionTailN excludes abandoned phantom sessions', () => {
+  it('fake-regression: a trailing block of phantoms does not evict real sessions from the window', async () => {
+    // 15 lines total: 7 real, then 8 trailing phantoms — mirrors the shape
+    // that caused the bug (a slice(-N) window landing entirely on stubs).
+    const lines = [];
+    for (let i = 1; i <= 7; i++) lines.push(makeSessionWithId(`real-${i}`));
+    for (let i = 1; i <= 8; i++) lines.push(makeSessionWithId(`phantom-${i}`, 'abandoned'));
+    const sessionsPath = writeFixture('sessions.jsonl', lines.join('\n'));
+
+    const signals = await buildLiveSignals({
+      statePath: sandboxPath('.claude/STATE.md'),
+      sessionsPath,
+      lockPath: sandboxPath('bootstrap.lock'),
+      sessionTailN: 10,
+      _scanBacklog: nullScanBacklog,
+    });
+
+    // Only 7 real sessions exist in the whole file — the window must contain
+    // exactly those 7, by session_id, and none of the 8 phantoms.
+    expect(signals.recentSessions.map((s) => s.session_id)).toEqual([
+      'real-1', 'real-2', 'real-3', 'real-4', 'real-5', 'real-6', 'real-7',
+    ]);
+  });
+
+  it('interleaved phantoms: the window reaches further back to fill N real sessions', async () => {
+    // Fixed, hand-verified interleaving (not generated via the same modulo
+    // logic the assertion would need to reproduce — see testing.md "Tautological
+    // Computation" anti-pattern). Real sessions in file order: real-1..real-10.
+    const specs = [
+      ['phantom-0', 'abandoned'],
+      ['real-1', undefined],
+      ['real-2', undefined],
+      ['phantom-3', 'abandoned'],
+      ['real-3', undefined],
+      ['real-4', undefined],
+      ['phantom-6', 'abandoned'],
+      ['real-5', undefined],
+      ['real-6', undefined],
+      ['phantom-9', 'abandoned'],
+      ['real-7', undefined],
+      ['real-8', undefined],
+      ['phantom-12', 'abandoned'],
+      ['real-9', undefined],
+      ['real-10', undefined],
+    ];
+    const lines = specs.map(([id, status]) => makeSessionWithId(id, status));
+    const sessionsPath = writeFixture('sessions.jsonl', lines.join('\n'));
+
+    const signals = await buildLiveSignals({
+      statePath: sandboxPath('.claude/STATE.md'),
+      sessionsPath,
+      lockPath: sandboxPath('bootstrap.lock'),
+      sessionTailN: 5,
+      _scanBacklog: nullScanBacklog,
+    });
+
+    // Last 5 of the 10 real sessions, reaching back past 5 interleaved phantoms.
+    expect(signals.recentSessions.map((s) => s.session_id)).toEqual([
+      'real-6', 'real-7', 'real-8', 'real-9', 'real-10',
+    ]);
+  });
+
+  it('all-abandoned ledger yields an empty window without throwing', async () => {
+    const lines = Array.from({ length: 6 }, (_, i) => makeSessionWithId(`phantom-${i}`, 'abandoned'));
+    const sessionsPath = writeFixture('sessions.jsonl', lines.join('\n'));
+
+    const signals = await buildLiveSignals({
+      statePath: sandboxPath('.claude/STATE.md'),
+      sessionsPath,
+      lockPath: sandboxPath('bootstrap.lock'),
+      sessionTailN: 10,
+      _scanBacklog: nullScanBacklog,
+    });
+
+    expect(signals.recentSessions).toEqual([]);
+    expect(Array.isArray(signals.recentSessions)).toBe(true);
   });
 });
 

@@ -337,6 +337,86 @@ describe('sweepBoard happy path', () => {
 });
 
 // ===========================================================================
+// sweepBoard — two-level host topology (issue #832)
+// ===========================================================================
+
+describe('sweepBoard — two-level <org>/<repo> topology (#832)', () => {
+  it('renders a dead lease in a 2-level-deep repo as force-closed (end-to-end #676/#716 gap closure)', async () => {
+    // The real host topology is ~/Projects/<org>/<repo>. Pre-#832
+    // enumerateCandidates scanned only immediate children, so a crashed session
+    // in ANY 2-level-deep repo never got re-derived — its row stayed
+    // in-progress forever. This is the end-to-end proof that it now flips.
+    const { hostDir, vaultDir, sandbox } = scaffold();
+
+    // hostDir/<org>/<repo> — one level deeper than every other test here.
+    const orgDir = join(hostDir, 'org');
+    mkdirSync(orgDir, { recursive: true });
+    const deadLock = buildLockBody({
+      sessionId: 'deep-dead-sess', ttlHours: 4, heartbeatAgeHours: 5, now: FIXED_NOW,
+    });
+    makeCandidateRepo(orgDir, 'deep-dead-repo', deadLock);
+
+    const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
+      vaultDir,
+      lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = readBoardRows(vaultDir);
+    const deepRow = rows.find((r) => r.repo === 'deep-dead-repo');
+    expect(deepRow).toEqual({
+      repo: 'deep-dead-repo',
+      status: 'force-closed',
+      session: 'deep-dead-sess',
+      branch: null,
+      mode: 'deep',
+      heartbeat: '2026-06-18T07:00:00.000Z',
+    });
+  });
+
+  it('sweeps a depth-1 and a depth-2 repo in the same pass', async () => {
+    const { hostDir, vaultDir, sandbox } = scaffold();
+
+    makeCandidateRepo(hostDir, 'shallow-live-repo', buildLockBody({
+      sessionId: 'shallow-sess', heartbeatAgeHours: 0, now: FIXED_NOW,
+    }));
+
+    const orgDir = join(hostDir, 'org');
+    mkdirSync(orgDir, { recursive: true });
+    makeCandidateRepo(orgDir, 'nested-live-repo', buildLockBody({
+      sessionId: 'nested-sess', heartbeatAgeHours: 0, now: FIXED_NOW,
+    }));
+
+    const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
+      vaultDir,
+      lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = readBoardRows(vaultDir);
+    const byRepo = Object.fromEntries(rows.map((r) => [r.repo, r]));
+    expect(byRepo['shallow-live-repo']?.status).toBe('in-progress');
+    expect(byRepo['nested-live-repo']?.status).toBe('in-progress');
+  });
+});
+
+// ===========================================================================
 // sweepBoard — idempotent merge: frei exclusion preserves prior rows
 // ===========================================================================
 

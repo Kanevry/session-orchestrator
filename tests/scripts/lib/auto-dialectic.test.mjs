@@ -271,6 +271,47 @@ describe('readDialecticSignals', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #834 — abandoned phantom stubs excluded from cadence counting
+// ---------------------------------------------------------------------------
+// Mirrors tests/lib/auto-dream.test.mjs's #834 coverage exactly: sessions.jsonl
+// carries phantom `status: 'abandoned'` stubs (session-close backfill records
+// for sessions that ended without a real close). A burst of abandoned stubs
+// must not fire /evolve --dialectic off zero real work.
+
+describe('readDialecticSignals — #834: abandoned phantom stubs excluded from cadence count', () => {
+  it('5 abandoned phantoms + 2 real sessions since last run: sessionsSinceLast counts only the 2 real sessions', async () => {
+    const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      status: 'abandoned',
+      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+    }));
+    const real = [
+      { started_at: '2026-06-10T08:00:00Z' },
+      { started_at: '2026-06-11T08:00:00Z' },
+    ];
+    const { repoRoot } = makeFakeRepo({ sessions: [...abandoned, ...real] });
+    const result = await readDialecticSignals({ repoRoot });
+    expect(result.sessionsSinceLast).toBe(2);
+  });
+});
+
+describe('shouldDispatchAutoDialectic — #834: cadence must not fire off abandoned phantom stubs', () => {
+  it('5 abandoned + 2 real sessions (7 raw lines), cadence=5: does NOT trigger (today it would, on 7 total)', async () => {
+    const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      status: 'abandoned',
+      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+    }));
+    const real = [
+      { started_at: '2026-06-10T08:00:00Z' },
+      { started_at: '2026-06-11T08:00:00Z' },
+    ];
+    const { repoRoot } = makeFakeRepo({ sessions: [...abandoned, ...real] });
+    const result = await shouldDispatchAutoDialectic({ repoRoot, cadence: 5 });
+    expect(result.trigger).toBe(false);
+    expect(result.signals.sessionsSinceLast).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // shouldDispatchAutoDialectic — decision branches
 // ---------------------------------------------------------------------------
 

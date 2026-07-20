@@ -223,6 +223,11 @@ function readinessConfidence(autopilotSummary, judgmentSummary, score) {
 /**
  * Summarize autopilot run history plus type-8 mode effectiveness rollups.
  *
+ * Abandoned-session filtering (#834): `sessions` is passed straight through
+ * to `groupByMode()`, which filters phantom `status: 'abandoned'` stubs
+ * before bucketing — this function inherits that guarantee transitively and
+ * does not duplicate the filter. See `autopilot-effectiveness.mjs` `groupByMode()`.
+ *
  * @param {Array} autopilotRuns
  * @param {Array} sessions
  * @returns {object}

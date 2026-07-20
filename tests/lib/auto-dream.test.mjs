@@ -133,6 +133,49 @@ describe('readDreamSignals', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #834 — abandoned phantom stubs excluded from cadence counting
+// ---------------------------------------------------------------------------
+// sessions.jsonl carries phantom `status: 'abandoned'` stubs (session-close
+// backfill records for sessions that ended without a real close). A burst of
+// abandoned stubs must not fire /memory-cleanup off zero real work.
+
+describe('readDreamSignals — #834: abandoned phantom stubs excluded from cadence count', () => {
+  it('5 abandoned phantoms + 2 real sessions since last cleanup: sessionsSinceCleanup counts only the 2 real sessions', async () => {
+    const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      status: 'abandoned',
+      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+    }));
+    const real = [
+      { started_at: '2026-06-10T08:00:00Z' },
+      { started_at: '2026-06-11T08:00:00Z' },
+    ];
+    const { repoRoot, memoryDir } = makeFakeRepo({ sessions: [...abandoned, ...real] });
+    const signals = await readDreamSignals({ repoRoot, memoryDir });
+    expect(signals.sessionsSinceCleanup).toBe(2);
+  });
+});
+
+describe('shouldDispatchAutoDream — #834: cadence must not fire off abandoned phantom stubs', () => {
+  it('5 abandoned + 2 real sessions (7 raw lines), threshold=5: does NOT trigger (today it would, on 7 total)', async () => {
+    const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      status: 'abandoned',
+      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+    }));
+    const real = [
+      { started_at: '2026-06-10T08:00:00Z' },
+      { started_at: '2026-06-11T08:00:00Z' },
+    ];
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      memoryLines: 10,
+      sessions: [...abandoned, ...real],
+    });
+    const result = await shouldDispatchAutoDream({ repoRoot, memoryDir, threshold: 5, softLimit: 180 });
+    expect(result.trigger).toBe(false);
+    expect(result.signals.sessionsSinceCleanup).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // shouldDispatchAutoDream — decision rules
 // ---------------------------------------------------------------------------
 

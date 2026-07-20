@@ -426,15 +426,23 @@ describe('mirrorNarrative', () => {
     tmpBase = undefined;
   });
 
-  /** Create a temp repo + sibling vault dir under os.tmpdir() and return the paths. */
-  function scaffold({ repoDirName, vaultEnabled = true, withStateMd = true } = {}) {
+  /**
+   * Create a temp repo + sibling vault dir under os.tmpdir() and return the paths.
+   *
+   * `vaultName` (#832 item 2), when a string, is injected as a `vault-name:`
+   * sub-key line inside the `vault-integration:` block VERBATIM (no quoting) —
+   * pass an already-YAML-safe value. Omit (undefined) to leave the key absent,
+   * matching today's config shape (regression baseline for bb26964).
+   */
+  function scaffold({ repoDirName, vaultEnabled = true, withStateMd = true, vaultName } = {}) {
     tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'narrative-mirror-'));
     const repoRoot = path.join(tmpBase, repoDirName);
     const vaultDir = path.join(tmpBase, 'vault');
     fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
 
+    const vaultNameLine = typeof vaultName === 'string' ? `  vault-name: ${vaultName}\n` : '';
     const vaultBlock = vaultEnabled
-      ? `vault-integration:\n  enabled: true\n  vault-dir: ${vaultDir}\n  mode: warn\n`
+      ? `vault-integration:\n  enabled: true\n  vault-dir: ${vaultDir}\n  mode: warn\n${vaultNameLine}`
       : 'persistence: true\n';
     fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), `# Repo\n\n## Session Config\n\n${vaultBlock}`);
 
@@ -612,6 +620,100 @@ describe('mirrorNarrative', () => {
 
       expect(result.action).toBe('written');
       expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorferv2'));
+    });
+  });
+
+  // =========================================================================
+  // mirrorNarrative — vault-name override honoured (issue #832 item 2)
+  //
+  // Finding: `vault-integration.vault-name` (#660) already carries the exact
+  // semantic issue #832 asked for under a new key — it just wasn't READ here.
+  // namespace.mjs already honours it for 40-learnings/ and 50-sessions/; this
+  // closes the gap for the narrative mirror. Precedence: explicit `repo` opt >
+  // `vault-name` > repoRoot basename.
+  // =========================================================================
+
+  describe('vault-name override (#832 item 2)', () => {
+    it('FAKE-REGRESSION (mandatory): a drifted-suffix repo directory resolves to the configured vault-name, not the raw basename', async () => {
+      // basename(repoRoot) = 'widget-tracker-app' — a TRUE rename (suffix drop),
+      // not a case/punctuation variant, so resolveLooseSlug's own loose-match
+      // (bb26964) cannot bridge this gap by itself; only the vault-name
+      // override can produce 'widget-tracker' here.
+      const { repoRoot, vaultDir } = scaffold({
+        repoDirName: 'widget-tracker-app',
+        vaultName: 'widget-tracker',
+      });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'widget-tracker'));
+      expect(result.path).not.toContain('widget-tracker-app');
+    });
+
+    it('precedence: an explicit `repo` opt still wins over a configured vault-name', async () => {
+      const { repoRoot, vaultDir } = scaffold({
+        repoDirName: 'basename-repo',
+        vaultName: 'configured-name',
+      });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'explicit-repo',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'explicit-repo'));
+    });
+
+    it('regression guard (bb26964): absent vault-name leaves basename + loose-match behaviour unchanged', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'gotzendorfer-repo-novault' });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'gotzendorfer-v2'), { recursive: true });
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'GotzendorferV2',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'gotzendorfer-v2'));
+    });
+
+    it('treats an empty-string vault-name as unset, falling back to the basename', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'empty-vault-name-repo', vaultName: '' });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'empty-vault-name-repo'));
+    });
+
+    it('treats a whitespace-only quoted vault-name as unset (not as an empty slug), falling back to the basename', async () => {
+      // Written by hand (not via scaffold) because this needs a QUOTED value —
+      // `vault-name: "   "` — to survive the config parser's own unquoted-value
+      // trim (which would otherwise collapse bare whitespace to '' upstream,
+      // testing the parser's null-coercion rather than this module's own
+      // `.trim()` defense on a genuinely non-null, whitespace-only string).
+      tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'narrative-mirror-'));
+      const repoRoot = path.join(tmpBase, 'whitespace-vault-name-repo');
+      const vaultDir = path.join(tmpBase, 'vault');
+      fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repoRoot, 'CLAUDE.md'),
+        '# Repo\n\n## Session Config\n\nvault-integration:\n' +
+          `  enabled: true\n  vault-dir: ${vaultDir}\n  mode: warn\n  vault-name: "   "\n`,
+      );
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        '---\nsession-id: main-x\n---\n\n## Wave History\n\n### Wave 1\n\n- did a thing.\n',
+      );
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'whitespace-vault-name-repo'));
     });
   });
 });

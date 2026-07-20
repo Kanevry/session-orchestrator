@@ -427,6 +427,39 @@ describe('autonomy-verdict — positive control: the happy path still reaches re
   });
 });
 
+// ---------------------------------------------------------------------------
+// #834 — abandoned-session filtering is inherited transitively from
+// autopilot-effectiveness.mjs groupByMode(). summarizeAutopilot() passes
+// `sessions` straight through to groupByMode() without re-reading `mode`/
+// `session_type` or `status` itself, so this file does NOT duplicate the
+// filter — this regression test locks the inheritance instead.
+// ---------------------------------------------------------------------------
+
+describe('autonomy-verdict — #834: abandoned-session filtering inherited from groupByMode()', () => {
+  it('20 manual + 20 autopilot real sessions + 15 abandoned phantoms: summarizeAutopilot() rollups are unaffected by phantoms', () => {
+    const runs = Array.from({ length: 20 }, (_, i) => makeRun(`r${i}`));
+    const manual = Array.from({ length: 20 }, () => makeSession({ completion: 0.7, carryover: 0.2 }));
+    const autopilot = runs.map((r) =>
+      makeSession({ autopilotRunId: r.autopilot_run_id, completion: 0.9, carryover: 0.1 }),
+    );
+    const phantoms = Array.from({ length: 15 }, () => ({
+      status: 'abandoned',
+      mode: 'feature',
+      completion_rate: 0,
+      carryover_ratio: 1,
+    }));
+
+    const summary = summarizeAutopilot(runs, [...manual, ...autopilot, ...phantoms]);
+
+    expect(summary.n_autopilot_sessions).toBe(20);
+    expect(summary.modes).toHaveLength(1);
+    expect(summary.modes[0].n_manual).toBe(20);
+    expect(summary.modes[0].n_autopilot).toBe(20);
+    expect(summary.completion_rate_manual).toBe(0.7);
+    expect(summary.completion_rate_autopilot).toBe(0.9);
+  });
+});
+
 describe('autonomy-verdict — readinessConfidence() exact value (R4)', () => {
   it('pins the exact confidence for a fixed autopilot/skill-judge input pair', () => {
     // Hand-crafted summaries (not derived from summarizeAutopilot/

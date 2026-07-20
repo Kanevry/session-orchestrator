@@ -224,3 +224,110 @@ describe('autopilot-effectiveness — buildLearning() smoke', () => {
     expect(rec.created_at).toBe(NOW_ISO);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #834 — abandoned-session filtering + session_type/mode coupling
+// ---------------------------------------------------------------------------
+//
+// sessions.jsonl carries phantom `status: 'abandoned'` stubs (session-close
+// backfill records for sessions that ended without a real close — 0 waves,
+// seconds of runtime). They are legitimate DATA but not legitimate SIGNAL:
+// they must not inflate n_manual/n_autopilot or dilute the completion/
+// carryover averages. Fixture below uses `session_type` (the CANONICAL field
+// per session-schema/constants.mjs SESSION_KEY_ALIASES — `mode` is a legacy
+// alias) to also lock the coupled fix: groupByMode() must read session_type
+// first, falling back to `mode` only for legacy-only records.
+
+function makeCanonicalSession({
+  mode = 'feature',
+  autopilotRunId = null,
+  completion = 0.8,
+  carryover = 0.1,
+} = {}) {
+  const s = {
+    session_type: mode,
+    completion_rate: completion,
+    carryover_ratio: carryover,
+  };
+  if (autopilotRunId) s.autopilot_run_id = autopilotRunId;
+  return s;
+}
+
+function makeAbandonedPhantom() {
+  // Shape mirrors a real session-close-backfill stub: carries a session_type
+  // field too, so an unfiltered reader would happily bucket it.
+  return {
+    status: 'abandoned',
+    session_type: 'feature',
+    completion_rate: 0,
+    carryover_ratio: 1,
+  };
+}
+
+describe('autopilot-effectiveness — #834: abandoned-session filtering', () => {
+  it('20 manual + 20 autopilot real sessions + 15 abandoned phantoms: counters and evidence are unaffected by phantoms', () => {
+    const runs = Array.from({ length: 20 }, (_, i) => makeRun(`r${i}`));
+    const manual = Array.from({ length: 20 }, () =>
+      makeCanonicalSession({ mode: 'feature', completion: 0.7, carryover: 0.2 }),
+    );
+    const autopilot = runs.map((r) =>
+      makeCanonicalSession({
+        mode: 'feature',
+        autopilotRunId: r.autopilot_run_id,
+        completion: 0.85,
+        carryover: 0.1,
+      }),
+    );
+    const phantoms = Array.from({ length: 15 }, () => makeAbandonedPhantom());
+
+    const out = analyze(runs, [...manual, ...autopilot, ...phantoms], { now: NOW_ISO });
+
+    expect(out).toHaveLength(1);
+    expect(out[0].evidence.n_manual).toBe(20);
+    expect(out[0].evidence.n_autopilot).toBe(20);
+    expect(out[0].evidence.completion_rate_manual).toBe(0.7);
+    expect(out[0].evidence.completion_rate_autopilot).toBe(0.85);
+    expect(out[0].evidence.carryover_ratio_manual).toBe(0.2);
+    expect(out[0].evidence.carryover_ratio_autopilot).toBe(0.1);
+  });
+
+  it('groupByMode() drops abandoned records entirely (0 contribution to either variant)', () => {
+    const runs = [makeRun('r1')];
+    const sessions = [
+      makeCanonicalSession({ mode: 'feature' }),
+      makeCanonicalSession({ mode: 'feature', autopilotRunId: 'r1' }),
+      { status: 'abandoned', session_type: 'feature' },
+      { status: 'abandoned', session_type: 'feature', autopilot_run_id: 'r1' },
+    ];
+    const map = groupByMode(runs, sessions);
+    const feat = map.get('feature');
+    expect(feat.n_manual).toBe(1);
+    expect(feat.n_autopilot).toBe(1);
+  });
+});
+
+describe('autopilot-effectiveness — #834: session_type is canonical, mode is the legacy fallback', () => {
+  it('reads session_type as the primary mode key', () => {
+    const sessions = [
+      { session_type: 'deep', completion_rate: 0.9, carryover_ratio: 0.05 },
+      { session_type: 'deep', completion_rate: 0.8, carryover_ratio: 0.15 },
+    ];
+    const map = groupByMode([], sessions);
+    expect(map.has('deep')).toBe(true);
+    expect(map.get('deep').n_manual).toBe(2);
+  });
+
+  it('falls back to the legacy mode key when session_type is absent', () => {
+    const sessions = [{ mode: 'housekeeping', completion_rate: 0.6, carryover_ratio: 0.3 }];
+    const map = groupByMode([], sessions);
+    expect(map.has('housekeeping')).toBe(true);
+    expect(map.get('housekeeping').n_manual).toBe(1);
+  });
+
+  it('prefers session_type over mode when both are present on the same record', () => {
+    const sessions = [{ session_type: 'deep', mode: 'feature', completion_rate: 0.5, carryover_ratio: 0.5 }];
+    const map = groupByMode([], sessions);
+    expect(map.has('deep')).toBe(true);
+    expect(map.has('feature')).toBe(false);
+  });
+});

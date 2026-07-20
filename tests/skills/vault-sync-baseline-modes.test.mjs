@@ -227,6 +227,56 @@ describe('vault-sync validator — mode=full vs hard backward compatibility', ()
     expect(data.mode).toBe('full');
   });
 
+  // ── #835: `strict` is a CLI alias for `hard` ───────────────────────────────
+  // scripts/lib/config-schema.mjs VAULT_MODE_VALUES is {strict, warn, off}, so
+  // a caller forwarding the CONFIGURED value verbatim used to hit exit 2
+  // ("invalid --mode value"). The CLI now accepts it and normalizes to 'hard'
+  // at parse time — the config schema is deliberately unchanged.
+
+  it('--mode strict exits 1 on a vault WITH errors — i.e. it truly enforces like hard', () => {
+    const vault = makeVault();
+    const { stdout, exitCode } = runValidator(vault, ['--mode', 'strict']);
+
+    expect(exitCode).toBe(1);
+    const data = JSON.parse(stdout);
+    expect(data.status).toBe('invalid');
+    // Normalized at parse time: exactly one internal value flows downstream.
+    expect(data.mode).toBe('hard');
+  });
+
+  it('--mode strict exits 0 on a CLEAN vault', () => {
+    const vault = mkdtempSync(join(tmpdir(), 'vsb-strict-clean-'));
+    tmpDirs.push(vault);
+    mkdirSync(join(vault, '_meta'), { recursive: true });
+    writeFileSync(join(vault, 'good.md'), GOOD_NOTE, 'utf8');
+
+    const { stdout, exitCode } = runValidator(vault, ['--mode', 'strict']);
+
+    expect(exitCode).toBe(0);
+    const data = JSON.parse(stdout);
+    expect(data.status).toBe('ok');
+    expect(data.errors).toEqual([]);
+  });
+
+  it('--mode=strict (equals form) matches --mode=hard exit code and status', () => {
+    const vault = makeVault();
+    const { stdout: strictOut, exitCode: strictExit } = runValidator(vault, ['--mode=strict']);
+    const { stdout: hardOut, exitCode: hardExit } = runValidator(vault, ['--mode=hard']);
+
+    expect(strictExit).toBe(hardExit);
+    expect(JSON.parse(strictOut).status).toBe(JSON.parse(hardOut).status);
+    expect(JSON.parse(strictOut).mode).toBe('hard');
+  });
+
+  it('an unknown --mode value still exits 2 and lists strict among the accepted values', () => {
+    const vault = makeVault();
+    const { stderr, exitCode } = runValidator(vault, ['--mode', 'bogus']);
+
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('invalid --mode value');
+    expect(stderr).toContain('hard|strict|warn|off|baseline|diff|full');
+  });
+
   it('bare invocation (no --mode) defaults to hard — same exit code and status as full on errors', () => {
     const vault = makeVault();
     const { stdout: bareOut, exitCode: bareExit } = runValidator(vault);

@@ -884,6 +884,89 @@ describe('mirrorBoard — hostPaths forwarding (load-bearing, #783 falsification
 });
 
 // ===========================================================================
+// mirrorBoard — vault-name override on the single-repo descriptor (#832)
+// ===========================================================================
+
+describe('mirrorBoard — vault-name override (#832)', () => {
+  /** Same as makeThisRepoConfig, plus a `vault-name:` key in the config block. */
+  function makeThisRepoConfigWithVaultName(name, vaultDir, vaultName) {
+    const repoRoot = join(sandbox, name);
+    mkdirSync(repoRoot, { recursive: true });
+    writeFileSync(
+      join(repoRoot, 'CLAUDE.md'),
+      `# Repo\n\n## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ${vaultDir}\n  vault-name: ${vaultName}\n  mode: warn\n`,
+    );
+    return repoRoot;
+  }
+
+  it('honours vault-name for the single-repo default descriptor instead of the directory basename', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    // Directory basename and configured vault-name deliberately differ.
+    const thisRepoRoot = makeThisRepoConfigWithVaultName(
+      'this-repo-dirname', vaultDir, 'configured-vault-name',
+    );
+
+    // No `repos` arg → mirrorBoard builds the single-repo default descriptor,
+    // which is the code path that previously ignored vault-name entirely.
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      explicitStatus: 'closed',
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    expect(rows.map((r) => r.repo)).toEqual(['configured-vault-name']);
+    // Falsification: the pre-#832 fallback rendered path.basename(repoRoot).
+    expect(rows.map((r) => r.repo)).not.toContain('this-repo-dirname');
+  });
+
+  it('falls back to the directory basename when vault-name is absent', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-no-vault-name', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      explicitStatus: 'closed',
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    expect(rows.map((r) => r.repo)).toEqual(['this-repo-no-vault-name']);
+  });
+
+  it('an explicit repos array still wins — its own repoName is not overwritten by vault-name', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const thisRepoRoot = makeThisRepoConfigWithVaultName(
+      'this-repo-explicit-list', vaultDir, 'configured-vault-name',
+    );
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot, repoName: 'caller-supplied-name', status: 'closed' }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    expect(rows.map((r) => r.repo)).toEqual(['caller-supplied-name']);
+  });
+});
+
+// ===========================================================================
 // mirrorBoard — TTL-staleness re-derivation on PRESERVED rows (issue #829
 // Finding 2, also self-heals Finding 1 leftovers)
 // ===========================================================================

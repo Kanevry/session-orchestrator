@@ -479,7 +479,11 @@ export function writeBoard(opts) {
  * @param {object} opts
  * @param {string} opts.repoRoot — the repo whose row is being updated.
  * @param {Array<{ repoRoot: string, repoName?: string, status?: string }>} [opts.repos]
- *   Full repo list; defaults to `[{ repoRoot, status: explicitStatus }]`.
+ *   Full repo list; defaults to a single-repo descriptor
+ *   `[{ repoRoot, repoName: <vault-name override>, status: explicitStatus }]`
+ *   where `repoName` comes from Session Config `vault-integration.vault-name`
+ *   (#660) and is `undefined` when unset — in which case {@link collectRows}
+ *   falls back to `path.basename(repoRoot)` as before.
  * @param {string} [opts.explicitStatus] — per-repo status override ('closed' from session-end).
  * @param {Date} [opts.now]
  * @param {boolean} [opts.dryRun]
@@ -524,9 +528,20 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
     return { action: 'skipped-vault-disabled' };
   }
 
+  // `vault-name` (#660) overrides the git-derived repo slug for per-project
+  // vault namespacing. Honour it for the single-repo default descriptor too —
+  // without it `collectRows` falls back to `path.basename(repoRoot)`, so a repo
+  // whose directory name differs from its configured vault name rendered under
+  // the wrong board row. An explicit `repos` array is left untouched: its
+  // entries carry their own `repoName` and are the caller's responsibility.
+  const vaultName = vault['vault-name'];
+  const repoNameOverride = typeof vaultName === 'string' && vaultName.length > 0
+    ? vaultName
+    : undefined;
+
   const repoList = Array.isArray(repos) && repos.length > 0
     ? repos
-    : [{ repoRoot, status: explicitStatus }];
+    : [{ repoRoot, repoName: repoNameOverride, status: explicitStatus }];
 
   const outputPath = resolveBoardPath(vaultDir);
 
@@ -696,9 +711,11 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  *       {@link mirrorBoard}'s idempotent merge, never dropped.
  *   (c) The enumerate + collectRows path is synchronous fs (readdirSync /
  *       existsSync / readLock per candidate) — O(repos) small reads, single-digit
- *       ms at host scale (~31 repos observed). No timeout is applied: a sync
- *       call cannot be preempted in-process, so a timeout would only convert a
- *       slow sweep into a thrown error, not a faster one.
+ *       ms at host scale (45 repos, ~0.9-1.9ms warm measured 2026-07-19 at the
+ *       default walk depth of 2; pre-#832's depth-1 scan saw only 1 of 47). No
+ *       timeout is applied: a sync call cannot be preempted in-process, so a
+ *       timeout would only convert a slow sweep into a thrown error, not a
+ *       faster one.
  *   (d) Merge key is `repoName` (`path.basename`), case-insensitively folded via
  *       {@link foldKey} (issue #719) — two rows differing only by case (e.g.
  *       `some-repo` vs `Some-Repo`, the same physical directory on a
@@ -712,6 +729,15 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  *       a basename (case-insensitively) still collapse to one row — that
  *       remains a known limitation, inherited from {@link collectRows}/
  *       {@link mirrorBoard}; not addressed here.
+ *
+ *       This limitation got materially WORSE with the depth-2 walk (#832):
+ *       under the old depth-1 scan, `<org-a>/<name>` and `<org-b>/<name>` were
+ *       both un-enumerable, so they could not collide. Both are now enumerated
+ *       and fold to a single row. Two such basename collisions were measured on
+ *       the reference host immediately after the change (same repo name under
+ *       two different org directories). Fixing this requires re-keying rows on
+ *       something path-derived rather than `path.basename` — deliberately out
+ *       of scope for #832 and tracked as a follow-up.
  *
  * Best-effort contract: `sweepBoard` itself never throws for an enumeration
  * failure — `enumerateCandidates` is wrapped in try/catch; on ANY failure the

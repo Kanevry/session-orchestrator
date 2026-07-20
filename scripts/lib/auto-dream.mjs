@@ -25,6 +25,8 @@ import { existsSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { filterRealSessions } from './session-schema.mjs';
+
 // ---------------------------------------------------------------------------
 // Signal reader — MEMORY.md size + sessions-since-last-cleanup
 // ---------------------------------------------------------------------------
@@ -74,8 +76,16 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
       }
     }
 
-    // Find the most recent memory_cleanup_at timestamp across all entries.
-    for (const entry of entries) {
+    // Abandoned-session filter (#834): sessions.jsonl carries phantom
+    // `status: 'abandoned'` stubs (session-close-backfill records for
+    // sessions that ended without a real close). They are legitimate DATA
+    // but not legitimate SIGNAL — a burst of abandoned stubs must not fire
+    // /memory-cleanup off zero real work. filterRealSessions() is the
+    // shared, tested implementation (scripts/lib/session-schema/filters.mjs).
+    const realEntries = filterRealSessions(entries);
+
+    // Find the most recent memory_cleanup_at timestamp across all REAL entries.
+    for (const entry of realEntries) {
       const ts = entry.memory_cleanup_at;
       if (typeof ts === 'string' && ts.length > 0) {
         if (lastCleanupAt === null || ts > lastCleanupAt) {
@@ -84,11 +94,12 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
       }
     }
 
-    // Count entries newer than the last cleanup (or total when no cleanup ever ran).
+    // Count REAL entries newer than the last cleanup (or total REAL entries
+    // when no cleanup ever ran).
     if (lastCleanupAt === null) {
-      sessionsSinceCleanup = entries.length;
+      sessionsSinceCleanup = realEntries.length;
     } else {
-      for (const entry of entries) {
+      for (const entry of realEntries) {
         const startedAt = entry.started_at;
         if (typeof startedAt === 'string' && startedAt > lastCleanupAt) {
           sessionsSinceCleanup += 1;

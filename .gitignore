@@ -123,3 +123,6 @@ pnpm-lock.yaml
 
 # Scratch-Kopien rekonstruierter PRDs (pre-sanitization Drafts) — nie committen (#784-Kontext, R3-Security-Finding 2026-07-08)
 docs/prd/*.original-uncommitted.md
+
+# Serena MCP local project state (host-local, never committed)
+.serena/

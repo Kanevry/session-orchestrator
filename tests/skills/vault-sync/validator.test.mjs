@@ -32,6 +32,8 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const VALIDATOR_MJS = join(REPO_ROOT, 'skills/vault-sync/validator.mjs');
 const VALIDATOR_CWD = join(REPO_ROOT, 'skills/vault-sync');
 const FIXTURES = join(REPO_ROOT, 'skills/vault-sync/tests/fixtures');
+/** Fixtures owned by this vitest file (co-located, not shared with the bats suite). */
+const LOCAL_FIXTURES = join(__dirname, 'fixtures');
 
 function runValidator(fixtureDir, extraArgs = [], env = {}) {
   return spawnSync('node', [VALIDATOR_MJS, ...extraArgs], {
@@ -221,6 +223,229 @@ describe('edge cases', () => {
     const parsed = JSON.parse(result.stdout);
     expect(parsed.files_checked).toBe(1);
     expect(parsed.errors.length).toBe(0);
+  });
+});
+
+// ── Link-target register vs check-set (#833) ─────────────────────────────────
+//
+// EXCLUDED_DIRS (walk-level) and CHECK_EXCLUDED_TOP_DIRS (validation-level) are
+// deliberately separate sets. Archived notes are WALKED (so they can resolve as
+// wiki-link targets) but never CHECKED (so their frontmatter cannot block a
+// close). These tests pin both halves plus the register's new key sources.
+
+describe('link-target register (#833)', () => {
+  const archiveLinkVault = join(LOCAL_FIXTURES, 'archive-link-vault');
+
+  /**
+   * FAKE-REGRESSION GUARD. Verified to go RED when '90-archive' is put back
+   * into EXCLUDED_DIRS in skills/vault-sync/validator.mjs — see the session
+   * report for the observed transcript. The link in live-note.md is a BARE
+   * basename on purpose: a pathed [[90-archive/archived-note]] resolves via the
+   * existsSync candidate branch regardless of the register, which would make
+   * this assertion vacuously green.
+   */
+  it('a live note linking [[archived-note]] by bare basename produces NO dangling warning', () => {
+    const result = runValidator(archiveLinkVault);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
+  });
+
+  it('archived notes are still excluded from CHECKING (counted, not validated)', () => {
+    const result = runValidator(archiveLinkVault);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    // Only live-note.md is checked; the archived note is skipped and counted.
+    expect(parsed.files_checked).toBe(1);
+    expect(parsed.archived_skipped_count).toBe(1);
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('archived notes with INVALID frontmatter produce no error entry', () => {
+    // archive-test-vault/90-archive/bad-archived.md has type: memo + bogus dates.
+    const result = runValidator(join(FIXTURES, 'archive-test-vault'));
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.errors.filter((e) => e.file && e.file.includes('bad-archived'))).toEqual([]);
+    expect(parsed.archived_skipped_count).toBe(1);
+  });
+
+  it('archived_skipped_count does NOT overload excluded_count (glob-matched files only)', () => {
+    const result = runValidator(archiveLinkVault);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.excluded_count).toBe(0);
+    expect(parsed.archived_skipped_count).toBe(1);
+  });
+
+  it('archive-only vault: exits 0 with status "ok" and files_checked 0', () => {
+    // Edge: before #833 an archive-only vault produced mdFiles.length === 0 →
+    // status "skipped". Archived notes are now walked, so the run proceeds.
+    const dir = mkdtempSync(join(tmpdir(), 'vault-archive-only-'));
+    mkdirSync(join(dir, '_meta'), { recursive: true });
+    mkdirSync(join(dir, '90-archive'), { recursive: true });
+    writeFileSync(
+      join(dir, '90-archive', 'only-note.md'),
+      '---\nid: only-note\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\n---\n\nBody.\n',
+      'utf8',
+    );
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.files_checked).toBe(0);
+    expect(parsed.archived_skipped_count).toBe(1);
+  });
+});
+
+describe('link-target register — id and aliases keys (#833)', () => {
+  /**
+   * Builds a two-note vault: a target note whose FILENAME deliberately differs
+   * from the register key under test, and a source note linking that key.
+   */
+  function makeRegisterVault(targetFrontmatter, linkTarget, targetFilename = 'zzz-unrelated-filename.md') {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-register-'));
+    mkdirSync(join(dir, '_meta'), { recursive: true });
+    writeFileSync(join(dir, targetFilename), `---\n${targetFrontmatter}\n---\n\nTarget body.\n`, 'utf8');
+    writeFileSync(
+      join(dir, 'source.md'),
+      `---\nid: source\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\n---\n\nSee [[${linkTarget}]].\n`,
+      'utf8',
+    );
+    return dir;
+  }
+
+  function danglingOf(result) {
+    return JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+  }
+
+  it('frontmatter `id` resolves a link when no file of that basename exists', () => {
+    const dir = makeRegisterVault(
+      'id: canonical-id\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19',
+      'canonical-id',
+    );
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    expect(danglingOf(result)).toEqual([]);
+  });
+
+  it('frontmatter `aliases` entry resolves a link', () => {
+    const dir = makeRegisterVault(
+      'id: alias-target\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\naliases:\n  - Some Alias\n  - second-alias',
+      'second-alias',
+    );
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    expect(danglingOf(result)).toEqual([]);
+  });
+
+  it('a still-unknown link target remains dangling (register does not resolve everything)', () => {
+    const dir = makeRegisterVault(
+      'id: canonical-id\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19',
+      'no-such-target',
+    );
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling).toHaveLength(1);
+    expect(dangling[0].message).toContain('[[no-such-target]]');
+  });
+
+  it('a scalar-string `aliases` does not crash the validator — JSON stays well-formed', () => {
+    // `aliases: not-an-array` violates the Zod array schema (→ an error entry)
+    // but MUST NOT throw out of the register build in pass 1.
+    const dir = makeRegisterVault(
+      'id: scalar-alias\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\naliases: not-an-array',
+      'scalar-alias',
+    );
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    // Exit 1 because the schema rejects the scalar — but the run completed.
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe('invalid');
+    expect(parsed.errors.some((e) => e.path === 'aliases')).toBe(true);
+    // The `id` key still registered, so the link resolved.
+    expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
+  });
+});
+
+describe('link-target register — case-insensitive NFC keys (#833)', () => {
+  function makeVault(files) {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-case-'));
+    mkdirSync(join(dir, '_meta'), { recursive: true });
+    for (const [relPath, content] of Object.entries(files)) {
+      const abs = join(dir, relPath);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, 'utf8');
+    }
+    return dir;
+  }
+
+  const note = (id, body = '') =>
+    `---\nid: ${id}\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\n---\n\n${body}\n`;
+
+  /**
+   * Target note whose key under test lives in `aliases`, NOT in its filename.
+   *
+   * Case parity CANNOT be tested via filenames on this host: APFS is both
+   * case-insensitive and normalization-insensitive, so resolveWikiLink's
+   * existsSync candidate branch resolves `[[some-TOPIC]]` against `Some-Topic.md`
+   * (and an NFD link against an NFC file) BEFORE the register is ever consulted
+   * — such a test is vacuously green even with a case-sensitive register.
+   * Verified empirically: existsSync('<tmp>/some-TOPIC.md') === true for a file
+   * written as 'Some-Topic.md'. Routing the key through `aliases` on an
+   * unrelated filename makes the register the only possible resolution path.
+   */
+  const aliasTarget = (alias) =>
+    `---\nid: alias-target\ntype: note\ncreated: 2026-07-19\nupdated: 2026-07-19\naliases:\n  - ${alias}\n---\n\nTarget.\n`;
+
+  it('resolves a link whose case differs from the registered alias key', () => {
+    const dir = makeVault({
+      'zzz-unrelated-filename.md': aliasTarget('Some-Topic'),
+      'source.md': note('source', 'See [[some-TOPIC]].'),
+    });
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+    expect(dangling).toEqual([]);
+  });
+
+  it('resolves an NFD-composed umlaut link against an NFC-registered key (German corpus)', () => {
+    // 'Übung' composed (NFC, U+00DC) in the register vs decomposed
+    // (NFD, U+0055 U+0308) in the link body.
+    const nfc = 'Übung'.normalize('NFC');
+    const nfd = 'Übung'.normalize('NFD');
+    expect(nfc).not.toBe(nfd); // guard: the pair really differs code-point-wise
+    const dir = makeVault({
+      'zzz-umlaut-filename.md': aliasTarget(nfc),
+      'source.md': note('source', `See [[${nfd}]].`),
+    });
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+    expect(dangling).toEqual([]);
+  });
+
+  it('case-collision across subdirs (Topic.md + topic.md) does not regress link resolution', () => {
+    // fileIndex values are arrays, so a lowercased-key collision merely appends.
+    const dir = makeVault({
+      'a/Topic.md': note('topic-upper'),
+      'b/topic.md': note('topic-lower'),
+      'source.md': note('source', 'See [[Topic]].'),
+    });
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
+    expect(parsed.files_checked).toBe(3);
+    expect(parsed.errors).toEqual([]);
   });
 });
 

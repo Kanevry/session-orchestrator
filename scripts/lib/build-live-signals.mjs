@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseStateMd, parseRecommendations } from './state-md.mjs';
-import { normalizeSession } from './session-schema.mjs';
+import { normalizeSession, tailRealSessions } from './session-schema.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 import { scanBacklog } from './backlog-scan.mjs';
 
@@ -98,9 +98,12 @@ export async function buildLiveSignals(opts = {}) {
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l.length > 0);
-      const tail = lines.slice(-sessionTailN);
+      // #834: parse ALL lines (not just the naive last-N) before windowing —
+      // `status: 'abandoned'` phantom stubs must be filtered out BEFORE the
+      // tail is taken, or sessionTailN silently means "last N LINES" instead
+      // of "last N REAL sessions". tailRealSessions() does the filter + tail.
       const parsed = [];
-      for (const line of tail) {
+      for (const line of lines) {
         try {
           const obj = JSON.parse(line);
           parsed.push(normalizeSession(obj));
@@ -108,7 +111,7 @@ export async function buildLiveSignals(opts = {}) {
           // Branch 4: skip malformed lines silently
         }
       }
-      recentSessions = parsed;
+      recentSessions = tailRealSessions(parsed, sessionTailN);
     }
   } catch {
     // Branch 3: file unreadable — recentSessions stays []
