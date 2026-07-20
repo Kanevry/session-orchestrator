@@ -212,6 +212,8 @@ export function buildBatch({
  * @param {string} [opts.statePath]        telemetry.json path override.
  * @param {string} [opts.queuePath]        queue path override.
  * @param {string} [opts.now]              ISO timestamp (sent_at, last_flush_at, rotation clock).
+ * @param {object} [opts.ownerConfig]      Parsed owner.yaml (default: loaded here). Inject to
+ *                                         isolate a test from the host's real owner.yaml fleet flag.
  * @returns {Promise<{ sent: boolean, queued: boolean, state: string, reason: string }>}
  */
 export async function flush({
@@ -222,12 +224,18 @@ export async function flush({
   statePath,
   queuePath,
   now,
+  ownerConfig,
 } = {}) {
+  // Resolve owner.yaml once (injectable for hermetic tests). loadOwnerConfig reads the host's
+  // real owner.yaml — a test asserting "consent absent" MUST inject {} or a real fleet flag
+  // (telemetry.enabled: true) legitimately flips send=true.
+  const cfg = ownerConfig ?? loadOwnerConfig().config;
+
   // OUTERMOST SEAM — the consent gate is the FIRST statement. When send !== true
   // nothing below (no fetch, no queue write, no anon-ID mint) is reachable.
   const consent = resolveConsent({
     env,
-    ownerConfig: loadOwnerConfig().config,
+    ownerConfig: cfg,
     state: readTelemetryState({ path: statePath }).record,
     interactive: false,
   });
@@ -236,11 +244,10 @@ export async function flush({
   }
 
   const nowIso = now || new Date().toISOString();
-  const ownerConfig = loadOwnerConfig().config;
 
   // Build the batch (this lazily mints + persists the anon-ID — only reachable
   // here, i.e. strictly after the gate).
-  const { record, reason } = buildBatch({ metricsDir, env, ownerConfig, statePath, now: nowIso });
+  const { record, reason } = buildBatch({ metricsDir, env, ownerConfig: cfg, statePath, now: nowIso });
   if (!record) {
     return { sent: false, queued: false, state: consent.state, reason: reason || 'no-record' };
   }

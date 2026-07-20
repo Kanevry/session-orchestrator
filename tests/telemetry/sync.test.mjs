@@ -124,11 +124,13 @@ describe('exported constants', () => {
 
 describe('flush — consent gate (outermost seam)', () => {
   it('sends nothing, queues nothing, and mints no anon_id when consent is absent', async () => {
-    // No telemetry.json on disk, no env opt-in → resolveConsent → no-consent.
+    // No telemetry.json on disk, no env opt-in, and an INJECTED empty owner.yaml
+    // (ownerConfig: {}) so the host's real owner.yaml fleet flag can never leak in —
+    // otherwise a host with telemetry.enabled: true legitimately flips this to enabled-fleet.
     seedMetrics({ invocations: [{ timestamp: NOW, skill: 'session-orchestrator:plan' }] });
     const sender = vi.fn().mockResolvedValue(undefined);
 
-    const result = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+    const result = await flush({ env: {}, ownerConfig: {}, sender, metricsDir, statePath, queuePath, now: NOW });
 
     expect(result).toEqual({ sent: false, queued: false, state: 'no-consent', reason: 'gated' });
     expect(sender).not.toHaveBeenCalled();
