@@ -209,7 +209,7 @@ What it is **not**:
 
 - **Not an official product of any agent vendor.** An independent, community-maintained project — not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Cursor, or any agent it integrates with. (It is distributed through the Claude Code plugin marketplace, but is not an Anthropic product.)
 - **Not a replacement** for Claude Code / Codex CLI / Cursor / Pi. It is a workflow layer that runs *on top of* your existing agent — you still need one of those installed.
-- **Not a hosted service.** Runs locally — no server, account, or cloud component.
+- **Local by default.** Runs locally — no account required. Optional, strictly opt-in anonymous usage telemetry (off until you consent; see [docs/telemetry.md](docs/telemetry.md)).
 - **No guarantee that telemetry numbers transfer to your repo.** Reported test counts and metrics describe *this* repository under its own conditions ([details](docs/telemetry/telemetry-claims.md)). Your results will vary by stack, project size, and configuration.
 
 ## Documentation
@@ -219,6 +219,7 @@ What it is **not**:
 - [Components & Reference](docs/components.md) — full skill/command/agent/hook inventory, repository anatomy, comparisons
 - [Plugin Architecture (v3)](docs/plugin-architecture-v3.md) — contributor guide, layering, hook anatomy, testing
 - [Migration to v3](docs/migration-v3.md) — upgrade path from v2.x, known issues, rollback
+- [Telemetry](docs/telemetry.md) — what the optional opt-in usage telemetry collects, and how to turn it off
 - [Telemetry claims](docs/telemetry/telemetry-claims.md) — how reported metrics are measured, and why they may not transfer
 - [Example Configs](docs/examples/) — Session Config examples for Next.js, Express, Swift
 - [CHANGELOG.md](CHANGELOG.md) — version history

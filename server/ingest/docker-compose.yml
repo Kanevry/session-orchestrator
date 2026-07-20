@@ -1,0 +1,61 @@
+# server/ingest/docker-compose.yml — anonymous usage-telemetry ingest server
+# (Epic #841, S6 / GitLab #847; PRD docs/prd/2026-07-20-anonymous-usage-telemetry.md
+# §2 "Deploy runbook"). Deployment procedure: docs/telemetry/deploy-runbook.md.
+#
+# Generic by design — no operator infra details (hostnames, IPs, ssh aliases)
+# live in this file. Every host-specific value is a shell-provided override at
+# `docker compose up` time; see the runbook for the exact invocation used on
+# the actual service host.
+#
+# Build-context gotcha: server/ingest/Dockerfile does `COPY server/ingest/ ...`
+# relative to the build context, so the context here MUST be the repo root
+# (two levels up from this file), not `.`.
+
+services:
+  telemetry-ingest:
+    build:
+      context: ../..
+      dockerfile: server/ingest/Dockerfile
+    container_name: telemetry-ingest
+    restart: unless-stopped
+    # HOST_IP:HOST_PORT:CONTAINER_PORT. BIND_ADDR/PORT here are COMPOSE-level
+    # substitution variables (read from the shell or a .env file next to this
+    # compose file at "docker compose up" time) — they are NOT passed into the
+    # container's own environment. The container's internal listen port stays
+    # fixed at 8787 (set via the Dockerfile's ENV PORT=8787 and matched by its
+    # HEALTHCHECK), regardless of the host-side PORT value below. Defaulting
+    # BIND_ADDR to 127.0.0.1 is a safety net for ad hoc local runs; the real
+    # deployment always sets BIND_ADDR explicitly to the private-VLAN address
+    # (see the runbook) so the service is never reachable from the public
+    # interface directly — only via the Caddy edge.
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-3300}:8787"
+    volumes:
+      # MUST resolve to a local filesystem mount, never NFS/network storage —
+      # SQLite WAL mode requires shared-memory-backed locking that network
+      # filesystems do not reliably provide. See the runbook's WAL verification
+      # step.
+      - telemetry-data:/data
+    environment:
+      NODE_ENV: production
+      SO_INGEST_DB: /data/records.db
+      # This deployment always sits behind the Caddy edge (reverse_proxy),
+      # so the left-most X-Forwarded-For hop is the real client IP for rate
+      # limiting. This matches config.mjs's own default (SO_INGEST_TRUST_PROXY
+      # defaults to "1") — set explicitly here to document the assumption.
+      SO_INGEST_TRUST_PROXY: "1"
+      # Remaining tunables all ship with sensible v1 defaults in
+      # server/ingest/config.mjs (see server/ingest/README.md § Configuration
+      # for the full table + meanings). Uncomment only to override a specific
+      # default for this deployment:
+      # SO_INGEST_BODY_CAP: "32768"
+      # SO_INGEST_RATE_WINDOW_MS: "3600000"
+      # SO_INGEST_RATE_LIMIT: "60"
+      # SO_INGEST_MAX_TRACKED_IPS: "50000"
+      # SO_INGEST_RETENTION_MONTHS: "24"
+      # SO_INGEST_RETENTION_INTERVAL_MS: "86400000"
+    # No healthcheck block here on purpose — the service inherits the
+    # Dockerfile's own HEALTHCHECK (wget against /healthz every 30s).
+
+volumes:
+  telemetry-data:

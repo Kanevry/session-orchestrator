@@ -1,5 +1,13 @@
 # Telemetry Claims — Provenance & Methodology
 
+> **Not the opt-in usage-telemetry client.** This document explains the
+> methodology behind the maintainer's **local, private** metrics aggregates
+> (`.orchestrator/metrics/*.jsonl`, gitignored by design) used in marketing
+> copy such as "645 orchestrated sessions." It is a separate data flow from
+> the plugin's optional, strictly opt-in anonymous usage-telemetry client —
+> see [docs/telemetry.md](../telemetry.md) for what that client collects,
+> its kill switches, and where the data goes.
+
 > Cross-repo aggregate over the maintainer's private session corpus as of 2026-06.
 > Not independently auditable: the per-session records this aggregate is computed
 > from are gitignored (privacy by default). This is a **snapshot, not a live

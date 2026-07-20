@@ -39,6 +39,7 @@
     ".codex-plugin/",
     ".cursor/",
     "docs/*.md",
+    "docs/telemetry/telemetry-claims.md",
     "NOTICE",
     "SECURITY.md",
     "!**/node_modules/**",

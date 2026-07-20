@@ -91,7 +91,8 @@ Two things worth knowing about this split:
 | `docs/examples/` | Living reference | Example Session Config blocks per project shape (Express API, integration test, Next.js, Swift/iOS). |
 | `docs/recipes/` | Living reference | Narrow how-to write-ups for a specific recurring pattern (e.g. the quality-gate container test-runner pattern). |
 | `docs/templates/` | Living reference | Copy-paste config snippets referenced directly by the setup guides (e.g. the `AGENTS.md` Session Config template). |
-| `docs/telemetry/` | Living reference | `telemetry-claims.md` — provenance/methodology notes for cross-repo telemetry numbers cited elsewhere in the docs. |
+| `docs/telemetry.md` (root) | Living reference | Public transparency page for the opt-in usage-telemetry client — exact field list, kill switches, consent precedence, retention. |
+| `docs/telemetry/` | Living reference | `telemetry-claims.md` — provenance/methodology notes for cross-repo telemetry numbers cited elsewhere in the docs (a separate, local-corpus data flow from the opt-in client telemetry above). |
 | `docs/adr/` | Public decision history | Architecture Decision Records — permanent, never archived, cited externally. |
 | `docs/prd/` | Active work document | PRDs of currently open epics only. Auto-archived to the Meta-Vault on epic close. |
 | `docs/plans/` | Active work document | `/write-executable-plan` artifacts for in-progress work. May not exist when nothing is mid-plan. |

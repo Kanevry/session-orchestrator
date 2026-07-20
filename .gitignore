@@ -126,3 +126,7 @@ docs/prd/*.original-uncommitted.md
 
 # Serena MCP local project state (host-local, never committed)
 .serena/
+
+# Ingest-server local SQLite DB + generated weekly digests (server/ingest/README.md;
+# Epic #841 S8 / #849) — runtime data, never committed to plugin source.
+server/ingest/data/
