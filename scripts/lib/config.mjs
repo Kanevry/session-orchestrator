@@ -8,6 +8,9 @@
  *   drift-check.mjs       — _parseDriftCheck
  *   docs-orchestrator.mjs — _parseDocsOrchestrator
  *   vault-staleness.mjs   — _parseVaultStaleness
+ *   moc-staleness.mjs     — _parseMocStaleness
+ *   context-coverage.mjs  — _parseContextCoverage
+ *   worktree-orphans.mjs  — _parseWorktreeOrphans
  *   events-rotation.mjs   — _parseEventsRotation
  *   vault-integration.mjs — _parseVaultIntegration + _parseResourceThresholds
  *
@@ -38,6 +41,9 @@ import { _parseDriftCheck } from './config/drift-check.mjs';
 import { _parseDocsOrchestrator } from './config/docs-orchestrator.mjs';
 import { _parseVaultStaleness } from './config/vault-staleness.mjs';
 import { _parseDocsStaleness } from './config/docs-staleness.mjs';
+import { _parseMocStaleness } from './config/moc-staleness.mjs';
+import { _parseContextCoverage } from './config/context-coverage.mjs';
+import { _parseWorktreeOrphans } from './config/worktree-orphans.mjs';
 import { _parseEventsRotation } from './config/events-rotation.mjs';
 import { _parseVaultIntegration, _parseResourceThresholds } from './config/vault-integration.mjs';
 import { _parseTest } from './config/test.mjs';
@@ -262,6 +268,12 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const vaultStaleness = _parseVaultStaleness(mdContent);
   // docs-staleness: parsed from full content (standalone top-level block, #781)
   const docsStaleness = _parseDocsStaleness(mdContent);
+  // moc-staleness: parsed from full content (standalone top-level block, #831/B2)
+  const mocStaleness = _parseMocStaleness(mdContent);
+  // context-coverage: parsed from full content (standalone top-level block, #831/B4)
+  const contextCoverage = _parseContextCoverage(mdContent);
+  // worktree-orphans: parsed from full content (standalone top-level block, #831/B5)
+  const worktreeOrphans = _parseWorktreeOrphans(mdContent);
 
   // events-rotation: parsed from full content (standalone top-level block)
   const eventsRotation = _parseEventsRotation(mdContent);
@@ -449,6 +461,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'docs-orchestrator': docsOrchestrator,
     'vault-staleness': vaultStaleness,
     'docs-staleness': docsStaleness,
+    'moc-staleness': mocStaleness,
+    'context-coverage': contextCoverage,
+    'worktree-orphans': worktreeOrphans,
     'events-rotation': eventsRotation,
     'test': testConfig,
     'gitlab-portfolio': gitlabPortfolio,

@@ -159,4 +159,57 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
     expect(records).toHaveLength(1);
     expect(records[0].event).toBe('stagnation_detected');
   });
+
+  // -------------------------------------------------------------------------
+  // Abandoned-stub tail eviction (#834) — the real session carrying the
+  // stagnation evidence must not be evicted from the last-3 window by 3
+  // trailing phantom abandoned stubs.
+  // -------------------------------------------------------------------------
+  it.skipIf(!HAS_JQ)('still emits when 3 trailing abandoned stubs would otherwise evict the real session from the last-3 window', () => {
+    const sessionId = 'main-2026-07-19-session-1';
+
+    // sessions.jsonl: the REAL session first, then 3 abandoned phantom stubs
+    // appended after it. A raw `tail -n 3` would return only the 3 ghosts,
+    // dropping sessionId out of LAST_SESSIONS entirely.
+    const sessionsPath = join(tmpDir, 'sessions.jsonl');
+    const sessionLines = [
+      { session_id: sessionId },
+      { session_id: 'ghost-1', status: 'abandoned' },
+      { session_id: 'ghost-2', status: 'abandoned' },
+      { session_id: 'ghost-3', status: 'abandoned' },
+    ];
+    writeFileSync(sessionsPath, sessionLines.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+
+    const targetFile = join(tmpDir, 'stagnant-module.mjs');
+    writeFileSync(targetFile, 'line 1\nline 2\n', 'utf8');
+
+    const eventsPath = join(tmpDir, 'events.jsonl');
+    const seed = {
+      timestamp: '2026-07-19T10:00:00Z',
+      event: 'stagnation_detected',
+      error_class: 'edit-format-friction',
+      session: sessionId,
+      file: targetFile,
+    };
+    writeFileSync(eventsPath, JSON.stringify(seed) + '\n', 'utf8');
+
+    const stdout = execFileSync('bash', [SCRIPT], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAX_FILES: '5',
+        EVENTS_JSONL: eventsPath,
+        SESSIONS_JSONL: sessionsPath,
+        AGENT_FILES: targetFile,
+        PERSISTENCE: 'true',
+        SESSION_ID: sessionId,
+        WAVE: '2',
+        AGENT_TYPE: 'code-implementer',
+      },
+    });
+
+    // The GROUNDING block must be printed — proves sessionId survived into
+    // LAST_SESSIONS despite the 3 trailing abandoned stubs.
+    expect(stdout).toContain(`## GROUNDING — ${targetFile}`);
+  });
 });

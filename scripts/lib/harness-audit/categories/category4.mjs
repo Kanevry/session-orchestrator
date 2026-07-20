@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
+import { isRealSession } from '../../session-schema/filters.mjs';
 
 // Default session-lock TTL in hours — mirrors DEFAULT_TTL_HOURS in
 // scripts/lib/session-lock.mjs. Inlined to keep this category stdlib-only
@@ -93,9 +94,19 @@ export function runCategory4(root) {
           { latestCompletedAt: null, ageInDays: null },
           'sessions.jsonl is empty'));
       } else {
-        const lastLine = lines[lines.length - 1];
+        // Scan backward past any trailing `status: 'abandoned'` phantom stubs
+        // (#834, session-close-backfill) to the last REAL session — otherwise a
+        // recent phantom lets a dormant repo pass a check meant to certify
+        // recent REAL engagement.
         let lastObj = null;
-        try { lastObj = JSON.parse(lastLine); } catch { /* ignore */ }
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+          let parsed = null;
+          try { parsed = JSON.parse(lines[i]); } catch { /* ignore */ }
+          if (parsed && isRealSession(parsed)) {
+            lastObj = parsed;
+            break;
+          }
+        }
         const completedAt = lastObj ? lastObj.completed_at : null;
         if (!completedAt) {
           checks.push(fail('sessions-jsonl-recent', 3, relPath,

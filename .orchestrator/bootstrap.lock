@@ -5,3 +5,5 @@ archetype: node-minimal
 timestamp: 2026-06-27T06:41:41Z
 source: retroactive
 plugin-version: 3.14.0
+refreshed-at: 2026-07-20T08:42:57.354Z
+refreshed-plugin-version: 3.16.0

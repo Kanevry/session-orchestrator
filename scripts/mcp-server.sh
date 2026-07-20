@@ -8,7 +8,8 @@ set -euo pipefail
 #   - session_config  — reads Session Config from the project instruction file
 #                       (CLAUDE.md, or AGENTS.md alias on Codex CLI — see
 #                       skills/_shared/instruction-file-resolution.md)
-#   - session_metrics — reads last 5 session metrics entries
+#   - session_metrics — reads last 5 REAL session metrics entries (#834:
+#                       abandoned phantom stubs are filtered out first)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,7 +76,7 @@ handle_tools_list() {
       },
       {
         "name": "session_metrics",
-        "description": "Reads the last 5 session metrics entries from .orchestrator/metrics/sessions.jsonl",
+        "description": "Reads the last 5 REAL session metrics entries from .orchestrator/metrics/sessions.jsonl (abandoned phantom stubs excluded)",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
       }
     ]
@@ -156,8 +157,11 @@ tool_session_metrics() {
     return
   fi
 
+  # Filter out phantom `status: 'abandoned'` stubs (#834, session-close-backfill
+  # — 0 waves, seconds of runtime) BEFORE taking the tail, so a recent phantom
+  # cannot displace real session records out of the last-5 window.
   local entries
-  entries=$(tail -n 5 "$metrics_file" 2>/dev/null) || true
+  entries=$(jq -c 'select(.status != "abandoned")' "$metrics_file" 2>/dev/null | tail -n 5) || true
 
   if [[ -z "$entries" ]]; then
     respond "$id" "$(text_content "No metrics found (file is empty)")"

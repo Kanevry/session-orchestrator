@@ -69,6 +69,21 @@ docs-staleness:
   thresholds:
     living: 90             # days — single tier; severity eskaliert bei 1×/2×/3× threshold
   mode: warn               # strict | warn | off
+moc-staleness:
+  # #831/B2 — session-start Phase 4 Banner: <vault>/08-topics/*-moc.md deren Frontmatter `updated:` älter als der Schwellwert ist. Parser-Gotcha: die moc-staleness:-Key-Zeile selbst darf KEINEN Inline-Kommentar tragen.
+  enabled: false           # opt-in
+  thresholds:
+    moc: 90                # days — Frontmatter-`updated:`-Staleness-Schwelle für *-moc.md; fehlendes/unparsbares `updated:` wird AUSGESCHLOSSEN, nicht als stale gemeldet
+  mode: warn               # warn | off
+context-coverage:
+  # #831/B4 — session-start Phase 4 Coverage-Zeile: registrierte <vault>/01-projects/*/-Ordner ohne context.md UND ohne _passive.md. "Registriert" = Ordner enthält _overview.md (Konvention aus discoverVaultRepos). Parser-Gotcha: keine Inline-Kommentare auf der Key-Zeile.
+  enabled: false           # opt-in
+  mode: warn               # warn | off
+worktree-orphans:
+  # #831/B5 — session-end Phase 4b Sweep: Worktree-Branches mit 0 Commits ahead of base. CANDIDATES ONLY — löscht nie selbst (PSA-003); die AUQ rendert der Koordinator. Parser-Gotcha: keine Inline-Kommentare auf der Key-Zeile.
+  enabled: false           # opt-in
+  base-branch: main        # Ref, gegen die der ahead-count gemessen wird
+  mode: warn               # warn | off
 drift-check:
   enabled: true            # #780 (Epic #774) — session-end Phase 2.2 Narrative-Drift-Gate; alle check-*-Flags defaulten true
   mode: warn               # warn (report, exit 0) | hard (exit 1 on errors)

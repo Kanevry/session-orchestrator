@@ -46,6 +46,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { readPeerCards } from './lib/peer-cards/reader.mjs';
+import { filterRealSessions } from './lib/session-schema/filters.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -392,7 +393,11 @@ async function readTopLearnings(repoRoot, topN) {
 }
 
 /**
- * Read and rank sessions: sort by `completed_at` DESC, take last K.
+ * Read and rank sessions: filter out phantom `status: 'abandoned'` stubs
+ * (#834, session-close-backfill), sort by `completed_at` DESC, take last K.
+ *
+ * Without the filter, phantoms (0 waves, seconds of runtime) can displace
+ * REAL session context out of the K-window the derivation prompt sees.
  *
  * @param {string} repoRoot
  * @param {number} lastK
@@ -400,7 +405,7 @@ async function readTopLearnings(repoRoot, topN) {
  */
 async function readLastSessions(repoRoot, lastK) {
   const path = join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-  const entries = await readJsonlBestEffort(path);
+  const entries = filterRealSessions(await readJsonlBestEffort(path));
   entries.sort((a, b) => {
     const ta = typeof a?.completed_at === 'string' ? a.completed_at : '';
     const tb = typeof b?.completed_at === 'string' ? b.completed_at : '';

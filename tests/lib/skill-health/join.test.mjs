@@ -17,6 +17,10 @@
  *   - duplicate session for same skill counted once in outcome aggregation
  *   - multiple skills across overlapping sessions
  *   - session with null session_id → unknown bucket
+ *   - abandoned-session join routing (#834): a session_id found in
+ *     sessions.jsonl but marked status:'abandoned' must NOT count as a plain
+ *     successful join (sessionsJoined) — it routes to a distinct
+ *     `outcomes.abandoned` / `sessionsAbandoned` bucket instead.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -65,9 +69,15 @@ function appendInv({ skill, session_id }) {
 /**
  * Append a session record to the sessions fixture.
  * agent_summary is optional — omit to simulate a session not yet in sessions.jsonl.
+ * status is optional — pass 'abandoned' to simulate a session-close-backfill
+ * phantom stub (#834).
  */
-function appendSession({ session_id, agent_summary }) {
-  const rec = { session_id, ...(agent_summary ? { agent_summary } : {}) };
+function appendSession({ session_id, agent_summary, status }) {
+  const rec = {
+    session_id,
+    ...(agent_summary ? { agent_summary } : {}),
+    ...(status ? { status } : {}),
+  };
   appendFileSync(sessPath, JSON.stringify(rec) + '\n');
 }
 
@@ -377,5 +387,67 @@ describe('agent_summary field summation', () => {
     expect(outcomes.partial).toBe(0);
     expect(outcomes.failed).toBe(0);
     expect(outcomes.spiral).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J9 — abandoned-session join routing (#834)
+// ---------------------------------------------------------------------------
+
+describe('abandoned-session join routing (#834)', () => {
+  it('an invocation pointing at an abandoned session_id is NOT counted as a plain successful join', async () => {
+    appendInv({ skill: 'discovery', session_id: 'sess-ghost' });
+    appendSession({
+      session_id: 'sess-ghost',
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      status: 'abandoned',
+    });
+
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+    // Not folded into outcomes.complete/etc, and sessionsJoined stays 0.
+    expect(result.bySkill.discovery.outcomes.complete).toBe(0);
+    expect(result.sessionsJoined).toBe(0);
+  });
+
+  it('routes the abandoned join to a distinct outcomes.abandoned bucket, not outcomes.unknown', async () => {
+    appendInv({ skill: 'discovery', session_id: 'sess-ghost' });
+    appendSession({
+      session_id: 'sess-ghost',
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      status: 'abandoned',
+    });
+
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+    expect(result.bySkill.discovery.outcomes.abandoned).toBe(1);
+    expect(result.bySkill.discovery.outcomes.unknown).toBe(0);
+  });
+
+  it('sessionsAbandoned counts the abandoned join at the top level, distinct from sessionsUnknown', async () => {
+    appendInv({ skill: 'discovery', session_id: 'sess-ghost' });
+    appendSession({
+      session_id: 'sess-ghost',
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      status: 'abandoned',
+    });
+
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+    expect(result.sessionsAbandoned).toBe(1);
+    expect(result.sessionsUnknown).toBe(0);
+  });
+
+  it('a real session (status absent) alongside an abandoned one only joins the real one', async () => {
+    appendInv({ skill: 'discovery', session_id: 'sess-real' });
+    appendInv({ skill: 'discovery', session_id: 'sess-ghost' });
+    appendSession({ session_id: 'sess-real', agent_summary: { complete: 5, partial: 0, failed: 0, spiral: 0 } });
+    appendSession({
+      session_id: 'sess-ghost',
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      status: 'abandoned',
+    });
+
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+    expect(result.bySkill.discovery.outcomes.complete).toBe(5);
+    expect(result.sessionsJoined).toBe(1);
+    expect(result.sessionsAbandoned).toBe(1);
   });
 });

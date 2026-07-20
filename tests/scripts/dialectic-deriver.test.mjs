@@ -438,6 +438,14 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     writeFileSync(join(repo, 'AGENTS.md'), body, 'utf8');
   }
 
+  /** Seed a sessions.jsonl fixture (readLastSessions input). */
+  function seedSessions(entries) {
+    const dir = join(repo, '.orchestrator', 'metrics');
+    mkdirSync(dir, { recursive: true });
+    const body = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    writeFileSync(join(dir, 'sessions.jsonl'), body, 'utf8');
+  }
+
   it('AC1: cadence trigger → dry-run returns parsed diff with model "haiku" by default', async () => {
     seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning one' }]);
 
@@ -631,5 +639,40 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     expect(newerPos).toBeGreaterThan(-1);
     expect(olderPos).toBeGreaterThan(-1);
     expect(newerPos).toBeLessThan(olderPos);
+  });
+
+  it('readLastSessions filters phantom abandoned stubs interleaved by completed_at before ranking (#834)', async () => {
+    // Two RECENT abandoned stubs would win a naive completed_at-DESC top-1
+    // window over the older REAL session — phantoms must be filtered out
+    // before ranking, not merely deprioritized.
+    seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning' }]);
+    seedSessions([
+      {
+        session_id: 'REAL-SESSION-MARKER',
+        completed_at: '2026-01-01T00:00:00Z',
+        agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+      },
+      {
+        session_id: 'GHOST-MARKER-1',
+        completed_at: '2026-06-01T00:00:00Z',
+        status: 'abandoned',
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      },
+      {
+        session_id: 'GHOST-MARKER-2',
+        completed_at: '2026-06-02T00:00:00Z',
+        status: 'abandoned',
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      },
+    ]);
+    const dispatchAgent = vi.fn().mockResolvedValue({
+      text: '```diff\n# target: user\nbody\n```',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    await runDialecticDeriver({ dispatchAgent, repoRoot: repo, lastKSessions: 1 });
+    const prompt = dispatchAgent.mock.calls[0][0].prompt;
+    expect(prompt).toContain('REAL-SESSION-MARKER');
+    expect(prompt).not.toContain('GHOST-MARKER-1');
+    expect(prompt).not.toContain('GHOST-MARKER-2');
   });
 });

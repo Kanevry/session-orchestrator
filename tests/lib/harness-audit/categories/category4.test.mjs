@@ -203,6 +203,39 @@ describe('runCategory4', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Abandoned-stub tail skip (#834) — c4.2 must scan backward to the last
+  // REAL session, not trust the raw last line.
+  // -------------------------------------------------------------------------
+  it('fails sessions-jsonl-recent when the last line is a RECENT abandoned stub but the last REAL session is > 30 days old', () => {
+    ensureDir(join(root, '.orchestrator/metrics'));
+
+    // Pinned "now" is 2026-05-09T08:00:00Z (see beforeEach).
+    // Last REAL session: 31 days ago (fails the 30-day threshold on its own).
+    const realCompletedAt = new Date('2026-04-08T08:00:00Z').toISOString();
+    // Trailing phantom stub: dated "today" — the pre-#834 bug would read only
+    // this line and report ageInDays: 0 (pass).
+    const abandonedCompletedAt = new Date('2026-05-09T07:00:00Z').toISOString();
+
+    const lines = [
+      JSON.stringify({ completed_at: realCompletedAt, session_type: 'deep' }),
+      JSON.stringify({
+        completed_at: abandonedCompletedAt,
+        session_type: 'housekeeping',
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+        status: 'abandoned',
+      }),
+    ];
+    writeFileSync(join(root, '.orchestrator/metrics/sessions.jsonl'), lines.join('\n') + '\n');
+
+    const checks = runCategory4(root);
+    const recentCheck = checks.find((c) => c.check_id === 'sessions-jsonl-recent');
+
+    expect(recentCheck.status).toBe('fail');
+    expect(recentCheck.evidence.ageInDays).toBe(31);
+    expect(recentCheck.evidence.latestCompletedAt).toBe(realCompletedAt);
+  });
+
+  // -------------------------------------------------------------------------
   // Edge case — sessions.jsonl file missing
   // -------------------------------------------------------------------------
   it('fails sessions-jsonl-recent when sessions.jsonl does not exist', () => {

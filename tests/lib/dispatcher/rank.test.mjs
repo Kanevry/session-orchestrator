@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   scoreCandidate,
@@ -6,6 +9,8 @@ import {
   defaultDeps,
   STALENESS_CAP_DAYS,
 } from '../../../scripts/lib/dispatcher/rank.mjs';
+
+const MS_PER_DAY = 86_400_000;
 
 // Deterministic clock for every rankCandidates call. Its exact value is
 // irrelevant because all signal sources are injected via deps — no dep reads
@@ -357,5 +362,56 @@ describe('defaultDeps', () => {
     expect(typeof deps.staleDaysFor).toBe('function');
     expect(typeof deps.checkCiStatus).toBe('function');
     expect(typeof deps.resourceVerdict).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultDeps().staleDaysFor — abandoned-stub tail skip (#834)
+// ---------------------------------------------------------------------------
+
+describe('defaultDeps().staleDaysFor — abandoned-stub tail skip (#834)', () => {
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'rank-stale-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  /**
+   * Fake-regression fixture: the LAST line is an abandoned stub dated "today"
+   * (nowMs), while the last REAL session is ~60 days old. Reading only the raw
+   * last line (the pre-#834 bug) would compute ~0 stale-days, making a
+   * genuinely neglected repo look freshly touched — the N=1 extreme case where
+   * one phantom stub is enough to zero out staleness and defeat the
+   * dispatcher's whole purpose.
+   */
+  function seedPhantomTailFixture(nowMs) {
+    const dir = join(tmpRoot, '.orchestrator', 'metrics');
+    mkdirSync(dir, { recursive: true });
+    const realCompletedAt = new Date(nowMs - 60 * MS_PER_DAY).toISOString();
+    const abandonedCompletedAt = new Date(nowMs).toISOString();
+    const lines = [
+      JSON.stringify({ session_id: 'real-1', completed_at: realCompletedAt, agent_summary: { complete: 3 } }),
+      JSON.stringify({
+        session_id: 'ghost-1',
+        completed_at: abandonedCompletedAt,
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+        status: 'abandoned',
+      }),
+    ];
+    writeFileSync(join(dir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
+  }
+
+  it('computes stale-days from the last REAL session (~60), not the trailing abandoned stub (~0)', async () => {
+    const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+    seedPhantomTailFixture(nowMs);
+
+    const staleDays = await defaultDeps().staleDaysFor(tmpRoot, nowMs);
+
+    expect(staleDays).toBeGreaterThan(59);
+    expect(staleDays).toBeLessThan(61);
   });
 });

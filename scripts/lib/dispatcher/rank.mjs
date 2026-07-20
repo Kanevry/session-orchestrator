@@ -35,6 +35,7 @@ import path from 'node:path';
 import { scanBacklog } from '../backlog-scan.mjs';
 import { checkCiStatus as realCheckCiStatus } from '../ci-status-banner.mjs';
 import { probe as realProbe, evaluate as realEvaluate } from '../resource-probe.mjs';
+import { isRealSession } from '../session-schema/filters.mjs';
 
 /** Staleness cap (days). Beyond this, additional age does not raise the score. */
 export const STALENESS_CAP_DAYS = 90;
@@ -156,13 +157,21 @@ async function defaultFetchPriority(repoRoot, nowMs) {
 
 /**
  * Default STALENESS source: read `<repoRoot>/.orchestrator/metrics/sessions.jsonl`,
- * take the LAST record, and compute days since `completed_at` (fallback
- * `started_at`). No file / no parsable record / no timestamp ⇒
- * `STALENESS_CAP_DAYS` (treat as maximally stale = most worthwhile).
+ * find the last REAL (non-phantom) record scanning backward from the tail, and
+ * compute days since `completed_at` (fallback `started_at`). No file / no
+ * parsable REAL record / no timestamp ⇒ `STALENESS_CAP_DAYS` (treat as
+ * maximally stale = most worthwhile).
+ *
+ * Scans backward PAST any trailing `status: 'abandoned'` phantom stubs (#834)
+ * — session-close-backfill writes these for sessions that ended without a real
+ * close (0 waves, seconds of runtime). Stopping at the raw last LINE would let
+ * a single recent phantom make a genuinely neglected repo look freshly
+ * touched, defeating the dispatcher's whole purpose (this is the N=1 extreme
+ * case of the phantom-tail problem — one stub is enough to zero out staleness).
  *
  * @param {string} repoRoot
  * @param {number} nowMs
- * @returns {Promise<number>} days since last session (≥ 0)
+ * @returns {Promise<number>} days since last REAL session (≥ 0)
  */
 async function defaultStaleDaysFor(repoRoot, nowMs) {
   try {
@@ -171,14 +180,19 @@ async function defaultStaleDaysFor(repoRoot, nowMs) {
     const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
     if (lines.length === 0) return STALENESS_CAP_DAYS;
 
-    // Last non-empty line = most recent session record.
+    // Scan backward for the last REAL (non-abandoned) session record, skipping
+    // both corrupt lines and phantom stubs.
     let last = null;
     for (let i = lines.length - 1; i >= 0; i -= 1) {
+      let parsed;
       try {
-        last = JSON.parse(lines[i]);
-        break;
+        parsed = JSON.parse(lines[i]);
       } catch {
-        // Skip a corrupt trailing line and try the previous one.
+        continue; // Skip a corrupt line and try the previous one.
+      }
+      if (isRealSession(parsed)) {
+        last = parsed;
+        break;
       }
     }
     if (!last || typeof last !== 'object') return STALENESS_CAP_DAYS;

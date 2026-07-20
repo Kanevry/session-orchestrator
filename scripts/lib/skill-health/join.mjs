@@ -15,12 +15,26 @@
  * the session is still in progress, or the record was never written), the session
  * contributes `unknown` to the outcome tally — it is never silently dropped.
  *
+ * ABANDONED-SESSION HANDLING (#834): a session_id CAN be found in sessions.jsonl
+ * yet be a phantom stub (`status: 'abandoned'`, written by session-close-backfill
+ * for a session that ended without a real close — 0 waves, all-zero agent_summary).
+ * Counting such a join as `sessionsJoined` would inflate the skill's join
+ * denominator with zero real contribution — the join "succeeds" but carries no
+ * signal. Per this module's own "never silently dropped" contract, an abandoned
+ * join is routed to a DISTINCT `abandoned` outcome bucket rather than either (a)
+ * silently folding into `sessionsJoined`/the numeric outcome fields with zero
+ * contribution (inflates the denominator invisibly), or (b) folding into
+ * `unknown` (which means "not found in the ledger at all" — a different failure
+ * mode a caller may want to distinguish from "found but phantom").
+ *
  * Part of Epic #645 — Skill Self-Evolution Foundation, Layer 2.
  */
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { isRealSession } from '../session-schema/filters.mjs';
 
 const DEFAULT_INVOCATIONS_PATH = path.resolve(
   fileURLToPath(import.meta.url),
@@ -61,18 +75,21 @@ async function readJsonl(filePath) {
 }
 
 /**
- * Builds a Map<session_id, agent_summary> from sessions.jsonl records.
+ * Builds a Map<session_id, { agentSummary, real }> from sessions.jsonl records.
  * Records without a session_id or with a non-object agent_summary are skipped.
+ * `real` is false for phantom `status: 'abandoned'` stubs (#834) — callers use
+ * it to route the join to the `abandoned` outcome bucket instead of counting
+ * a zero-signal join as `sessionsJoined`.
  *
  * @param {object[]} sessionRecords
- * @returns {Map<string, { complete: number, partial: number, failed: number, spiral: number }>}
+ * @returns {Map<string, { agentSummary: { complete: number, partial: number, failed: number, spiral: number }, real: boolean }>}
  */
 function buildSessionMap(sessionRecords) {
   const map = new Map();
   for (const rec of sessionRecords) {
     if (typeof rec.session_id !== 'string' || !rec.session_id) continue;
     if (rec.agent_summary && typeof rec.agent_summary === 'object') {
-      map.set(rec.session_id, rec.agent_summary);
+      map.set(rec.session_id, { agentSummary: rec.agent_summary, real: isRealSession(rec) });
     }
   }
   return map;
@@ -91,12 +108,13 @@ function buildSessionMap(sessionRecords) {
  *       skill: string,
  *       selections: number,
  *       sessions: string[],
- *       outcomes: { complete: number, partial: number, failed: number, spiral: number, unknown: number }
+ *       outcomes: { complete: number, partial: number, failed: number, spiral: number, unknown: number, abandoned: number }
  *     }
  *   },
  *   totalSelections: number,
  *   sessionsJoined: number,
- *   sessionsUnknown: number
+ *   sessionsUnknown: number,
+ *   sessionsAbandoned: number
  * }>}
  */
 export async function joinSkillOutcomes({
@@ -116,6 +134,7 @@ export async function joinSkillOutcomes({
   let totalSelections = 0;
   let sessionsJoined = 0;
   let sessionsUnknown = 0;
+  let sessionsAbandoned = 0;
 
   for (const inv of invocations) {
     // Only process skill-selection events with a valid skill field
@@ -132,7 +151,7 @@ export async function joinSkillOutcomes({
         skill,
         selectionCount: 0,
         sessions: new Set(),
-        outcomes: { complete: 0, partial: 0, failed: 0, spiral: 0, unknown: 0 },
+        outcomes: { complete: 0, partial: 0, failed: 0, spiral: 0, unknown: 0, abandoned: 0 },
       });
     }
 
@@ -144,14 +163,21 @@ export async function joinSkillOutcomes({
       record.sessions.add(sessionId);
 
       if (isNew) {
-        const summary = sessionMap.get(sessionId);
-        if (summary) {
+        const entry = sessionMap.get(sessionId);
+        if (entry && entry.real) {
+          const summary = entry.agentSummary;
           // Sum session-level aggregate outcomes into this skill's buckets
           record.outcomes.complete += typeof summary.complete === 'number' ? summary.complete : 0;
           record.outcomes.partial += typeof summary.partial === 'number' ? summary.partial : 0;
           record.outcomes.failed += typeof summary.failed === 'number' ? summary.failed : 0;
           record.outcomes.spiral += typeof summary.spiral === 'number' ? summary.spiral : 0;
           sessionsJoined += 1;
+        } else if (entry && !entry.real) {
+          // Found in sessions.jsonl but a phantom abandoned stub (#834) — a
+          // zero-signal join. Route to a distinct bucket instead of inflating
+          // sessionsJoined or conflating with "not found at all" (unknown).
+          record.outcomes.abandoned += 1;
+          sessionsAbandoned += 1;
         } else {
           // Session id not found in sessions.jsonl — count as unknown, never drop
           record.outcomes.unknown += 1;
@@ -177,5 +203,5 @@ export async function joinSkillOutcomes({
     };
   }
 
-  return { bySkill: bySkillObj, totalSelections, sessionsJoined, sessionsUnknown };
+  return { bySkill: bySkillObj, totalSelections, sessionsJoined, sessionsUnknown, sessionsAbandoned };
 }
