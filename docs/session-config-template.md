@@ -466,6 +466,21 @@ docs-staleness:
   mode: warn                           # strict | warn | off
   thresholds:
     living: 90                         # days — single tier; severity escalates at 1×/2×/3× threshold
+moc-staleness:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in — <vault>/08-topics/*-moc.md staleness banner (session-start Phase 4)
+  thresholds:
+    moc: 90                            # days — frontmatter `updated:` threshold; missing/unparseable is EXCLUDED, not reported
+  mode: warn                           # warn | off
+context-coverage:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in — registered 01-projects/ folders lacking context.md AND _passive.md
+  mode: warn                           # warn | off
+worktree-orphans:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in — session-end Phase 4b sweep; CANDIDATES ONLY, never auto-deletes (PSA-003)
+  base-branch: main                    # validated — a leading-dash value is rejected and falls back to main
+  mode: warn                           # warn | off
 ```
 
 Read by: `skills/discovery/probes/docs-staleness.mjs`, `scripts/lib/config/docs-staleness.mjs`.
@@ -820,6 +835,18 @@ docs-staleness:
   mode: warn
   thresholds:
     living: 90
+moc-staleness:
+  enabled: false
+  thresholds:
+    moc: 90
+  mode: warn
+context-coverage:
+  enabled: false
+  mode: warn
+worktree-orphans:
+  enabled: false
+  base-branch: main
+  mode: warn
 
 # CLAUDE.md drift check
 drift-check:

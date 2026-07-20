@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 
 import * as sweepModule from '@lib/session-end/worktree-orphan-sweep.mjs';
 import { checkWorktreeOrphans } from '@lib/session-end/worktree-orphan-sweep.mjs';
+import { _parseWorktreeOrphans } from '@lib/config/worktree-orphans.mjs';
 
 const MAIN = '/sandbox/wt/example-repo';
 const WT_ONE = '/sandbox/wt/example-repo-session-1';
@@ -37,13 +38,36 @@ const PORCELAIN_MAIN_ONLY = `worktree ${MAIN}\nHEAD 1111111111111111111111111111
 /**
  * Build a fake `execFileFn` returning canned stdout and recording every call.
  *
+ * The `rev-list` branch is a FAITHFUL double of the option-injection behaviour
+ * the reviewer measured against real git in a scratch repo whose true
+ * ahead-count was 2:
+ *
+ *   main                 -> COUNT=2
+ *   --glob=refs/heads/*  -> COUNT=0     (exit 0, WRONG answer — the silent lie)
+ *   --max-count=0        -> ERROR rc=128
+ *
+ * ...and, once `--end-of-options` precedes the range token, git rejects the
+ * option-shaped value with rc=128 instead of silently answering it. Modelling
+ * BOTH sides is what lets the injection test bite: drop `--end-of-options` from
+ * the module and the fake starts returning the silent `0` again.
+ *
  * @param {object} spec
  * @param {string} [spec.porcelain] - stdout for `worktree list --porcelain`
  * @param {Record<string, string>} [spec.counts] - range → `rev-list --count` stdout
  * @param {boolean} [spec.throwOnList] - make `worktree list` throw
  * @param {string[]} [spec.throwOnCountFor] - ranges whose `rev-list` throws
+ * @param {Record<string, string>} [spec.dirty] - wtPath → `status --porcelain` stdout
+ *   (any non-empty value marks that worktree as holding uncommitted work)
+ * @param {string[]} [spec.throwOnStatusFor] - wtPaths whose `status` throws
  */
-function makeFakeGit({ porcelain, counts = {}, throwOnList = false, throwOnCountFor = [] }) {
+function makeFakeGit({
+  porcelain,
+  counts = {},
+  throwOnList = false,
+  throwOnCountFor = [],
+  dirty = {},
+  throwOnStatusFor = [],
+}) {
   const calls = [];
   const fn = (file, args, options) => {
     calls.push({ file, args, options });
@@ -53,11 +77,29 @@ function makeFakeGit({ porcelain, counts = {}, throwOnList = false, throwOnCount
       return porcelain;
     }
     if (sub === 'rev-list') {
-      const range = args[4];
+      // The range is always the FINAL token, with or without --end-of-options.
+      const range = args[args.length - 1];
+      if (range.startsWith('-')) {
+        if (args.includes('--end-of-options')) {
+          throw new Error(`fatal: option '${range}' must come before non-option arguments`);
+        }
+        return '0\n'; // exit 0 with a WRONG answer — the silent lie
+      }
       if (throwOnCountFor.includes(range)) {
         throw new Error(`fatal: bad revision '${range}'`);
       }
       return Object.hasOwn(counts, range) ? counts[range] : '0\n';
+    }
+    if (sub === 'status') {
+      // isWorktreeClean() anchors both status calls at the worktree path.
+      const wtPath = args[1];
+      if (throwOnStatusFor.includes(wtPath)) {
+        throw new Error('fatal: not a git repository');
+      }
+      // `status --porcelain` carries the dirty payload; `status --short
+      // --branch` is the separate ahead-scan and stays empty here.
+      if (args[3] === '--porcelain') return dirty[wtPath] ?? '';
+      return '';
     }
     throw new Error(`unexpected git subcommand: ${sub}`);
   };
@@ -347,7 +389,15 @@ describe('checkWorktreeOrphans — message contract', () => {
 });
 
 describe('checkWorktreeOrphans — no-delete invariants (PSA-003)', () => {
-  /** Read-only allow-list: the ONLY two git shapes this module may ever issue. */
+  /**
+   * Read-only allow-list: the ONLY git shapes this module may ever issue.
+   *
+   * Grew from two shapes to four when the sweep started delegating its
+   * uncommitted-work check to `isWorktreeClean()` (which issues
+   * `status --porcelain` + `status --short --branch`). Both additions are
+   * READ-ONLY — the list stays an exact allow-list, and no mutating shape is
+   * admitted. Everything outside it still fails this assertion.
+   */
   function assertReadOnly(calls) {
     for (const call of calls) {
       expect(call.file).toBe('git');
@@ -357,7 +407,8 @@ describe('checkWorktreeOrphans — no-delete invariants (PSA-003)', () => {
       const shape = call.args.slice(2).join(' ');
       const isList = shape === 'worktree list --porcelain';
       const isRevList = call.args[2] === 'rev-list' && call.args[3] === '--count';
-      expect(isList || isRevList).toBe(true);
+      const isStatus = shape === 'status --porcelain' || shape === 'status --short --branch';
+      expect(isList || isRevList || isStatus).toBe(true);
     }
   }
 
@@ -446,5 +497,279 @@ describe('checkWorktreeOrphans — no-delete invariants (PSA-003)', () => {
         'wtPath',
       ]);
     }
+  });
+});
+
+describe('base-branch option-injection (defect 1 — source layer: config parser)', () => {
+  it('rejects an option-shaped base-branch and falls back to "main"', () => {
+    const md = [
+      'worktree-orphans:',
+      '  enabled: true',
+      '  base-branch: --glob=refs/heads/*',
+      '  mode: warn',
+    ].join('\n');
+
+    expect(_parseWorktreeOrphans(md)['base-branch']).toBe('main');
+  });
+
+  it('rejects a bare leading-dash base-branch and falls back to "main"', () => {
+    const md = ['worktree-orphans:', '  enabled: true', '  base-branch: --all'].join('\n');
+
+    expect(_parseWorktreeOrphans(md)['base-branch']).toBe('main');
+  });
+
+  it('rejects a base-branch containing ".." that would corrupt the range token', () => {
+    const md = ['worktree-orphans:', '  enabled: true', '  base-branch: main..other'].join('\n');
+
+    expect(_parseWorktreeOrphans(md)['base-branch']).toBe('main');
+  });
+
+  it('rejects a base-branch carrying whitespace or shell metacharacters', () => {
+    const withSpace = ['worktree-orphans:', '  base-branch: "main ; echo hi"'].join('\n');
+    const withPipe = ['worktree-orphans:', '  base-branch: "main|tee"'].join('\n');
+
+    expect(_parseWorktreeOrphans(withSpace)['base-branch']).toBe('main');
+    expect(_parseWorktreeOrphans(withPipe)['base-branch']).toBe('main');
+  });
+
+  it('still accepts a legitimate namespaced branch name', () => {
+    const md = ['worktree-orphans:', '  enabled: true', '  base-branch: release/v2.1-rc'].join('\n');
+
+    expect(_parseWorktreeOrphans(md)['base-branch']).toBe('release/v2.1-rc');
+  });
+});
+
+describe('base-branch option-injection (defect 1 — sink layer: --end-of-options)', () => {
+  it('emits --end-of-options immediately before the range token', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+    });
+
+    checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: git,
+    });
+
+    const revList = git.calls.filter((c) => c.args[2] === 'rev-list');
+    expect(revList).toHaveLength(2);
+    // Assert the ACTUAL argv array the fake received, in full.
+    expect(revList[0].args).toEqual([
+      '-C',
+      MAIN,
+      'rev-list',
+      '--count',
+      '--end-of-options',
+      'main..feat/example-one',
+    ]);
+    // Position matters: the guard is worthless after the range token.
+    for (const call of revList) {
+      expect(call.args.indexOf('--end-of-options')).toBe(call.args.length - 2);
+    }
+  });
+
+  it('reports NO candidate when a hand-built config smuggles an option-shaped base-branch', () => {
+    // Bypasses the parser entirely — this is the second defence layer on its
+    // own. Real git answers `--glob=refs/heads/*` with a silent `0` unless
+    // --end-of-options precedes it, which would mark BOTH worktrees orphaned.
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: { enabled: true, 'base-branch': '--glob=refs/heads/*', mode: 'warn' },
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+  });
+});
+
+describe('config gate fails CLOSED (defect 2)', () => {
+  it('returns null AND invokes no git call when config is omitted entirely', () => {
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+    expect(git.calls).toHaveLength(0);
+  });
+
+  it('returns null AND invokes no git call when config is an empty object', () => {
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: {},
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+    expect(git.calls).toHaveLength(0);
+  });
+
+  it('returns null AND invokes no git call when config is explicitly undefined', () => {
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: undefined,
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+    expect(git.calls).toHaveLength(0);
+  });
+
+  it('returns null AND invokes no git call when the block exists but has no enabled key', () => {
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: { 'worktree-orphans': { 'base-branch': 'main', mode: 'warn' } },
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+    expect(git.calls).toHaveLength(0);
+  });
+});
+
+describe('config parameter shape (defect 2 — sibling-probe symmetry)', () => {
+  it('behaves identically for the FULL config and the already-indexed block', () => {
+    const gitFull = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+    });
+    const gitBlock = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+    });
+
+    const fromFull = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: { 'worktree-orphans': ENABLED },
+      execFileFn: gitFull,
+    });
+    const fromBlock = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: gitBlock,
+    });
+
+    expect(fromFull).toEqual(fromBlock);
+    expect(fromFull.candidates.map((c) => c.wtPath)).toEqual([WT_ONE, WT_TWO]);
+  });
+
+  it('honours mode:off nested inside the FULL config shape', () => {
+    const git = makeFakeGit({ porcelain: PORCELAIN_TWO_SIBLINGS });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: { 'worktree-orphans': { enabled: true, 'base-branch': 'main', mode: 'off' } },
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+    expect(git.calls).toHaveLength(0);
+  });
+
+  it('honours a nested non-default base-branch in the rev-list range', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'develop..feat/example-one': '0\n', 'develop..fix/example-two': '4\n' },
+    });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: { 'worktree-orphans': { enabled: true, 'base-branch': 'develop', mode: 'warn' } },
+      execFileFn: git,
+    });
+
+    expect(result.candidates.map((c) => c.branch)).toEqual(['feat/example-one']);
+  });
+});
+
+describe('uncommitted work is never an orphan (defect 3)', () => {
+  it('does NOT report a 0-ahead worktree holding staged work', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+      dirty: { [WT_ONE]: 'A  wip.txt\n' },
+    });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: git,
+    });
+
+    expect(result.candidates.map((c) => c.wtPath)).toEqual([WT_TWO]);
+  });
+
+  it('does NOT report a 0-ahead worktree holding modified or untracked files', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+      dirty: { [WT_ONE]: ' M notes.md\n', [WT_TWO]: '?? scratch.log\n' },
+    });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: git,
+    });
+
+    expect(result).toBe(null);
+  });
+
+  it('is conservative when the status check itself throws', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+      throwOnStatusFor: [WT_ONE],
+    });
+
+    const result = checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: git,
+    });
+
+    // Unverifiable → NOT a candidate; the healthy sibling is unaffected.
+    expect(result.candidates.map((c) => c.wtPath)).toEqual([WT_TWO]);
+  });
+
+  it('runs the status check against the worktree path, not the main checkout', () => {
+    const git = makeFakeGit({
+      porcelain: PORCELAIN_TWO_SIBLINGS,
+      counts: { 'main..feat/example-one': '0\n', 'main..fix/example-two': '0\n' },
+    });
+
+    checkWorktreeOrphans({
+      repoRoot: MAIN,
+      mainCheckoutRoot: MAIN,
+      config: ENABLED,
+      execFileFn: git,
+    });
+
+    const statusAnchors = git.calls.filter((c) => c.args[2] === 'status').map((c) => c.args[1]);
+    expect(statusAnchors).toEqual([WT_ONE, WT_ONE, WT_TWO, WT_TWO]);
   });
 });

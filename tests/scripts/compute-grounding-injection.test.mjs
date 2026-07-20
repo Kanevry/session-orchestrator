@@ -211,5 +211,91 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
     // The GROUNDING block must be printed — proves sessionId survived into
     // LAST_SESSIONS despite the 3 trailing abandoned stubs.
     expect(stdout).toContain(`## GROUNDING — ${targetFile}`);
+
+    // Strengthened assertion (reviewer feedback on #834): a bare stdout
+    // substring check is a single boolean suppressed by many unrelated
+    // conditions (PERSISTENCE, MAX_FILES, the events-file match, a missing
+    // jq) and gives no session-window-specific signal on RED. Read the
+    // structurally-appended orchestrator.grounding.injected record instead —
+    // it only exists if the FULL chain (LAST_SESSIONS eviction-safe filter →
+    // MATCHED → CANDIDATES → SELECTED → emit) succeeded, and its `file` field
+    // pins the assertion to the exact selected file rather than a
+    // heuristically-grepped text block.
+    const records = readFileSync(eventsPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+    const grounding = records.find((r) => r.event === 'orchestrator.grounding.injected');
+    expect(grounding).toBeDefined();
+    expect(grounding.file).toBe(targetFile);
+    expect(grounding.session).toBe(sessionId);
+  });
+
+  // -------------------------------------------------------------------------
+  // Torn-write tolerance — a malformed line BEFORE the real sessions must not
+  // abort the whole jq stream and strand LAST_SESSIONS on a stale pre-corruption
+  // session id. Regression case: `jq -c 'select(...)'` aborts at the first
+  // unparseable line, so anything sitting downstream of it in the file (here,
+  // the REAL session carrying the stagnation evidence) never reaches
+  // LAST_SESSIONS at all. Current test coverage before this addition has zero
+  // GARBAGE/malformed/not-json/invalid fixtures (see PR description grep).
+  // -------------------------------------------------------------------------
+  it.skipIf(!HAS_JQ)('still drives the output from the real session when a malformed line precedes it in sessions.jsonl', () => {
+    const staleSessionId = 'main-2026-01-01-session-stale';
+    const realSessionId = 'main-2026-07-20-session-real';
+
+    // sessions.jsonl: a VALID but stale session first, then a malformed line,
+    // then the REAL session whose stagnation evidence must drive the match.
+    // Under the pre-fix `jq -c 'select(...)'` this aborts at the malformed
+    // line — LAST_SESSIONS would contain only staleSessionId, and the seed
+    // event below (session=realSessionId) would never match.
+    const sessionsPath = join(tmpDir, 'sessions.jsonl');
+    const sessionLines = [
+      JSON.stringify({ session_id: staleSessionId }),
+      'GARBAGE NOT JSON',
+      JSON.stringify({ session_id: realSessionId }),
+    ];
+    writeFileSync(sessionsPath, sessionLines.join('\n') + '\n', 'utf8');
+
+    const targetFile = join(tmpDir, 'real-stagnant-module.mjs');
+    writeFileSync(targetFile, 'line 1\nline 2\n', 'utf8');
+
+    const eventsPath = join(tmpDir, 'events.jsonl');
+    const seed = {
+      timestamp: '2026-07-20T10:00:00Z',
+      event: 'stagnation_detected',
+      error_class: 'edit-format-friction',
+      session: realSessionId,
+      file: targetFile,
+    };
+    writeFileSync(eventsPath, JSON.stringify(seed) + '\n', 'utf8');
+
+    const stdout = execFileSync('bash', [SCRIPT], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAX_FILES: '5',
+        EVENTS_JSONL: eventsPath,
+        SESSIONS_JSONL: sessionsPath,
+        AGENT_FILES: targetFile,
+        PERSISTENCE: 'true',
+        SESSION_ID: realSessionId,
+        WAVE: '4',
+        AGENT_TYPE: 'code-implementer',
+      },
+    });
+
+    expect(stdout).toContain(`## GROUNDING — ${targetFile}`);
+
+    const records = readFileSync(eventsPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+    const grounding = records.find((r) => r.event === 'orchestrator.grounding.injected');
+    expect(grounding).toBeDefined();
+    expect(grounding.file).toBe(targetFile);
+    expect(grounding.session).toBe(realSessionId);
   });
 });

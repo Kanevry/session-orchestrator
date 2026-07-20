@@ -20,7 +20,34 @@ function makeRun(id) {
   return { autopilot_run_id: id };
 }
 
+/**
+ * FAITHFUL default fixture (#835). Mirrors what the session-end writer actually
+ * emits: `session_type` at the top level, effectiveness metrics NESTED under
+ * `effectiveness`. Verified against the live 70-record ledger — 70/70 records
+ * carry `session_type`, 0/70 carry a TOP-LEVEL `completion_rate`.
+ *
+ * Every general-purpose test below uses this shape. The legacy top-level shape
+ * is exercised deliberately and only by `makeLegacySession` (see below), which
+ * pins the backwards-compatible fallback.
+ */
 function makeSession({ mode = 'feature', autopilotRunId = null, completion = 0.8, carryover = 0.1 } = {}) {
+  const s = {
+    session_type: mode,
+    effectiveness: {
+      completion_rate: completion,
+      carryover_ratio: carryover,
+    },
+  };
+  if (autopilotRunId) s.autopilot_run_id = autopilotRunId;
+  return s;
+}
+
+/**
+ * LEGACY-shape fixture — pre-nesting records with `mode` + top-level metric
+ * fields. Kept to pin the fallback branch of completionOf/carryoverOf and the
+ * `mode`-as-legacy-alias branch of groupByMode. Deliberately NOT the default.
+ */
+function makeLegacySession({ mode = 'feature', autopilotRunId = null, completion = 0.8, carryover = 0.1 } = {}) {
   const s = {
     mode,
     completion_rate: completion,
@@ -238,29 +265,35 @@ describe('autopilot-effectiveness — buildLearning() smoke', () => {
 // alias) to also lock the coupled fix: groupByMode() must read session_type
 // first, falling back to `mode` only for legacy-only records.
 
-function makeCanonicalSession({
-  mode = 'feature',
-  autopilotRunId = null,
-  completion = 0.8,
-  carryover = 0.1,
-} = {}) {
-  const s = {
-    session_type: mode,
-    completion_rate: completion,
-    carryover_ratio: carryover,
-  };
-  if (autopilotRunId) s.autopilot_run_id = autopilotRunId;
-  return s;
-}
+/** Canonical shape — identical to the default {@link makeSession} fixture. */
+const makeCanonicalSession = makeSession;
 
 function makeAbandonedPhantom() {
-  // Shape mirrors a real session-close-backfill stub: carries a session_type
-  // field too, so an unfiltered reader would happily bucket it.
+  // Faithful to a real session-close-backfill stub (verified against the live
+  // ledger): `session_type` present so an unfiltered reader would happily
+  // bucket it, `status: 'abandoned'`, 0 waves — and NO `effectiveness` block
+  // at all. The counter assertions are the discriminator for this shape.
   return {
     status: 'abandoned',
     session_type: 'feature',
-    completion_rate: 0,
-    carryover_ratio: 1,
+    total_waves: 0,
+    waves: [],
+    _backfill_source: 'events-jsonl',
+  };
+}
+
+/**
+ * Hostile variant: an abandoned stub that DOES carry an effectiveness block.
+ * Not observed in the live ledger, but it is what would dilute the averages if
+ * the abandoned filter ever regressed — so it pins the dilution guard
+ * separately from the (faithful) metric-less shape above.
+ */
+function makeAbandonedPhantomWithMetrics() {
+  return {
+    status: 'abandoned',
+    session_type: 'feature',
+    total_waves: 0,
+    effectiveness: { completion_rate: 0, carryover_ratio: 1 },
   };
 }
 
@@ -278,7 +311,10 @@ describe('autopilot-effectiveness — #834: abandoned-session filtering', () => 
         carryover: 0.1,
       }),
     );
-    const phantoms = Array.from({ length: 15 }, () => makeAbandonedPhantom());
+    const phantoms = [
+      ...Array.from({ length: 10 }, () => makeAbandonedPhantom()),
+      ...Array.from({ length: 5 }, () => makeAbandonedPhantomWithMetrics()),
+    ];
 
     const out = analyze(runs, [...manual, ...autopilot, ...phantoms], { now: NOW_ISO });
 
@@ -309,8 +345,8 @@ describe('autopilot-effectiveness — #834: abandoned-session filtering', () => 
 describe('autopilot-effectiveness — #834: session_type is canonical, mode is the legacy fallback', () => {
   it('reads session_type as the primary mode key', () => {
     const sessions = [
-      { session_type: 'deep', completion_rate: 0.9, carryover_ratio: 0.05 },
-      { session_type: 'deep', completion_rate: 0.8, carryover_ratio: 0.15 },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.9, carryover_ratio: 0.05 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8, carryover_ratio: 0.15 } },
     ];
     const map = groupByMode([], sessions);
     expect(map.has('deep')).toBe(true);
@@ -318,16 +354,96 @@ describe('autopilot-effectiveness — #834: session_type is canonical, mode is t
   });
 
   it('falls back to the legacy mode key when session_type is absent', () => {
-    const sessions = [{ mode: 'housekeeping', completion_rate: 0.6, carryover_ratio: 0.3 }];
+    const sessions = [makeLegacySession({ mode: 'housekeeping', completion: 0.6, carryover: 0.3 })];
     const map = groupByMode([], sessions);
     expect(map.has('housekeeping')).toBe(true);
     expect(map.get('housekeeping').n_manual).toBe(1);
   });
 
   it('prefers session_type over mode when both are present on the same record', () => {
-    const sessions = [{ session_type: 'deep', mode: 'feature', completion_rate: 0.5, carryover_ratio: 0.5 }];
+    const sessions = [
+      { session_type: 'deep', mode: 'feature', effectiveness: { completion_rate: 0.5, carryover_ratio: 0.5 } },
+    ];
     const map = groupByMode([], sessions);
     expect(map.has('deep')).toBe(true);
     expect(map.has('feature')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #835 — effectiveness metrics are NESTED in the real writer output
+// ---------------------------------------------------------------------------
+//
+// The session-end writer emits completion_rate / carryover_ratio UNDER an
+// `effectiveness` block, never at the top level. Reading only the top level
+// left every metric null on real data (live ledger: 70/70 records carry
+// `session_type`, 0/70 carry a top-level `completion_rate`), so buildLearning()
+// always took its "insufficient effectiveness data" branch even once bucketing
+// worked. The fixtures above were shaped to the ANALYZER's expectation rather
+// than the WRITER's output — anti-pattern #8 "unfaithful double".
+
+describe('autopilot-effectiveness — #835: nested effectiveness metrics', () => {
+  it('reads effectiveness.completion_rate / .carryover_ratio (the real writer shape)', () => {
+    const map = groupByMode([], [
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8, carryover_ratio: 0.1 } },
+    ]);
+    const deep = map.get('deep');
+    expect(deep.completion_rate_manual).toBe(0.8);
+    expect(deep.carryover_ratio_manual).toBe(0.1);
+  });
+
+  it('averages nested metrics across several real-shaped records', () => {
+    const map = groupByMode([], [
+      { session_type: 'deep', effectiveness: { completion_rate: 1, carryover_ratio: 0 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.5, carryover_ratio: 0.4 } },
+    ]);
+    const deep = map.get('deep');
+    expect(deep.completion_rate_manual).toBe(0.75);
+    expect(deep.carryover_ratio_manual).toBe(0.2);
+  });
+
+  it('still honours the legacy TOP-LEVEL metric shape (fallback branch)', () => {
+    const map = groupByMode([], [makeLegacySession({ mode: 'deep', completion: 0.6, carryover: 0.3 })]);
+    const deep = map.get('deep');
+    expect(deep.completion_rate_manual).toBe(0.6);
+    expect(deep.carryover_ratio_manual).toBe(0.3);
+  });
+
+  it('prefers the nested value over a conflicting top-level value', () => {
+    const map = groupByMode([], [
+      {
+        session_type: 'deep',
+        completion_rate: 0.1,
+        carryover_ratio: 0.9,
+        effectiveness: { completion_rate: 0.8, carryover_ratio: 0.1 },
+      },
+    ]);
+    const deep = map.get('deep');
+    expect(deep.completion_rate_manual).toBe(0.8);
+    expect(deep.carryover_ratio_manual).toBe(0.1);
+  });
+
+  it('a record whose effectiveness block lacks carryover_ratio yields completion only', () => {
+    // Live-ledger reality: 50/60 effectiveness blocks carry completion_rate,
+    // only 15/60 carry carryover_ratio. A partial block must not poison either.
+    const map = groupByMode([], [
+      { session_type: 'deep', effectiveness: { completion_rate: 1, carryover: 0, planned_issues: 5 } },
+    ]);
+    const deep = map.get('deep');
+    expect(deep.completion_rate_manual).toBe(1);
+    expect(deep.carryover_ratio_manual).toBeNull();
+  });
+
+  it('emits a real insight (not the insufficient-data branch) from nested-shape records', () => {
+    const runs = Array.from({ length: 20 }, (_, i) => makeRun(`r${i}`));
+    const manual = makeBatch(20, { mode: 'feature', completion: 0.7, carryover: 0.2 });
+    const autopilot = runs.map((r) =>
+      makeSession({ mode: 'feature', autopilotRunId: r.autopilot_run_id, completion: 0.85, carryover: 0.1 }),
+    );
+    const out = analyze(runs, [...manual, ...autopilot], { now: NOW_ISO });
+    expect(out).toHaveLength(1);
+    expect(out[0].insight).not.toContain('insufficient effectiveness data');
+    expect(out[0].evidence.completion_delta).toBeCloseTo(0.15, 3);
+    expect(out[0].evidence.carryover_delta).toBeCloseTo(-0.1, 3);
   });
 });

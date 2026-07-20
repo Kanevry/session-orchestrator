@@ -785,6 +785,71 @@ docs-staleness:
 
 **Used by:** `skills/discovery/probes/docs-staleness.mjs` (`runProbe`), `scripts/lib/config/docs-staleness.mjs` (`_parseDocsStaleness`). Writes one JSONL summary record per run to `.orchestrator/metrics/docs-staleness.jsonl`. See `docs/README.md` for the living-vs-archived docs classification this probe enforces.
 
+## MOC Staleness (#831/B2)
+
+Opt-in session-start banner probe for Obsidian "map of content" index notes — `<vault>/08-topics/*-moc.md` whose frontmatter `updated:` is older than the threshold. Complements `vault-staleness` (which covers project narratives) by covering the topic index layer. Rendered at session-start Phase 4 alongside the other banners; never blocks a session.
+
+```yaml
+moc-staleness:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in
+  thresholds:
+    moc: 90                            # days — frontmatter `updated:` staleness threshold
+  mode: warn                           # warn | off
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `moc-staleness.enabled` | boolean | `false` | Must be explicitly `true` to activate. The gate fails CLOSED — a missing block, a missing `enabled` key, or an omitted `config` argument all return `null` before any filesystem I/O. |
+| `moc-staleness.thresholds.moc` | integer (days) | `90` | Age threshold measured against frontmatter `updated:`. Non-numeric or non-positive values fall back to the default. |
+| `moc-staleness.mode` | string | `warn` | `warn` \| `off`. A malformed value falls back to `warn`. |
+
+A MOC whose `updated:` is **missing or unparseable is deliberately EXCLUDED**, not reported as stale — the corrective action there is "fix the frontmatter", not the banner's own hint. Same rule as `scripts/lib/peer-cards/staleness-banner.mjs`.
+
+**Used by:** `scripts/lib/moc-staleness-banner.mjs` (`checkMocStaleness`), `scripts/lib/config/moc-staleness.mjs` (`_parseMocStaleness`). Wired at `skills/session-start/SKILL.md` Phase 4.
+
+## Context Coverage (#831/B4)
+
+Opt-in session-start coverage banner: registered `<vault>/01-projects/<slug>/` folders that carry **neither** `context.md` nor `_passive.md`. A project counts as *registered* iff its folder contains `_overview.md` — the same convention `discoverVaultRepos()` uses (`scripts/lib/gitlab-portfolio/vcs-detect.mjs`). Folders lacking `_overview.md` are never counted and never reported as gaps.
+
+```yaml
+context-coverage:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in
+  mode: warn                           # warn | off
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `context-coverage.enabled` | boolean | `false` | Must be explicitly `true` to activate. Fails CLOSED, as above. |
+| `context-coverage.mode` | string | `warn` | `warn` \| `off`. A malformed value falls back to `warn`. |
+
+**Used by:** `scripts/lib/context-coverage-banner.mjs` (`checkContextCoverage`), `scripts/lib/config/context-coverage.mjs` (`_parseContextCoverage`). Wired at `skills/session-start/SKILL.md` Phase 4.
+
+## Worktree Orphans (#831/B5)
+
+Opt-in session-end sweep (Phase 4b) identifying git worktree branches with **0 commits ahead of the base branch** — leftovers from finished sessions. The module **proposes; it never disposes**: it returns `candidates` and the coordinator renders the removal AUQ. Nothing is removed without explicit operator confirmation (PSA-003).
+
+```yaml
+worktree-orphans:
+  # Parser gotcha: this key line must carry NO inline comment.
+  enabled: false                       # opt-in
+  base-branch: main                    # ref the ahead-count is measured against
+  mode: warn                           # warn | off
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `worktree-orphans.enabled` | boolean | `false` | Must be explicitly `true` to activate. Fails CLOSED — a repo that never opted in pays no git invocation. |
+| `worktree-orphans.base-branch` | string | `main` | Ref the ahead-count is measured against. **Validated:** a value beginning with `-`, or containing whitespace or shell metacharacters, is rejected and falls back to `main`. |
+| `worktree-orphans.mode` | string | `warn` | `warn` \| `off`. A malformed value falls back to `warn`. |
+
+**Why `base-branch` is validated rather than passed through.** It reaches an argv position in `git rev-list --count <base>..<branch>`. A value shaped like a git flag (e.g. `--glob=refs/heads/*`) is parsed as an OPTION rather than a revision range, exits 0, and prints `0` — silently marking **every** worktree as a 0-ahead orphan and offering the operator a deletion prompt for worktrees full of live work. The conservative default does not catch it, because `0` parses fine. Defence is two-layer: the parser rejects leading-dash values, and the sink passes `--end-of-options` so any surviving payload becomes a hard git error. This makes `base-branch` a **fifth command-influencing Session Config surface** beyond the four listed in `.claude/rules/security.md` § "Session Config Command Trust" — and unlike those, no attacker is required: a typo reaches the same outcome.
+
+A worktree holding uncommitted, staged or untracked work is **never** a candidate — `isWorktreeClean()` (the Phase 4a helper) is consulted first, and any git error while checking excludes the worktree conservatively.
+
+**Used by:** `scripts/lib/session-end/worktree-orphan-sweep.mjs` (`checkWorktreeOrphans`), `scripts/lib/config/worktree-orphans.mjs` (`_parseWorktreeOrphans`, `_isSafeBaseBranch`). Wired at `skills/session-end/SKILL.md` Phase 4b.
+
 ## Docs Orchestrator
 
 Opt-in configuration for the `docs-orchestrator` skill, which generates audience-split documentation (User / Dev / Vault) within sessions (see `skills/docs-orchestrator/SKILL.md`). When enabled, session-start runs a Phase 2.5 docs-context step, session-plan assigns a Docs role, and session-end runs a Phase 3.2 gap-reporting step. The `docs-writer` agent is made available automatically when `enabled: true`.

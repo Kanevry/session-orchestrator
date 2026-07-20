@@ -160,8 +160,16 @@ tool_session_metrics() {
   # Filter out phantom `status: 'abandoned'` stubs (#834, session-close-backfill
   # — 0 waves, seconds of runtime) BEFORE taking the tail, so a recent phantom
   # cannot displace real session records out of the last-5 window.
+  #
+  # `-R` (raw-input) + `fromjson?` parses each line individually and SKIPS
+  # unparseable ones instead of aborting the whole stream — plain
+  # `jq -c 'select(...)'` aborts at the FIRST malformed line (jq: parse error,
+  # exit 5), which is fatal here because sessions.jsonl is append-only from
+  # multiple writers and a torn write is exactly the case that matters. This
+  # mirrors the per-line try/catch behaviour of the .mjs path
+  # (scripts/lib/session-schema/filters.mjs).
   local entries
-  entries=$(jq -c 'select(.status != "abandoned")' "$metrics_file" 2>/dev/null | tail -n 5) || true
+  entries=$(jq -R -c 'fromjson? | select(.status != "abandoned")' "$metrics_file" 2>/dev/null | tail -n 5) || true
 
   if [[ -z "$entries" ]]; then
     respond "$id" "$(text_content "No metrics found (file is empty)")"

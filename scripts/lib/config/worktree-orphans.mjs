@@ -20,6 +20,56 @@ import { matchBlockHeader } from './block-header.mjs';
  */
 
 /**
+ * Valid `base-branch` character set — mirrors `ENTER_WORKTREE_BRANCH_RE` in
+ * scripts/lib/autopilot/worktree-pipeline.mjs (itself mirroring the private
+ * `isValidBranch()` in scripts/lib/session-id.mjs). Duplicated rather than
+ * imported because this parser is dependency-free by contract (see header) and
+ * `isValidBranch` is module-private; worktree-pipeline.mjs sets the precedent
+ * for mirroring it locally.
+ */
+const BASE_BRANCH_CHARSET = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * Decide whether a `base-branch` value is safe to hand to the Phase 4b sweep.
+ *
+ * The consumer (scripts/lib/session-end/worktree-orphan-sweep.mjs) interpolates
+ * this value into the argv token `` `${baseBranch}..${branch}` `` for
+ * `git rev-list --count`. Two failure modes make a charset check load-bearing:
+ *
+ *  1. OPTION-SHAPED values. `git rev-list` parses a leading-`-` token as an
+ *     OPTION, not a revision. `--glob=refs/heads/*` makes rev-list answer about
+ *     a completely different ref set and exit 0 with `0` — a silent WRONG
+ *     answer, not an error, so the sweep's conservative-on-error guard never
+ *     fires and every worktree is reported as a 0-ahead orphan.
+ *  2. RANGE-CORRUPTING values. A value containing `..` yields `a..b..branch`.
+ *
+ * No shell-out: `git check-ref-format --branch` is the semantic reference, but
+ * a config parser must stay a pure function. The charset + prefix/suffix rules
+ * below are a conservative SUBSET of what git accepts — a rejected value falls
+ * back to the `main` default rather than failing the parse, because a
+ * mistyped branch name must never escalate into a broken session config.
+ *
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+export function _isSafeBaseBranch(v) {
+  if (typeof v !== 'string' || v.length === 0) return false;
+  // Rejects whitespace and every shell-ish character (= * ; | & $ ` ' " ( ) < >),
+  // which also rejects `--glob=refs/heads/*` on the `=` and `*` alone.
+  if (!BASE_BRANCH_CHARSET.test(v)) return false;
+  // The charset permits `-` so that `my-branch` works; a LEADING `-` is the
+  // option-shaped case and must be rejected explicitly.
+  if (v.startsWith('-')) return false;
+  // Would corrupt the `<base>..<branch>` range token at the sink.
+  if (v.includes('..')) return false;
+  // git check-ref-format: no leading/trailing `/` or `.`, no `.lock` suffix.
+  if (v.startsWith('/') || v.endsWith('/')) return false;
+  if (v.startsWith('.') || v.endsWith('.')) return false;
+  if (v.endsWith('.lock')) return false;
+  return true;
+}
+
+/**
  * Parse the top-level `worktree-orphans:` YAML block from markdown content.
  * Defaults: enabled=false, base-branch="main", mode="warn".
  *
@@ -73,8 +123,10 @@ export function _parseWorktreeOrphans(content) {
         woEnabled = v.toLowerCase() === 'true';
         break;
       case 'base-branch':
-        // Any non-empty scalar is accepted — branch names are repo-specific.
-        if (v.length > 0) woBaseBranch = v;
+        // NOT "any non-empty scalar": an option-shaped or range-corrupting
+        // value is silently dropped in favour of the safe `main` default.
+        // See _isSafeBaseBranch() for why this is a security boundary.
+        if (_isSafeBaseBranch(v)) woBaseBranch = v;
         break;
       case 'mode':
         if (['warn', 'off'].includes(v)) woMode = v;

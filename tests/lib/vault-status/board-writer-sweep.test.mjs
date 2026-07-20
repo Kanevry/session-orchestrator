@@ -47,6 +47,7 @@ import { join } from 'node:path';
 import {
   buildSweepRepos,
   sweepBoard,
+  mirrorBoard,
   resolveBoardPath,
   renderBoard,
   writeBoard,
@@ -585,5 +586,148 @@ describe('sweepBoard — hostPaths forwarding (load-bearing, #783 falsification)
     expect(result.action).toBe('dry-run');
     expect(result.path).toBe(resolveBoardPath(fakeVaultDir));
     expect(result.path).not.toBe(resolveBoardPath(vaultDir));
+  });
+});
+
+// ===========================================================================
+// vault-name override on the SWEEP path (#835)
+//
+// `vault-name` (#660) was applied only to mirrorBoard's FALLBACK single-repo
+// descriptor, which made it inert on the primary production path: sweepBoard
+// (session-start Phase 1.7) always passes a non-empty `repos`, because
+// buildSweepRepos unconditionally appends thisRepoRoot as a bare
+// `{ repoRoot }` entry with NO repoName. Result on a repo whose configured
+// vault-name differs from its directory basename: session-start wrote the row
+// keyed foldKey(basename) while session-end (mirrorBoard without `repos`)
+// wrote it keyed foldKey(vault-name) — two rows, and the close never updated
+// the in-progress one.
+// ===========================================================================
+
+/** makeThisRepo + a `vault-name:` key in the Session Config block. */
+function makeThisRepoWithVaultName(sandbox, name, { vaultDir, vaultName, lock }) {
+  const repoRoot = join(sandbox, name);
+  mkdirSync(repoRoot, { recursive: true });
+  writeFileSync(
+    join(repoRoot, 'CLAUDE.md'),
+    `# Repo\n\n## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ${vaultDir}\n  vault-name: ${vaultName}\n  mode: warn\n`,
+  );
+  if (lock !== undefined && lock !== null) {
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'session.lock'), JSON.stringify(lock, null, 2) + '\n', 'utf8');
+  }
+  return repoRoot;
+}
+
+describe('vault-name override on the sweepBoard path (#835)', () => {
+  it('sweepBoard keys THIS repo row by the configured vault-name, not the directory basename', async () => {
+    const { hostDir, vaultDir, sandbox } = scaffold();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    // Directory basename and configured vault-name deliberately differ.
+    const thisRepoRoot = makeThisRepoWithVaultName(sandbox, 'this-repo-dirname-sweep', {
+      vaultDir,
+      vaultName: 'configured-board-name',
+      lock: buildLockBody({ sessionId: 'sweep-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const repos = readBoardRows(vaultDir).map((r) => r.repo);
+    expect(repos).toContain('configured-board-name');
+    // Falsification: the pre-#835 sweep path rendered path.basename(repoRoot).
+    expect(repos).not.toContain('this-repo-dirname-sweep');
+  });
+
+  it('does NOT rename a FOREIGN repo entry — its vault-name lives in its own config', async () => {
+    const { hostDir, vaultDir, sandbox } = scaffold();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const thisRepoRoot = makeThisRepoWithVaultName(sandbox, 'this-repo-foreign-guard', {
+      vaultDir,
+      vaultName: 'configured-board-name',
+    });
+    const foreignRepoRoot = makeCandidateRepo(hostDir, 'foreign-repo-dirname', null);
+
+    // sweepBoard-shaped input: bare `{ repoRoot }` entries, no repoName anywhere.
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: foreignRepoRoot }, { repoRoot: thisRepoRoot }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const repos = readBoardRows(vaultDir).map((r) => r.repo);
+    expect(repos).toContain('configured-board-name');
+    // The foreign repo keeps its own basename — our vault-name must not leak.
+    expect(repos).toContain('foreign-repo-dirname');
+    expect(repos).toHaveLength(2);
+  });
+
+  it('the session-end shape (no `repos` arg) still honours the override', async () => {
+    const { vaultDir, sandbox } = scaffold();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const thisRepoRoot = makeThisRepoWithVaultName(sandbox, 'this-repo-close-shape', {
+      vaultDir,
+      vaultName: 'configured-board-name',
+    });
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      explicitStatus: 'closed',
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    expect(readBoardRows(vaultDir).map((r) => r.repo)).toEqual(['configured-board-name']);
+  });
+
+  it('THE USER-VISIBLE BUG: a session-start sweep followed by a session-end close leaves ONE row, not two', async () => {
+    const { hostDir, vaultDir, sandbox } = scaffold();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const thisRepoRoot = makeThisRepoWithVaultName(sandbox, 'this-repo-open-close', {
+      vaultDir,
+      vaultName: 'configured-board-name',
+      lock: buildLockBody({ sessionId: 'open-close-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    // 1. session-start Phase 1.7 — the host-wide sweep (passes `repos`).
+    const opened = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+    expect(opened.action).toBe('written');
+    const afterStart = readBoardRows(vaultDir);
+    expect(afterStart.map((r) => r.repo)).toEqual(['configured-board-name']);
+    expect(afterStart[0].status).toBe('in-progress');
+
+    // 2. session-end — the single-repo close (NO `repos` arg).
+    const closed = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      explicitStatus: 'closed',
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+    expect(closed.action).toBe('written');
+
+    // Pre-#835: TWO rows — a stale `in-progress` keyed by the directory
+    // basename plus a fresh `closed` keyed by the vault-name.
+    const afterClose = readBoardRows(vaultDir);
+    expect(afterClose).toHaveLength(1);
+    expect(afterClose[0].repo).toBe('configured-board-name');
+    expect(afterClose[0].status).toBe('closed');
   });
 });

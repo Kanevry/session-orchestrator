@@ -22,6 +22,9 @@ vi.mock('node:fs', async () => {
 
 import { checkContextCoverage } from '@lib/context-coverage-banner.mjs';
 
+/** Minimal explicit opt-in config — the probe is opt-in; omitting this gates closed. */
+const ENABLED_CONFIG = { 'context-coverage': { enabled: true } };
+
 let tmpRepo;
 let tmpVault;
 
@@ -107,11 +110,95 @@ describe('checkContextCoverage — config gate (disabled, no I/O)', () => {
     expect(result).toBe(null);
     expect(readdirSpy).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Fail-open regression (issue #831 defect) — a config that carries OTHER
+  // top-level blocks (here: `vault-integration.vault-dir`) but no
+  // `context-coverage` block at all must NOT run the probe. Before the fix,
+  // `cfg.enabled === false` was false for an absent block (`undefined !==
+  // false`), so the probe ran unsolicited against exactly this fixture shape.
+  // -------------------------------------------------------------------------
+
+  it('FAIL-OPEN REGRESSION: a config with vault-integration.vault-dir but NO context-coverage block does not run the probe', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha'); // WOULD be a gap if the probe ran
+    const readdirSpy = vi.spyOn(fs, 'readdirSync');
+
+    const result = checkContextCoverage({
+      repoRoot: tmpRepo,
+      // NOTE: vault-dir is resolved from config, NOT from opts.vaultDir — this
+      // is the exact fail-open fixture shape the reviewer reproduced: a
+      // config assembled by consumer repos that predates this probe.
+      config: { 'vault-integration': { 'vault-dir': tmpVault } },
+    });
+
+    expect(result).toBe(null);
+    expect(readdirSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null when config is omitted entirely', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha');
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault })).toBe(null);
+  });
+
+  it('returns null when config is an empty object', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha');
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: {} })).toBe(null);
+  });
+
+  it('returns null when the context-coverage block is present but has no enabled key', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha');
+    const result = checkContextCoverage({
+      repoRoot: tmpRepo,
+      vaultDir: tmpVault,
+      config: { 'context-coverage': {} },
+    });
+    expect(result).toBe(null);
+  });
+
+  it('explicit enabled: true still produces the finding (the fix does not simply disable the probe)', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha'); // gap
+    const result = checkContextCoverage({
+      repoRoot: tmpRepo,
+      vaultDir: tmpVault,
+      config: ENABLED_CONFIG,
+    });
+    expect(result).not.toBe(null);
+    expect(result.gaps).toEqual([{ slug: 'alpha' }]);
+  });
+
+  // Positive control (testing.md "Negative-Assertion Fake-Regression Check"):
+  // the `not.toHaveBeenCalled()` assertions above are only meaningful if the
+  // SAME spy DOES fire when the gate is open. Without this test, the negative
+  // is vacuous — it would stay green even if the fs-mock passthrough silently
+  // stopped making the namespace configurable.
+  it('POSITIVE CONTROL: readdirSync IS called when context-coverage.enabled is true', () => {
+    makeProjectsDir(tmpVault);
+    makeProject(tmpVault, 'alpha');
+    const readdirSpy = vi.spyOn(fs, 'readdirSync');
+
+    const result = checkContextCoverage({
+      repoRoot: tmpRepo,
+      vaultDir: tmpVault,
+      config: ENABLED_CONFIG,
+    });
+
+    expect(readdirSpy).toHaveBeenCalled();
+    expect(result).not.toBe(null);
+  });
 });
 
 describe('checkContextCoverage — vault-dir resolution', () => {
   it('returns null when neither opts.vaultDir nor config vault-integration.vault-dir resolves', () => {
-    expect(checkContextCoverage({ repoRoot: tmpRepo, config: {} })).toBe(null);
+    // Explicitly enabled so this null is proven to come from the missing
+    // vault-dir branch, not from the (also-null-producing) disabled gate.
+    expect(
+      checkContextCoverage({ repoRoot: tmpRepo, config: { 'context-coverage': { enabled: true } } })
+    ).toBe(null);
   });
 
   it('resolves the vault dir from config["vault-integration"]["vault-dir"] when opts.vaultDir is absent', () => {
@@ -119,7 +206,7 @@ describe('checkContextCoverage — vault-dir resolution', () => {
     makeProject(tmpVault, 'alpha'); // no context.md/_passive.md — a gap
     const result = checkContextCoverage({
       repoRoot: tmpRepo,
-      config: { 'vault-integration': { 'vault-dir': tmpVault } },
+      config: { 'context-coverage': { enabled: true }, 'vault-integration': { 'vault-dir': tmpVault } },
     });
     expect(result).not.toBe(null);
     expect(result.gaps).toEqual([{ slug: 'alpha' }]);
@@ -138,7 +225,10 @@ describe('checkContextCoverage — vault-dir resolution', () => {
       const result = checkContextCoverage({
         repoRoot: tmpRepo,
         vaultDir: tmpVault,
-        config: { 'vault-integration': { 'vault-dir': configVault } },
+        config: {
+          'context-coverage': { enabled: true },
+          'vault-integration': { 'vault-dir': configVault },
+        },
       });
       expect(result).toBe(null);
     } finally {
@@ -161,7 +251,7 @@ describe('checkContextCoverage — vault-dir resolution', () => {
 
     const result = checkContextCoverage({
       repoRoot: tmpRepo,
-      config: { 'vault-integration': { 'vault-dir': '~/nested-vault' } },
+      config: { 'context-coverage': { enabled: true }, 'vault-integration': { 'vault-dir': '~/nested-vault' } },
     });
 
     expect(result).not.toBe(null);
@@ -171,8 +261,12 @@ describe('checkContextCoverage — vault-dir resolution', () => {
 
 describe('checkContextCoverage — absent 01-projects/', () => {
   it('returns null when <vaultDir>/01-projects/ does not exist', () => {
-    // tmpVault exists but has no 01-projects subdirectory at all.
-    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault })).toBe(null);
+    // tmpVault exists but has no 01-projects subdirectory at all. Explicitly
+    // enabled so this null is proven to come from the absent-directory
+    // branch, not vacuously from the (also-null-producing) closed gate.
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG })).toBe(
+      null
+    );
   });
 });
 
@@ -181,7 +275,9 @@ describe('checkContextCoverage — healthy (every registered project covered)', 
     makeProjectsDir(tmpVault);
     makeProject(tmpVault, 'alpha', { contextMd: true });
     makeProject(tmpVault, 'beta', { passiveMd: true });
-    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault })).toBe(null);
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG })).toBe(
+      null
+    );
   });
 });
 
@@ -189,13 +285,17 @@ describe('checkContextCoverage — coverage-file variants', () => {
   it('context.md alone satisfies coverage', () => {
     makeProjectsDir(tmpVault);
     makeProject(tmpVault, 'alpha', { contextMd: true });
-    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault })).toBe(null);
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG })).toBe(
+      null
+    );
   });
 
   it('_passive.md alone satisfies coverage', () => {
     makeProjectsDir(tmpVault);
     makeProject(tmpVault, 'alpha', { passiveMd: true });
-    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault })).toBe(null);
+    expect(checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG })).toBe(
+      null
+    );
   });
 });
 
@@ -207,7 +307,7 @@ describe('checkContextCoverage — some gaps (exact result shape)', () => {
     makeProject(tmpVault, 'gamma'); // gap
     makeProject(tmpVault, 'delta'); // gap
 
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
 
     expect(result).toEqual({
       severity: 'warn',
@@ -227,7 +327,7 @@ describe('checkContextCoverage — _overview.md registration definition', () => 
     makeProject(tmpVault, 'alpha', { contextMd: true }); // registered + covered
     makeProject(tmpVault, 'unregistered', { overview: false }); // NOT registered — no _overview.md
 
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
 
     // Only 'alpha' is registered (and covered) — the unregistered folder must
     // not inflate `registered` and must never appear in `gaps`.
@@ -239,7 +339,7 @@ describe('checkContextCoverage — _overview.md registration definition', () => 
     makeProject(tmpVault, 'alpha'); // registered, no coverage file — a real gap
     makeProject(tmpVault, 'unregistered', { overview: false }); // no _overview.md, no coverage file either
 
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
 
     expect(result.registered).toBe(1);
     expect(result.gaps).toEqual([{ slug: 'alpha' }]);
@@ -252,7 +352,7 @@ describe('checkContextCoverage — stray file inside 01-projects/', () => {
     fs.writeFileSync(path.join(projectsDir, 'README.md'), '# not a project\n', 'utf8');
     makeProject(tmpVault, 'alpha'); // gap
 
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
 
     expect(result.registered).toBe(1);
     expect(result.gaps).toEqual([{ slug: 'alpha' }]);
@@ -263,7 +363,7 @@ describe('checkContextCoverage — message prefix', () => {
   it('pins the literal "⚠ context-coverage: " prefix', () => {
     makeProjectsDir(tmpVault);
     makeProject(tmpVault, 'alpha'); // gap
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
     expect(result.message.startsWith('⚠ context-coverage: ')).toBe(true);
   });
 });
@@ -275,7 +375,7 @@ describe('checkContextCoverage — large gap count truncation', () => {
       makeProject(tmpVault, `proj-${String(i).padStart(2, '0')}`); // all gaps
     }
 
-    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault });
+    const result = checkContextCoverage({ repoRoot: tmpRepo, vaultDir: tmpVault, config: ENABLED_CONFIG });
 
     expect(result.registered).toBe(25);
     expect(result.gaps).toHaveLength(25);
@@ -287,7 +387,11 @@ describe('checkContextCoverage — fail-silent', () => {
   it('does not throw when repoRoot is a weird value', () => {
     let result;
     expect(() => {
-      result = checkContextCoverage({ repoRoot: '/tmp/\0bad', vaultDir: tmpVault });
+      result = checkContextCoverage({
+        repoRoot: '/tmp/\0bad',
+        vaultDir: tmpVault,
+        config: ENABLED_CONFIG,
+      });
     }).not.toThrow();
     expect(result).toBe(null);
   });

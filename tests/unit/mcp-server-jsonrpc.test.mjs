@@ -8,8 +8,10 @@
 // feed one request line on stdin, and assert the emitted stdout line is valid
 // JSON with the id preserved.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,17 +20,23 @@ import { fileURLToPath } from 'node:url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..', '..');
 const serverScript = join('scripts', 'mcp-server.sh');
+const serverScriptAbs = join(repoRoot, serverScript);
 
 /**
  * Spawn the MCP server, feed a single JSON-RPC request line on stdin, and
  * return the first stdout line (the response).
+ *
+ * @param {object} requestObj
+ * @param {string} [cwd] — defaults to repoRoot; pass a temp repo dir to run
+ *   the server against a controlled fixture instead of the real repo's own
+ *   .orchestrator/metrics/sessions.jsonl.
  */
-function runServer(requestObj) {
+function runServer(requestObj, cwd = repoRoot) {
   const input = `${JSON.stringify(requestObj)}\n`;
-  const result = spawnSync('bash', [serverScript], {
+  const result = spawnSync('bash', [serverScriptAbs], {
     input,
     encoding: 'utf8',
-    cwd: repoRoot,
+    cwd,
   });
   const firstLine = result.stdout.split('\n').find((l) => l.trim().length > 0);
   return { result, firstLine };
@@ -89,5 +97,67 @@ describe('mcp-server.sh JSON-RPC id handling (#650)', () => {
     const parsed = JSON.parse(firstLine);
     expect(parsed.id).toBeNull();
     expect(parsed.error.code).toBe(-32601);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session_metrics tool — torn-write tolerance (regression: jq must not abort
+// the whole sessions.jsonl stream at the first unparseable line).
+//
+// tool_session_metrics() filters out `status: 'abandoned'` phantom stubs via
+// `jq -R -c 'fromjson? | select(.status != "abandoned")'` BEFORE taking the
+// last-5 tail. sessions.jsonl is append-only from multiple writers, so a torn
+// (unparseable) line anywhere in the file must not make the tool report
+// "No metrics found (file is empty)" on a ledger that plainly is not empty.
+// ---------------------------------------------------------------------------
+
+describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
+  let tmpRepo;
+
+  beforeEach(() => {
+    tmpRepo = mkdtempSync(join(tmpdir(), 'mcp-server-metrics-'));
+    // Minimal git init so `git rev-parse --show-toplevel` resolves inside
+    // the fixture repo instead of falling through to the real repo root.
+    spawnSync('git', ['init', '-q'], { cwd: tmpRepo, encoding: 'utf8' });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it('returns both real sessions when a malformed line sits between them, excluding the abandoned stub', () => {
+    const metricsDir = join(tmpRepo, '.orchestrator', 'metrics');
+    mkdirSync(metricsDir, { recursive: true });
+
+    // Fixture order: [real, abandoned, NOT-JSON, real] — a torn write in the
+    // middle of the ledger, exactly the append-only-multi-writer case that
+    // matters. Neutral invented session ids only (no real names).
+    const lines = [
+      JSON.stringify({ session_id: 'session-alpha-001', status: 'ok' }),
+      JSON.stringify({ session_id: 'session-ghost-999', status: 'abandoned' }),
+      'NOT JSON',
+      JSON.stringify({ session_id: 'session-beta-002', status: 'ok' }),
+    ];
+    writeFileSync(join(metricsDir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+    const { firstLine } = runServer(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'session_metrics', arguments: {} },
+      },
+      tmpRepo,
+    );
+
+    const parsed = JSON.parse(firstLine);
+    const text = parsed.result.content[0].text;
+
+    // Specific content assertions — NOT a bare toBeTruthy(), which would pass
+    // even on the broken (stream-aborted, empty-result) behaviour.
+    expect(text).toContain('session-alpha-001');
+    expect(text).toContain('session-beta-002');
+    expect(text).not.toContain('session-ghost-999');
+    expect(text).not.toBe('No metrics found (file is empty)');
   });
 });

@@ -72,17 +72,39 @@ function isoPlusDays(nowIso, days) {
 }
 
 /**
+ * Return the `effectiveness` sub-object of a session record, or an empty object
+ * when absent/malformed. Session records NEST their effectiveness metrics under
+ * this key — see `skills/session-end/metrics-collection.md` (the writer) and
+ * `scripts/lib/eval/session-resolve.mjs` (a sibling reader).
+ *
+ * @param {object} s
+ * @returns {object} the nested block, or `{}` when there is none
+ */
+function effectivenessOf(s) {
+  const e = s?.effectiveness;
+  return e && typeof e === 'object' && !Array.isArray(e) ? e : {};
+}
+
+/**
  * Extract a completion ratio from a session record. Sessions encode this in a
  * few historically-evolved shapes; we tolerate all of them and fall back to
  * `null` (excluded from the average) when nothing usable is present.
+ *
+ * Shape precedence (#835): the NESTED `effectiveness.completion_rate` is the
+ * shape the session-end writer actually emits and is therefore read FIRST. The
+ * top-level read is retained as a fallback for legacy/hand-written records —
+ * dropping it would silently zero out any record predating the nesting.
  *
  * @param {object} s
  * @returns {number|null} ratio in [0, 1], or null when unknown
  */
 function completionOf(s) {
   if (!s || typeof s !== 'object') return null;
-  // Direct ratio fields
-  const direct = num(s.completion_rate ?? s.completion_ratio);
+  const eff = effectivenessOf(s);
+  // Direct ratio fields — nested (canonical) first, then legacy top-level.
+  const direct = num(
+    eff.completion_rate ?? eff.completion_ratio ?? s.completion_rate ?? s.completion_ratio,
+  );
   if (direct !== null && direct >= 0 && direct <= 1) return direct;
   // Planned vs completed counts
   const planned = num(s.planned_count ?? s.tasks_planned);
@@ -95,15 +117,18 @@ function completionOf(s) {
 
 /**
  * Extract a carryover ratio from a session record. Carryover = work not closed
- * within the session that flowed to a follow-up. Same tolerance pattern as
- * `completionOf`.
+ * within the session that flowed to a follow-up. Same tolerance pattern —
+ * and the same nested-first precedence (#835) — as `completionOf`.
  *
  * @param {object} s
  * @returns {number|null} ratio in [0, 1], or null when unknown
  */
 function carryoverOf(s) {
   if (!s || typeof s !== 'object') return null;
-  const direct = num(s.carryover_ratio ?? s.carryover_rate);
+  const eff = effectivenessOf(s);
+  const direct = num(
+    eff.carryover_ratio ?? eff.carryover_rate ?? s.carryover_ratio ?? s.carryover_rate,
+  );
   if (direct !== null && direct >= 0 && direct <= 1) return direct;
   const planned = num(s.planned_count ?? s.tasks_planned);
   const carried = num(s.carryover_count ?? s.tasks_carried_over);

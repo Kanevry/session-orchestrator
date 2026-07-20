@@ -41,6 +41,9 @@ import { checkMocStaleness } from '@lib/moc-staleness-banner.mjs';
 
 const FIXED_NOW = new Date('2026-07-20T00:00:00Z');
 
+/** Minimal explicit opt-in config — the probe is opt-in; omitting this gates closed. */
+const ENABLED_CONFIG = { 'moc-staleness': { enabled: true } };
+
 /** ISO string for `days` whole days before FIXED_NOW. */
 function daysAgoIso(days) {
   return new Date(FIXED_NOW.getTime() - days * 86_400_000).toISOString();
@@ -153,6 +156,118 @@ describe('checkMocStaleness — config gate', () => {
 
     expect(result).toBe(null);
   });
+
+  // -------------------------------------------------------------------------
+  // Fail-open regression (issue #831 defect) — a config that carries OTHER
+  // top-level blocks (here: `vault-integration.vault-dir`) but no
+  // `moc-staleness` block at all must NOT run the probe. Before the fix,
+  // `cfg.enabled === false` was false for an absent block (`undefined !==
+  // false`), so the probe ran unsolicited against exactly this fixture shape.
+  // -------------------------------------------------------------------------
+
+  it('FAIL-OPEN REGRESSION: a config with vault-integration.vault-dir but NO moc-staleness block does not run the probe', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    // Genuinely stale — WOULD produce a finding if the probe ran (proven by
+    // the "reports one stale MOC" test elsewhere using the identical fixture
+    // shape).
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    const existsSpy = vi.spyOn(fs, 'existsSync');
+    const readdirSpy = vi.spyOn(fs, 'readdirSync');
+    const readFileSpy = vi.spyOn(fs, 'readFileSync');
+
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      now: FIXED_NOW,
+      // NOTE: vault-dir is resolved from config, NOT from opts.vaultDir — this
+      // is the exact fail-open fixture shape the reviewer reproduced: a
+      // config assembled by consumer repos that predates this probe.
+      config: { 'vault-integration': { 'vault-dir': vaultDir } },
+    });
+
+    expect(result).toBe(null);
+    expect(existsSpy).not.toHaveBeenCalled();
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(readFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null when config is omitted entirely', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+  });
+
+  it('returns null when config is an empty object', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: {} })).toBe(null);
+  });
+
+  it('returns null when the moc-staleness block is present but has no enabled key', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: { 'moc-staleness': { thresholds: { moc: 90 } } },
+    });
+
+    expect(result).toBe(null);
+  });
+
+  it('explicit enabled: true still produces the finding (the fix does not simply disable the probe)', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG });
+
+    expect(result).not.toBe(null);
+    expect(result.stale).toEqual([{ file: 'alpha-moc.md', days: 200 }]);
+  });
+
+  // Positive control (testing.md "Negative-Assertion Fake-Regression Check"):
+  // the three `not.toHaveBeenCalled()` assertions above are only meaningful
+  // if the SAME spies DO fire when the gate is open. Without this test, all
+  // three negatives are vacuous — they would stay green even if the fs-mock
+  // passthrough silently stopped making the namespace configurable.
+  it('POSITIVE CONTROL: readdirSync IS called when moc-staleness.enabled is true', () => {
+    const tmpRepo = makeTmpDir('moc-staleness-repo-');
+    const vaultDir = makeTmpDir('moc-staleness-vault-');
+    const topicsDir = path.join(vaultDir, '08-topics');
+    fs.mkdirSync(topicsDir, { recursive: true });
+    writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(200)}`);
+
+    const readdirSpy = vi.spyOn(fs, 'readdirSync');
+
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
+
+    expect(readdirSpy).toHaveBeenCalled();
+    expect(result).not.toBe(null);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -162,13 +277,17 @@ describe('checkMocStaleness — config gate', () => {
 describe('checkMocStaleness — vault-dir resolution', () => {
   it('returns null when neither opts.vaultDir nor config vault-integration provide a path', () => {
     const tmpRepo = makeTmpDir('moc-staleness-repo-');
-    expect(checkMocStaleness({ repoRoot: tmpRepo, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('returns null when 08-topics/ is absent under the resolved vault dir', () => {
     const tmpRepo = makeTmpDir('moc-staleness-repo-');
     const vaultDir = makeTmpDir('moc-staleness-vault-'); // no 08-topics/ subdir created
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('opts.vaultDir (test seam) takes precedence over config vault-integration.vault-dir', () => {
@@ -232,7 +351,11 @@ describe('checkMocStaleness — healthy (no banner)', () => {
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(5)}`);
 
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    // Explicitly enabled: this null must be proven to come from the "not
+    // stale" branch, not vacuously from the (also-null-producing) closed gate.
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('ignores a non "-moc.md" file in 08-topics/ regardless of its staleness', () => {
@@ -243,7 +366,9 @@ describe('checkMocStaleness — healthy (no banner)', () => {
     // Very old `updated:`, but the filename does not end in "-moc.md".
     writeMoc(topicsDir, 'example-topic-note.md', `id: example-topic-note\nupdated: ${daysAgoIso(999)}`);
 
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 });
 
@@ -259,12 +384,17 @@ describe('checkMocStaleness — warn (a stale MOC)', () => {
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'example-topic-moc.md', `id: example-topic-moc\nupdated: ${daysAgoIso(142)}`);
 
-    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
 
     expect(result).toEqual({
       severity: 'warn',
       message:
-        '⚠ moc-staleness: 1 MOCs stale (>90 days) — example-topic-moc.md (142d) — ' +
+        '⚠ moc-staleness: 1 MOC stale (>90 days) — example-topic-moc.md (142d) — ' +
         'review and refresh the `updated:` frontmatter.',
       stale: [{ file: 'example-topic-moc.md', days: 142 }],
     });
@@ -277,7 +407,12 @@ describe('checkMocStaleness — warn (a stale MOC)', () => {
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(120)}`);
 
-    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
 
     expect(result.message.startsWith('⚠ moc-staleness: ')).toBe(true);
   });
@@ -289,8 +424,12 @@ describe('checkMocStaleness — warn (a stale MOC)', () => {
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'alpha-moc.md', `id: alpha-moc\nupdated: ${daysAgoIso(45)}`);
 
-    // Below the default 90d threshold — silent under defaults.
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    // Below the default 90d threshold — silent under defaults. Explicitly
+    // enabled so this null is proven to come from the threshold comparison,
+    // not vacuously from the (also-null-producing) closed gate.
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
 
     // Above a tightened 30d threshold — warns.
     const result = checkMocStaleness({
@@ -311,7 +450,12 @@ describe('checkMocStaleness — warn (a stale MOC)', () => {
     writeMoc(topicsDir, 'example-topic-moc.md', `id: example-topic-moc\nupdated: ${daysAgoIso(142)}`);
     writeMoc(topicsDir, 'other-moc.md', `id: other-moc\nupdated: ${daysAgoIso(98)}`);
 
-    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
 
     expect(Array.isArray(result)).toBe(false);
     expect(result.severity).toBe('warn');
@@ -331,7 +475,12 @@ describe('checkMocStaleness — warn (a stale MOC)', () => {
       writeMoc(topicsDir, name, `id: ${name}\nupdated: ${daysAgoIso(200)}`);
     }
 
-    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
 
     expect(result.stale).toHaveLength(25);
     expect(result.message).toContain('more (name list truncated)');
@@ -350,7 +499,9 @@ describe('checkMocStaleness — missing/unparseable updated: is excluded', () =>
     fs.mkdirSync(topicsDir, { recursive: true });
     fs.writeFileSync(path.join(topicsDir, 'alpha-moc.md'), '# alpha\n\nno frontmatter here.\n', 'utf8');
 
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('returns null when the only MOC has frontmatter but no updated: key', () => {
@@ -360,7 +511,9 @@ describe('checkMocStaleness — missing/unparseable updated: is excluded', () =>
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'alpha-moc.md', 'id: alpha-moc\ntype: reference');
 
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('returns null when the only MOC has an unparseable updated: value', () => {
@@ -370,7 +523,9 @@ describe('checkMocStaleness — missing/unparseable updated: is excluded', () =>
     fs.mkdirSync(topicsDir, { recursive: true });
     writeMoc(topicsDir, 'alpha-moc.md', 'id: alpha-moc\nupdated: not-a-real-date');
 
-    expect(checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW })).toBe(null);
+    expect(
+      checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG })
+    ).toBe(null);
   });
 
   it('excludes a broken-frontmatter MOC while still reporting a genuinely stale sibling', () => {
@@ -383,7 +538,12 @@ describe('checkMocStaleness — missing/unparseable updated: is excluded', () =>
     // Reported: genuinely stale
     writeMoc(topicsDir, 'example-topic-moc.md', `id: example-topic-moc\nupdated: ${daysAgoIso(142)}`);
 
-    const result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+    const result = checkMocStaleness({
+      repoRoot: tmpRepo,
+      vaultDir,
+      now: FIXED_NOW,
+      config: ENABLED_CONFIG,
+    });
 
     expect(result.stale).toEqual([{ file: 'example-topic-moc.md', days: 142 }]);
     expect(result.message).not.toContain('broken-moc.md');
@@ -403,7 +563,7 @@ describe('checkMocStaleness — fail-silent', () => {
 
     let result;
     expect(() => {
-      result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW });
+      result = checkMocStaleness({ repoRoot: tmpRepo, vaultDir, now: FIXED_NOW, config: ENABLED_CONFIG });
     }).not.toThrow();
     expect(result).toBe(null);
   });

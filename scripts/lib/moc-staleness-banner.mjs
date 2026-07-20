@@ -194,8 +194,14 @@ export function checkMocStaleness({ repoRoot, vaultDir, now, config } = {}) {
         ? config['moc-staleness']
         : {};
 
-    // Config gate — returns null BEFORE any filesystem I/O.
-    if (cfg.enabled === false || cfg.mode === 'off') return null;
+    // Config gate — returns null BEFORE any filesystem I/O. Explicit opt-in
+    // required: `cfg.enabled` must be the literal `true`, not merely
+    // truthy/absent. A config block that is entirely absent (or present
+    // without an `enabled` key) must fail CLOSED, not open — see issue #831
+    // fail-open regression (a config carrying `vault-integration.vault-dir`
+    // but no `moc-staleness` block previously ran the probe unsolicited,
+    // because `undefined !== false`).
+    if (cfg?.enabled !== true || cfg?.mode === 'off') return null;
 
     const rawVaultDir = _resolveRawVaultDir(vaultDir, config);
     if (!rawVaultDir) return null;
@@ -248,7 +254,8 @@ export function checkMocStaleness({ repoRoot, vaultDir, now, config } = {}) {
 
     if (stale.length === 0) return null;
 
-    const finding = `${stale.length} MOCs stale (>${thresholdDays} days)`;
+    const subjectLabel = stale.length === 1 ? '1 MOC stale' : `${stale.length} MOCs stale`;
+    const finding = `${subjectLabel} (>${thresholdDays} days)`;
     const remediation = 'review and refresh the `updated:` frontmatter.';
     const message = `⚠ moc-staleness: ${finding} — ${_formatStaleNames(stale)} — ${remediation}`;
 

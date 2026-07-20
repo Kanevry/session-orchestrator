@@ -480,10 +480,12 @@ export function writeBoard(opts) {
  * @param {string} opts.repoRoot — the repo whose row is being updated.
  * @param {Array<{ repoRoot: string, repoName?: string, status?: string }>} [opts.repos]
  *   Full repo list; defaults to a single-repo descriptor
- *   `[{ repoRoot, repoName: <vault-name override>, status: explicitStatus }]`
- *   where `repoName` comes from Session Config `vault-integration.vault-name`
- *   (#660) and is `undefined` when unset — in which case {@link collectRows}
- *   falls back to `path.basename(repoRoot)` as before.
+ *   `[{ repoRoot, status: explicitStatus }]`. Whichever entry resolves to
+ *   `repoRoot` — in the caller-supplied list as well as in the default — gets
+ *   its `repoName` filled from Session Config `vault-integration.vault-name`
+ *   (#660) unless it already carries one; entries for other repos are never
+ *   touched. With no `vault-name` configured, {@link collectRows} falls back to
+ *   `path.basename(repoRoot)` as before.
  * @param {string} [opts.explicitStatus] — per-repo status override ('closed' from session-end).
  * @param {Date} [opts.now]
  * @param {boolean} [opts.dryRun]
@@ -529,19 +531,49 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   }
 
   // `vault-name` (#660) overrides the git-derived repo slug for per-project
-  // vault namespacing. Honour it for the single-repo default descriptor too —
-  // without it `collectRows` falls back to `path.basename(repoRoot)`, so a repo
-  // whose directory name differs from its configured vault name rendered under
-  // the wrong board row. An explicit `repos` array is left untouched: its
-  // entries carry their own `repoName` and are the caller's responsibility.
+  // vault namespacing. Without it `collectRows` falls back to
+  // `path.basename(repoRoot)`, so a repo whose directory name differs from its
+  // configured vault name renders under the wrong board row.
+  //
+  // The override is applied during descriptor NORMALISATION, not descriptor
+  // CONSTRUCTION (#835). Applying it only to the fallback single-repo
+  // descriptor made it inert on the primary production path: `sweepBoard`
+  // (session-start Phase 1.7) ALWAYS passes a non-empty `repos` — see
+  // {@link buildSweepRepos}, which unconditionally appends `thisRepoRoot` and
+  // emits bare `{ repoRoot }` entries with NO `repoName`. So session-start
+  // keyed the row `foldKey(path.basename(repoRoot))` while session-end (which
+  // calls this function WITHOUT `repos`) keyed it `foldKey(vault-name)`. The
+  // merge key is `repoName`, so the close never updated the in-progress row:
+  // a duplicate row plus a permanently stale `in-progress` status.
+  //
+  // Scope: ONLY the entry whose `repoRoot` resolves to THIS repo's root is
+  // touched. Entries for FOREIGN repos are left alone — a foreign repo's
+  // `vault-name` lives in ITS own Session Config, which this function does not
+  // read; stamping our override onto it would mislabel someone else's row. An
+  // entry that already carries an explicit non-empty `repoName` also wins, so
+  // a caller can still name its own row deliberately (#832 contract).
   const vaultName = vault['vault-name'];
   const repoNameOverride = typeof vaultName === 'string' && vaultName.length > 0
     ? vaultName
     : undefined;
 
-  const repoList = Array.isArray(repos) && repos.length > 0
+  const baseRepoList = Array.isArray(repos) && repos.length > 0
     ? repos
-    : [{ repoRoot, repoName: repoNameOverride, status: explicitStatus }];
+    : [{ repoRoot, status: explicitStatus }];
+
+  const repoList = repoNameOverride === undefined
+    ? baseRepoList
+    : baseRepoList.map((entry) => {
+        if (!entry || typeof entry.repoRoot !== 'string' || entry.repoRoot.length === 0) return entry;
+        if (typeof entry.repoName === 'string' && entry.repoName.length > 0) return entry;
+        let isSelf;
+        try {
+          isSelf = path.resolve(entry.repoRoot) === path.resolve(repoRoot);
+        } catch {
+          isSelf = false;
+        }
+        return isSelf ? { ...entry, repoName: repoNameOverride } : entry;
+      });
 
   const outputPath = resolveBoardPath(vaultDir);
 
