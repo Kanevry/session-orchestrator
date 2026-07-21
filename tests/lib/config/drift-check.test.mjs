@@ -59,19 +59,24 @@ describe('_parseDriftCheck', () => {
   });
 
   describe('mode', () => {
-    it('parses mode: hard', () => {
+    it('parses mode: strict', () => {
+      const content = 'drift-check:\n  enabled: true\n  mode: strict\n';
+      expect(_parseDriftCheck(content).mode).toBe('strict');
+    });
+
+    it('normalizes legacy mode: hard → strict (#217 alias)', () => {
       const content = 'drift-check:\n  enabled: true\n  mode: hard\n';
-      expect(_parseDriftCheck(content).mode).toBe('hard');
+      expect(_parseDriftCheck(content).mode).toBe('strict');
+    });
+
+    it('parses mode: warn', () => {
+      const content = 'drift-check:\n  mode: warn\n';
+      expect(_parseDriftCheck(content).mode).toBe('warn');
     });
 
     it('parses mode: off', () => {
       const content = 'drift-check:\n  mode: off\n';
       expect(_parseDriftCheck(content).mode).toBe('off');
-    });
-
-    it('silently defaults to "warn" on stale strict mode', () => {
-      const content = 'drift-check:\n  mode: strict\n';
-      expect(_parseDriftCheck(content).mode).toBe('warn');
     });
 
     it('silently defaults to "warn" on invalid mode', () => {
@@ -167,10 +172,10 @@ describe('_parseDriftCheck', () => {
 
   describe('CRLF tolerance and inline comments', () => {
     it('handles CRLF line endings', () => {
-      const content = 'drift-check:\r\n  enabled: true\r\n  mode: hard\r\n';
+      const content = 'drift-check:\r\n  enabled: true\r\n  mode: strict\r\n';
       const result = _parseDriftCheck(content);
       expect(result.enabled).toBe(true);
-      expect(result.mode).toBe('hard');
+      expect(result.mode).toBe('strict');
     });
 
     it('strips inline YAML comments', () => {

@@ -63,15 +63,33 @@ describe('mode handling', () => {
     expect(j.errors.length).toBeGreaterThan(0);
   });
 
-  it('mode=hard exits 1 when errors exist', () => {
+  it('mode=strict exits 1 when errors exist', () => {
+    writeFileSync(join(vault, 'CLAUDE.md'), 'Bad path: /Users/definitely/missing/xyz-abc\n');
+    const r = runChecker(vault, ['--mode', 'strict', '--skip-issue-refs']);
+    expect(r.code).toBe(1);
+    const j = parseJson(r.stdout);
+    expect(j.status).toBe('invalid');
+    expect(j.mode).toBe('strict');
+  });
+
+  it('mode=strict exits 0 when clean', () => {
+    writeFileSync(join(vault, 'CLAUDE.md'), '# clean\nNo paths here.\n');
+    const r = runChecker(vault, ['--mode', 'strict', '--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.status).toBe('ok');
+  });
+
+  it('mode=hard (legacy alias) exits 1 when errors exist and normalizes to strict', () => {
     writeFileSync(join(vault, 'CLAUDE.md'), 'Bad path: /Users/definitely/missing/xyz-abc\n');
     const r = runChecker(vault, ['--mode', 'hard', '--skip-issue-refs']);
     expect(r.code).toBe(1);
     const j = parseJson(r.stdout);
     expect(j.status).toBe('invalid');
+    expect(j.mode).toBe('strict');
   });
 
-  it('mode=hard exits 0 when clean', () => {
+  it('mode=hard (legacy alias) exits 0 when clean', () => {
     writeFileSync(join(vault, 'CLAUDE.md'), '# clean\nNo paths here.\n');
     const r = runChecker(vault, ['--mode', 'hard', '--skip-issue-refs']);
     expect(r.code).toBe(0);

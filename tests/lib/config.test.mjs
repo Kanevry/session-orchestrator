@@ -1120,7 +1120,19 @@ describe('#217 regression — hard-mode handling by gate', () => {
     expect(config['vault-sync'].mode).toBe('warn');
   });
 
-  it('drift-check.mode: hard is preserved for checker hard-mode carryover flow', () => {
+  it('drift-check.mode: strict is accepted (was silently downgraded to warn pre-fix)', () => {
+    const content = [
+      '## Session Config',
+      '',
+      'drift-check:',
+      '  enabled: true',
+      '  mode: strict',
+    ].join('\n');
+    const config = parseSessionConfig(content);
+    expect(config['drift-check'].mode).toBe('strict');
+  });
+
+  it('drift-check.mode: hard normalizes to strict (legacy alias — #217 drift-check half)', () => {
     const content = [
       '## Session Config',
       '',
@@ -1129,7 +1141,7 @@ describe('#217 regression — hard-mode handling by gate', () => {
       '  mode: hard',
     ].join('\n');
     const config = parseSessionConfig(content);
-    expect(config['drift-check'].mode).toBe('hard');
+    expect(config['drift-check'].mode).toBe('strict');
   });
 });
 

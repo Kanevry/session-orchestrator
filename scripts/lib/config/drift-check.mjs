@@ -99,7 +99,15 @@ export function _parseDriftCheck(content) {
         dcEnabled = v.toLowerCase() === 'true';
         break;
       case 'mode':
-        if (['hard', 'warn', 'off'].includes(v)) dcMode = v;
+        // Enum: strict|warn|off. `hard` is a legacy alias for `strict`,
+        // normalized here. This is the drift-check half of the #217 enum
+        // migration (vault-sync moved hard→strict on 2026-04-21; drift-check
+        // was forgotten, so a committed `mode: strict` silently fell back to
+        // the `warn` default and the narrative-drift gate ran unenforced).
+        // Invalid values still fall back to the 'warn' default below.
+        if (['strict', 'hard', 'warn', 'off'].includes(v)) {
+          dcMode = v === 'hard' ? 'strict' : v;
+        }
         break;
       case 'include-paths':
         if (!v) inIncludeList = true;
