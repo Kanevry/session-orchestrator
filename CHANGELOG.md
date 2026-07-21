@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.0] - 2026-07-21
+
+Telemetry & curation release. Headline: **opt-in anonymous usage telemetry** (#841) — a
+consent-gated client with anonymous IDs, a local queue, and a record_kind-generic ingest
+path, off by default — alongside the **vault-curation probe trio** (#831 B2/B4/B5), the
+completed abandoned-session sweep, and a review-panel/gates hardening pass. The npm
+distribution line is complete: this release ships the `npm-publish` token-runbook skill
+distilled from the v3.16.0 first publish (#825) plus broadened registry metadata.
+
+### Added
+
+- **Opt-in anonymous usage telemetry (#841)** — `scripts/lib/telemetry/` (`anon-id`, `consent`, `queue`, `schema`, `sync`): consent-gated client with anonymous IDs and a local queue, record_kind-generic ingest, `flush()` with `ownerConfig` injection for hermetic tests. Off by default; PRD at `docs/prd/2026-07-20-anonymous-usage-telemetry.md`.
+- **Vault-curation probes B2/B4/B5 (#831)** — `moc-staleness` (frontmatter-`updated:` MOC banner), `context-coverage` (registered projects missing `context.md`/`_passive.md`), `worktree-orphans` (candidates-only sweep — never deletes, PSA-003) — all opt-in via Session Config; abandoned-session sweep completed.
+- **`skills/npm-publish/`** — token-based publish runbook (granular-token requirements, temp-userconfig flow, leakage gates, failure-mode table) distilled from the v3.16.0 first publish (#825).
+
+### Fixed
+
+- **Review-panel findings** — base-branch injection in diff-range resolution, fail-open quality gates, torn-write `jq` invocation, inert analyzer wiring.
+- **vault-sync register/mode + abandoned-session signal integrity** — register/mode vocabulary alignment, enumerate scan depth, signal-integrity guards on the abandoned-session sweep.
+- **Telemetry `flush()`** — accepts `ownerConfig` injection so hermetic tests never read the host `owner.yaml`.
+
+### Changed
+
+- **npm discoverability** — broadened `keywords` + explicit `bugs` field in `package.json`.
+
 ## [3.16.0] - 2026-07-19
 
 Hardening release. Headline: the **bold-key parser fix goes class-wide** — a shared
