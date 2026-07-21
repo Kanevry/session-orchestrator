@@ -15,7 +15,7 @@ Dieses Kit macht jeden externen Submission-Schritt zu einem 5-Minuten-Browser-Ta
 **Voraussetzungen:**
 - Anthropic-Account-Login im Browser.
 - `claude plugin validate` lokal grün (heute bereits bestätigt: „Validation passed").
-- Der Katalog-Eintrag existiert bereits (SHA `fdb27d9`, 2026-04-07, ~588 Commits hinter HEAD) — das ist ein Refresh, keine Neu-Einreichung. PRs gegen `anthropics/claude-plugins-community` werden automatisch geschlossen — nur das Formular funktioniert.
+- Der Katalog-Eintrag existiert bereits (SHA `fdb27d9`, 2026-04-07, ~610 Commits hinter HEAD) — das ist ein Refresh, keine Neu-Einreichung. PRs gegen `anthropics/claude-plugins-community` werden automatisch geschlossen — nur das Formular funktioniert.
 
 **Ablauf-Checkliste:**
 1. `claude plugin validate` (lokal) erneut laufen lassen und Output als Beleg griffbereit halten.
@@ -31,8 +31,9 @@ Requesting a catalog refresh for an existing listing.
 
 Plugin: session-orchestrator
 Repository: https://github.com/Kanevry/session-orchestrator
-Current catalog pin: fdb27d9 (2026-04-07), approximately 588 commits behind HEAD.
-Current version: 3.14.0 (validated locally with `claude plugin validate`).
+Current catalog pin: fdb27d9 (2026-04-07), approximately 610 commits behind HEAD.
+Current version: 3.17.0 (validated locally with `claude plugin validate`;
+also published on npm as session-orchestrator@3.17.0).
 
 The catalog metadata (description, homepage) is stale relative to the current
 .claude-plugin/plugin.json. Requesting:
@@ -49,7 +50,7 @@ configuration gap on our end (e.g. missing webhook or label) we should fix.
 Contact: office@gotzendorfer.at
 ```
 
-**Erwartetes Ergebnis + Verifikation:** Katalog-Pin zeigt auf aktuellen `main`-HEAD statt `fdb27d9`, Metadaten decken sich mit `.claude-plugin/plugin.json`. Verifikation: `/plugin install session-orchestrator@claude-community` in Claude Code installiert Version 3.14.0 (oder höher), nicht den alten Snapshot.
+**Erwartetes Ergebnis + Verifikation:** Katalog-Pin zeigt auf aktuellen `main`-HEAD statt `fdb27d9`, Metadaten decken sich mit `.claude-plugin/plugin.json`. Verifikation: `/plugin install session-orchestrator@claude-community` in Claude Code installiert Version 3.17.0 (oder höher), nicht den alten Snapshot.
 
 ---
 
