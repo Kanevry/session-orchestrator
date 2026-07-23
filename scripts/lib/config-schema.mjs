@@ -25,11 +25,13 @@ const REQUIRED_STRING_FIELDS = [
  */
 export function validateSessionConfig(config) {
   const errors = [];
+  const warnings = [];
 
   if (config === null || typeof config !== 'object' || Array.isArray(config)) {
     return {
       ok: false,
       errors: [{ path: '$', rule: 'type', message: 'config must be a JSON object' }],
+      warnings,
     };
   }
 
@@ -90,10 +92,24 @@ export function validateSessionConfig(config) {
     for (const msg of gpErrs) errors.push({ path: 'gitlab-portfolio', rule: 'object', message: msg });
   }
 
-  if (errors.length > 0) {
-    return { ok: false, errors };
+  // HR-003 cross-field anti-pattern (baseline #60): a heavy repo left on
+  // isolation: auto|none accumulates worktrees without the aggressive cleanup
+  // HR-003 recommends — this is advisory (warn-level), it never flips `ok`.
+  if (config['heavy-repo'] === true) {
+    const isolationVal = config['isolation'];
+    if (isolationVal === 'auto' || isolationVal === 'none') {
+      warnings.push({
+        path: 'isolation',
+        rule: 'heavy-repo-cross-field',
+        message: `heavy-repo: true but isolation is '${isolationVal}' — heavy repos should pin isolation: worktree (HR-003)`,
+      });
+    }
   }
-  return { ok: true, config };
+
+  if (errors.length > 0) {
+    return { ok: false, errors, warnings };
+  }
+  return { ok: true, config, warnings };
 }
 
 function validateAgentsPerWave(value, errors) {

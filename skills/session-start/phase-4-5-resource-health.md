@@ -10,13 +10,18 @@ Read `.orchestrator/host.json` (written by `hooks/on-session-start.mjs`) and run
 // Conceptual — the wave-executor and session-plan skills call these directly.
 import { probe, evaluate } from '$PLUGIN_ROOT/scripts/lib/resource-probe.mjs';
 const snapshot = await probe();
-const verdict = evaluate(snapshot, config['resource-thresholds']);
+const verdict = evaluate(snapshot, config['resource-thresholds'], {
+  heavyRepo: config['heavy-repo'],
+  agentsPerWave: config['agents-per-wave'],
+});
 ```
 
 The `evaluate()` result has three fields:
 - `verdict`: `green` | `warn` | `critical`
 - `reasons`: array of human-readable explanations
 - `recommended_agents_per_wave_cap`: integer cap (0 = coordinator-direct) or null
+
+The third `options` argument is optional (HR-003/HR-004, baseline #60) — when `config['heavy-repo']` is `true`, the cap is forced to at most `config['agents-per-wave']` regardless of the live verdict (static preflight ceiling; more-restrictive-wins against whatever the resource signals already computed). Omitting `options` entirely preserves pre-#60 behaviour.
 
 ## Adaptive Rules (default thresholds; configurable via `resource-thresholds`)
 
@@ -34,6 +39,12 @@ Print a one-line Resource Health verdict immediately after Phase 4's output:
 
 ```
 Resource Health: ⚠ warn — RAM free 3.1 GB below threshold 4 GB; capping agents-per-wave at 2.
+```
+
+When `config['heavy-repo']` is `true` and the HR-004 preflight ceiling actually reduces `recommended_agents_per_wave_cap` below what the live verdict alone would have produced, print an additional banner line right after the verdict line:
+
+```
+⚠ Heavy-repo mode active — agents-per-wave capped to 4 (Session Config heavy-repo: true)
 ```
 
 When verdict is `warn` or `critical`, use the AskUserQuestion tool to present:

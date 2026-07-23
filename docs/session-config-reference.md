@@ -303,6 +303,19 @@ Independent of isolation choice, wave-executor now persists a per-worktree meta 
 
 This guard converts the manual post-copy `git diff` check (used to rescue the 07:30 and 09:00 regressions) into a coded pre-copy gate. The check is non-blocking on `pass` / `warn` / `no-meta`; only `block` interrupts the wave.
 
+### Heavy-Repo Preflight (HR-003/HR-004, baseline #60)
+
+`templates/shared/.claude/rules/heavy-repo.md` documents two Session Config fields for repos large enough that default parallelism risks resource pressure (HR-001 indicators: checkout > 50 MB, DB surface > 100 tables, prior parallel agent count > 15, build time > 90s, generated artifacts > 200 MB). Both fields are now wired end-to-end (previously documented but silently dropped by the parser):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `heavy-repo` | boolean | `false` | Marks the repo as heavy per HR-001. When `true`, `scripts/lib/resource-probe/evaluate.mjs` and `scripts/lib/wave-resource-gate.mjs` apply a STATIC preflight ceiling: `recommended_agents_per_wave_cap` / dispatched `agents` are clamped to at most `agents-per-wave`, REGARDLESS of the live resource-probe verdict. When `agents-per-wave` uses the parenthetical override syntax (e.g. `4 (deep: 18)`), the parsed value is an object `{default, <mode>: N}`, not a plain number — both modules resolve that shape to `.default` (no session-mode input is in scope at the gate), so the cap is never silently skipped for overridden repos. More-restrictive-wins: a resource-driven `reduce`/`coordinator-direct` that already computed a tighter number is never loosened by this cap — it only ever lowers, never raises, the dispatched agent count. `validateSessionConfig()` (`scripts/lib/config-schema.mjs`) also emits a warn-level cross-field finding when `heavy-repo: true` and `isolation` is `auto` or `none` — heavy repos should pin `isolation: worktree` (HR-003 anti-pattern). |
+| `worktree-cleanup` | string | `default` | One of `default` \| `aggressive`. HR-003 recommends `aggressive` for heavy repos (clean up worktrees immediately after each wave, no cross-wave retention). **Honesty note:** `aggressive` currently behaves identically to `default` at runtime — the parser accepts and returns the value, but the per-wave aggressive sweep into `worktree-cleanup.mjs`/`worktree-sweep.mjs` is a tracked follow-up, not yet implemented. Setting this field today documents intent; it does not yet change wave-executor's cleanup cadence. |
+
+Session-start Phase 4.5 (`skills/session-start/phase-4-5-resource-health.md`) passes `heavy-repo` and `agents-per-wave` through to `evaluate()` and renders `⚠ Heavy-repo mode active — agents-per-wave capped to N (Session Config heavy-repo: true)` when the ceiling actually reduces the recommendation, per HR-004.
+
+The heavy-repo cap applies only on the resource-aware path: it runs inside `applyDecisionRules()`/`evaluate()`, both gated behind `resource-awareness` being enabled (the default). Setting `resource-awareness: false` is a FULL opt-out — it skips the live probe AND bypasses the HR-004 static cap, even when `heavy-repo: true` is also set.
+
 ## Planning
 
 | Field | Type | Default | Description |

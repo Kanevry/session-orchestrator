@@ -195,6 +195,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const allowDestructiveOps = _coerceBoolean(kv, 'allow-destructive-ops', false);
   const resourceAwareness = _coerceBoolean(kv, 'resource-awareness', true);
   const enableHostBanner = _coerceBoolean(kv, 'enable-host-banner', true);
+  // heavy-repo / worktree-cleanup: HR-003 preflight fields (templates/shared/.claude/rules/heavy-repo.md),
+  // documented but previously unwired — silently dropped by the parser (baseline issue #60).
+  const heavyRepo = _coerceBoolean(kv, 'heavy-repo', false);
 
   // List fields
   const crossRepos = _coerceList(kv, 'cross-repos', undefined);
@@ -212,6 +215,10 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const enforcement = _coerceEnum(kv, 'enforcement', 'warn', ['strict', 'warn', 'off']);
   const isolation = _coerceEnum(kv, 'isolation', 'auto', ['worktree', 'none', 'auto']);
   const discoverySeverityThreshold = _coerceEnum(kv, 'discovery-severity-threshold', 'low', ['critical', 'high', 'medium', 'low']);
+  // worktree-cleanup: HR-003 (baseline issue #60). NOTE: 'aggressive' currently behaves
+  // identically to 'default' at runtime — the per-wave aggressive sweep is a tracked
+  // follow-up (see docs/session-config-reference.md). This wires the parser + value only.
+  const worktreeCleanup = _coerceEnum(kv, 'worktree-cleanup', 'default', ['default', 'aggressive']);
 
   // Object fields
   const agentMapping = _coerceObject(kv, 'agent-mapping');
@@ -437,6 +444,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'allow-destructive-ops': allowDestructiveOps,
     'resource-awareness': resourceAwareness,
     'enable-host-banner': enableHostBanner,
+    'heavy-repo': heavyRepo,
+    'worktree-cleanup': worktreeCleanup,
     'resource-thresholds': resourceThresholds,
     'worktree-exclude': worktreeExclude,
     'vault-integration': vaultIntegration,

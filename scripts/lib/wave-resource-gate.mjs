@@ -54,13 +54,87 @@ async function extractMeasurements(opts) {
 
 /**
  * Apply the gate decision rule sequence (rules 3-8) given measurements and
- * config. Returns the full gate result.
+ * config, then apply the HR-004 heavy-repo preflight ceiling on top. Returns
+ * the full gate result.
  *
  * @param {{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number}} measurements
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
  * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
  */
 function applyDecisionRules(measurements, opts) {
+  const result = computeResourceDecision(measurements, opts);
+  return applyHeavyRepoCap(result, opts);
+}
+
+/**
+ * Resolve an `agents-per-wave` config value into a plain numeric cap, or
+ * `null` when no cap should apply.
+ *
+ * `_coerceInteger()` (scripts/lib/config/coercers.mjs) parses the documented
+ * HR-003 parenthetical-override syntax — `agents-per-wave: 4 (deep: 18)` —
+ * into an OBJECT `{ default: 4, deep: 18 }`, not a plain number. Feeding that
+ * object straight into a `typeof cap !== 'number'` guard makes the heavy-repo
+ * cap silently no-op for every repo using the override syntax, which defeats
+ * HR-004 exactly where it matters most (a heavy repo that also runs deep
+ * sessions).
+ *
+ * `evaluateWaveResourceGate()` has no session-mode input in scope — `waveRole`
+ * is a wave role (e.g. "Impl-Core"), not a session mode (e.g. "deep") — so the
+ * object shape resolves to `cap.default` here. That is the conservative
+ * choice: the documented HR-003 convention writes the override as
+ * `<default> (mode: <higher-ceiling>)`, i.e. `default` is the MORE
+ * restrictive of the pair. Falling back to it can only under-apply a looser
+ * mode-specific ceiling; it never lets a heavy repo exceed its base cap.
+ *
+ * @param {number|{default: number, [mode: string]: number}|*} cap
+ * @returns {number|null}
+ */
+function resolveApwCap(cap) {
+  if (typeof cap === 'number') return Number.isFinite(cap) ? cap : null;
+  if (cap !== null && typeof cap === 'object' && !Array.isArray(cap)) {
+    const def = cap.default;
+    return typeof def === 'number' && Number.isFinite(def) ? def : null;
+  }
+  return null;
+}
+
+/**
+ * HR-003/HR-004 heavy-repo preflight ceiling (baseline #60). A STATIC cap
+ * independent of the live resource-probe verdict: when `config['heavy-repo']`
+ * is `true`, `agents` is clamped to at most `config['agents-per-wave']`
+ * (resolved via {@link resolveApwCap} to handle the object-override shape).
+ * More-restrictive-wins — this only ever LOWERS `agents`, never raises it
+ * above what the resource-driven rules already decided (e.g. a
+ * coordinator-direct 0 stays 0).
+ *
+ * @param {{decision: string, agents: number, reasons: string[], measurements: object}} result
+ * @param {object} opts - Same opts shape as evaluateWaveResourceGate
+ * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
+ */
+function applyHeavyRepoCap(result, opts) {
+  const { config } = opts;
+  if (!config || config['heavy-repo'] !== true) return result;
+  const cap = resolveApwCap(config['agents-per-wave']);
+  if (cap === null) return result;
+  if (result.agents <= cap) return result; // already within the ceiling — never raise
+  return {
+    ...result,
+    decision: result.decision === 'coordinator-direct' ? 'coordinator-direct' : 'reduce',
+    agents: cap,
+    reasons: [...result.reasons, `heavy-repo: true caps agents-per-wave to ${cap} (HR-004)`],
+  };
+}
+
+/**
+ * Rules 3-8: resource-driven decision sequence (RAM/CPU/concurrent-sessions).
+ * Extracted so `applyDecisionRules` can layer the HR-004 heavy-repo cap on
+ * top without duplicating this sequence.
+ *
+ * @param {{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number}} measurements
+ * @param {object} opts - Same opts shape as evaluateWaveResourceGate
+ * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
+ */
+function computeResourceDecision(measurements, opts) {
   const { config, plannedAgents } = opts;
   const { ramFreeGb, ramAvailableGb, cpuLoadPct, concurrentSessions } = measurements;
   const T = config['resource-thresholds'];
@@ -156,6 +230,11 @@ export async function evaluateWaveResourceGate(opts) {
   const { config, plannedAgents } = opts;
 
   // Rule 1: resource-awareness disabled — skip all probing.
+  // `resource-awareness: false` is a FULL opt-out, INCLUDING the HR-004
+  // heavy-repo static cap below (applyHeavyRepoCap runs only inside
+  // applyDecisionRules, which this early return bypasses entirely). The
+  // static cap only applies on the resource-aware path — deliberate,
+  // reviewed 2026-07-23, baseline #60.
   if (config['resource-awareness'] === false) {
     return {
       decision: 'proceed',

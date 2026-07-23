@@ -251,3 +251,85 @@ describe('session-config-parity — opt-in baseline severity split (#785)', () =
     expect(parityErrors.map((e) => e.extracted)).toContain('persistence');
   });
 });
+
+// ── bullet-form local Session Config keys (baseline issue #60) ─────────────
+//
+// `extractTopLevelKeys()` originally required a bare `key:` at column 0
+// (`/^([A-Za-z][\w-]*):/gm`). Real consumer CLAUDE.md files (e.g.
+// real consumer repos) write Session Config as Markdown bullets —
+// `- key: value` or `- **key:** value` — rather than a flat YAML fence. Zero
+// keys were extracted from such a local file, so Check 6 either
+// false-positived on every mandatory key (local side reads as empty) or, when
+// BOTH sides used bullet form, passed vacuously (both sides empty, so the
+// diff was always empty regardless of what was actually missing).
+describe('session-config-parity — bullet-form local keys (#60)', () => {
+  const singleBlockTemplate = [
+    '# Session Config Template',
+    '',
+    '## Session Config',
+    '',
+    '```yaml',
+    'foo: 1',
+    'bar: 2',
+    'baz: 3',
+    '```',
+    '',
+  ].join('\n');
+
+  function writeTemplate() {
+    mkdirSync(join(vault, 'docs'));
+    writeFileSync(join(vault, 'docs', 'session-config-template.md'), singleBlockTemplate);
+  }
+
+  it('bare-form control: `key:` local keys stay 0 missing (regression control)', () => {
+    writeTemplate();
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\nfoo: 1\nbar: 2\nbaz: 3\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.errors.filter((e) => e.check === 'session-config-parity')).toHaveLength(0);
+  });
+
+  it('`- key: value` bullet form extracts local keys — 0 missing', () => {
+    writeTemplate();
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\n- foo: 1\n- bar: 2\n- baz: 3\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.errors.filter((e) => e.check === 'session-config-parity')).toHaveLength(0);
+  });
+
+  it('`- **key:** value` bold-bullet form (launchpad shape) extracts local keys — 0 missing', () => {
+    writeTemplate();
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\n- **foo:** 1\n- **bar:** 2\n- **baz:** 3\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.errors.filter((e) => e.check === 'session-config-parity')).toHaveLength(0);
+  });
+
+  it('vacuous-pass guard: bullet-form local file MISSING a mandatory key still surfaces that error', () => {
+    writeTemplate();
+    // Omits `baz` — the fix must extract `foo`/`bar` correctly from bullet
+    // form so only the genuinely-missing key is reported (not all three).
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\n- **foo:** 1\n- **bar:** 2\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    const parityErrors = j.errors.filter((e) => e.check === 'session-config-parity');
+    expect(parityErrors).toHaveLength(1);
+    expect(parityErrors[0].extracted).toBe('baz');
+  });
+});
