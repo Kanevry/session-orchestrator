@@ -300,6 +300,67 @@ describe('archiveFileToVault', () => {
   });
 });
 
+describe('archiveFileToVault — unquoted created: date (js-yaml Date auto-resolution, #837)', () => {
+  // js-yaml's default schema auto-resolves an UNQUOTED ISO-8601-shaped scalar
+  // to a native `Date`, not a string — confirmed empirically against this
+  // repo's installed js-yaml:
+  //   YAML.load('created: 2026-01-01').created instanceof Date === true
+  // A QUOTED fixture ("created: '2026-01-01'") sails through the pre-fix
+  // `typeof === 'string'` check and would pass BOTH before and after the fix
+  // — a fake regression that proves nothing. This fixture is deliberately
+  // bare/unquoted to exercise the real bug, and routes through
+  // archiveFileToVault → splitFrontmatter (the actual YAML.load seam), not
+  // buildArchiveFields called directly with a hand-built existing object.
+  it('preserves the original created date from an unquoted "created: 2026-01-01" fixture', () => {
+    const vault = mkTmp('va-vault-');
+    const src = writeFile(
+      vault,
+      'src/note.md',
+      '---\nid: keep-date\ntype: note\ncreated: 2026-01-01\n---\n# Heading\n\nbody\n',
+    );
+
+    archiveFileToVault({
+      repoRoot: vault,
+      vaultDir: vault,
+      sourcePath: src,
+      targetSubdir: 'archive',
+      dryRun: false,
+      now: FIXED_NOW,
+    });
+
+    // Assert on the PARSED value (splitFrontmatter → YAML.load), not raw file
+    // text — renderFrontmatter round-trips through YAML.dump, which quotes
+    // date-shaped strings on write (verified: dump({created:'2026-01-01'})
+    // emits `created: '2026-01-01'`), so a raw-text substring match would
+    // couple the test to js-yaml's quoting choice rather than the value.
+    const out = readFileSync(join(vault, 'archive/note.md'), 'utf8');
+    const { frontmatter } = splitFrontmatter(out);
+    expect(frontmatter.created).toBe('2026-01-01');
+  });
+
+  it('falls back to today when created: is entirely absent (happy-path-only negative twin)', () => {
+    const vault = mkTmp('va-vault-');
+    const src = writeFile(
+      vault,
+      'src/note.md',
+      '---\nid: no-date\ntype: note\n---\n# Heading\n\nbody\n',
+    );
+
+    archiveFileToVault({
+      repoRoot: vault,
+      vaultDir: vault,
+      sourcePath: src,
+      targetSubdir: 'archive',
+      dryRun: false,
+      now: FIXED_NOW,
+    });
+
+    const out = readFileSync(join(vault, 'archive/note.md'), 'utf8');
+    const { frontmatter } = splitFrontmatter(out);
+    expect(frontmatter.created).toBe(FIXED_DAY);
+  });
+});
+
 describe('archiveFileToVault — containment guard (#793 GAP-3)', () => {
   // The escape target must stay inside OUR OWN mkTmp sandbox (cleaned up via
   // the `cleanups` afterEach) rather than pointing at an uncontrolled location

@@ -449,6 +449,224 @@ describe('link-target register — case-insensitive NFC keys (#833)', () => {
   });
 });
 
+// ── Wiki-links inside code spans are not real links (#852) ──────────────────
+//
+// A wikilink written as inline code (`[[target]]`) or inside a fenced code
+// block is pedagogical prose ABOUT the Obsidian convention (#159 pattern: keep
+// named invariants in backticks), not an actual link — it must never produce a
+// dangling-wiki-link warning. codespan-link-vault deliberately uses
+// NON-EXISTENT targets inside both span kinds so the fixture is a real
+// regression test (a resolvable target inside a code span would pass whether
+// or not code-span exclusion exists at all — see archive-link-vault's
+// `[[90-archive/archived-note]]`, which resolves either way and proves
+// nothing about code-span handling).
+describe('wiki-links inside code spans are ignored (#852)', () => {
+  const codespanVault = join(LOCAL_FIXTURES, 'codespan-link-vault');
+
+  function danglingOf(result) {
+    return JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+  }
+
+  it('an inline-code-wrapped wikilink with a non-existent target produces NO dangling warning', () => {
+    const result = runValidator(codespanVault);
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes('no-such-target'))).toBe(false);
+  });
+
+  it('a fenced-code-block wikilink with a non-existent target produces NO dangling warning', () => {
+    const result = runValidator(codespanVault);
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes('also-no-such-target'))).toBe(false);
+  });
+
+  // FALSIFIABLE OVER-STRIP CONTROL (post-#852 QA review). The prior version of
+  // this test asserted "no warning" for a link on the same line as an inline
+  // code span — but the validator emits no POSITIVE signal for a resolved
+  // link, so "no warning" cannot distinguish "extracted and resolved" from
+  // "never extracted at all" (an over-stripping implementation that swallows
+  // the whole line passes this assertion too). Using a target that
+  // intentionally does NOT exist makes the assertion able to fail: an
+  // over-stripping implementation drops this warning, a correct one produces
+  // it. Verified by fake-regression during implementation (see session report
+  // — reintroducing the pre-fix regex flips this RED).
+  it('FALSIFIABLE OVER-STRIP CONTROL: a link on the same line as an inline code span IS extracted and reported (target intentionally absent)', () => {
+    const result = runValidator(codespanVault);
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    const hit = dangling.filter((w) => w.message.includes('control-target'));
+    expect(hit).toHaveLength(1);
+    expect(hit[0].message).toBe('Wiki-link target not found in vault: [[control-target]]');
+  });
+
+  it('a genuinely dangling link OUTSIDE any code span is still reported', () => {
+    const result = runValidator(codespanVault);
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes('still-dangling'))).toBe(true);
+  });
+
+  it('exactly 2 dangling warnings total — code-span links excluded, both non-span links included', () => {
+    const result = runValidator(codespanVault);
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling).toHaveLength(2);
+    const messages = dangling.map((w) => w.message).sort();
+    expect(messages).toEqual([
+      'Wiki-link target not found in vault: [[control-target]]',
+      'Wiki-link target not found in vault: [[still-dangling]]',
+    ]);
+  });
+});
+
+// ── Fenced-code mis-pairing regression (Defect 1, post-#852 QA review) ──────
+//
+// The ORIGINAL #852 fix used `/```[\s\S]*?```/g`, which pairs ANY two ```
+// runs in the file — including a ``` merely MENTIONED mid-sentence in prose.
+// A note with an odd number of ``` runs mis-pairs: the mid-line mention pairs
+// with the next REAL fence-open, blanking (and hiding a dangling link inside)
+// everything in between, while the actual fenced block that follows is left
+// completely unblanked (so a link genuinely inside it is wrongly reported).
+// This is a worse defect than #852 set out to fix — a false NEGATIVE in a
+// link-integrity validator, strictly worse than the false positive #852
+// targeted, because a missing warning is invisible.
+describe('fenced-code mis-pairing regression (Defect 1)', () => {
+  function makeFencePairingVault() {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-fence-pairing-'));
+    mkdirSync(join(dir, '_meta'), { recursive: true });
+    const body = [
+      '---',
+      'id: fence-pairing-source',
+      'type: note',
+      'created: 2026-07-24',
+      'updated: 2026-07-24',
+      '---',
+      '',
+      'Prose that mentions a fence marker inline: wrap code in ``` markers.',
+      '',
+      'A genuinely dangling link that MUST be reported: [[swallowed-dangling]].',
+      '',
+      '```',
+      'Fenced block containing [[in-block-target]] which must be suppressed.',
+      '```',
+      '',
+    ].join('\n');
+    writeFileSync(join(dir, 'source.md'), body, 'utf8');
+    return dir;
+  }
+
+  function danglingOf(result) {
+    return JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+  }
+
+  it('a dangling link between a mid-line fence mention and the next real fence is still reported', () => {
+    const dir = makeFencePairingVault();
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes('swallowed-dangling'))).toBe(true);
+  });
+
+  it('a wikilink inside the real fenced block that follows is still suppressed', () => {
+    const dir = makeFencePairingVault();
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes('in-block-target'))).toBe(false);
+  });
+
+  it('a mid-line ``` mention does not open a fence — exactly 1 dangling warning total', () => {
+    const dir = makeFencePairingVault();
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling).toHaveLength(1);
+    expect(dangling[0].message).toBe('Wiki-link target not found in vault: [[swallowed-dangling]]');
+  });
+});
+
+// ── Remaining code-span false-positive shapes (Defect 3, post-#852 QA review) ──
+//
+// The original #852 fix only handled single-backtick inline spans and basic
+// ``` fenced blocks. Three more CommonMark code-span shapes still produced
+// false-positive dangling warnings: a double-backtick inline span (used when
+// the wrapped content itself contains a backtick), a `~~~`-fenced block, and
+// a 4-space-indented code block. A ```` ```md ```` info-string fence is
+// included as a regression guard — it already worked before this fix.
+describe('remaining code-span false-positive shapes (Defect 3)', () => {
+  function makeSpanVault(bodyLines) {
+    const dir = mkdtempSync(join(tmpdir(), 'vault-span-shape-'));
+    mkdirSync(join(dir, '_meta'), { recursive: true });
+    const body = [
+      '---',
+      'id: span-shape-source',
+      'type: note',
+      'created: 2026-07-24',
+      'updated: 2026-07-24',
+      '---',
+      '',
+      ...bodyLines,
+      '',
+    ].join('\n');
+    writeFileSync(join(dir, 'source.md'), body, 'utf8');
+    return dir;
+  }
+
+  function danglingOf(result) {
+    return JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
+  }
+
+  it.each([
+    [
+      'double-backtick inline span (content would contain a backtick in real prose)',
+      ['A double-backtick span containing a link: ``[[double-tick-target]]``.'],
+      'double-tick-target',
+    ],
+    [
+      'tilde-fenced block (~~~)',
+      ['~~~', 'Tilde-fenced block containing [[tilde-target]].', '~~~'],
+      'tilde-target',
+    ],
+    [
+      '4-space-indented code block',
+      ['Prose before.', '', '    Indented code line containing [[indented-target]].', ''],
+      'indented-target',
+    ],
+    [
+      'fenced block with an info string (regression guard — already worked pre-fix)',
+      ['```md', 'Fenced block with an info string containing [[info-string-target]].', '```'],
+      'info-string-target',
+    ],
+  ])('%s: a non-existent target inside the span produces NO dangling warning', (_label, bodyLines, target) => {
+    const dir = makeSpanVault(bodyLines);
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling.some((w) => w.message.includes(target))).toBe(false);
+  });
+
+  it('a genuinely dangling link OUTSIDE any of these spans is still reported (regression guard)', () => {
+    const dir = makeSpanVault([
+      '~~~',
+      'Tilde-fenced block containing [[tilde-target-2]].',
+      '~~~',
+      '',
+      'A real dangling link outside any span: [[outside-dangling]].',
+    ]);
+    const result = runValidator(dir);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    expect(result.status).toBe(0);
+    const dangling = danglingOf(result);
+    expect(dangling).toHaveLength(1);
+    expect(dangling[0].message).toBe('Wiki-link target not found in vault: [[outside-dangling]]');
+  });
+});
+
 // ── Mode flags ────────────────────────────────────────────────────────────────
 
 describe('mode flags', () => {

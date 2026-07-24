@@ -240,8 +240,23 @@ export function buildArchiveFields({
   const finalType = VAULT_TYPE_ENUM.includes(base.type) ? base.type : type;
 
   // created: keep a valid existing date (original creation), else today.
-  const created =
-    typeof base.created === 'string' && ISO_DATE_RE.test(base.created) ? base.created : dateStr;
+  //
+  // js-yaml's default schema auto-resolves an unquoted ISO-8601-shaped scalar
+  // (the canonical `created: 2026-01-01` form) into a native `Date`, NOT a
+  // string — same quirk as moc-staleness-banner.mjs's `_readMocStalenessDays`
+  // (verified: `YAML.load('created: 2026-01-01').created instanceof Date`).
+  // Without this branch, an unquoted existing `created:` silently fails the
+  // `typeof === 'string'` check below and gets clobbered with today's date
+  // (#837). Accept both shapes; anything else (missing, number, array, an
+  // invalid Date, …) falls back to `dateStr` as before.
+  let created;
+  if (typeof base.created === 'string' && ISO_DATE_RE.test(base.created)) {
+    created = base.created;
+  } else if (base.created instanceof Date && !Number.isNaN(base.created.getTime())) {
+    created = base.created.toISOString().slice(0, 10);
+  } else {
+    created = dateStr;
+  }
 
   // title: explicit arg wins, else existing, else undefined (caller may derive).
   let finalTitle = title;
