@@ -2,9 +2,12 @@
 
 **Date:** 2026-07-24
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Approved
+**Epic:** #874 (Epic A — dieses Repo) · #875 (Epic B — projects-baseline)
 **Appetite:** 2w (Batch 1). Phase 3 „Trimmen" ist vollständig geplant und als Batch 2 terminiert — siehe § 2.5.
 **Parent Project:** session-orchestrator (Epic A) + projects-baseline (Epic B)
+
+**Issues:** Batch 1 → #876 (FA1) · #877 (FA2) · #878 (FA2b+c) · #879 (FA3) · #880 (FA5) · #881 (FA6-0) · #882 (FA6-1+2) · #883 (FA6-3). Batch 2 → #884 (T1) · #885 (T2) · #886 (T3) · #887 (T4) · #888 (T5) · #889 (T6) · #890 (T7) · #891 (T8).
 
 > **Zwei Epics, eine PRD.** Epic A (FA1–FA3, FA5) ist repo-intern und teilt die These „Routing, nicht Inhalt". Epic B (FA6) ist Fleet-Deployment-Sicherheit in `projects-baseline` — anderes Repo, andere Fehlerklasse, **keine Code-Abhängigkeit zu Epic A**. Sie stehen hier zusammen, weil der Operator die Reichweite „Repo + Baseline-Fleet" gewählt hat und beide dieselbe Messgrundlage brauchen; sie werden als getrennte Epics gefiled und können unabhängig laufen.
 
