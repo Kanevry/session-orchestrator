@@ -2,8 +2,9 @@
  * enumerate.mjs — Candidate-repo enumeration + free/busy resolution.
  *
  * Epic #673 Phase 2 (issue #676, PRD §2 P2.1+P2.2, §4). Enumerates candidate
- * repos below a confinement root (recursive walk, depth-capped — see
- * {@link DEFAULT_MAX_DEPTH}) and resolves each as free or busy via its per-repo
+ * repos below a confinement root (recursive walk, fixed at a depth of
+ * {@link DEFAULT_MAX_DEPTH} — see that constant for the measurement backing
+ * the value) and resolves each as free or busy via its per-repo
  * `session.lock` v2 lease (heartbeat-based liveness).
  *
  * Source of truth for free/busy: the same lease semantics as
@@ -16,8 +17,9 @@
  * the {@link Candidate} contract defined here.
  *
  * Exports:
- *   enumerateCandidates  — walk a startDir up to `maxDepth` levels deep, resolve
- *                          each repo's free/busy status from its lease.
+ *   enumerateCandidates  — walk a startDir up to {@link DEFAULT_MAX_DEPTH}
+ *                          levels deep, resolve each repo's free/busy status
+ *                          from its lease.
  *   freeCandidates       — filter helper: keep only `free === true` candidates.
  *
  * No top-level side effects. All filesystem + lock access is dependency-injected
@@ -49,7 +51,7 @@ const STATUS_IN_PROGRESS = 'in-progress';
 const STATUS_FORCE_CLOSED = 'force-closed';
 
 /**
- * Default walk depth. `1` = immediate children of the scan root only (the
+ * Fixed walk depth. `1` = immediate children of the scan root only (the
  * pre-#832 behaviour); `2` additionally covers `<root>/<org>/<repo>`.
  *
  * Measured on the reference host (~/Projects, 2026-07-19; warm dentry cache —
@@ -61,14 +63,19 @@ const STATUS_FORCE_CLOSED = 'force-closed';
  *   depth 3 → 47 of 47 repos, ~8ms (node_modules is pruned, but the extra
  *                                     level still multiplies the node count)
  *                                     for two additional repos, both archived.
- * Depth 2 is therefore the default: it recovers 96% of the host's repos at
- * negligible cost, while depth 3 costs ~8x the walk for two dead repos.
+ * Depth 2 is therefore the fixed bound: it recovers 96% of the host's repos
+ * at negligible cost, while depth 3 costs ~8x the walk for two dead repos.
+ *
+ * This was previously exposed as a caller-tunable `maxDepth` option (clamped
+ * 1..3). Issue #838 removed the knob: all three production callers
+ * (`scripts/lib/dispatcher/cli.mjs`, `scripts/lib/lock-reaper.mjs`,
+ * `scripts/lib/vault-status/board-writer.mjs`) always omitted it and relied on
+ * this default, and no CLI surface ever forwarded a caller-supplied value —
+ * a config knob whose only exercised path was its own test suite. The walk
+ * BOUND is unchanged; only the ability to override it at the call boundary
+ * is gone.
  */
 const DEFAULT_MAX_DEPTH = 2;
-
-/** Hard bounds for {@link clampMaxDepth}. Depth 3 is the ceiling by measurement. */
-const MIN_MAX_DEPTH = 1;
-const MAX_MAX_DEPTH = 3;
 
 /**
  * Directory names never DESCENDED into during the walk.
@@ -88,25 +95,6 @@ function shouldDescendInto(name) {
   // Dot-directories (.git, .claude, .orchestrator, .venv, …) hold no host repos.
   if (name.startsWith('.')) return false;
   return true;
-}
-
-/**
- * Normalise a caller-supplied `maxDepth` into the supported 1..3 range.
- * Anything that is not a positive finite number falls back to
- * {@link DEFAULT_MAX_DEPTH} — including `0`, negatives, `NaN`, and non-numbers
- * such as the string `'3'` (no coercion: a string is a caller bug, and silently
- * honouring it would make an unvalidated config value widen the walk).
- *
- * @param {unknown} value
- * @returns {number} an integer in [MIN_MAX_DEPTH, MAX_MAX_DEPTH].
- */
-function clampMaxDepth(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_MAX_DEPTH;
-  const truncated = Math.trunc(value);
-  if (truncated <= 0) return DEFAULT_MAX_DEPTH;
-  if (truncated < MIN_MAX_DEPTH) return MIN_MAX_DEPTH;
-  if (truncated > MAX_MAX_DEPTH) return MAX_MAX_DEPTH;
-  return truncated;
 }
 
 /**
@@ -188,9 +176,10 @@ function isGitRepo(childAbs, existsSyncFn) {
  * free or busy via its local lease.
  *
  * Algorithm:
- *   1. Depth-first walk of `startDir`, up to `maxDepth` levels deep (depth 1 =
- *      immediate children). Every directory node is a repo candidate iff
- *      `<node>/.git` exists (dir or file — the file form covers worktrees).
+ *   1. Depth-first walk of `startDir`, up to {@link DEFAULT_MAX_DEPTH} levels
+ *      deep (depth 1 = immediate children). Every directory node is a repo
+ *      candidate iff `<node>/.git` exists (dir or file — the file form covers
+ *      worktrees).
  *   2. Confinement guard (`validatePathInsideProject(nodeAbs, startDir)`) runs
  *      on EVERY node BEFORE it is emitted AND before it is opened — see the
  *      security notes on the walk body below.
@@ -212,8 +201,6 @@ function isGitRepo(childAbs, existsSyncFn) {
  *
  * @param {object} [opts]
  * @param {string} [opts.startDir] — scan root; defaults to {@link getConfinementRoot}().
- * @param {number} [opts.maxDepth] — walk depth, clamped to 1..3; defaults to
- *   {@link DEFAULT_MAX_DEPTH} (2) for anything non-numeric, non-finite, or <= 0.
  * @param {number} [opts.now] — clock seam in ms; defaults to Date.now().
  * @param {object} [opts.deps] — dependency-injection seam (Wave-4 testability).
  * @param {Function} [opts.deps.readdirSync]   — node:fs readdirSync.
@@ -225,7 +212,7 @@ function isGitRepo(childAbs, existsSyncFn) {
  * @param {Function} [opts.deps.now] — () => ms (overridden by opts.now when set).
  * @returns {Promise<Candidate[]>}
  */
-export async function enumerateCandidates({ startDir, now, maxDepth, deps } = {}) {
+export async function enumerateCandidates({ startDir, now, deps } = {}) {
   const d = deps ?? {};
   const readdirSyncFn = d.readdirSync ?? readdirSync;
   const existsSyncFn = d.existsSync ?? existsSync;
@@ -239,7 +226,6 @@ export async function enumerateCandidates({ startDir, now, maxDepth, deps } = {}
     ? startDir
     : getConfinementRoot();
   const nowMs = typeof now === 'number' ? now : nowFn();
-  const depthCap = clampMaxDepth(maxDepth);
 
   // Dedup set keyed by resolved absolute path; preserves first-seen ordering
   // (FS-scan repos first, config-declared additions after).
@@ -281,8 +267,8 @@ export async function enumerateCandidates({ startDir, now, maxDepth, deps } = {}
   //
   // Unbounded recursion is impossible: `Dirent.isDirectory()` is false for a
   // symlink-to-directory (verified empirically), so symlink cycles never enter
-  // the walk — and `depthCap` bounds it regardless, including for stubbed
-  // entries that do not implement isDirectory().
+  // the walk — and `DEFAULT_MAX_DEPTH` bounds it regardless, including for
+  // stubbed entries that do not implement isDirectory().
   const walk = (dirAbs, depth) => {
     let entries;
     try {
@@ -318,7 +304,7 @@ export async function enumerateCandidates({ startDir, now, maxDepth, deps } = {}
       // (the umbrella-repo case documented above). Prune by name only, and only
       // for the descent decision — emission above is untouched, which keeps the
       // depth-1 contract byte-identical to the pre-#832 scan.
-      if (depth < depthCap && shouldDescendInto(entry.name)) {
+      if (depth < DEFAULT_MAX_DEPTH && shouldDescendInto(entry.name)) {
         walk(childAbs, depth + 1);
       }
     }

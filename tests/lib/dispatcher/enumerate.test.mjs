@@ -57,8 +57,8 @@ function tree(spec) {
  *
  * The readdirSync stub is keyed BY DIRECTORY (issue #832): the SUT now walks
  * recursively, so a stub that ignored `dir` and returned the same array for
- * every path would turn each fixture into a maxDepth-deep fanout tree and make
- * `toHaveLength(1)` assertions pass (or fail) for entirely the wrong reason.
+ * every path would turn each fixture into a fixed-depth-deep fanout tree and
+ * make `toHaveLength(1)` assertions pass (or fail) for entirely the wrong reason.
  * `entries` seeds ROOT; any directory not present in `dirs` reads as empty.
  *
  * The returned bundle carries two inspection arrays for spy-style assertions:
@@ -473,17 +473,15 @@ describe('enumerateCandidates — recursive walk (#832)', () => {
     });
   }
 
-  it('maxDepth:1 finds nothing in an <org>/<repo> tree (pre-#832 behaviour)', async () => {
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 1, deps: twoLevelDeps(),
-    });
+  // #838 removed the caller-tunable `maxDepth` knob (0 production callers ever
+  // passed it — see scripts/lib/dispatcher/enumerate.mjs DEFAULT_MAX_DEPTH
+  // docblock). The walk BOUND itself (fixed at 2) is unchanged, so the two
+  // tests below stay as the acceptance-pair proof of that bound: a repo at
+  // depth 2 IS enumerated (positive), a repo at depth 3 is NOT (negative twin).
 
-    expect(out).toEqual([]);
-  });
-
-  it('maxDepth:2 finds exactly the grandchild repo in an <org>/<repo> tree', async () => {
+  it('walks the fixed depth of 2, finding a grandchild repo in an <org>/<repo> tree', async () => {
     const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 2, deps: twoLevelDeps(),
+      startDir: ROOT, now: FIXED_NOW, deps: twoLevelDeps(),
     });
 
     expect(out).toHaveLength(1);
@@ -492,36 +490,20 @@ describe('enumerateCandidates — recursive walk (#832)', () => {
     expect(out[0].status).toBe('frei');
   });
 
-  it('defaults to depth 2 when maxDepth is omitted', async () => {
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, deps: twoLevelDeps(),
-    });
-
-    expect(out).toHaveLength(1);
-    expect(out[0].repoRoot).toBe(DEEP_REPO);
-  });
-
-  it('hard cap: a depth-3 repo is missed at maxDepth 2 and found at maxDepth 3', async () => {
+  it('hard cap: a depth-3 repo is NOT enumerated at the fixed depth of 2', async () => {
     const a = path.join(ROOT, 'a');
     const b = path.join(a, 'b');
     const cRepo = path.join(b, 'c-repo');
-    const build = () => makeDeps({
+    const deps = makeDeps({
       entries: [dirent('a')],
       dirs: tree({ [a]: ['b'], [b]: ['c-repo'] }),
       gitRepos: new Set([path.join(cRepo, '.git')]),
       isLockLive: () => false,
     });
 
-    const atTwo = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 2, deps: build(),
-    });
-    const atThree = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 3, deps: build(),
-    });
+    const out = await enumerateCandidates({ startDir: ROOT, now: FIXED_NOW, deps });
 
-    expect(atTwo).toEqual([]);
-    expect(atThree).toHaveLength(1);
-    expect(atThree[0].repoRoot).toBe(cRepo);
+    expect(out).toEqual([]);
   });
 
   it('does NOT stop descending at a repo: an umbrella repo AND its inner repo are both returned', async () => {
@@ -577,20 +559,22 @@ describe('enumerateCandidates — recursive walk (#832)', () => {
 // ===========================================================================
 
 describe('enumerateCandidates — descent pruning', () => {
+  // Both fixtures below place the pruned directory as a DIRECT child of ROOT
+  // (depth 1), one level inside the fixed depth cap of 2 — so a passing
+  // assertion proves NAME-based pruning fired, not merely that the depth cap
+  // happened to stop the walk first (#838: with the maxDepth knob gone, these
+  // can no longer force a depth-3 fixture to isolate the two mechanisms).
   it('never descends into node_modules, so a vendored .git there is not a candidate', async () => {
-    const a = path.join(ROOT, 'a');
-    const nm = path.join(a, 'node_modules');
+    const nm = path.join(ROOT, 'node_modules');
     const vendored = path.join(nm, 'x-repo');
     const deps = makeDeps({
-      entries: [dirent('a')],
-      dirs: tree({ [a]: ['node_modules'], [nm]: ['x-repo'] }),
+      entries: [dirent('node_modules')],
+      dirs: tree({ [nm]: ['x-repo'] }),
       gitRepos: new Set([path.join(vendored, '.git')]),
       isLockLive: () => false,
     });
 
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 3, deps,
-    });
+    const out = await enumerateCandidates({ startDir: ROOT, now: FIXED_NOW, deps });
 
     expect(out).toEqual([]);
     // Pruning happens at the DESCENT decision — node_modules is never opened.
@@ -598,19 +582,16 @@ describe('enumerateCandidates — descent pruning', () => {
   });
 
   it('never descends into a dot-directory', async () => {
-    const a = path.join(ROOT, 'a');
-    const hidden = path.join(a, '.cache');
+    const hidden = path.join(ROOT, '.cache');
     const buried = path.join(hidden, 'y-repo');
     const deps = makeDeps({
-      entries: [dirent('a')],
-      dirs: tree({ [a]: ['.cache'], [hidden]: ['y-repo'] }),
+      entries: [dirent('.cache')],
+      dirs: tree({ [hidden]: ['y-repo'] }),
       gitRepos: new Set([path.join(buried, '.git')]),
       isLockLive: () => false,
     });
 
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 3, deps,
-    });
+    const out = await enumerateCandidates({ startDir: ROOT, now: FIXED_NOW, deps });
 
     expect(out).toEqual([]);
     expect(deps.readdirCalls).not.toContain(hidden);
@@ -630,81 +611,6 @@ describe('enumerateCandidates — descent pruning', () => {
 
     expect(out).toHaveLength(1);
     expect(out[0].repoRoot).toBe(dotRepo);
-  });
-});
-
-// ===========================================================================
-// maxDepth clamping (#832)
-// ===========================================================================
-
-describe('enumerateCandidates — maxDepth clamping', () => {
-  const a = path.join(ROOT, 'a');
-  const b = path.join(a, 'b');
-  const cRepo = path.join(b, 'c-repo');
-  const orgRepo = path.join(a, 'shallow-repo');
-
-  /** Tree carrying BOTH a depth-2 repo and a depth-3 repo. */
-  function depthProbeDeps() {
-    return makeDeps({
-      entries: [dirent('a')],
-      dirs: tree({ [a]: ['b', 'shallow-repo'], [b]: ['c-repo'] }),
-      gitRepos: new Set([
-        path.join(orgRepo, '.git'),
-        path.join(cRepo, '.git'),
-      ]),
-      isLockLive: () => false,
-    });
-  }
-
-  async function reposAt(maxDepth) {
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth, deps: depthProbeDeps(),
-    });
-    return out.map((c) => c.repoRoot).sort();
-  }
-
-  it('0 falls back to the default depth of 2', async () => {
-    expect(await reposAt(0)).toEqual([orgRepo]);
-  });
-
-  it('-1 falls back to the default depth of 2', async () => {
-    expect(await reposAt(-1)).toEqual([orgRepo]);
-  });
-
-  it('NaN falls back to the default depth of 2', async () => {
-    expect(await reposAt(NaN)).toEqual([orgRepo]);
-  });
-
-  it("the STRING '3' is not coerced — it falls back to the default depth of 2", async () => {
-    // Discriminating assertion: a coercing implementation would find c-repo.
-    expect(await reposAt('3')).toEqual([orgRepo]);
-    expect(await reposAt(3)).toEqual([orgRepo, cRepo].sort());
-  });
-
-  it('undefined falls back to the default depth of 2', async () => {
-    expect(await reposAt(undefined)).toEqual([orgRepo]);
-  });
-
-  it('a value above the ceiling clamps to 3 rather than walking deeper', async () => {
-    const deep = path.join(cRepo, 'd', 'e-repo');
-    const deps = makeDeps({
-      entries: [dirent('a')],
-      dirs: tree({
-        [a]: ['b'],
-        [b]: ['c-repo'],
-        [cRepo]: ['d'],
-        [path.join(cRepo, 'd')]: ['e-repo'],
-      }),
-      gitRepos: new Set([path.join(cRepo, '.git'), path.join(deep, '.git')]),
-      isLockLive: () => false,
-    });
-
-    const out = await enumerateCandidates({
-      startDir: ROOT, now: FIXED_NOW, maxDepth: 99, deps,
-    });
-
-    // Clamped to 3 → c-repo (depth 3) yes, e-repo (depth 5) no.
-    expect(out.map((c) => c.repoRoot)).toEqual([cRepo]);
   });
 });
 
