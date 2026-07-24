@@ -27,7 +27,25 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { execFileSync } = await import('node:child_process');
-const { stripStatusLabels } = await import('@lib/issue-close-strip-labels.mjs');
+const { stripStatusLabels: stripStatusLabelsReal } = await import('@lib/issue-close-strip-labels.mjs');
+
+// ---------------------------------------------------------------------------
+// #839 host-pinning shim
+//
+// stripStatusLabels() now resolves a `-R`/`--repo` spec via an injectable
+// `resolveRepoSpecFn` (default: the real `resolveRepoSpec`, which shells out
+// to `git remote get-url`). Every pre-#839 test below is unaware of this and
+// asserts an EXACT execFileSync call sequence (count + args) for just the
+// glab/gh calls — so this local wrapper injects a no-op resolver
+// (`() => undefined`, matching pre-#839 "no -R appended" behaviour) as the
+// DEFAULT, keeping every unmodified test's call sequence byte-for-byte
+// identical. Tests that specifically exercise #839 host-pinning call
+// `stripStatusLabelsReal` directly (bypassing this shim) with an explicit
+// resolveRepoSpecFn override or the real default.
+// ---------------------------------------------------------------------------
+function stripStatusLabels(opts) {
+  return stripStatusLabelsReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,27 +98,34 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('stripStatusLabels (gitlab)', () => {
-  it('strips a single status:* label and returns its name', async () => {
+  it('strips a single status:* label, returns its name, and pins both calls to the resolved -R spec (#839)', async () => {
     const glabViewJson = JSON.stringify({
       iid: 42,
       labels: ['status:in-progress', 'priority:high'],
     });
+    const spec = 'https://gitlab.example.com/group/session-orchestrator.git';
 
     setCliResponses([
       { ok: true, stdout: glabViewJson },  // glab issue view
       { ok: true, stdout: '' },             // glab issue update --unlabel
     ]);
 
-    const result = await stripStatusLabels({ issueId: 42, vcs: 'gitlab' });
+    // Bypass the no-op shim: inject a resolvable spec so the -R host-pinning
+    // args are exercised directly (#839).
+    const result = await stripStatusLabelsReal({
+      issueId: 42,
+      vcs: 'gitlab',
+      resolveRepoSpecFn: () => spec,
+    });
 
     expect(result).toEqual({ stripped: ['status:in-progress'] });
 
-    // Verify the first call is `glab issue view <id> --output json`
+    // Verify the first call is `glab issue view <id> --output json -R <spec>`
     const [viewCmd, viewArgs] = execFileSync.mock.calls[0];
     expect(viewCmd).toBe('glab');
-    expect(viewArgs).toEqual(['issue', 'view', '42', '--output', 'json']);
+    expect(viewArgs).toEqual(['issue', 'view', '42', '--output', 'json', '-R', spec]);
 
-    // Verify the second call is `glab issue update <id> --unlabel <labels>`
+    // Verify the second call is `glab issue update <id> --unlabel <labels> -R <spec>`
     const [updateCmd, updateArgs] = execFileSync.mock.calls[1];
     expect(updateCmd).toBe('glab');
     expect(updateArgs[0]).toBe('issue');
@@ -109,6 +134,8 @@ describe('stripStatusLabels (gitlab)', () => {
     expect(updateArgs).toContain('--unlabel');
     const unlabelIdx = updateArgs.indexOf('--unlabel');
     expect(updateArgs[unlabelIdx + 1]).toBe('status:in-progress');
+    // -R must be present on the write (update) call too — not just the read.
+    expect(updateArgs).toEqual(['issue', 'update', '42', '--unlabel', 'status:in-progress', '-R', spec]);
   });
 
   it('strips multiple status:* labels in one call, leaving non-status labels intact', async () => {
@@ -172,24 +199,31 @@ describe('stripStatusLabels (gitlab)', () => {
 // ---------------------------------------------------------------------------
 
 describe('stripStatusLabels (github)', () => {
-  it('strips a status:* label via gh issue edit --remove-label', async () => {
+  it('strips a status:* label via gh issue edit --remove-label, pinning both calls to -R (#839)', async () => {
     const ghViewJson = JSON.stringify({
       labels: [{ name: 'status:ready' }, { name: 'priority:high' }],
     });
+    const spec = 'https://github.com/org/repo.git';
 
     setCliResponses([
       { ok: true, stdout: ghViewJson },  // gh issue view --json labels
       { ok: true, stdout: '' },           // gh issue edit --remove-label
     ]);
 
-    const result = await stripStatusLabels({ issueId: 99, vcs: 'github' });
+    // Bypass the no-op shim: inject a resolvable spec so the -R host-pinning
+    // args are exercised directly (#839).
+    const result = await stripStatusLabelsReal({
+      issueId: 99,
+      vcs: 'github',
+      resolveRepoSpecFn: () => spec,
+    });
 
     expect(result).toEqual({ stripped: ['status:ready'] });
 
     // Verify view call
     const [viewCmd, viewArgs] = execFileSync.mock.calls[0];
     expect(viewCmd).toBe('gh');
-    expect(viewArgs).toEqual(['issue', 'view', '99', '--json', 'labels']);
+    expect(viewArgs).toEqual(['issue', 'view', '99', '--json', 'labels', '-R', spec]);
 
     // Verify edit call uses --remove-label (not --unlabel)
     const [editCmd, editArgs] = execFileSync.mock.calls[1];
@@ -200,6 +234,8 @@ describe('stripStatusLabels (github)', () => {
     expect(editArgs).toContain('--remove-label');
     const removeIdx = editArgs.indexOf('--remove-label');
     expect(editArgs[removeIdx + 1]).toBe('status:ready');
+    // -R must be present on the write (edit) call too — not just the read.
+    expect(editArgs).toEqual(['issue', 'edit', '99', '--remove-label', 'status:ready', '-R', spec]);
   });
 
   it('is a no-op on github when no status:* labels present', async () => {
@@ -269,5 +305,96 @@ describe('stripStatusLabels — error handling', () => {
     expect(typeof result.error).toBe('string');
     expect(result.error).toContain('JSON parse failed');
     expect(execFileSync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #839 — host-pinning regression + graceful degradation
+//
+// These tests exercise stripStatusLabelsReal directly (bypassing the no-op
+// shim above) so the REAL default resolveRepoSpecFn (`resolveRepoSpec`,
+// which shells out to `git remote get-url`) runs. execFileSync therefore
+// receives BOTH `git` and `glab`/`gh` calls in this section — distinguished
+// by `cmd`, not by call order.
+// ---------------------------------------------------------------------------
+
+describe('stripStatusLabels — #839 wrong-host regression (RED-before/GREEN-after)', () => {
+  const REAL_GITLAB_HOST = process.env.GITLAB_HOST;
+
+  beforeEach(() => {
+    // Simulate the live-verified failure mode: ambient GITLAB_HOST points at
+    // a DIFFERENT GitLab instance than this repo's remotes.
+    process.env.GITLAB_HOST = 'wrong.example.com';
+  });
+
+  afterEach(() => {
+    if (REAL_GITLAB_HOST === undefined) delete process.env.GITLAB_HOST;
+    else process.env.GITLAB_HOST = REAL_GITLAB_HOST;
+  });
+
+  it('strips status labels correctly even when GITLAB_HOST points at the wrong instance', async () => {
+    const glabViewJson = JSON.stringify({ iid: 839, labels: ['status:in-progress', 'priority:high'] });
+
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git') {
+        // Real `git remote get-url` — resolves this repo's actual remote,
+        // independent of the (wrong) ambient GITLAB_HOST. Fictional host/path
+        // (never the operator's real GitLab instance — #494 owner-leakage).
+        return 'https://gitlab.example.com/example-group/example-project.git\n';
+      }
+      if (cmd === 'glab') {
+        // Simulate real glab: WITHOUT -R/--repo it fails, honoring the wrong
+        // ambient GITLAB_HOST — this mirrors the SHAPE of the error observed
+        // live (#839), with fictional host/IP substituted (#494 owner-leakage).
+        const hasRepoFlag = args.includes('-R') || args.includes('--repo');
+        if (!hasRepoFlag) {
+          throw cliError(
+            [
+              ' ERROR',
+              ' Could not determine base repository: none of the git remotes configured for this repository correspond to the',
+              ' GITLAB_HOST environment variable.',
+              ' GITLAB_HOST is currently set to wrong.example.com',
+              ' Configured remotes: 192.0.2.10, github.com.',
+            ].join('\n'),
+          );
+        }
+        if (args.includes('view')) return glabViewJson;
+        if (args.includes('update')) return '';
+      }
+      throw new Error(`stripStatusLabels #839 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
+    });
+
+    const result = await stripStatusLabelsReal({ issueId: 839, vcs: 'gitlab' });
+
+    expect(result.stripped).toEqual(['status:in-progress']);
+    expect(result.error).toBeUndefined();
+  });
+});
+
+describe('stripStatusLabels — #839 graceful degradation (no remote resolves)', () => {
+  it('appends no -R flag and behaves exactly as before #839 when git remote resolution fails entirely', async () => {
+    const glabViewJson = JSON.stringify({ iid: 12, labels: ['status:ready'] });
+
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git') {
+        throw cliError('fatal: no such remote');
+      }
+      if (cmd === 'glab') {
+        if (args.includes('view')) return glabViewJson;
+        if (args.includes('update')) return '';
+      }
+      throw new Error(`stripStatusLabels #839 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
+    });
+
+    const result = await stripStatusLabelsReal({ issueId: 12, vcs: 'gitlab' });
+
+    expect(result).toEqual({ stripped: ['status:ready'] });
+
+    const glabCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'glab');
+    expect(glabCalls).toHaveLength(2);
+    for (const [, args] of glabCalls) {
+      expect(args).not.toContain('-R');
+      expect(args).not.toContain('--repo');
+    }
   });
 });

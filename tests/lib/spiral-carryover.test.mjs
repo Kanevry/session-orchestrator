@@ -34,11 +34,38 @@ vi.mock('node:child_process', () => {
 const { execFileSync } = await import('node:child_process');
 const {
   computeTaskHash,
-  findExistingCarryover,
-  findExistingBrokenWindow,
-  createSpiralCarryoverIssue,
-  createBrokenWindowIssue,
+  findExistingCarryover: findExistingCarryoverReal,
+  findExistingBrokenWindow: findExistingBrokenWindowReal,
+  createSpiralCarryoverIssue: createSpiralCarryoverIssueReal,
+  createBrokenWindowIssue: createBrokenWindowIssueReal,
 } = await import('@lib/spiral-carryover.mjs');
+
+// ---------------------------------------------------------------------------
+// #839 host-pinning shim
+//
+// Every exported creator/finder in spiral-carryover.mjs now resolves a
+// `-R`/`--repo` spec via an injectable `resolveRepoSpecFn` (default: the real
+// `resolveRepoSpec`, which shells out to `git remote get-url`). The tests
+// below this shim block predate #839 and assert an EXACT execFileSync call
+// sequence for just the glab/gh calls — so these local wrappers inject a
+// no-op resolver (`() => undefined`, matching pre-#839 "no -R appended"
+// behaviour) as the DEFAULT, keeping every existing test's call sequence
+// byte-for-byte identical without editing a single one of them. The
+// "#839 host pinning" describe block at the end of this file calls the
+// `*Real` functions directly to exercise the real behaviour.
+// ---------------------------------------------------------------------------
+function findExistingCarryover(opts) {
+  return findExistingCarryoverReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function findExistingBrokenWindow(opts) {
+  return findExistingBrokenWindowReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function createSpiralCarryoverIssue(opts) {
+  return createSpiralCarryoverIssueReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function createBrokenWindowIssue(opts) {
+  return createBrokenWindowIssueReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -626,5 +653,252 @@ describe('createBrokenWindowIssue', () => {
     expect(typeof res.error).toBe('string');
     // Fails before the dedup lookup ever shells out (computeDueDate throws first).
     expect(execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #839 — host pinning: -R/--repo on both the dedup lookup AND the write
+// (`issue create`) call. Uses the `*Real` functions directly (bypassing the
+// no-op shim above) with an explicit resolveRepoSpecFn.
+// ---------------------------------------------------------------------------
+
+describe('createSpiralCarryoverIssue — #839 host pinning (gitlab)', () => {
+  it('pins both the dedup `glab issue list` call and the `glab issue create` call to -R <spec>', async () => {
+    const spec = 'https://gitlab.example.com/group/session-orchestrator.git';
+    setCliResponses([
+      { ok: true, stdout: '[]' }, // glab issue list (dedup — no hit)
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/70\n' }, // glab issue create
+    ]);
+
+    const res = await createSpiralCarryoverIssueReal({
+      taskDescription: 'host-pinned carryover',
+      kind: 'SPIRAL',
+      context: 'ctx',
+      vcs: 'gitlab',
+      resolveRepoSpecFn: () => spec,
+    });
+
+    expect(res.created).toBe(true);
+    expect(res.issueId).toBe(70);
+
+    const [listCmd, listArgs] = execFileSync.mock.calls[0];
+    expect(listCmd).toBe('glab');
+    expect(listArgs).toEqual(['issue', 'list', '--label', 'type:carryover', '--per-page', '100', '--output', 'json', '-R', spec]);
+
+    const [createCmd, createArgs] = execFileSync.mock.calls[1];
+    expect(createCmd).toBe('glab');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(spec);
+  });
+
+  it('resolves the -R spec exactly ONCE per call, reusing it for the dedup lookup (no second git spawn)', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/71\n' },
+    ]);
+    const spy = vi.fn(() => 'https://gitlab.example.com/group/session-orchestrator.git');
+
+    await createSpiralCarryoverIssueReal({
+      taskDescription: 'resolve-once check',
+      kind: 'SPIRAL',
+      context: 'ctx',
+      vcs: 'gitlab',
+      resolveRepoSpecFn: spy,
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('appends no -R at all when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/72\n' },
+    ]);
+
+    await createSpiralCarryoverIssueReal({
+      taskDescription: 'no remote resolves',
+      kind: 'SPIRAL',
+      context: 'ctx',
+      vcs: 'gitlab',
+      resolveRepoSpecFn: () => undefined,
+    });
+
+    for (const [, args] of execFileSync.mock.calls) {
+      expect(args).not.toContain('-R');
+    }
+  });
+});
+
+describe('createSpiralCarryoverIssue — #839 host pinning (github)', () => {
+  it('pins both the dedup `gh issue list` call and the `gh issue create` call to -R <spec>', async () => {
+    const spec = 'https://github.com/org/repo.git';
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://github.com/org/repo/issues/9\n' },
+    ]);
+
+    const res = await createSpiralCarryoverIssueReal({
+      taskDescription: 'gh host-pinned carryover',
+      kind: 'FAILED',
+      context: 'ctx',
+      vcs: 'github',
+      resolveRepoSpecFn: () => spec,
+    });
+
+    expect(res.created).toBe(true);
+    expect(res.issueId).toBe(9);
+
+    const [listCmd, listArgs] = execFileSync.mock.calls[0];
+    expect(listCmd).toBe('gh');
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(spec);
+
+    const [createCmd, createArgs] = execFileSync.mock.calls[1];
+    expect(createCmd).toBe('gh');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(spec);
+  });
+});
+
+describe('createBrokenWindowIssue — #839 host pinning (gitlab)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-10T00:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('pins both the dedup `glab issue list` call and the `glab issue create` call to -R <spec>, keeping --due-date', async () => {
+    const spec = 'https://gitlab.example.com/group/session-orchestrator.git';
+    setCliResponses([
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/52\n' },
+    ]);
+
+    const res = await createBrokenWindowIssueReal({
+      item: { title: 'host-pinned broken window', source: 'gap-839' },
+      vcs: 'gitlab',
+      resolveRepoSpecFn: () => spec,
+    });
+
+    expect(res.created).toBe(true);
+    expect(res.due).toBe('2026-07-17');
+
+    const [listCmd, listArgs] = execFileSync.mock.calls[0];
+    expect(listCmd).toBe('glab');
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(spec);
+
+    const [createCmd, createArgs] = execFileSync.mock.calls[1];
+    expect(createCmd).toBe('glab');
+    expect(createArgs).toContain('--due-date');
+    expect(createArgs[createArgs.indexOf('--due-date') + 1]).toBe('2026-07-17');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(spec);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap 3 (QA follow-up) — every *Real(...) call above injects an explicit
+// resolveRepoSpecFn stub, so a mis-wired production DEFAULT (e.g. the wrong
+// import, or a default that silently swallows its own vcs argument) would
+// pass every test in this file without detection. Mirrors the pattern in
+// tests/lib/issue-close-strip-labels.test.mjs's "#839 wrong-host regression"
+// block: call the *Real function with resolveRepoSpecFn OMITTED so the
+// production default (`resolveRepoSpec`, imported at module top) runs for
+// real — through to the mocked `execFileSync('git', ...)` call.
+// ---------------------------------------------------------------------------
+
+describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REAL module (Gap 3)', () => {
+  it('derives the -R spec through the real resolveRepoSpec → git remote get-url chain when resolveRepoSpecFn is omitted', async () => {
+    const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    const createdUrl = 'https://gitlab.example.com/example-group/example-project/-/issues/99';
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git') return `${remoteUrl}\n`;
+      if (cmd === 'glab') {
+        if (args.includes('list')) return '[]';
+        if (args.includes('create')) return `${createdUrl}\n`;
+      }
+      throw new Error(`Gap 3 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
+    });
+
+    const res = await createSpiralCarryoverIssueReal({
+      taskDescription: 'gap-3 default-resolver task',
+      kind: 'SPIRAL',
+      context: 'ctx',
+      vcs: 'gitlab',
+      // resolveRepoSpecFn intentionally OMITTED — exercises the production default.
+    });
+
+    expect(res).toEqual({ created: true, issueId: 99, issueUrl: createdUrl });
+
+    // The real chain actually shelled out to `git remote get-url` — proof
+    // the default parameter is wired to the real module, not a no-op.
+    const gitCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'git');
+    expect(gitCalls).toHaveLength(1);
+    expect(gitCalls[0][1]).toEqual(['-C', process.cwd(), 'remote', 'get-url', 'gitlab']);
+
+    // Both the dedup `glab issue list` call and the `glab issue create` call
+    // carry the -R spec resolved through that real chain.
+    const [listCmd, listArgs] = execFileSync.mock.calls.find(([cmd, args]) => cmd === 'glab' && args.includes('list'));
+    expect(listCmd).toBe('glab');
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(remoteUrl);
+
+    const [createCmd, createArgs] = execFileSync.mock.calls.find(([cmd, args]) => cmd === 'glab' && args.includes('create'));
+    expect(createCmd).toBe('glab');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(remoteUrl);
+  });
+
+  it('appends no -R at all when the real chain finds no matching remote (graceful degradation, default resolver)', async () => {
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git') {
+        const err = new Error('fatal: no such remote');
+        err.stderr = 'fatal: no such remote';
+        throw err;
+      }
+      if (cmd === 'glab') {
+        if (args.includes('list')) return '[]';
+        if (args.includes('create')) return 'https://gitlab.example.com/example-group/example-project/-/issues/100\n';
+      }
+      throw new Error(`Gap 3 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
+    });
+
+    await createSpiralCarryoverIssueReal({
+      taskDescription: 'gap-3 no-remote task',
+      kind: 'SPIRAL',
+      context: 'ctx',
+      vcs: 'gitlab',
+    });
+
+    const glabCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'glab');
+    expect(glabCalls).toHaveLength(2);
+    for (const [, args] of glabCalls) {
+      expect(args).not.toContain('-R');
+    }
+  });
+});
+
+describe('findExistingCarryover / findExistingBrokenWindow — #839 host pinning', () => {
+  it('findExistingCarryover appends -R <spec> to the glab issue list call', async () => {
+    const spec = 'https://gitlab.example.com/group/session-orchestrator.git';
+    setCliResponses([{ ok: true, stdout: '[]' }]);
+
+    await findExistingCarryoverReal({ taskHash: 'abc12345', vcs: 'gitlab', resolveRepoSpecFn: () => spec });
+
+    const [, args] = execFileSync.mock.calls[0];
+    expect(args).toContain('-R');
+    expect(args[args.indexOf('-R') + 1]).toBe(spec);
+  });
+
+  it('findExistingBrokenWindow appends no -R when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    setCliResponses([{ ok: true, stdout: '[]' }]);
+
+    await findExistingBrokenWindowReal({ taskHash: 'cafe1234', vcs: 'gitlab', resolveRepoSpecFn: () => undefined });
+
+    const [, args] = execFileSync.mock.calls[0];
+    expect(args).not.toContain('-R');
   });
 });

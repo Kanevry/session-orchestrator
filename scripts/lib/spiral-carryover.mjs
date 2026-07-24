@@ -23,10 +23,20 @@
  *
  * This module intentionally does NOT reuse `scripts/lib/vault-backfill/glab.mjs`
  * — that helper is vault-specific and wider in scope than needed here.
+ *
+ * Host pinning (#839): every `glab`/`gh` spawn below (the dedup lookup AND the
+ * `issue create` write) is pinned to the resolved repo via `-R <spec>`. A bare
+ * spawn falls back to the ambient `GITLAB_HOST`/`GH_HOST`, which can silently
+ * resolve to the WRONG GitLab instance on a multi-host machine — for a WRITE
+ * path (`issue create`) that means either filing into the wrong project, or
+ * failing open and defeating `findExistingLabeledIssue`'s dedup (which itself
+ * fails open to `{exists:false}` on any CLI error), risking double-filed
+ * issues. See `scripts/lib/vcs-repo-spec.mjs` for the full rationale.
  */
 
 import { execFileSync } from 'node:child_process';
 import { digestSha256Short } from './crypto-digest-utils.mjs';
+import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 /**
  * Compute a stable 8-char sha256 hash of a task description.
@@ -96,18 +106,33 @@ function parseIssueCreateOutput(stdout) {
  * Returns `{ exists: false }` on any CLI failure — caller treats this as
  * "probably no duplicate" and proceeds with creation (fail-open).
  *
- * @param {{ taskHash: string, label: string, vcs?: 'gitlab' | 'github' }} opts
+ * @param {{
+ *   taskHash: string,
+ *   label: string,
+ *   vcs?: 'gitlab' | 'github',
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined
+ * }} opts
  * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
  */
-async function findExistingLabeledIssue({ taskHash, label, vcs = 'gitlab' } = {}) {
+async function findExistingLabeledIssue({
+  taskHash,
+  label,
+  vcs = 'gitlab',
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
+} = {}) {
   if (!taskHash || typeof taskHash !== 'string') {
     return { exists: false };
   }
 
+  const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
+  const spec = resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
+
   try {
-    if (vcs === 'github') {
+    if (vcsResolved === 'github') {
       // gh: list open issues carrying the label; body match is done locally.
-      const res = runCli('gh', [
+      const args = [
         'issue',
         'list',
         '--label',
@@ -118,7 +143,9 @@ async function findExistingLabeledIssue({ taskHash, label, vcs = 'gitlab' } = {}
         '100',
         '--json',
         'number,url,body',
-      ]);
+      ];
+      if (spec) args.push('-R', spec);
+      const res = runCli('gh', args);
       if (!res.ok) return { exists: false };
       let arr;
       try {
@@ -136,16 +163,9 @@ async function findExistingLabeledIssue({ taskHash, label, vcs = 'gitlab' } = {}
     }
 
     // Default: gitlab via glab.
-    const res = runCli('glab', [
-      'issue',
-      'list',
-      '--label',
-      label,
-      '--per-page',
-      '100',
-      '--output',
-      'json',
-    ]);
+    const args = ['issue', 'list', '--label', label, '--per-page', '100', '--output', 'json'];
+    if (spec) args.push('-R', spec);
+    const res = runCli('glab', args);
     if (!res.ok) return { exists: false };
     let arr;
     try {
@@ -173,22 +193,42 @@ async function findExistingLabeledIssue({ taskHash, label, vcs = 'gitlab' } = {}
  * Check whether a carryover issue already exists for this task.
  * Thin wrapper over `findExistingLabeledIssue` with the `type:carryover` label.
  *
- * @param {{ taskHash: string, vcs?: 'gitlab' | 'github' }} opts
+ * @param {{
+ *   taskHash: string,
+ *   vcs?: 'gitlab' | 'github',
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined
+ * }} opts
  * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
  */
-export async function findExistingCarryover({ taskHash, vcs = 'gitlab' } = {}) {
-  return findExistingLabeledIssue({ taskHash, label: 'type:carryover', vcs });
+export async function findExistingCarryover({
+  taskHash,
+  vcs = 'gitlab',
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
+} = {}) {
+  return findExistingLabeledIssue({ taskHash, label: 'type:carryover', vcs, repoRoot, resolveRepoSpecFn });
 }
 
 /**
  * Check whether a broken-window closure issue already exists for this task.
  * Thin wrapper over `findExistingLabeledIssue` with the `broken-window` label.
  *
- * @param {{ taskHash: string, vcs?: 'gitlab' | 'github' }} opts
+ * @param {{
+ *   taskHash: string,
+ *   vcs?: 'gitlab' | 'github',
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined
+ * }} opts
  * @returns {Promise<{ exists: boolean, issueId?: number, issueUrl?: string }>}
  */
-export async function findExistingBrokenWindow({ taskHash, vcs = 'gitlab' } = {}) {
-  return findExistingLabeledIssue({ taskHash, label: 'broken-window', vcs });
+export async function findExistingBrokenWindow({
+  taskHash,
+  vcs = 'gitlab',
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
+} = {}) {
+  return findExistingLabeledIssue({ taskHash, label: 'broken-window', vcs, repoRoot, resolveRepoSpecFn });
 }
 
 /**
@@ -245,7 +285,9 @@ function buildCarryoverBody({ taskDescription, kind, context, taskHash }) {
  *   kind: 'SPIRAL' | 'FAILED',
  *   context: string,
  *   priority?: 'high' | 'medium',
- *   vcs?: 'gitlab' | 'github'
+ *   vcs?: 'gitlab' | 'github',
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined
  * }} opts
  * @returns {Promise<{
  *   created: boolean,
@@ -261,6 +303,8 @@ export async function createSpiralCarryoverIssue({
   context,
   priority = 'high',
   vcs = 'gitlab',
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
 } = {}) {
   try {
     if (kind !== 'SPIRAL' && kind !== 'FAILED') {
@@ -272,10 +316,19 @@ export async function createSpiralCarryoverIssue({
     }
     const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
 
+    // Resolve the -R/--repo host-pinning spec ONCE (#839); reuse the same
+    // resolved value for the dedup lookup below instead of re-resolving.
+    const spec = resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
+
     const taskHash = computeTaskHash(taskDescription);
 
     // Dedup check first.
-    const existing = await findExistingCarryover({ taskHash, vcs: vcsResolved });
+    const existing = await findExistingCarryover({
+      taskHash,
+      vcs: vcsResolved,
+      repoRoot,
+      resolveRepoSpecFn: () => spec,
+    });
     if (existing.exists) {
       return {
         created: false,
@@ -299,6 +352,7 @@ export async function createSpiralCarryoverIssue({
       cmd = 'glab';
       args = ['issue', 'create', '--title', title, '--description', body, '--label', labels];
     }
+    if (spec) args.push('-R', spec);
 
     const res = runCli(cmd, args);
     if (!res.ok) {
@@ -403,13 +457,15 @@ function buildBrokenWindowBody({ item, taskHash, dueDate, vcs }) {
  *   5. Parse stdout for the issue URL and return `{ created: true, issueId, issueUrl, due }`.
  *
  * Never throws. On any CLI failure returns `{ created: false, skipped: 'error', error }`.
- * `repoRoot` is accepted for signature symmetry with the caller but currently
- * unused — `glab`/`gh` resolve the project from the invoking cwd.
+ * `repoRoot` defaults to `process.cwd()` and is used (#839) to resolve the
+ * `-R`/`--repo` host-pinning spec via `resolveRepoSpecFn` — previously accepted
+ * only for signature symmetry and left unused.
  *
  * @param {{
  *   item: { title?: string, source?: string, description?: string, sessionId?: string },
  *   dueDays?: number,
  *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined,
  *   vcs?: 'gitlab' | 'github'
  * }} opts
  * @returns {Promise<{
@@ -424,7 +480,8 @@ function buildBrokenWindowBody({ item, taskHash, dueDate, vcs }) {
 export async function createBrokenWindowIssue({
   item,
   dueDays = 7,
-  repoRoot: _repoRoot,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
   vcs = 'gitlab',
 } = {}) {
   try {
@@ -437,11 +494,20 @@ export async function createBrokenWindowIssue({
 
     const dueDate = computeDueDate(dueDays);
 
+    // Resolve the -R/--repo host-pinning spec ONCE (#839); reuse the same
+    // resolved value for the dedup lookup below instead of re-resolving.
+    const spec = resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
+
     // Dedup key: (source, title) pair — two different sources with the same
     // title are genuinely distinct broken windows and each file separately.
     const taskHash = computeTaskHash(`${source}::${title}`);
 
-    const existing = await findExistingBrokenWindow({ taskHash, vcs: vcsResolved });
+    const existing = await findExistingBrokenWindow({
+      taskHash,
+      vcs: vcsResolved,
+      repoRoot,
+      resolveRepoSpecFn: () => spec,
+    });
     if (existing.exists) {
       return {
         created: false,
@@ -475,6 +541,7 @@ export async function createBrokenWindowIssue({
         dueDate,
       ];
     }
+    if (spec) args.push('-R', spec);
 
     const res = runCli(cmd, args);
     if (!res.ok) {
