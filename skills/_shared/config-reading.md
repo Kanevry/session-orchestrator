@@ -219,7 +219,7 @@ const rules = loadApplicableRules({
 ### Backward compatibility
 
 - Rule files without any frontmatter continue to load as always-on. No migration required.
-- Files already using the old `paths:` frontmatter key do not match `globs:` — they are treated as always-on until updated.
+- `paths:` is a full alias for `globs:` (issue #795) — files using the old `paths:` frontmatter key load correctly SCOPED, not always-on. When BOTH `globs:` and `paths:` are present on the same rule, `globs:` wins silently (no merge, no warning) and `paths:` is discarded.
 
 ### Failure mode
 
