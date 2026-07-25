@@ -133,3 +133,106 @@ describe('receiving-review.md — RCR rule structure (#40)', () => {
     expect(cliDesignMd).toContain('receiving-review.md');
   });
 });
+
+describe('receiving-review.md — RCR-007 Three-Class Finding Triage (#899)', () => {
+  it('RCR-007 section heading is present', () => {
+    expect(content).toMatch(/##\s+RCR-007/);
+  });
+
+  it('finding class in-scope-blocker is present', () => {
+    expect(content).toContain('`in-scope-blocker`');
+  });
+
+  it('finding class follow-up is present', () => {
+    expect(content).toContain('`follow-up`');
+  });
+
+  it('finding class stop-and-escalate is present', () => {
+    expect(content).toContain('`stop-and-escalate`');
+  });
+
+  it('stop-and-escalate trigger 1 of 5 — a new protocol — is present', () => {
+    expect(content).toContain('(1) a new protocol,');
+  });
+
+  it('stop-and-escalate trigger 2 of 5 — a new config surface — is present', () => {
+    expect(content).toContain('(2) a new config surface,');
+  });
+
+  it('stop-and-escalate trigger 3 of 5 — a storage change — is present', () => {
+    expect(content).toContain('(3) a storage change,');
+  });
+
+  it('stop-and-escalate trigger 4 of 5 — a public-API contract — is present', () => {
+    expect(content).toContain('(4) a public-API contract,');
+  });
+
+  it('stop-and-escalate trigger 5 of 5 — a different owner boundary or a release-process change — is present', () => {
+    expect(content).toContain('(5) a different owner boundary or a release-process change.');
+  });
+
+  it('stop-and-escalate trigger list is stated as a closed set (exactly five, nothing else)', () => {
+    expect(content).toMatch(/`stop-and-escalate` triggers[\s\S]{0,10}exactly these five, nothing else/);
+  });
+
+  it('frozen-scope exception 1 of 5 — active data loss — is present', () => {
+    expect(content).toContain('(1) active data loss,');
+  });
+
+  it('frozen-scope exception 2 of 5 — crash — is present', () => {
+    expect(content).toContain('(2) crash,');
+  });
+
+  it('frozen-scope exception 3 of 5 — broken install/upgrade — is present', () => {
+    expect(content).toContain('(3) broken install/upgrade,');
+  });
+
+  it('frozen-scope exception 4 of 5 — release blocker — is present', () => {
+    expect(content).toContain('(4) release blocker,');
+  });
+
+  it('frozen-scope exception 5 of 5 — concrete security exposure — is present', () => {
+    expect(content).toContain('(5) concrete security exposure.');
+  });
+
+  it('frozen-scope exception list is stated as a closed set (exactly five, nothing else)', () => {
+    expect(content).toMatch(/Frozen-scope exceptions[\s\S]{0,10}exactly these five, nothing else/);
+  });
+});
+
+describe('receiving-review.md — RCR-008 Two-Cycle Reclassify (#899)', () => {
+  it('RCR-008 section heading is present', () => {
+    expect(content).toMatch(/##\s+RCR-008/);
+  });
+
+  it('reclassify obligation after two non-converging fix cycles is stated', () => {
+    expect(content).toMatch(/two fix cycles without a \*\*strict decrease\*\* in blocking findings/);
+  });
+
+  it('no-stack / no-push landing-lane clause is present', () => {
+    expect(content).toContain('no stacked, no pushed fix commits');
+  });
+});
+
+describe('receiving-review.md — instruction budget (#899)', () => {
+  it('byte size stays within the +2000B growth ceiling (8225 B) over the pre-change 6225 B baseline', async () => {
+    const { computeInstructionBudget } = await import('../../scripts/lib/instruction-budget-guard.mjs');
+    const budget = computeInstructionBudget({ repoRoot });
+    const entry = budget.perFile.find((f) => f.file === 'receiving-review.md');
+    expect(entry).toBeDefined();
+    expect(entry.bytes).toBeLessThanOrEqual(8225);
+  });
+
+  it('repo-wide always-on directive total stays at or under the 480 ceiling', async () => {
+    const { computeInstructionBudget, DEFAULT_CEILING } = await import('../../scripts/lib/instruction-budget-guard.mjs');
+    const budget = computeInstructionBudget({ repoRoot });
+    expect(budget.ceiling).toBe(DEFAULT_CEILING);
+    expect(budget.totalDirectives).toBeLessThanOrEqual(480);
+  });
+
+  it('repo-wide instruction budget is not flagged overBudget', async () => {
+    const { computeInstructionBudget } = await import('../../scripts/lib/instruction-budget-guard.mjs');
+    const budget = computeInstructionBudget({ repoRoot });
+    expect(budget.overBudget).toBe(false);
+  });
+});

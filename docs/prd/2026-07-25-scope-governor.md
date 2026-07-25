@@ -2,21 +2,25 @@
 
 **Date:** 2026-07-25
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Implemented (2026-07-25, Session `main-2026-07-25-session-2`, Waves 1–4)
 **Epic:** #894
 **Sub-Issues:** #895 (S1) · #896 (S2) · #897 (S3+S4) · #898 (S5) · #899 (S6)
+**Delivered:** #895 `scripts/lib/scope-baseline.mjs` (`DRIFT_EXCLUDE_PATTERNS`, `writeBaseline()`, `readBaseline()`) · #896 `computeDrift()` + Verdrahtung in `skills/wave-executor/wave-loop.md` und `skills/session-end/plan-verification.md` · #897 RCR-007 + RCR-008 in `.claude/rules/receiving-review.md` · #898 Idle-Reset-Regel 7 in `skills/session-start/SKILL.md` · #899 `tests/lib/scope-baseline.test.mjs` (35 Tests) + `tests/rules/receiving-review.test.mjs` (27 → 49 Tests). **Alle sechs Scope-Punkte geliefert — S5 wurde nicht gestrichen.**
 **Appetite:** 1w
 **Parent Project:** session-orchestrator (standalone Feature, kein Epic-Kind)
 
 > Quelle der Doktrin: [`openclaw/agent-skills` § `skills/autoreview/SKILL.md`](https://github.com/openclaw/agent-skills/blob/main/skills/autoreview/SKILL.md) (MIT), § "Scope Governor". Adoptiert werden **vier** von dreizehn geprüften Mustern; die übrigen neun sind in § 2 Out-of-Scope mit Begründung festgehalten, damit die Nicht-Adoption als Entscheidung lesbar ist und nicht als Lücke.
 
-> **Revisionshistorie — vier Runden, viermal dieselbe Fehlerklasse in neuer Verkleidung.** Der Reviewer hat das Muster am Ende selbst benannt, und es ist die wichtigste Lektion dieses Dokuments: *jedes Mal wurde ein Verhältnis definiert, indem die eine Seite auf Prosa verwies und die andere gerechnet wurde.*
+> **Revisionshistorie — fünf Runden, fünfmal dieselbe Fehlerklasse in neuer Verkleidung.** Der Reviewer hat das Muster am Ende selbst benannt, und es ist die wichtigste Lektion dieses Dokuments: *jedes Mal wurde ein Verhältnis definiert, indem die eine Seite auf Prosa verwies und die andere gerechnet wurde.* Die fünfte Runde fand nicht mehr im Review statt, sondern **im ausgelieferten Code** — siehe `Impl → Fix`.
 >
 > - **R1 → R2:** Baseline lag in `wave-scope.json` — einer Datei, die der Harness pro Session selbst löscht. Die genannte Datenquelle (`over_delivery_ratio`) existierte nicht als Code. Ein konkurrierender Schwellwert 1.3 war unerwähnt. LOC-Achse gestrichen (YAGNI).
 > - **R2 → R3:** Dieselbe Klasse **invertiert** — die Baseline wurde nie gelöscht, überlebte den Session-Wechsel und wäre nur einmal pro Repo eingefroren worden. Zusätzlich: Numerator/Denominator filterten Test-Dateien unterschiedlich, eine planmäßige Session hätte `0,67` gelesen.
 > - **R3 → R4:** Dieselbe Klasse **eine Ebene tiefer** — der Vergleichs-Key hieß `session-id`, das Schema kennt aber `session` (§ 4 Session-Scoping); und die „wiederverwendete" Filterliste ist in sich **nicht gleichartig** (`reclassify` vs. `exclude`) und schließt ein Verzeichnis aus, in dem ein geplantes Deliverable liegt (§ 4 Symmetrie-Invariante). Die gepinnte 1,0-Invariante war unerfüllbar.
+> - **Impl → Fix:** Dieselbe Klasse **zum fünften Mal — und erstmals nicht im Review, sondern im ausgelieferten Code**. Das gelieferte `computeDrift()` filterte den **Numerator** in Code, während `writeBaseline()` den **Denominator** wortwörtlich speicherte: dessen Filterung delegierte an Prosa in `skills/wave-executor/wave-loop.md:43`, die den Koordinator-LLM anwies, `plannedFiles` vor dem Aufruf „PRE-FILTERED via `DRIFT_EXCLUDE_PATTERNS`" zu übergeben. Koordinator-Grep bestätigte: **kein** Code wandte `DRIFT_EXCLUDE_PATTERNS` je auf eine geplante Dateimenge an. Exakt das Muster aus dem Satz oben — die eine Seite gerechnet, die andere auf Prosa verwiesen. Im Review der Umsetzung gefunden und in derselben Session in Code korrigiert.
 >
-> **Konsequenz für die Umsetzung:** beide Seiten des Bruchs werden an **einer** Stelle, **in Code** definiert — `DRIFT_EXCLUDE_PATTERNS` in `scripts/lib/scope-baseline.mjs`. Und der erste Test, der geschrieben wird, ist der 1,0-Fall für eine planmäßige Session; nicht der letzte.
+> **Konsequenz für die Umsetzung (R4):** beide Seiten des Bruchs werden an **einer** Stelle, **in Code** definiert — `DRIFT_EXCLUDE_PATTERNS` in `scripts/lib/scope-baseline.mjs`. Und der erste Test, der geschrieben wird, ist der 1,0-Fall für eine planmäßige Session; nicht der letzte.
+>
+> **Nachgeschärfte Konsequenz (Impl):** diese Mitigation war **notwendig, aber nicht hinreichend**. Eine geteilte **Konstante**, die aus zwei Ausführungskontexten referenziert wird — und einer davon ist ein LLM, der Prosa befolgt — ist nicht dasselbe wie ein geteilter **Code-Pfad**. Erst der geteilte Code-Pfad macht die Invariante strukturell; die geteilte Konstante macht sie nur *dokumentiert*. Die Prüffrage für die nächste Revision lautet daher nicht „zeigen beide Seiten auf dieselbe Konstante?", sondern **„wendet beide Seiten dieselbe Funktion an?"**
 
 ## 1. Problem & Motivation
 
@@ -30,7 +34,7 @@ Dieses Feature ersetzt die Abbruch-Semantik durch eine **Scope-Semantik**. Drei 
 2. Ein **Drift-Tripwire**, der den tatsächlichen Diff gegen diese Baseline misst und bei Überschreitung des 2×-Faktors warnt.
 3. Eine **Finding-Triage-Doktrin**, die jedes Review-Finding vor dem Patchen in eine von drei Klassen einordnet — `in-scope-blocker`, `follow-up`, `stop-and-escalate` — plus die Pflicht, nach zwei nicht-konvergierenden Fix-Zyklen **alle** verbleibenden Findings neu zu klassifizieren, statt blind einen dritten Zyklus zu fahren oder abzubrechen.
 
-Die dritte Klasse `stop-and-escalate` existiert bei uns heute nicht: `skills/session-end/SKILL.md:316-317` kennt für Review-Findings genau zwei Dispositionen (`HIGH+/blocking → fix inline oder Issue` / `MED/LOW → Report-Sektion, kein Issue`). Ein Finding, dessen korrekte Behandlung eine neue Protokoll-, Config-, Storage- oder Public-API-Entscheidung wäre, hat bei uns keinen Ausgang außer „fix it" oder „ignore it" — beides falsch.
+Die dritte Klasse `stop-and-escalate` existiert bei uns heute nicht. Die Dispositions-Tabelle in `skills/session-end/SKILL.md:314-319` führt **vier** Zeilen — `HIGH+/blocking` (`:316`), `MED/LOW` (`:317`), `Planned-carryover` (`:318`) und `SPIRAL/FAILED` (`:319`) — von denen die ersten beiden die Review-Findings disponieren, die letzten beiden Carryover-Routen sind. (Die Planungsfassung behauptete „genau zwei Dispositionen bei `:316-317`"; bei der Umsetzung per `sed -n '312,321p'` als Vierzeiler widerlegt.) Der tragende Befund bleibt davon unberührt und ist der eigentliche Grund für `stop-and-escalate`: `grep -i escalat skills/session-end/SKILL.md` **exitet 1** — eine Escalate-Klasse existiert in dieser Datei nirgends. Ein Finding, dessen korrekte Behandlung eine neue Protokoll-, Config-, Storage- oder Public-API-Entscheidung wäre, hat bei uns keinen Ausgang außer „fix it" oder „ignore it" — beides falsch.
 
 ### Why
 
@@ -43,7 +47,7 @@ Zwei unabhängige externe Quellen bestätigen die Diagnose:
 
 Der **2×-Diff-Wachstums-Tripwire ist außerhalb von autoreview nirgends publiziert** (Recherche 2026-07-25, fünf Quellen). Das ist deren eigentlicher origineller Beitrag und der Teil, der bei uns am wenigsten Substitut hat.
 
-**Eigenbeleg aus der Entstehung dieses PRDs.** Die Review-Historie oben ist selbst ein Datenpunkt für die Diagnose: drei Runden, jede fand einen fatalen Fehler, jede Korrektur erzeugte die nächste Variante derselben Klasse. Ein Cap bei zwei Runden hätte hier nach R2 beendet — mit einem grünen PRD, dessen Tripwire um seinen eigenen Schwellwert stumpf gewesen wäre. Nicht weil das Budget schlecht gewählt war, sondern weil ein Runden-Zähler nichts über Konvergenz weiß. Genau dafür existiert RCR-008.
+**Eigenbeleg aus der Entstehung dieses PRDs.** Die Review-Historie oben ist selbst ein Datenpunkt für die Diagnose: drei Review-Runden — plus eine vierte Instanz derselben Klasse in der Umsetzung (`Impl → Fix`) — und jede Korrektur erzeugte die nächste Variante. Ein Cap bei zwei Runden hätte hier nach R2 beendet — mit einem grünen PRD, dessen Tripwire um seinen eigenen Schwellwert stumpf gewesen wäre. Nicht weil das Budget schlecht gewählt war, sondern weil ein Runden-Zähler nichts über Konvergenz weiß. Genau dafür existiert RCR-008.
 
 **Was wir schon haben — und warum es die Lücke nicht schließt.** Zwei bestehende Mechanismen berühren dieselbe Metrik-Familie:
 
@@ -62,12 +66,12 @@ Voraussetzung erfüllt: **#876 ist gelandet** (`23f7812`, 2026-07-25). Vor diese
 
 ### In-Scope
 
-- [ ] **S1 — Scope-Baseline-Modul.** Neues `scripts/lib/scope-baseline.mjs` mit `writeBaseline()`, `readBaseline()`, `computeDrift()` und der exportierten Konstante `DRIFT_EXCLUDE_PATTERNS`. Die Baseline wird als **fünf flache Keys** in die STATE.md-Frontmatter geschrieben (`scope-baseline-intent`, `-owner-boundary`, `-planned-files`, `-session`, `-frozen-at`); `branch` und `session-start-ref` werden aus der bestehenden Frontmatter gelesen, nicht dupliziert. Session-Scoping vergleicht gegen das **kanonische `session`-Feld** über `parseSessionId()`. Schreibpfad ist `withStateMdLock()`, in try/catch gewrappt.
-- [ ] **S2 — Drift-Berechnung + 2×-Tripwire auf der Datei-Achse, warn-only.** `computeDrift()` vergleicht die Anzahl geänderter, nicht-ausgeschlossener Dateien seit `session-start-ref` gegen `scope-baseline-planned-files`. Schwelle 2.0, konfigurierbar, `>=` gilt als gerissen. **Beide Seiten des Bruchs verwenden `DRIFT_EXCLUDE_PATTERNS` — dieselbe Konstante, im selben Modul, in Code** (Symmetrie-Invariante, § 4). Ausgabe ist ein WARN auf stderr plus ein Feld im Wave-Checkpoint — **niemals ein Deny, niemals ein Exit ≠ 0**.
-- [ ] **S3 — RCR-007: Drei-Klassen-Finding-Triage.** Neue Klausel in `.claude/rules/receiving-review.md`: Pflicht-Klassifikation vor dem Patchen in `in-scope-blocker` / `follow-up` / `stop-and-escalate`, mit den fünf enumerierten Escalate-Triggern und der **geschlossenen** Kritisch-Ausnahmeliste (aktiver Datenverlust, Crash, kaputtes Install/Upgrade, Release-Blocker, konkrete Security-Exposure — nichts sonst rechtfertigt Scope-Bruch).
-- [ ] **S4 — RCR-008: Two-Cycle-Reclassify.** Nach zwei Fix-Zyklen ohne Konvergenz: Pause, **alle** verbleibenden Findings neu klassifizieren, nur weiterfahren wenn jedes davon noch `in-scope-blocker` ist. Plus Landing-Lane-Hygiene: keine gestackten oder gepushten Fix-Commits während Klassifikation oder Proof offen sind.
-- [ ] **S5 — Idle-Reset-Regel.** `skills/session-start/SKILL.md` § Idle Reset bekommt eine Regel 7: die fünf `scope-baseline-*`-Keys werden über denselben `updateFrontmatterFields(contents, {field: null})`-Mechanismus gelöscht, den Regel 6 für die v1.1-Recommendation-Keys schon etabliert. Das ist der Gürtel; der `session`-Vergleich in S1 ist der Hosenträger. **Wenn das Appetite reißt, ist S5 der Kandidat zum Streichen** — es ist der einzige In-Scope-Punkt, den dieses PRD selbst als redundant ausweist.
-- [ ] **S6 — Tests.** Unit-Tests für S1/S2. Der **erste** geschriebene Test ist der 1,0-Fall für eine exakt planmäßige Session (§ 3 FA2, Szenario 1) — das ist die Invariante, an der drei Revisionen gescheitert sind. Dazu der **Fake-Regression-Nachweis** für den Tripwire (er muss auf synthetischem Drift ROT werden — ein grüner Guard beweist nichts, `.claude/rules/testing.md` § "Negative-Assertion Fake-Regression Check") und ein Rules-Test, der Präsenz, inhaltliche Vollständigkeit und Byte-Grenze von RCR-007/008 pinnt (Verifikationsmethode für S3/S4, siehe § 3 FA3/FA4).
+- [x] **S1 — Scope-Baseline-Modul** (geliefert als **#895**). Neues `scripts/lib/scope-baseline.mjs` mit `writeBaseline()`, `readBaseline()`, `computeDrift()` und der exportierten Konstante `DRIFT_EXCLUDE_PATTERNS`. Die Baseline wird als **fünf flache Keys** in die STATE.md-Frontmatter geschrieben (`scope-baseline-intent`, `-owner-boundary`, `-planned-files`, `-session`, `-frozen-at`); `branch` und `session-start-ref` werden aus der bestehenden Frontmatter gelesen, nicht dupliziert. Session-Scoping liest das **kanonische `session`-Feld direkt aus der Frontmatter** (`parseSessionId()` nur, falls die gelesene ID normalisiert werden muss — die Planungsfassung schrieb „vergleicht … über `parseSessionId()`", was bei der Umsetzung widerlegt wurde: die Funktion nimmt einen String und macht kein I/O, § 4). Schreibpfad ist `withStateMdLock()`, in try/catch gewrappt.
+- [x] **S2 — Drift-Berechnung + 2×-Tripwire auf der Datei-Achse, warn-only** (geliefert als **#896**). `computeDrift()` vergleicht die Anzahl geänderter, nicht-ausgeschlossener Dateien seit `session-start-ref` gegen `scope-baseline-planned-files`. Schwelle 2.0, konfigurierbar, `>=` gilt als gerissen. **Beide Seiten des Bruchs verwenden `DRIFT_EXCLUDE_PATTERNS` — dieselbe Konstante, im selben Modul, in Code** (Symmetrie-Invariante, § 4). Ausgabe ist ein WARN auf stderr plus ein Feld im Wave-Checkpoint — **niemals ein Deny, niemals ein Exit ≠ 0**.
+- [x] **S3 — RCR-007: Drei-Klassen-Finding-Triage** (geliefert als **#897**). Neue Klausel in `.claude/rules/receiving-review.md`: Pflicht-Klassifikation vor dem Patchen in `in-scope-blocker` / `follow-up` / `stop-and-escalate`, mit den fünf enumerierten Escalate-Triggern und der **geschlossenen** Kritisch-Ausnahmeliste (aktiver Datenverlust, Crash, kaputtes Install/Upgrade, Release-Blocker, konkrete Security-Exposure — nichts sonst rechtfertigt Scope-Bruch).
+- [x] **S4 — RCR-008: Two-Cycle-Reclassify** (geliefert als **#897**, gemeinsam mit S3). Nach zwei Fix-Zyklen ohne Konvergenz: Pause, **alle** verbleibenden Findings neu klassifizieren, nur weiterfahren wenn jedes davon noch `in-scope-blocker` ist. Plus Landing-Lane-Hygiene: keine gestackten oder gepushten Fix-Commits während Klassifikation oder Proof offen sind.
+- [x] **S5 — Idle-Reset-Regel** (geliefert als **#898** — **nicht gestrichen**). `skills/session-start/SKILL.md` § Idle Reset bekommt eine Regel 7: die fünf `scope-baseline-*`-Keys werden über denselben `updateFrontmatterFields(contents, {field: null})`-Mechanismus gelöscht, den Regel 6 für die v1.1-Recommendation-Keys schon etabliert. Das ist der Gürtel; der `session`-Vergleich in S1 ist der Hosenträger. **Wenn das Appetite reißt, ist S5 der Kandidat zum Streichen** — es ist der einzige In-Scope-Punkt, den dieses PRD selbst als redundant ausweist. *(Das Appetite hat gehalten: S5 wurde geliefert, nicht gestrichen.)*
+- [x] **S6 — Tests** (geliefert als **#899**). Unit-Tests für S1/S2. Der **erste** geschriebene Test ist der 1,0-Fall für eine exakt planmäßige Session (§ 3 FA2, Szenario 1) — das ist die Invariante, an der drei Revisionen gescheitert sind. Dazu der **Fake-Regression-Nachweis** für den Tripwire (er muss auf synthetischem Drift ROT werden — ein grüner Guard beweist nichts, `.claude/rules/testing.md` § "Negative-Assertion Fake-Regression Check") und ein Rules-Test in **`tests/rules/receiving-review.test.mjs`**, der Präsenz, inhaltliche Vollständigkeit und Byte-Grenze von RCR-007/008 pinnt (Verifikationsmethode für S3/S4, siehe § 3 FA3/FA4). *Geliefert: `tests/lib/scope-baseline.test.mjs` (35 Tests) + `tests/rules/receiving-review.test.mjs` (27 → 49 Tests).*
 
 ### Out-of-Scope
 
@@ -102,8 +106,8 @@ And alle übrigen Frontmatter-Keys bleiben unverändert
 ```
 
 ```gherkin
-Given eine STATE.md deren scope-baseline-session via parseSessionId() dem
-      kanonischen session-Feld GLEICHT
+Given eine STATE.md deren scope-baseline-session dem direkt gelesenen
+      kanonischen Frontmatter-Feld session GLEICHT
 When writeBaseline() ein zweites Mal mit abweichenden Werten aufgerufen wird
 Then bleiben alle scope-baseline-* Keys unverändert
 And der Rückgabewert ist {written: false, reason: "already-frozen"}
@@ -210,7 +214,7 @@ And die nächste Wave wird dispatcht
 
 > **Diese Kriterien sind Doktrin, nicht Code.** Sie beschreiben eine Urteilsentscheidung des Koordinators, die kein Unit-Test assertieren kann — es gibt keinen mechanisierbaren Output. Sie dürfen NICHT in Unit-Tests übersetzt werden.
 >
-> **Verifikationsmethode:** `tests/rules/check-rules-handwritten.test.mjs` prüft, dass RCR-007 in `.claude/rules/receiving-review.md` präsent ist, alle drei Klassennamen führt, alle fünf enumerierten Escalate-Trigger enthält und die fünfstellige geschlossene Kritisch-Ausnahmeliste vollständig nennt. Das verifiziert die *Auslieferung* der Doktrin, nicht ihre Befolgung.
+> **Verifikationsmethode:** `tests/rules/receiving-review.test.mjs` prüft, dass RCR-007 in `.claude/rules/receiving-review.md` präsent ist, alle drei Klassennamen führt, alle fünf enumerierten Escalate-Trigger enthält und die fünfstellige geschlossene Kritisch-Ausnahmeliste vollständig nennt. Das verifiziert die *Auslieferung* der Doktrin, nicht ihre Befolgung.
 
 ```gherkin
 Given ein Review-Finding, das durch den aktuellen Diff eingeführt wurde
@@ -235,7 +239,9 @@ And der Scope-Bruch wird an den Operator berichtet statt ihn zu überbauen
 Given ein Review-Finding, das real ist aber eine benachbarte Bug-Klasse oder Sibling-Surface betrifft
 When der Koordinator es klassifiziert
 Then lautet die Klasse follow-up
-And es wird nach der bestehenden Disposition aus skills/session-end/SKILL.md:316-317 behandelt
+And es wird nach der bestehenden Review-Finding-Disposition aus der
+    Vier-Zeilen-Tabelle skills/session-end/SKILL.md:314-319 behandelt
+    (Review-Zeilen :316 HIGH+/blocking und :317 MED/LOW)
 ```
 
 ### FA4 — Two-Cycle-Reclassify (RCR-008) — DOCTRINE (non-executable)
@@ -342,7 +348,7 @@ And DRIFT_EXCLUDE_PATTERNS ist die EINZIGE Filterquelle für beide Seiten
 - The scope-baseline module shall persist the baseline as flat keys in STATE.md frontmatter and shall not introduce an additional artefact path.
 - The scope-baseline module shall never throw; every failure — including a lock timeout — shall be expressed in the returned object.
 - The scope-baseline module shall reuse the existing `branch` and `session-start-ref` frontmatter fields rather than writing its own copies.
-- The scope-baseline module shall read session identity from the canonical `session` frontmatter field via `parseSessionId()`, and shall never read a `session-id` key.
+- The scope-baseline module shall read session identity **directly** from the canonical `session` frontmatter field, and shall never read a `session-id` key. `parseSessionId()` shall be applied only where that string needs format-normalisation — it takes a session-ID string and performs no I/O, so it can never be the reader itself (`session-id.mjs:21`, `:200`).
 
 **State-driven:**
 - While `scope-baseline-session` equals the current `session` value, the module shall reject further `writeBaseline()` calls with `{written: false, reason: "already-frozen"}`.
@@ -409,13 +415,26 @@ And DRIFT_EXCLUDE_PATTERNS ist die EINZIGE Filterquelle für beide Seiten
 **Unwanted behaviour:**
 - If the Idle Reset runs, then `## What Not To Retry` and `## Open Questions` shall remain byte-for-byte intact — the new rule shall not widen the reset's blast radius.
 
-### Byte-Budget (querschnittlich)
+### Budget (querschnittlich) — zwei Achsen, nur eine davon wird im Repo erzwungen
+
+> **Korrektur aus der Umsetzung.** Die Planungsfassung budgetierte ausschließlich Bytes. Der Repo-Guard erzwingt aber eine **Direktiven**-Decke, keine Byte-Decke: `scripts/lib/instruction-budget-guard.mjs:401` rechnet `overBudget = totalDirectives > ceiling`, mit `DEFAULT_CEILING = 480` (`:51`). **Eine Byte-Decke existiert nirgends im Repo** (verifiziert per Grep über `instruction-budget-guard.mjs` — jeder `overBudget`-Treffer hängt an `totalDirectives`). Der Byte-Bound bleibt als **selbstauferlegtes PRD-Kriterium** gültig; er ist nur kein Repo-Gate. Beide Achsen werden daher getrennt geführt.
 
 **Ubiquitous:**
-- The added RCR-007 + RCR-008 clauses shall grow `.claude/rules/receiving-review.md` by no more than 2.000 bytes over its 2026-07-25 baseline of **6.225 B as reported by `computeInstructionBudget()`** (frontmatter-stripped; raw `wc -c` reports 6.270 B — the rules-test and this criterion shall both use the `computeInstructionBudget()` figure).
+- *(PRD-eigener Bound, kein Repo-Gate)* The added RCR-007 + RCR-008 clauses shall grow `.claude/rules/receiving-review.md` by no more than 2.000 bytes over its 2026-07-25 baseline of **6.225 B as reported by `computeInstructionBudget()`** (frontmatter-stripped; raw `wc -c` reports 6.270 B — the rules-test and this criterion shall both use the `computeInstructionBudget()` figure).
+- *(Repo-Gate)* The always-on surface shall stay at or below the enforced **directive** ceiling of 480 (`instruction-budget-guard.mjs:51`), evaluated as `totalDirectives > ceiling` (`:401`).
 
 **Unwanted behaviour:**
-- If the always-on surface total would exceed its recorded pre-change value by more than 2.000 bytes, then the clauses shall be shortened rather than the budget raised.
+- If either bound would be exceeded, then the clauses shall be shortened rather than the budget raised.
+
+**Gemessenes Ergebnis (2026-07-25, nach Auslieferung von #897):**
+
+| Achse | vorher | nachher | Delta | Bound | Status |
+|---|---|---|---|---|---|
+| Bytes (`computeInstructionBudget()`, `receiving-review.md`) | 6.225 B | **8.088 B** | +1.863 B | ≤ 2.000 B (PRD-eigen) | eingehalten |
+| Direktiven (`receiving-review.md`) | 37 | **39** | +2 | — | eingehalten |
+| Direktiven (repo-weit, always-on) | — | **457 / 480** | — | 480 (Repo-Gate) | `overBudget: false` |
+
+Bemerkenswert für künftige Klausel-Autoren: **in der Praxis band die Byte-Achse, nicht die Direktiven-Achse** (93 % des Byte-Bounds ausgeschöpft gegenüber +2 Direktiven bei 23 verbleibenden Direktiven Luft). Grund ist die Heuristik selbst — `countDirectives()` zählt Bullets (`/^\s*[-*+]\s/`), nummerierte Punkte (`/^\s*\d+[.)]\s/`) und Überschriften ab H2 (`/^#{2,}\s/`); RCR-007/008 wurden als **Markdown-Tabellen** verfasst, deren Zeilen keines dieser Muster erfüllen. Wer dieselbe Doktrin als Bullet-Liste schreibt, verschiebt die Bindung auf die andere Achse.
 
 ## 4. Technical Notes
 
@@ -424,7 +443,7 @@ And DRIFT_EXCLUDE_PATTERNS ist die EINZIGE Filterquelle für beide Seiten
 Sieben Dateien. Zwei davon fallen unter `DRIFT_EXCLUDE_PATTERNS` → **fünf gezählte**, das ist der Wert für `scope-baseline-planned-files`:
 
 *Gezählt (5):*
-- `scripts/lib/scope-baseline.mjs` — **neu.** `writeBaseline()`, `readBaseline()`, `computeDrift()`, `DRIFT_EXCLUDE_PATTERNS`. Nutzt `parseStateMd`/`serializeStateMd` (`scripts/lib/state-md.mjs:14`), `parseSessionId()` (`scripts/lib/session-id.mjs`) und `withStateMdLock` (definiert in `scripts/lib/locks/state-md-lock.mjs:285`, öffentlich re-exportiert über `scripts/lib/session-lock.mjs:60` — dieselbe Import-Fläche, die `session-id.mjs:38` verwendet).
+- `scripts/lib/scope-baseline.mjs` — **neu.** `writeBaseline()`, `readBaseline()`, `computeDrift()`, `DRIFT_EXCLUDE_PATTERNS`. Nutzt `parseStateMd`/`serializeStateMd` (`scripts/lib/state-md.mjs:14`), liest die Session-ID **selbst** aus `frontmatter.session` (nicht über `parseSessionId()`, siehe § Session-Scoping) und verwendet `withStateMdLock` (definiert in `scripts/lib/locks/state-md-lock.mjs:285`, öffentlich re-exportiert über `scripts/lib/session-lock.mjs:60` — dieselbe Import-Fläche, die `session-id.mjs:38` verwendet).
 - `.claude/rules/receiving-review.md` — **+RCR-007, +RCR-008.** Letzte bestehende Klausel ist RCR-006, die Nummern sind frei. Frontmatter ist bereits `tier: always` (seit #880), also kein Never-always-on-Brandmauer-Verstoß. Byte-Delta ≤ 2.000 B. **Diese Datei ist der Grund, warum `DRIFT_EXCLUDE_PATTERNS` `.claude/rules/**` behält** — sie ist ein Deliverable dieses Features.
 - `skills/wave-executor/wave-loop.md` — Pre-Wave-1 ruft `writeBaseline()`; der Inter-Wave-Checkpoint ruft `computeDrift()` und rendert den WARN.
 - `skills/session-end/plan-verification.md` — § 1.1a bekommt die Drift-Zeile in den bestehenden Report-Block (`:46-53`) **plus einen Satz, der auf `DRIFT_EXCLUDE_PATTERNS` als geteilte Quelle zeigt**. Die vollständige Extraktion der Filter in ein gemeinsames Modul ist out-of-scope (§ 2).
@@ -432,7 +451,7 @@ Sieben Dateien. Zwei davon fallen unter `DRIFT_EXCLUDE_PATTERNS` → **fünf gez
 
 *Ausgeschlossen (2):*
 - `tests/lib/scope-baseline.test.mjs` — **neu.**
-- `tests/rules/check-rules-handwritten.test.mjs` — **erweitert.**
+- `tests/rules/receiving-review.test.mjs` — **erweitert** (27 → 49 Tests). *(Die Planungsfassung nannte hier `tests/rules/check-rules-handwritten.test.mjs`; bei der Umsetzung widerlegt — jene Datei pinnt das **check-rules-Skript** gegen Fixture-Temp-Verzeichnisse und liest `.claude/rules/receiving-review.md` nie: `grep -n "receiving-review" tests/rules/check-rules-handwritten.test.mjs` exitet 1.)*
 
 ### Architecture
 
@@ -442,20 +461,22 @@ STATE.md ist der richtige Ort, aus vier Gründen, die alle auf bestehende Mechan
 
 1. **Sie führt genau diese Art von Wert schon.** `session-start-ref` ist ein write-once, session-gepinnter Commit — dasselbe Muster. Zwei von sieben Baseline-Feldern existieren bereits und werden wiederverwendet.
 2. **Es gibt einen dokumentierten Accessor.** `plan-verification.md:12-23` liest `session-start-ref` bereits über `parseFrontmatter` aus STATE.md.
-3. **Sie ist im Coordinator-Carveout von `enforce-scope.mjs`.** `COORDINATOR_CARVEOUT_PATHS` (`:220-225`) listet die vier `STATE.md`-Pfade explizit; der Carveout-Aufruf steht bei `:201-203`. Ein Baseline-Write braucht keinen `allowedPaths`-Eintrag.
+3. **Sie ist im Coordinator-Carveout von `hooks/enforce-scope.mjs`.** `COORDINATOR_CARVEOUT_PATHS` (`:220-225`) listet die vier `STATE.md`-Pfade explizit; der Carveout-Aufruf steht bei `:201-203` und liefert `emitAllow()` **vor** Gate 7. Ein Baseline-Write braucht keinen `allowedPaths`-Eintrag. *(Die Planungsfassung verortete die Datei unter `scripts/lib/enforce-scope.mjs` — existiert nicht; bei der Umsetzung per `find . -name enforce-scope.mjs` auf `hooks/` korrigiert. Die zitierten Zeilennummern stimmen für die reale Datei.)*
 4. **Sie überlebt Wave-Churn und ist host-lokal.** Nichts löscht oder resettet STATE.md mitten in der Session (verifiziert: kein `unlinkSync`/`rm`-Pfad gegen STATE.md in `skills/`, `scripts/`, `hooks/`; der Idle Reset läuft ausschließlich bei *session-start* auf dem `completed`-Zweig), und sie ist gitignored (`.gitignore:16`).
 
 Der in R1 genannte Gegengrund — der `withStateMdLock`-Schreibpfad — war keiner: der Lock existiert genau dafür, dass konkurrierende Writer sich nicht überschreiben (PSA-005).
 
-**Session-Scoping: das kanonische Feld heißt `session`, nicht `session-id`.** R3 verglich gegen `session-id` — ein Key, den das Schema **nicht kennt**. `skills/_shared/state-ownership.md:20` dokumentiert `session: <session-id>`, wobei `<session-id>` nur der Wert-Platzhalter ist; `:28` listet `session` unter den **optionalen** Feldern mit der ausdrücklichen Leseregel „writers SHOULD populate these fields but readers MUST tolerate their absence" und verlangt `parseSessionId()` für die Dual-Format-Kompatibilität (semantisch seit #573, legacy UUID-v4 davor). Der Code liest entsprechend `parsed.frontmatter?.session` (`scripts/lib/session-id.mjs:169`).
+**Session-Scoping: das kanonische Feld heißt `session`, nicht `session-id`.** R3 verglich gegen `session-id` — ein Key, den das Schema **nicht kennt**. `skills/_shared/state-ownership.md:20` dokumentiert `session: <session-id>`, wobei `<session-id>` nur der Wert-Platzhalter ist; `:28` listet `session` unter den **optionalen** Feldern mit der ausdrücklichen Leseregel „writers SHOULD populate these fields but readers MUST tolerate their absence" und nennt `parseSessionId()` für die Dual-Format-Kompatibilität (semantisch seit #573, legacy UUID-v4 davor).
 
-Warum das gefährlich und nicht kosmetisch war: die **live STATE.md dieses Repos führt beide Keys** mit identischem Wert (`session-id:` in Zeile 4, `session:` in Zeile 5) — ein undokumentiertes Duplikat, das kein Code liest. Ein Smoke-Test auf dieser Maschine wäre grün gewesen. Auf jeder schema-konformen STATE.md — Bootstrap-Platzhalter, anderes Plattform-State-Dir, pre-#573-Datei — wäre `frontmatter['session-id']` `undefined` gewesen, die Regel „weicht ab → stale" hätte **immer** gegriffen, und der Tripwire wäre dauerhaft still inert gewesen. Genau die Inertness, für die die LOC-Achse gestrichen wurde, durch einen Ein-Wort-Namensfehler wieder eingebaut.
+**Wichtig — `parseSessionId()` ist NICHT der Leser.** Die Planungsfassung schrieb, der Vergleich laufe „über `parseSessionId()`"; bei der Umsetzung widerlegt. Die Funktion nimmt eine Session-ID **als String** entgegen und macht **kein I/O**: ihr eigener Docstring bei `scripts/lib/session-id.mjs:21` lautet wörtlich „parseSessionId is a pure synchronous function — no I/O, no side effects", die Signatur steht bei `:200`. Der Frontmatter-Read bei `session-id.mjs:169` (`parsed.frontmatter?.session`) liegt **innerhalb** von `readSessionIdFromStateMd()` (`:159`) — einer modul-**privaten**, nicht exportierten Funktion (`grep -n "^export" scripts/lib/session-id.mjs` listet sie nicht). Die korrekte Aufteilung lautet daher: **`frontmatter.session` selbst lesen**, und `parseSessionId()` erst danach anwenden, falls dieser String normalisiert werden muss (Format-Vergleich semantisch vs. UUID). Wer die Funktion für den Lesevorgang hält, baut ein Modul, das die Session-ID nie erfährt.
 
-Daraus folgen drei Regeln: gegen `frontmatter.session` vergleichen; über `parseSessionId()` lesen; und **das Fehlen des optionalen Feldes explizit behandeln** — beide Seiten `null` gilt als MATCH (einfrieren, nicht dauerhaft stale), eine Seite `null` führt zu frischem Freeze.
+Warum der Namensfehler gefährlich und nicht kosmetisch war: **eine live STATE.md dieses Repos führt beide Keys** mit identischem Wert — `.codex/STATE.md:4` trägt `session-id: main-2026-07-04-deep-3` direkt über `:5` `session: main-2026-07-04-deep-3`, ein undokumentiertes Duplikat, das kein Code liest. (Die Planungsfassung schrieb das der „live STATE.md" pauschal zu; die aktuell aktive `.claude/STATE.md` trägt nur noch `session` — das Duplikat überlebt in der Codex-Datei. Für das Argument ist das gleichgültig, für die Reproduzierbarkeit nicht: der Smoke-Test wäre je nach Plattform-State-Dir grün **oder** rot gewesen, was die Falle eher verschärft als entschärft.) Ein Smoke-Test gegen die Codex-Datei wäre grün gewesen. Auf jeder schema-konformen STATE.md — Bootstrap-Platzhalter, anderes Plattform-State-Dir, pre-#573-Datei — wäre `frontmatter['session-id']` `undefined` gewesen, die Regel „weicht ab → stale" hätte **immer** gegriffen, und der Tripwire wäre dauerhaft still inert gewesen. Genau die Inertness, für die die LOC-Achse gestrichen wurde, durch einen Ein-Wort-Namensfehler wieder eingebaut.
+
+Daraus folgen drei Regeln: gegen `frontmatter.session` vergleichen; diesen Wert **direkt aus der Frontmatter lesen** und `parseSessionId()` nur zur Format-Normalisierung des gelesenen Strings einsetzen; und **das Fehlen des optionalen Feldes explizit behandeln** — beide Seiten `null` gilt als MATCH (einfrieren, nicht dauerhaft stale), eine Seite `null` führt zu frischem Freeze.
 
 Der Session-Scoping-Fix ist zweischichtig, und die Reihenfolge ist Absicht:
 
-- **Primär (Mechanik, S1):** `scope-baseline-session` + der `parseSessionId()`-Vergleich. `readBaseline()` liefert `{stale: true, …}`, `computeDrift()` liefert `skipped: 'stale-baseline'`; `writeBaseline()` behandelt eine fremde Session als *überschreibbar*, nicht als `already-frozen`. Die Baseline ist damit **selbstvalidierend**.
+- **Primär (Mechanik, S1):** `scope-baseline-session` + der Vergleich gegen das direkt gelesene `frontmatter.session`. `readBaseline()` liefert `{stale: true, …}`, `computeDrift()` liefert `skipped: 'stale-baseline'`; `writeBaseline()` behandelt eine fremde Session als *überschreibbar*, nicht als `already-frozen`. Die Baseline ist damit **selbstvalidierend**.
 - **Sekundär (Hygiene, S5):** Idle-Reset-Regel 7 räumt zusätzlich auf.
 
 Die Primär-Schicht trägt allein. Eine Lösung, die *nur* aus S5 bestünde, wäre „session-start muss daran denken" — Disziplin statt Mechanik, die Klasse, die uns beim STATE.md-Write-Race schon getroffen hat (PSA-005).
@@ -486,7 +507,7 @@ export const DRIFT_EXCLUDE_PATTERNS = [
 ];
 ```
 
-Gematcht wird mit `pathMatchesPattern()` aus `scope-gate.mjs` — derselbe Matcher, den `enforce-scope.mjs` Gate 7 verwendet, also keine vierte Glob-Semantik im Repo. `plan-verification.md` bekommt einen Satz, der auf diese Konstante als geteilte Quelle zeigt; die vollständige Extraktion ist out-of-scope (§ 2).
+Gematcht wird mit `pathMatchesPattern()` aus `scope-gate.mjs` — derselbe Matcher, den `hooks/enforce-scope.mjs` Gate 7 verwendet, also keine vierte Glob-Semantik im Repo. `plan-verification.md` bekommt einen Satz, der auf diese Konstante als geteilte Quelle zeigt; die vollständige Extraktion ist out-of-scope (§ 2).
 
 **Schwellwert-Abgleich: warum 2.0 neben dem bestehenden 1.3 keine Dublette ist.** Es gibt bereits einen Schwellwert auf der Familie „Dateien vs. geplante Dateien" — `R > 1.3` in `session-plan/SKILL.md:115` und `:401`:
 
@@ -509,7 +530,7 @@ Zwei Zahlen für zwei Fragen. Beide sind intern symmetrisch — der bestehende R
 
 **`readBaseline()` muss zwei Zustände unterscheiden.** Ein `null` für „keine Baseline" **und** „veraltete Baseline" hätte `computeDrift()` gezwungen, die Frontmatter ein zweites Mal zu parsen, um die beiden Skip-Gründe auseinanderzuhalten — zwei Lesepfade auf dieselbe Datei, die auseinanderdriften. Daher: `null` nur für „keine Baseline", `{stale: true, baselineSession, currentSession}` für veraltet.
 
-**Warum warn-only statt Gate 8 in `enforce-scope.mjs`:** `getEnforcementLevel()` defaultet fail-closed auf `strict`. Ein Tripwire mit Rechenfehler würde damit nicht warnen, sondern Waves hart blocken — genau in der Situation, in der der Operator am wenigsten Lust auf einen Harness-Bug hat. Enforcement ist der 2-Wochen-Pfad.
+**Warum warn-only statt Gate 8 in `hooks/enforce-scope.mjs`:** `getEnforcementLevel()` defaultet fail-closed auf `strict`. Ein Tripwire mit Rechenfehler würde damit nicht warnen, sondern Waves hart blocken — genau in der Situation, in der der Operator am wenigsten Lust auf einen Harness-Bug hat. Enforcement ist der 2-Wochen-Pfad.
 
 **Fail-Open-Asymmetrie — bewusste Ausnahme von einer modulweiten Konvention.** Dieses Modul ist bei unlesbaren Daten **fail-open** (`skipped`). Das weicht von einer **dokumentierten Modul-Konvention** der Scope-Domäne ab: `getEnforcementLevel()` (`scope-gate.mjs:50-57`) und `gateEnabled()` (`:68-79`) fallen beide Richtung Enforcement, und `assertFileScopeSubset()` deklariert im Docstring „Fail-closed & no-throw (module convention)" (`:195-197`). Begründung: ein *blockierender* Gate muss bei Unlesbarkeit misstrauisch sein, ein *warnendes* Signal muss schweigen — ein WARN auf unlesbaren Daten ist Rauschen, das die Glaubwürdigkeit des Guards zerstört. Diese Begründung MUSS als Kommentar im Modul stehen und die Konvention beim Namen nennen, damit der nächste Leser eine bewusste Ausnahme sieht und keinen Flüchtigkeitsfehler „vereinheitlicht".
 
@@ -533,7 +554,7 @@ scope-baseline-frozen-at: 2026-07-26T08:00:00Z
 ---
 ```
 
-**Herleitung der 5.** § 4 Affected Files listet sieben Dateien. `DRIFT_EXCLUDE_PATTERNS` schließt davon zwei aus (`tests/lib/scope-baseline.test.mjs`, `tests/rules/check-rules-handwritten.test.mjs` via `**/*.test.*`). `.claude/rules/receiving-review.md` wird **gezählt** — die Konstante verengt `:45` genau dafür. Bleiben fünf. Eine Session, die genau diese sieben Dateien anfasst, liest `5/5 = 1,0`.
+**Herleitung der 5.** § 4 Affected Files listet sieben Dateien. `DRIFT_EXCLUDE_PATTERNS` schließt davon zwei aus (`tests/lib/scope-baseline.test.mjs`, `tests/rules/receiving-review.test.mjs` via `**/*.test.*`). `.claude/rules/receiving-review.md` wird **gezählt** — die Konstante verengt `:45` genau dafür. Bleiben fünf. Eine Session, die genau diese sieben Dateien anfasst, liest `5/5 = 1,0`.
 
 ### API Changes
 
@@ -547,7 +568,8 @@ writeBaseline({ repoRoot, intent, ownerBoundary, plannedFiles })
   → Promise<{ written: boolean, reason?: string }>
   // reason ∈ 'already-frozen' | 'no-state-md' | 'unreadable-state-md' | 'lock-timeout'
   // branch, session-start-ref und session werden aus der bestehenden Frontmatter
-  // gelesen (session via parseSessionId()), nicht übergeben. Eine fremde Session
+  // gelesen (session DIREKT aus frontmatter.session; parseSessionId() nur zur
+  // Format-Normalisierung des gelesenen Strings), nicht übergeben. Eine fremde Session
   // gilt als STALE und wird überschrieben — nicht als 'already-frozen' abgewiesen.
 
 // SYNC — reiner Lesepfad. Drei unterscheidbare Rückgaben, damit computeDrift()
@@ -573,12 +595,12 @@ computeDrift({ repoRoot, threshold = 2.0 })
 |------|--------|------------|--------|
 | Tripwire feuert auf legitime Waves (False Positive) und erodiert Vertrauen | Mittel — ein ignorierter WARN ist schlimmer als keiner | Warn-only in v1; Schwelle konfigurierbar; der WARN nennt `plannedFiles` und `actualFiles`, nicht nur „Drift" | Implement |
 | Tripwire ist stumpf, weil beide Seiten unterschiedlich filtern | Hoch — grün und wirkungslos zugleich (R2- **und** R3-Blocker, zweimal in Folge) | Eine exportierte Konstante, in Code, für beide Seiten; `pathMatchesPattern()` als geteilter Matcher; die 1,0-Invariante ist der ERSTE zu schreibende Test | Implement |
-| Vergleich gegen einen Key, den das Schema nicht kennt → dauerhaft inert | Hoch — still, und auf dieser Maschine wegen eines Key-Duplikats **nicht** reproduzierbar (R3-Blocker) | Gegen `frontmatter.session` via `parseSessionId()`; explizite Regel für das Fehlen des optionalen Feldes; ein Test mit einer STATE.md, die **nur** `session` trägt | Implement |
+| Vergleich gegen einen Key, den das Schema nicht kennt → dauerhaft inert | Hoch — still, und gegen `.codex/STATE.md` wegen eines Key-Duplikats **nicht** reproduzierbar (R3-Blocker) | `frontmatter.session` **direkt** lesen und vergleichen (`parseSessionId()` ist ein reiner String-Parser ohne I/O, § 4); explizite Regel für das Fehlen des optionalen Feldes; ein Test mit einer STATE.md, die **nur** `session` trägt | Implement |
 | Veraltete Baseline aus der Vorsession verfälscht die Messung ab Session 2 | Hoch — still und dauerhaft (R2-Blocker) | Zweischichtig: `scope-baseline-session` macht die Baseline selbstvalidierend (Mechanik), Idle-Reset-Regel 7 räumt auf (Hygiene). Die Mechanik trägt allein | Implement |
 | RCR-007/008 als Prosa ohne Mechanik = Disziplin-statt-Mechanik | Mittel — die Klasse, die uns beim STATE.md-Write-Race schon getroffen hat (PSA-005) | Bewusst akzeptiert: die Triage ist eine Urteilsentscheidung, die kein Hook treffen kann. Der Tripwire ist der mechanische Anteil. Der Rules-Test verifiziert die Auslieferung | Implement |
 | `stop-and-escalate` wird zur Ausrede, unbequeme Findings wegzurouten | Hoch, wenn es passiert — invers zum Zweck | Escalate-Trigger **enumeriert**, Kritisch-Ausnahmeliste **geschlossen**; der Rules-Test pinnt die Vollständigkeit beider Listen | Implement |
 | Zwei Schwellwerte (1.3 / 2.0) auf verwandten Metriken verwirren | Mittel — Bug-Generator, wenn undokumentiert | Abgrenzungstabelle mit sechs Achsen in § 4; beide Zahlen bleiben absichtlich verschieden | Implement |
-| Byte-Budget: zwei neue always-on-Klauseln wachsen die Koordinator-Fläche (102.401 B) | Niedrig, aber kumulativ | Harte Grenze ≤ 2.000 B (§ 3.A), gemessen mit `computeInstructionBudget()` vor/nach. #885 schafft parallel ~28 KB Luft | Implement |
+| Budget: zwei neue always-on-Klauseln wachsen die Koordinator-Fläche (102.401 B) | Niedrig, aber kumulativ | Zwei Achsen (§ 3.A): PRD-eigener Byte-Bound ≤ 2.000 B **und** die einzige real erzwungene Decke, `totalDirectives > 480` (`instruction-budget-guard.mjs:401`, `:51`). Gemessen: **+1.863 B / +2 Direktiven**, repo-weit **457/480**, `overBudget: false`. #885 schafft parallel ~28 KB Luft | Implement |
 | Lock-Timeout wirft und bricht den Wave-Start ab | Niedrig | try/catch → `{written:false, reason:'lock-timeout'}`; FA1 hat ein eigenes Szenario | Implement |
 | `DRIFT_EXCLUDE_PATTERNS` und `plan-verification.md:42-45` driften auseinander | Mittel — die billige Form des Fixes lässt zwei Quellen bestehen | Bewusst akzeptiert für 1w: `plan-verification.md` bekommt einen Zeiger auf die Konstante. Die vollständige Extraktion ist als erster 2w-Kandidat in § 2 vermerkt | Defer |
 | `persistence: false` deaktiviert das Feature vollständig | Niedrig für dieses Repo (`persistence: true`), aber eine echte Abdeckungs-Regression der Verlagerung | Bewusst akzeptiert: in R1 lag die Baseline in `wave-scope.json`, das der Harness unabhängig von `persistence` schreibt. Für `persistence: false`-Repos liefert S2 dauerhaft `skipped: 'no-state-md'`. Alternative wäre ein zweiter Speicherort — genau die Duplizierung, die R1 zum Scheitern brachte | Defer |
