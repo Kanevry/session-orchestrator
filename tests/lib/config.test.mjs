@@ -110,7 +110,7 @@ describe('parseSessionConfig', () => {
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
         'resource-awareness', 'enable-host-banner', 'resource-thresholds',
         'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
-        'heavy-repo', 'worktree-cleanup',
+        'heavy-repo', 'worktree-cleanup', 'issue-budget',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);

@@ -56,6 +56,7 @@ import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseHandoverGate } from './config/handover-gate.mjs';
+import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
@@ -303,6 +304,12 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // Handover-Alignment-Gate — Epic #724)
   const handoverGate = _parseHandoverGate(mdContent);
 
+  // issue-budget: per-session issue-creation cap (QUANTITY gate). Distinct from
+  // discovery-severity-threshold / discovery-confidence-threshold above, which
+  // are per-finding QUALITY filters and cannot bound creation volume. Enforced
+  // by hooks/pre-bash-issue-budget.mjs + scripts/lib/spiral-carryover.mjs.
+  const issueBudget = _parseIssueBudget(mdContent);
+
   // broken-window-budget: parsed from full content (#730/H5 — session-end Phase 2.6)
   const brokenWindow = _parseBrokenWindow(mdContent);
 
@@ -454,6 +461,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'handover-gate': handoverGate,
+    'issue-budget': issueBudget,
     'broken-window-budget': brokenWindow,
     'slopcheck': slopcheck,
     'skill-evolution': skillEvolution,

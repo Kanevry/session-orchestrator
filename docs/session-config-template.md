@@ -101,6 +101,17 @@ discovery-parallelism: 5               # 1..16 probe agents in parallel
 
 Read by: `skills/discovery/SKILL.md` and the probe modules under `skills/discovery/probes-*.md`.
 
+## Issue Budget
+
+```yaml
+issue-budget:
+  max-per-session: 12                  # non-exempt issues one session may create (0 = block all)
+  mode: strict                         # strict | warn | off
+  overflow: collect-issue              # collect-issue | vault-note
+```
+
+Quantity cap, not a quality filter — `discovery-*-threshold` above cannot bound creation volume. `priority::critical`, the carryover class and `broken-window` issues are exempt. Read by: `hooks/pre-bash-issue-budget.mjs`, `scripts/lib/spiral-carryover.mjs`, `skills/session-end/SKILL.md` Phase 5 Step 3b.
+
 ## Persistence & Safety
 
 ```yaml
@@ -284,7 +295,7 @@ Read by: `scripts/lib/config/handover-gate.mjs`, `skills/session-end/SKILL.md` P
 
 ## Broken-Window Budget
 
-Opt-in gate in `/close` (session-end Phase 2.6). When enabled, it aggregates THIS session's "knowingly-broken shipments" (echo-stubs shipped under `enforcement: warn`, Phase 2.3/2.5 "Override and close" choices, MED/LOW findings routed to "Unresolved Review Findings", wave-level overridden findings) and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority:high`, hard due-date). Non-blocking and idempotent (issue #730, Epic H / H5).
+Opt-in gate in `/close` (session-end Phase 2.6). When enabled, it aggregates THIS session's "knowingly-broken shipments" (echo-stubs shipped under `enforcement: warn`, Phase 2.3/2.5 "Override and close" choices, MED/LOW findings routed to "Unresolved Review Findings", wave-level overridden findings) and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority::high`, hard due-date). Non-blocking and idempotent (issue #730, Epic H / H5).
 
 ```yaml
 broken-window-budget:

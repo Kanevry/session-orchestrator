@@ -72,7 +72,7 @@ async function _promptInteractiveAnswers(existingConfig, ciProvider, packageMana
     : `CI pipeline identifiers (format "id" or "id:label", comma-separated, blank to skip):\n> `;
   const labelsPrompt = currentLabels
     ? `Critical issue labels [current: ${currentLabels}]:\n> `
-    : `Critical issue labels (comma-separated, e.g. "priority:critical,severity:blocker", blank to skip):\n> `;
+    : `Critical issue labels (comma-separated, e.g. "priority::critical,severity:blocker", blank to skip):\n> `;
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q) => new Promise((resolve) => rl.question(q, resolve));

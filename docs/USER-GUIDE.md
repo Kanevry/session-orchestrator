@@ -155,7 +155,7 @@ Suitable for: a small SaaS product, an internal admin tool, a personal project y
 Sets up everything in Fast, plus:
 - Standard `CLAUDE.md` with full Session Config
 - Baseline directory structure per archetype
-- VCS labels created (`priority:*`, `status:*`, `type:*`)
+- VCS labels created (`priority::*`, `status:*`, `type:*`)
 - Initial `STATUS.md` SSOT file
 
 #### Deep — customer-facing systems, team repos, production
@@ -397,6 +397,9 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
+| `issue-budget.max-per-session` | integer | `12` | Per-session cap on non-exempt issue creations. A **quantity** gate — unlike the two `discovery-*-threshold` filters above, which score individual findings and cannot bound volume. `priority::critical`, the carryover class and `broken-window` issues are exempt. |
+| `issue-budget.mode` | string | `strict` | `strict` blocks over-cap creations and parks them; `warn` allows with a stderr notice; `off` disables the gate. |
+| `issue-budget.overflow` | string | `collect-issue` | Where parked creations are drained at session-end: `collect-issue` (one `[Backlog-Sammel]` issue) or `vault-note` (one file under `vault/00-inbox/`). |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
 | `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Only required if you want to scaffold from your own baseline during `/plan new`. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
@@ -725,7 +728,7 @@ Before any code is committed, `/close` runs all checks:
 | Debug artifacts | No `console.log`, `debugger`, or `TODO: remove` in changed files |
 | Git status | All changes accounted for |
 
-If any check fails and cannot be quickly fixed, the orchestrator creates a `priority:high` issue for immediate follow-up rather than committing broken code.
+If any check fails and cannot be quickly fixed, the orchestrator creates a `priority::high` issue for immediate follow-up rather than committing broken code.
 
 ### Deterministic Scripts
 
@@ -808,7 +811,7 @@ Enable ecosystem health and configure your endpoints in Session Config:
 Each configured endpoint is queried with a simple HTTP check. If the endpoint returns JSON with a `status` field, that value is reported. Otherwise, the check reports OK or unreachable.
 
 **Cross-repo critical issues:**
-For each related repository, the orchestrator queries open issues with `priority:critical` or `priority:high` labels. This surfaces blocking problems in other parts of your ecosystem before you start working.
+For each related repository, the orchestrator queries open issues with `priority::critical` or `priority::high` labels. This surfaces blocking problems in other parts of your ecosystem before you start working.
 
 **CI pipeline status:**
 The latest CI pipeline runs are checked for the current repository.

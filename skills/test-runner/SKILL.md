@@ -201,8 +201,8 @@ If the glab query fails, log the error and proceed with an empty fingerprint set
 
 | Severity | Action |
 |----------|--------|
-| `critical` | Auto-create issue — no AUQ. Label: `from:test-runner,priority:critical` |
-| `high` | Auto-create issue — no AUQ. Label: `from:test-runner,priority:high` |
+| `critical` | Auto-create issue — no AUQ. Label: `from:test-runner,priority::critical` |
+| `high` | Auto-create issue — no AUQ. Label: `from:test-runner,priority::high` |
 | `medium` | Batched AUQ triage (see below) |
 | `low` | Batched AUQ triage (see below) |
 

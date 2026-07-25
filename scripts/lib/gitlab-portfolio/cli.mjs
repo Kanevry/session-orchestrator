@@ -289,7 +289,7 @@ EXIT CODES
 
   // ── Fetch issues in parallel ───────────────────────────────────────────────
   const staleDays = portfolioConfig['stale-days'] ?? 30;
-  const criticalLabels = portfolioConfig['critical-labels'] ?? ['priority:critical', 'priority:high'];
+  const criticalLabels = portfolioConfig['critical-labels'] ?? ['priority::critical', 'priority::high'];
   const mode = portfolioConfig.mode ?? 'warn';
 
   let resultsMap;

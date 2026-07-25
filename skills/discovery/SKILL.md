@@ -373,7 +373,7 @@ AskUserQuestion({
     question: "<finding title>\n\n<file_path>:<line_number>\n```\n<matched_text with +/-3 lines context>\n```\n\n<description>\n\nRecommended fix: <recommended_fix>",
     header: "<severity>",
     options: [
-      { label: "Create issue (<severity>)", description: "Create a priority:<severity> issue for this finding" },
+      { label: "Create issue (<severity>)", description: "Create a priority::<severity> issue for this finding" },
       { label: "Adjust priority", description: "Create issue with different priority" },
       { label: "Dismiss -- intentional", description: "This is by design, skip" },
       { label: "Dismiss -- false positive", description: "Detection was wrong, skip" }
@@ -432,10 +432,10 @@ AskUserQuestion({
 For each approved finding:
 
 1. Format using the Discovery Finding Issue Template from `issue-templates.md`
-2. Determine labels: `type:discovery` + `priority:<level>` + `area:<inferred from category/filepath>` + `status:ready`
+2. Determine labels: `type:discovery` + `priority::<level>` + `area:<inferred from category/filepath>` + `status:ready`
 3. Create issue via VCS CLI:
-   - **GitLab**: `glab issue create --title "[Discovery] <title>" --label "type:discovery,priority:<level>,area:<area>,status:ready" --description "<body>"`
-   - **GitHub**: `gh issue create --title "[Discovery] <title>" --label "type:discovery,priority:<level>,area:<area>,status:ready" --body "<body>"`
+   - **GitLab**: `glab issue create --title "[Discovery] <title>" --label "type:discovery,priority::<level>,area:<area>,status:ready" --description "<body>"`
+   - **GitHub**: `gh issue create --title "[Discovery] <title>" --label "type:discovery,priority::<level>,area:<area>,status:ready" --body "<body>"`
 4. Brief pause (1s) between creations for rate limiting
 
 ### 6.2 Final Report

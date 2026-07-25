@@ -104,8 +104,12 @@ function coerceOriginIssue(v) {
 }
 
 /**
- * Coerce a priority field: lowercase, trim, strip a leading `priority:` label,
- * validate against the closed enum. Anything invalid → null.
+ * Coerce a priority field: lowercase, trim, strip a leading `priority::` (the
+ * canonical scoped form) or legacy `priority:` label prefix, validate against
+ * the closed enum. Anything invalid → null.
+ *
+ * Both spellings are accepted on INPUT because the label-data migration to the
+ * scoped form trails the producer migration — see `scripts/lib/label-scope.mjs`.
  *
  * @param {unknown} v
  * @returns {'critical'|'high'|'medium'|'low'|null}
@@ -113,7 +117,7 @@ function coerceOriginIssue(v) {
 function coercePriority(v) {
   if (v === null || v === undefined) return null;
   let s = String(v).trim().toLowerCase();
-  if (s.startsWith('priority:')) s = s.slice('priority:'.length).trim();
+  s = s.replace(/^priority::?/, '').trim();
   return VALID_PRIORITIES.has(s) ? /** @type {any} */ (s) : null;
 }
 

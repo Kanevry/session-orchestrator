@@ -10,7 +10,7 @@ References the label taxonomy from the gitlab-ops skill.
 Discovery findings use the following labels from the gitlab-ops label taxonomy:
 
 - **Type:** `type:discovery`
-- **Priority:** `priority:critical` | `priority:high` | `priority:medium` | `priority:low` (mapped from probe severity)
+- **Priority:** `priority::critical` | `priority::high` | `priority::medium` | `priority::low` (mapped from probe severity)
 - **Area:** `area:frontend` | `area:backend` | `area:security` | `area:testing` | `area:ci` | `area:infrastructure` (mapped from probe category)
 - **Status:** `status:ready`
 
@@ -28,10 +28,10 @@ Discovery findings use the following labels from the gitlab-ops label taxonomy:
 
 | Probe Severity | Priority Label |
 |---|---|
-| Critical | `priority:critical` |
-| High | `priority:high` |
-| Medium | `priority:medium` |
-| Low | `priority:low` |
+| Critical | `priority::critical` |
+| High | `priority::high` |
+| Medium | `priority::medium` |
+| Low | `priority::low` |
 
 ---
 
@@ -74,14 +74,14 @@ Used for a single finding from a single probe.
 - [ ] Quality gates pass after fix
 ```
 
-**Labels:** `type:discovery`, `priority:<level>`, `area:<area>`, `status:ready`
+**Labels:** `type:discovery`, `priority::<level>`, `area:<area>`, `status:ready`
 
 **CLI Example:**
 ```bash
 # GitHub
 gh issue create \
   --title "[Discovery] <finding_title>" \
-  --label "type:discovery,priority:<level>,area:<area>,status:ready" \
+  --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --body "$(cat <<'EOF'
 <template body filled in>
 EOF
@@ -90,7 +90,7 @@ EOF
 # GitLab
 glab issue create \
   --title "[Discovery] <finding_title>" \
-  --label "type:discovery,priority:<level>,area:<area>,status:ready" \
+  --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --description "$(cat <<'EOF'
 <template body filled in>
 EOF
@@ -154,14 +154,14 @@ Used when multiple related findings from the same probe or category are grouped 
 - [ ] Quality gates pass after fixes
 ```
 
-**Labels:** `type:discovery`, `priority:<highest_severity_found>`, `area:<area>`, `status:ready`
+**Labels:** `type:discovery`, `priority::<highest_severity_found>`, `area:<area>`, `status:ready`
 
 **CLI Example:**
 ```bash
 # GitHub
 gh issue create \
   --title "[Discovery] <category> audit: <summary>" \
-  --label "type:discovery,priority:<level>,area:<area>,status:ready" \
+  --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --body "$(cat <<'EOF'
 <template body filled in>
 EOF
@@ -170,7 +170,7 @@ EOF
 # GitLab
 glab issue create \
   --title "[Discovery] <category> audit: <summary>" \
-  --label "type:discovery,priority:<level>,area:<area>,status:ready" \
+  --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --description "$(cat <<'EOF'
 <template body filled in>
 EOF

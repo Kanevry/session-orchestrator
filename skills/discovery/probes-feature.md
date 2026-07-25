@@ -147,4 +147,4 @@ verification_method: vcs-issue
 
 ---
 
-**Labels for auto-created issues:** `type:discovery`, `area:skills`, `priority:high` (High/Critical severity) or `priority:medium` (Medium severity), `status:ready`.
+**Labels for auto-created issues:** `type:discovery`, `area:skills`, `priority::high` (High/Critical severity) or `priority::medium` (Medium severity), `status:ready`.

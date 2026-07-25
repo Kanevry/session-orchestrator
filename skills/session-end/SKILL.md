@@ -74,7 +74,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 - Document what was completed and what remains
 - **Do NOT file the carryover issue here (#769).** Collect a carryover **candidate** instead — append it to the in-memory candidate list that the Phase 1.65 Handover Alignment Gate consumes. The issue is filed (only if the gate confirms it) in Phase 5 Step 3. Candidate record (JS keys as `routeCandidates` / `normalizeCandidate` read them — `source-phase`→`sourcePhase`, `origin-issue`→`originIssue`; see `plan-verification.md § Candidate Record Format`):
   - `{ task: '<original task description>', sourcePhase: '1.2', originIssue: <IID or null>, priority: '<original>', bucket: 'partially-done' }`
-- The eventual issue keeps the source-specific `[Carryover]` template — Title `[Carryover] <original task description>`, Labels `priority:<original>` + `status:ready`, Description = what's done / what's left / context for next session.
+- The eventual issue keeps the source-specific `[Carryover]` template — Title `[Carryover] <original task description>`, Labels `priority::<original>` + `status:ready`, Description = what's done / what's left / context for next session.
 - Link to the original issue when applicable (record its IID as `originIssue`; a candidate with no origin issue auto-carries per the gate's routing, so nothing planned is silently forgotten).
 
 ### 1.3 Not Started Items
@@ -218,7 +218,7 @@ node scripts/emit-event.mjs --type orchestrator.handover.gated --payload \
    const { autoCarry, ask } = routeCandidates(candidates);
    ```
 
-   `autoCarry` = `priority:critical|high` OR `bucket === 'spiral-failed'` OR `originIssue === null` — **non-deselectable** (dropping any of these would be real forgetting; consistent with the Critical Rule at `SKILL.md:853`). `ask` = the middle-band (priority `medium`/`low`/none WITH an origin issue, buckets not-started/emergent/partially-done) plus any `malformed` record. `routeCandidates` returns NORMALIZED copies for gate rendering; the coordinator retains its ORIGINAL candidate objects (with filing payloads) for Phase 5 Step 3.
+   `autoCarry` = `priority::critical|high` OR `bucket === 'spiral-failed'` OR `originIssue === null` — **non-deselectable** (dropping any of these would be real forgetting; consistent with the Critical Rule at `SKILL.md:853`). `ask` = the middle-band (priority `medium`/`low`/none WITH an origin issue, buckets not-started/emergent/partially-done) plus any `malformed` record. `routeCandidates` returns NORMALIZED copies for gate rendering; the coordinator retains its ORIGINAL candidate objects (with filing payloads) for Phase 5 Step 3.
 
 3. Read STATE.md contents and extract the open questions via the sibling helper:
 
@@ -313,10 +313,10 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
 
      | Finding class | Disposition |
      |---|---|
-     | HIGH+ / blocking review finding | Fix inline if quick (<2 min); else create an issue (`priority:high`, `status:ready`) and note it in the Final Report |
+     | HIGH+ / blocking review finding | Fix inline if quick (<2 min); else create an issue (`priority::high`, `status:ready`) and note it in the Final Report |
      | MED / LOW review finding | Fold in-session if quick; else record under "Unresolved Review Findings" in the Final Report — DO NOT create an issue (#617) |
      | Planned-carryover (item was in the plan, not finished) | Route as a carryover **candidate** per Phase 1.2 → the Phase 1.65 gate files it. Never forgotten: a no-origin/critical/high item auto-carries as a `[Carryover]` issue; a middle-band item with an origin issue is preselected=carry (and its origin issue stays open even if dropped). |
-     | SPIRAL / FAILED agent carryover | Route as an **auto-carry** candidate per Phase 1.6 → filed via `createSpiralCarryoverIssue` in Phase 5 Step 3 (non-deselectable) |
+     | SPIRAL / FAILED agent carryover | Route as an **auto-carry** candidate per Phase 1.6 → filed via `createSpiralCarryoverIssue` in Phase 5 Step 3 (non-deselectable; **exempt from the `issue-budget` cap** — the `[Carryover] [SPIRAL\|FAILED]` title and the `type::carryover` label bypass it, so a full budget can never swallow this filing) |
 
 **Override-ratio telemetry (#730/H5):** whenever one or more MED/LOW review findings are routed to "Unresolved Review Findings" (rather than fixed), additionally emit a single event capturing how many findings were absorbed rather than resolved — feeding the `override_ratio` metric:
 
@@ -364,7 +364,7 @@ Rules:
 
 > **Verification Reference:** See `verification-checklist.md` in this skill directory for the full quality gate checklist.
 
-Run ALL checks listed in the verification checklist. If any check fails: fix if quick (<2 min), otherwise create a `priority:high` issue. Do NOT commit broken code.
+Run ALL checks listed in the verification checklist. If any check fails: fix if quick (<2 min), otherwise create a `priority::high` issue. Do NOT commit broken code.
 
 ### Phase 2.0a: Echo-Stub Detection (GH #42)
 
@@ -438,7 +438,7 @@ totalFindings = projectStaleness.findings.length + narrativeStaleness.findings.l
   - If `totalFindings === 0`: continue, log `Vault staleness: clean (mode=strict)`.
   - If `totalFindings > 0`: do NOT block the close. Present the findings list and surface an AskUserQuestion whose Recommended default is **warn + carryover + continue**:
     - On Claude Code: AskUserQuestion with options:
-      1. "Warn + carryover and close (Recommended)" — file a carryover issue (labels `carryover`, `priority:high`) titled `[Carryover] Vault staleness (strict) — <count> findings` documenting the stale projects/narratives for a follow-up session, log a Deviation entry in STATE.md `## Deviations`, then continue the close:
+      1. "Warn + carryover and close (Recommended)" — file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] Vault staleness (strict) — <count> findings` documenting the stale projects/narratives for a follow-up session, log a Deviation entry in STATE.md `## Deviations`, then continue the close:
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings carried over. Findings: <count> (projects: <N>, narratives: <M>) → issue #<IID>.`
       2. "Override and close" — proceed without a carryover issue, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings overridden by user. Findings: <count> (projects: <N>, narratives: <M>).`
@@ -480,7 +480,7 @@ For each kept phase:
   - exit code `≠ 0` ⇒ **BLOCK the close** using the same routing pattern as Phase 2.3 strict-mode. `mode: hard` here is an operator-declared repo contract (the repo deliberately chose `mode: hard`), so the block semantics are preserved — but the AUQ now ALSO offers a warn + carryover escape hatch. Present the phase name + captured summary and offer:
     - On Claude Code: AskUserQuestion with options:
       1. "Fix and retry Phase 2.5" (Recommended) — exit close, let the user investigate.
-      2. "Warn + carryover and close" — file a carryover issue (labels `carryover`, `priority:high`) titled `[Carryover] custom-phase '<name>' (mode=hard) exited <code>` capturing the phase name + captured summary for a follow-up session, log the Deviation entry, then continue the close.
+      2. "Warn + carryover and close" — file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] custom-phase '<name>' (mode=hard) exited <code>` capturing the phase name + captured summary for a follow-up session, log the Deviation entry, then continue the close.
       3. "Override and close" — proceed, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.5: custom-phase '<name>' (mode=hard) exited <code>, overridden by user.`
          In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node scripts/emit-event.mjs --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
@@ -507,7 +507,7 @@ already-computed results — no new detection logic, only aggregation:
 4. Wave-level reviewer findings overridden without a fix task (`## Deviations` entries matching `reviewer finding overridden` — written by wave-executor §5/5a).
 
 For EACH item: file a hard-terminated closure issue via `createBrokenWindowIssue()`
-from `scripts/lib/spiral-carryover.mjs` — labels `broken-window` + `priority:high`,
+from `scripts/lib/spiral-carryover.mjs` — labels `broken-window` + `priority::high`,
 due-date = today + `broken-window-budget.due-days` (default 7; `glab` native
 `--due-date`, `gh` fallback: `Due: <date>` as first body line — GitHub has no
 native due-date field). Idempotent per task-hash — re-running a close never
@@ -986,8 +986,8 @@ if (sweep) {
    The call is idempotent: if the issue has no `status:*` labels, no update CLI call is made. Failures from `stripStatusLabels` are non-fatal — log and proceed with close.
 
 2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
-3. **Create carryover issues — from the Phase 1.65 gate's carry-list ONLY (#769):** file an issue for each item on the carry-list produced by the Handover Alignment Gate — i.e. the non-deselectable **auto-carry** class (`priority:critical|high`, SPIRAL/FAILED, or no-origin-issue candidates) PLUS the middle-band items the operator LEFT SELECTED in triage. Do NOT file anything the gate dropped, and do NOT file directly from Phase 1.2/1.3/1.4/1.6 — those phases only collected candidates.
-   - **Template stays source-specific:** 1.2 Partially-Done → `[Carryover] <task>` (labels `priority:<original>`, `status:ready`); 1.4 unfinished Emergent → a **normal** issue (NOT the `[Carryover]` template); 1.6 SPIRAL/FAILED → fire the deferred `createSpiralCarryoverIssue({ taskDescription, kind, context, priority: 'high', vcs })` (idempotent task-hash dedup — payload comes from the candidate's `_spiral` annotation set in Phase 1.6 step 5). 1.3 files no NEW issue: a carried 1.3 candidate simply keeps its ORIGINAL issue `status:ready`.
+3. **Create carryover issues — from the Phase 1.65 gate's carry-list ONLY (#769):** file an issue for each item on the carry-list produced by the Handover Alignment Gate — i.e. the non-deselectable **auto-carry** class (`priority::critical|high`, SPIRAL/FAILED, or no-origin-issue candidates) PLUS the middle-band items the operator LEFT SELECTED in triage. Do NOT file anything the gate dropped, and do NOT file directly from Phase 1.2/1.3/1.4/1.6 — those phases only collected candidates.
+   - **Template stays source-specific:** 1.2 Partially-Done → `[Carryover] <task>` (labels `priority::<original>`, `status:ready`); 1.4 unfinished Emergent → a **normal** issue (NOT the `[Carryover]` template); 1.6 SPIRAL/FAILED → fire the deferred `createSpiralCarryoverIssue({ taskDescription, kind, context, priority: 'high', vcs })` (idempotent task-hash dedup — payload comes from the candidate's `_spiral` annotation set in Phase 1.6 step 5). 1.3 files no NEW issue: a carried 1.3 candidate simply keeps its ORIGINAL issue `status:ready`.
    - **Dropped middle-band items:** file NO `[Carryover]` duplicate; the origin issue stays open and unchanged. Record each drop in the Phase 6 Final Report under `### Dropped at Handover Gate` with its origin-issue reference and a reason slot.
    - **Fail-open / gate skipped:** when Phase 1.65 skipped fail-open, the carry-list is ALL candidates (status quo) and there is no drop-list.
    - **Mark answered open questions `[x]` durably — atomic with the filing above (#769):** now, on the completed side of the Quality Gate, persist each answered open question captured in-memory at Phase 1.65 Step 4 to STATE.md via the lock-guarded sibling helper (PSA-005). Co-locating this write with the carryover-issue filing is the load-bearing correctness invariant: an earlier Quality-Gate abort leaves every question `- [ ]` on disk, so it correctly re-surfaces via `readOpenQuestions().filter(!answered)` on re-close — the `[x]` mark now reflects a COMPLETED handover, never a mid-close state a later abort would invalidate. Any implied-work candidate an answered question enqueued in Phase 1.65 is filed by the carry-list step above, so the mark and its issue land together:
@@ -1002,13 +1002,32 @@ if (sweep) {
 
      Fail-open: a `markOpenQuestionAnsweredOnDisk` failure is non-fatal — log a WARN and proceed with the close; the question simply stays `- [ ]` and roundtrips to the next session.
 
+3b. **Drain the issue-budget overflow — exactly ONE collector artefact (issue-budget):** when `.orchestrator/runtime/issue-budget.json` has a non-empty `overflow[]`, the session hit its `issue-budget.max-per-session` cap and every over-cap creation was PARKED rather than filed. Fold the whole list into a single artefact so nothing is silently dropped.
+
+    **Ordering (load-bearing):** run this as the LAST issue-creating action of Phase 5 — after step 3, after "Discovery Issue Creation", after step 4 — and re-read the counter file at that moment. Those steps can themselves push new entries into `overflow[]`; draining early would leave them unfiled.
+
+    ```js
+    import { readBudgetState, budgetStatePath } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
+    const state = readBudgetState(repoRoot, sessionId);   // { sessionId, count, exempt, overflow: [...] }
+    ```
+
+    - **`issue-budget.overflow: collect-issue` (default)** — create exactly ONE issue:
+      - Title: `[Backlog-Sammel] <session-id>, <N> zurückgestellte Punkte`
+      - Labels: `type::backlog`, `priority::low`
+      - Body: a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp).
+      - This collector issue is itself EXEMPT from the cap (`[Backlog-Sammel]` is in the exemption list in `scripts/lib/issue-budget.mjs`), so it always lands even at count == max.
+    - **`issue-budget.overflow: vault-note`** — create NO issue. Write one Markdown file `vault/00-inbox/<session-id>-backlog-sammel.md` (path relative to `vault-integration.vault-dir`) with valid vault frontmatter and the same checklist body.
+    - After the artefact exists, reset `overflow` to `[]` in the counter file and record the collector issue ID / note path in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`.
+    - **Never exempt-by-accident:** the cap never applied to `priority::critical`, the carryover class (`[Carryover]`, SPIRAL/FAILED, `type::carryover`), or `broken-window` closure issues, so nothing on the Phase 1.65 carry-list can ever appear in `overflow[]`. The promises at Phase 1.8 ("SPIRAL / FAILED agent carryover … non-deselectable") and the Critical Rule "ALWAYS create issues for unfinished PLANNED work" stay intact by construction.
+    - Fail-open: a missing or malformed counter file means "no overflow" — log a WARN and continue the close.
+
 #### Discovery Issue Creation (if discovery ran in Phase 1.5)
 
 For each finding with severity `critical` or `high` from Phase 1.5:
 1. Create a VCS issue using the detected platform CLI:
    - Title: `[Discovery] <description>` (truncated to 70 chars)
    - Body: `**Probe:** <probe>\n**File:** <file>:<line>\n**Severity:** <severity>\n**Confidence:** <confidence>%\n**Recommendation:** <recommendation>`
-   - Labels: `type:discovery`, `priority:<severity>` (critical→critical, high→high)
+   - Labels: `type:discovery`, `priority::<severity>` (critical→critical, high→high)
 2. Log each created issue ID for the Final Report
 3. Update `discovery_stats.issues_created` count
 
@@ -1110,7 +1129,7 @@ Present to the user:
 - **NEVER commit with TypeScript errors** — 0 errors is non-negotiable
 - **NEVER use `git add .`** — stage files individually to avoid capturing parallel session work
 - **NEVER skip issue updates** — VCS must reflect reality after every session
-- **ALWAYS create issues for unfinished PLANNED work** — SPIRAL/FAILED agent carryover and partially-done plan items (Phase 1.2 / 1.6) ALWAYS get a ticket; nothing planned-but-unfinished is "remembered" without one.
+- **ALWAYS create issues for unfinished PLANNED work** — SPIRAL/FAILED agent carryover and partially-done plan items (Phase 1.2 / 1.6) ALWAYS get a ticket; nothing planned-but-unfinished is "remembered" without one. The `issue-budget` per-session cap does NOT weaken this: `priority::critical`, the carryover class (`[Carryover]`, `[SPIRAL]`/`[FAILED]`, `type::carryover`, bare `carryover`) and `broken-window` closure issues are exempt from the cap by construction (`scripts/lib/issue-budget.mjs` `EXEMPT_RULES`). Non-exempt over-cap creations are not dropped either — they are parked and folded into one `[Backlog-Sammel]` collector in Phase 5 Step 3b.
 - **DO NOT auto-file MED/LOW review findings as issues** — newly-surfaced reviewer findings (Phase 1.8 / W4 panel) at MED or LOW severity are folded in-session or recorded in the Final Report under "Unresolved Review Findings". Only HIGH+/blocking review findings get an issue. (Issue #617 — stops the self-referential low-priority backlog.)
 - **ALWAYS push to origin** — local-only work is lost work
 - **ALWAYS mirror to GitHub** if configured — keep mirrors in sync

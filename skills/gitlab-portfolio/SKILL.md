@@ -93,7 +93,7 @@ gitlab-portfolio:
   enabled: true
   mode: warn          # warn | strict | off
   stale-days: 30
-  critical-labels: ["priority:critical", "priority:high"]
+  critical-labels: ["priority::critical", "priority::high"]
 ```
 
 | Field | Default | Meaning |
@@ -101,7 +101,7 @@ gitlab-portfolio:
 | `enabled` | `false` | Master switch. |
 | `mode` | `warn` | `warn` / `strict` / `off` — failure handling; `off` ≡ disabled. |
 | `stale-days` | `30` | Issues older than N days are flagged stale. |
-| `critical-labels` | `["priority:critical","priority:high"]` | Label substrings that classify an issue as critical (case-insensitive). |
+| `critical-labels` | `["priority::critical","priority::high"]` | Label substrings that classify an issue as critical (case-insensitive). |
 
 ### Security
 

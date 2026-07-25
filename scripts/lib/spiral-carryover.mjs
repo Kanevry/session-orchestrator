@@ -27,6 +27,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { digestSha256Short } from './crypto-digest-utils.mjs';
+import { chargeIssueBudget, formatBlockReason } from './issue-budget.mjs';
 
 /**
  * Compute a stable 8-char sha256 hash of a task description.
@@ -52,12 +53,56 @@ function truncate(s, max) {
 }
 
 /**
- * Run a CLI command and return { ok, stdout, stderr }. Never throws.
+ * True when the argv describes an issue-CREATE call (not a list/search).
+ * The dedup lookups in this module also go through `runCli`, and those must
+ * never be charged against the issue budget.
+ *
  * @param {string} cmd
  * @param {string[]} args
- * @returns {{ ok: boolean, stdout: string, stderr: string }}
+ * @returns {boolean}
+ */
+function isIssueCreateArgv(cmd, args) {
+  if (cmd !== 'gh' && cmd !== 'glab') return false;
+  if (!Array.isArray(args) || args.length < 2) return false;
+  return args[0] === 'issue' && (args[1] === 'create' || args[1] === 'new');
+}
+
+/**
+ * Run a CLI command and return { ok, stdout, stderr }. Never throws.
+ *
+ * ISSUE-BUDGET GATE (both Node producers funnel through here): before shelling
+ * out to an issue-create call, the same `chargeIssueBudget` decision the
+ * `pre-bash-issue-budget` hook applies is evaluated here — otherwise the
+ * programmatic path would be a hole straight through the shell-level cap.
+ *
+ * In practice BOTH current callers are exempt by class (`createSpiralCarryoverIssue`
+ * emits `[Carryover] [SPIRAL|FAILED] …`, `createBrokenWindowIssue` emits the
+ * `broken-window` label), so this gate is a no-op for them by design — that is
+ * exactly the session-end promise at SKILL.md:319 / :1113 being preserved. It
+ * bites for any FUTURE non-exempt producer added to this module.
+ *
+ * @param {string} cmd
+ * @param {string[]} args
+ * @returns {{ ok: boolean, stdout: string, stderr: string, budgetBlocked?: boolean }}
  */
 function runCli(cmd, args) {
+  if (isIssueCreateArgv(cmd, args)) {
+    try {
+      const repoRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      const titleIdx = args.indexOf('--title');
+      const verdict = chargeIssueBudget({
+        repoRoot,
+        sessionId: process.env.CLAUDE_SESSION_ID || null,
+        command: [cmd, ...args].join(' '),
+        title: titleIdx >= 0 ? (args[titleIdx + 1] ?? null) : null,
+      });
+      if (verdict.decision === 'block') {
+        return { ok: false, stdout: '', stderr: formatBlockReason(verdict), budgetBlocked: true };
+      }
+    } catch {
+      // Fail open — a budget-bookkeeping failure must never lose a carryover.
+    }
+  }
   try {
     const stdout = execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return { ok: true, stdout: String(stdout ?? ''), stderr: '' };
@@ -288,7 +333,7 @@ export async function createSpiralCarryoverIssue({
     const truncatedDesc = truncate(String(taskDescription ?? '').trim() || '(untitled task)', 80);
     const title = `[Carryover] [${kind}] ${truncatedDesc}`;
     const body = buildCarryoverBody({ taskDescription, kind, context, taskHash });
-    const labels = `priority:${priority},status:ready,type:carryover`;
+    const labels = `priority::${priority},status:ready,type:carryover`;
 
     let cmd;
     let args;
@@ -453,7 +498,7 @@ export async function createBrokenWindowIssue({
 
     const issueTitle = `[Broken-Window] ${truncate(title, 80)}`;
     const body = buildBrokenWindowBody({ item, taskHash, dueDate, vcs: vcsResolved });
-    const labels = 'broken-window,priority:high';
+    const labels = 'broken-window,priority::high';
 
     let cmd;
     let args;
