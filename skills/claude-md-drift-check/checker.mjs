@@ -34,6 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
+import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 
 const FORWARD_HEADING_RE =
@@ -44,6 +45,10 @@ const BACKWARD_HEADING_RE =
 function parseArgs(argv) {
   const out = {
     mode: 'warn',
+    // #864: true only when --mode was actually passed on argv. Distinguishes
+    // "operator explicitly requested warn" from "the flag was never given" —
+    // the latter is where the target's own drift-check.mode default applies.
+    modeExplicit: false,
     includePaths: [],
     skipPathResolver: false,
     skipProjectCount: false,
@@ -62,7 +67,7 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--mode') out.mode = argv[++i];
+    if (a === '--mode') { out.mode = argv[++i]; out.modeExplicit = true; }
     else if (a === '--include-path') out.includePaths.push(argv[++i]);
     else if (a === '--repo') out.repo = argv[++i];
     else if (a === '--commands-dir') out.commandsDir = argv[++i];
@@ -79,7 +84,7 @@ function parseArgs(argv) {
     else if (a === '--skip-rule-scoping') out.skipRuleScoping = true;
     else if (a === '--skip-docs-parity') out.skipDocsParity = true;
     else if (a === '--help' || a === '-h') {
-      process.stdout.write('Usage: checker.mjs [--mode strict|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--config-template PATH] [--skip-surface-count] [--skip-command-count] [--skip-generated-rule-staleness] [--skip-rule-scoping] [--skip-docs-parity] [--skip-*]\n');
+      process.stdout.write('Usage: checker.mjs [--mode strict|warn|off] [--include-path GLOB]... [--repo OWNER/NAME] [--commands-dir PATH] [--config-template PATH] [--skip-surface-count] [--skip-command-count] [--skip-generated-rule-staleness] [--skip-rule-scoping] [--skip-docs-parity] [--skip-*]\n  --mode precedence (issue #864): explicit --mode > target CLAUDE.md/AGENTS.md drift-check.mode > \'warn\'\n');
       process.exit(0);
     } else {
       process.stderr.write(`{"status":"infra-error","reason":"unknown arg: ${a}"}\n`);
@@ -463,8 +468,11 @@ function lookupIssueState(iid, repo, cache) {
 // ───────────────────────────────────────────────────────────────────────────
 // Rule-scoping family (Check 9) — validates .claude/rules/*.md frontmatter
 // against the scripts/lib/rule-loader.mjs contract:
-//   1. paths-presence   → errors[]:   a top-level `paths:` key (rule-loader.mjs
-//      only recognises `globs:`; `paths:` silently loads the rule ALWAYS-ON).
+//   1. paths-presence   → errors[]:   a top-level `paths:` key that
+//      rule-loader.mjs's parseGlobsFrontmatter (the `paths:` alias, issue
+//      #795) fails to recognise — a genuine parse mismatch. A well-formed
+//      `paths:`-only rule is NOT flagged: since #795, `paths:` is a full
+//      alias for `globs:` and loads correctly SCOPED (#840).
 //   2. cited-but-missing → errors[]:  (a) `.claude/rules/<name>.md` citations in
 //      CLAUDE.md/AGENTS.md that don't exist on disk; (b) bare `<name>.md`
 //      tokens in a rule's own `## See Also` footer that don't exist on disk
@@ -598,6 +606,58 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const vaultDir = resolve(process.env.VAULT_DIR || process.cwd());
 
+  // Alias-aware instruction file resolution (issue #33) — resolved BEFORE
+  // mode defaulting so an unspecified --mode can read the target's OWN
+  // drift-check.mode (issue #864).
+  // CLAUDE.md (Claude Code / Cursor IDE) and AGENTS.md (Codex CLI) are
+  // transparent aliases — see skills/_shared/instruction-file-resolution.md.
+  const instr = resolveInstructionFile(vaultDir); // {path, kind} | null
+  const resolvedPath = instr ? instr.path : null;
+  const resolvedKind = instr ? instr.kind : null;
+
+  // #864: precedence is --mode flag > target's drift-check.mode > 'warn'.
+  // An invocation without an explicit --mode previously always ran in the
+  // hardcoded 'warn' default even when the target's own Session Config
+  // declared `drift-check.mode: strict` — silently softening the very
+  // contract the config was meant to enforce. Only substitute when --mode
+  // was never passed on argv; an explicit flag always wins. `_parseDriftCheck`
+  // is the SAME parser scripts/lib/config.mjs uses elsewhere, so this reuses
+  // rather than re-derives the drift-check block's mode-parsing/normalization
+  // (including its own hard→strict alias and its 'warn' fallback on absence
+  // or an invalid value).
+  //
+  // Blast-radius guard (QA follow-up on #864, reproduced empirically):
+  // the auto-read must not apply AT ALL when the feature it belongs to is
+  // disabled — `drift-check.enabled: false` means the operator switched the
+  // whole gate off, and a stale/dormant `mode: strict` sitting in that
+  // disabled block must not hard-block a bare invocation. Read `enabled` off
+  // the SAME `_parseDriftCheck()` call (it already parses the flag) rather
+  // than a second bespoke regex.
+  //
+  // Separately, a config-derived `mode: off` is never auto-applied even when
+  // `enabled: true`: 'off' is a legitimate silencing only when a human
+  // explicitly types `--mode off` on the CLI. Picking it up silently from
+  // config would turn what used to be a full warn-mode report into an
+  // undetectable no-op on every future bare invocation — the exact silent
+  // failure class `.claude/rules/verification-before-completion.md` § VBC-005
+  // exists to prevent. Concretely: config-derived mode is applied only when
+  // `enabled === true` AND `mode !== 'off'`; a config `mode: off` downgrades
+  // to the built-in 'warn' default instead of taking effect. This keeps
+  // `status: 'skipped-mode-off'` reachable ONLY via an explicit `--mode off`
+  // flag — a caller who never passed that flag can rely on a bare invocation
+  // always actually running its checks, even against a config that declares
+  // `mode: off`.
+  if (!args.modeExplicit && instr) {
+    try {
+      const targetDriftCheck = _parseDriftCheck(readFileSync(instr.path, 'utf8'));
+      if (targetDriftCheck.enabled && targetDriftCheck.mode !== 'off') {
+        args.mode = targetDriftCheck.mode;
+      }
+    } catch {
+      // target file unreadable (race, permissions) — keep the 'warn' CLI default
+    }
+  }
+
   if (!['strict', 'hard', 'warn', 'off'].includes(args.mode)) {
     process.stderr.write(`{"status":"infra-error","reason":"invalid --mode: ${args.mode}"}\n`);
     process.exit(2);
@@ -605,14 +665,10 @@ function main() {
   // `hard` is a legacy alias for `strict` (#217 enum migration — parity with
   // the vault-sync validator, which normalizes the reverse direction). Collapse
   // to a single blocking value so exactly one internal value flows downstream.
+  // (`_parseDriftCheck` already normalizes 'hard'->'strict' on the config-default
+  // path above, so this is a no-op there — it remains load-bearing for an
+  // explicit `--mode hard` on the CLI.)
   if (args.mode === 'hard') args.mode = 'strict';
-
-  // Alias-aware instruction file resolution (issue #33).
-  // CLAUDE.md (Claude Code / Cursor IDE) and AGENTS.md (Codex CLI) are
-  // transparent aliases — see skills/_shared/instruction-file-resolution.md.
-  const instr = resolveInstructionFile(vaultDir); // {path, kind} | null
-  const resolvedPath = instr ? instr.path : null;
-  const resolvedKind = instr ? instr.kind : null;
 
   if (args.mode === 'off') {
     process.stdout.write(JSON.stringify({
@@ -996,18 +1052,32 @@ function main() {
         }
 
         // --- Probe 1: paths-presence → errors[] ---
+        // Since ef7f4fc (2026-07-13, issue #795), rule-loader.mjs's
+        // parseGlobsFrontmatter() accepts `paths:` as a full alias for
+        // `globs:` (globs: wins silently only when BOTH keys are present on
+        // the same rule — see rule-loader.mjs module doc). A well-formed
+        // `paths:`-only rule therefore loads correctly SCOPED, not
+        // always-on — declaring `paths:` alone must NOT be flagged (#840).
+        // This probe reuses parseGlobsFrontmatter — the SAME parser
+        // rule-loader.mjs itself runs — rather than re-deriving the alias
+        // rule with a second hand-rolled regex; duplicating a loader's
+        // parsing logic is exactly the drift class that caused #840. It
+        // fires only when the textual `paths:` key is present yet
+        // parseGlobsFrontmatter failed to recognise it (globs === null) —
+        // a genuine parse mismatch between this probe's textual detection
+        // and the loader's actual behaviour, not routine `paths:` usage.
+        let parsed;
+        try { parsed = parseGlobsFrontmatter(content); } catch { parsed = { globs: null, meta: {} }; }
         const fmBody = extractFrontmatterBlockBody(content);
-        if (fmBody && /^paths:/m.test(fmBody)) {
+        if (fmBody && /^paths:/m.test(fmBody) && parsed.globs === null) {
           errors.push({
             check: 'rule-scoping', file: relPath, line: 1,
-            message: `Rule frontmatter declares 'paths:' which rule-loader.mjs does not recognise — the rule silently loads ALWAYS-ON regardless of file scope. Migrate to 'globs:'.`,
+            message: `Rule frontmatter declares 'paths:' but rule-loader.mjs's parseGlobsFrontmatter did not recognise it — the rule may silently load ALWAYS-ON. Verify the paths:/globs: frontmatter syntax.`,
             extracted: 'paths:',
           });
         }
 
         // --- Probes 3 & 4: zero-match-globs / foreign-glob → warnings[] ---
-        let parsed;
-        try { parsed = parseGlobsFrontmatter(content); } catch { parsed = { globs: null, meta: {} }; }
         const globs = parsed.globs;
         if (Array.isArray(globs) && globs.length > 0) {
           if (trackedFiles === null) trackedFiles = listTrackedFiles(vaultDir);

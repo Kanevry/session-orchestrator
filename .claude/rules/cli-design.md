@@ -9,6 +9,7 @@ globs:
   - tools/**
   - "*.sh"
 tier: wave-only
+review-date: 2026-10-23
 ---
 
 # CLI Design Rules

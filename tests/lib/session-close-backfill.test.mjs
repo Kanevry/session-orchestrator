@@ -455,6 +455,101 @@ describe('backfillAbandonedSession — dead-by-age relaxation (#731)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #863 — own-live-lock self-exclusion (defect 1: a live OWN session was
+// getting recorded 'abandoned' because the pre-#863 guard only ever checked
+// `foreign`, never `own`).
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — own-live-lock guard (#863)', () => {
+  it('refuses to backfill its OWN candidate while that session\'s own lock is still live', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+      // No 'stopped'/'ended' event — this session is genuinely still running.
+    ]);
+    // Own lock (UUID + semantic match), heartbeat = now → live.
+    seedLock({
+      sessionId: UUID,
+      semanticSessionId: 'main-2026-05-27-session-1',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('skipped-own-live-lock');
+    expect(res.sessionId).toBe('main-2026-05-27-session-1');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('negative twin — still backfills its OWN candidate when that session\'s own lock is STALE (not a blanket off-switch)', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // Own lock, heartbeat 10h before now, ttl 4h → stale/dead.
+    seedLock({
+      sessionId: UUID,
+      semanticSessionId: 'main-2026-05-27-session-1',
+      lastHeartbeat: new Date(NOW_MS - 10 * 3600 * 1000).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('lock-shape trap (d) — a live OWN candidate is still recognised when the lock stores the semantic id directly in `session_id` (no `semantic_session_id` field), even bridged via events + relaxDeadByAge', async () => {
+    // Mirrors the real CLI usage pattern flagged in the task: relaxDeadByAge
+    // is passed unconditionally by the migration CLI. Without the (d) shape
+    // fallback, this OWN live lock is misclassified `foreign`, and its age
+    // (last known event 4h29m before NOW_MS, older than the 4h TTL) makes
+    // isCandidateDeadByAge relax right past the (wrongly-foreign) live-lock
+    // guard — incorrectly backfilling a session that is live RIGHT NOW.
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // Shape-trap lock: session_id IS the semantic id; no semantic_session_id
+    // field at all. Heartbeat = now → live.
+    seedLock({
+      sessionId: 'main-2026-05-27-session-1',
+      semanticSessionId: undefined,
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      relaxDeadByAge: true,
+    });
+
+    expect(res.action).toBe('skipped-own-live-lock');
+    expect(res.deadByAge).toBeUndefined();
+    expect(readSessions()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TOCTOU marker skip
 // ---------------------------------------------------------------------------
 

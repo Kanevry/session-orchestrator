@@ -296,6 +296,7 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  *   { action: 'would-backfill', sessionId, record, deadByAge? }    — dryRun only, not written
  *   { action: 'skipped-no-identifier' }                — neither id known
  *   { action: 'skipped-already-recorded', sessionId }  — already in sessions.jsonl
+ *   { action: 'skipped-own-live-lock', sessionId }     — candidate IS this live session (#863)
  *   { action: 'skipped-foreign-live-lock', sessionId, lockSessionId }
  *   { action: 'skipped-marker-exists', sessionId }     — lost the TOCTOU claim
  *   { action: 'error', error, sessionId? }             — any failure, swallowed
@@ -421,7 +422,14 @@ export async function backfillAbandonedSession({
         if (dupe) return dupe;
       }
 
-      // -- Liveness guard — never overwrite a FOREIGN live lock ---------------
+      // -- Liveness guard — never overwrite a FOREIGN live lock, and never ----
+      // record OUR OWN live lock as 'abandoned' (#863 defect 1). Before this
+      // fix, the guard below only ever ran when `foreign` was true — the
+      // "this candidate IS the currently-live session" branch fell straight
+      // through to synthesis + append, backfilling a session as 'abandoned'
+      // mere seconds after it started (observed on-disk: main-2026-07-21-
+      // session-2, started 13:58:28.189Z, recorded abandoned 13:58:31.065Z).
+      //
       // deadByAge (#731): set when a foreign live lock was present but the
       // candidate qualified for relaxation — surfaced on the final result so
       // callers (the migration CLI's summary) can count relaxed backfills.
@@ -436,8 +444,32 @@ export async function backfillAbandonedSession({
         const ownByUuid = Boolean(sessionId) && lock.session_id === sessionId;
         const ownBySemantic =
           (Boolean(semanticSessionId) && lock.semantic_session_id === semanticSessionId) ||
-          (Boolean(recordId) && lock.semantic_session_id === recordId);
-        const foreign = !ownByUuid && !ownBySemantic;
+          (Boolean(recordId) && lock.semantic_session_id === recordId) ||
+          // #863 (d) — lock-shape trap: some on-disk locks store the semantic
+          // id directly in `session_id` with no separate `semantic_session_id`
+          // field at all (the "generated-semantic" acquisition path in
+          // on-session-start.mjs mints `session_id === the semantic id`, and
+          // bootstrapLock's v2 enrichment step — which would otherwise add
+          // `semantic_session_id` — never ran for that lock). Without this
+          // fallback, ownBySemantic is dead code for that shape and a
+          // genuinely-own lock is misclassified `foreign`, which can then be
+          // wrongly bypassed by the dead-by-age relaxation below despite
+          // being live right now.
+          (Boolean(semanticSessionId) && lock.session_id === semanticSessionId) ||
+          (Boolean(recordId) && lock.session_id === recordId);
+        const own = ownByUuid || ownBySemantic;
+        const foreign = !own;
+
+        // #863 defect 1 — an OWN lock that is still live means this session
+        // is actively running right now; it must never be recorded
+        // 'abandoned'. Runs BEFORE the foreign-live-lock guard below (which
+        // only ever fires when `foreign` is true). A STALE own lock
+        // (isLockLive === false) falls through unchanged — this is a
+        // liveness gate, not a blanket own-session off-switch.
+        if (own && isLockLive(lock, nowMs)) {
+          return { action: 'skipped-own-live-lock', sessionId: recordId };
+        }
+
         if (foreign && isLockLive(lock, nowMs)) {
           const relaxed = isCandidateDeadByAge({
             relaxDeadByAge,

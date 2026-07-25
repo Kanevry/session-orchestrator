@@ -446,7 +446,85 @@ function parseFrontmatter(raw) {
 }
 
 // ── Wiki-link regex — captures link body for target parsing ─────────────────
-const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+// NOTE: intentionally NOT module-level. A shared `/g` regex driven by
+// `.exec()` in a loop carries `lastIndex` state across calls; the previous
+// module-level `WIKILINK_RE` was safe only because the loop always ran to
+// exhaustion (never an early return/continue). Constructing a fresh regex
+// per `extractWikiLinks()` call removes that hazard structurally rather than
+// relying on "the loop happens to always finish" (#852).
+function wikilinkRegex() {
+  return /\[\[([^\]]+)\]\]/g;
+}
+
+// ── Code-span stripping (#852, hardened post-review) ────────────────────────
+// A wikilink written as inline code (`` `[[target]]` ``) or inside a fenced /
+// indented code block is pedagogical prose ABOUT the Obsidian wiki-link
+// convention (#159 pattern: keep named invariants in backticks), not a real
+// link, and must never surface a dangling-wiki-link warning. All span kinds
+// are blanked out (non-newline chars -> space, newlines preserved) BEFORE the
+// wikilink regex runs, so their `[[...]]` content is invisible to
+// extractWikiLinks() while line count / offsets stay stable for any future
+// position-aware consumer.
+//
+// NOTE: intentionally functions, not module-level `/g` regex constants. Every
+// call below builds a fresh RegExp so no shared `lastIndex` state can leak
+// across calls (same rationale as wikilinkRegex() above, #852).
+//
+// Order: fenced blocks (multi-line) -> indented code blocks (line-based) ->
+// inline spans (single/double backtick, same line only). Fenced blocks run
+// first because they are the only multi-line shape; the other two are
+// line-local and their relative order does not change the result (a line
+// already blanked by an earlier pass is all-spaces and matches idempotently
+// under either later pass).
+//
+// Fenced-block fix (post-#852 QA review): the ORIGINAL `/```[\s\S]*?```/g`
+// paired ANY two ``` runs in the whole file — including a ``` merely
+// MENTIONED mid-sentence in prose — which silently blanked (and hid dangling
+// links inside) everything between an unrelated mention and the next real
+// fence. Real CommonMark fences must open at the START of a line (up to 3
+// leading spaces); this regex is now line-anchored so a mid-line mention can
+// never open a fence. The closing fence must reuse the SAME fence character
+// (backtick vs tilde) with a run of at least 3 — `(?:\1){3,}` repeats the
+// single captured fence character, so a backtick fence cannot be closed by a
+// tilde run or vice versa. Also handles `~~~` fences and fenced blocks that
+// carry an info string (e.g. ```` ```md ````) — the info string is just the
+// rest of the opening line, already consumed by `[^\n]*`.
+function fencedCodeRegex() {
+  return /^ {0,3}(`|~)\1{2,}[^\n]*\n[\s\S]*?^ {0,3}(?:\1){3,}[ \t]*$/gm;
+}
+
+// Indented code blocks (4+ leading spaces, or a leading tab) are CommonMark
+// code too. Required to be flanked by a blank line (or start/end of text) on
+// both sides — mirrors CommonMark's "separated from surrounding paragraph
+// text" rule closely enough to avoid blanking ordinary 4-space-indented list
+// continuation text that isn't actually a code block, while still catching
+// the FP shape this fixes.
+function indentedCodeRegex() {
+  return /(?<=^|\n\n)(?: {4,}|\t)[^\n]*(?:\n(?: {4,}|\t)[^\n]*)*/g;
+}
+
+// Inline code spans: single-backtick (`` ` `` ... `` ` ``) or double-backtick
+// (`` `` `` ... `` `` ``, used when the wrapped content itself contains a
+// backtick) delimiters, same line only. The closing delimiter must be the
+// SAME LENGTH as the opening one (`\1` backreference on the captured 1-2
+// backtick run) so a double-backtick span isn't mis-closed by the first lone
+// backtick inside its own content — the over-strip hazard called out in
+// #852. A lone/stray backtick with no same-length partner on the same line
+// therefore matches nothing and is left as plain text.
+function inlineCodeRegex() {
+  return /(`{1,2})[^\n]*?\1(?!`)/g;
+}
+
+function blank(match) {
+  return match.replace(/[^\n]/g, ' ');
+}
+
+function stripCodeSpans(text) {
+  let out = text.replace(fencedCodeRegex(), blank);
+  out = out.replace(indentedCodeRegex(), blank);
+  out = out.replace(inlineCodeRegex(), blank);
+  return out;
+}
 
 function findAliasSeparatorIndex(linkBody) {
   for (let i = 0; i < linkBody.length; i++) {
@@ -463,9 +541,11 @@ function extractWikiLinkTarget(linkBody) {
 }
 
 function extractWikiLinks(content) {
+  const stripped = stripCodeSpans(content);
   const targets = new Set();
+  const re = wikilinkRegex();
   let m;
-  while ((m = WIKILINK_RE.exec(content)) !== null) {
+  while ((m = re.exec(stripped)) !== null) {
     const target = extractWikiLinkTarget(m[1]);
     if (target.length > 0) targets.add(target);
   }

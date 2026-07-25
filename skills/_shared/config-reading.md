@@ -195,7 +195,7 @@ Flow-style arrays are also accepted: `globs: ["src/**", "tests/**"]`.
 In the live path the coordinator does NOT call the loader directly — it runs the CLI `scripts/print-applicable-rules.mjs` (which calls the loader) once per wave and captures stdout as the `<APPLICABLE-RULES>` block:
 
 ```sh
-RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" 2>/dev/null)"
+RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave 2>/dev/null)"
 # Empty stdout (no .claude/rules/, no matches, or any failure) → inject nothing.
 ```
 
@@ -219,7 +219,7 @@ const rules = loadApplicableRules({
 ### Backward compatibility
 
 - Rule files without any frontmatter continue to load as always-on. No migration required.
-- Files already using the old `paths:` frontmatter key do not match `globs:` — they are treated as always-on until updated.
+- `paths:` is a full alias for `globs:` (issue #795) — files using the old `paths:` frontmatter key load correctly SCOPED, not always-on. When BOTH `globs:` and `paths:` are present on the same rule, `globs:` wins silently (no merge, no warning) and `paths:` is discarded.
 
 ### Failure mode
 

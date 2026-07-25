@@ -42,6 +42,7 @@ import { findProjectRoot, resolveInstructionFile, warn } from './lib/common.mjs'
 import { parseSessionConfig } from './lib/config.mjs';
 import { glabRun as defaultGlabRun } from './lib/vault-backfill/glab.mjs';
 import { archiveFileToVault, titleFromMarkdown } from './lib/vault-archive.mjs';
+import { defaultGlabRepo } from './lib/vcs-repo-spec.mjs';
 
 const DEFAULT_PRD_DIR = 'docs/prd';
 const DEFAULT_VAULT_SUBDIR = '01-projects/session-orchestrator/prd';
@@ -57,28 +58,17 @@ function defaultGitRun(gitArgs) {
   return { ok: r.status === 0, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
-/**
- * Best-effort auto-detection of the glab `-R` repo spec from the local git
- * remotes (prefers a `gitlab` helper-remote, else `origin`). Returned as the raw
- * remote URL, which glab `-R` accepts (HTTPS, `.git`, or SSH forms all work).
- *
- * This keeps the committed custom-phase command host-agnostic (no private host
- * in CLAUDE.md — owner-leakage/#494) while still resolving the correct host when
- * glab is spawned non-interactively (a bare `glab` spawn ignores the shell
- * wrapper and falls back to the ambient GITLAB_HOST, which may not match).
- *
- * @param {string} repoRoot
- * @param {(args: string[]) => { ok: boolean, stdout: string, stderr: string }} gitRunFn
- * @returns {string|undefined}
- */
-export function defaultGlabRepo(repoRoot, gitRunFn) {
-  for (const remote of ['gitlab', 'origin']) {
-    const { ok, stdout } = gitRunFn(['-C', repoRoot, 'remote', 'get-url', remote]);
-    const url = ok ? stdout.trim() : '';
-    if (url) return url;
-  }
-  return undefined;
-}
+// Best-effort auto-detection of the glab `-R` repo spec from the local git
+// remotes (prefers a `gitlab` helper-remote, else `origin`) — lifted into
+// `scripts/lib/vcs-repo-spec.mjs::defaultGlabRepo` (#839) as the single shared
+// implementation; re-exported here (`export { defaultGlabRepo }` below) so
+// existing callers/tests importing it from this module keep working.
+//
+// This keeps the committed custom-phase command host-agnostic (no private host
+// in CLAUDE.md — owner-leakage/#494) while still resolving the correct host when
+// glab is spawned non-interactively (a bare `glab` spawn ignores the shell
+// wrapper and falls back to the ambient GITLAB_HOST, which may not match).
+export { defaultGlabRepo };
 
 // ---------------------------------------------------------------------------
 // Pure helpers

@@ -1,5 +1,6 @@
 ---
 tier: always
+review-date: 2026-10-23
 ---
 
 # Receiving Code Review (Always-on)
@@ -76,6 +77,30 @@ You are allowed — and expected — to push back on review feedback that is wro
 
 Push-back is a feature, not a bug. A reviewer who is never pushed back on never learns the project. An implementer who never pushes back implements every wrong suggestion.
 
+## RCR-007: Three-Class Finding Triage
+
+Classify every finding into **exactly one** class before patching:
+
+| Class | Meaning | Action |
+|---|---|---|
+| **`in-scope-blocker`** | Introduced by this diff, same owner boundary, fixable without changing the task's contract | Fix this cycle |
+| **`follow-up`** | Real, but an adjacent bug class or sibling surface | Route via the disposition table in `skills/session-end/SKILL.md` |
+| **`stop-and-escalate`** | The correct fix would break the frozen scope — see the five triggers below | Never patch, however small it looks — report the scope break to the operator |
+
+`stop-and-escalate` triggers — exactly these five, nothing else: (1) a new protocol, (2) a new config surface, (3) a storage change, (4) a public-API contract, (5) a different owner boundary or a release-process change.
+
+Frozen-scope exceptions — exactly these five, nothing else: (1) active data loss, (2) crash, (3) broken install/upgrade, (4) release blocker, (5) concrete security exposure.
+
+`stop-and-escalate` degenerating into an excuse to route inconvenient findings away is precisely inverse to its purpose.
+
+## RCR-008: Two-Cycle Reclassify
+
+After two fix cycles without a **strict decrease** in blocking findings: pause, reclassify every remaining finding. A third cycle starts only if every finding is still `in-scope-blocker`; otherwise move the smallest safely-landable subset forward and the rest to `follow-up`.
+
+**Landing-lane hygiene**: no stacked, no pushed fix commits while a classification or a focused proof is open. Edits stay local until the cycle is proven in-scope.
+
+Contrast with `verification-auto-fix.max-retries: 2` (see `quality-gates-autofix.md`): the retry cap **stops** on budget; RCR-008 forces **reclassification**, continuing while every finding is still `in-scope-blocker`.
+
 ## Anti-Patterns
 
 - Saying "great point, implementing now" before VERIFY
@@ -87,4 +112,4 @@ Push-back is a feature, not a bug. A reviewer who is never pushed back on never 
 
 ## See Also
 
-development.md · testing.md · cli-design.md · ask-via-tool.md · parallel-sessions.md · verification-before-completion.md
+development.md · testing.md · cli-design.md · ask-via-tool.md · parallel-sessions.md · verification-before-completion.md · quality-gates-autofix.md

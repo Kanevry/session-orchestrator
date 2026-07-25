@@ -9,7 +9,11 @@
  */
 
 const ENFORCEMENT_VALUES = new Set(['strict', 'warn', 'off']);
-const VAULT_MODE_VALUES = new Set(['strict', 'warn', 'off']);
+// Exported (issue #836) so cross-layer mode-vocabulary parity tests can use
+// this Set as the single source of truth for "the modes a Session Config
+// `*.mode` key accepts" — rather than re-deriving a duplicate literal list
+// that could silently drift from this schema.
+export const VAULT_MODE_VALUES = new Set(['strict', 'warn', 'off']);
 
 const REQUIRED_STRING_FIELDS = [
   'test-command',

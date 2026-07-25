@@ -25,6 +25,7 @@ import {
   checkInstructionBudget,
   loadInstructionBudgetConfig,
   _parseInstructionBudget,
+  countDirectives,
   DEFAULT_CEILING,
 } from '@lib/instruction-budget-guard.mjs';
 
@@ -80,6 +81,10 @@ Some intro prose that is not a directive.
 Closing paragraph.
 `;
 const ALPHA_COUNT = 6;
+// ALPHA has no frontmatter, so its byte total is the full raw content —
+// hand-verified via `Buffer.byteLength(ALPHA, 'utf8')` run standalone
+// (NOT via the production countContentBytes heuristic under test; #877).
+const ALPHA_BYTES = 164;
 
 // beta: always-on, contains a fenced code block whose bullets/headings must be ignored.
 //   ## Heading B      -> heading depth 2   (1)
@@ -103,6 +108,11 @@ const BETA = `## Heading B
 * bullet after fence
 `;
 const BETA_COUNT = 3;
+// BETA also has no frontmatter, so its byte total is the full raw content
+// INCLUDING the fenced block's 3 fake lines — the byte dimension does NOT
+// exclude fenced content the way countDirectives does (#877: that
+// divergence is intentional, see instruction-budget-guard.mjs doc).
+const BETA_BYTES = 126;
 
 // delta: always-on, has YAML frontmatter WITHOUT globs (still always-on).
 //   frontmatter title:/description: lines must NOT be counted.
@@ -119,6 +129,10 @@ description: has frontmatter but no globs key
 - d bullet
 `;
 const DELTA_COUNT = 2;
+// DELTA's byte total excludes the frontmatter block (same skip logic
+// countDirectives uses) — only the body "\n## Delta Heading\n\n- d bullet\n"
+// counts, hand-verified via `Buffer.byteLength` on that body string alone.
+const DELTA_BYTES = 30;
 
 // gamma: glob-scoped → EXCLUDED from the always-on count entirely.
 // Its bullets would count as 3 if (wrongly) included.
@@ -168,9 +182,9 @@ describe('computeInstructionBudget — directive counting', () => {
     // Expected counts are the hand-derived per-fixture literals (see fixture
     // comments above), pinned here to catch a DESC-sort or membership regression.
     expect(result.perFile).toEqual([
-      { file: 'alpha.md', count: ALPHA_COUNT },
-      { file: 'beta.md', count: BETA_COUNT },
-      { file: 'delta.md', count: DELTA_COUNT },
+      { file: 'alpha.md', count: ALPHA_COUNT, bytes: ALPHA_BYTES },
+      { file: 'beta.md', count: BETA_COUNT, bytes: BETA_BYTES },
+      { file: 'delta.md', count: DELTA_COUNT, bytes: DELTA_BYTES },
     ]);
   });
 
@@ -182,7 +196,7 @@ describe('computeInstructionBudget — directive counting', () => {
 
     // 3 real directives; the 3 fenced lines are ignored.
     expect(result.totalDirectives).toBe(3);
-    expect(result.perFile).toEqual([{ file: 'beta.md', count: 3 }]);
+    expect(result.perFile).toEqual([{ file: 'beta.md', count: 3, bytes: BETA_BYTES }]);
   });
 
   it('does not count YAML frontmatter lines as directives', () => {
@@ -232,6 +246,9 @@ const PATHS_SCOPED_BODY = `## Scoped Heading
 - scoped bullet three
 `;
 const PATHS_SCOPED_BODY_COUNT = 4;
+// No frontmatter in PATHS_SCOPED_BODY itself (only PATHS_SCOPED wraps it in
+// one) — hand-verified via `Buffer.byteLength` standalone (#877).
+const PATHS_SCOPED_BODY_BYTES = 81;
 
 const PATHS_SCOPED = `---
 paths:
@@ -249,6 +266,8 @@ const UNSCOPED_ALWAYS_ON = `## Unscoped Heading
 - unscoped bullet
 `;
 const UNSCOPED_ALWAYS_ON_COUNT = 2;
+// No frontmatter — hand-verified via `Buffer.byteLength` standalone (#877).
+const UNSCOPED_ALWAYS_ON_BYTES = 39;
 
 describe('#795 paths:-scoped rules excluded from always-on budget', () => {
   it('excludes a paths:-scoped rule from the always-on total, counting only the unscoped rule', () => {
@@ -260,7 +279,7 @@ describe('#795 paths:-scoped rules excluded from always-on budget', () => {
 
     // scoped.md's 4 directives must NOT be counted — only unscoped.md's 2.
     expect(result.totalDirectives).toBe(2);
-    expect(result.perFile).toEqual([{ file: 'unscoped.md', count: 2 }]);
+    expect(result.perFile).toEqual([{ file: 'unscoped.md', count: 2, bytes: UNSCOPED_ALWAYS_ON_BYTES }]);
   });
 
   it('fake-regression control: the SAME rule body WITHOUT the paths: key counts as always-on (proves the exclusion above is real, not a naming fluke)', () => {
@@ -277,8 +296,8 @@ describe('#795 paths:-scoped rules excluded from always-on budget', () => {
 
     expect(result.totalDirectives).toBe(6);
     expect(result.perFile).toEqual([
-      { file: 'scoped.md', count: PATHS_SCOPED_BODY_COUNT },
-      { file: 'unscoped.md', count: UNSCOPED_ALWAYS_ON_COUNT },
+      { file: 'scoped.md', count: PATHS_SCOPED_BODY_COUNT, bytes: PATHS_SCOPED_BODY_BYTES },
+      { file: 'unscoped.md', count: UNSCOPED_ALWAYS_ON_COUNT, bytes: UNSCOPED_ALWAYS_ON_BYTES },
     ]);
   });
 });
@@ -328,6 +347,215 @@ describe('computeInstructionBudget — ceiling boundary', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #877 FA2 — byte dimension (totalBytes / perFile[].bytes)
+// ---------------------------------------------------------------------------
+
+describe('computeInstructionBudget — byte dimension (#877)', () => {
+  it('sums totalBytes across always-on files, excluding the glob-scoped gamma.md', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // ALPHA_BYTES + BETA_BYTES + DELTA_BYTES — gamma.md contributes 0 (it is
+    // glob-scoped, excluded from the always-on set entirely, same membership
+    // rule as totalDirectives above).
+    expect(result.totalBytes).toBe(ALPHA_BYTES + BETA_BYTES + DELTA_BYTES);
+  });
+
+  it('excludes YAML frontmatter bytes from the byte total, mirroring countDirectives', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'delta.md', DELTA);
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // DELTA_BYTES is hand-derived from the BODY only (frontmatter stripped);
+    // if frontmatter bytes leaked into the count, this would be larger.
+    expect(result.totalBytes).toBe(DELTA_BYTES);
+  });
+
+  it('includes fenced-code bytes in totalBytes even though countDirectives excludes them from totalDirectives', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'beta.md', BETA);
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // BETA has no frontmatter, so BETA_BYTES is its FULL raw byte length —
+    // including the 3 fenced fake-directive lines. Contrast with
+    // totalDirectives, which excludes those same lines (3, not 6).
+    expect(result.totalBytes).toBe(BETA_BYTES);
+    expect(result.totalDirectives).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #877 FA2 — countDirectives export (reused by the byte walk, not duplicated)
+// ---------------------------------------------------------------------------
+
+describe('countDirectives — exported for reuse (#877)', () => {
+  it('is exported and matches the hand-counted literals used elsewhere in this file', () => {
+    expect(countDirectives(ALPHA)).toBe(ALPHA_COUNT);
+    expect(countDirectives(BETA)).toBe(BETA_COUNT);
+    expect(countDirectives(DELTA)).toBe(DELTA_COUNT);
+  });
+
+  it('perFile.count from computeInstructionBudget is identical to a direct countDirectives call (no second classifier)', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+    const alphaEntry = result.perFile.find((f) => f.file === 'alpha.md');
+
+    expect(alphaEntry.count).toBe(countDirectives(ALPHA));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #877 FA2 — bySurface tier split.
+//
+// Fixtures below carry explicit `tier:` frontmatter (issue #692) with NO
+// `globs:`/`paths:` key, so all four stay in the always-on set. Byte counts
+// are hand-derived the same way as the fixtures above (Buffer.byteLength on
+// the post-frontmatter body, verified standalone — never via the SUT).
+// ---------------------------------------------------------------------------
+
+// tierAlways: `tier: always`, body = "\n- a\n" after frontmatter strip.
+//   1 directive (the bullet); byte body is 5 bytes: \n, -, space, a, \n.
+const TIER_ALWAYS = `---
+tier: always
+---
+
+- a
+`;
+const TIER_ALWAYS_COUNT = 1;
+const TIER_ALWAYS_BYTES = 5;
+
+// tierCoord: `tier: coordinator-only`, same body shape as TIER_ALWAYS (- c).
+const TIER_COORD = `---
+tier: coordinator-only
+---
+
+- c
+`;
+const TIER_COORD_COUNT = 1;
+const TIER_COORD_BYTES = 5;
+
+// tierWave: `tier: wave-only`, same body shape (- w). Structurally unusual
+// (no repo file currently combines always-on + wave-only) but valid per
+// rule-loader's tier contract — needed to exercise the nesting invariant.
+const TIER_WAVE = `---
+tier: wave-only
+---
+
+- w
+`;
+const TIER_WAVE_COUNT = 1;
+const TIER_WAVE_BYTES = 5;
+
+// tierUntagged: no `tier:` key at all, no frontmatter — always-on and
+// tier-unrestricted (passes every context gate; NOT part of bySurface.always,
+// which is scoped strictly to `tier === 'always'`).
+const TIER_UNTAGGED = `- u
+`;
+const TIER_UNTAGGED_COUNT = 1;
+const TIER_UNTAGGED_BYTES = 4;
+
+function makeTierFixture() {
+  const dir = makeTmpRulesDir();
+  writeRule(dir, 'tier-always.md', TIER_ALWAYS);
+  writeRule(dir, 'tier-coord.md', TIER_COORD);
+  writeRule(dir, 'tier-wave.md', TIER_WAVE);
+  writeRule(dir, 'tier-untagged.md', TIER_UNTAGGED);
+  return dir;
+}
+
+describe('computeInstructionBudget — bySurface tier split (#877)', () => {
+  it('bySurface.coordinator equals totalBytes (the coordinator sees the full always-on corpus)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.bySurface.coordinator).toBe(result.totalBytes);
+    expect(result.bySurface.coordinator).toBe(
+      TIER_ALWAYS_BYTES + TIER_COORD_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES,
+    );
+  });
+
+  it('bySurface.wave excludes tier:coordinator-only bytes (what a wave agent actually receives)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // always + wave-only + untagged — coordinator-only (tier-coord.md) is excluded.
+    expect(result.bySurface.wave).toBe(TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES);
+  });
+
+  it('bySurface.always is scoped strictly to tier:always (excludes untagged, coordinator-only, wave-only)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.bySurface.always).toBe(TIER_ALWAYS_BYTES);
+  });
+
+  it('holds the nesting invariant always ⊆ wave ⊆ coordinator (strictly less-or-equal in byte terms)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.bySurface.always).toBeLessThanOrEqual(result.bySurface.wave);
+    expect(result.bySurface.wave).toBeLessThanOrEqual(result.bySurface.coordinator);
+  });
+
+  it('does NOT implement the additive coordinator + wave === totalBytes identity (would double-count the always tier)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    // coordinator(19) + wave(14) = 33 ≠ totalBytes(19) — the additive PRD
+    // identity is mathematically impossible here and must NOT hold.
+    expect(result.bySurface.coordinator + result.bySurface.wave).not.toBe(result.totalBytes);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #877 FA2 — context param
+// ---------------------------------------------------------------------------
+
+describe('computeInstructionBudget — context param (#877)', () => {
+  it('context: "wave" narrows totalDirectives/totalBytes/perFile to exclude tier:coordinator-only files', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'wave' });
+
+    expect(result.totalDirectives).toBe(TIER_ALWAYS_COUNT + TIER_WAVE_COUNT + TIER_UNTAGGED_COUNT);
+    expect(result.totalBytes).toBe(TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES);
+    expect(result.perFile.map((f) => f.file).sort()).toEqual([
+      'tier-always.md',
+      'tier-untagged.md',
+      'tier-wave.md',
+    ]);
+  });
+
+  it('omitting context preserves the pre-#877 tier-agnostic total (every always-on file counted)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.totalDirectives).toBe(
+      TIER_ALWAYS_COUNT + TIER_COORD_COUNT + TIER_WAVE_COUNT + TIER_UNTAGGED_COUNT,
+    );
+    expect(result.perFile).toHaveLength(4);
+  });
+
+  it('an unrecognised context value falls back to the tier-agnostic default (fail-open, never throws)', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'bogus' });
+
+    expect(result.perFile).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkInstructionBudget — banner wrapper
 // ---------------------------------------------------------------------------
 
@@ -367,10 +595,12 @@ describe('never throws on a missing rulesDir', () => {
 
     expect(result).toEqual({
       totalDirectives: 0,
+      totalBytes: 0,
       perFile: [],
       ceiling: 480,
       overBudget: false,
       severity: 'ok',
+      bySurface: { coordinator: 0, wave: 0, always: 0 },
     });
   });
 

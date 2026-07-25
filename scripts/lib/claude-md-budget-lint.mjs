@@ -36,7 +36,7 @@
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { resolveInstructionFile } from './common.mjs';
 
 /** Thrown by `lintClaudeMd()` on any infra-level failure (missing/unreadable file). */
@@ -141,6 +141,59 @@ export function lintClaudeMd(opts = {}) {
     hasProvenance,
     violations,
   };
+}
+
+/**
+ * Banner wrapper — session-start Phase 4 convention (#878 FA2b). Resolves
+ * the repo's CLAUDE.md/AGENTS.md via `resolveInstructionFile` and lints it
+ * via `lintClaudeMd()` in **warn-only** mode: this probe NEVER gates
+ * session-start — its exit code is never evaluated as a pass/fail signal,
+ * only its violation list is rendered (mirrors `checkInstructionBudget` /
+ * `checkReconcileNudge` / the other Phase 4 "banner-or-null" probes).
+ *
+ * Returns null (silent no-op) when:
+ *   - no CLAUDE.md/AGENTS.md resolves under `opts.repoRoot`
+ *   - the resolved file has zero violations (`status === 'ok'`)
+ *   - `resolveInstructionFile` or `lintClaudeMd` fails for any reason
+ *     (never throw out of a banner wrapper — mirrors every sibling probe)
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] project root (defaults to process.cwd()).
+ * @param {number} [opts.maxLines] forwarded to lintClaudeMd (default DEFAULT_MAX_LINES).
+ * @param {number} [opts.maxLineChars] forwarded to lintClaudeMd (default DEFAULT_MAX_LINE_CHARS).
+ * @returns {{ severity: 'warn', message: string } | null}
+ */
+export function checkClaudeMdBudgetLint(opts = {}) {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+
+  let filePath;
+  try {
+    const instructionFile = resolveInstructionFile(repoRoot);
+    if (!instructionFile) return null;
+    filePath = instructionFile.path;
+  } catch {
+    return null;
+  }
+
+  let result;
+  try {
+    result = lintClaudeMd({
+      filePath,
+      maxLines: typeof opts.maxLines === 'number' ? opts.maxLines : DEFAULT_MAX_LINES,
+      maxLineChars: typeof opts.maxLineChars === 'number' ? opts.maxLineChars : DEFAULT_MAX_LINE_CHARS,
+    });
+  } catch {
+    return null; // never throw out of the banner wrapper
+  }
+
+  if (!result || result.violations.length === 0) return null;
+
+  const ruleNames = [...new Set(result.violations.map((v) => v.rule))].join(', ');
+  const message =
+    `⚠ CLAUDE.md budget lint: ${result.violations.length} violation(s) (${ruleNames}) in ${basename(filePath)} — ` +
+    `run \`node scripts/lib/claude-md-budget-lint.mjs --mode warn\` for details.`;
+
+  return { severity: 'warn', message };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────

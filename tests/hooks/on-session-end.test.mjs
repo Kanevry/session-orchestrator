@@ -371,6 +371,14 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
 // status:'abandoned' stub keyed by its SEMANTIC id, and its own lock must be
 // released. If the `backfillAbandonedSession(...)` call in on-session-end.mjs
 // were removed/mis-wired, the first test fails RED (0 records instead of 1).
+//
+// #863 — the lock in this fixture MUST be genuinely STALE (heartbeat past
+// the default TTL), not live. A live own lock at hook-time means the session
+// is actively running RIGHT NOW — backfilling it as 'abandoned' is exactly
+// the #863 defect (confirmed on-disk: main-2026-07-21-session-2 was recorded
+// abandoned 2.9 seconds after it started). The lock is still deterministically
+// released regardless of staleness — that half of the hook has no liveness
+// gate for a UUID-matched own lock.
 // ---------------------------------------------------------------------------
 
 describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 15000 }, () => {
@@ -397,8 +405,14 @@ describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 1500
       timestamp: new Date().toISOString(),
       semanticSessionId: SEMANTIC,
     });
-    // Own live lock (UUID match) — backfill proceeds, release then clears it.
-    await seedLock(dir, { sessionId: UUID, semanticSessionId: SEMANTIC });
+    // Own STALE lock (UUID match, heartbeat past the 4h default TTL) — a
+    // genuinely abandoned session. Backfill proceeds (own-live-lock guard
+    // does not fire since isLockLive() is false); release then clears it.
+    await seedLock(dir, {
+      sessionId: UUID,
+      semanticSessionId: SEMANTIC,
+      lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
+    });
 
     const result = await runHook({
       projectDir: dir,
@@ -651,5 +665,154 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     const events = await readAllEvents(dir);
     expect(events.some((e) => e.event === 'orchestrator.session.lock.release_failed')).toBe(false);
     expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #863 — semantic-id contamination releases a FOREIGN live lock, and a
+// lock-shape trap (session_id IS the semantic id, no semantic_session_id
+// field) that a fallback-only match must not trust while live.
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — semantic-id contamination guard (#863)', { timeout: 15000 }, () => {
+  it('does NOT release a DIFFERENT, still-live session\'s lock when a foreign terminating window inherits the currently-recorded semantic id', async () => {
+    const dir = await mkProject();
+    // current-session.json reflects session B — the CURRENTLY recorded
+    // session, still live right now (e.g. a second open window/tab).
+    await seedCurrentSession(dir, {
+      sessionId: 'uuid-b',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-b',
+    });
+    // B's own lock — genuinely live.
+    await seedLock(dir, {
+      sessionId: 'uuid-b',
+      semanticSessionId: 'sem-b',
+      lastHeartbeat: new Date().toISOString(),
+    });
+
+    // Window A's SessionEnd fires with its OWN, explicit, DIFFERENT uuid —
+    // this has nothing to do with B.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'uuid-a', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // B's live lock must survive untouched — A's termination is unrelated.
+    expect(await lockExists(dir)).toBe(true);
+  });
+
+  it('lock-shape trap (d) — a fallback-only semantic match on a LIVE lock is never released (low-confidence, no stdin corroboration)', async () => {
+    const dir = await mkProject();
+    // The lock stores the semantic id directly in session_id; no separate
+    // semantic_session_id field (the shape observed on-disk in this repo).
+    // Its own id ('sem-b') differs from the CURRENT recorded session_id
+    // ('new-id-b') — a rotation-shaped divergence, but without the strict
+    // semantic_session_id field the strict comparison can't recognise it.
+    await seedLock(dir, {
+      sessionId: 'sem-b',
+      semanticSessionId: undefined,
+      lastHeartbeat: new Date().toISOString(),
+    });
+    await seedCurrentSession(dir, {
+      sessionId: 'new-id-b',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-b',
+    });
+
+    // Explicit, genuinely-matching stdin — this really is the recorded
+    // session ending (not an omitted-stdin ambiguity).
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-id-b', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // Fallback-only match on a LIVE lock — never released.
+    expect(await lockExists(dir)).toBe(true);
+  });
+
+  it('lock-shape trap (d), negative twin — a fallback-only semantic match on a STALE lock IS released via the primary path (not via reconciliation)', async () => {
+    const dir = await mkProject();
+    await seedLock(dir, {
+      sessionId: 'sem-c',
+      semanticSessionId: undefined,
+      lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(), // stale
+    });
+    await seedCurrentSession(dir, {
+      sessionId: 'new-id-c',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-c',
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-id-c', reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await lockExists(dir)).toBe(false);
+    // Released via the PRIMARY release() path, not the reconciliation/reaper
+    // fallback — the discriminating signal versus the "matched neither
+    // ownership check" reconciliation path.
+    const events = await readAllEvents(dir);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #863 (QA follow-up) — the contamination-guard fixture above never seeds
+// events.jsonl, so backfillAbandonedSession()'s collectSessionEvents() walk
+// is a trivial no-op regardless of whether the backfiller is broken. This
+// block re-runs the SAME "Window A ends, Session B is recorded+live" shape
+// WITH real events seeded for B (`started` + `lock.acquired`), so the
+// backfill path genuinely traverses provenance data, and asserts on
+// sessions.jsonl in addition to the lock — closing the gap the earlier test
+// left open (see the RED/GREEN proof + DECISIONS note in the session report
+// for what the revert actually demonstrates).
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — contamination guard covers backfill too, with a genuinely-reached events walk (#863 follow-up)', { timeout: 15000 }, () => {
+  const UUID_A = '77777777-8888-4999-a000-111111111111'; // Window A — ending session, unrelated to B
+  const UUID_B = '22222222-3333-4444-8555-666666666666'; // Session B — recorded + LIVE right now
+  const SEM_B = 'main-2026-07-02-session-b';
+  const STARTED_AT_B = '2026-07-02T09:00:00.000Z';
+
+  it('does NOT release session B\'s live lock, and does NOT backfill any sessions.jsonl record, when B has real seeded provenance (started + lock.acquired)', async () => {
+    const dir = await mkProject();
+    // B has real history in events.jsonl — collectSessionEvents() genuinely
+    // walks and matches these records (unlike the no-events fixture above),
+    // so a green result here is not a vacuous "nothing to process" pass.
+    await seedEvents(dir, [
+      { timestamp: STARTED_AT_B, event: 'orchestrator.session.started', session_id: UUID_B, branch: 'main', project: 'demo' },
+      {
+        timestamp: '2026-07-02T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID_B,
+        semantic_session_id: SEM_B,
+        mode: 'deep',
+      },
+    ]);
+    // current-session.json reflects B — the CURRENTLY recorded session,
+    // still live right now (e.g. a second open window/tab).
+    await seedCurrentSession(dir, { sessionId: UUID_B, timestamp: new Date().toISOString(), semanticSessionId: SEM_B });
+    // B's own lock — genuinely live.
+    await seedLock(dir, { sessionId: UUID_B, semanticSessionId: SEM_B, lastHeartbeat: new Date().toISOString() });
+
+    // Window A's SessionEnd fires with its OWN, explicit, DIFFERENT uuid —
+    // this has nothing to do with B.
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID_A, reason: 'clear' }),
+    });
+
+    expect(result.code).toBe(0);
+    // B's live lock must survive untouched — A's termination is unrelated.
+    expect(await lockExists(dir)).toBe(true);
+    // No sessions.jsonl entry gets written as a side effect of A's unrelated
+    // termination — neither attributed to B nor to anyone else.
+    const records = await readSessions(dir);
+    expect(records).toHaveLength(0);
   });
 });

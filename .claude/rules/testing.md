@@ -7,6 +7,7 @@ globs:
   - vitest.config.*
   - playwright.config.*
 tier: wave-only
+review-date: 2026-10-23
 ---
 
 # Testing Rules (Path-scoped)

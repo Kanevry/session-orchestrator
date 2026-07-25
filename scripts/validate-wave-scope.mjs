@@ -22,6 +22,7 @@
  *   2 — I/O error (file not found, unreadable stdin, unreadable --assert-subset file)
  */
 
+import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { warn } from './lib/common.mjs';
 import { assertFileScopeSubset } from './lib/scope-gate.mjs';
@@ -140,8 +141,90 @@ function validateRequired(obj, errors) {
 }
 
 /**
+ * Literal filesystem-root forms — POSIX "/" and the Windows equivalents "\"
+ * and a bare drive root ("C:\", "C:\\", ...). Checked independently of
+ * `path.isAbsolute()` because that primitive is platform-native: on a POSIX
+ * host (this repo's dev/CI hosts) it never reports `C:\` as absolute, so a
+ * Windows-literal-root entry would otherwise slip past every check below.
+ * @type {ReadonlySet<string>}
+ */
+const FILESYSTEM_ROOT_LITERALS = new Set(['/', '\\']);
+const WINDOWS_DRIVE_ROOT_RE = /^[A-Za-z]:\\+$/;
+
+/**
+ * @param {string} entry
+ * @returns {boolean}
+ */
+function isFilesystemRootLiteral(entry) {
+  return FILESYSTEM_ROOT_LITERALS.has(entry) || WINDOWS_DRIVE_ROOT_RE.test(entry);
+}
+
+/**
+ * Well-known top-level system/home directories. A FIXED DENYLIST (not a
+ * segment-count threshold): the #792 legitimate grant
+ * (`/private/tmp/<session>/scratchpad/**`) is itself a single-segment-deep
+ * grant under an unusual root ("private"), so any segment-count heuristic
+ * tight enough to catch `/etc/**` risks catching that too, or must be tuned
+ * loosely enough to leave a gap. A fixed list of the directories a
+ * hallucinated/mis-copied wave-scope entry could plausibly land on is
+ * predictable, auditable in a one-line diff, and does not touch legitimate
+ * deep grants under any other root.
+ * @type {ReadonlySet<string>}
+ */
+const DENIED_ABSOLUTE_TOP_SEGMENTS = new Set([
+  'etc',
+  'Users',
+  'home',
+  'root',
+  'bin',
+  'sbin',
+  'usr',
+  'System',
+  'var',
+  'boot',
+  'dev',
+  'proc',
+  'sys',
+  'Library',
+  'Applications',
+  'Windows',
+]);
+
+/**
+ * The top-level path segment of an absolute POSIX-style entry (the segment
+ * immediately after the leading "/"), if it is on the denylist above.
+ * @param {string} entry
+ * @returns {string|null}
+ */
+function deniedTopSegment(entry) {
+  const first = entry.split('/').filter(Boolean)[0];
+  return first && DENIED_ABSOLUTE_TOP_SEGMENTS.has(first) ? first : null;
+}
+
+/**
+ * Does this entry contain a glob wildcard? Mirrors this codebase's own glob
+ * convention (`isGlobScopeEntry` in scripts/lib/scope-gate.mjs / #796): `*`
+ * is the sole wildcard metachar used in allowedPaths/fileScope entries
+ * throughout this repo (no `?`/`[]`/`{}` glob syntax is supported or tested
+ * anywhere else in scope-gate.mjs or enforce-scope.mjs).
+ * @param {string} entry
+ * @returns {boolean}
+ */
+function hasWildcard(entry) {
+  return entry.includes('*');
+}
+
+/**
  * Validate allowedPaths array: must exist, be an array of non-empty strings,
- * with no absolute paths and no path-traversal segments.
+ * with no path-traversal segments. Absolute (out-of-repo) entries are a
+ * SANCTIONED Gate 5b grant (#792) — WARN, not reject; see #870. A narrow
+ * catastrophic subclass of absolute entries is instead a hard ERROR
+ * (#870-followup security review, confidence 0.85): allowedPaths is not
+ * hand-authored — wave-loop.md's Scope Manifest computes it PROGRAMMATICALLY
+ * as the union of LLM-authored per-agent "Files:" scopes — so a
+ * hallucinated/mis-copied/injected entry reaching one of these shapes must
+ * hard-fail rather than rely on a stderr WARN nothing guarantees a human
+ * reads before dispatch.
  * @param {Record<string, unknown>} obj
  * @param {string[]} errors
  * @param {string[]} warnings
@@ -161,11 +244,46 @@ function validateAllowedPaths(obj, errors, warnings) {
       errors.push('allowedPaths contains empty string');
       continue;
     }
-    // Reject absolute paths (must be repo-relative)
-    if (entry.startsWith('/')) {
-      errors.push(`allowedPaths contains absolute path: ${entry}`);
+    // #870: an explicit absolute entry is a SANCTIONED out-of-repo grant — mirrors
+    // hooks/enforce-scope.mjs Gate 5b (matchesAbsoluteAllowlist), which honours ANY
+    // syntactically-absolute allowedPaths entry (path.isAbsolute) against the
+    // realpath-resolved write candidate. Using `path.isAbsolute` (not a hand-rolled
+    // `startsWith('/')`) keeps the same platform-native semantics Gate 5b uses.
+    // WARN, not reject — the validator must not contradict the hook it validates
+    // for (#792 / #870) — EXCEPT for the narrow catastrophic subclass below
+    // (#870-followup), which hard-rejects regardless of what Gate 5b would do
+    // with it: pre-flight validation exists precisely to catch a grant this bad
+    // before the hook is ever consulted.
+    if (path.isAbsolute(entry) || isFilesystemRootLiteral(entry)) {
+      if (isFilesystemRootLiteral(entry)) {
+        errors.push(
+          `allowedPaths grants the entire filesystem root: ${entry} — refused unconditionally, this can never be a valid wave scope`,
+        );
+      } else {
+        const denied = deniedTopSegment(entry);
+        if (denied) {
+          errors.push(
+            `allowedPaths contains a well-known system/home directory grant: ${entry} (top-level segment "${denied}" is denylisted) — refused, scope a narrower path instead`,
+          );
+        } else if (!hasWildcard(entry)) {
+          errors.push(
+            `allowedPaths contains a bare absolute file grant with no wildcard: ${entry} — a single concrete out-of-repo file has no established legitimate use in this codebase; scope a glob instead`,
+          );
+        } else {
+          warnings.push(
+            `allowedPaths contains an absolute (out-of-repo) path: ${entry} — honoured by hooks/enforce-scope.mjs Gate 5b; verify this grant is intentional`,
+          );
+        }
+      }
     }
-    // Reject path traversal: any `../` segment
+    // Reject path traversal: any `../` segment. INDEPENDENT of the absolute checks
+    // above — an absolute entry that ALSO contains `../` must still be rejected
+    // here, unconditionally, even when it was already rejected above for a
+    // different reason. (Such an entry could never actually match Gate 5b's
+    // realpath-canonicalised candidate anyway, since realpath strips `..`
+    // segments before Gate 5b ever compares it — see enforce-scope.mjs REQ-09 —
+    // but validate-time rejection gives the operator immediate, actionable
+    // feedback instead of leaving a silently-dead allowedPaths entry.)
     if (entry.includes('../')) {
       errors.push(`allowedPaths contains path traversal: ${entry}`);
     }

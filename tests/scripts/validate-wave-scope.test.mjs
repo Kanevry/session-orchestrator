@@ -109,16 +109,73 @@ describe('validate-wave-scope.mjs — required-field contract', () => {
 });
 
 describe('validate-wave-scope.mjs — security checks', () => {
-  it('rejects absolute paths in allowedPaths', () => {
-    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/etc/passwd'] }));
-    expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/absolute path/);
+  // #870: an explicit absolute allowedPaths entry is a SANCTIONED Gate 5b
+  // out-of-repo grant (hooks/enforce-scope.mjs matchesAbsoluteAllowlist, #792)
+  // — the validator must agree with the hook, not contradict it. Flipped from
+  // "rejects absolute paths" (the pre-#870 contract) to "accepts with a WARN".
+  //
+  // #870-followup (security review, confidence 0.85): the ORIGINAL #870 fixture
+  // here was `/etc/passwd` — that is now a member of the catastrophic subclass
+  // (see "catastrophic absolute grant rejection" below) and correctly rejects.
+  // This test now uses a legitimately-scoped absolute glob (a scratchpad grant
+  // outside any denylisted system/home directory) to keep exercising the WARN
+  // path the #870 fix introduced.
+  it('accepts an absolute path entry with a WARN (#870 — sanctioned Gate 5b out-of-repo grant)', () => {
+    const r = run(
+      JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/so-session-example/scratchpad/**'] }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING.*absolute \(out-of-repo\) path.*Gate 5b/);
+  });
+
+  // Exact repro from GitLab issue #870:
+  //   echo '{"wave":1,"role":"Discovery","enforcement":"strict","allowedPaths":["/private/tmp/x/**"],"blockedCommands":[]}' \
+  //     | node scripts/validate-wave-scope.mjs
+  // Pre-#870 this exited 1 ("allowedPaths contains absolute path"), even though
+  // the SAME entry is honoured live by hooks/enforce-scope.mjs Gate 5b.
+  it('accepts the #870 issue repro — absolute glob out-of-repo grant exits 0', () => {
+    const repro = {
+      wave: 1,
+      role: 'Discovery',
+      enforcement: 'strict',
+      allowedPaths: ['/private/tmp/x/**'],
+      blockedCommands: [],
+    };
+    const r = run(JSON.stringify(repro));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING.*absolute \(out-of-repo\) path: \/private\/tmp\/x\/\*\*/);
   });
 
   it('rejects path traversal in allowedPaths', () => {
     const r = run(JSON.stringify({ ...VALID, allowedPaths: ['../escape'] }));
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/path traversal/);
+  });
+
+  // The traversal guard (entry.includes('../')) is INDEPENDENT of the absolute
+  // check — an absolute entry that ALSO contains `../` must still be rejected.
+  // This is also the "hostile absolute entry the hook would NOT honour" case:
+  // hooks/enforce-scope.mjs matchesAbsoluteAllowlist (~253-261) matches the
+  // pattern literally against the fully realpath-RESOLVED candidate (REQ-03),
+  // and realpath strips `..` segments before that comparison ever runs — so a
+  // `../`-bearing absolute pattern can never actually match Gate 5b's candidate
+  // in the first place (REQ-09, ~32-38). A naive fix that early-`continue`s on
+  // `path.isAbsolute(entry)` would silently drop this guard; this test pins
+  // that the traversal check still fires for absolute entries too.
+  it('rejects an absolute entry that ALSO contains path traversal (hostile — Gate 5b could never match it either)', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/x/../../etc/shadow'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/path traversal/);
+  });
+
+  // Bare relative `**` is NOT a Gate 5b grant (path.isAbsolute('**') === false,
+  // so hooks/enforce-scope.mjs matchesAbsoluteAllowlist's `abs` filter drops it
+  // — REQ-09, ~32-34) — it remains an ordinary in-repo relative glob, unaffected
+  // by the #870 fix.
+  it('accepts a bare relative "**" entry unaffected by #870 (not a Gate 5b grant, ordinary in-repo glob)', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['**'] }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
   });
 
   it('rejects non-array allowedPaths', () => {
@@ -132,6 +189,90 @@ describe('validate-wave-scope.mjs — security checks', () => {
     const r = run(JSON.stringify(noBc));
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/Missing required field: blockedCommands/);
+  });
+});
+
+describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#870-followup)', () => {
+  // Security review (confidence 0.85): #870 made EVERY absolute allowedPaths
+  // entry pass with a stderr WARN, including the literal filesystem root ("/")
+  // and well-known system/home directories. allowedPaths is not hand-authored —
+  // wave-loop.md's Scope Manifest computes it PROGRAMMATICALLY as the union of
+  // LLM-authored "Files:" scopes — so a hallucinated/mis-copied/injected entry
+  // reaching one of these shapes must hard-fail (exit 1), not rely on a stderr
+  // line nothing guarantees a human reads before dispatch. These tests must
+  // observe RED against the pre-fix (#870) code, then GREEN after.
+
+  it('rejects the literal filesystem root "/"', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*filesystem root/);
+  });
+
+  it('rejects a denylisted system-directory glob: /etc/**', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/etc/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*system\/home directory/);
+  });
+
+  it('rejects a denylisted home-directory glob: /Users/**', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*system\/home directory/);
+  });
+
+  it('rejects a bare absolute file grant with no wildcard: /etc/passwd', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/etc/passwd'] }));
+    expect(r.status).toBe(1);
+    // /etc/passwd is caught by the system/home denylist (top segment "etc");
+    // the no-wildcard rule below covers bare files OUTSIDE the denylist too.
+    expect(r.stderr).toMatch(/ERROR:.*system\/home directory|ERROR:.*no wildcard/);
+  });
+
+  it('rejects a bare absolute file grant with no wildcard OUTSIDE the denylist', () => {
+    const r = run(
+      JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/so-session-example/notes.txt'] }),
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*no wildcard/);
+  });
+
+  it('rejects the Windows literal root forms "\\\\" and "C:\\\\"', () => {
+    const r1 = run(JSON.stringify({ ...VALID, allowedPaths: ['\\'] }));
+    expect(r1.status).toBe(1);
+    expect(r1.stderr).toMatch(/ERROR:.*filesystem root/);
+
+    const r2 = run(JSON.stringify({ ...VALID, allowedPaths: ['C:\\'] }));
+    expect(r2.status).toBe(1);
+    expect(r2.stderr).toMatch(/ERROR:.*filesystem root/);
+  });
+
+  // Non-regression: the #792/#870 legitimately-scoped absolute glob must keep
+  // exiting 0 with a WARN — this is the case #870 exists for.
+  it('does NOT regress the #792/#870 legitimately-scoped absolute glob', () => {
+    const r = run(
+      JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/so-session-abc/scratchpad/**'] }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(
+      /WARNING.*absolute \(out-of-repo\) path: \/private\/tmp\/so-session-abc\/scratchpad\/\*\*/,
+    );
+  });
+
+  // Relative paths are wholly unaffected by this subclass — no absolute check
+  // ever fires for them.
+  it('leaves relative paths unaffected', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['src/**', 'tests/**'] }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  // The traversal check remains INDEPENDENT (not else-if) of the new absolute
+  // subclass checks — an absolute entry rejected for another reason must still
+  // surface the traversal error when it also contains "../".
+  it('still rejects absolute + traversal via the unconditional traversal check', () => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/x/../../etc/shadow'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/path traversal/);
   });
 });
 

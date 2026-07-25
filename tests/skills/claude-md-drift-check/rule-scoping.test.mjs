@@ -87,26 +87,57 @@ function makeRulesDir() {
 // Probe 1 — paths-presence (error)
 // ---------------------------------------------------------------------------
 
+// Since ef7f4fc (2026-07-13, issue #795), rule-loader.mjs's
+// parseGlobsFrontmatter() accepts `paths:` as a full alias for `globs:` — a
+// well-formed `paths:`-only rule loads correctly SCOPED, not always-on. The
+// probe must therefore stay SILENT on plain `paths:` usage (#840) and only
+// fire when the textual `paths:` key is present yet parseGlobsFrontmatter
+// genuinely fails to recognise it (a real parse mismatch).
 describe('rule-scoping — paths-presence probe', () => {
-  it('reports an error when a rule declares a top-level paths: key', () => {
+  it('does NOT report an error when a rule declares a well-formed top-level paths: key (#840 alias)', () => {
     const rulesDir = makeRulesDir();
     writeFileSync(join(rulesDir, 'bad.md'), '---\npaths:\n  - src/**\n---\n\n# Bad Rule\n');
+    mkdirSync(join(vault, 'src'), { recursive: true });
+    writeFileSync(join(vault, 'src', 'index.ts'), '// x\n');
 
     const r = runChecker(vault, ['--mode', 'hard']);
 
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(0);
     const j = parseJson(r.stdout);
     expect(j.checks_run).toContain('rule-scoping');
-    const errs = j.errors.filter((e) => e.check === 'rule-scoping' && e.extracted === 'paths:');
-    expect(errs).toHaveLength(1);
-    expect(errs[0].file).toBe('.claude/rules/bad.md');
+    expect(j.errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
   });
 
-  it('reports paths: even when a provenance comment precedes frontmatter', () => {
+  it('does NOT report an error when a well-formed paths: is preceded by a provenance comment', () => {
+    // parseGlobsFrontmatter (rule-loader.mjs) and extractFrontmatterBlockBody
+    // (checker.mjs) locate the frontmatter start via two SEPARATE
+    // implementations (stripLeadingProvenanceHeader vs
+    // stripLeadingRuleHeaderLines) — this variant keeps both exercised so a
+    // future divergence between the two would still be caught.
     const rulesDir = makeRulesDir();
     writeFileSync(
       join(rulesDir, 'bad.md'),
       '<!-- source: session-orchestrator plugin (canonical: rules/always-on/bad.md) -->\n---\npaths:\n  - src/**\n---\n\n# Bad Rule\n',
+    );
+    mkdirSync(join(vault, 'src'), { recursive: true });
+    writeFileSync(join(vault, 'src', 'index.ts'), '// x\n');
+
+    const r = runChecker(vault, ['--mode', 'hard']);
+
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
+  });
+
+  it('reports an error when paths: is present but genuinely malformed (parse mismatch — negative twin)', () => {
+    // A non-indented, colon-less line inside the frontmatter block makes
+    // parseGlobsFrontmatter() throw — checker.mjs catches it and falls back
+    // to globs: null, which is the genuine-defect condition the probe must
+    // still catch (distinguishing "paths: used" from "paths: unparseable").
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'bad.md'),
+      '---\npaths:\n  - src/**\nbogus line without colon\n---\n\n# Bad Rule\n',
     );
 
     const r = runChecker(vault, ['--mode', 'hard']);
@@ -116,6 +147,7 @@ describe('rule-scoping — paths-presence probe', () => {
     const errs = j.errors.filter((e) => e.check === 'rule-scoping' && e.extracted === 'paths:');
     expect(errs).toHaveLength(1);
     expect(errs[0].file).toBe('.claude/rules/bad.md');
+    expect(errs[0].message).toContain('did not recognise it');
   });
 
   it('stays silent when the rule uses globs: instead of paths:', () => {

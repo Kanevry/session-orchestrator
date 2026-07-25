@@ -14,6 +14,11 @@
  *   - Never throws — all errors are caught and returned as `{ stripped: [],
  *     error: string }` so callers can log and proceed with close unblocked.
  *   - Supports GitLab (`glab`) and GitHub (`gh`). VCS is a required param.
+ *   - Every `glab`/`gh` spawn is pinned to the resolved repo via `-R <spec>`
+ *     (#839) — see `scripts/lib/vcs-repo-spec.mjs` for why: a bare spawn
+ *     falls back to the ambient `GITLAB_HOST`/`GH_HOST`, which can silently
+ *     resolve to the wrong GitLab instance on a multi-host machine, turning
+ *     this whole module into a silent no-op.
  *
  * Usage (from session-end Phase 5 issue-close loop):
  *
@@ -28,6 +33,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 /** Regex that matches any `status:*` label name. */
 const STATUS_LABEL_RE = /^status:/;
@@ -57,15 +63,19 @@ function runCli(cmd, args) {
 /**
  * Fetch the label names currently applied to an issue.
  *
- * @param {{ issueId: number | string, vcs: 'gitlab' | 'github' }} opts
+ * @param {{ issueId: number | string, vcs: 'gitlab' | 'github', spec?: string }} opts
+ *   `spec` is the resolved `-R`/`--repo` host-pinning value (#839); omitted
+ *   (undefined) means no `-R` is appended — never emit `-R undefined`.
  * @returns {{ ok: boolean, labels: string[], stderr: string }}
  */
-function fetchLabels({ issueId, vcs }) {
+function fetchLabels({ issueId, vcs, spec }) {
   const id = String(issueId);
 
   if (vcs === 'github') {
     // `gh issue view <NUMBER> --json labels` returns { labels: [{name, ...}] }
-    const res = runCli('gh', ['issue', 'view', id, '--json', 'labels']);
+    const args = ['issue', 'view', id, '--json', 'labels'];
+    if (spec) args.push('-R', spec);
+    const res = runCli('gh', args);
     if (!res.ok) return { ok: false, labels: [], stderr: res.stderr };
     let parsed;
     try {
@@ -81,7 +91,9 @@ function fetchLabels({ issueId, vcs }) {
 
   // Default: gitlab via glab.
   // `glab issue view <IID> --output json` returns an issue object with a `labels` array.
-  const res = runCli('glab', ['issue', 'view', id, '--output', 'json']);
+  const args = ['issue', 'view', id, '--output', 'json'];
+  if (spec) args.push('-R', spec);
+  const res = runCli('glab', args);
   if (!res.ok) return { ok: false, labels: [], stderr: res.stderr };
   let parsed;
   try {
@@ -105,11 +117,22 @@ function fetchLabels({ issueId, vcs }) {
  *
  * @param {{
  *   issueId: number | string,
- *   vcs?: 'gitlab' | 'github'
+ *   vcs?: 'gitlab' | 'github',
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined
  * }} opts
+ *   `repoRoot` defaults to `process.cwd()`. `resolveRepoSpecFn` is the
+ *   injectable seam for the `-R`/`--repo` host-pinning resolution (#839) —
+ *   defaults to the real `resolveRepoSpec` (shells out to `git remote
+ *   get-url`); tests inject a stub instead of shelling out.
  * @returns {Promise<{ stripped: string[], error?: string }>}
  */
-export async function stripStatusLabels({ issueId, vcs = 'gitlab' } = {}) {
+export async function stripStatusLabels({
+  issueId,
+  vcs = 'gitlab',
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
+} = {}) {
   try {
     const id = String(issueId ?? '').trim();
     if (!id || id === 'undefined' || id === 'null') {
@@ -118,8 +141,12 @@ export async function stripStatusLabels({ issueId, vcs = 'gitlab' } = {}) {
 
     const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
 
+    // Resolve the -R/--repo host-pinning spec ONCE, reused by both the fetch
+    // and the strip call below (#839). undefined ⇒ no -R is appended anywhere.
+    const spec = resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
+
     // Step 1: fetch current labels.
-    const { ok, labels, stderr } = fetchLabels({ issueId: id, vcs: vcsResolved });
+    const { ok, labels, stderr } = fetchLabels({ issueId: id, vcs: vcsResolved, spec });
     if (!ok) {
       return { stripped: [], error: `failed to fetch labels: ${stderr}` };
     }
@@ -139,11 +166,14 @@ export async function stripStatusLabels({ issueId, vcs = 'gitlab' } = {}) {
       for (const label of toStrip) {
         args.push('--remove-label', label);
       }
+      if (spec) args.push('-R', spec);
       stripRes = runCli('gh', args);
     } else {
       // `glab issue update <IID> --unlabel label1,label2,...`
       // glab accepts comma-separated list in a single --unlabel flag value.
-      stripRes = runCli('glab', ['issue', 'update', id, '--unlabel', toStrip.join(',')]);
+      const args = ['issue', 'update', id, '--unlabel', toStrip.join(',')];
+      if (spec) args.push('-R', spec);
+      stripRes = runCli('glab', args);
     }
 
     if (!stripRes.ok) {

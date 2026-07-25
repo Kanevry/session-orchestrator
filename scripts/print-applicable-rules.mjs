@@ -26,7 +26,9 @@
  *   - --json       → `{ count, rules: [{path, alwaysOn, matchedGlobs}] }`
  *
  * Exit codes (per .claude/rules/cli-design.md):
- *   0 — success
+ *   0 — success, INCLUDING EPIPE (the reader closed its end of the pipe
+ *       early — `| head`, `| grep -q`, any truncating consumer — before the
+ *       full payload drained; see the process.stdout 'error' handler below)
  *   1 — user/input error (bad --wave-scope path, malformed wave-scope JSON)
  *   2 — system error (unexpected internal failure)
  * Data → stdout, diagnostics → stderr.
@@ -34,6 +36,11 @@
  * Best-effort by design: a missing rules dir, missing STATE.md, or missing
  * host.json each degrade to "no gating / no rules" rather than failing — the
  * wave-executor caller treats any non-zero exit as "inject nothing, continue".
+ * EPIPE is deliberately EXCLUDED from that "non-zero = inject nothing"
+ * contract: the actual wave-executor caller drains stdout fully
+ * (execFileSync/spawnSync-style capture) and never closes the pipe early, so
+ * EPIPE can only be triggered by an exploratory or truncating reader — never
+ * by the real caller this CLI exists to serve.
  *
  * Related: issue #336 (glob-scoped rules), #694 (rule-activation / FA1),
  *   scripts/lib/rule-loader.mjs (loadApplicableRules),
@@ -48,6 +55,31 @@ import { join } from 'node:path';
 import { findProjectRoot } from './lib/common.mjs';
 import { loadApplicableRules } from './lib/rule-loader.mjs';
 import { readHostClass } from './lib/autopilot/telemetry.mjs';
+
+// ---------------------------------------------------------------------------
+// EPIPE hardening (regression follow-up on #876)
+// ---------------------------------------------------------------------------
+//
+// process.stdout.write() to a pipe is ASYNCHRONOUS in Node. When the reader
+// closes its end early — `| head`, `| grep -q`, any truncating consumer —
+// before the writer has finished draining, the deferred write fails and
+// process.stdout emits an 'error' event carrying err.code === 'EPIPE'. Left
+// unhandled, that is an UNCAUGHT EXCEPTION: Node prints a stack trace to
+// stderr ("Unhandled 'error' event") and exits 1 — even though nothing
+// actually failed on the producer side; the reader simply chose to stop
+// consuming. Registered before any stdout write below so it covers every
+// output branch (--help, --json, Markdown, and the empty-match no-op).
+//
+// Exit 0 on EPIPE, matching conventional Unix CLI behaviour (`cat file |
+// head` reports no error to its caller) and restoring the pre-#876 exit
+// contract for this specific case. Any other stdout write error is
+// unexpected and is re-thrown rather than swallowed.
+process.stdout.on('error', (err) => {
+  if (err && err.code === 'EPIPE') {
+    process.exit(0);
+  }
+  throw err;
+});
 
 const HELP = `Usage: node scripts/print-applicable-rules.mjs [options]
 
@@ -223,6 +255,18 @@ try {
   fail(`Rule loading failed: ${err.message}`, 2);
 }
 
+// NOTE (#876): deliberately no `process.exit(0)` after these stdout writes.
+// process.stdout.write() to a pipe is ASYNCHRONOUS in Node — an explicit
+// process.exit() terminates the process before the kernel pipe buffer (64KiB
+// on macOS) has been fully drained, silently truncating any payload beyond
+// that threshold with exit code still 0. Letting the script fall off the end
+// lets Node's event loop wait for the pending write to flush before the
+// process exits naturally (default exit code 0) — the fix generalizes to any
+// payload size, not just today's measured ~105KB. The three branches below
+// are mutually exclusive (if/else-if/else) so only one ever writes to stdout.
+// When the reader closes early instead of draining to completion, the write
+// fails with EPIPE — handled asynchronously by the process.stdout 'error'
+// listener registered near the top of this file, not by anything here.
 if (opts.json) {
   const out = {
     count: rules.length,
@@ -233,15 +277,10 @@ if (opts.json) {
     })),
   };
   process.stdout.write(JSON.stringify(out, null, 2) + '\n');
-  process.exit(0);
+} else if (rules.length === 0) {
+  // Empty match set → print nothing (caller injects nothing).
+} else {
+  const header = '## Applicable Rules (scoped to this wave)';
+  const body = rules.map((r) => r.content.trimEnd()).join('\n\n---\n\n');
+  process.stdout.write(`${header}\n\n${body}\n`);
 }
-
-// Markdown block. Empty match set → print nothing (caller injects nothing).
-if (rules.length === 0) {
-  process.exit(0);
-}
-
-const header = '## Applicable Rules (scoped to this wave)';
-const body = rules.map((r) => r.content.trimEnd()).join('\n\n---\n\n');
-process.stdout.write(`${header}\n\n${body}\n`);
-process.exit(0);

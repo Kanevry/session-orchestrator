@@ -1,5 +1,6 @@
 ---
 tier: always
+review-date: 2026-10-23
 ---
 
 # Security Rules (Always-on)

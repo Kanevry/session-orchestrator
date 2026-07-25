@@ -29,6 +29,32 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 3. Proceed to next wave immediately
 4. Do NOT write wave-scope.json for skipped waves
 
+### 0a. Scope Baseline Freeze (S2 — #896)
+
+Run this ONCE, immediately after the Self-Report above and before Wave 1 dispatches — never per-wave, same "before the first wave" anchor as the empty-waves rule above. Freezes the session's scope baseline into STATE.md frontmatter so the drift tripwire in step 7a below has a denominator to compare the rest of the session against.
+
+```js
+import { writeBaseline } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
+
+const result = await writeBaseline({
+  repoRoot: process.cwd(),
+  intent: '<one-line session intent, from the agreed session plan>',
+  ownerBoundary: '<the plan\'s file-scope boundary, e.g. the union of declared agent file scopes>',
+  plannedFiles: <the RAW array of declared agent file-scope paths, unfiltered
+    — the UNION of every wave's per-agent "Files:" specs. Pass the array as-is;
+    `writeBaseline()` filters it internally via `DRIFT_EXCLUDE_PATTERNS`
+    (the same `filterExcluded()` helper the S2 drift tripwire's numerator
+    uses in step 7 below), so both sides of the ratio are produced by ONE
+    code path (#894 review finding F1 — the coordinator no longer has to
+    remember to pre-filter in prose). A plain pre-counted number is still
+    accepted for back-compat but is NOT the preferred call shape.>,
+});
+```
+
+Best-effort — never blocks Wave 1 from dispatching. `result.written === false` with `reason: 'already-frozen'` is expected and silent (a prior wave-executor pass in this same session already froze the baseline — do not re-freeze, do not log). Log any OTHER `reason` (`no-state-md`, `unreadable-state-md`, `lock-timeout`, `lock-fs-error`, `unexpected-error`, `size-ceiling`, `frontmatter-unsafe`) as an informational note in the wave progress update — none of these block dispatch.
+
+Skip entirely when `persistence: false` in Session Config (no STATE.md exists in that mode).
+
 ### 0.5. Pre-Dispatch Resource Gate (#193)
 
 Before dispatching agents, the coordinator runs a resource gate to decide whether the wave should proceed as planned, reduce its agent count, or escalate to coordinator-direct. Gated on `$CONFIG["resource-awareness"]` (default: true).
@@ -733,6 +759,22 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    - `over_delivery_ratio`: files_changed / max(planned_files_count, 1), rounded to 2 decimals. > 1 = agents touched more files than briefed (under-sizing signal, #730/H4). Omit both fields when `grounding-check: false`.
    - `quality_check`: incremental check result (pass/fail/skipped)
    Append this wave record to the session metrics `waves` array.
+
+7a. **Scope drift tripwire (S2 — #896, warn-only)**: distinct from `over_delivery_ratio` above — that metric is per-wave and unfiltered; this one is session-cumulative (since `session-start-ref`) and filtered through `DRIFT_EXCLUDE_PATTERNS`, so the two numbers are NOT expected to agree. Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as § 0a Scope Baseline Freeze above. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
+
+   ```js
+   import { computeDrift } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
+
+   const drift = computeDrift({ repoRoot: process.cwd(), threshold: 2.0 });
+   if (drift.skipped === false && drift.breached) {
+     console.warn(
+       `⚠ Scope drift: filesRatio ${drift.filesRatio} (${drift.actualFiles} actual / ${drift.plannedFiles} planned files) ` +
+       `>= threshold ${drift.threshold} — session has grown beyond its frozen scope baseline.`
+     );
+   }
+   ```
+
+   Include the WARN line verbatim in the wave progress update when `breached` is true — name `filesRatio`, `plannedFiles`, `actualFiles`, and the configured `threshold`, not merely the word "drift". `drift.skipped === true` (`no-state-md`, `unreadable-state-md`, `no-baseline`, `stale-baseline`, or `unresolvable-ref` — see `computeDrift()`'s JSDoc for the precedence order) is silent: no WARN, no progress-update line. `persistence: false` implies `no-state-md`, so this step degrades to a silent no-op in that mode without a separate gate check.
 
 ### 3. Adapt Plan (if needed)
 

@@ -22,9 +22,20 @@ const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 const CHECKER = resolve(process.cwd(), 'skills/claude-md-drift-check/checker.mjs');
 
 function runChecker(vaultDir, args = []) {
+  const env = { ...process.env, VAULT_DIR: vaultDir, PATH: process.env.PATH };
+  // Hermetic subprocess env (mirrors rule-scoping.test.mjs's hardened idiom):
+  // an ambient TYPECHECK_CMD/TEST_CMD/LINT_CMD/FILES/SESSION_START_REF from an
+  // outer quality-gate invocation must never leak into the spawned checker.
+  delete env.TYPECHECK_CMD;
+  delete env.TEST_CMD;
+  delete env.LINT_CMD;
+  delete env.FILES;
+  delete env.SESSION_START_REF;
   const r = spawnSync('node', [CHECKER, ...args], {
-    env: { ...process.env, VAULT_DIR: vaultDir, PATH: process.env.PATH },
+    env,
     encoding: 'utf8',
+    timeout: 15_000,
+    maxBuffer: 10 * 1024 * 1024,
   });
   return { stdout: r.stdout, stderr: r.stderr, code: r.status };
 }
@@ -102,6 +113,118 @@ describe('mode handling', () => {
     const r = runChecker(vault, ['--mode', 'banana']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('invalid --mode');
+  });
+});
+
+// #864 — default-path resolution: no explicit --mode flag reads the target's
+// own `drift-check.mode` from its Session Config; falls back to 'warn' only
+// when the target declares no drift-check block at all. An explicit --mode
+// on the CLI always wins over whatever the target declares.
+describe('mode handling — #864 default resolution from target drift-check.mode', () => {
+  it('config declares drift-check.mode: strict, no --mode flag → default resolves to strict (exit 1 on errors)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: true\n  mode: strict\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(1);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('strict');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('config declares no drift-check block, no --mode flag → default stays warn (exit 0 despite errors)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\npersistence: true\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('warn');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('explicit --mode warn overrides a target-declared drift-check.mode: strict (exit 0 despite errors)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: true\n  mode: strict\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs', '--mode', 'warn']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('warn');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('config declares drift-check.mode: hard (legacy alias), no --mode flag → default normalizes to strict', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: true\n  mode: hard\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(1);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('strict');
+  });
+});
+
+// QA follow-up on #864 — blast-radius guard: the config auto-read must not
+// (a) apply at all when the drift-check FEATURE is disabled (a dormant
+// `mode: strict` inside a `enabled: false` block must not hard-block a bare
+// invocation), and must not (b) silently pick up a config-derived `mode: off`
+// on a bare invocation (that would turn a full warn-mode report into an
+// undetectable no-op). Each shape's explicit-flag twin proves the explicit
+// --mode flag still wins over both the disabled-feature guard and the
+// config-off guard.
+describe('mode handling — #864 blast-radius guard (enabled:false / mode:off shapes)', () => {
+  it('config declares drift-check.enabled: false + mode: strict, no --mode flag → does NOT hard-block (falls back to warn)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: false\n  mode: strict\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('warn');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('config declares drift-check.enabled: false + mode: strict, explicit --mode strict still applies (explicit flag always wins over the disabled-feature guard)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: false\n  mode: strict\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs', '--mode', 'strict']);
+    expect(r.code).toBe(1);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('strict');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('config declares drift-check.enabled: true + mode: off, no --mode flag → auto-read ignores config off, falls back to warn (checks actually run — not a silent no-op)', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: true\n  mode: off\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('warn');
+    expect(j.status).toBe('invalid');
+    expect(j.errors.length).toBeGreaterThan(0);
+  });
+
+  it('config declares drift-check.enabled: true + mode: off, explicit --mode off is honoured as a genuine silencing', () => {
+    writeFileSync(
+      join(vault, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\ndrift-check:\n  enabled: true\n  mode: off\n\nBad path: /Users/definitely/missing/xyz-abc\n',
+    );
+    const r = runChecker(vault, ['--skip-issue-refs', '--mode', 'off']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.mode).toBe('off');
+    expect(j.status).toBe('skipped-mode-off');
   });
 });
 
