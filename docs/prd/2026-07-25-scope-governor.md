@@ -3,6 +3,8 @@
 **Date:** 2026-07-25
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
 **Status:** Draft
+**Epic:** #894
+**Sub-Issues:** #895 (S1) · #896 (S2) · #897 (S3+S4) · #898 (S5) · #899 (S6)
 **Appetite:** 1w
 **Parent Project:** session-orchestrator (standalone Feature, kein Epic-Kind)
 
