@@ -1,5 +1,6 @@
 ---
 tier: coordinator-only
+review-date: 2026-10-23
 ---
 
 # Language-Server / LSP Posture (Always-on)

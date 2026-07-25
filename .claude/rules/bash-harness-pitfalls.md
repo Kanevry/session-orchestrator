@@ -6,6 +6,7 @@ globs:
   - tests/**
   - .husky/**
 tier: wave-only
+review-date: 2026-10-23
 ---
 
 # Bash / Shell-Harness Pitfalls (Path-scoped)

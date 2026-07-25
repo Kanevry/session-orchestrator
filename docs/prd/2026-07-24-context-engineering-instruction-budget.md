@@ -13,6 +13,36 @@
 
 ---
 
+## 0. Korrekturen aus der Umsetzung (2026-07-25, Session `main-2026-07-25-deep-1`)
+
+> **Append-only Korrektur-Log.** Batch 1 (#876/#877/#878/#879/#880) wurde am 2026-07-25 geliefert. Die Umsetzung hat mehrere Behauptungen dieser PRD widerlegt und einige bestätigt. Der Originaltext unten bleibt stehen — die Korrekturen stehen hier, damit nachvollziehbar ist, was geglaubt und was gemessen wurde. Jede Zeile ist mit einem ausgeführten Transkript belegt (PSA-006).
+
+### Widerlegt
+
+| # | Behauptung der PRD | Gemessen | Konsequenz |
+|---|---|---|---|
+| K1 | § 3 FA2: `bySurface.coordinator + bySurface.wave === totalBytes` | Unerfüllbar — Tiers sind verschachtelt, nicht disjunkt. `102.401 + 62.391 = 164.792 ≠ 102.401` | Kriterium ersetzt durch `coordinator === totalBytes` + `always ⊆ wave ⊆ coordinator` |
+| K2 | § 2.1 / § 3 FA2c: `eval-judge.md` überschreitet ein **1.024-Zeichen-Limit** | **Kein solches Limit existiert im Repo.** `validate-plugin` 140/0 auf dieser Datei | Ausreißer statt Verstoß; rangbasierte Top-N-Meldung statt Schwellwert |
+| K3 | § 2.1 FA2c: Description-Fläche „**~27 KB**" | 27.200 Zeichen naiv vs. **34.808 Zeichen / 34.941 B** block-scalar-gefaltet (+27 %) | Die 27-KB-Zahl ist selbst das Produkt des naiven Scanners, vor dem die PRD warnt |
+| K4 | § 2.1 FA2c: **2 Skills** nutzen Block-Scalar-`description:` | **22 SKILL.md** (+1 weitere Datei unter `skills/`); `agents/` und `commands/` null | Der blinde Fleck ist 11× größer als angenommen |
+| K5 | § 2.2 FA3: Reference „dokumentiert bereits jeden Key"; Check 10b erzwinge CLAUDE.md↔Reference-Parität | `auto-skill-dispatch` fehlte in **beiden** Dateien. Check 10b vergleicht **Template→Reference** (`checker.mjs:1236-1244`), nie CLAUDE.md | Check 10b war strukturell blind für genau diese Lücke |
+| K6 | § 1 / FA1: Die Suite bleibe grün, weil `spawnSync` „die Pipe laufend leert" | Falsch — die Race ist **schreiberseitig**. `execFileSync` trunkiert identisch bei 65.536 B | Grün war die Suite wegen **38-Byte-Fixtures**. Der Regressionstest braucht ein >64-KiB-Fixture, nicht einen anderen Spawn-Mechanismus |
+| K7 | § 1 / FA1: Wave-Pfad 62.617 B, „trunkiert heute **nicht**", 2.919 B Restluft | Gilt nur für den **Default-Scope** (`allowedPaths: []`). Ein realistischer Wave-`allowedPaths`-Union misst **105.268 B** — 61 % über der Grenze | Der Wave-Pfad trunkierte **bereits**. Live beim Dispatch dieser Session getroffen: 37,7 % Verlust, dabei fielen `testing.md` und `verification-before-completion.md` **vollständig** weg |
+| K8 | § 2.2 / FA5: Enforcement-Punkt sei `scripts/lib/validate-vendored-rules.mjs` | Das CI-verdrahtete Gate ist `scripts/lib/validate/check-rules.mjs` (`validate-plugin.mjs:244`). `validate-vendored-rules.mjs` läuft nur beim Vendoring | FA5 dort implementiert, wo es CI erreicht |
+| K9 | FA5: „11 von 18 Rules ohne Aktivierungsachse **und** ohne Review-Datum" | Ohne Review-Datum: korrekt (11/18). Ohne Achse: **0/18** — alle tragen `tier:`, das der rule-loader als Gate honoriert | Echte unbedingte Last = `tier: always` = **62.538 B**, nicht 102.672 B |
+
+### Bestätigt — nicht anfassen
+
+62.617 B und 102.775 B (§ 1) reproduzieren exakt auf dem Baseline-Commit · 40.134 B `coordinator-only` (§ 1) exakt · „vier von elf `tier: coordinator-only`" exakt · 102.672 B für die 11 always-on-Rules exakt · „~27 KB" korrekt **als naive Zahl** (nur als Flächen-Gesamtzahl falsch etikettiert) · `validate-vendored-rules.mjs` hat tatsächlich nur einen Importer.
+
+### Während der Umsetzung neu entdeckt
+
+- **Der Fix für FA1 erzeugte zunächst eine eigene Regression:** das Entfernen von `process.exit(0)` änderte den EPIPE-Kontrakt — ein früh schließender Leser (`| head`, `| grep -q`) lieferte exit 1 plus Stacktrace statt exit 0. Da der wave-executor non-zero als „inject nothing" behandelt, hätte das **null Regeln** injiziert. Behoben im selben Durchlauf durch einen `stdout`-`error`-Handler; beide Verhalten sind jetzt getestet.
+- **Die Bug-Klasse wurde im selben Change-Set reproduziert:** `scripts/lib/description-surface.mjs` — in derselben Session neu angelegt — trug `process.exit(0)` direkt nach `process.stdout.write`. Gefunden vom Quality-Panel, nicht vom Autor.
+- **`validate-vendored-rules.mjs:278-285`** begründet seinen `paths-frontmatter`-Fehler damit, dass der rule-loader `paths:` nicht kenne. Seit #795 ist jede Einzelaussage dieser Meldung falsch (`rule-loader.mjs:275`/`:313`). Die *Absicht* (kanonisches `globs:`, siehe #742) bleibt gültig.
+
+---
+
 ## 1. Problem & Motivation
 
 ### What
@@ -144,8 +174,11 @@ Given computeInstructionBudget wird auf diesem Repo aufgerufen
 When das Ergebnis inspiziert wird
 Then enthält es totalDirectives, perFile[].count, ceiling, overBudget und severity unverändert
 And zusätzlich totalBytes, perFile[].bytes und bySurface mit den Schlüsseln coordinator, wave, always
-And die Summe von bySurface.coordinator und bySurface.wave entspricht totalBytes
+And bySurface.coordinator entspricht totalBytes
+And es gilt die Verschachtelung always ⊆ wave ⊆ coordinator
 ```
+
+> **Korrigiert 2026-07-25 (deep-1).** Das ursprüngliche Kriterium lautete `Summe von bySurface.coordinator und bySurface.wave entspricht totalBytes` — das ist **mathematisch unerfüllbar**. Die Tiers sind **verschachtelt, nicht disjunkt**: ein Wave-Agent bekommt `tier: always` + `tier: wave-only`, der Koordinator bekommt dieselben PLUS `tier: coordinator-only`. Eine Addition doppelt den `always`-Anteil. Gemessen am 2026-07-25: `coordinator 102.401` + `wave 62.391` = 164.792 ≠ `totalBytes 102.401`. Die gelieferte Implementierung (`scripts/lib/instruction-budget-guard.mjs`) pinnt die Nicht-Identität als Negativtest.
 
 ```gherkin
 Given die bestehende Testsuite tests/scripts/instruction-budget-guard.test.mjs mit 25 Tests
@@ -183,8 +216,10 @@ Then rendert Phase 4 keine Zeile für diesen Probe
 ```gherkin
 Given agents/eval-judge.md trägt eine description von 1.180 Zeichen
 When die Description-Fläche gemessen wird
-Then wird eval-judge.md als Überschreitung des 1.024-Zeichen-Limits gemeldet
+Then wird eval-judge.md als größter Eintrag der Description-Fläche ausgewiesen
 ```
+
+> **Korrigiert 2026-07-25 (deep-1).** Das ursprüngliche Kriterium verlangte eine Meldung als „Überschreitung des 1.024-Zeichen-Limits". **Ein solches Limit existiert nirgends im Repo** — verifiziert dort, wo ein Description-Gate stehen müsste: `grep -rn '1024' scripts/lib/validate/` → **0 Treffer**, `grep -rn '1024' .claude-plugin/` → **0 Treffer**. (Ein breiter `grep -rn '1024\|1,024'` über `scripts/ tests/ hooks/ skills/ docs/ .claude/` liefert **187 Zeilen in 73 Dateien** — durchweg `maxBuffer`-Arithmetik, `events-rotation`-MB-Grenzen und RAM-Rechnung, kein Description-Gate. Eine frühere Fassung dieses Absatzes nannte hier „20 Treffer"; diese Zahl war aus einem Agent-Report übernommen und **nicht nachgefahren** — genau der PSA-006-Fehler, den dieses Log korrigieren soll. Gefunden vom session-reviewer in Phase 1.8 derselben Session.) `validate-plugin` lässt `agents/eval-judge.md` mit 140/0 passieren. Die 1.180 Zeichen sind korrekt, aber sie machen die Datei zum **Ausreißer**, nicht zum **Verstoß**. Ein Kriterium, das gegen eine nicht existierende Regel prüft, wäre ein Assert-Nothing-Test.
 
 ```gherkin
 Given skills/eval/SKILL.md und skills/evolve/SKILL.md schreiben description als YAML-Block-Scalar

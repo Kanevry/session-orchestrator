@@ -18,8 +18,17 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync, execFileSync } from 'node:child_process';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  openSync,
+  closeSync,
+  statSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -330,5 +339,246 @@ describe('bad --wave-scope path', () => {
     const { status, stderr } = runCli(['--wave-scope', badJson]);
     expect(status).toBe(1);
     expect(stderr).toContain('Malformed JSON');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pipe delivery — payload exceeding the 64KiB OS pipe buffer (#876)
+// ---------------------------------------------------------------------------
+//
+// process.stdout.write() to a pipe is ASYNCHRONOUS in Node. Calling
+// process.exit() immediately after the write races the kernel pipe buffer
+// (65536 bytes on macOS) — data beyond that threshold is silently discarded
+// while the process still reports exit code 0. The fixtures used everywhere
+// else in this file are ~38 bytes and can never exercise that race — a naive
+// "swap spawnSync for a real pipe" regression test would stay green against
+// the broken code for exactly that reason. These fixtures are built large
+// enough (and their size is asserted, not assumed) to force the race every
+// time, for BOTH the Markdown path (content-heavy: few files, large bodies)
+// and the --json path (metadata-only: no rule `content` field, so it needs
+// MANY files instead of large bodies to cross the same threshold).
+
+const PIPE_BUFFER_BYTES = 65536;
+
+/**
+ * Runs the CLI with stdout redirected to a real on-disk file (not a pipe) —
+ * this is the ground-truth "complete" byte count a correct pipe delivery
+ * must match. A file descriptor is never subject to the OS pipe-buffer race
+ * that affects a pipe/FIFO, so this measurement cannot itself be truncated.
+ * @param {string} cwd - hermetic repo root to run the CLI against
+ * @param {string[]} args
+ * @returns {number} byte length of the captured output
+ */
+function fileRedirectByteLength(cwd, args) {
+  const outPath = join(cwd, `complete-${Math.random().toString(36).slice(2)}.out`);
+  const fd = openSync(outPath, 'w');
+  try {
+    const res = spawnSync('node', [CLI, ...args], {
+      stdio: ['ignore', fd, 'ignore'],
+      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd },
+    });
+    if (res.status !== 0) {
+      throw new Error(`CLI exited ${res.status} while building the file-redirect baseline`);
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return statSync(outPath).size;
+}
+
+describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
+  // Content-heavy fixture for the Markdown path: few files, large bodies —
+  // the Markdown block embeds each rule's full raw content.
+  let markdownRepo;
+  // Metadata-only fixture for the --json path: --json output carries only
+  // {path, alwaysOn, matchedGlobs} per rule (no `content`), so reaching the
+  // same byte threshold needs MANY small files instead of large bodies.
+  let jsonRepo;
+
+  beforeAll(() => {
+    markdownRepo = mkdtempSync(join(tmpdir(), 'print-rules-pipe-md-'));
+    mkdirSync(join(markdownRepo, '.claude', 'rules'), { recursive: true });
+    mkdirSync(join(markdownRepo, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(markdownRepo, '.claude', 'wave-scope.json'),
+      JSON.stringify({ allowedPaths: [] }),
+    );
+    // 40 always-on rules x ~2KB body each -> comfortably over 65536 bytes
+    // once joined with the '\n\n---\n\n' separators and header.
+    for (let i = 0; i < 40; i++) {
+      const body = `# Rule ${i}\n\n${'x'.repeat(2000)}\n`;
+      writeFileSync(
+        join(markdownRepo, '.claude', 'rules', `rule-${String(i).padStart(2, '0')}.md`),
+        body,
+      );
+    }
+
+    jsonRepo = mkdtempSync(join(tmpdir(), 'print-rules-pipe-json-'));
+    mkdirSync(join(jsonRepo, '.claude', 'rules'), { recursive: true });
+    mkdirSync(join(jsonRepo, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(jsonRepo, '.claude', 'wave-scope.json'),
+      JSON.stringify({ allowedPaths: [] }),
+    );
+    // 650 always-on rules (tiny bodies — content is irrelevant to --json
+    // output) -> the per-rule {path, alwaysOn, matchedGlobs} JSON entries
+    // alone exceed 65536 bytes (empirically ~125 bytes/entry).
+    for (let i = 0; i < 650; i++) {
+      writeFileSync(join(jsonRepo, '.claude', 'rules', `r${String(i).padStart(4, '0')}.md`), '# R\n');
+    }
+  });
+
+  afterAll(() => {
+    rmSync(markdownRepo, { recursive: true, force: true });
+    rmSync(jsonRepo, { recursive: true, force: true });
+  });
+
+  it('Markdown output through a spawnSync pipe is byte-identical to the file-redirect baseline', () => {
+    const completeLen = fileRedirectByteLength(markdownRepo, []);
+    expect(completeLen).toBeGreaterThan(PIPE_BUFFER_BYTES); // fixture sanity
+
+    const res = spawnSync('node', [CLI], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: markdownRepo },
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout.length).toBe(completeLen);
+  });
+
+  it('--json output through a spawnSync pipe is byte-identical to the file-redirect baseline', () => {
+    const completeLen = fileRedirectByteLength(jsonRepo, ['--json']);
+    expect(completeLen).toBeGreaterThan(PIPE_BUFFER_BYTES); // fixture sanity
+
+    const res = spawnSync('node', [CLI, '--json'], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: jsonRepo },
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout.length).toBe(completeLen);
+    // Byte-count parity alone would pass even on a coincidental match; also
+    // confirm the payload is a syntactically complete JSON document (a
+    // truncated tail fails to parse).
+    expect(() => JSON.parse(res.stdout.toString('utf8'))).not.toThrow();
+  });
+
+  it('Markdown output through execFileSync (a continuously-draining reader) is byte-identical to the file-redirect baseline', () => {
+    // Guards against the issue's original claim that a continuously-draining
+    // synchronous reader (execFileSync) is immune to the truncation — it is
+    // not, because the race is on the WRITER side (process.exit before the
+    // kernel pipe buffer drains), not on how fast the reader consumes. (The
+    // disproof itself only holds counterfactually, against the pre-fix code;
+    // run here against the fixed CLI, this test asserts completeness.)
+    const completeLen = fileRedirectByteLength(markdownRepo, []);
+    const stdout = execFileSync('node', [CLI], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: markdownRepo },
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(stdout.length).toBe(completeLen);
+  });
+
+  it('delivers the Markdown payload through an actual shell pipe (node ... | wc -c) byte-identical to the file-redirect baseline', () => {
+    const completeLen = fileRedirectByteLength(markdownRepo, []);
+    const res = spawnSync('sh', ['-c', `node "${CLI}" | wc -c`], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: markdownRepo },
+    });
+    expect(res.status).toBe(0);
+    expect(parseInt(res.stdout.trim(), 10)).toBe(completeLen);
+  });
+
+  // -------------------------------------------------------------------------
+  // EPIPE — an early-closing reader must not crash (regression follow-up on
+  // #876). #876 fixed silent truncation by removing process.exit(0) after the
+  // stdout writes, but did not handle the case where the READER closes the
+  // pipe early ('| head', '| grep -q'): process.stdout.write() then fails
+  // asynchronously with EPIPE, which — left unhandled — is an uncaught
+  // exception (Node prints "Unhandled 'error' event" + a stack trace to
+  // stderr and exits 1). Both assertions run through `bash -c` with
+  // `set -o pipefail` so `$?` reflects the CLI's OWN exit status, not the
+  // downstream reader's (mirrors the exact reproduction used to diagnose this
+  // regression).
+  //
+  // Fixture-size gotcha (empirically probed, not assumed): the markdownRepo
+  // fixture above (40 rules, ~80KB) is NOT reliably large enough to force
+  // this race — a real `head`/`grep` implementation can drain that much in
+  // its own read buffer(s) before it decides to close, so the writer can
+  // finish successfully before the reader ever hangs up (probed 5/5 runs,
+  // zero EPIPEs at ~80KB). At ~200KB the race reproduces 5/5. This nested
+  // describe therefore builds its own larger, dedicated fixture rather than
+  // reusing markdownRepo — the two fixtures serve different purposes
+  // (byte-parity vs. forcing an early-close race) and conflating them would
+  // make the EPIPE assertions flaky.
+  // -------------------------------------------------------------------------
+
+  describe('EPIPE — early-closing reader', () => {
+    let epipeRepo;
+
+    beforeAll(() => {
+      epipeRepo = mkdtempSync(join(tmpdir(), 'print-rules-pipe-epipe-'));
+      mkdirSync(join(epipeRepo, '.claude', 'rules'), { recursive: true });
+      mkdirSync(join(epipeRepo, '.orchestrator'), { recursive: true });
+      writeFileSync(
+        join(epipeRepo, '.claude', 'wave-scope.json'),
+        JSON.stringify({ allowedPaths: [] }),
+      );
+      // 120 always-on rules x ~2KB body each -> ~240KB, well past the ~200KB
+      // empirically-observed threshold for reliably forcing an early-closing
+      // reader to trigger EPIPE on the writer side.
+      for (let i = 0; i < 120; i++) {
+        const body = `# Rule ${i}\n\n${'x'.repeat(2000)}\n`;
+        writeFileSync(
+          join(epipeRepo, '.claude', 'rules', `rule-${String(i).padStart(3, '0')}.md`),
+          body,
+        );
+      }
+    });
+
+    afterAll(() => {
+      rmSync(epipeRepo, { recursive: true, force: true });
+    });
+
+    it('exits 0 (not 1) when piped through `head -c`, with a fully drained baseline available for comparison', () => {
+      const completeLen = fileRedirectByteLength(epipeRepo, []);
+      expect(completeLen).toBeGreaterThan(200_000); // fixture sanity — margin over the empirical threshold
+
+      const stderrPath = join(epipeRepo, 'epipe-head-stderr.log');
+      const res = spawnSync(
+        'bash',
+        [
+          '-c',
+          `set -o pipefail; node "${CLI}" 2>"${stderrPath}" | head -c 100 >/dev/null; echo "$?"`,
+        ],
+        { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: epipeRepo } },
+      );
+
+      expect(res.status).toBe(0); // the bash -c wrapper itself (the `echo` command) succeeds
+      expect(res.stdout.trim()).toBe('0'); // the CLI's own exit code, captured via pipefail
+
+      const stderrContent = readFileSync(stderrPath, 'utf8');
+      expect(stderrContent).not.toContain("Unhandled 'error' event");
+      expect(stderrContent).toBe('');
+    });
+
+    it('exits 0 (not 1) when piped through `grep -q`, with no stack trace on stderr', () => {
+      const completeLen = fileRedirectByteLength(epipeRepo, []);
+      expect(completeLen).toBeGreaterThan(200_000); // fixture sanity — margin over the empirical threshold
+
+      const stderrPath = join(epipeRepo, 'epipe-grep-stderr.log');
+      // "# Rule 0" is the first line of the first rule's body — grep matches
+      // and closes its stdin almost immediately, long before the ~240KB
+      // payload finishes writing.
+      const res = spawnSync(
+        'bash',
+        ['-c', `set -o pipefail; node "${CLI}" 2>"${stderrPath}" | grep -q "# Rule 0"; echo "$?"`],
+        { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: epipeRepo } },
+      );
+
+      expect(res.status).toBe(0); // the bash -c wrapper itself succeeds
+      expect(res.stdout.trim()).toBe('0'); // the CLI's own exit code, captured via pipefail
+
+      const stderrContent = readFileSync(stderrPath, 'utf8');
+      expect(stderrContent).not.toContain("Unhandled 'error' event");
+      expect(stderrContent).toBe('');
+    });
   });
 });

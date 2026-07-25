@@ -277,9 +277,17 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
       violations.push({
         rule: 'paths-frontmatter',
         severity: 'error',
+        // NOTE (#795 / corrected 2026-07-25): the previous wording claimed rule-loader.mjs
+        // does not recognize `paths:` and that such a rule loads always-on. Both are false
+        // since #795 — `rule-loader.mjs:275` accepts `paths` alongside `globs`, and `:313`
+        // treats it as a fallback alias (`globs:` wins silently when both are present), so a
+        // `paths:`-only rule IS glob-scoped. The probe itself stays: it enforces the canonical
+        // vendoring form, which is a convention gate, not a loader-compatibility gate. That
+        // intent survives #795 and is the subject of the #742 fleet canonicalisation sweep.
         message:
-          `${relPath}: frontmatter declares a top-level 'paths:' key, which rule-loader.mjs does not recognize — ` +
-          `it is silently ignored and the rule loads as always-on instead of glob-scoped. Migrate to 'globs:'.`,
+          `${relPath}: frontmatter declares a top-level 'paths:' key. It is a recognized alias ` +
+          `for 'globs:' (issue #795), so the rule does load glob-scoped — but 'globs:' is the ` +
+          `canonical form for vendored rules. Migrate to 'globs:' (see issue #742).`,
         line: lineWithinFrontmatter(fm.startLine, fm.body, pathsMatch.index),
       });
     }

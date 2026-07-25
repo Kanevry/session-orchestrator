@@ -75,6 +75,16 @@ stale-issue-days: 30                   # issue-age threshold for triage flag
 
 Read by: `skills/session-start/SKILL.md`, `skills/ecosystem-health/SKILL.md`, `skills/gitlab-ops/SKILL.md`.
 
+## Auto-Skill Dispatch
+
+```yaml
+auto-skill-dispatch: false             # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
+```
+
+Top-level scalar (not nested). When `true`, entry-point skills invoke `skills/using-orchestrator/SKILL.md` once before their own Phase 1 to detect implicit slash-command intent in the user's first message (bilingual EN/DE phrase map, confidence-scored, AUQ-disambiguated on close ties). Default `false` — zero behavior change until opted in.
+
+Read by: `skills/using-orchestrator/SKILL.md`, `skills/_shared/bootstrap-gate.md`.
+
 ## Quality Gates
 
 ```yaml

@@ -34,7 +34,7 @@ These are the non-obvious, mistake-causing facts that must load every session. E
 
 persistence: true
 enforcement: warn
-agents-per-wave: 6 (deep: 18)   # base 6; deep sessions use 18 — see config-reading.md override syntax
+agents-per-wave: 6 (deep: 18)
 waves: 5
 recent-commits: 20
 test-command: npm test
@@ -42,146 +42,141 @@ typecheck-command: npm run typecheck
 lint-command: npm run lint
 stale-branch-days: 7
 plugin-freshness-days: 30
-plan-baseline-path: ~/Projects/projects-baseline   # host-local override: SO_BASELINE_PATH > owner.yaml paths.baseline-path > this default (#653)
+plan-baseline-path: ~/Projects/projects-baseline
 plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal
 vcs: gitlab
-auto-skill-dispatch: false               # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
+auto-skill-dispatch: false
 vault-integration:
   enabled: true
-  vault-dir: ~/Projects/vault    # host-local override: SO_VAULT_DIR > owner.yaml paths.vault-dir > this default (#653)
-  mode: warn               # strict | warn | off
-  vault-name:              # optional (#660) — overrides git-derived repo slug for 40-learnings/, 50-sessions/ (namespace.mjs) and the per-repo narrative mirror (narrative-mirror.mjs, #832 item 2); board rows NOT yet covered (tracked in #832); null/absent → deriveRepo()
+  vault-dir: ~/Projects/vault
+  mode: warn
+  vault-name:
 docs-orchestrator:
-  enabled: false           # opt-in; when true, session-start Phase 2.5 runs + docs-writer agent available
+  enabled: false
   audiences: [user, dev, vault]
-  mode: warn               # warn | strict | off
+  mode: warn
 vault-staleness:
-  enabled: false           # opt-in vault-drift probes (runs in /discovery vault)
+  enabled: false
   thresholds:
-    top: 30                # days — tier=top narrative staleness threshold
-    active: 60             # days — tier=active
-    archived: 180          # days — tier=archived
-  mode: warn               # warn | strict | off
+    top: 30
+    active: 60
+    archived: 180
+  mode: warn
 docs-staleness:
-  enabled: false           # opt-in — #781 (Epic #774) — mtime-staleness probe für docs/*.md (root) + docs/examples/*.md; docs/adr/ + docs/prd/ bewusst ausgenommen
+  enabled: false
   thresholds:
-    living: 90             # days — single tier; severity eskaliert bei 1×/2×/3× threshold
-  mode: warn               # strict | warn | off
+    living: 90
+  mode: warn
 moc-staleness:
-  # #831/B2 — session-start Phase 4 Banner: <vault>/08-topics/*-moc.md deren Frontmatter `updated:` älter als der Schwellwert ist. Parser-Gotcha: die moc-staleness:-Key-Zeile selbst darf KEINEN Inline-Kommentar tragen.
-  enabled: false           # opt-in
+  enabled: false
   thresholds:
-    moc: 90                # days — Frontmatter-`updated:`-Staleness-Schwelle für *-moc.md; fehlendes/unparsbares `updated:` wird AUSGESCHLOSSEN, nicht als stale gemeldet
-  mode: warn               # warn | off
+    moc: 90
+  mode: warn
 context-coverage:
-  # #831/B4 — session-start Phase 4 Coverage-Zeile: registrierte <vault>/01-projects/*/-Ordner ohne context.md UND ohne _passive.md. "Registriert" = Ordner enthält _overview.md (Konvention aus discoverVaultRepos). Parser-Gotcha: keine Inline-Kommentare auf der Key-Zeile.
-  enabled: false           # opt-in
-  mode: warn               # warn | off
+  enabled: false
+  mode: warn
 worktree-orphans:
-  # #831/B5 — session-end Phase 4b Sweep: Worktree-Branches mit 0 Commits ahead of base. CANDIDATES ONLY — löscht nie selbst (PSA-003); die AUQ rendert der Koordinator. Parser-Gotcha: keine Inline-Kommentare auf der Key-Zeile.
-  enabled: false           # opt-in
-  base-branch: main        # Ref, gegen die der ahead-count gemessen wird
-  mode: warn               # warn | off
+  enabled: false
+  base-branch: main
+  mode: warn
 drift-check:
-  enabled: true            # #780 (Epic #774) — session-end Phase 2.2 Narrative-Drift-Gate; alle check-*-Flags defaulten true
-  mode: warn               # warn (report, exit 0) | hard (exit 1 on errors)
-  check-docs-parity: true  # Check 10 — components.md-Zähl-Claims, Template↔Reference-Key-Parität, Metrics-Pfad-Liveness
+  enabled: true
+  mode: warn
+  check-docs-parity: true
 wave-reviewers:
-  enabled: false           # opt-in inter-wave architecture/QA/PRD audits
-  reviewers: []            # ["architect-reviewer", "qa-strategist", "analyst"]
-  mode: warn               # warn | strict | off
-memory-cleanup-soft-limit: 180   # PRD F2.2 (#502) — hard ceiling on memory file count before nudge
+  enabled: false
+  reviewers: []
+  mode: warn
+memory-cleanup-soft-limit: 180
 vault-mirror:
   quality:
-    min-narrative-chars: 400     # PRD F1.2 (#504) — min vault note body length before mirror
-    min-confidence: 0.5          # PRD F1.2 (#504) — min learning confidence (0.0..1.0) before mirror
+    min-narrative-chars: 400
+    min-confidence: 0.5
 memory:
   banner:
-    enabled: true                # PRD F2.3 (#505) — silence the session-start "📚 Loaded from memory" banner when false
+    enabled: true
   proposals:
-    enabled: true                # PRD F2.1 (#501) — agent-writable memory tool (memory.propose CLI + session-end AUQ)
-    quota-per-wave: 5            # max proposals per wave-executor agent
-    confidence-floor: 0.5        # below this confidence, propose() returns rejected-low-confidence
+    enabled: true
+    quota-per-wave: 5
+    confidence-floor: 0.5
 auto-dream:
-  min-confidence: 0.5            # issue #566 — filter applied at memory-proposals collect-emit (session-end Phase 3.6.3); SECOND gate above memory.proposals.confidence-floor — inert at default; only bites when set HIGHER than confidence-floor (persist-medium / surface-high)
+  min-confidence: 0.5
 cold-start:
-  enabled: true                  # PRD F1.3 (#500) — silence cold-start nudges when false
-  nudge-after-hours: 1           # PRD F1.3 (#500) — hours of idle before cold-start nudge fires
-  silence-after-sessions: 1      # PRD F1.3 (#500) — consecutive silent sessions before nudge fires
+  enabled: true
+  nudge-after-hours: 1
+  silence-after-sessions: 1
 state-md-lock:
-  enabled: true                  # PRD gsd Pattern 1 (#518) — mechanical STATE.md write lock
-  timeout-ms: 10000              # acquire timeout
+  enabled: true
+  timeout-ms: 10000
 handover-gate:
-  enabled: true                  # #769 — interactive Handover-Alignment-Gate in /close before carryover filing (fail-open: skips when disabled/headless/autopilot)
-  max-open-questions: 3          # integer ≥ 0 — max open questions surfaced in the gate's triage AUQ (0 = none; channel stays active)
+  enabled: true
+  max-open-questions: 3
 broken-window-budget:
-  enabled: false                 # #730/H5 — opt-in; session-end Phase 2.6 files hard-due-date closure issues for knowingly-broken shipments
-  due-days: 7                    # integer ≥ 1 — hard due-date horizon (glab native --due-date; gh Due: <date> body line)
+  enabled: false
+  due-days: 7
 slopcheck:
-  enabled: false                 # PRD gsd Pattern 2 (#520) — opt-in package legitimacy gate
-  sources: [plan, discovery]     # where classifyPackages is invoked
+  enabled: false
+  sources: [plan, discovery]
 templates-first:
-  enabled: true                  # PRD gsd Pattern 3 (#519) — gh/glab template-read enforcement
-  hosts: [github, gitlab]        # host-regex allow-list
+  enabled: true
+  hosts: [github, gitlab]
 verification-auto-fix:
-  enabled: false                 # PRD gsd Pattern 4 (#521) — opt-in auto-fix retry loop after Quality-Gate fail
-  max-retries: 2                 # bounded retries
+  enabled: false
+  max-retries: 2
 discovery-validator:
-  enabled: true                  # PSA-006 (#567) — distributional-claim grep-verification enforcement (SubagentStop hook, log+warn-only, exit-0-always, non-blocking)
+  enabled: true
 frontend-slop-hook:
-  enabled: false                 # #684 — PostToolUse frontend-slop detector after UI-file edits (warn-only, non-blocking, opt-in); profile-gate also applies
+  enabled: false
 loop-guard:
-  enabled: true                  # ecc-analysis (#619) — PostToolUse runaway tool-loop detector (warn-only, non-blocking); profile-gate also applies
-  threshold: 3                   # identical (tool+argsHash) calls within window before a loop-warning fires
-  window: 5                      # ring-buffer size (recent tool calls tracked per session)
+  enabled: true
+  threshold: 3
+  window: 5
 instruction-budget:
-  enabled: true                  # #687 — session-start Phase 4 always-on directive-budget banner (warn-only, non-blocking, growth-ratchet)
-  ceiling: 480                   # structural-directive ceiling; banner fires when always-on count exceeds this (baseline ~457; ratchet guards against growth)
-  mode: warn                     # warn (surface banner) | off (silent no-op)
+  enabled: true
+  ceiling: 480
+  mode: warn
 config-protection:
-  enabled: true                  # ecc-analysis (#622) — PreToolUse guard: warn when an Edit/Write LOOSENS a quality gate (eslint/vitest/tsconfig/gitleaks/...)
-  mode: warn                     # warn (stderr + event, exit 0) | strict (block loosening edits, exit 2)
-allow-config-weakening: false    # ecc-analysis (#622) — per-session bypass for config-protection (mirrors allow-destructive-ops)
+  enabled: true
+  mode: warn
+allow-config-weakening: false
 compact-nudge:
-  enabled: false                 # ecc-analysis (#620) — opt-in advisory /compact nudge at inter-wave checkpoints (never auto-compacts)
-  after: [discovery, impl]       # wave boundaries that may fire the nudge — subset of {discovery, impl, failed-wave}
-  mode: warn                     # warn (surface one bullet in the wave progress update) | off (silent no-op)
+  enabled: false
+  after: [discovery, impl]
+  mode: warn
 goal-integration:
-  enabled: false                 # Lever 5 (#636) — opt-in advisory /goal continuation anchor at named seams; ADR-0010: continuation, never judgment
-  seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time
+  enabled: false
+  seams: [session-end-backlog, inter-wave-fixloop]
 custom-phases:
-  # #637 — repo-declared deterministic close/housekeeping phases; see docs/session-config-reference.md § Custom Phases.
-  # Parser-Gotcha: die `custom-phases:`-Key-Zeile selbst darf KEINEN Inline-Kommentar tragen (custom-phases.mjs /^custom-phases:\s*$/).
   - name: archive-closed-prds
-    when: both                   # #782 (Epic #774) — verschiebt PRDs geschlossener Epics in den Meta-Vault (dry-run-Default im CLI; hier explizit --apply)
+    when: both
     command: node scripts/archive-closed-prds.mjs --apply
-    mode: warn                   # non-blocking — fail-closed CLI skippt bei unklarem Epic-State
+    mode: warn
   - name: archive-closed-plans
-    when: both                   # #786 — verschiebt docs/plans/-Artefakte geschlossener Features/Epics in den Meta-Vault (gleicher fail-closed Mechanismus wie archive-closed-prds)
+    when: both
     command: node scripts/archive-closed-prds.mjs --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans
-    mode: warn                   # non-blocking — fail-closed CLI skippt bei unklarem Epic-State
+    mode: warn
 evolve:
-  extra-sources: []              # #638 — opt-in EXTRA /evolve learning sources (sidecar JSON: {path, kind: regression-flags, learning-type: domain-regression}); empty = none. /evolve READS the sidecars, never runs the measurement. See docs/session-config-reference.md § Evolve Extra Sources
+  extra-sources: []
 dialectic:
-  cadence: 5                     # #506 — session-end 3.6.7 auto-trigger alle N Sessions (0 = kill-switch; manuell geht immer)
-  model: haiku                   # haiku | sonnet | opus — fail-fast on unknown value
-  budget-tokens: 32000           # 2026-07-04 session-3: Default 8000 strukturell unerreichbar — Fixanteil (Peer-Cards+Steering+Gerüst) ≈13k, volle Inputs (top-50/last-10) ≈28.4k
+  cadence: 5
+  model: haiku
+  budget-tokens: 32000
 eval:
-  enabled: true                  # #803 — session-end Phase 3.7d Session-Prozess-Eval (advisory, blockiert Close nie); Parser-Gotcha: die eval:-Key-Zeile selbst darf KEINEN Inline-Kommentar tragen
-  mode: warn                     # warn | off
-  judge: off                     # off | haiku | sonnet — advisory-LLM-Judge (uncalibrated), default off
-  report: html                   # html | none — Run-Report unter .orchestrator/eval/reports/ (gitignored)
-  handle:                        # optionales Pseudonym für spätere Submissions — null/absent → null
+  enabled: true
+  mode: warn
+  judge: off
+  report: html
+  handle:
 reconcile:
-  enabled: false                 # #697 + #696 — opt-in; FA3 reads this to gate session-end Phase 3.6.8 (advisory rule-proposal delivery)
-  mode: warn                     # off | warn — advisory only; rules are NEVER auto-applied, every write is operator-AUQ-gated (#696)
-  targets: [repo-local]          # where approved rules are written; repo-local = .claude/rules/ in v1 (#696)
-  rule-expiry-days: null         # CRITICAL: default null — reconcile engine (emitter.mjs computeExpiresAt) falls back to per-type TTL (default 60d). Set a positive integer to override flat expiry. (#697)
-  confidence-floor: 0.5          # float 0.0..1.0 — min learning confidence before a learning is eligible for a rule proposal (#696)
-  min-rule-days: 7               # #741.1 — floor for emitted rule expires-at: max(derived, now + N days). Prevents born-dead rules (expired at proposal time → rule-loader excludes). Positive integer; ≤0/malformed → 7.
-  min-insight-chars: 24          # #741.2 — reject a learning whose trimmed insight is shorter than N chars before rule conversion (placeholder/legacy-stub gate, analog to vault-mirror.quality.min-narrative-chars). Integer ≥0; 0 = off.
+  enabled: false
+  mode: warn
+  targets: [repo-local]
+  rule-expiry-days: null
+  confidence-floor: 0.5
+  min-rule-days: 7
+  min-insight-chars: 24
 
 ## Skill Evolution <!-- consistency:exempt:parity-exempt-skill-evolution-block -->
 

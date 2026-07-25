@@ -195,7 +195,7 @@ Flow-style arrays are also accepted: `globs: ["src/**", "tests/**"]`.
 In the live path the coordinator does NOT call the loader directly — it runs the CLI `scripts/print-applicable-rules.mjs` (which calls the loader) once per wave and captures stdout as the `<APPLICABLE-RULES>` block:
 
 ```sh
-RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" 2>/dev/null)"
+RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave 2>/dev/null)"
 # Empty stdout (no .claude/rules/, no matches, or any failure) → inject nothing.
 ```
 

@@ -32,6 +32,35 @@ Validation runs automatically via `scripts/parse-config.mjs` → `scripts/valida
 
 Bypass via `SO_SKIP_CONFIG_VALIDATION=1`. Missing fields can be patched into an existing config file via `/bootstrap --retroactive`.
 
+## Parser Gotcha: No-Inline-Comment Block Headers
+
+**General contract, applies to every nested (block-shaped) Session Config key, not just the handful annotated below.** A top-level block key like `eval:`, `custom-phases:`, `moc-staleness:`, `context-coverage:`, or `worktree-orphans:` is opened by the shared bold-tolerant matcher `matchBlockHeader(line, key)` (`scripts/lib/config/block-header.mjs`) rather than by a per-key regex. As of the #830 generalisation, **38 files** under `scripts/lib/config/` import it — 37 block-shaped parsers (`auto-dream`, `broken-window`, `cold-start`, `config-protection`, `context-coverage`, `cross-repo`, `custom-phases`, `dialectic`, `discovery-validator`, `dispatcher-autonomy`, `dispatcher-autonomy-capture`, `docs-orchestrator`, `docs-staleness`, `drift-check`, `eval`, `events-rotation`, `evolve`, `frontend-slop-hook`, `gitlab-portfolio`, `handover-gate`, `loop-guard`, `memory`, `moc-staleness`, `persona-gate-wave`, `reconcile`, `skill-evolution`, `slopcheck`, `state-md-lock`, `templates-first`, `test`, `vault-integration`, `vault-mirror-quality`, `vault-staleness`, `vault-sync`, `verification-auto-fix`, `wave-reviewers`, `worktree-orphans`) plus `block-header.mjs` itself — confirmed via `grep -rln "matchBlockHeader" scripts/lib/config/ | wc -l` → `38`.
+
+**The matcher's accept/reject contract** (`matchBlockHeader(line, key)`, equivalent to the regex `^(?:-\s+)?(?:\*\*)?<key>:(?:\*\*)?\s*$`):
+
+| Form | Matches? |
+|---|---|
+| `key:` | ✅ plain header |
+| `- key:` | ✅ dash-bullet header |
+| `**key:**` | ✅ bold header |
+| `- **key:**` | ✅ dash-bullet + bold header |
+| `key: value` | ❌ a header carrying a value is not a block-opener |
+| `key:  # comment` | ❌ **the load-bearing gotcha** — a trailing inline comment on the header line itself |
+| `  key:` (indented) | ❌ this is a sub-key of some other block, not a top-level header |
+| `other-key:` | ❌ different key |
+
+**Why the inline-comment case matters more than it looks.** When a block-header line carries a trailing `# comment`, the matcher returns `false` for that line — the block-open scan never flips into "in-block" mode, so **every field under that key silently falls back to its default**. There is no error, no warning, no stderr output anywhere in the pipeline. The only symptom is a repo's opt-in feature quietly behaving as if it were never configured — exactly the class of bug this gotcha exists to prevent. Sub-key lines (`enabled:`, `mode:`, …) are unaffected — inline comments on THOSE lines parse fine; only the block-opener line itself is fragile.
+
+**The five keys carrying an explicit source-level warning comment today** (a strict subset of the 37 — every other block-shaped key has the identical failure mode, just without an inline reminder):
+
+- `eval:` — see § Eval (#803) below for the full parser-gotcha paragraph (learning confidence 0.9).
+- `custom-phases:` — see § Custom Phases (#637) below.
+- `moc-staleness:` — see § MOC Staleness (#831/B2) below.
+- `context-coverage:` — see § Context Coverage (#831/B4) below.
+- `worktree-orphans:` — see § Worktree Orphans (#831/B5) below.
+
+**Stale-citation note:** an older code comment on the `custom-phases:` key in this repo's own `CLAUDE.md` cites a per-key regex (`/^custom-phases:\s*$/`) as the mechanism. That citation predates the #830 generalisation — `custom-phases.mjs` (like all 37 consumers) now delegates to the shared `matchBlockHeader(line, 'custom-phases')`, which is strictly MORE tolerant than the old per-key regex (it additionally accepts the dash-bullet and bold-bullet renderings). The no-inline-comment failure mode is unchanged; only the underlying mechanism moved from a bespoke regex to the shared helper. Treat any remaining per-key regex citation in prose (including in this file, prior to this section's introduction) as documentation of the OLD mechanism — the general contract above is current.
+
 ## Policy Files
 
 Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
@@ -66,6 +95,24 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | `issue-limit` | integer | `50` | Maximum issues to fetch when querying VCS during session start. |
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
+
+## Auto-Skill Dispatch (#337)
+
+Opt-in phrase-match meta-skill (`skills/using-orchestrator/SKILL.md`) that inspects the user's first message for implicit slash-command intent (e.g. "plane neues Projekt", "run discovery on the backlog") and dispatches to the highest-confidence matching entry-point skill via the `Skill` tool — before that skill's own Phase 1 — once the bootstrap gate is open. Off by default; when `false` (or absent) the meta-skill returns immediately with zero reads, zero logging, zero side effects, and every calling skill behaves exactly as if it was never invoked.
+
+This is a top-level SCALAR field — not a nested object — matching `vcs`, unlike most of the other opt-in features in this reference which live under a nested block.
+
+```yaml
+auto-skill-dispatch: false               # opt-in; default false preserves existing behavior
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto-skill-dispatch` | boolean | `false` | Master toggle. When `false`, `skills/using-orchestrator/SKILL.md` is a no-op — no message inspection, no phrase-map scoring, no dispatch. When `true`, every entry-point skill (per `skills/_shared/bootstrap-gate.md`) invokes the meta-skill once before its own Phase 1. |
+
+**Dispatch algorithm summary:** the meta-skill scores the user's first message against a bilingual (EN/DE) phrase map covering `/plan {new,feature,retro}`, `/session {housekeeping,feature,deep}`, `/discovery`, `/evolve`, `/close`, `/bootstrap`. Confidence tiers: exact slash-command match `0.95`, exact natural-language match `0.90`, substring match `0.60`, semantic near-miss `0.40`. Only scores ≥ `0.85` trigger a dispatch. When the top two candidates both score ≥ `0.85` with a delta < `0.15`, the meta-skill disambiguates via `AskUserQuestion` (per `.claude/rules/ask-via-tool.md` AUQ-003) rather than silently picking one. Below `0.85`, or with no candidates, the meta-skill returns silently and the calling skill's own routing logic takes over — the original user message is never rewritten before being passed to the dispatch target.
+
+**Used by:** `skills/using-orchestrator/SKILL.md` (the dispatch algorithm, full phrase map, and confidence-scoring table), `skills/_shared/bootstrap-gate.md` (the opt-in call site — invoked once per entry-point skill when the gate is open). Note: unlike most Session Config booleans documented in this file, `auto-skill-dispatch` has no dedicated parser module under `scripts/lib/config/` — it is read directly from the raw Session Config text by the calling skill's own Phase logic, the same pattern used for prose-level opt-in flags that never reach `scripts/parse-config.mjs`'s structured JSON output.
 
 ## Templates-First Hook (#519)
 
@@ -451,7 +498,7 @@ vault-integration:
 | `vault-integration.enabled` | boolean | `false` | If true, session-end and evolve skills invoke `vault-mirror.mjs` to sync learnings and sessions into the vault. When false (or missing), mirroring is skipped silently. |
 | `vault-integration.vault-dir` | string or null | `null` | Absolute path to the vault repository. Falls back to `$VAULT_DIR` env variable if not set. Required when `enabled` is true. |
 | `vault-integration.mode` | string | `warn` | Mirror error handling. `strict` blocks session close if the mirror exits non-zero. `warn` reports errors but does not block. `off` bypasses mirror invocation entirely (useful when transitioning). |
-| `vault-integration.vault-name` | string or null | `null` | Optional override for the per-project vault namespace segment (#660). When set (or via CLI `--vault-name`), vault writes go to `40-learnings/<vault-name>/` and `50-sessions/<vault-name>/`, sanitised to a kebab slug. When null/absent, the namespace is derived from the git origin via `deriveRepo()`. Owner-privacy leaks (personal home path / private slug / personal name) are redacted to `redacted-repo`. NOT a filesystem path → NOT host-path-resolved. Resolver: `scripts/lib/vault-mirror/namespace.mjs` (`resolveRepoNamespace`). |
+| `vault-integration.vault-name` | string or null | `null` | Optional override for the per-project vault namespace segment (#660). When set (or via CLI `--vault-name`), vault writes go to `40-learnings/<vault-name>/` and `50-sessions/<vault-name>/`, sanitised to a kebab slug. When null/absent, the namespace is derived from the git origin via `deriveRepo()`. Owner-privacy leaks (personal home path / private slug / personal name) are redacted to `redacted-repo`. NOT a filesystem path → NOT host-path-resolved. **Coverage gap:** portfolio board rows are NOT yet namespace-aware — the override only reaches `40-learnings/`, `50-sessions/`, and the per-repo narrative mirror (`narrative-mirror.mjs`, #832 item 2); tracked separately in #832. Resolver: `scripts/lib/vault-mirror/namespace.mjs` (`resolveRepoNamespace`). |
 | `vault-integration.gitlab-groups` | string[] or null | `null` | List of GitLab group paths to scan for repos missing `.vault.yaml`. Consumed by `scripts/vault-backfill.mjs` (via `readVaultIntegrationConfig()`) and the `/plan retro` vault-backfill sub-mode (`skills/plan/mode-retro.md` Phase 1.6 Step 1). When null/unset, the backfill CLI exits with a "no groups configured" notice. |
 
 ### Environment override: `VAULT_MIRROR_CANONICAL_SUFFIX`
@@ -695,6 +742,8 @@ dialectic:
 
 **Token cost:** With defaults (cadence: 5, budget-tokens: 8000, output 4000, model haiku), ~12k tokens every 5 sessions. At haiku pricing this is ~$0.02/run. Surfaced in Final Report.
 
+**Empirical note (2026-07-04 session-3) — the parser default of `8000` proved structurally unreachable for this repo's own peer-card/steering corpus.** Fixed overhead (Peer-Cards + Steering + scaffold) alone runs ≈13k tokens, and a full input set (top-50 learnings + last-10 sessions) runs ≈28.4k tokens — both already exceed the `8000` default before any call is made. This repo's own committed Session Config therefore sets `budget-tokens: 32000`, not the documented default. If your repo accumulates a similarly large peer-card/steering corpus over time, raise `budget-tokens` accordingly rather than leaving the low default in place — a too-low budget silently truncates the dialectic critique input rather than erroring.
+
 ## Eval (#803)
 
 Opt-in configuration for the Standard v1 evaluation harness (aiat-llm-eval PRD, `docs/prd/2026-07-16-aiat-llm-eval.md` §S6) and the forthcoming `/eval` skill (Session-Prozess-Eval — lands in a later wave of Epic #803). This section documents the config surface only; the skill that reads it is not yet shipped as of this parser's introduction.
@@ -718,7 +767,7 @@ eval:
 | `eval.report` | string | `html` | Report artifact format. Must be one of `html`, `none`. **Fail-fast** on an unknown value, same as `eval.mode`. |
 | `eval.handle` | string \| `null` | `null` | Optional free-text handle/label for the eval run. Absent, empty, or whitespace-only values all collapse to `null` (never an empty string). |
 
-**Parser gotcha (learning confidence 0.9 — mirrors `custom-phases:` and `dialectic:`):** the `eval:` key-line itself MUST NOT carry an inline comment. The block-open scan uses the strict regex `/^eval:\s*$/`; a trailing `# comment` on that exact line fails the match, so the parser never enters the block and ALL fields silently fall back to their defaults — no error, no warning surfaces anywhere. Sub-key lines (`enabled:`, `mode:`, …) tolerate inline comments without issue.
+**Parser gotcha (learning confidence 0.9 — mirrors `custom-phases:` and every other block-shaped key):** the `eval:` key-line itself MUST NOT carry an inline comment. The block-open scan uses the shared `matchBlockHeader(line, 'eval')` (`scripts/lib/config/block-header.mjs`) — it tolerates the bold-bullet `- **eval:**` rendering (#830) but a trailing `# comment` on the header line still fails the match, so the parser never enters the block and ALL fields silently fall back to their defaults — no error, no warning surfaces anywhere. Sub-key lines (`enabled:`, `mode:`, …) tolerate inline comments without issue. See § Parser Gotcha: No-Inline-Comment Block Headers (top of this file) for the general contract this key shares with 36 other block-shaped keys.
 
 **Used by:** `scripts/lib/config/eval.mjs` (`_parseEval`), `scripts/lib/config.mjs`. Skill consumer (`skills/eval/SKILL.md`) is a follow-up wave of Epic #803 — not yet implemented as of this parser.
 
@@ -791,7 +840,7 @@ Opt-in session-start banner probe for Obsidian "map of content" index notes — 
 
 ```yaml
 moc-staleness:
-  # Parser gotcha: this key line must carry NO inline comment.
+  # Parser gotcha: this key line must carry NO inline comment (§ Parser Gotcha: No-Inline-Comment Block Headers, top of this file).
   enabled: false                       # opt-in
   thresholds:
     moc: 90                            # days — frontmatter `updated:` staleness threshold
@@ -814,7 +863,7 @@ Opt-in session-start coverage banner: registered `<vault>/01-projects/<slug>/` f
 
 ```yaml
 context-coverage:
-  # Parser gotcha: this key line must carry NO inline comment.
+  # Parser gotcha: this key line must carry NO inline comment (§ Parser Gotcha: No-Inline-Comment Block Headers, top of this file).
   enabled: false                       # opt-in
   mode: warn                           # warn | off
 ```
@@ -832,7 +881,7 @@ Opt-in session-end sweep (Phase 4b) identifying git worktree branches with **0 c
 
 ```yaml
 worktree-orphans:
-  # Parser gotcha: this key line must carry NO inline comment.
+  # Parser gotcha: this key line must carry NO inline comment (§ Parser Gotcha: No-Inline-Comment Block Headers, top of this file).
   enabled: false                       # opt-in
   base-branch: main                    # ref the ahead-count is measured against
   mode: warn                           # warn | off
@@ -923,6 +972,8 @@ test:
 ## Custom Phases (#637)
 
 Opt-in, repo-declared deterministic phases that run as their own phase during session close (and/or housekeeping). Where the freeform `special:` key gives no execution guarantee, `custom-phases` is a **contract**: each phase runs a deterministic `command` via Bash with exit-code gating and summary reporting, so a repo can run a domain command (e.g. an eval-learn aggregate) as a first-class close step. Absent/empty ⇒ `[]` ⇒ no custom phases run; existing sessions are unaffected.
+
+**Parser gotcha:** like every other block-shaped Session Config key, the `custom-phases:` key-line itself MUST NOT carry an inline comment — see § Parser Gotcha: No-Inline-Comment Block Headers (top of this file) for the general `matchBlockHeader` contract. A trailing `# comment` on that exact line means the parser never enters the block and `custom-phases` silently resolves to `[]` — no error, no warning.
 
 The block is a YAML list under a top-level `custom-phases` key:
 
@@ -1356,6 +1407,31 @@ autopilot:
 **`bg-isolation: none` hard-error guard:** when `bg-isolation: none` AND `--max-stories > 1`, `autopilot-multi` requires `--deconflict-paths=<glob>` on the CLI to confirm that per-story file ownership is planned. Omitting the flag exits with code 1. This enforces the parallel-session discipline defined in `.claude/rules/parallel-sessions.md` PSA-001/002/003 — two agents editing the same file in the main tree simultaneously will corrupt each other's work.
 
 **Feature introduced by:** GitLab issue #431 (CC 2.1.143 `worktree.bgIsolation` changelog adoption). Implementation: `scripts/autopilot-multi.mjs` reads `config?.autopilot?.['bg-isolation']` via `scripts/parse-config.mjs`. Documentation: `skills/autopilot/SKILL.md` § Configuration.
+
+## Wave Reviewers
+
+Opt-in inter-wave architecture/QA/PRD audit dispatch. When configured, wave-executor's `### 5a. Persona-reviewer dispatch` step (Impl-Core and Impl-Polish waves only — Discovery, Quality, and Finalization are skipped) fans out the named code-oriented reviewer agents in parallel with read-only scope after the wave's own work completes. Findings are **advisory only** — a `WARN` or `FAIL` never blocks the wave; it is surfaced in the wave progress summary and fed into the next wave's agent assignments, or logged as an overridden Deviation (#730/H5) when not actioned.
+
+All fields live under a top-level `wave-reviewers` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+
+```yaml
+wave-reviewers:
+  enabled: false            # opt-in inter-wave architecture/QA/PRD audits
+  reviewers: []             # ["architect-reviewer", "qa-strategist", "analyst"]
+  mode: warn                # warn | strict | off
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `wave-reviewers.enabled` | boolean | `false` | Master toggle. Absent, `false`, or an empty `reviewers` array all resolve to the same no-op — the dispatch step is skipped entirely and the wave loop proceeds exactly as before. |
+| `wave-reviewers.reviewers` | string[] | `[]` | Reviewer agent names to dispatch in parallel. Plugin-provided values: `architect-reviewer`, `qa-strategist`, `analyst`. Custom reviewer agents under `agents/` are also valid if their `name` frontmatter matches. Each name is dispatched via `Agent({ subagent_type: "session-orchestrator:<reviewer-name>", ... })` with read-only scope. |
+| `wave-reviewers.mode` | string (`warn` \| `strict` \| `off`) | `warn` | Parsed but currently only `enabled` + a non-empty `reviewers` array gate the dispatch step in `skills/wave-executor/wave-loop.md`; `mode` is reserved for future escalation behaviour (e.g. blocking on `FAIL`). |
+
+**Deprecated alias:** `persona-reviewers` is accepted as a backward-compatible alias. When only `persona-reviewers` is present, its values are used and a deprecation WARN is emitted to stderr; when both keys are present, `wave-reviewers` wins and the WARN still fires. Issue #461/#478.
+
+**Distinct from `persona-gate-wave`** (below): `wave-reviewers` dispatches code-oriented reviewer agents (`architect-reviewer`, `qa-strategist`, `analyst`) that judge implementation correctness; `persona-gate-wave` dispatches catalog domain/buyer/audit personas from `.claude/personas/` that judge audience fit. The two keys are independent and may both be configured on the same project without conflict.
+
+**Used by:** `scripts/lib/config/wave-reviewers.mjs` (`_parseWaveReviewers`), `scripts/lib/config.mjs`, `skills/wave-executor/wave-loop.md` § 5a.
 
 ## Persona-Gate Wave (#458)
 
