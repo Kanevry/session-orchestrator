@@ -235,10 +235,10 @@ Score each issue using three factors:
 
 1. **Technical dependencies (highest weight):**
    - DB schema before API, API before frontend, shared libs before consumers.
-   - Issues that block others → `priority:critical` or `priority:high`.
+   - Issues that block others → `priority::critical` or `priority::high`.
 2. **Business value (medium weight):**
-   - Core MVP features → `priority:high`.
-   - Nice-to-haves → `priority:medium` or `priority:low`.
+   - Core MVP features → `priority::high`.
+   - Nice-to-haves → `priority::medium` or `priority::low`.
 3. **Risk (tiebreaker):**
    - Issues with identified risks from PRD Section 7 → bump up one level.
 
@@ -249,12 +249,12 @@ Use taxonomy from `setup-gitlab-groups.sh`:
 **Priority mapping for VCS labels:**
 | Categorization | VCS Label |
 |---|---|
-| P0 (critical path, blocking) | `priority:critical` |
-| P1 (high impact, needed soon) | `priority:high` |
-| P2 (medium, can wait) | `priority:medium` |
-| P3 (nice-to-have) | `priority:low` |
+| P0 (critical path, blocking) | `priority::critical` |
+| P1 (high impact, needed soon) | `priority::high` |
+| P2 (medium, can wait) | `priority::medium` |
+| P3 (nice-to-have) | `priority::low` |
 
-Always use the `priority:<level>` format in VCS CLI commands, not P0/P1/P2/P3.
+Always use the `priority::<level>` format in VCS CLI commands, not P0/P1/P2/P3.
 
 - **type:** feature, enhancement, bug, chore, docs
 - **status:** `status:ready`
@@ -275,11 +275,11 @@ Use AskUserQuestion to present the full issue structure:
 ```bash
 # Create epic
 glab issue create --title "$EPIC_TITLE" --description "$EPIC_DESC" \
-  --label "type:epic,priority:$PRIORITY" --milestone "$MILESTONE"
+  --label "type:epic,priority::$PRIORITY" --milestone "$MILESTONE"
 
 # Create sub-issues
 glab issue create --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
-  --label "type:feature,priority:$PRIORITY,status:ready,area:$AREA,appetite:$APPETITE"
+  --label "type:feature,priority::$PRIORITY,status:ready,area:$AREA,appetite:$APPETITE"
 ```
 
 ### Step 6: Set dependency links

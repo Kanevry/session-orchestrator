@@ -376,9 +376,9 @@ The Epic issue's number is not known during § 5.5.1. Once Phase 6 creates it, s
 
 Score each issue using three factors:
 
-1. **Technical dependencies (highest weight):** Issues that other issues depend on get `priority:critical` or `priority:high`. Identify dependency chains: DB schema before API, API before frontend, shared libs before consumers, infrastructure before application.
+1. **Technical dependencies (highest weight):** Issues that other issues depend on get `priority::critical` or `priority::high`. Identify dependency chains: DB schema before API, API before frontend, shared libs before consumers, infrastructure before application.
 
-2. **Business value (medium weight):** Issues the user marked as core MVP features in the PRD get `priority:high`. Nice-to-haves and polish items get `priority:medium` or `priority:low`.
+2. **Business value (medium weight):** Issues the user marked as core MVP features in the PRD get `priority::high`. Nice-to-haves and polish items get `priority::medium` or `priority::low`.
 
 3. **Risk (tiebreaker) — Impact × Risk 2×2 triage:** Classify each issue by Impact (high/low) and Risk (high/low) before applying the bump:
    - **High-Impact + Low-Risk → Implement.** Proceed directly; apply the one-level priority bump from the tiebreaker rule.
@@ -387,7 +387,7 @@ Score each issue using three factors:
    - **Low-Impact + High-Risk → Reject.** Do not create an issue for this candidate; note the rejection rationale in the PRD's Risks & Dependencies section instead.
 
 Assign labels from the standard taxonomy:
-- `priority:critical` / `priority:high` / `priority:medium` / `priority:low`
+- `priority::critical` / `priority::high` / `priority::medium` / `priority::low`
 - `type:feature` / `type:enhancement` / `type:bug` / `type:chore` / `type:discovery`
 - `status:ready`
 - `area:<inferred from content>` (e.g., `area:api`, `area:frontend`, `area:infra`)
@@ -422,8 +422,8 @@ If user selects "Adjust priorities" or "Remove issues", handle the adjustments i
 For each approved issue:
 
 1. Create via VCS CLI using comma-separated labels in a single `--label` flag:
-   - **GitLab**: `glab issue create --title "[Plan] <title>" --label "type:feature,priority:high,status:ready" --description "<body>"`
-   - **GitHub**: `gh issue create --title "[Plan] <title>" --label "type:feature,priority:high,status:ready" --body "<body>"`
+   - **GitLab**: `glab issue create --title "[Plan] <title>" --label "type:feature,priority::high,status:ready" --description "<body>"`
+   - **GitHub**: `gh issue create --title "[Plan] <title>" --label "type:feature,priority::high,status:ready" --body "<body>"`
 2. Brief pause (1s) between creations for rate limiting
 3. After all issues are created, set dependency links:
    - **GitLab**: use `glab api` to set `blocks`/`is-blocked-by` relations. On HTTP 403 (non-Premium/Ultimate): `relates_to` + body-ordering-note fallback — see gitlab-ops SKILL.md § "Issue Linking (`blocks` / `is_blocked_by`)".

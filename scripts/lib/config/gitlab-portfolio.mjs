@@ -9,7 +9,7 @@ export const GITLAB_PORTFOLIO_DEFAULTS = {
   enabled: false,
   mode: 'warn',
   'stale-days': 30,
-  'critical-labels': ['priority:critical', 'priority:high'],
+  'critical-labels': ['priority::critical', 'priority::high'],
 };
 
 const VALID_MODES = new Set(['warn', 'strict', 'off']);

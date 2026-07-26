@@ -56,15 +56,15 @@ absent, skip silently — do not assume any host path.
 - If `> 0`, surface the count and remind that the session-end auto-commit and
   `/evolve` handle catch-up. Do **not** commit the vault yourself.
 
-## 4. Top-3 priority:high backlog
+## 4. Top-3 priority::high backlog
 
 Detect the host from `git remote -v` (as in check 2) and query, without `-R`/owner flags:
 
-- GitLab: `glab issue list --label priority:high --state opened --per-page 3 --output json`
-- GitHub: `gh issue list --label priority:high --state open --limit 3`
+- GitLab: `glab issue list --label priority::high --state opened --per-page 3 --output json`
+- GitHub: `gh issue list --label priority::high --state open --limit 3`
 
 Surface the issue id + title — up to three lines. Skip silently when the query
-returns zero results or the CLI errors. Surface any `priority:high` issue that
+returns zero results or the CLI errors. Surface any `priority::high` issue that
 exists, even a single one.
 
 ## 5. Idle path

@@ -26,7 +26,7 @@ const VALID_MODES = new Set([
  * @param {number} input.completionRate  — 0.00..1.00; share of planned issues closed
  * @param {number} input.carryoverRatio  — 0.00..1.00; carryover / planned (0 when planned=0)
  * @param {Array<number|string>} [input.carryoverIssues] — IDs/IIDs of carried-over issues,
- *   pre-sorted (priority:critical/high first, FIFO tiebreak). Sliced to 0-5 entries for
+ *   pre-sorted (priority::critical/high first, FIFO tiebreak). Sliced to 0-5 entries for
  *   the `priorities` field.
  * @returns {{mode: string, priorities: number[], rationale: string}}
  */

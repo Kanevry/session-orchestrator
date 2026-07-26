@@ -287,7 +287,7 @@ describe('createSpiralCarryoverIssue', () => {
     expect(labelIdx).toBeGreaterThan(-1);
     const labels = createArgs[labelIdx + 1];
     expect(labels).toContain('type:carryover');
-    expect(labels).toContain('priority:high');
+    expect(labels).toContain('priority::high');
     expect(labels).toContain('status:ready');
 
     const descIdx = createArgs.indexOf('--description');
@@ -529,7 +529,7 @@ describe('createBrokenWindowIssue', () => {
 
     const labels = createArgs[createArgs.indexOf('--label') + 1];
     expect(labels).toContain('broken-window');
-    expect(labels).toContain('priority:high');
+    expect(labels).toContain('priority::high');
 
     const dueIdx = createArgs.indexOf('--due-date');
     expect(dueIdx).toBeGreaterThan(-1);

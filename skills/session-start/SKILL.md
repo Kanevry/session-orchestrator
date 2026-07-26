@@ -636,7 +636,7 @@ Using the detected VCS CLI, query (reading `issue-limit` from Session Config, de
 5. **Pipeline/CI status** — is CI green?
 
 Group issues by:
-- `priority:critical` / `priority:high` — must-address
+- `priority::critical` / `priority::high` — must-address
 - `status:ready` — ready to work on
 - Session-type relevance (housekeeping tasks vs feature tasks vs deep-work tasks)
 

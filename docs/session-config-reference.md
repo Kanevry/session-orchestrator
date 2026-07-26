@@ -174,6 +174,29 @@ verification-auto-fix:
 | `discovery-confidence-threshold` | integer | `60` | Minimum confidence score (0-100) for discovery findings to be reported. Findings below this threshold are auto-deferred. |
 | `discovery-parallelism` | integer | `5` | Maximum probe agents dispatched in parallel per category during Phase 3. Bounds: `1..16`; out-of-range values silently fall back to the default. Raise for large stacks to reduce wall-clock, lower to relieve a busy host. |
 
+## Issue Budget (per-session creation cap)
+
+Bounds how many issues ONE session may create. This is a **quantity** gate and is deliberately separate from `discovery-severity-threshold` / `discovery-confidence-threshold` above, which are per-finding **quality** filters: those two cannot bound volume (their `low` / `60` defaults filter almost nothing), they are only consulted in skill prose, and the largest producers — session-end carryover filing, `/plan` issue creation, `scripts/lib/spiral-carryover.mjs` — never read them at all.
+
+```yaml
+issue-budget:
+  max-per-session: 12          # integer >= 0; 0 blocks every non-exempt creation
+  mode: strict                 # strict | warn | off
+  overflow: collect-issue      # collect-issue | vault-note
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `issue-budget.max-per-session` | integer | `12` | Non-exempt issues one session may create before the cap bites. `0` is valid (blocks everything non-exempt). Malformed or negative values fall back to `12`. |
+| `issue-budget.mode` | string | `strict` | `strict` blocks over-cap creations (exit 2 from the hook) and parks them as overflow; `warn` allows them with a stderr notice; `off` disables the gate entirely (no counter is written). |
+| `issue-budget.overflow` | string | `collect-issue` | Where session-end drains parked creations. `collect-issue` files exactly ONE `[Backlog-Sammel] <session-id>, N zurückgestellte Punkte` issue (`type::backlog`, `priority::low`) whose body is a checklist of the parked items; `vault-note` writes a single Markdown file under `vault/00-inbox/` instead. |
+
+**Exemptions (load-bearing).** `priority::critical`, the carryover class (`[Carryover]`, `[SPIRAL]`/`[FAILED]`, `type::carryover`, a bare `carryover` label) and `broken-window` closure issues bypass the cap unconditionally. Without those exemptions the cap would break the standing session-end promises in `skills/session-end/SKILL.md` (Phase 1.8 "non-deselectable" SPIRAL/FAILED carryover, and the Critical Rule "ALWAYS create issues for unfinished PLANNED work"). Exempt creations are counted in the state file's `exempt` field for observability but never blocked.
+
+**Counter file:** `.orchestrator/runtime/issue-budget.json` — `{ sessionId, count, exempt, overflow: [...] }`. It resets automatically when a new `sessionId` is seen.
+
+**Used by:** `hooks/pre-bash-issue-budget.mjs` (shell path, PreToolUse/Bash), `scripts/lib/spiral-carryover.mjs` `runCli()` (programmatic path), `scripts/lib/issue-budget.mjs` (shared decision core), `skills/session-end/SKILL.md` Phase 5 Step 3b (overflow drain). Parser: `scripts/lib/config/issue-budget.mjs`.
+
 ## Slopcheck (Package Legitimacy Gate) (#520)
 
 Opt-in defense against LLM-hallucinated package names ("slopsquatting"). When enabled, `classifyPackages(pkgs)` consults the registry and classifies each package as `LEGITIMATE` (exists, download count above threshold), `ASSUMED` (exists but very new / low downloads — warning, not block), `SUS` (audit warning hit — operator confirmation required), or `SLOP` (package not found in the registry — a possible LLM hallucination; hard block in plan-flow). Hooked into `/plan` PRD generation (Phase 3.5 Package-Audit) and `/discovery` supply-chain probes. Complementary to the always-on SEC-020 supply-chain baseline (`ignore-scripts=true`, `block-exotic-subdeps=true`, `minimum-release-age=1440`): SEC-020 prevents post-install execution of malicious packages; Slopcheck prevents adopting non-existent (typosquat-target) packages in the first place. PRD gsd Pattern 2 / issue #520.
@@ -349,6 +372,19 @@ Independent of isolation choice, wave-executor now persists a per-worktree meta 
 - **no-meta** — meta file missing or corrupted; fall back to manual diff review.
 
 This guard converts the manual post-copy `git diff` check (used to rescue the 07:30 and 09:00 regressions) into a coded pre-copy gate. The check is non-blocking on `pass` / `warn` / `no-meta`; only `block` interrupts the wave.
+
+### Heavy-Repo Preflight (HR-003/HR-004, baseline #60)
+
+`templates/shared/.claude/rules/heavy-repo.md` documents two Session Config fields for repos large enough that default parallelism risks resource pressure (HR-001 indicators: checkout > 50 MB, DB surface > 100 tables, prior parallel agent count > 15, build time > 90s, generated artifacts > 200 MB). Both fields are now wired end-to-end (previously documented but silently dropped by the parser):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `heavy-repo` | boolean | `false` | Marks the repo as heavy per HR-001. When `true`, `scripts/lib/resource-probe/evaluate.mjs` and `scripts/lib/wave-resource-gate.mjs` apply a STATIC preflight ceiling: `recommended_agents_per_wave_cap` / dispatched `agents` are clamped to at most `agents-per-wave`, REGARDLESS of the live resource-probe verdict. When `agents-per-wave` uses the parenthetical override syntax (e.g. `4 (deep: 18)`), the parsed value is an object `{default, <mode>: N}`, not a plain number — both modules resolve that shape to `.default` (no session-mode input is in scope at the gate), so the cap is never silently skipped for overridden repos. More-restrictive-wins: a resource-driven `reduce`/`coordinator-direct` that already computed a tighter number is never loosened by this cap — it only ever lowers, never raises, the dispatched agent count. `validateSessionConfig()` (`scripts/lib/config-schema.mjs`) also emits a warn-level cross-field finding when `heavy-repo: true` and `isolation` is `auto` or `none` — heavy repos should pin `isolation: worktree` (HR-003 anti-pattern). |
+| `worktree-cleanup` | string | `default` | One of `default` \| `aggressive`. HR-003 recommends `aggressive` for heavy repos (clean up worktrees immediately after each wave, no cross-wave retention). **Honesty note:** `aggressive` currently behaves identically to `default` at runtime — the parser accepts and returns the value, but the per-wave aggressive sweep into `worktree-cleanup.mjs`/`worktree-sweep.mjs` is a tracked follow-up, not yet implemented. Setting this field today documents intent; it does not yet change wave-executor's cleanup cadence. |
+
+Session-start Phase 4.5 (`skills/session-start/phase-4-5-resource-health.md`) passes `heavy-repo` and `agents-per-wave` through to `evaluate()` and renders `⚠ Heavy-repo mode active — agents-per-wave capped to N (Session Config heavy-repo: true)` when the ceiling actually reduces the recommendation, per HR-004.
+
+The heavy-repo cap applies only on the resource-aware path: it runs inside `applyDecisionRules()`/`evaluate()`, both gated behind `resource-awareness` being enabled (the default). Setting `resource-awareness: false` is a FULL opt-out — it skips the live probe AND bypasses the HR-004 static cap, even when `heavy-repo: true` is also set.
 
 ## Planning
 
@@ -698,7 +734,7 @@ handover-gate:
 
 ## Broken-Window Budget (#730/H5)
 
-Opt-in configuration for the Broken-Window Budget in `/close`. When enabled, session-end Phase 2.6 aggregates THIS session's "knowingly-broken shipments" — echo-stub findings that shipped under `enforcement: warn`, "Override and close" choices in Phase 2.3 / 2.5, MED/LOW review findings routed to "Unresolved Review Findings" (#617), and wave-level reviewer findings overridden without a fix task — and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority:high`, with a hard due-date). It also emits `orchestrator.finding.overridden` events feeding the `effectiveness.override_ratio` metric. Non-blocking and idempotent: a filing failure is a WARN and re-running a close never duplicates issues.
+Opt-in configuration for the Broken-Window Budget in `/close`. When enabled, session-end Phase 2.6 aggregates THIS session's "knowingly-broken shipments" — echo-stub findings that shipped under `enforcement: warn`, "Override and close" choices in Phase 2.3 / 2.5, MED/LOW review findings routed to "Unresolved Review Findings" (#617), and wave-level reviewer findings overridden without a fix task — and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority::high`, with a hard due-date). It also emits `orchestrator.finding.overridden` events feeding the `effectiveness.override_ratio` metric. Non-blocking and idempotent: a filing failure is a WARN and re-running a close never duplicates issues.
 
 All fields live under a top-level `broken-window-budget` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -1082,7 +1118,7 @@ Session-end Phase 3.7a is the **only writer** of these fields. Session-start Pha
 | Field | Type | Value range | Description |
 |-------|------|-------------|-------------|
 | `recommended-mode` | string | `housekeeping` \| `feature` \| `deep` \| `discovery` \| `evolve` \| `plan-retro` | v0 heuristic output: suggested mode for the next session. |
-| `top-priorities` | integer[] | 0–5 entries | Carried-over issue IIDs, pre-sorted (priority:critical/high first, FIFO tiebreak). |
+| `top-priorities` | integer[] | 0–5 entries | Carried-over issue IIDs, pre-sorted (priority::critical/high first, FIFO tiebreak). |
 | `carryover-ratio` | float | `0.00`–`1.00` | `carryover_count / planned_issues` (0 when planned=0). Rounded to 2 decimals. |
 | `completion-rate` | float | `0.00`–`1.00` | `completed_issues / planned_issues`. Rounded to 2 decimals. |
 | `rationale` | string | ≤ 120 chars, single line | Which v0 rule branch fired (e.g. `"v0: completion <50% → retro"`). |

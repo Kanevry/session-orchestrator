@@ -69,7 +69,7 @@ Compare the files the plan said would be touched against the files actually chan
 - Document what was completed and what remains
 - Create a VCS issue for the remaining work with:
   - Title: `[Carryover] <original task description>`
-  - Labels: `priority:<original>`, `status:ready`
+  - Labels: `priority::<original>`, `status:ready`
   - Description: what's done, what's left, context for next session
 - Link to original issue if applicable
 

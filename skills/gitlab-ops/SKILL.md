@@ -6,7 +6,7 @@ model: haiku
 model-preference: sonnet
 model-preference-codex: gpt-5.4-mini
 model-preference-cursor: claude-sonnet-4-6
-description: Use this skill when performing VCS operations on GitLab or GitHub repositories — creating, updating, or closing issues and MRs, applying label taxonomy, running `glab`/`gh` CLI commands, or resolving project IDs dynamically. Acts as the single source of truth for CLI command syntax and label conventions; consuming skills reference this rather than duplicating logic. Triggers: "create a GitLab issue", "list open MRs", "apply priority label", "how do I resolve the project ID", "what's the carryover issue template". <example>Context: session-end needs to file a carryover issue for an incomplete task. user: "/close" assistant: "Creating carryover issue via glab with the Carryover Template from gitlab-ops — labels: carryover, priority:high."</example>
+description: Use this skill when performing VCS operations on GitLab or GitHub repositories — creating, updating, or closing issues and MRs, applying label taxonomy, running `glab`/`gh` CLI commands, or resolving project IDs dynamically. Acts as the single source of truth for CLI command syntax and label conventions; consuming skills reference this rather than duplicating logic. Triggers: "create a GitLab issue", "list open MRs", "apply priority label", "how do I resolve the project ID", "what's the carryover issue template". <example>Context: session-end needs to file a carryover issue for an incomplete task. user: "/close" assistant: "Creating carryover issue via glab with the Carryover Template from gitlab-ops — labels: carryover, priority::high."</example>
 ---
 
 # VCS Operations Reference
@@ -99,13 +99,21 @@ done
 
 ## Label Taxonomy
 
-**Taxonomy convention (decided 2026-07-05, #727):** labels use the SINGLE-COLON form exclusively (`priority:high`, `status:ready`, `area:vcs`, `type:chore`, `from:<agent>`). The `::`-scoped form (`priority::high`, GitLab scoped-labels) is DEPRECATED baseline-scaffold legacy and MUST NOT be introduced — this repo mirrors to GitHub, which has no scoped-label semantics (no mutual-exclusion enforcement), so `::` yields zero benefit on the mirror while a migration would break every existing label reference and issue.
+**Taxonomy convention — `priority` REVERSED to scoped `::` (supersedes #727 for this one axis).**
+
+- **`priority::<level>` is canonical.** #727's stated rationale was that "this repo mirrors to GitHub, which has no scoped-label semantics … while a migration would break every existing label reference and issue." Both halves were checked on 2026-07-25 and neither holds:
+  - **Issues are not mirrored at all.** `aiat-poc-infra/docs/github-mirror-runbook.md:1,5` describes a git **push-mirror** with GitHub as "read-only downstream"; `docs/gitlab-team-org-2026-06-21.md:45` confirms there is no two-way GitLab issue sync. Nothing crosses the boundary that a label rename could break.
+  - **GitHub already uses the scoped form.** `gh api "repos/AIAT-AIandBusinessgrowth/aiat-barrierefrei-engine/labels"` returns `priority::high`, `priority::low`, `priority::med`, `priority::medium` across 77 open issues, and **zero** `priority:high`. Same pattern on `aiat-doc-vlm`. GitHub treats `::` as an ordinary string; it merely does not enforce mutual exclusion.
+  - Volume agrees independently: **416 `priority::` against 249 `priority:` and 7 bare** at the time of the decision. Chasing the minority spelling would mean re-labelling the majority.
+  Producers were migrated FIRST (this change); the label-data migration follows separately, because migrating data before producers means the divergence returns within a day.
+- **`area:` / `type:` / `status:` / `from:` stay SINGLE-COLON** — but NOT on #727's rationale, which is disproven above. They stay because nothing measured argues for flipping them, and because each axis is its own migration cost. Flipping them is a separate decision and is explicitly NOT made here. Note that `status` in particular is the worst-disciplined axis on the instance (354 assignments, only 48 percent scoped, 5 genuine value conflicts), so any future flip there needs a conflict-resolution pass first.
+- **Readers accept both spellings.** Every consumer that MATCHES a label compares through `scripts/lib/label-scope.mjs` `normalizeLabel()`, which collapses `::` to `:` — so issues still carrying `priority:high` keep being counted until the data migration lands. Only WRITES are canonical.
 
 ### Priority Labels
-- `priority:critical` — blocking production or users
-- `priority:high` — important, schedule this sprint
-- `priority:medium` — plan for next sprint
-- `priority:low` — backlog, nice-to-have
+- `priority::critical` — blocking production or users
+- `priority::high` — important, schedule this sprint
+- `priority::medium` — plan for next sprint
+- `priority::low` — backlog, nice-to-have
 
 ### Status Labels
 - `status:ready` — defined, ready to pick up
@@ -151,11 +159,11 @@ GitHub has no native issue-blocking relation at all — the body-ordering-note f
 # Issues
 glab issue list --per-page 50                              # All open issues
 glab issue list --label "status:ready" --per-page 10       # Ready to work on
-glab issue list --label "priority:high" --per-page 10      # High priority
+glab issue list --label "priority::high" --per-page 10     # High priority
 glab issue list --closed --per-page 10                      # Recently closed
 glab issue view <IID>                                       # View issue details
 glab issue view <IID> --comments                            # With comments
-glab issue create --title "title" --label "priority:high,status:ready"
+glab issue create --title "title" --label "priority::high,status:ready"
 glab issue update <IID> --label "status:in-progress"        # WARNING: --label REPLACES the full set — see caveat below
 glab issue close <IID>                                       # then VERIFY: glab issue view <IID> must show state=closed
 glab issue note <IID> -m "Comment text"                    # Add comment
@@ -188,11 +196,11 @@ glab api "projects/$(glab repo view --output json | python3 -c "import json,sys;
 # Issues
 gh issue list --limit 50                                   # All open issues
 gh issue list --label "status:ready" --limit 10            # Ready to work on
-gh issue list --label "priority:high" --limit 10           # High priority
+gh issue list --label "priority::high" --limit 10          # High priority
 gh issue list --state closed --limit 10                    # Recently closed
 gh issue view <NUMBER>                                      # View issue details
 gh issue view <NUMBER> --comments                           # With comments
-gh issue create --title "title" --label "priority:high,status:ready"
+gh issue create --title "title" --label "priority::high,status:ready"
 gh issue edit <NUMBER> --add-label "status:in-progress"
 gh issue close <NUMBER>
 gh issue comment <NUMBER> --body "Comment text"            # Add comment
@@ -272,7 +280,7 @@ Relates to #ORIGINAL_IID
 ## [Discovery] <finding title>
 
 **Probe:** <probe_name>
-**Severity:** <priority:critical|high|medium|low>
+**Severity:** <priority::critical|high|medium|low>
 **Category:** <code|infra|ui|arch|session|audit|vault|feature>
 
 ### Finding
@@ -302,7 +310,7 @@ Relates to #ORIGINAL_IID
 - [ ] Quality gates pass after fix
 ```
 
-Labels: `type:discovery`, `priority:<level>`, `area:<inferred>`, `status:ready`
+Labels: `type:discovery`, `priority::<level>`, `area:<inferred>`, `status:ready`
 
 ## Template-First Enforcement (PSA-005 + #519)
 

@@ -318,3 +318,136 @@ describe('formatGateReport', () => {
     expect(report).toContain('RAM 8GB free');
   });
 });
+
+// ---------------------------------------------------------------------------
+// heavy-repo preflight cap (HR-003/HR-004, baseline #60)
+// ---------------------------------------------------------------------------
+//
+// `config['heavy-repo'] === true` forces a STATIC ceiling on dispatched agents
+// regardless of the live resource-probe verdict. More-restrictive-wins: the
+// cap only ever lowers `agents`, never raises it above what the resource
+// rules already decided (e.g. a coordinator-direct 0 stays 0).
+
+describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
+  test('clamps an otherwise-uncapped "proceed" decision down to agents-per-wave', async () => {
+    const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 3 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(), // healthy — would otherwise proceed with 6
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3);
+    expect(result.reasons.some((r) => r.includes('heavy-repo: true caps agents-per-wave to 3 (HR-004)'))).toBe(true);
+  });
+
+  test('resolves the object override shape `{ default, deep }` (parenthetical config syntax) using the default — clamps agents down', async () => {
+    // Real parsed shape of `agents-per-wave: 4 (deep: 8)` per _coerceInteger
+    // (scripts/lib/config/coercers.mjs) is an OBJECT, not a plain number.
+    // applyHeavyRepoCap must resolve it via `.default` rather than silently
+    // no-op'ing the cap (the bug this test pins down).
+    const config = makeConfig({
+      'heavy-repo': true,
+      'agents-per-wave': { default: 4, deep: 8 },
+    });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 12,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(), // healthy — would otherwise proceed with 12
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(4);
+    expect(result.reasons.some((r) => r.includes('heavy-repo: true caps agents-per-wave to 4 (HR-004)'))).toBe(true);
+  });
+
+  test('does not clamp when plannedAgents is already within the heavy-repo cap', async () => {
+    const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 8 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 4,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(4);
+    expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(false);
+  });
+
+  test('heavy-repo: false never clamps, even when plannedAgents exceeds agents-per-wave', async () => {
+    const config = makeConfig({ 'heavy-repo': false, 'agents-per-wave': 2 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
+    expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(false);
+  });
+
+  test('never RAISES agents: a coordinator-direct 0 stays 0 even with a looser heavy-repo cap', async () => {
+    const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 4 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ ramFreeGb: 1.5 }), // below critical (2 GB)
+    });
+    expect(result.decision).toBe('coordinator-direct');
+    expect(result.agents).toBe(0);
+  });
+
+  test('tightens further when the resource-driven reduce already computed MORE than the heavy-repo cap', async () => {
+    // CPU overload alone → reduce to floor(6/2)=3; heavy-repo cap=2 is stricter.
+    const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 2 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ cpuLoadPct: 90 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(2);
+    expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(true);
+  });
+
+  test('leaves an already-stricter resource-driven reduce unchanged when the heavy-repo cap is looser', async () => {
+    // CPU overload alone → reduce to floor(6/2)=3; heavy-repo cap=8 is looser — no double-clamp.
+    const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 8 });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ cpuLoadPct: 90 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3);
+    expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(false);
+  });
+
+  // Pin test (baseline #60, reviewed 2026-07-23): `resource-awareness: false`
+  // is a FULL opt-out, INCLUDING the HR-004 heavy-repo static cap — Rule 1's
+  // early return in evaluateWaveResourceGate() short-circuits before
+  // applyDecisionRules()/applyHeavyRepoCap() ever run. This is deliberate,
+  // documented behavior — not a bug. If this test ever needs to change, that
+  // change must be a conscious decision, not an accidental regression.
+  test('resource-awareness: false bypasses the heavy-repo cap entirely — proceeds at plannedAgents above the cap', async () => {
+    const config = makeConfig({
+      'resource-awareness': false,
+      'heavy-repo': true,
+      'agents-per-wave': 2,
+    });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
+    expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(false);
+  });
+});

@@ -62,7 +62,7 @@ gitlab-portfolio:
   enabled: true
   mode: warn          # warn | strict | off
   stale-days: 30
-  critical-labels: ["priority:critical", "priority:high"]
+  critical-labels: ["priority::critical", "priority::high"]
 ```
 
 ## Output Format

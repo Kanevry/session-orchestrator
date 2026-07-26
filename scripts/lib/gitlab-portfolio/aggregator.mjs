@@ -12,6 +12,8 @@
 
 import { spawn as _spawn } from 'node:child_process';
 
+import { normalizeLabel, normalizedLabelSet } from '../label-scope.mjs';
+
 /** Default timeout per repo CLI invocation (ms). */
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -332,7 +334,11 @@ export function summarizeRepo(issues, opts) {
 
   const nowMs = now instanceof Date ? now.getTime() : Date.now();
   const staleThresholdMs = staleDays * 86_400_000;
-  const criticalSet = new Set(Array.isArray(criticalLabels) ? criticalLabels : []);
+  // Scope-tolerant matching: defaults use the canonical scoped spelling
+  // (`priority::critical`), but issues labelled before the migration still
+  // carry `priority:critical`. Normalising both sides keeps those counted —
+  // see scripts/lib/label-scope.mjs.
+  const criticalSet = normalizedLabelSet(criticalLabels);
 
   let criticalCount = 0;
   let staleCount = 0;
@@ -341,7 +347,7 @@ export function summarizeRepo(issues, opts) {
 
   for (const issue of issues) {
     // Critical
-    if (issue.labels.some((l) => criticalSet.has(l))) {
+    if (issue.labels.some((l) => criticalSet.has(normalizeLabel(l)))) {
       criticalCount++;
     }
 

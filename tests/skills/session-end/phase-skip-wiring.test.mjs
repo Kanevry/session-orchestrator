@@ -179,7 +179,7 @@ describe('C — Gate E (vault-operations mode:hard) → warn + carryover', () =>
   });
   it('files a carryover issue instead', () => {
     expect(vault.toLowerCase()).toContain('carryover');
-    expect(vault).toContain('priority:high');
+    expect(vault).toContain('priority::high');
   });
 });
 
@@ -190,7 +190,7 @@ describe('C — Gate F (drift-operations mode:hard) → warn + carryover', () =>
   });
   it('files a carryover issue instead', () => {
     expect(drift.toLowerCase()).toContain('carryover');
-    expect(drift).toContain('priority:high');
+    expect(drift).toContain('priority::high');
   });
 
   it('does not describe hard drift-check mode as blocking', () => {

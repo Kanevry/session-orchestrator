@@ -39,6 +39,7 @@ import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
+import { resolveHost, matchesBypass } from './_lib/vcs-create-matcher.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { existsSync, readdirSync, lstatSync } from 'node:fs';
@@ -54,13 +55,11 @@ if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
 // ---------------------------------------------------------------------------
 
 /**
- * Matches the canonical `gh` / `glab` issue/PR/MR creation invocations.
- * Anchored at start (^) with optional leading whitespace to catch indented
- * shell snippets. Word-boundary at the end avoids false positives on tokens
- * like `created` or `news`. Edit operations (`gh pr edit`, `glab mr edit`)
- * are deliberately out of scope per PRD § 2 Out-of-Scope.
+ * The `gh`/`glab` create matcher (`CREATE_REGEX`, `resolveHost`,
+ * `matchesBypass`) now lives in `hooks/_lib/vcs-create-matcher.mjs` so the
+ * sibling issue-budget hook parses create commands with byte-identical
+ * semantics instead of a diverging copy. Behaviour here is unchanged.
  */
-const CREATE_REGEX = /^\s*(gh|glab)\s+(pr|mr|issue)\s+(create|new)\b/;
 
 /**
  * Default acknowledgement path, relative to project root. Used when the
@@ -140,46 +139,6 @@ function resolvePolicyPath(projectDir) {
     if (existsSync(candidate)) return candidate;
   }
   return null;
-}
-
-/**
- * Determine which host the command targets by inspecting the CREATE_REGEX
- * capture. `gh` → "github", `glab` → "gitlab".
- *
- * @param {string} command
- * @returns {"github"|"gitlab"|null}
- */
-function resolveHost(command) {
-  const m = command.match(CREATE_REGEX);
-  if (!m) return null;
-  return m[1] === 'gh' ? 'github' : 'gitlab';
-}
-
-/**
- * True when the command starts with any of the bypass patterns. Bypass match
- * is a prefix check with a word/EOL boundary on the trailing edge — this
- * prevents trivial bypass via prefix-inclusion (e.g. policy entry
- * "gh issue create --label bot" must not match "gh issue create --label botanical").
- *
- * @param {string} command
- * @param {string[]} bypassPatterns
- * @returns {boolean}
- */
-function matchesBypass(command, bypassPatterns) {
-  if (!Array.isArray(bypassPatterns) || bypassPatterns.length === 0) {
-    return false;
-  }
-  const stripped = command.replace(/^\s+/, '');
-  for (const pat of bypassPatterns) {
-    if (typeof pat !== 'string' || pat.length === 0) continue;
-    const patStripped = pat.replace(/^\s+/, '');
-    if (!stripped.startsWith(patStripped)) continue;
-    // Boundary check: next character must be whitespace, EOL, or absent.
-    // This prevents "gh foo --label bot" from matching policy "gh foo --label botanical".
-    const nextChar = stripped.charAt(patStripped.length);
-    if (nextChar === '' || /\s/.test(nextChar)) return true;
-  }
-  return false;
 }
 
 /**

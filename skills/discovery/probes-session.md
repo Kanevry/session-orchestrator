@@ -91,7 +91,7 @@ gh issue list --limit 100 --json number,title,labels,updatedAt,assignees --jq '.
 # Flag:
 # - Issues with no activity in stale-issue-days (default: 30 days)
 # - Issues assigned but with no associated branch
-# - Issues labeled priority:high or priority:critical that are stale
+# - Issues labeled priority::high or priority::critical that are stale
 
 # Check for associated branches:
 git branch -r | grep -i "<issue_number>"
@@ -109,7 +109,7 @@ Has Branch: true | false
 Priority: <priority label or NONE>
 ```
 
-**Default Severity:** Low. Medium if `priority:high` or `priority:critical` is stale.
+**Default Severity:** Low. Medium if `priority::high` or `priority::critical` is stale.
 
 ---
 

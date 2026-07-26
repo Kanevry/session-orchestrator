@@ -101,7 +101,7 @@ function fetchLabels({ issueId, vcs, spec }) {
   } catch (e) {
     return { ok: false, labels: [], stderr: `JSON parse failed: ${e && e.message ? e.message : String(e)}` };
   }
-  // GitLab JSON shape: { labels: ["status:ready", "priority:high", ...] }
+  // GitLab JSON shape: { labels: ["status:ready", "priority::high", ...] }
   const labels = Array.isArray(parsed?.labels)
     ? parsed.labels.map((l) => (typeof l === 'string' ? l : String(l))).filter(Boolean)
     : [];

@@ -56,6 +56,7 @@ import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseHandoverGate } from './config/handover-gate.mjs';
+import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
@@ -195,6 +196,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const allowDestructiveOps = _coerceBoolean(kv, 'allow-destructive-ops', false);
   const resourceAwareness = _coerceBoolean(kv, 'resource-awareness', true);
   const enableHostBanner = _coerceBoolean(kv, 'enable-host-banner', true);
+  // heavy-repo / worktree-cleanup: HR-003 preflight fields (templates/shared/.claude/rules/heavy-repo.md),
+  // documented but previously unwired — silently dropped by the parser (baseline issue #60).
+  const heavyRepo = _coerceBoolean(kv, 'heavy-repo', false);
 
   // List fields
   const crossRepos = _coerceList(kv, 'cross-repos', undefined);
@@ -212,6 +216,10 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const enforcement = _coerceEnum(kv, 'enforcement', 'warn', ['strict', 'warn', 'off']);
   const isolation = _coerceEnum(kv, 'isolation', 'auto', ['worktree', 'none', 'auto']);
   const discoverySeverityThreshold = _coerceEnum(kv, 'discovery-severity-threshold', 'low', ['critical', 'high', 'medium', 'low']);
+  // worktree-cleanup: HR-003 (baseline issue #60). NOTE: 'aggressive' currently behaves
+  // identically to 'default' at runtime — the per-wave aggressive sweep is a tracked
+  // follow-up (see docs/session-config-reference.md). This wires the parser + value only.
+  const worktreeCleanup = _coerceEnum(kv, 'worktree-cleanup', 'default', ['default', 'aggressive']);
 
   // Object fields
   const agentMapping = _coerceObject(kv, 'agent-mapping');
@@ -295,6 +303,12 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // handover-gate: parsed from full content (PRD 2026-07-07 /close
   // Handover-Alignment-Gate — Epic #724)
   const handoverGate = _parseHandoverGate(mdContent);
+
+  // issue-budget: per-session issue-creation cap (QUANTITY gate). Distinct from
+  // discovery-severity-threshold / discovery-confidence-threshold above, which
+  // are per-finding QUALITY filters and cannot bound creation volume. Enforced
+  // by hooks/pre-bash-issue-budget.mjs + scripts/lib/spiral-carryover.mjs.
+  const issueBudget = _parseIssueBudget(mdContent);
 
   // broken-window-budget: parsed from full content (#730/H5 — session-end Phase 2.6)
   const brokenWindow = _parseBrokenWindow(mdContent);
@@ -437,6 +451,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'allow-destructive-ops': allowDestructiveOps,
     'resource-awareness': resourceAwareness,
     'enable-host-banner': enableHostBanner,
+    'heavy-repo': heavyRepo,
+    'worktree-cleanup': worktreeCleanup,
     'resource-thresholds': resourceThresholds,
     'worktree-exclude': worktreeExclude,
     'vault-integration': vaultIntegration,
@@ -445,6 +461,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'handover-gate': handoverGate,
+    'issue-budget': issueBudget,
     'broken-window-budget': brokenWindow,
     'slopcheck': slopcheck,
     'skill-evolution': skillEvolution,

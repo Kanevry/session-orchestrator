@@ -47,9 +47,49 @@ const MACOS_HEALTHY_PRESSURE_PCT = 30;
  * and return a verdict used by session-start Phase 4.5.
  * @param {object} snapshot — output of probe()
  * @param {object} thresholds — resource-thresholds block from parseSessionConfig
+ * @param {{heavyRepo?: boolean, agentsPerWave?: number|{default: number, [mode: string]: number}}} [options] — HR-003/HR-004
+ *   preflight ceiling (baseline #60). When `heavyRepo` is true and `agentsPerWave`
+ *   resolves to a number (see {@link resolveAgentsPerWaveCap}), `recommended_agents_per_wave_cap`
+ *   is forced to at most that number REGARDLESS of the live-probe verdict — a
+ *   static preflight ceiling, not a runtime signal. More-restrictive-wins:
+ *   effective = min(existing cap ?? Infinity, agentsPerWave). Omitted entirely
+ *   = today's behaviour (back-compat).
+ *
+ *   `agentsPerWave` accepts either a plain number OR the `{default, <mode>: N}`
+ *   object `_coerceInteger()` (scripts/lib/config/coercers.mjs) produces for
+ *   the parenthetical override syntax (e.g. `agents-per-wave: 4 (deep: 18)`) —
+ *   `skills/session-start/phase-4-5-resource-health.md` documents wiring
+ *   `config['agents-per-wave']` straight into this option, so the object shape
+ *   is a real input here, not a hypothetical one.
  * @returns {{verdict: 'green'|'warn'|'degraded'|'critical', reasons: string[], recommended_agents_per_wave_cap: number|null}}
  */
-export function evaluate(snapshot, thresholds) {
+
+/**
+ * Resolve an `agentsPerWave` option value into a plain numeric cap, or `null`
+ * when no cap should apply. Mirrors `resolveApwCap()` in
+ * `../wave-resource-gate.mjs` — kept as a local pure helper here rather than
+ * a cross-module import since both sites are ≤10 lines and evolve
+ * independently per their own gate's options shape.
+ *
+ * `evaluate()` has no session-mode input in scope, so the object shape
+ * resolves to `cap.default` — the documented HR-003 convention writes the
+ * override as `<default> (mode: <higher-ceiling>)`, i.e. `default` is the
+ * MORE restrictive of the pair, so this can only under-apply a looser
+ * mode-specific ceiling, never let a heavy repo exceed its base cap.
+ *
+ * @param {number|{default: number, [mode: string]: number}|*} cap
+ * @returns {number|null}
+ */
+function resolveAgentsPerWaveCap(cap) {
+  if (typeof cap === 'number') return Number.isFinite(cap) ? cap : null;
+  if (cap !== null && typeof cap === 'object' && !Array.isArray(cap)) {
+    const def = cap.default;
+    return typeof def === 'number' && Number.isFinite(def) ? def : null;
+  }
+  return null;
+}
+
+export function evaluate(snapshot, thresholds, options = {}) {
   const reasons = [];
   let verdict = 'green';
   let cap = null;
@@ -184,6 +224,18 @@ export function evaluate(snapshot, thresholds) {
   // (the bumpVerdict path sets cap=0 inline for critical, but re-affirm for safety)
   if (verdict === 'critical') {
     cap = 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // HR-003/HR-004 heavy-repo preflight ceiling (#60): a STATIC cap independent
+  // of the live-probe verdict. Applies only when heavyRepo is true and
+  // agentsPerWave is a finite number — more-restrictive-wins against whatever
+  // the live-probe signals already computed.
+  // ---------------------------------------------------------------------------
+  const { heavyRepo, agentsPerWave } = options;
+  const resolvedApwCap = resolveAgentsPerWaveCap(agentsPerWave);
+  if (heavyRepo === true && resolvedApwCap !== null) {
+    cap = cap === null ? resolvedApwCap : Math.min(cap, resolvedApwCap);
   }
 
   return { verdict, reasons, recommended_agents_per_wave_cap: cap };

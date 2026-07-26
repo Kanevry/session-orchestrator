@@ -110,6 +110,7 @@ describe('parseSessionConfig', () => {
         'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
         'resource-awareness', 'enable-host-banner', 'resource-thresholds',
         'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
+        'heavy-repo', 'worktree-cleanup', 'issue-budget',
       ];
       for (const key of expectedKeys) {
         expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
@@ -739,6 +740,47 @@ describe('parseSessionConfig', () => {
       const content = `## Session Config\n\nallow-destructive-ops: false\n`;
       const config = parseSessionConfig(content);
       expect(config['allow-destructive-ops']).toBe(false);
+    });
+  });
+
+  describe('heavy-repo / worktree-cleanup (HR-003, baseline #60)', () => {
+    it('defaults heavy-repo to false when not present in config', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['heavy-repo']).toBe(false);
+    });
+
+    it('parses heavy-repo: true', () => {
+      const content = `## Session Config\n\nheavy-repo: true\n`;
+      const config = parseSessionConfig(content);
+      expect(config['heavy-repo']).toBe(true);
+    });
+
+    it('parses explicit heavy-repo: false', () => {
+      const content = `## Session Config\n\nheavy-repo: false\n`;
+      const config = parseSessionConfig(content);
+      expect(config['heavy-repo']).toBe(false);
+    });
+
+    it('defaults worktree-cleanup to "default" when not present in config', () => {
+      const config = parseSessionConfig(readFixture('config-minimal.md'));
+      expect(config['worktree-cleanup']).toBe('default');
+    });
+
+    it('parses worktree-cleanup: aggressive', () => {
+      const content = `## Session Config\n\nworktree-cleanup: aggressive\n`;
+      const config = parseSessionConfig(content);
+      expect(config['worktree-cleanup']).toBe('aggressive');
+    });
+
+    it('parses explicit worktree-cleanup: default', () => {
+      const content = `## Session Config\n\nworktree-cleanup: default\n`;
+      const config = parseSessionConfig(content);
+      expect(config['worktree-cleanup']).toBe('default');
+    });
+
+    it('throws on invalid worktree-cleanup value', () => {
+      const content = `## Session Config\n\nworktree-cleanup: bogus\n`;
+      expect(() => parseSessionConfig(content)).toThrow(/worktree-cleanup must be/);
     });
   });
 

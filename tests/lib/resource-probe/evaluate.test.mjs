@@ -467,3 +467,79 @@ describe('evaluate() — defensive defaults for missing fields', () => {
     expect(result.reasons).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// heavy-repo preflight cap (HR-003/HR-004, baseline #60)
+// ---------------------------------------------------------------------------
+//
+// Optional third `options` param: { heavyRepo, agentsPerWave }. When
+// heavyRepo is true, recommended_agents_per_wave_cap is forced to at most
+// agentsPerWave REGARDLESS of the live-probe verdict — a static preflight
+// ceiling. More-restrictive-wins: effective = min(existing cap ?? Infinity,
+// agentsPerWave). Omitting the third arg entirely preserves pre-existing
+// behaviour (back-compat).
+
+describe('evaluate() — heavy-repo preflight cap (#60)', () => {
+  it('omitted options param preserves back-compat behaviour (green, cap null)', () => {
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+  });
+
+  it('forces a cap on an otherwise-uncapped green verdict when heavyRepo is true', () => {
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 4 });
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(4);
+  });
+
+  it('does not force a cap when heavyRepo is false, even with agentsPerWave set', () => {
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: false, agentsPerWave: 4 });
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+  });
+
+  it('more-restrictive-wins: keeps the tighter live-probe cap when agentsPerWave is looser', () => {
+    // CPU overload alone yields cap=2 (warn) — agentsPerWave=6 must not loosen it.
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 6 });
+    expect(result.verdict).toBe('warn');
+    expect(result.recommended_agents_per_wave_cap).toBe(2);
+  });
+
+  it('more-restrictive-wins: tightens to agentsPerWave when it is stricter than the live-probe cap', () => {
+    // CPU overload alone yields cap=2 (warn) — agentsPerWave=1 must win (tighter).
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 1 });
+    expect(result.verdict).toBe('warn');
+    expect(result.recommended_agents_per_wave_cap).toBe(1);
+  });
+
+  it('critical verdict cap (0) is unaffected by a looser agentsPerWave ceiling', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 1 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 4 });
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+  });
+
+  it('heavyRepo true with agentsPerWave omitted does not throw and leaves cap unchanged', () => {
+    expect(() => evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true })).not.toThrow();
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true });
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+  });
+
+  // Session-start Phase 4.5 (skills/session-start/phase-4-5-resource-health.md)
+  // documents `agentsPerWave: config['agents-per-wave']` verbatim — and
+  // `config['agents-per-wave']` is an OBJECT `{ default, <mode>: N }` whenever
+  // Session Config uses the documented HR-003 parenthetical override syntax
+  // (`agents-per-wave: 4 (deep: 18)`, parsed by `_coerceInteger()` in
+  // scripts/lib/config/coercers.mjs). Passing that object straight through
+  // must resolve to `.default`, not silently no-op the cap.
+  it('resolves the object override shape `{ default, deep }` using the default — caps agents down', () => {
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, {
+      heavyRepo: true,
+      agentsPerWave: { default: 4, deep: 18 },
+    });
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(4);
+  });
+});

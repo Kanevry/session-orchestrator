@@ -12,7 +12,7 @@ describe('GITLAB_PORTFOLIO_DEFAULTS', () => {
     expect(GITLAB_PORTFOLIO_DEFAULTS.enabled).toBe(false);
     expect(GITLAB_PORTFOLIO_DEFAULTS.mode).toBe('warn');
     expect(GITLAB_PORTFOLIO_DEFAULTS['stale-days']).toBe(30);
-    expect(GITLAB_PORTFOLIO_DEFAULTS['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(GITLAB_PORTFOLIO_DEFAULTS['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 });
 
@@ -25,7 +25,7 @@ describe('coerceGitlabPortfolio — undefined/null input', () => {
     expect(result.enabled).toBe(false);
     expect(result.mode).toBe('warn');
     expect(result['stale-days']).toBe(30);
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 
   it('returns defaults when input is null', () => {
@@ -34,7 +34,7 @@ describe('coerceGitlabPortfolio — undefined/null input', () => {
     expect(result.enabled).toBe(false);
     expect(result.mode).toBe('warn');
     expect(result['stale-days']).toBe(30);
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 
   it('returns defaults when input is an array (not a plain object)', () => {
@@ -155,15 +155,15 @@ describe('coerceGitlabPortfolio — critical-labels filtering', () => {
       'critical-labels': ['', null, 42],
     });
 
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 
   it('falls back to defaults when critical-labels is not an array', () => {
     const result = coerceGitlabPortfolio({
-      'critical-labels': 'priority:critical',
+      'critical-labels': 'priority::critical',
     });
 
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 
   it('accepts single valid label string in array', () => {
@@ -186,7 +186,7 @@ gitlab-portfolio:
   mode: strict
   stale-days: 45
   critical-labels:
-    - priority:critical
+    - priority::critical
     - bug
 `;
 
@@ -195,7 +195,7 @@ gitlab-portfolio:
     expect(result.enabled).toBe(true);
     expect(result.mode).toBe('strict');
     expect(result['stale-days']).toBe(45);
-    expect(result['critical-labels']).toEqual(['priority:critical', 'bug']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'bug']);
   });
 
   it('returns defaults when gitlab-portfolio block is absent', () => {
@@ -206,7 +206,7 @@ gitlab-portfolio:
     expect(result.enabled).toBe(false);
     expect(result.mode).toBe('warn');
     expect(result['stale-days']).toBe(30);
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 
   it('uses defaults for critical-labels when none are listed under the block', () => {
@@ -215,6 +215,6 @@ gitlab-portfolio:
     const result = _parseGitlabPortfolio(content);
 
     // No critical-labels block → falls back to defaults
-    expect(result['critical-labels']).toEqual(['priority:critical', 'priority:high']);
+    expect(result['critical-labels']).toEqual(['priority::critical', 'priority::high']);
   });
 });

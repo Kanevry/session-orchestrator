@@ -19,6 +19,8 @@
 
 import { spawnSync } from 'node:child_process';
 
+import { normalizeLabel } from './label-scope.mjs';
+
 export const STALE_THRESHOLD_DAYS = 30;
 
 /** Module-level cache. Keyed by JSON.stringify({vcs, limit}). */
@@ -108,8 +110,12 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
 
     for (const name of labelNames) {
       byLabel[name] = (byLabel[name] || 0) + 1;
-      if (name === 'priority:critical') criticalCount += 1;
-      else if (name === 'priority:high') highCount += 1;
+      // Scope-tolerant: the canonical spelling is the scoped `priority::<level>`,
+      // but the label-data migration trails the producer migration, so issues
+      // carrying the legacy `priority:<level>` must keep counting.
+      const key = normalizeLabel(name);
+      if (key === 'priority:critical') criticalCount += 1;
+      else if (key === 'priority:high') highCount += 1;
     }
 
     const updated = issue.updated_at || issue.updatedAt || null;

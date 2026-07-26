@@ -177,10 +177,23 @@ function extractSessionConfigBlock(content, { occurrence = 'first' } = {}) {
 /**
  * Extract top-level YAML keys from a YAML body. Only column-0 keys are
  * collected (indented keys are children and ignored).
+ *
+ * Accepts four equivalent forms consumer CLAUDE.md files write a Session
+ * Config key in: bare `key:`, Markdown bullet `- key:`, bold `**key:**`
+ * (closing bold before the colon), and the bold-bullet consumer shape
+ * `- **key:** value` (bold wraps the key AND colon together, closing bold
+ * AFTER the colon). Baseline issue #60: the original bare-only regex
+ * extracted zero keys from bullet-form local files, so session-config-parity
+ * (Check 6, below) either false-positived on every mandatory key (local side
+ * reads as empty) or, when the TEMPLATE side also used bullet form, passed
+ * vacuously (both sides empty, so the diff was always empty). Sibling
+ * precedent: `scripts/lib/config/block-header.mjs` recognizes only header
+ * lines, not individual key-value pairs — this function is the per-key
+ * counterpart.
  */
 function extractTopLevelKeys(body) {
   const keys = [];
-  const re = /^([A-Za-z][\w-]*):/gm;
+  const re = /^(?:-\s+)?(?:\*\*)?([A-Za-z][\w-]*)(?:\*\*)?:/gm;
   let m;
   while ((m = re.exec(body)) !== null) {
     keys.push(m[1]);

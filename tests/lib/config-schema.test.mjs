@@ -319,3 +319,48 @@ describe('vault-sync validator', () => {
     }
   });
 });
+
+describe('heavy-repo × isolation cross-field warning (HR-003, baseline #60)', () => {
+  it('warns when heavy-repo: true and isolation: auto', () => {
+    const result = validateSessionConfig(baseConfig({ 'heavy-repo': true, isolation: 'auto' }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === 'isolation' && w.message.includes('HR-003'))).toBe(true);
+  });
+
+  it('warns when heavy-repo: true and isolation: none', () => {
+    const result = validateSessionConfig(baseConfig({ 'heavy-repo': true, isolation: 'none' }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === 'isolation')).toBe(true);
+  });
+
+  it('does not warn when heavy-repo: true and isolation: worktree (correctly pinned)', () => {
+    const result = validateSessionConfig(baseConfig({ 'heavy-repo': true, isolation: 'worktree' }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === 'isolation')).toBe(false);
+  });
+
+  it('does not warn when heavy-repo is false, even with isolation: auto', () => {
+    const result = validateSessionConfig(baseConfig({ 'heavy-repo': false, isolation: 'auto' }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === 'isolation')).toBe(false);
+  });
+
+  it('does not warn when heavy-repo is absent (default false), even with isolation: auto', () => {
+    const result = validateSessionConfig(baseConfig({ isolation: 'auto' }));
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === 'isolation')).toBe(false);
+  });
+
+  it('surfaces the warning even when the config is otherwise invalid (ok: false)', () => {
+    const result = validateSessionConfig(
+      baseConfig({ waves: 2, 'heavy-repo': true, isolation: 'auto' })
+    );
+    expect(result.ok).toBe(false);
+    expect(result.warnings.some((w) => w.path === 'isolation' && w.message.includes('HR-003'))).toBe(true);
+  });
+
+  it('warnings array is always present and empty by default', () => {
+    const result = validateSessionConfig(baseConfig());
+    expect(result.warnings).toEqual([]);
+  });
+});
