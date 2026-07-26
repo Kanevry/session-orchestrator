@@ -1588,6 +1588,8 @@ skill-evolution:
 
 **Parity note.** The `skill-evolution:` key is documented in `docs/session-config-template.md` as a **standalone `## Skill Evolution` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6. Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
 
+**Root instruction-file activation capture (#652).** This repo's own `## Skill Evolution` block records why the feature was armed (`autonomy: autonomous-gated`) here specifically: the engine was activated for this repo (#652) after the C2 engine (#647/#651) plus the H1 `evidence_kind` guard (session-3) made autonomous-apply safe. Under that gate, the engine may auto-apply ONLY the `command-count` drift shape on the root instruction file, behind the quadruple condition (autonomy ∧ safe-posture ∧ gate-green ∧ evidence ≥ evidence-floor) AND only for `filesystem-fact`-sourced candidates. Plugin-level, local-skill, and remote-skill repair targets are ALWAYS MR-only regardless of this setting.
+
 ## Dispatcher Autonomy (#679)
 
 Opt-in configuration for the cross-repo free-repo dispatcher autonomy gate (Epic #673, Sub-issue #679). Controls whether the `/dispatcher` flow runs in advisory mode (surfaces ranked candidates for operator review only) or applies dispatch decisions behind a confidence gate. The default is `off` — fail-closed, no behavior change for repos that omit this block.
@@ -1612,6 +1614,8 @@ dispatcher-autonomy:
 **Cross-reference:** "Cross-Repo Vault-Status Mirror + Autopilot Dispatcher" (#673; archived in the private Meta-Vault), Sub-issue #679.
 
 **Parity note.** The `dispatcher-autonomy:` key is documented in `docs/session-config-template.md` as a **standalone `## Dispatcher Autonomy` section** outside the `## Session Config` block — intentionally parity-exempt from `claude-md-drift-check` Check-6 (session-config-parity). Adding it as a column-0 key inside `## Session Config` would hard-fail every repo with `drift-check.mode: hard` that has not yet adopted the feature.
+
+**Root instruction-file adoption capture (#681).** This repo's own `## Dispatcher Autonomy` block is the one-time capture of #681 (dogfooded here), committed with `autonomy: off` — fail-closed, identical to this repo's de-facto state before adoption. Its committed PRESENCE is itself the never-re-ask marker: session-start Phase 1.1's migration trigger checks for the block's existence and will not re-prompt, regardless of the value inside. See the Host-local override paragraph above (#653 pattern) for the full env > `owner.yaml` > committed > `off` precedence chain that lets a machine opt this repo into `advisory`/`autonomous-gated` without editing the committed block.
 
 ## Defaults
 

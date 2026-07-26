@@ -23,12 +23,21 @@ State-free by design (see the **Live state is not in this file** gotcha below). 
 
 These are the non-obvious, mistake-causing facts that must load every session. Everything else is delegated above.
 
-- **CI status is the source of truth at session-start.** Local-only test runs are insufficient evidence of CI green. Phase 4 of session-start invokes `scripts/lib/ci-status-banner.mjs` via `checkCiStatus({ repoRoot })` to render a 🚨 banner when CI is red on HEAD. Never claim CI green from `npm test` alone — the 8-pipeline silent regression (2026-05-09 → 2026-05-10, fixed in deep-2) is the cautionary tale. <!-- consistency:exempt:runtime-only -->
-- **Destructive-Command Guard is active in main + subagent waves.** `hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands per `.orchestrator/policy/blocked-commands.json` (13 rules). Rule source of truth: [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003). Per-session bypass via Session Config: `allow-destructive-ops: true` (intentional maintenance only).
+- **CI status is the source of truth at session-start.** Local-only test runs are insufficient evidence of CI green.
+  Phase 4 of session-start invokes `scripts/lib/ci-status-banner.mjs` via `checkCiStatus({ repoRoot })` to render a 🚨 banner when CI is red on HEAD.
+  Never claim CI green from `npm test` alone — the 8-pipeline silent regression (2026-05-09 → 2026-05-10, fixed in deep-2) is the cautionary tale. <!-- consistency:exempt:runtime-only -->
+- **Destructive-Command Guard is active in main + subagent waves.** `hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands per `.orchestrator/policy/blocked-commands.json` (13 rules).
+  Rule source of truth: [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003). Per-session bypass via Session Config: `allow-destructive-ops: true` (intentional maintenance only).
 - **Session Config below is runtime-critical.** `scripts/parse-config.mjs` parses the `## Session Config` block; `claude-md-drift-check` Check 6 enforces top-level-key parity against `docs/session-config-template.md`. Edit it like code, not prose — a dropped key changes runtime behaviour.
 - **Live state is not in this file.** Stack: Node 24+, vitest, ESLint 10 (`npm ci` after clone). Test counts, backlog, version, component inventory drift fast — the SSOT is README badges + `.orchestrator/metrics/sessions.jsonl`. Per-session detail lives in the Meta-Vault decisions log (linked above), not here.
-- **`memory.propose` requires `SO_WAVE_AGENT=1`.** `scripts/memory-propose.mjs` exits `3` (`rejected-wrong-context`) unless `process.env.SO_WAVE_AGENT === '1'`. The wave-executor boilerplate (see `skills/wave-executor/SKILL.md`) sets this env-var for every dispatched agent automatically. Direct invocation from the coordinator thread will always be rejected — use `/evolve` there instead. Full status dict: `queued` (0), `dry-run-ok` (0, validate-only via `--dry-run` — validates + prints, never writes proposals.jsonl; #741.3), `quota-exceeded` (1), `rejected-low-confidence` (2), `rejected-wrong-context` (3), `error` (4). See `docs/session-config-reference.md` § Memory Proposals. <!-- consistency:exempt:runtime-only -->
-- **Auto-promoted worktree cleanup is Hybrid Pattern (Anthropic-style).** When a session ran in a sibling worktree created via `enterWorktree()` (Phase 0.5 PROMOTION_OFFER outcome), `/close` Phase 4a detects this (`parseSessionId().format === 'semantic'` + path matches `<basePath>/<repo-name>-<sessionId>/`). Clean worktree → auto-remove with WARN. Dirty (uncommitted/untracked/unpushed) → AUQ `[Behalten/Löschen/Manuell]`. The Phase 4a cleanup runs AFTER Phase 4 commit+push, not before — this respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal. PSA-003 compliance enforced. Implementation: `skills/session-end/SKILL.md § Phase 4a`. <!-- consistency:exempt:runtime-only -->
+- **`memory.propose` requires `SO_WAVE_AGENT=1`.** `scripts/memory-propose.mjs` exits `3` (`rejected-wrong-context`) unless `process.env.SO_WAVE_AGENT === '1'`.
+  The wave-executor boilerplate (see `skills/wave-executor/SKILL.md`) sets this env-var for every dispatched agent automatically. Direct invocation from the coordinator thread will always be rejected — use `/evolve` there instead.
+  Full status dict: `queued` (0), `dry-run-ok` (0, validate-only via `--dry-run` — validates + prints, never writes proposals.jsonl; #741.3), `quota-exceeded` (1), `rejected-low-confidence` (2), `rejected-wrong-context` (3), `error` (4).
+  See `docs/session-config-reference.md` § Memory Proposals. <!-- consistency:exempt:runtime-only -->
+- **Auto-promoted worktree cleanup is Hybrid Pattern (Anthropic-style).** When a session ran in a sibling worktree created via `enterWorktree()` (Phase 0.5 PROMOTION_OFFER outcome), `/close` Phase 4a detects this (`parseSessionId().format === 'semantic'` + path matches `<basePath>/<repo-name>-<sessionId>/`).
+  Clean worktree → auto-remove with WARN. Dirty (uncommitted/untracked/unpushed) → AUQ `[Behalten/Löschen/Manuell]`.
+  The Phase 4a cleanup runs AFTER Phase 4 commit+push, not before — this respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal.
+  PSA-003 compliance enforced. Implementation: `skills/session-end/SKILL.md § Phase 4a`. <!-- consistency:exempt:runtime-only -->
 
 ## Session Config
 
@@ -180,7 +189,8 @@ reconcile:
 
 ## Skill Evolution <!-- consistency:exempt:parity-exempt-skill-evolution-block -->
 
-> Opt-in self-evolution autonomy gate (Epic #643). A DISTINCT top-level block from the `evolve:` Session Config key above — `scripts/lib/config/skill-evolution.mjs` parses it independently of the `## Session Config` boundary. Lives outside `## Session Config` by design so `claude-md-drift-check` Check 6 (session-config-parity) does not flag it. Activated for this repo (#652) after the C2 engine (#647/#651) + the H1 evidence_kind guard (session-3) made autonomous-apply safe: the engine may auto-apply ONLY the `command-count` drift shape on the root instruction file, behind the quadruple gate (autonomy ∧ safe-posture ∧ gate-green ∧ evidence ≥ evidence-floor) AND only for `filesystem-fact`-sourced candidates. Plugin/local-skill/remote targets are ALWAYS MR-only.
+> Opt-in self-evolution autonomy gate (Epic #643). A DISTINCT top-level block from the `evolve:` Session Config key above — `scripts/lib/config/skill-evolution.mjs` parses it independently of the `## Session Config` boundary, so `claude-md-drift-check` Check 6 (session-config-parity) never flags it.
+> See `docs/session-config-reference.md` § Skill Evolution for the #652 activation history, the C2/H1-guard detail, and the quadruple-gate + MR-only rules.
 
 skill-evolution:
   autonomy: autonomous-gated      # off | advisory | autonomous-gated — armed (#652)
@@ -189,7 +199,9 @@ skill-evolution:
 
 ## Dispatcher Autonomy <!-- consistency:exempt:parity-exempt-dispatcher-autonomy-block -->
 
-> **Parity-exempt section** (Epic #673, #679). Intentionally OUTSIDE `## Session Config` so `claude-md-drift-check` Check-6 (session-config-parity) does not flag repos that have not adopted this feature — `scripts/lib/config/dispatcher-autonomy.mjs` parses it independently of the `## Session Config` boundary. This committed block is the one-time capture of #681 (dogfooded here); its PRESENCE is the never-re-ask marker, so session-start Phase 1.1's migration trigger will not re-prompt. The value is `off` — fail-closed, no behaviour change, identical to this repo's de-facto state before adoption. The effective autonomy resolves host-locally `SO_DISPATCHER_AUTONOMY` env > `owner.yaml` `dispatcher.autonomy` > committed > `off` (#653 pattern), so a machine may opt this repo into `advisory`/`autonomous-gated` without editing this block.
+> **Parity-exempt section** (Epic #673, #679). Intentionally OUTSIDE `## Session Config` so `claude-md-drift-check` Check-6 (session-config-parity) does not flag repos that have not adopted this feature — `scripts/lib/config/dispatcher-autonomy.mjs` parses it independently.
+> This block's committed presence is itself the never-re-ask marker (session-start Phase 1.1 migration trigger). Effective autonomy resolves host-locally: env > `owner.yaml` > committed > `off`.
+> See `docs/session-config-reference.md` § Dispatcher Autonomy for the #681 capture history and the full precedence chain.
 
 dispatcher-autonomy:
   autonomy: off            # off | advisory | autonomous-gated — default off (fail-closed)
