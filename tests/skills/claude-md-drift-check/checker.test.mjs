@@ -377,6 +377,52 @@ describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH r
   });
 });
 
+// ---------------------------------------------------------------------------
+// check 3: issue-reference-freshness — explicit --repo CLI precedence (#872)
+//
+// checker.mjs's own comment ("#872: CLI --repo always wins; otherwise
+// auto-detect...") documents an explicit-over-auto-detect precedence that
+// the SSH-remote test above never actually exercises — that test never
+// passes a CLI --repo flag at all, so it only pins the auto-detect branch.
+// This test gives the vault repo an SSH remote that WOULD resolve to a
+// different --repo value via resolveRepoSpec, then passes an explicit
+// --repo argv value and asserts the CLI value reaches glab untouched while
+// the auto-detected host is never used — proving resolveRepoSpec's result
+// is discarded (never invoked/never wins) whenever args.repo is already set.
+// ---------------------------------------------------------------------------
+
+describe('check 3: issue-reference-freshness — explicit --repo CLI precedence over auto-detect', () => {
+  it('an explicit --repo argv value reaches glab verbatim, not the SSH-remote-derived auto-detected spec', () => {
+    spawnSync('git', ['init', '--quiet'], { cwd: vault });
+    spawnSync(
+      'git',
+      ['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'],
+      { cwd: vault },
+    );
+    writeFileSync(join(vault, 'CLAUDE.md'), "## What's Next\n- #123 upcoming\n");
+
+    const binDir = mkdtempSync(join(tmpdir(), 'drift-check-glab-stub-'));
+    const captureFile = join(binDir, 'capture.txt');
+    const glabStub = join(binDir, 'glab');
+    writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
+    chmodSync(glabStub, 0o755);
+
+    try {
+      const r = runChecker(
+        vault,
+        ['--repo', 'explicit-owner/explicit-repo'],
+        { PATH: `${binDir}${delimiter}${process.env.PATH}` },
+      );
+      expect(r.code).toBe(0);
+      const capture = existsSync(captureFile) ? readFileSync(captureFile, 'utf8') : '';
+      expect(capture).toContain('--repo explicit-owner/explicit-repo');
+      expect(capture).not.toContain('gitlab.example.com');
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('check 4: session-file-existence', () => {
   it('flags references to missing session files', () => {
     writeFileSync(join(vault, 'CLAUDE.md'),

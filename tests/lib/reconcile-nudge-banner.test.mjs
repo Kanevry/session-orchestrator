@@ -169,6 +169,40 @@ describe('checkReconcileNudge — nudge (c): rule-eligible learnings', () => {
   });
 });
 
+describe('checkReconcileNudge — type-alias read-path (issue #900): raw dialect type normalizes before eligibility', () => {
+  it('a raw "gotcha" learning with non-empty file_paths counts as rule-eligible after alias normalization', async () => {
+    // 'gotcha' is a raw producer dialect, never itself in CONVERT_TYPES —
+    // LEARNING_TYPE_ALIASES maps it to 'anti-pattern' (ruleConvertible: true)
+    // via normalizeDialects() on the readLearnings() funnel. This proves that
+    // normalization actually reaches filterEligible() through this consumer,
+    // not just in an isolated schema.mjs unit test.
+    writeLearnings(tmpRepo, NUDGE_MIN_ELIGIBLE, {
+      type: 'gotcha',
+      confidence: 0.8,
+      file_paths: ['scripts/lib/example.mjs'],
+    });
+    const computed = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(computed.eligibleCount).toBe(NUDGE_MIN_ELIGIBLE);
+    const result = await checkReconcileNudge({ repoRoot: tmpRepo });
+    expect(result).not.toBe(null);
+    expect(result.message).toContain(`${NUDGE_MIN_ELIGIBLE} rule-eligible`);
+  });
+
+  it('a raw "gotcha" learning WITHOUT file_paths does not count as rule-eligible (negative control)', async () => {
+    // Same alias resolution ('gotcha' -> 'anti-pattern') but no file_paths —
+    // classifyLearning's file-gate still rejects it. Confirms the eligibility
+    // gain above comes from the file_paths presence, not merely from the
+    // type-alias resolution alone.
+    writeLearnings(tmpRepo, NUDGE_MIN_ELIGIBLE, {
+      type: 'gotcha',
+      confidence: 0.8,
+    });
+    const computed = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(computed.eligibleCount).toBe(0);
+    expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
+  });
+});
+
 describe('checkReconcileNudge — nudge (b): delta since last determinable run', () => {
   const PRIOR_RUN_CANDIDATES = 10;
 
