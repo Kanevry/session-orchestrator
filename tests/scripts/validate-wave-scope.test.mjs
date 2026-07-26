@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -299,26 +299,30 @@ describe('validate-wave-scope.mjs — file input errors', () => {
 });
 
 describe('validate-wave-scope.mjs — stdin pipe (shebang/runnable)', () => {
-  // .claude/wave-scope.json is a gitignored runtime file; skip when absent.
-  const waveScopePath = resolve(__dirname, '../../.claude/wave-scope.json');
-  const waveScopeExists = existsSync(waveScopePath);
+  // #901: previously gated on the live, gitignored .claude/wave-scope.json —
+  // the suite total flipped by ±1 depending on WHEN it ran (mid-wave vs.
+  // between waves vs. CI, where the file never exists). A fixture makes the
+  // test deterministic and gives the stdin path CI coverage for the first
+  // time. Precedent: tests/lib/state-md/frontmatter-safe-guard.test.mjs.
+  const stdinFixture = JSON.stringify({
+    wave: 2,
+    role: 'Impl-Core',
+    enforcement: 'strict',
+    allowedPaths: ['src/lib/example.mjs', 'tests/lib/example.test.mjs'],
+    blockedCommands: ['rm -rf', 'git push --force'],
+  });
 
-  it.skipIf(!waveScopeExists)('cat .claude/wave-scope.json | node validate-wave-scope.mjs exits 0', () => {
-    // Pipe the real .claude/wave-scope.json from the repo through stdin
-    const catResult = spawnSync('cat', [waveScopePath], { encoding: 'utf8' });
-    expect(catResult.status).toBe(0);
-
-    // Now pipe that content to the validator via stdin
+  it('piping a valid wave-scope JSON via stdin exits 0', () => {
     const r = spawnSync('node', [SCRIPT], {
-      input: catResult.stdout,
+      input: stdinFixture,
       encoding: 'utf8',
     });
     expect(r.status).toBe(0);
     expect(r.stderr).toBe('');
     // Output must be valid JSON matching the source
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.wave).toBeTypeOf('number');
-    expect(parsed.enforcement).toMatch(/^(strict|warn|off)$/);
+    expect(parsed.wave).toBe(2);
+    expect(parsed.enforcement).toBe('strict');
   });
 });
 
