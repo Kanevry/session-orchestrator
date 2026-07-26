@@ -1,3 +1,12 @@
+# DO NOT UNTRACK. This file is deliberately tracked (owner decision 2026-07-21).
+#
+# The vault-side generator reads it to regenerate the project's _overview.md; if it
+# leaves the repo, that registration breaks. Untracking has already been proposed and
+# reverted twice — the privacy argument does not hold, because the GitLab path below
+# is public elsewhere in this repo anyway (CHANGELOG.md, docs/ci-setup.md), so
+# removing this file costs the registration and buys nothing. It passes
+# check-owner-leakage CP1–CP10 as-is.
+
 apiVersion: vault.gotzendorfer/v1
 kind: Repository
 
