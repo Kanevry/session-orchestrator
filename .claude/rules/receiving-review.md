@@ -5,7 +5,7 @@ review-date: 2026-10-23
 
 # Receiving Code Review (Always-on)
 
-How the coordinator (and any agent receiving review output) handles feedback. The default failure mode in our history is performative agreement — the agent says "great point, I'll implement it" before verifying the feedback is even correct, and ends up half-implementing a wrong suggestion. This rule prevents that.
+How the coordinator (and any agent receiving review output) handles feedback. The default failure mode in our history is performative agreement — accepting before verifying, then half-implementing a wrong suggestion. This rule prevents that.
 
 Applies to feedback from: session-reviewer, security-reviewer, persona reviewers (architect-reviewer, qa-strategist, analyst), inter-wave Quality-Lite output, user-provided review comments, external code-review-agent output.
 
@@ -85,13 +85,17 @@ Classify every finding into **exactly one** class before patching:
 |---|---|---|
 | **`in-scope-blocker`** | Introduced by this diff, same owner boundary, fixable without changing the task's contract | Fix this cycle |
 | **`follow-up`** | Real, but an adjacent bug class or sibling surface | Route via the disposition table in `skills/session-end/SKILL.md` |
-| **`stop-and-escalate`** | The correct fix would break the frozen scope — see the five triggers below | Never patch, however small it looks — report the scope break to the operator |
+| **`stop-and-escalate`** | The correct fix would break the frozen scope | Never patch, however small — escalate via the check below |
 
 `stop-and-escalate` triggers — exactly these five, nothing else: (1) a new protocol, (2) a new config surface, (3) a storage change, (4) a public-API contract, (5) a different owner boundary or a release-process change.
 
 Frozen-scope exceptions — exactly these five, nothing else: (1) active data loss, (2) crash, (3) broken install/upgrade, (4) release blocker, (5) concrete security exposure.
 
-`stop-and-escalate` degenerating into an excuse to route inconvenient findings away is precisely inverse to its purpose.
+Before invoking `stop-and-escalate`, run this check:
+
+1. **Name the trigger** — state exactly which of the five above applies.
+2. **Prove the smaller fix insufficient** — show why no in-scope-blocker subset resolves the finding without crossing that trigger.
+3. **Report, don't patch** — hand the operator steps 1-2; escalating is the action, never a workaround commit.
 
 ## RCR-008: Two-Cycle Reclassify
 

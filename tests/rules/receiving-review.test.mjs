@@ -200,6 +200,34 @@ describe('receiving-review.md — RCR-007 Three-Class Finding Triage (#899)', ()
   });
 });
 
+describe('receiving-review.md — RCR-007 anti-gaming check procedure (#902)', () => {
+  it('the old one-sentence anti-gaming clause is gone (replaced, not appended)', () => {
+    expect(content).not.toContain('degenerating into an excuse to route inconvenient findings away');
+  });
+
+  it('a pre-escalation check is introduced before invoking stop-and-escalate', () => {
+    expect(content).toMatch(/Before invoking `stop-and-escalate`, run this check:/);
+  });
+
+  it('step 1 of 3 — name the trigger — is present', () => {
+    expect(content).toMatch(/\*\*Name the trigger\*\* — state exactly which of the five above applies\./);
+  });
+
+  it('step 2 of 3 — prove the smaller fix insufficient — is present', () => {
+    expect(content).toMatch(/\*\*Prove the smaller fix insufficient\*\* — show why no in-scope-blocker subset resolves the finding without crossing that trigger\./);
+  });
+
+  it('step 3 of 3 — report, do not patch — is present', () => {
+    expect(content).toMatch(/\*\*Report, don't patch\*\* — hand the operator steps 1-2; escalating is the action, never a workaround commit\./);
+  });
+
+  it('the check is a genuine 3-item numbered procedure scoped to the RCR-007 section (not prose)', () => {
+    const rcr007Section = content.split('## RCR-007')[1].split('## RCR-008')[0];
+    const numberedSteps = rcr007Section.match(/^\d+\.\s+\*\*/gm) ?? [];
+    expect(numberedSteps.length).toBe(3);
+  });
+});
+
 describe('receiving-review.md — RCR-008 Two-Cycle Reclassify (#899)', () => {
   it('RCR-008 section heading is present', () => {
     expect(content).toMatch(/##\s+RCR-008/);
