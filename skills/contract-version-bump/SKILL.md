@@ -24,6 +24,10 @@ description: >
 
 # Contract Version Bump
 
+> Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent
+> aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md).
+> Every reference to `CLAUDE.md` in this skill resolves via that precedence rule.
+
 A version bump on a machine-readable contract (JSON Schema, OpenAPI/API spec, config schema) is
 not just "increment the number." Three failure modes recur and are each individually
 non-obvious enough that a careful agent still misses them without a checklist: the contract's
@@ -74,10 +78,12 @@ grep -rn "<current-version>" --include=*.json --include=*.md --include=*.yaml --
 #    (field-catalog tables, example fixtures, README snippets)
 grep -rln "schema_version\|apiVersion\|<version-field-name>" docs/ examples/ 2>/dev/null
 
-# 3. Vendored copies in sibling repos — check every path under CLAUDE.md's
-#    `cross-repos:` list. Match by basename, not by path: a vendored copy is
-#    rarely at an identical relative path.
-for repo in $(yq '.["cross-repos"][]' CLAUDE.md 2>/dev/null || grep -A20 '^cross-repos:' CLAUDE.md | grep '  - ' | sed 's/^ *- *//'); do
+# 3. Vendored copies in sibling repos — check every path under the instruction
+#    file's `cross-repos:` list. Match by basename, not by path: a vendored copy
+#    is rarely at an identical relative path.
+#    CLAUDE.md and AGENTS.md are transparent aliases — resolve whichever exists.
+INSTR=$([ -f CLAUDE.md ] && echo CLAUDE.md || echo AGENTS.md)
+for repo in $(yq '.["cross-repos"][]' "$INSTR" 2>/dev/null || grep -A20 '^cross-repos:' "$INSTR" | grep '  - ' | sed 's/^ *- *//'); do
   find "$repo" -iname "$(basename <contract-file>)" 2>/dev/null
 done
 ```
@@ -178,7 +184,8 @@ surface it as explicit follow-up work, even if fixing it is out of scope for thi
       making? If not, write the clause first (with justification), before touching the version.
 - [ ] Classify Patch / Minor / Major against that rule — not generic semver instinct.
 - [ ] `grep -rn` the current version literal across this repo (schema, prose spec, examples/fixtures).
-- [ ] Search every repo in CLAUDE.md's `cross-repos:` list for a vendored copy (basename match).
+- [ ] Search every repo in the instruction file's `cross-repos:` list (`CLAUDE.md`, or `AGENTS.md`
+      on Codex CLI) for a vendored copy (basename match).
 - [ ] For every new/changed keyword, grep each known consumer's source for that keyword name.
       Decide: extend / fold into a supported keyword / document the gap — pick one, write it down.
 - [ ] Apply the bump + constraint change to every non-exempt literal found in Phase 2.

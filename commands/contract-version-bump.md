@@ -11,7 +11,8 @@ config schema) after changing it. Invoke the contract-version-bump skill with ar
 
 Runs six phases: classify the change against the CONTRACT'S OWN versioning rule (not generic
 semver instinct), find every version literal and vendored copy across this repo and every repo
-in CLAUDE.md's `cross-repos:` list, check whether every known consumer actually evaluates each
+in the instruction file's `cross-repos:` list (`CLAUDE.md`, or `AGENTS.md` on Codex CLI — the two
+are transparent aliases), check whether every known consumer actually evaluates each
 new/changed schema keyword, apply the bump consistently (with written exceptions, never silent
 ones), write a Keep-a-Changelog entry that calls out breaking-for-consumers risk explicitly
 regardless of version tier, and report any dependent repo/copy left un-synced as follow-up work.
