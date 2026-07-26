@@ -467,16 +467,20 @@ function makeTierFixture() {
   return dir;
 }
 
-describe('computeInstructionBudget — bySurface tier split (#877)', () => {
-  it('bySurface.coordinator equals totalBytes (the coordinator sees the full always-on corpus)', () => {
+describe('computeInstructionBudget — bySurface tier split (#877; corrected #893)', () => {
+  it('bySurface.coordinator excludes tier:wave-only bytes (#893 — mirrors loadApplicableRules({context:"coordinator"}), NOT the full untiered corpus)', () => {
     const dir = makeTierFixture();
 
     const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
 
-    expect(result.bySurface.coordinator).toBe(result.totalBytes);
+    // always + coordinator-only + untagged — wave-only (tier-wave.md) is excluded.
     expect(result.bySurface.coordinator).toBe(
-      TIER_ALWAYS_BYTES + TIER_COORD_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES,
+      TIER_ALWAYS_BYTES + TIER_COORD_BYTES + TIER_UNTAGGED_BYTES,
     );
+    // Pre-#893 this equaled totalBytes (the full untiered corpus); it no
+    // longer does, because totalBytes (no context requested) still includes
+    // the wave-only file that bySurface.coordinator now correctly excludes.
+    expect(result.bySurface.coordinator).not.toBe(result.totalBytes);
   });
 
   it('bySurface.wave excludes tier:coordinator-only bytes (what a wave agent actually receives)', () => {
@@ -496,13 +500,20 @@ describe('computeInstructionBudget — bySurface tier split (#877)', () => {
     expect(result.bySurface.always).toBe(TIER_ALWAYS_BYTES);
   });
 
-  it('holds the nesting invariant always ⊆ wave ⊆ coordinator (strictly less-or-equal in byte terms)', () => {
+  it('always is a subset of BOTH wave and coordinator (each surface individually), but wave and coordinator are NOT nested in each other (#893)', () => {
     const dir = makeTierFixture();
 
     const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
 
+    // `always` never exceeds either sibling surface — neither tier gate
+    // excludes `tier: always` content.
     expect(result.bySurface.always).toBeLessThanOrEqual(result.bySurface.wave);
-    expect(result.bySurface.wave).toBeLessThanOrEqual(result.bySurface.coordinator);
+    expect(result.bySurface.always).toBeLessThanOrEqual(result.bySurface.coordinator);
+    // In THIS fixture wave and coordinator happen to be equal (symmetric
+    // 5-byte coordinator-only/wave-only bodies) — that is fixture
+    // coincidence, not a general `wave ⊆ coordinator` invariant. See the
+    // asymmetric-fixture test below for the case where they diverge.
+    expect(result.bySurface.wave).toBe(result.bySurface.coordinator);
   });
 
   it('does NOT implement the additive coordinator + wave === totalBytes identity (would double-count the always tier)', () => {
@@ -510,9 +521,132 @@ describe('computeInstructionBudget — bySurface tier split (#877)', () => {
 
     const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
 
-    // coordinator(19) + wave(14) = 33 ≠ totalBytes(19) — the additive PRD
-    // identity is mathematically impossible here and must NOT hold.
+    // coordinator(14) + wave(14) = 28 ≠ totalBytes(19, untiered — no context
+    // requested) — the additive PRD identity is mathematically impossible
+    // here and must NOT hold.
     expect(result.bySurface.coordinator + result.bySurface.wave).not.toBe(result.totalBytes);
+    expect(result.bySurface.coordinator).toBe(14);
+    expect(result.bySurface.wave).toBe(14);
+    expect(result.totalBytes).toBe(19);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #893 — asymmetric tier fixture: a BIGGER coordinator-only body than the
+// wave-only body, so `bySurface.wave` and `bySurface.coordinator` can never
+// coincidentally match the way they do in the symmetric makeTierFixture()
+// above. Proves (a) wave/coordinator are genuinely sibling projections, not
+// nested, and (b) bySurface stays computed identically regardless of which
+// `context` was requested for the PRIMARY totals (M1).
+// ---------------------------------------------------------------------------
+
+// coordBig: `tier: coordinator-only`, 2-bullet body (bigger than tier-wave's
+// 1-bullet body). Byte/count hand-verified standalone via Buffer.byteLength
+// on the post-frontmatter body — never via the SUT.
+const TIER_COORD_BIG = `---
+tier: coordinator-only
+---
+
+- coordinator only bullet one
+- coordinator only bullet two
+`;
+const TIER_COORD_BIG_BYTES = 61;
+
+function makeAsymmetricTierFixture() {
+  const dir = makeTmpRulesDir();
+  writeRule(dir, 'tier-always.md', TIER_ALWAYS);
+  writeRule(dir, 'tier-coord-big.md', TIER_COORD_BIG);
+  writeRule(dir, 'tier-wave.md', TIER_WAVE);
+  writeRule(dir, 'tier-untagged.md', TIER_UNTAGGED);
+  return dir;
+}
+
+describe('computeInstructionBudget — bySurface context-independence, asymmetric fixture (#893 M1)', () => {
+  it('bySurface is identical across context:"wave", context:"coordinator", and no context at all', () => {
+    const dir = makeAsymmetricTierFixture();
+
+    const withWave = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'wave' });
+    const withCoordinator = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      context: 'coordinator',
+    });
+    const withNoContext = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    const expectedBySurface = {
+      coordinator: TIER_ALWAYS_BYTES + TIER_COORD_BIG_BYTES + TIER_UNTAGGED_BYTES, // 70
+      wave: TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES, // 14
+      always: TIER_ALWAYS_BYTES, // 5
+    };
+
+    expect(withWave.bySurface).toEqual(expectedBySurface);
+    expect(withCoordinator.bySurface).toEqual(expectedBySurface);
+    expect(withNoContext.bySurface).toEqual(expectedBySurface);
+  });
+
+  it('a context:"wave" call narrows totalBytes below bySurface.coordinator, proving bySurface.coordinator is NOT re-derived from the narrowed selection', () => {
+    const dir = makeAsymmetricTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'wave' });
+
+    // totalBytes (wave-narrowed) excludes the big coordinator-only file.
+    expect(result.totalBytes).toBe(TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES); // 14
+    // bySurface.coordinator still reports the FULL coordinator-surface sum,
+    // unaffected by the 'wave' context requested for the primary totals.
+    expect(result.bySurface.coordinator).toBe(
+      TIER_ALWAYS_BYTES + TIER_COORD_BIG_BYTES + TIER_UNTAGGED_BYTES,
+    ); // 70
+    expect(result.bySurface.coordinator).not.toBe(result.totalBytes);
+  });
+
+  it('wave and coordinator are genuinely sibling projections here — coordinator is bigger than wave (no nesting invariant)', () => {
+    const dir = makeAsymmetricTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.bySurface.wave).toBe(14);
+    expect(result.bySurface.coordinator).toBe(70);
+    expect(result.bySurface.wave).toBeLessThan(result.bySurface.coordinator);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #893 M2 — context: 'coordinator' PRIMARY totals (totalDirectives/totalBytes/
+// perFile). Before the fix, 'coordinator' silently coerced to the untiered
+// `null` shape (same bug class as bySurface.coordinator above, but for the
+// PRIMARY totals instead of the surface split).
+// ---------------------------------------------------------------------------
+
+describe('computeInstructionBudget — context: "coordinator" narrows PRIMARY totals (#893 M2)', () => {
+  it('excludes tier:wave-only from totalDirectives/totalBytes/perFile, mirroring loadApplicableRules({context:"coordinator"})', () => {
+    const dir = makeTierFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'coordinator' });
+
+    expect(result.totalDirectives).toBe(
+      TIER_ALWAYS_COUNT + TIER_COORD_COUNT + TIER_UNTAGGED_COUNT,
+    );
+    expect(result.totalBytes).toBe(TIER_ALWAYS_BYTES + TIER_COORD_BYTES + TIER_UNTAGGED_BYTES);
+    expect(result.perFile.map((f) => f.file).sort()).toEqual([
+      'tier-always.md',
+      'tier-coord.md',
+      'tier-untagged.md',
+    ]);
+  });
+
+  it('fake-regression control: context:"wave" on the SAME fixture includes the wave-only file instead (proves the two contexts genuinely select different sets, not a naming fluke)', () => {
+    const dir = makeTierFixture();
+
+    const coordinatorResult = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      context: 'coordinator',
+    });
+    const waveResult = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, context: 'wave' });
+
+    expect(coordinatorResult.perFile.map((f) => f.file).sort()).not.toContain('tier-wave.md');
+    expect(waveResult.perFile.map((f) => f.file).sort()).toContain('tier-wave.md');
+    expect(waveResult.perFile.map((f) => f.file).sort()).not.toContain('tier-coord.md');
   });
 });
 

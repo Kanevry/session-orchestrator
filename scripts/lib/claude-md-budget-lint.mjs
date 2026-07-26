@@ -19,16 +19,28 @@
  * Stdlib-only, no third-party deps. `lintClaudeMd()` is pure computation and
  * throws `ClaudeMdLintInfraError` on any unreadable/missing-file condition —
  * the CLI (`main()`) is the sole place that catches this and maps it to
- * exit 2, mirroring the `checker.mjs` contract below.
+ * exit 2 (a genuine infra error). CLI-argument errors (parsed in
+ * `parseArgs()`/`argError()`) are a SEPARATE class and map to exit 1 instead
+ * — see the exit-code contract below.
  *
- * Exit-code contract (mirrors skills/claude-md-drift-check/checker.mjs):
+ * Exit-code contract (#892 CLI-arg hygiene fix — DIVERGES from
+ *   skills/claude-md-drift-check/checker.mjs, which still conflates CLI
+ *   argument errors with infra errors under exit 2; that module is out of
+ *   this fix's file scope, so the divergence is deliberate and not
+ *   backported there):
  *   0 — no violations, OR violations present but --mode warn
- *   1 — violations present AND --mode hard (the CLI default)
- *   2 — infra error (missing file, unreadable file, invalid --mode)
+ *   1 — violations present AND --mode hard (the CLI default), OR a CLI
+ *       argument error (missing flag value, unknown flag, invalid --mode,
+ *       non-numeric --max-lines/--max-line-chars) — per
+ *       .claude/rules/cli-design.md § Exit Codes, an argument error is a
+ *       USER/input error, never a system error.
+ *   2 — infra error ONLY: missing/unreadable CLAUDE.md/AGENTS.md target file
+ *       (surfaced by lintClaudeMd()/resolveLintTarget()).
  *
  * Cross-references:
  * - scripts/lib/instruction-budget-guard.mjs (sibling directive-count probe)
- * - skills/claude-md-drift-check/checker.mjs (exit-code contract this mirrors)
+ * - skills/claude-md-drift-check/checker.mjs (infra-error half of the exit-code contract this mirrors; CLI-arg-error half deliberately diverges, see above)
+ * - scripts/lib/description-surface.mjs (source of the argError()/CLI-arg-hygiene pattern this module now follows, #878 FA2c)
  * - scripts/lib/rules-sync.mjs (PLUGIN_HEADER_PREFIX provenance-header convention)
  * - skills/bootstrap/fast-template.md § Step 2c (bootstrap wiring)
  * - skills/bootstrap/SKILL.md § Phase 4.5 (bootstrap wiring)
@@ -198,6 +210,19 @@ export function checkClaudeMdBudgetLint(opts = {}) {
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
+/**
+ * Exit code 1 per `.claude/rules/cli-design.md` § Exit Codes — every failure
+ * mode below (missing flag value, unrecognized flag, invalid --mode, a
+ * non-numeric --max-lines/--max-line-chars) is a USER/input error, never a
+ * system error (missing file, unreadable file), so none of them may use
+ * exit 2. Mirrors `scripts/lib/description-surface.mjs`'s identical
+ * `argError()` pattern (#878 FA2c) — #892 CLI-arg hygiene fix.
+ */
+function argError(reason) {
+  process.stderr.write(JSON.stringify({ status: 'user-error', reason }) + '\n');
+  process.exit(1);
+}
+
 function parseArgs(argv) {
   const out = {
     file: null,
@@ -210,22 +235,52 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--file') out.file = argv[++i];
-    else if (a === '--repo-root') out.repoRoot = argv[++i];
-    else if (a === '--max-lines') out.maxLines = Number.parseInt(argv[++i], 10);
-    else if (a === '--max-line-chars') out.maxLineChars = Number.parseInt(argv[++i], 10);
-    else if (a === '--require-provenance') out.requireProvenance = true;
-    else if (a === '--mode') out.mode = argv[++i];
-    else if (a === '--json') out.json = true;
-    else if (a === '--help' || a === '-h') {
+    if (a === '--file') {
+      const val = argv[++i];
+      // A trailing `--file` with no following value must fail cleanly, not
+      // silently fall back to --repo-root-based resolution.
+      if (val === undefined) return argError('--file requires a value');
+      out.file = val;
+    } else if (a === '--repo-root') {
+      const val = argv[++i];
+      // A trailing `--repo-root` with no following value must fail cleanly,
+      // not crash `resolve(undefined)` deeper in resolveLintTarget() with a
+      // leaked internal TypeError message.
+      if (val === undefined) return argError('--repo-root requires a value');
+      out.repoRoot = val;
+    } else if (a === '--max-lines') {
+      const val = argv[++i];
+      if (val === undefined) return argError('--max-lines requires a value');
+      const parsed = Number.parseInt(val, 10);
+      if (!Number.isFinite(parsed)) return argError(`invalid --max-lines: ${val}`);
+      out.maxLines = parsed;
+    } else if (a === '--max-line-chars') {
+      const val = argv[++i];
+      if (val === undefined) return argError('--max-line-chars requires a value');
+      const parsed = Number.parseInt(val, 10);
+      if (!Number.isFinite(parsed)) return argError(`invalid --max-line-chars: ${val}`);
+      out.maxLineChars = parsed;
+    } else if (a === '--require-provenance') {
+      out.requireProvenance = true;
+    } else if (a === '--mode') {
+      const val = argv[++i];
+      if (val === undefined) return argError('--mode requires a value');
+      if (!['hard', 'warn'].includes(val)) return argError(`invalid --mode: ${val}`);
+      out.mode = val;
+    } else if (a === '--json') {
+      out.json = true;
+    } else if (a === '--help' || a === '-h') {
       process.stdout.write(
         'Usage: claude-md-budget-lint.mjs [--file CLAUDE.md|AGENTS.md] [--repo-root PATH] [--max-lines 150] ' +
-          '[--max-line-chars 400] [--require-provenance] [--mode hard|warn] [--json]\n'
+          '[--max-line-chars 400] [--require-provenance] [--mode hard|warn] [--json]\n' +
+          'Exit codes: 0 = ok (no violations, or --mode warn with violations); ' +
+          '1 = violations in --mode hard, OR a CLI argument error (missing flag value, unknown flag, ' +
+          'invalid --mode, non-numeric --max-lines/--max-line-chars); ' +
+          '2 = infra error (missing/unreadable CLAUDE.md/AGENTS.md target file).\n'
       );
       process.exit(0);
     } else {
-      process.stderr.write(JSON.stringify({ status: 'infra-error', reason: `unknown arg: ${a}` }) + '\n');
-      process.exit(2);
+      return argError(`unknown arg: ${a}`);
     }
   }
   return out;
@@ -253,16 +308,12 @@ function formatHuman(result, mode) {
 }
 
 function main() {
+  // parseArgs() already validates --mode (enum), --max-lines/--max-line-chars
+  // (numeric), missing flag values, and unknown flags — calling argError()
+  // (exit 1) and terminating the process before returning on any violation.
+  // By the time control reaches here, args carries only well-formed values;
+  // no redundant re-validation needed (#892 CLI-arg hygiene fix).
   const args = parseArgs(process.argv.slice(2));
-
-  if (!['hard', 'warn'].includes(args.mode)) {
-    process.stderr.write(JSON.stringify({ status: 'infra-error', reason: `invalid --mode: ${args.mode}` }) + '\n');
-    process.exit(2);
-  }
-  if (!Number.isFinite(args.maxLines) || !Number.isFinite(args.maxLineChars)) {
-    process.stderr.write(JSON.stringify({ status: 'infra-error', reason: 'invalid --max-lines/--max-line-chars' }) + '\n');
-    process.exit(2);
-  }
 
   let result;
   try {

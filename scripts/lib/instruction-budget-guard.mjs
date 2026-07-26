@@ -19,10 +19,22 @@
  * understates the real instruction-budget cost. `bySurface` further splits
  * the always-on corpus by `entry.tier` (issue #692) so a coordinator-only
  * file (never reaches a wave agent) does not silently inflate what a wave
- * agent's own budget looks like. The invariant is `always ⊆ wave ⊆
- * coordinator` (NOT the additive `coordinator + wave === totalBytes`
- * identity — that double-counts the `always` tier, which sits in both
- * surfaces; see #877 issue discussion).
+ * agent's own budget looks like.
+ *
+ * #893 correction: `bySurface.coordinator` mirrors
+ * `loadApplicableRules({context:'coordinator'})` exactly — the REAL
+ * coordinator delivery path (`print-applicable-rules.mjs --context
+ * coordinator`) — which EXCLUDES `tier: wave-only` content, not "the entire
+ * always-on corpus regardless of tier" as a pre-#893 doc revision claimed.
+ * `always` is a strict subset of both `wave` and `coordinator` (neither tier
+ * gate touches `tier: 'always'`), but `wave` and `coordinator` are each other's
+ * SIBLING projections, not nested — one excludes `coordinator-only`, the other
+ * excludes `wave-only`, so neither is guaranteed to be `⊆` the other. Do NOT
+ * assume `wave ⊆ coordinator` (that only held under the pre-#893 bug where
+ * `context: 'coordinator'` silently meant "untiered"). The additive
+ * `coordinator + wave === totalBytes` identity is separately never
+ * guaranteed either — it double-counts the `always` tier that sits in both
+ * surfaces; see #877 issue discussion.
  *
  * Plain-JS — no Zod dependency. Never throws.
  *   - `computeInstructionBudget` always returns the full shape (never null).
@@ -293,15 +305,29 @@ function sumBytes(entries) {
  * @param {string} [opts.repoRoot]  project root (defaults to process.cwd()).
  * @param {string} [opts.rulesDir]  rules directory (defaults to <repoRoot>/.claude/rules).
  * @param {number} [opts.ceiling]   directive ceiling (defaults to DEFAULT_CEILING).
- * @param {'wave'|'coordinator'|null} [opts.context]  (#877) narrows the
- *   PRIMARY totals (`totalDirectives`/`totalBytes`/`perFile`) to what a
- *   WAVE agent actually receives when `'wave'` (excludes `tier:
- *   coordinator-only`, via rule-loader's own tier gate — no hand-rolled
- *   tier conditionals here). `null` (default) or `'coordinator'` both
- *   preserve the pre-#877 shape: every always-on rule, tier-agnostic — the
- *   coordinator, by definition, receives the full always-on corpus (see
- *   `bySurface.coordinator` below). This is independent of `bySurface`,
- *   which is ALWAYS computed for all three surfaces regardless of `context`.
+ * @param {'wave'|'coordinator'|null} [opts.context]  (#877; corrected #893)
+ *   narrows the PRIMARY totals (`totalDirectives`/`totalBytes`/`perFile`) to
+ *   what a given surface actually receives, via rule-loader's own tier gate
+ *   (`loadApplicableRules({context})`) — no hand-rolled tier conditionals
+ *   here:
+ *     - `'wave'`: excludes `tier: coordinator-only` (what a WAVE agent
+ *       receives).
+ *     - `'coordinator'` (#893 fix — previously silently coerced to `null`,
+ *       i.e. untiered): excludes `tier: wave-only` — mirrors
+ *       `loadApplicableRules({context:'coordinator'})` exactly, the REAL
+ *       coordinator delivery path (`print-applicable-rules.mjs --context
+ *       coordinator`).
+ *     - `null` (default) OR any unrecognised value (`undefined`, `'bogus'`,
+ *       …): the pre-#877 tier-agnostic shape — every always-on rule,
+ *       regardless of tier. This ALSO matches rule-loader's own
+ *       `context: null` semantics (no tier gating at all — see
+ *       `rule-loader.mjs`'s `applyGates`), so `null` is not a special case
+ *       invented by this module; it is the same "no tier gate" behaviour
+ *       rule-loader itself defines. Fail-open: an unrecognised string never
+ *       throws, it just falls back to this same untiered shape.
+ *   This `context` param is independent of `bySurface`, which is ALWAYS
+ *   computed the same way for all three surfaces regardless of `context`
+ *   (see the `bySurface` doc below).
  * @returns {{
  *   totalDirectives: number,
  *   totalBytes: number,
@@ -315,28 +341,46 @@ function sumBytes(entries) {
  *   { totalDirectives: 0, totalBytes: 0, perFile: [], ceiling, overBudget: false,
  *     severity: 'ok', bySurface: { coordinator: 0, wave: 0, always: 0 } }.
  *
- *   bySurface invariant (#877 — NOT the additive `coordinator + wave ===
- *   totalBytes` identity, which double-counts the `always` tier):
- *     always ⊆ wave ⊆ coordinator
- *     bySurface.coordinator === totalBytes (of the FULL always-on set) —
- *       the coordinator is the top-level context that decides what to
- *       inject into each wave dispatch, so it structurally sees the entire
- *       always-on corpus regardless of any file's `tier:`. This is a
- *       DIRECT alias, not a tier-filtered derivation — it holds
- *       unconditionally, not merely because the current corpus happens to
- *       have zero `tier: wave-only` always-on files.
+ *   bySurface definition (#877; corrected #893 — NOT the additive
+ *   `coordinator + wave === totalBytes` identity, which double-counts the
+ *   `always` tier):
  *     bySurface.wave === bytes of every always-on rule whose tier is not
  *       'coordinator-only' (i.e. what `loadApplicableRules({context:'wave'})`
- *       returns) — equivalently "always + wave-only" bytes, since every
- *       always-on rule in this repo's corpus carries exactly one of the
- *       three tier values.
- *     bySurface.always === bytes of always-on rules with `tier === 'always'` only
+ *       returns) — equivalently "always + wave-only" bytes.
+ *     bySurface.coordinator === bytes of every always-on rule whose tier is
+ *       not 'wave-only' (i.e. what `loadApplicableRules({context:'coordinator'})`
+ *       returns — the REAL coordinator delivery path,
+ *       `print-applicable-rules.mjs --context coordinator`) —
+ *       equivalently "always + coordinator-only" bytes. #893 fix: this is
+ *       NOT a tier-agnostic alias of `totalBytes` — a pre-#893 doc revision
+ *       claimed the coordinator "structurally sees the entire always-on
+ *       corpus regardless of tier", which does not match rule-loader's own
+ *       tier gate and is corrected here.
+ *     bySurface.always === bytes of always-on rules with `tier === 'always'` only.
+ *
+ *   `always` is a strict subset of BOTH `wave` and `coordinator` (neither
+ *   tier gate excludes `tier: 'always'`), but `wave` and `coordinator` are
+ *   SIBLING projections of the same corpus, not nested in each other — each
+ *   excludes a DIFFERENT tier, so their relative size depends on how much
+ *   content actually carries `tier: wave-only` vs. `tier: coordinator-only`.
+ *   Do NOT assume `wave ⊆ coordinator` or `coordinator ⊆ wave`.
+ *
+ *   `bySurface` is computed identically regardless of what `opts.context`
+ *   was requested for the PRIMARY totals above — e.g. a `context: 'wave'`
+ *   call still reports the FULL coordinator-surface byte sum in
+ *   `bySurface.coordinator`, not the wave-narrowed `totalBytes`.
  */
 export function computeInstructionBudget(opts = {}) {
   const repoRoot = opts.repoRoot ?? process.cwd();
   const rulesDir = opts.rulesDir ?? join(repoRoot, '.claude/rules');
   const ceiling = typeof opts.ceiling === 'number' ? opts.ceiling : DEFAULT_CEILING;
-  const context = opts.context === 'wave' ? 'wave' : null;
+  // #893 fix: 'coordinator' used to fall through to the `null` (untiered)
+  // branch below — silently measuring the WRONG rule set for a coordinator
+  // context (it never excluded `tier: wave-only`). Now explicitly recognised
+  // alongside 'wave'; any other value (incl. `undefined`/'bogus') still
+  // fails open to the untiered `null` shape — see the param doc above.
+  const context =
+    opts.context === 'wave' ? 'wave' : opts.context === 'coordinator' ? 'coordinator' : null;
 
   const empty = {
     totalDirectives: 0,
@@ -350,38 +394,49 @@ export function computeInstructionBudget(opts = {}) {
 
   let allEntries;
   let waveEntries;
+  let coordinatorEntries;
   try {
     // Empty scopePaths → only always-on rules (no glob matches) are
-    // returned by either call. `context: null` is the pre-#877 shape
-    // (tier-agnostic, and also the coordinator's own view — see doc
-    // above); `context: 'wave'` applies rule-loader's own tier gate
-    // (`applyGates`) — reused, not reimplemented.
+    // returned by any of the three calls. `context: null` is the pre-#877
+    // shape (tier-agnostic — no tier gating at all, matching rule-loader's
+    // own `context: null` semantics); `context: 'wave'` / `context:
+    // 'coordinator'` each apply rule-loader's own tier gate (`applyGates`)
+    // — reused, not reimplemented. All three lists are loaded unconditionally
+    // (not just the one matching `opts.context`) because `bySurface` reports
+    // all three surfaces regardless of which `context` was requested for the
+    // PRIMARY totals (see doc above).
     allEntries = loadApplicableRules({ rulesDir, scopePaths: [] });
     waveEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'wave' });
+    coordinatorEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'coordinator' });
   } catch {
     return empty;
   }
 
-  if (!Array.isArray(allEntries) || !Array.isArray(waveEntries)) {
+  if (
+    !Array.isArray(allEntries) ||
+    !Array.isArray(waveEntries) ||
+    !Array.isArray(coordinatorEntries)
+  ) {
     return empty;
   }
 
   const alwaysOnAll = allEntries.filter((e) => e && e.alwaysOn === true);
   const alwaysOnWave = waveEntries.filter((e) => e && e.alwaysOn === true);
+  const alwaysOnCoordinator = coordinatorEntries.filter((e) => e && e.alwaysOn === true);
 
   const bySurface = {
-    coordinator: sumBytes(alwaysOnAll),
+    coordinator: sumBytes(alwaysOnCoordinator),
     wave: sumBytes(alwaysOnWave),
     always: sumBytes(alwaysOnAll.filter((e) => e.tier === 'always')),
   };
 
   // Surface-selected entry set for the PRIMARY totals. `context: null`
-  // (default) preserves pre-#877 behaviour — every always-on rule,
-  // tier-agnostic (same set that defines `bySurface.coordinator`).
-  // `context: 'wave'` narrows to what a wave agent receives — the exact
-  // same filtered list `bySurface.wave` sums (no second, separately
-  // computed entry list).
-  const selectedEntries = context === 'wave' ? alwaysOnWave : alwaysOnAll;
+  // (default, or any unrecognised value) preserves pre-#877 behaviour —
+  // every always-on rule, tier-agnostic. `context: 'wave'` / `context:
+  // 'coordinator'` each narrow to the exact same filtered list their
+  // `bySurface` counterpart sums (no second, separately computed entry list).
+  const selectedEntries =
+    context === 'wave' ? alwaysOnWave : context === 'coordinator' ? alwaysOnCoordinator : alwaysOnAll;
 
   const perFile = [];
   let totalDirectives = 0;

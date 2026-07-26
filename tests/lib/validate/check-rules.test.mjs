@@ -335,6 +335,56 @@ describe('check-rules — multiple violations in a single rule', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Case 12 (#892): auto-generated rule with an EMPTY globs array (`globs: []`)
+// must earn a distinct, accurate FAIL — "matches NOTHING, never loads" — and
+// NEVER the inverted "always-on" message. This is the auto-generated twin of
+// the handwritten-branch fix in tests/rules/check-rules-handwritten.test.mjs
+// (#880 QA Defect 1). Critically, a co-present `host-class:` key must NOT
+// rescue the rule into a PASS — rule-loader.mjs's globs.length === 0
+// exclusion is unconditional.
+// ---------------------------------------------------------------------------
+
+describe('check-rules — auto-generated rule with empty globs array (#892)', () => {
+  it('FAILs with an accurate "matches NOTHING / never loads" message, not "always-on"', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'empty-globs-generated.md',
+      '---\nauto-generated: true\nglobs: []\nlearning-key: anti-pattern/dead-rule\nexpires-at: 2099-01-01\n---\n# Empty Globs\nContent.\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/FAIL:.*empty-globs-generated\.md.*matches NOTHING/);
+    expect(r.stdout).toMatch(/FAIL:.*empty-globs-generated\.md.*never loads/);
+    // The OLD (inverted, pre-#892) message must NOT appear for this file —
+    // that message asserted the rule "is always-on", the exact opposite of
+    // the true "matches nothing, never loads" outcome.
+    expect(r.stdout).not.toMatch(/FAIL:.*empty-globs-generated\.md.*is always-on/);
+    expect(r.stdout).not.toMatch(/PASS:.*empty-globs-generated\.md/);
+  });
+
+  it('still FAILs the empty-globs message when a co-present host-class: key would otherwise satisfy the axis', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'empty-globs-with-hostclass.md',
+      '---\nauto-generated: true\nglobs: []\nhost-class: mac-m-series\nlearning-key: anti-pattern/dead-rule-hostclass\nexpires-at: 2099-01-01\n---\n# Empty Globs, Host-Class\nContent.\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    // host-class: cannot rescue an empty globs array from rule-loader.mjs's
+    // unconditional globs.length === 0 exclusion — the rule still never
+    // loads, so it must still FAIL, never silently PASS.
+    expect(r.stdout).toMatch(/FAIL:.*empty-globs-with-hostclass\.md.*matches NOTHING/);
+    expect(r.stdout).not.toMatch(/PASS:.*empty-globs-with-hostclass\.md/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Case 11: mixed valid and invalid auto-generated rules
 // ---------------------------------------------------------------------------
 

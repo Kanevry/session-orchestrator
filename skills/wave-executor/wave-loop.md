@@ -46,12 +46,14 @@ const result = await writeBaseline({
     (the same `filterExcluded()` helper the S2 drift tripwire's numerator
     uses in step 7 below), so both sides of the ratio are produced by ONE
     code path (#894 review finding F1 — the coordinator no longer has to
-    remember to pre-filter in prose). A plain pre-counted number is still
-    accepted for back-compat but is NOT the preferred call shape.>,
+    remember to pre-filter in prose). MUST be an array — issue #903 removed
+    the previously-accepted plain pre-counted-number call shape (it was an
+    unverified re-entry vector for the same F1 filter-bypass bug); anything
+    else is rejected up front with `reason: 'invalid-planned-files'`.>,
 });
 ```
 
-Best-effort — never blocks Wave 1 from dispatching. `result.written === false` with `reason: 'already-frozen'` is expected and silent (a prior wave-executor pass in this same session already froze the baseline — do not re-freeze, do not log). Log any OTHER `reason` (`no-state-md`, `unreadable-state-md`, `lock-timeout`, `lock-fs-error`, `unexpected-error`, `size-ceiling`, `frontmatter-unsafe`) as an informational note in the wave progress update — none of these block dispatch.
+Best-effort — never blocks Wave 1 from dispatching. `result.written === false` with `reason: 'already-frozen'` is expected and silent (a prior wave-executor pass in this same session already froze the baseline — do not re-freeze, do not log). Log any OTHER `reason` (`invalid-planned-files`, `no-state-md`, `unreadable-state-md`, `lock-timeout`, `lock-fs-error`, `unexpected-error`, `size-ceiling`, `frontmatter-unsafe`) as an informational note in the wave progress update — none of these block dispatch.
 
 Skip entirely when `persistence: false` in Session Config (no STATE.md exists in that mode).
 

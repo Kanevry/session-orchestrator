@@ -288,3 +288,109 @@ describe('CLI — exit codes', () => {
     expect(Array.isArray(parsed.violations)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CLI — argument-hygiene error paths (#892). Every CLI-argument error (a
+// missing flag value, an invalid --mode enum value, a non-numeric
+// --max-lines/--max-line-chars, or an unknown flag) is a USER/input error
+// per `.claude/rules/cli-design.md` § Exit Codes and MUST exit 1 — never
+// exit 2 (reserved for genuine infra errors: missing/unreadable target
+// file). Before #892, `--repo-root` with no following value crashed into an
+// uncaught `resolve(undefined)` TypeError (leaked internal message, exit 2),
+// and every other arg-error path here also exited 2.
+// ---------------------------------------------------------------------------
+
+describe('CLI — argument-hygiene error paths (#892)', () => {
+  it('exits 1 with a clean stderr message when --repo-root has no following value', () => {
+    const { stdout, stderr, status } = runCLI(['--repo-root']);
+
+    expect(status).toBe(1);
+    // No leaked internal Node TypeError ("paths[0] argument must be of type string").
+    expect(stderr).not.toMatch(/TypeError|paths\[0\]/);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: '--repo-root requires a value' });
+    expect(stdout).toBe('');
+  });
+
+  it('exits 1 with a clean stderr message when --file has no following value', () => {
+    const { stderr, status } = runCLI(['--file']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: '--file requires a value' });
+  });
+
+  it('exits 1 when --max-lines has no following value', () => {
+    const { stderr, status } = runCLI(['--max-lines']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: '--max-lines requires a value' });
+  });
+
+  it('exits 1 when --max-lines is given a non-numeric value', () => {
+    const { stderr, status } = runCLI(['--max-lines', 'abc']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: 'invalid --max-lines: abc' });
+  });
+
+  it('exits 1 when --max-line-chars has no following value', () => {
+    const { stderr, status } = runCLI(['--max-line-chars']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: '--max-line-chars requires a value' });
+  });
+
+  it('exits 1 when --max-line-chars is given a non-numeric value', () => {
+    const { stderr, status } = runCLI(['--max-line-chars', 'xyz']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: 'invalid --max-line-chars: xyz' });
+  });
+
+  it('exits 1 when --mode has no following value', () => {
+    const { stderr, status } = runCLI(['--mode']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: '--mode requires a value' });
+  });
+
+  it('exits 1 when --mode is given an unrecognized enum value', () => {
+    const { stderr, status } = runCLI(['--mode', 'bogus']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: 'invalid --mode: bogus' });
+  });
+
+  it('exits 1 for an unrecognized flag', () => {
+    const { stderr, status } = runCLI(['--does-not-exist']);
+
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr);
+    expect(parsed).toEqual({ status: 'user-error', reason: 'unknown arg: --does-not-exist' });
+  });
+
+  it('still exits 2 for a genuine infra error (missing target file) — unaffected by the arg-hygiene fix', () => {
+    const missing = join(tmpdir(), 'definitely-does-not-exist-budget-lint-arg-hygiene.md');
+
+    const { stderr, status } = runCLI(['--file', missing]);
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr);
+    expect(parsed.status).toBe('infra-error');
+  });
+
+  it('--help documents the exit-code contract', () => {
+    const { stdout, status } = runCLI(['--help']);
+
+    expect(status).toBe(0);
+    expect(stdout).toContain('Exit codes:');
+    expect(stdout).toContain('CLI argument error');
+  });
+});

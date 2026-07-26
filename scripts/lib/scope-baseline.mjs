@@ -91,23 +91,26 @@
  *
  * `writeStateMd()` never throws by contract EXCEPT a `TypeError` when its
  * transformer returns a non-string/non-null/non-undefined value — this
- * module's transformer always returns a string or `null`, OR throws a
- * `TypeError` itself when the `plannedFiles` argument is neither a number
- * nor an array (see `writeBaseline()`'s param doc) — and the underlying
- * `withStateMdLock()` THROWS a labelled Error on acquire failure BY DESIGN
- * (state-md-lock.mjs:265-270: "throws a labelled Error so callers see the
- * failure as an exception rather than a silent {ok:false} return", throw
- * site :328, tagging `err.code` as `STATE_LOCK_TIMEOUT` or
+ * module's transformer always returns a string or `null`. As of issue #903
+ * the `plannedFiles` argument is validated BEFORE `writeStateMd()` is ever
+ * called (see `writeBaseline()`'s param doc) — an invalid shape now short-
+ * circuits with `{ written: false, reason: 'invalid-planned-files' }`
+ * without reading STATE.md or taking the lock at all, so the transformer
+ * itself no longer has a `plannedFiles`-shape failure mode to throw from.
+ * The underlying `withStateMdLock()` THROWS a labelled Error on acquire
+ * failure BY DESIGN (state-md-lock.mjs:265-270: "throws a labelled Error so
+ * callers see the failure as an exception rather than a silent {ok:false}
+ * return", throw site :328, tagging `err.code` as `STATE_LOCK_TIMEOUT` or
  * `STATE_LOCK_FS_ERROR`). This module's contract is "never throw" —
  * `writeBaseline()` therefore wraps the `writeStateMd()` call in try/catch
  * and maps the escaping error's `err.code` HONESTLY instead of collapsing
  * every failure into one reason (#894 review finding F4 — a disk-full /
  * permission failure on the lock directory must not misdirect the operator
- * toward "retry, it's contention", and a genuine bug thrown inside the
- * transformer must not masquerade as a transient lock condition either):
+ * toward "retry, it's contention"):
  * `STATE_LOCK_TIMEOUT` → `'lock-timeout'`, `STATE_LOCK_FS_ERROR` →
- * `'lock-fs-error'`, anything else (including a `TypeError` raised by the
- * transformer itself) → `'unexpected-error'`.
+ * `'lock-fs-error'`, anything else → `'unexpected-error'` (this branch has
+ * no currently-reachable trigger post-#903 but stays as a defensive
+ * catch-all).
  *
  * `branch` and `session-start-ref` are READ from the existing frontmatter —
  * this module never writes or duplicates them (they are already session-
@@ -131,10 +134,14 @@ import { pathMatchesPattern } from './scope-gate.mjs';
 // filter silently broke the ratio). `writeBaseline()` now filters the
 // denominator itself, in code, whenever its `plannedFiles` argument is the
 // RAW array of planned file paths (`countPlannedFiles()`, exported below —
-// the preferred, documented call shape); a plain number is still accepted
-// for back-compat ("already counted, store verbatim"). `computeDrift()`
-// filters the numerator at measure time by running the live
-// `git diff --name-only` output through the same `filterExcluded()` helper.
+// the ONLY accepted call shape as of issue #903, which REMOVED the
+// previously-accepted "already counted, store verbatim" plain-number
+// back-compat shape: it was an unverified re-entry vector for exactly the
+// F1 bug this filter exists to prevent — a caller could hand
+// `writeBaseline()` an unfiltered count with no `filterExcluded()` pass at
+// all). `computeDrift()` filters the numerator at measure time by running
+// the live `git diff --name-only` output through the same
+// `filterExcluded()` helper.
 // Deliberately narrows skills/session-end/plan-verification.md:42-45's
 // per-session-state exclusion from "the whole .claude/ directory" down to
 // just the session ARTEFACTS — `.claude/rules/**` stays COUNTED because a
@@ -345,19 +352,29 @@ export function readBaseline(repoRoot) {
  * @param {string|undefined} args.repoRoot
  * @param {string} args.intent
  * @param {string} args.ownerBoundary
- * @param {number|string[]} args.plannedFiles — EITHER (preferred) the RAW
- *   array of planned file paths (e.g. the union of declared agent file
- *   scopes for the session) — filtered internally via `countPlannedFiles()`,
- *   which calls the SAME `filterExcluded()` helper `computeDrift()`'s
- *   numerator uses (see the `DRIFT_EXCLUDE_PATTERNS` doc comment above and
- *   #894 review finding F1) — OR (back-compat) a plain pre-counted number,
- *   stored verbatim with no further filtering. Any other type throws a
- *   `TypeError` from inside the write transformer, which this function
- *   catches and reports as `{ written: false, reason: 'unexpected-error' }`
- *   — it never escapes (see module docstring § the final paragraph).
- * @returns {Promise<{ written: boolean, reason?: 'already-frozen'|'no-state-md'|'unreadable-state-md'|'lock-timeout'|'lock-fs-error'|'unexpected-error'|'size-ceiling'|'frontmatter-unsafe' }>}
+ * @param {string[]} args.plannedFiles — the RAW array of planned file paths
+ *   (e.g. the union of declared agent file scopes for the session) —
+ *   filtered internally via `countPlannedFiles()`, which calls the SAME
+ *   `filterExcluded()` helper `computeDrift()`'s numerator uses (see the
+ *   `DRIFT_EXCLUDE_PATTERNS` doc comment above and #894 review finding F1).
+ *   MUST be an array. Issue #903 REMOVED the previously-accepted
+ *   "already-counted plain number" back-compat shape: it was an unverified
+ *   re-entry vector for exactly the F1 bug the filtering above exists to
+ *   prevent (a caller could hand this function an unfiltered count with no
+ *   `filterExcluded()` pass at all). Anything that is not an array is
+ *   rejected UP FRONT — before STATE.md is read or the lock is taken —
+ *   as `{ written: false, reason: 'invalid-planned-files' }`.
+ * @returns {Promise<{ written: boolean, reason?: 'invalid-planned-files'|'already-frozen'|'no-state-md'|'unreadable-state-md'|'lock-timeout'|'lock-fs-error'|'unexpected-error'|'size-ceiling'|'frontmatter-unsafe' }>}
  */
 export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFiles } = {}) {
+  if (!Array.isArray(plannedFiles)) {
+    // #903 — the plain-number back-compat shape is REMOVED, not merely
+    // undocumented: it let a caller bypass `filterExcluded()` entirely by
+    // pre-counting (possibly unfiltered) and storing verbatim. Reject up
+    // front — no STATE.md read, no lock ever taken.
+    return { written: false, reason: 'invalid-planned-files' };
+  }
+
   let skipReason;
 
   try {
@@ -392,24 +409,14 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
         // and overwrite all five keys below.
       }
 
-      // Resolve the denominator (#894 review finding F1): an array is the
-      // RAW planned-file list, filtered here via `countPlannedFiles()` — the
-      // SAME `filterExcluded()` primitive `computeDrift()`'s numerator uses
-      // below, so both sides of the ratio are provably produced by one
-      // function. A number is accepted for back-compat and stored verbatim.
-      // Anything else is a call-site bug — throw rather than silently store
-      // garbage; caught below and reported as `'unexpected-error'`, never
-      // escapes this function.
-      let resolvedPlannedFiles;
-      if (Array.isArray(plannedFiles)) {
-        resolvedPlannedFiles = countPlannedFiles(plannedFiles);
-      } else if (typeof plannedFiles === 'number' && Number.isFinite(plannedFiles)) {
-        resolvedPlannedFiles = plannedFiles;
-      } else {
-        throw new TypeError(
-          'writeBaseline: plannedFiles must be a number (pre-counted, back-compat) or an array of raw file paths (filtered internally via DRIFT_EXCLUDE_PATTERNS)'
-        );
-      }
+      // Resolve the denominator (#894 review finding F1, tightened by
+      // #903): `plannedFiles` is GUARANTEED to be an array here — the outer
+      // `writeBaseline()` already rejected anything else (see the
+      // `Array.isArray()` guard above) before this transformer ever ran.
+      // Filter it via `countPlannedFiles()` — the SAME `filterExcluded()`
+      // primitive `computeDrift()`'s numerator uses below, so both sides of
+      // the ratio are provably produced by one function.
+      const resolvedPlannedFiles = countPlannedFiles(plannedFiles);
 
       fm['scope-baseline-intent'] = intent;
       fm['scope-baseline-owner-boundary'] = ownerBoundary;
@@ -441,9 +448,10 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
     // `err.code` HONESTLY (#894 review finding F4) instead of collapsing
     // every failure into `'lock-timeout'`: a disk-full / permission failure
     // on the lock directory must not misdirect the operator toward "retry,
-    // it's contention", and a genuine bug (including the `TypeError` thrown
-    // above for an invalid `plannedFiles` argument) must not masquerade as a
-    // transient lock condition either.
+    // it's contention". (The invalid-`plannedFiles` case that used to throw
+    // from inside this transformer is gone as of #903 — it is rejected by
+    // the `Array.isArray()` guard before `writeStateMd()` is ever called,
+    // so it never reaches this catch block.)
     if (err?.code === 'STATE_LOCK_TIMEOUT') {
       return { written: false, reason: 'lock-timeout' };
     }

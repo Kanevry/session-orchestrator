@@ -247,7 +247,7 @@ describe('writeBaseline()', () => {
       repoRoot: root,
       intent: 'S6-scope-freeze',
       ownerBoundary: 'scripts/lib/scope-baseline.mjs',
-      plannedFiles: 5,
+      plannedFiles: makeNFileNames('pf', 5),
     });
     expect(result).toEqual({ written: true });
 
@@ -280,7 +280,7 @@ describe('writeBaseline()', () => {
   it('scope-baseline-frozen-at is a parseable ISO-8601 timestamp', async () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
-    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
 
     const fm = parseStateMd(readFileSync(statePath, 'utf8')).frontmatter;
     const frozenAt = fm['scope-baseline-frozen-at'];
@@ -292,11 +292,11 @@ describe('writeBaseline()', () => {
   it('a second call for the same session is rejected as already-frozen, with no mutation', async () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
-    const first = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    const first = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
     expect(first).toEqual({ written: true });
     const afterFirst = readFileSync(statePath, 'utf8');
 
-    const second = await writeBaseline({ repoRoot: root, intent: 'I2-different', ownerBoundary: 'O2-different', plannedFiles: 99 });
+    const second = await writeBaseline({ repoRoot: root, intent: 'I2-different', ownerBoundary: 'O2-different', plannedFiles: makeNFileNames('pf2', 9) });
 
     expect(second).toEqual({ written: false, reason: 'already-frozen' });
     expect(readFileSync(statePath, 'utf8')).toBe(afterFirst);
@@ -305,10 +305,10 @@ describe('writeBaseline()', () => {
   it('a stale baseline (different session) is fully overwritten', async () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
-    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
     setSessionField(statePath, 'session-B');
 
-    const second = await writeBaseline({ repoRoot: root, intent: 'I2', ownerBoundary: 'O2', plannedFiles: 7 });
+    const second = await writeBaseline({ repoRoot: root, intent: 'I2', ownerBoundary: 'O2', plannedFiles: makeNFileNames('pf2', 7) });
 
     expect(second).toEqual({ written: true });
     const fm = parseStateMd(readFileSync(statePath, 'utf8')).frontmatter;
@@ -322,7 +322,7 @@ describe('writeBaseline()', () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_NO_SESSION);
 
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 4 });
+    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 4) });
 
     expect(result).toEqual({ written: true });
     const fm = parseStateMd(readFileSync(statePath, 'utf8')).frontmatter;
@@ -332,10 +332,10 @@ describe('writeBaseline()', () => {
   it('a second call with session STILL absent matches (both sides null) and is rejected as already-frozen, not treated as stale', async () => {
     const root = makeTmpDir();
     seedState(root, FIXTURE_NO_SESSION);
-    const first = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 4 });
+    const first = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 4) });
     expect(first).toEqual({ written: true });
 
-    const second = await writeBaseline({ repoRoot: root, intent: 'I2', ownerBoundary: 'O2', plannedFiles: 8 });
+    const second = await writeBaseline({ repoRoot: root, intent: 'I2', ownerBoundary: 'O2', plannedFiles: makeNFileNames('pf2', 8) });
 
     expect(second).toEqual({ written: false, reason: 'already-frozen' });
   });
@@ -378,7 +378,7 @@ describe('writeBaseline()', () => {
       );
 
       await expect(
-        writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 })
+        writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) })
       ).resolves.toEqual({ written: false, reason: 'lock-timeout' });
 
       expect(readFileSync(statePath, 'utf8')).toBe(FIXTURE_WITH_SESSION_A);
@@ -396,29 +396,54 @@ describe('writeBaseline()', () => {
     // held-lock-poll-to-deadline branch above.
     const root = unwritablePath('scope-baseline-fs-error');
 
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
 
     expect(result).toEqual({ written: false, reason: 'lock-fs-error' });
   });
 
-  it('an error thrown from inside the transformer (invalid plannedFiles argument) → {written:false, reason:"unexpected-error"}, NOT "lock-timeout"', async () => {
+  // ── #903 — the back-compat plain-number call shape is REMOVED ──────────
+  // (issue #903: the number path was an unverified re-entry vector for the
+  // exact F1 filter-bypass bug — a caller could hand `writeBaseline()` an
+  // already-counted, possibly UNFILTERED number, stored verbatim with no
+  // `filterExcluded()` pass at all). `plannedFiles` now MUST be an array;
+  // anything else is rejected UP FRONT, before STATE.md is even read or the
+  // lock is taken — no exception, no half-written state.
+  it('a bare number for plannedFiles (the removed #903 back-compat call shape) is rejected up front → {written:false, reason:"invalid-planned-files"}, STATE.md untouched', async () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
 
-    // Neither a number nor an array — writeBaseline()'s transformer throws a
-    // TypeError for this rather than silently storing garbage (see the F1
-    // fix's plannedFiles-resolution branch). The F4 fix must map this
-    // escaping error honestly, not collapse it into "lock-timeout".
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 'not-a-valid-type' });
+    const result = await writeBaseline({
+      repoRoot: root,
+      intent: 'I1',
+      ownerBoundary: 'O1',
+      plannedFiles: SEVEN_FILE_CHANGE_SET.length, // 7 — the exact pre-#903 call shape
+    });
 
-    expect(result).toEqual({ written: false, reason: 'unexpected-error' });
+    expect(result).toEqual({ written: false, reason: 'invalid-planned-files' });
     expect(readFileSync(statePath, 'utf8')).toBe(FIXTURE_WITH_SESSION_A);
   });
+
+  it('any other non-array plannedFiles (string) is rejected the same way → {written:false, reason:"invalid-planned-files"}, STATE.md untouched', async () => {
+    const root = makeTmpDir();
+    const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
+
+    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 'not-a-valid-type' });
+
+    expect(result).toEqual({ written: false, reason: 'invalid-planned-files' });
+    expect(readFileSync(statePath, 'utf8')).toBe(FIXTURE_WITH_SESSION_A);
+  });
+
+  // The F1 filter-safety proof (denominator filtered through the SAME
+  // `filterExcluded()` primitive the numerator uses) continues to live in
+  // the "E2E (#894 F1)" `computeDrift()` test below — it already
+  // demonstrates an UNFILTERED raw array (`SEVEN_FILE_CHANGE_SET`, 2
+  // excludable test files included) resolving to `filesRatio === 1.0`, not
+  // 0.71. Not duplicated here — see testing.md's "Duplication" checklist.
 
   it('no STATE.md on disk → {written:false, reason:"no-state-md"}', async () => {
     const root = makeTmpDir();
 
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
 
     expect(result).toEqual({ written: false, reason: 'no-state-md' });
   });
@@ -427,7 +452,7 @@ describe('writeBaseline()', () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_MALFORMED);
 
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 3 });
+    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
 
     expect(result).toEqual({ written: false, reason: 'unreadable-state-md' });
     expect(readFileSync(statePath, 'utf8')).toBe(FIXTURE_MALFORMED);
@@ -447,7 +472,7 @@ describe('readBaseline()', () => {
   it('returns {stale:true, baselineSession, currentSession} (not null) when the baseline belongs to a different session', async () => {
     const root = makeTmpDir();
     const statePath = seedState(root, FIXTURE_WITH_SESSION_A);
-    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: 5 });
+    await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 5) });
     setSessionField(statePath, 'session-B');
 
     const result = readBaseline(root);
@@ -462,7 +487,7 @@ describe('readBaseline()', () => {
       repoRoot: root,
       intent: 'S6-scope-freeze',
       ownerBoundary: 'scripts/lib/scope-baseline.mjs',
-      plannedFiles: 5,
+      plannedFiles: makeNFileNames('pf', 5),
     });
 
     const baseline = readBaseline(root);
@@ -783,7 +808,7 @@ describe('frontmatter round-trip', () => {
       repoRoot: root,
       intent: 'freeze-five-files',
       ownerBoundary: 'scripts/lib/scope-baseline.mjs',
-      plannedFiles: 5,
+      plannedFiles: makeNFileNames('pf', 5),
     });
 
     const raw1 = readFileSync(statePath, 'utf8');
@@ -804,7 +829,7 @@ describe('frontmatter round-trip', () => {
       repoRoot: root,
       intent: 'freeze scope: five deliverables',
       ownerBoundary: 'scripts/lib/scope-baseline.mjs',
-      plannedFiles: 5,
+      plannedFiles: makeNFileNames('pf', 5),
     });
 
     const parsed1 = parseStateMd(readFileSync(statePath, 'utf8'));
