@@ -944,6 +944,29 @@ describe('Section G — --file-paths (#900 C)', () => {
     expect(result.validation.some((m) => m.includes('accepts at most 20 paths'))).toBe(true);
   });
 
+  // Q3-MED fix pass: a glob-metacharacter entry (e.g. '**') survives every
+  // other Step 1b check (not absolute, no "..", no newline, under the length
+  // cap) and reaches emitter.mjs::globsFromFilePaths verbatim, where a
+  // dirname==='.' entry is emitted AS THE GLOB ITSELF — making '**' an
+  // effectively always-on rule glob. Reject at the argv boundary.
+  it('exits 4 when a --file-paths entry contains the glob metacharacter "**"', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', '**'];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('glob metacharacters'))).toBe(true);
+  });
+
+  it('exits 4 when a --file-paths entry contains a bracket-class glob metacharacter', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', 'src/[ab]/x.mjs'];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('glob metacharacters'))).toBe(true);
+  });
+
   it('accepts a comma-separated --file-paths value and writes it as an array to proposals.jsonl', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const args = [...VALID_ARGS, '--file-paths', 'scripts/lib/a.mjs,scripts/lib/b.mjs'];

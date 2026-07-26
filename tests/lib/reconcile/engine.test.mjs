@@ -354,6 +354,35 @@ describe('runReconcile — #900 brandmauer guard: an aliased type without scope 
     // the emitter at all.
     expect(result.proposals.every((p) => typeof p.content === 'string' && p.content.length > 0)).toBe(true);
   });
+
+  // Q3-MED fix pass: a record whose ONLY file_paths entry is a glob
+  // metacharacter (e.g. '**', from an old learning predating the #900 C /
+  // schema.mjs argv-boundary guards) has a non-empty file_paths[] — so it
+  // DOES pass the eligibility FILE gate above and DOES reach the emitter.
+  // The emitter's globsFromFilePaths now skips the metacharacter entry,
+  // producing empty globs; with no host_class, toActivationMetadata throws
+  // the never-always-on invariant, and the engine's per-item try/catch
+  // degrades this to a rejection — never a minted always-on rule.
+  it('a learning whose only file_paths entry is "**" reaches the emitter and is rejected there (never an always-on rule)', async () => {
+    const learning = eligibleLearning({
+      subject: 'stale-glob-only-learning',
+      file_paths: ['**'],
+    });
+
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { learnings: [learning] },
+    );
+
+    expect(result.summary.proposed).toBe(0);
+    expect(result.summary.rejected).toBe(1);
+    expect(result.proposals).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    // This time the eligibility gate did NOT catch it (file_paths was
+    // non-empty) — the emitter's own throw-based brandmauer is what fired.
+    expect(result.rejected[0].reason).toMatch(/emit\/render error/);
+    expect(result.rejected[0].reason).toMatch(/never-always-on|activation axis/);
+  });
 });
 
 describe('runReconcile — never writes .claude/rules/', () => {

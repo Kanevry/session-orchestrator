@@ -193,6 +193,62 @@ describe('resolveRepoSpec — github normalization malformed-input fallback', ()
       'https://github.example.com/just-one-segment',
     );
   });
+
+  // Q2-MED test-gap fix pass (#872 follow-up): pins the ACTUAL, already-shipped
+  // normalizeGithubSpec fallback behaviour for two under-tested edge cases —
+  // read the implementation FIRST, do not assume a "should" behaviour.
+
+  it('falls back to the raw URL for an SSH remote with an explicit port (sshMatch has no port slot)', () => {
+    // sshMatch's regex is `user@host:owner/repo(.git)?` — a `:2222` port
+    // segment before `owner/repo` breaks that shape (the regex captures
+    // "2222" as the would-be owner slot, then cannot also match the
+    // remaining "/owner/repo.git" as the repo slot — anchored end fails).
+    // normalizeGithubSpec's documented fallback ("returns url unchanged when
+    // it does not match the expected host/owner/repo shape") fires here.
+    const fn = () => ({ ok: true, stdout: 'ssh://git@github.example.com:2222/owner/repo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'ssh://git@github.example.com:2222/owner/repo.git',
+    );
+  });
+
+  it('falls back to the raw URL for a 3+ path-segment HTTPS remote (no owner/sub/repo support)', () => {
+    // httpsMatch's regex captures exactly host/owner/repo (two path segments
+    // after the host) — a third segment ("org/sub/repo") does not match the
+    // anchored `([^/]+)\/([^/]+?)(?:\.git)?\/?$` tail, so normalizeGithubSpec
+    // falls back to the raw URL, same documented behaviour as the
+    // one-segment case above.
+    const fn = () => ({ ok: true, stdout: 'https://github.example.com/org/sub/repo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'https://github.example.com/org/sub/repo.git',
+    );
+  });
+});
+
+describe('resolveRepoSpec / resolveRepoHost — argv-boundary guard (#872 follow-up, Q3-LOW)', () => {
+  // A well-formed remote URL/host never legitimately contains whitespace or a
+  // control character. These tests plant one via the gitRun DI seam (a
+  // corrupted/malicious .git/config is the realistic source) and assert the
+  // guard degrades to `undefined` rather than forwarding an unsafe token.
+
+  it('resolveRepoSpec (gitlab) returns undefined when the raw remote URL has an embedded space', () => {
+    const fn = () => ({ ok: true, stdout: 'https://host/g/re po.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
+
+  it('resolveRepoSpec (gitlab) returns undefined when the raw remote URL has an embedded newline', () => {
+    const fn = () => ({ ok: true, stdout: 'https://host/g/re\npo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
+
+  it('resolveRepoSpec (github) returns undefined when the normalized HOST/OWNER/REPO spec has an embedded space', () => {
+    const fn = () => ({ ok: true, stdout: 'https://github.example.com/owner/re po.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBeUndefined();
+  });
+
+  it('resolveRepoHost returns undefined when the extracted host has an embedded space', () => {
+    const fn = () => ({ ok: true, stdout: 'https://ho st/owner/repo.git\n', stderr: '' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
 });
 
 describe('resolveRepoHost (#872)', () => {

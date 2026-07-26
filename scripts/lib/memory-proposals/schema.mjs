@@ -251,14 +251,25 @@ export function validateProposalRecord(record) {
   }
 
   // file_paths (optional, but if present must be a non-empty array of
-  // non-empty, newline-free strings) — issue #900 C.
+  // non-empty, newline-free, glob-metacharacter-free strings) — issue #900 C,
+  // Q3-MED fix pass: a glob metacharacter (* ? [ ] { }) surviving this schema
+  // gate would later reach emitter.mjs::globsFromFilePaths verbatim for a
+  // top-level (dirname==='.') entry, effectively producing an always-on rule
+  // glob (e.g. `file_paths: ['**']`). `createProposalRecord` never sets an
+  // empty array (it omits the key), so a present-but-empty `[]` is itself a
+  // signal of a malformed/tampered record — reject it explicitly.
   if ('file_paths' in record) {
     const fp = record.file_paths;
     const isValidArray =
       Array.isArray(fp) &&
-      fp.every((p) => typeof p === 'string' && p.length > 0 && !/[\r\n]/.test(p));
+      fp.length > 0 &&
+      fp.every(
+        (p) => typeof p === 'string' && p.length > 0 && !/[\r\n]/.test(p) && !/[*?[\]{}]/.test(p),
+      );
     if (!isValidArray) {
-      errors.push('file_paths must be an array of non-empty newline-free strings when present');
+      errors.push(
+        'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      );
     }
   }
 

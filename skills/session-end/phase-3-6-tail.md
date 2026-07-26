@@ -241,7 +241,7 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
 
 #### Coordinator-direct procedure
 
-1. Read Session Config: `reconcile.enabled` (default `false`), `reconcile['rule-expiry-days']` (default `null` — falls back to per-type TTL in the engine), `reconcile['confidence-floor']` (default `0.5`), `reconcile['min-rule-days']` (default `7` — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule, issue #741.1), `reconcile['min-insight-chars']` (default `24` — opt-in minimum insight length gating the eligibility placeholder-insight check, issue #741.2). If `reconcile.enabled` is not `true`, log `reconcile: disabled (reconcile.enabled=false)` and skip all remaining steps.
+1. Read Session Config: `reconcile.enabled` (default `false`), `reconcile['rule-expiry-days']` (default `null` — falls back to per-type TTL in the engine), `reconcile['confidence-floor']` (default `0.5`), `reconcile['min-rule-days']` (default `7` — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule, issue #741.1), `reconcile['min-insight-chars']` (default `24` — opt-in minimum insight length gating the eligibility placeholder-insight check, issue #741.2), `reconcile['max-proposals-per-run']` (default `10` — volume brake, issue #900 D; the engine sorts eligible learnings by confidence DESC and proposes at most this many per run). If `reconcile.enabled` is not `true`, log `reconcile: disabled (reconcile.enabled=false)` and skip all remaining steps.
 
 2. Invoke `runReconcile` from `scripts/lib/reconcile/engine.mjs`:
 
@@ -252,6 +252,7 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
      ruleExpiryDays: config.reconcile['rule-expiry-days'] ?? undefined,
      minRuleDays: config.reconcile['min-rule-days'] ?? undefined,
      minInsightChars: config.reconcile['min-insight-chars'] ?? undefined,
+     maxProposalsPerRun: config.reconcile['max-proposals-per-run'] ?? undefined,
      now: new Date(),
    });
    ```

@@ -76,6 +76,7 @@ CONFIDENCE_FLOOR=$(echo "$CONFIG" | jq -r '.reconcile["confidence-floor"] // 0.5
 RECONCILE_MODE=$(echo "$CONFIG"   | jq -r '.reconcile.mode // "warn"')
 MIN_RULE_DAYS=$(echo "$CONFIG"    | jq -r '.reconcile["min-rule-days"] // 7')
 MIN_INSIGHT_CHARS=$(echo "$CONFIG" | jq -r '.reconcile["min-insight-chars"] // 24')
+MAX_PROPOSALS_PER_RUN=$(echo "$CONFIG" | jq -r '.reconcile["max-proposals-per-run"] // 10')
 ```
 
 When `RULE_EXPIRY_DAYS` is empty, pass `ruleExpiryDays: undefined` to `runReconcile` so the engine uses its per-type TTL. Defaults when the `reconcile` block is absent or a field is missing:
@@ -86,6 +87,8 @@ When `RULE_EXPIRY_DAYS` is empty, pass `ruleExpiryDays: undefined` to `runReconc
   near-dead or already-elapsed natural expiry never produces a born-dead rule (issue #741.1).
 - `min-insight-chars`: 24 — opt-in minimum insight length gating the eligibility
   placeholder-insight check (issue #741.2).
+- `max-proposals-per-run`: 10 — volume brake (issue #900 D); the engine sorts eligible
+  learnings by confidence DESC and proposes at most this many per run.
 
 Note: `reconcile.enabled` is intentionally NOT checked — this on-demand command always runs.
 
@@ -119,6 +122,7 @@ const { proposals, rejected, summary, error } = await runReconcile({
   ruleExpiryDays: RULE_EXPIRY_DAYS,   // empty → undefined → engine per-type TTL
   minRuleDays: MIN_RULE_DAYS,         // default 7 — floors a near-dead expires-at
   minInsightChars: MIN_INSIGHT_CHARS, // default 24 — opt-in placeholder-insight length gate
+  maxProposalsPerRun: MAX_PROPOSALS_PER_RUN, // default 10 — volume brake (issue #900 D)
   now: new Date(),
   dryRun: DRY_RUN,     // true → engine touches no disk (no idempotency sidecar write)
 });
@@ -307,9 +311,9 @@ If `written === 0` and `approved.length === 0`:
   silently swallow failures.
 - **ALWAYS** present proposals in batches of ≤4 via AUQ multiSelect — mirrors session-end
   3.6.3 / 3.6.8 and keeps the operator prompt readable.
-- **ALWAYS** honour `confidence-floor`, `rule-expiry-days`, `min-rule-days`, and
-  `min-insight-chars` from Session Config `reconcile` block — the engine reads these, but
-  the skill must pass them explicitly.
+- **ALWAYS** honour `confidence-floor`, `rule-expiry-days`, `min-rule-days`,
+  `min-insight-chars`, and `max-proposals-per-run` from Session Config `reconcile` block —
+  the engine reads these, but the skill must pass them explicitly.
 
 ## Anti-Patterns
 

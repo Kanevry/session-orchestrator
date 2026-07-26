@@ -157,6 +157,38 @@ describe('toActivationMetadata — never-always-on invariant', () => {
   });
 });
 
+// Q3-MED fix pass: a learning record from OLD state (predating the #900 C /
+// schema.mjs argv-boundary guards) can carry a glob-metacharacter file_paths
+// entry (e.g. '**') — globsFromFilePaths must never emit it verbatim, since a
+// top-level (dirname==='.') entry is emitted AS THE GLOB ITSELF and '**'
+// would be an effectively always-on rule glob.
+describe('toActivationMetadata — glob-metacharacter file_paths entries are skipped', () => {
+  it('skips a "**" entry but keeps a clean sibling path as the sole glob', () => {
+    const learning = fragileLearning({
+      file_paths: ['**', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, {});
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+
+  it('throws the never-always-on invariant when "**" is the ONLY file_paths entry', () => {
+    const learning = fragileLearning({ file_paths: ['**'] });
+    // FALSIFICATION: emitting '**' verbatim instead of skipping it would
+    // produce a non-empty globs array and this would NOT throw.
+    expect(() => toActivationMetadata(learning, {})).toThrow(
+      /never-always-on|activation axis/,
+    );
+  });
+
+  it('skips a bracket-class glob entry (e.g. "src/[ab]/x.mjs")', () => {
+    const learning = fragileLearning({
+      file_paths: ['src/[ab]/x.mjs', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, {});
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+});
+
 describe('toActivationMetadata — description sanitization', () => {
   it('strips newlines from the description', () => {
     const learning = fragileLearning({

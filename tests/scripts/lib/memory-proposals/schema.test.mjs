@@ -684,7 +684,9 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     // FALSIFICATION: removing the Array.isArray check would accept a bare string → fail
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
-    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
   });
 
   it('returns {ok:false} when file_paths contains a non-string entry', () => {
@@ -693,7 +695,9 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     // FALSIFICATION: removing the per-entry typeof check would accept a number entry → fail
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
-    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
   });
 
   it('returns {ok:false} when file_paths contains an empty string entry', () => {
@@ -702,7 +706,9 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     // FALSIFICATION: removing the per-entry length check would accept an empty string → fail
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
-    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
   });
 
   it('returns {ok:false} when a file_paths entry contains a newline', () => {
@@ -711,7 +717,48 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     // FALSIFICATION: removing the per-entry newline check would accept it → fail
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
-    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
+  });
+
+  // Q3-MED fix pass: a glob metacharacter surviving this schema gate would
+  // later reach emitter.mjs::globsFromFilePaths verbatim for a top-level
+  // (dirname==='.') entry — effectively an always-on rule glob.
+  it('returns {ok:false} when a file_paths entry contains the glob metacharacter "**"', () => {
+    const record = validRecord();
+    record.file_paths = ['**'];
+    // FALSIFICATION: removing the per-entry glob-metacharacter check would accept it → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
+  });
+
+  it('returns {ok:false} when a file_paths entry contains a bracket-class glob metacharacter', () => {
+    const record = validRecord();
+    record.file_paths = ['src/[ab]/x.mjs'];
+    // FALSIFICATION: removing the per-entry glob-metacharacter check would accept it → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
+  });
+
+  // Q2-conf55 mitnahme: createProposalRecord never sets an empty array (it
+  // omits the key entirely) — a present-but-empty `[]` is itself a signal of
+  // a malformed/tampered record.
+  it('returns {ok:false} when file_paths is present but an empty array', () => {
+    const record = validRecord();
+    record.file_paths = [];
+    // FALSIFICATION: removing the `fp.length > 0` check would accept `[]` → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe(
+      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+    );
   });
 });
 

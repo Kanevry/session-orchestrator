@@ -223,6 +223,10 @@ if (filePaths !== undefined) {
       argErrors.push(`--file-paths must not contain ".." path segments: "${p}"`);
     } else if (/[\r\n]/.test(p)) {
       argErrors.push(`--file-paths entries must not contain newline characters: "${p}"`);
+    } else if (/[*?[\]{}]/.test(p)) {
+      argErrors.push(
+        `--file-paths must not contain glob metacharacters (* ? [ ] { }) — a literal repo-relative path is required: "${p}"`,
+      );
     } else if (p.length > FILE_PATH_MAX_CHARS) {
       argErrors.push(
         `--file-paths entry exceeds ${FILE_PATH_MAX_CHARS} chars (got ${p.length}): "${p.slice(0, 40)}..."`,

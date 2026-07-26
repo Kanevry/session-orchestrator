@@ -463,4 +463,32 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
     expect(callArgs.minRuleDays).toBe(14);
     expect(callArgs.minInsightChars).toBe(12);
   });
+
+  // Q2-HIGH fix pass: `max-proposals-per-run` was parsed by config/reconcile.mjs
+  // and implemented by runReconcile({maxProposalsPerRun}), but decideReconcile()
+  // never forwarded it — grep-verified 0 production call-sites passed it through.
+  // Pins the same forwarding contract as minRuleDays/minInsightChars above.
+  it('forwards max-proposals-per-run from Session Config verbatim as maxProposalsPerRun', async () => {
+    const root = makeRepo();
+    writeJsonl(metric(root, 'learnings.jsonl'), [
+      {
+        id: 'c-cap', created_at: '2026-07-01T00:00:00.000Z', type: 'convention', confidence: 0.9,
+        subject: 'cap forwarding probe', insight: 'insight long enough to pass', evidence: 'seen once',
+        expires_at: '2027-01-01T00:00:00.000Z', schema_version: 1,
+        scope: 'repo-local', file_paths: ['skills/x.md'],
+      },
+    ]);
+    vi.mocked(runReconcile).mockClear();
+
+    await plan(root, defaultConfig({
+      reconcile: {
+        enabled: true, 'confidence-floor': 0.5, 'rule-expiry-days': null,
+        'max-proposals-per-run': 3,
+      },
+    }));
+
+    expect(vi.mocked(runReconcile)).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(runReconcile).mock.calls[0][0];
+    expect(callArgs.maxProposalsPerRun).toBe(3);
+  });
 });

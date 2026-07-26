@@ -65,13 +65,26 @@ function kebab(s) {
     .replace(/^-+|-+$/g, '');
 }
 
+// Glob metacharacters (issue #900-follow-up, Q3-MED). A top-level
+// (dirname==='.') file_paths entry is emitted AS THE GLOB ITSELF below — so a
+// stray '**' or '[ab]' entry (e.g. from an OLD learning record predating the
+// #900 C / schema.mjs argv-boundary guards) must never reach the renderer
+// verbatim, or it would produce an effectively always-on rule glob. Skipped
+// here as defense-in-depth even though the argv (memory-propose.mjs) and
+// schema (memory-proposals/schema.mjs) layers already reject these at write
+// time — this emitter also processes learnings.jsonl entries that predate
+// those guards.
+const GLOB_METACHAR_RE = /[*?[\]{}]/;
+
 /**
  * Derive non-empty directory globs from a learning's `file_paths`.
  *
  * For each path: take its directory (`path.dirname`) and emit `<dir>/**`. When
  * the file sits at the repo top level (`dirname` === '.'), emit the bare
- * basename pattern instead of `./**` (e.g. `"foo.mjs"`). Results are deduped,
- * order-preserving on first occurrence.
+ * basename pattern instead of `./**` (e.g. `"foo.mjs"`). Entries containing a
+ * glob metacharacter (`* ? [ ] { }`) are skipped entirely — see
+ * {@link GLOB_METACHAR_RE}. Results are deduped, order-preserving on first
+ * occurrence.
  *
  * @param {string[]} filePaths
  * @returns {string[]}
@@ -81,6 +94,7 @@ function globsFromFilePaths(filePaths) {
   const seen = new Set();
   for (const raw of filePaths) {
     if (typeof raw !== 'string' || raw === '') continue;
+    if (GLOB_METACHAR_RE.test(raw)) continue;
     const normalized = raw.replace(/\\/g, '/');
     const dir = dirname(normalized);
     const pattern = dir === '.' ? normalized : `${dir}/**`;

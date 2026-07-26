@@ -42,6 +42,29 @@
 import { execFileSync } from 'node:child_process';
 
 /**
+ * argv-boundary guard (#872 follow-up, Q3-LOW centralization). A well-formed
+ * git remote URL or bare hostname never legitimately contains whitespace or a
+ * C0 control character — if a resolved value does, treat it as `undefined`
+ * ("could not auto-detect") rather than let it flow into a `-R`/`--repo`/
+ * `--hostname` argv position. This is the CENTRAL defense for both
+ * `resolveRepoSpec` and `resolveRepoHost`: the ~9 call sites across the repo
+ * that do a bare `if (spec) args.push('-R', spec)` do not re-check the value
+ * themselves, so they inherit this guard for free by going through either
+ * exported function here rather than reading a git remote URL directly.
+ */
+// eslint-disable-next-line no-control-regex -- deliberate: the argv-boundary guard must catch ALL C0 control characters, not only the \s subset
+const UNSAFE_ARGV_CHARS_RE = /[\s\x00-\x1f]/;
+
+/**
+ * @param {unknown} value
+ * @returns {boolean} true when `value` is a string containing whitespace or a
+ *   C0 control character — unsafe to forward as a single argv token.
+ */
+function isUnsafeForArgv(value) {
+  return typeof value === 'string' && UNSAFE_ARGV_CHARS_RE.test(value);
+}
+
+/**
  * Default git-remote runner: `git -C <repoRoot> remote get-url <name>`.
  * Never throws — returns `{ ok:false, stdout:'', stderr }` on any failure
  * (missing remote, not a git repo, git not on PATH, ...).
@@ -177,7 +200,10 @@ function resolveRawRemoteUrl({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun 
  *
  * Returns `undefined` when no matching remote resolves — callers MUST treat
  * this as "could not auto-detect" and omit the `-R`/`--repo` flag entirely
- * (never emit `-R undefined`).
+ * (never emit `-R undefined`). Also returns `undefined` when the resolved
+ * spec contains whitespace or a control character — see the module-level
+ * argv-boundary guard ({@link isUnsafeForArgv}), which this function applies
+ * to the FINAL spec value (post `normalizeGithubSpec`, when applicable).
  *
  * @param {{
  *   repoRoot?: string,
@@ -190,7 +216,8 @@ export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitR
   const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
   const url = resolveRawRemoteUrl({ repoRoot, vcs: vcsResolved, gitRun });
   if (!url) return undefined;
-  return vcsResolved === 'github' ? normalizeGithubSpec(url) : url;
+  const spec = vcsResolved === 'github' ? normalizeGithubSpec(url) : url;
+  return isUnsafeForArgv(spec) ? undefined : spec;
 }
 
 /**
@@ -204,6 +231,8 @@ export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitR
  * Applies the identical remote-preference-order + cross-family-guard
  * resolution as `resolveRepoSpec`, just returning the host instead of the
  * full spec — same contract: `undefined` ⇒ caller omits the flag entirely.
+ * Also applies the same argv-boundary guard ({@link isUnsafeForArgv}) to the
+ * resolved host before returning it.
  *
  * @param {{
  *   repoRoot?: string,
@@ -214,7 +243,8 @@ export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitR
  */
 export function resolveRepoHost({ repoRoot, vcs, gitRun } = {}) {
   const url = resolveRawRemoteUrl({ repoRoot, vcs, gitRun });
-  return url ? (extractHost(url) ?? undefined) : undefined;
+  const host = url ? (extractHost(url) ?? undefined) : undefined;
+  return isUnsafeForArgv(host) ? undefined : host;
 }
 
 /**
