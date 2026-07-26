@@ -10,8 +10,11 @@
  *
  * Expected partition (asserted in eligibility.test.mjs + engine.test.mjs):
  *   eligible = 2  (fragile-pattern+files, recurring-issue+files)
- *   rejected = 4  (eligible type w/ no file_paths ×2, reject type w/ files,
- *                  default-reject type)
+ *   rejected = 4  (eligible type w/ no file_paths ×3 [incl. 'proven' — #900
+ *                  flipped proven-pattern to ruleConvertible:true, so its
+ *                  rejection reason changed from "not in convert allow-list"
+ *                  to "empty file_paths[]", but it is STILL rejected], reject
+ *                  type w/ files ×1 ['sizing'/effective-sizing])
  *
  * @type {Array<Record<string, unknown>>}
  */
@@ -44,7 +47,8 @@ export const RECONCILE_FIXTURE = [
     confidence: 0.9,
     file_paths: ['scripts/lib/c/z.mjs'],
   },
-  // REJECT — default-reject type.
+  // REJECT — eligible type (#900: proven-pattern flipped ruleConvertible:true),
+  // but no file_paths — rejects on the file gate, not the type gate.
   { type: 'proven-pattern', subject: 'proven', insight: 'e', confidence: 0.95 },
   // REJECT — eligible type, no file_paths.
   { type: 'anti-pattern', subject: 'anti-no-files', insight: 'f', confidence: 0.5 },

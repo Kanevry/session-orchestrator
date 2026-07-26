@@ -30,6 +30,7 @@ const DEFAULTS = {
   'confidence-floor': 0.5,
   'min-rule-days': 7,
   'min-insight-chars': 24,
+  'max-proposals-per-run': 10,
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,7 @@ describe('_parseReconcile — explicit overrides', () => {
       '  confidence-floor: 0.75',
       '  min-rule-days: 14',
       '  min-insight-chars: 40',
+      '  max-proposals-per-run: 5',
     ].join('\n') + '\n';
 
     const result = _parseReconcile(content);
@@ -144,6 +146,7 @@ describe('_parseReconcile — explicit overrides', () => {
       'confidence-floor': 0.75,
       'min-rule-days': 14,
       'min-insight-chars': 40,
+      'max-proposals-per-run': 5,
     });
   });
 

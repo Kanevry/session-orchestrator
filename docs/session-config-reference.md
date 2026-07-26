@@ -1078,6 +1078,7 @@ reconcile:
   confidence-floor: 0.5    # min learning confidence before a learning is eligible
   min-rule-days: 7         # floor on emitted expires-at so a rule is never born-dead
   min-insight-chars: 24    # reject placeholder/minimal insights before rule conversion
+  max-proposals-per-run: 10 # volume brake — cap on proposals minted per engine run
 ```
 
 | Field | Type | Default | Description |
@@ -1089,6 +1090,7 @@ reconcile:
 | `reconcile.confidence-floor` | float | `0.5` | Minimum learning confidence (0.0..1.0) required before a learning is eligible for a rule proposal. Learnings with `confidence < confidence-floor` are skipped by the engine. Bounds: `0.0 ≤ value ≤ 1.0`; out-of-range values silently fall back to `0.5`. Set to `0.0` to surface proposals for all learnings regardless of confidence. |
 | `reconcile.min-rule-days` | integer | `7` | Floor (in days) applied to the emitted rule's `expires-at` — issue #741.1. A learning close to its natural per-type TTL expiry could otherwise generate a rule that expires almost immediately ("born-dead"); `computeExpiresAt()` (`scripts/lib/reconcile/emitter.mjs`) floors the result at `now + min-rule-days` so an approved rule always has at least this many days of active life. Mirrors the hardcoded `MIN_RULE_DAYS_DEFAULT` constant in the emitter. Bounds: positive integer; non-finite or ≤0 values fall back to the default. |
 | `reconcile.min-insight-chars` | integer | `24` | Minimum `insight` length (characters) required before a learning is eligible for rule conversion — issue #741.2. Opt-in and additive to the always-on placeholder/empty-insight rejection in `classifyLearning()` (`scripts/lib/reconcile/eligibility.mjs`): a non-empty but too-short insight (e.g. a stub or a recovery placeholder) is rejected with reason `placeholder-insight` before it reaches proposal generation. Set to `0` to disable the length check (only the always-on empty/placeholder-regex check applies). |
+| `reconcile.max-proposals-per-run` | integer | `10` | Volume brake — issue #900 D. After the eligibility filter runs, `runReconcile()` (`scripts/lib/reconcile/engine.mjs`) sorts eligible learnings by confidence DESC and proposes at most this many per run; the rest are recorded as `capped` rejections (visible in `summary.capped` and each carrying a `capped — ...` reason) rather than silently dropped. The brake is **always active** — even a caller that omits the parameter entirely gets the same default the Session Config parser uses. Bounds: positive integer (≥ 1); malformed, absent, or non-positive values fall back to `10`. |
 
 ### Never-always-on invariant
 

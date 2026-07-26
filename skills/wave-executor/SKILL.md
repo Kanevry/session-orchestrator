@@ -272,9 +272,12 @@ During this wave, you may propose a learning to the session's memory via the CLI
       --subject "one-line title (max 100 chars, no newlines)" \
       --insight "your discovery paragraph (max 2000 chars)" \
       --evidence "concrete proof: code citation / log excerpt / commit ref (max 5000 chars)" \
-      --confidence <0.5 to 1.0>
+      --confidence <0.5 to 1.0> \
+      --file-paths "scripts/lib/a.mjs,scripts/lib/b.mjs"
 
 MUST prefix with `SO_WAVE_AGENT=1` — without it the CLI returns exit 3 `rejected-wrong-context`. The env-var is the per-process guard that distinguishes wave-executor agents from coordinator-context invocations.
+
+`--file-paths` is optional but strongly encouraged: repo-relative path(s) this learning applies to (repeatable and/or comma-separated, deduped; rejects absolute paths, `..` segments, embedded newlines, entries over 256 chars, and more than 20 entries). Without `--file-paths` this learning can never become `/reconcile`-eligible — the reconciliation engine can only convert a learning into a conditional `.claude/rules/*.md` rule when it carries a non-empty scope (issue #900).
 
 Exit code 0 = queued (the coordinator will present at session-end via AskUserQuestion); 1 = quota-exceeded; 2 = rejected-low-confidence (below floor 0.5); 3 = rejected-wrong-context (STATE.md not active OR SO_WAVE_AGENT != "1"); 4 = error (arg validation or internal).
 

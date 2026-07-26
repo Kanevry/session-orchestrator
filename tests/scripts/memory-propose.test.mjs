@@ -883,3 +883,99 @@ describe('Section F — --dry-run (validate-only, no write; #741.3)', () => {
     expect(existsSync(jsonlPath)).toBe(false);
   });
 });
+
+// ===========================================================================
+// Section G — --file-paths (issue #900 C)
+// ===========================================================================
+//
+// --file-paths validation (Step 1b) runs BEFORE the STATE.md / SO_WAVE_AGENT /
+// current-wave context gates (Step 2/2b/2c) — same ordering rationale as
+// Section A's argv-validation tests, so the malformed-input cases below need
+// neither STATE.md nor SO_WAVE_AGENT to reach exit 4.
+
+describe('Section G — --file-paths (#900 C)', () => {
+  const WAVE_AGENT_ENV = { extraEnv: { SO_WAVE_AGENT: '1' } };
+
+  it('exits 4 when --file-paths is an absolute path', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', '/etc/passwd'];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('error');
+    expect(result.validation.some((m) => m.includes('absolute path rejected'))).toBe(true);
+  });
+
+  it('exits 4 when --file-paths contains a ".." path segment', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', '../outside/escape.mjs'];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('".." path segments'))).toBe(true);
+  });
+
+  it('exits 4 when --file-paths contains an embedded newline', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', 'a.mjs\nb.mjs'];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('newline characters'))).toBe(true);
+  });
+
+  it('exits 4 when a --file-paths entry exceeds 256 chars', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const longPath = 'a/'.repeat(130) + 'x.mjs'; // 265 chars — over the 256 cap
+    const args = [...VALID_ARGS, '--file-paths', longPath];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('exceeds 256 chars'))).toBe(true);
+  });
+
+  it('exits 4 when --file-paths supplies more than 20 paths', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const manyPaths = Array.from({ length: 21 }, (_, i) => `scripts/lib/f${i}.mjs`).join(',');
+    const args = [...VALID_ARGS, '--file-paths', manyPaths];
+    const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(4);
+    const result = parseJSON(stdout);
+    expect(result.validation.some((m) => m.includes('accepts at most 20 paths'))).toBe(true);
+  });
+
+  it('accepts a comma-separated --file-paths value and writes it as an array to proposals.jsonl', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [...VALID_ARGS, '--file-paths', 'scripts/lib/a.mjs,scripts/lib/b.mjs'];
+    const { code } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(0);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    const line = JSON.parse(readFileSync(jsonlPath, 'utf8').trim().split('\n')[0]);
+    expect(line.file_paths).toEqual(['scripts/lib/a.mjs', 'scripts/lib/b.mjs']);
+  });
+
+  it('accepts repeated --file-paths flags and dedupes/merges them into one ordered array', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const args = [
+      ...VALID_ARGS,
+      '--file-paths', 'scripts/lib/a.mjs',
+      '--file-paths', 'scripts/lib/b.mjs, scripts/lib/a.mjs',
+    ];
+    const { code } = await runCli(dir, args, WAVE_AGENT_ENV);
+    expect(code).toBe(0);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    const line = JSON.parse(readFileSync(jsonlPath, 'utf8').trim().split('\n')[0]);
+    expect(line.file_paths).toEqual(['scripts/lib/a.mjs', 'scripts/lib/b.mjs']);
+  });
+
+  it('does NOT set file_paths on the record when --file-paths is omitted (byte-identical regression)', async () => {
+    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
+    const { code } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
+    expect(code).toBe(0);
+    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
+    const line = JSON.parse(readFileSync(jsonlPath, 'utf8').trim().split('\n')[0]);
+    // FALSIFICATION: unconditionally setting record.file_paths (even to []
+    // or undefined-serialized-as-null) would make this key present.
+    expect('file_paths' in line).toBe(false);
+  });
+});

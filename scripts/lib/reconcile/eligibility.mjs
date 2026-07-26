@@ -135,7 +135,7 @@ export function classifyLearning(learning, { now, minInsightChars } = {}) {
   if (!Array.isArray(filePaths) || filePaths.length === 0) {
     return {
       eligible: false,
-      reason: `eligible type '${type}' but empty file_paths[] — cannot scope a conditional rule`,
+      reason: `eligible type '${type}' but empty file_paths[] — cannot scope a conditional rule (propose with --file-paths to make this convertible)`,
     };
   }
 

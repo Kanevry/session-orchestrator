@@ -42,7 +42,7 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
@@ -104,7 +104,8 @@ const rawArgv = process.argv.slice(2);
 if (rawArgv.includes('--help') || rawArgv.includes('-h')) {
   process.stdout.write(
     'Usage: SO_WAVE_AGENT=1 memory-propose.mjs --type <type> --subject "..." ' +
-    '--insight "..." --evidence "..." --confidence <0-1> [--dry-run]\n\n' +
+    '--insight "..." --evidence "..." --confidence <0-1> ' +
+    '[--file-paths "a.mjs,b.mjs"] [--dry-run]\n\n' +
     'Environment:\n' +
     '  SO_WAVE_AGENT=1 — REQUIRED. The CLI returns exit 3 (rejected-wrong-context)\n' +
     '                    when this env-var is absent or not exactly "1".\n' +
@@ -113,7 +114,14 @@ if (rawArgv.includes('--help') || rawArgv.includes('-h')) {
     '  --dry-run — Validate the proposal (argv + schema) but do NOT write to\n' +
     '              proposals.jsonl. Bypasses the STATE.md / SO_WAVE_AGENT /\n' +
     '              current-wave context gates so it can be run safely from\n' +
-    '              coordinator context (issue #741.3).\n\n' +
+    '              coordinator context (issue #741.3).\n' +
+    '  --file-paths — Optional. Repo-relative path(s) this learning applies to.\n' +
+    '                 Repeatable AND/OR comma-separated (`--file-paths a.mjs\n' +
+    '                 --file-paths b.mjs,c.mjs`), deduped. Rejects absolute\n' +
+    '                 paths, ".." segments, embedded newlines, entries over 256\n' +
+    '                 chars, and more than 20 entries (exit 4). Without\n' +
+    '                 --file-paths this learning can never become /reconcile-\n' +
+    '                 eligible (issue #900).\n\n' +
     'Exit codes / stdout status:\n' +
     `  0 — ${STATUS.QUEUED} (or ${STATUS.DRY_RUN_OK} under --dry-run)\n` +
     `  1 — ${STATUS.QUOTA_EXCEEDED}\n` +
@@ -133,12 +141,13 @@ try {
   parsedArgs = parseArgs({
     args: rawArgv,
     options: {
-      type:       { type: 'string' },
-      subject:    { type: 'string' },
-      insight:    { type: 'string' },
-      evidence:   { type: 'string' },
-      confidence: { type: 'string' },
-      'dry-run':  { type: 'boolean' },
+      type:          { type: 'string' },
+      subject:       { type: 'string' },
+      insight:       { type: 'string' },
+      evidence:      { type: 'string' },
+      confidence:    { type: 'string' },
+      'dry-run':     { type: 'boolean' },
+      'file-paths':  { type: 'string', multiple: true },
     },
     strict: false, // emit unknown flags as positionals rather than throwing
   });
@@ -170,6 +179,55 @@ if (confidenceRaw !== undefined) {
   confidenceVal = Number(confidenceRaw);
   if (!Number.isFinite(confidenceVal) || confidenceVal < 0 || confidenceVal > 1) {
     argErrors.push('--confidence must be a finite number in [0, 1]');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step 1b — Parse + validate --file-paths (issue #900 C)
+// ---------------------------------------------------------------------------
+//
+// --file-paths is repeatable AND each occurrence may itself be comma-separated
+// (`--file-paths a.mjs --file-paths b.mjs,c.mjs`). Flattened, trimmed,
+// empty-filtered, and deduped BEFORE validation so callers see one clean
+// error per genuinely-bad entry rather than noise from formatting.
+//
+// Validation runs here (Step 1, argv-level) — BEFORE createProposalRecord
+// (Step 6) — so a malformed --file-paths value produces the same exit-4
+// argv-error contract as every other required/optional flag, never a
+// downstream schema-validation surprise.
+
+const FILE_PATHS_MAX_COUNT = 20;
+const FILE_PATH_MAX_CHARS = 256;
+
+const filePathsRaw = parsedArgs.values['file-paths'];
+/** @type {string[]|undefined} */
+let filePaths;
+if (Array.isArray(filePathsRaw) && filePathsRaw.length > 0) {
+  const flattened = filePathsRaw
+    .flatMap((entry) => String(entry).split(','))
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  filePaths = [...new Set(flattened)];
+}
+
+if (filePaths !== undefined) {
+  if (filePaths.length > FILE_PATHS_MAX_COUNT) {
+    argErrors.push(
+      `--file-paths accepts at most ${FILE_PATHS_MAX_COUNT} paths (got ${filePaths.length})`,
+    );
+  }
+  for (const p of filePaths) {
+    if (isAbsolute(p)) {
+      argErrors.push(`--file-paths must be repo-relative — absolute path rejected: "${p}"`);
+    } else if (p.split(/[\\/]/).includes('..')) {
+      argErrors.push(`--file-paths must not contain ".." path segments: "${p}"`);
+    } else if (/[\r\n]/.test(p)) {
+      argErrors.push(`--file-paths entries must not contain newline characters: "${p}"`);
+    } else if (p.length > FILE_PATH_MAX_CHARS) {
+      argErrors.push(
+        `--file-paths entry exceeds ${FILE_PATH_MAX_CHARS} chars (got ${p.length}): "${p.slice(0, 40)}..."`,
+      );
+    }
   }
 }
 
@@ -362,6 +420,7 @@ try {
     evidence,
     confidence,
     waveId,
+    filePaths,
   });
 } catch (err) {
   exit({ status: STATUS.ERROR, validation: [`Failed to create proposal record: ${err.message}`] }, 4);

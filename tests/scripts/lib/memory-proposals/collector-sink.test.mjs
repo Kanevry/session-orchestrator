@@ -797,6 +797,66 @@ describe('collector-sink integration (#501 F2.1)', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // #900 — file_paths pass-through contract
+  //
+  // _proposalToLearning (sink.mjs) builds the learning record via a rest
+  // spread (`{ ...base }`) over the proposal minus proposed_by_agent — so
+  // file_paths was ALREADY structurally pass-through before this issue; this
+  // test freezes that contract so a future refactor of _proposalToLearning
+  // cannot silently drop it.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('#900 — file_paths pass-through contract (writeApproved)', () => {
+    it('carries file_paths from an approved proposal verbatim into the promoted learning', async () => {
+      const record = makeRecord({
+        waveId: 'W1',
+        filePaths: ['scripts/lib/reconcile/engine.mjs', 'scripts/lib/reconcile/eligibility.mjs'],
+      });
+      await appendProposal({ record, repoRoot: tmpRepo, waveId: 'W1' });
+
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      // Sanity: the proposal itself actually carries file_paths — otherwise
+      // the pass-through assertion below proves nothing.
+      expect(proposals[0].file_paths).toEqual([
+        'scripts/lib/reconcile/engine.mjs',
+        'scripts/lib/reconcile/eligibility.mjs',
+      ]);
+
+      const { written, errors } = await writeApproved({
+        approved: [proposals[0]],
+        repoRoot: tmpRepo,
+        sessionId: SESSION_ID,
+      });
+      expect(errors).toHaveLength(0);
+      expect(written).toBe(1);
+
+      const learnings = readJsonlLines(learningsJsonlPath);
+      expect(learnings).toHaveLength(1);
+      // FALSIFICATION: if _proposalToLearning ever switched from a rest
+      // spread to an explicit field allowlist that omitted file_paths, this
+      // would be undefined instead of the two paths above.
+      expect(learnings[0].file_paths).toEqual([
+        'scripts/lib/reconcile/engine.mjs',
+        'scripts/lib/reconcile/eligibility.mjs',
+      ]);
+    });
+
+    it('a proposal without file_paths promotes a learning without a file_paths key (no invented [])', async () => {
+      const record = makeRecord({ waveId: 'W1' });
+      await appendProposal({ record, repoRoot: tmpRepo, waveId: 'W1' });
+      const proposals = readJsonlLines(proposalsJsonlPath);
+      expect('file_paths' in proposals[0]).toBe(false);
+
+      await writeApproved({ approved: [proposals[0]], repoRoot: tmpRepo, sessionId: SESSION_ID });
+
+      const learnings = readJsonlLines(learningsJsonlPath);
+      // FALSIFICATION: if _proposalToLearning ever defaulted a missing
+      // file_paths to [], this would be true instead of false.
+      expect('file_paths' in learnings[0]).toBe(false);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // #545 C2 — path-safety negative tests
   //
   // The sink delegates path validation to validatePathInsideProject (path-utils.mjs)

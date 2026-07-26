@@ -6,7 +6,9 @@
  *   - Happy path: eligible types with non-empty file_paths.
  *   - Reject: eligible type but no file_paths (empty file_paths reason).
  *   - Reject: type gate beats file gate (out-of-allow-list type WITH file_paths).
- *   - Reject: default-reject types (proven-pattern).
+ *   - Reject: default-reject types (autonomy-verdict; #900 flipped proven-pattern
+ *     and workflow-pattern to ruleConvertible:true, so they are no longer
+ *     default-reject examples — see the CONVERT_TYPES describe block below).
  *   - Invalid records (null / {} / no type) → rejected, never throws.
  *   - filterEligible partition shape + counts.
  *   - Committed-fixture regression lock (CI-portable; no real-file read).
@@ -73,9 +75,11 @@ describe('classifyLearning — rejected records', () => {
     expect(result.reason).toMatch(/not in convert allow-list/);
   });
 
-  it('rejects proven-pattern as a default-reject type', () => {
+  it('rejects autonomy-verdict as a default-reject type (analyzer-only, ruleConvertible:false)', () => {
+    // proven-pattern moved OFF this list (#900 — flipped ruleConvertible:true).
+    // autonomy-verdict remains a genuine default-reject type.
     const result = classifyLearning({
-      type: 'proven-pattern',
+      type: 'autonomy-verdict',
       file_paths: ['a.mjs'],
     });
     expect(result.eligible).toBe(false);
@@ -244,8 +248,9 @@ describe('CONVERT_TYPES', () => {
     expect(CONVERT_TYPES.has('anti-pattern')).toBe(true);
   });
 
-  it('does not contain default-reject types', () => {
-    expect(CONVERT_TYPES.has('proven-pattern')).toBe(false);
+  it('contains proven-pattern (#900 — flipped ruleConvertible:true); still excludes effective-sizing', () => {
+    // FALSIFICATION: reverting the #900 registry flip would make this false again.
+    expect(CONVERT_TYPES.has('proven-pattern')).toBe(true);
     expect(CONVERT_TYPES.has('effective-sizing')).toBe(false);
   });
 
@@ -253,6 +258,16 @@ describe('CONVERT_TYPES', () => {
     expect(CONVERT_TYPES.has('convention')).toBe(true);
     expect(CONVERT_TYPES.has('architecture-pattern')).toBe(true);
     expect(CONVERT_TYPES.has('design-pattern')).toBe(true);
+  });
+
+  it('contains the two newly convertible types (#900): proven-pattern, workflow-pattern', () => {
+    expect(CONVERT_TYPES.has('proven-pattern')).toBe(true);
+    expect(CONVERT_TYPES.has('workflow-pattern')).toBe(true);
+  });
+
+  it('still excludes genuine default-reject types (autonomy-verdict, effective-sizing)', () => {
+    expect(CONVERT_TYPES.has('autonomy-verdict')).toBe(false);
+    expect(CONVERT_TYPES.has('effective-sizing')).toBe(false);
   });
 });
 

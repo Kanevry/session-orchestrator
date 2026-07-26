@@ -272,6 +272,25 @@ describe('createProposalRecord', () => {
     const r2 = validRecord();
     expect(r1.id).not.toBe(r2.id);
   });
+
+  it('sets file_paths when a non-empty array is provided (#900 C)', () => {
+    // FALSIFICATION: removing the `if (Array.isArray(filePaths) && ...)` block would never set this
+    const record = createProposalRecord(validOpts({ filePaths: ['scripts/lib/a.mjs', 'scripts/lib/b.mjs'] }));
+    expect(record.file_paths).toEqual(['scripts/lib/a.mjs', 'scripts/lib/b.mjs']);
+  });
+
+  it('does NOT set file_paths when the optional field is omitted (#900 C)', () => {
+    // FALSIFICATION: unconditionally assigning `record.file_paths = filePaths` would set this to undefined
+    const record = validRecord();
+    expect('file_paths' in record).toBe(false);
+  });
+
+  it('does NOT set file_paths when an empty array is provided (#900 C — never [])', () => {
+    // FALSIFICATION: using `filePaths !== undefined` instead of the non-empty-array
+    // check would set record.file_paths to [] here
+    const record = createProposalRecord(validOpts({ filePaths: [] }));
+    expect('file_paths' in record).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -645,6 +664,54 @@ describe('validateProposalRecord — proposed_by_agent optional field', () => {
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe('proposed_by_agent must be a string when present');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateProposalRecord() — file_paths optional field (#900 C)
+// ---------------------------------------------------------------------------
+
+describe('validateProposalRecord — file_paths optional field (#900 C)', () => {
+  it('returns {ok:true} when file_paths is a non-empty array of valid strings', () => {
+    const record = createProposalRecord(validOpts({ filePaths: ['scripts/lib/a.mjs'] }));
+    // FALSIFICATION: rejecting a well-formed file_paths array would fail this
+    expect(validateProposalRecord(record)).toEqual({ ok: true });
+  });
+
+  it('returns {ok:false} when file_paths is present but not an array', () => {
+    const record = validRecord();
+    record.file_paths = 'scripts/lib/a.mjs';
+    // FALSIFICATION: removing the Array.isArray check would accept a bare string → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+  });
+
+  it('returns {ok:false} when file_paths contains a non-string entry', () => {
+    const record = validRecord();
+    record.file_paths = ['scripts/lib/a.mjs', 42];
+    // FALSIFICATION: removing the per-entry typeof check would accept a number entry → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+  });
+
+  it('returns {ok:false} when file_paths contains an empty string entry', () => {
+    const record = validRecord();
+    record.file_paths = ['scripts/lib/a.mjs', ''];
+    // FALSIFICATION: removing the per-entry length check would accept an empty string → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
+  });
+
+  it('returns {ok:false} when a file_paths entry contains a newline', () => {
+    const record = validRecord();
+    record.file_paths = ['scripts/lib/a.mjs\nscripts/lib/b.mjs'];
+    // FALSIFICATION: removing the per-entry newline check would accept it → fail
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe('file_paths must be an array of non-empty newline-free strings when present');
   });
 });
 

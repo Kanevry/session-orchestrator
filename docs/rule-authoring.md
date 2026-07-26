@@ -203,8 +203,8 @@ Transcribed verbatim from `LEARNING_TYPE_REGISTRY` (16 types):
 | `fragile-file` | 45 | true | true |
 | `effective-sizing` | 45 | true | false |
 | `recurring-issue` | 45 | true | true |
-| `workflow-pattern` | 90 | true | false |
-| `proven-pattern` | 90 | true | false |
+| `workflow-pattern` | 90 | true | true |
+| `proven-pattern` | 90 | true | true |
 | `anti-pattern` | 90 | true | true |
 | `autopilot-effectiveness` | 90 | true | false |
 | `autonomy-verdict` | 90 | false | false |
@@ -217,7 +217,11 @@ Transcribed verbatim from `LEARNING_TYPE_REGISTRY` (16 types):
 
 Capability axes:
 - **`agentProposable`** — the type may appear in `PROPOSAL_TYPES` (a wave-agent may `memory.propose()` this type). `autonomy-verdict`, `fragile-pattern`, and `stagnation-class-frequency` are `false` — these are analyzer-synthesized classes, not agent-observed, so they are never agent-proposable.
-- **`ruleConvertible`** — the type may appear in `CONVERT_TYPES` (the FA2 reconciliation engine may convert a learning of this type into a conditional `.claude/rules/*.md` proposal). `fragile-file`, `recurring-issue`, `anti-pattern`, `convention`, `architecture-pattern`, `design-pattern`, `fragile-pattern`, and `stagnation-class-frequency` are the eight `ruleConvertible: true` types.
+- **`ruleConvertible`** — the type may appear in `CONVERT_TYPES` (the FA2 reconciliation engine may convert a learning of this type into a conditional `.claude/rules/*.md` proposal). `fragile-file`, `recurring-issue`, `anti-pattern`, `convention`, `architecture-pattern`, `design-pattern`, `fragile-pattern`, `stagnation-class-frequency`, `workflow-pattern`, and `proven-pattern` are the ten `ruleConvertible: true` types (issue #900 flipped the last two from `false` — the real corpus census showed a large volume of these records carrying usable `file_paths` scope that were structurally unconvertible before the flip).
+
+### Type aliasing (issue #900)
+
+The real learnings corpus also accumulated free-form type names that were never registered — the same semantic classes as two registered types, written with a different literal. `LEARNING_TYPE_ALIASES` in `scripts/lib/learnings/schema.mjs` maps these to their canonical counterpart (`gotcha` → `anti-pattern`, `pattern` → `proven-pattern`), applied by `normalizeDialects()` on both the read and write/migration funnels — mirroring the existing `files` → `file_paths` dialect-normalization pattern one level up (a type-name alias instead of a field-name alias). No alias key may collide with a registry key (guarded by a test in `tests/lib/learnings-schema-normalization.test.mjs`).
 
 `LEARNING_TTL_DAYS[type]` derives its value from `LEARNING_TYPE_REGISTRY[type].ttlDays` for every listed type, plus a `default: 60` fallback entry for any type not present in the registry (`deriveExpiresAt()` looks up `LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default`).
 

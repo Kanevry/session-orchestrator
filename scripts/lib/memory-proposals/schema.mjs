@@ -22,7 +22,11 @@
  *   schema_version   1
  *
  * Optional fields:
- *   proposed_by_agent string | undefined — identifier of the submitting agent
+ *   proposed_by_agent string | undefined  — identifier of the submitting agent
+ *   file_paths        string[] | undefined — repo-relative path(s) this
+ *     proposal applies to (issue #900 C). Omitted entirely when empty/absent
+ *     — never set to `[]`. Required, downstream, for a promoted learning to
+ *     ever become /reconcile-eligible (see `reconcile/eligibility.mjs`).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -86,6 +90,9 @@ const EVIDENCE_MAX = 5000;
  * @param {number} opts.confidence     — [0, 1]
  * @param {string} opts.waveId         — e.g. 'W2'
  * @param {string} [opts.proposedByAgent] — optional agent identifier
+ * @param {string[]} [opts.filePaths]  — optional repo-relative path(s) this
+ *   proposal applies to (issue #900 C). Set on the record ONLY when a
+ *   non-empty array is supplied — mirrors the `proposedByAgent` pattern.
  * @returns {object} complete proposal record
  */
 export function createProposalRecord({
@@ -96,6 +103,7 @@ export function createProposalRecord({
   confidence,
   waveId,
   proposedByAgent,
+  filePaths,
 }) {
   const record = {
     id: randomUUID(),
@@ -111,6 +119,10 @@ export function createProposalRecord({
 
   if (proposedByAgent !== undefined) {
     record.proposed_by_agent = proposedByAgent;
+  }
+
+  if (Array.isArray(filePaths) && filePaths.length > 0) {
+    record.file_paths = filePaths;
   }
 
   return record;
@@ -236,6 +248,18 @@ export function validateProposalRecord(record) {
   // proposed_by_agent (optional, but if present must be string)
   if ('proposed_by_agent' in record && typeof record.proposed_by_agent !== 'string') {
     errors.push('proposed_by_agent must be a string when present');
+  }
+
+  // file_paths (optional, but if present must be a non-empty array of
+  // non-empty, newline-free strings) — issue #900 C.
+  if ('file_paths' in record) {
+    const fp = record.file_paths;
+    const isValidArray =
+      Array.isArray(fp) &&
+      fp.every((p) => typeof p === 'string' && p.length > 0 && !/[\r\n]/.test(p));
+    if (!isValidArray) {
+      errors.push('file_paths must be an array of non-empty newline-free strings when present');
+    }
   }
 
   if (errors.length > 0) {

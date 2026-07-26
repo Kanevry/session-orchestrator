@@ -83,8 +83,13 @@ export const LEARNING_TYPE_REGISTRY = Object.freeze({
   'fragile-file':                Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
   'effective-sizing':            Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: false }),
   'recurring-issue':             Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
-  'workflow-pattern':            Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
-  'proven-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
+  // workflow-pattern / proven-pattern: flipped ruleConvertible false->true
+  // (issue #900) — the real corpus census showed a large volume of live
+  // `workflow-pattern`/`proven-pattern` records (post type-alias-normalization,
+  // see LEARNING_TYPE_ALIASES below) that carried usable file_paths but were
+  // structurally unconvertible before this flip.
+  'workflow-pattern':            Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  'proven-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
   'anti-pattern':                Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
   'autopilot-effectiveness':     Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
   // autonomy-verdict (#683): repo/scope readiness synthesis from autopilot
@@ -104,6 +109,30 @@ export const LEARNING_TYPE_REGISTRY = Object.freeze({
   // NOT agent-proposable (analyzer-synthesized classes, not agent-observed).
   'fragile-pattern':             Object.freeze({ ttlDays: 45, agentProposable: false, ruleConvertible: true  }),
   'stagnation-class-frequency':  Object.freeze({ ttlDays: 60, agentProposable: false, ruleConvertible: true  }),
+});
+
+/**
+ * Free-form producer-dialect type names -> their canonical
+ * {@link LEARNING_TYPE_REGISTRY} counterpart (issue #900). The real corpus
+ * accumulated learnings stamped with type names that were never registered
+ * (`gotcha`, `pattern`, ...) — these are semantically the SAME classes as
+ * two registered types, just written with a different literal. Applied by
+ * {@link normalizeDialects} on both the read funnel (`normalizeLearning`)
+ * and the write/migration funnel (`migrateLegacyLearning`), so every
+ * downstream consumer (TTL derivation, `CONVERT_TYPES` / `PROPOSAL_TYPES`
+ * membership, reconcile eligibility) sees one canonical type space —
+ * mirrors the existing `files` -> `file_paths` dialect-normalization
+ * pattern one level up (type name instead of field name).
+ *
+ * INVARIANT (guarded by a test): no alias KEY may collide with a
+ * `LEARNING_TYPE_REGISTRY` key — a collision would silently rewrite an
+ * already-canonical type into a different one.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const LEARNING_TYPE_ALIASES = Object.freeze({
+  gotcha: 'anti-pattern',
+  pattern: 'proven-pattern',
 });
 
 /**
@@ -275,7 +304,10 @@ const _warnedSessionIdConflict = new Set();
  * session_id/source_session conflict (see below); idempotent; never throws;
  * non-objects (and arrays) pass through unchanged. Does NOT mutate its input.
  *
- * Dialect rules (Epic #723 B2 — census 2026-07-02):
+ * Dialect rules (Epic #723 B2 — census 2026-07-02; type-alias rule added
+ * issue #900):
+ *   - `type`         → canonical type — resolved via {@link LEARNING_TYPE_ALIASES}
+ *                      (e.g. `gotcha` → `anti-pattern`, `pattern` → `proven-pattern`).
  *   - `files`        → `file_paths`  — verbatim value move; an empty array is
  *                      preserved as an empty `file_paths`; a canonical
  *                      `file_paths` already present wins (legacy `files` dropped).
@@ -309,6 +341,14 @@ export function normalizeDialects(entry, { reserializeTimestamps = true } = {}) 
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
 
   const out = { ...entry };
+
+  // type alias resolution (#900) — canonicalize free-form producer type names
+  // (e.g. `gotcha`, `pattern`) to their LEARNING_TYPE_REGISTRY counterpart so
+  // every downstream consumer (TTL derivation, CONVERT_TYPES / PROPOSAL_TYPES
+  // membership, reconcile eligibility) sees one canonical type space.
+  if (typeof out.type === 'string' && out.type in LEARNING_TYPE_ALIASES) {
+    out.type = LEARNING_TYPE_ALIASES[out.type];
+  }
 
   // files → file_paths (verbatim value move; canonical wins; empty array kept).
   if ('files' in out) {

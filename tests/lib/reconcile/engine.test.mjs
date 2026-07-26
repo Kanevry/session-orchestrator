@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 
 import { runReconcile } from '../../../scripts/lib/reconcile/engine.mjs';
+import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
 import { RECONCILE_FIXTURE } from './_fixtures.mjs';
 
 /** An eligible fragile-pattern learning (real type + non-empty file_paths). */
@@ -62,6 +63,7 @@ describe('runReconcile — committed-fixture regression lock (DI-injected dryRun
       eligible: 2,
       proposed: 2,
       rejected: 4,
+      capped: 0,
       written: false,
     });
     expect(result.proposals).toHaveLength(2);
@@ -156,6 +158,7 @@ describe('runReconcile — empty short-circuit', () => {
       eligible: 0,
       proposed: 0,
       rejected: 0,
+      capped: 0,
       written: false,
     });
     // Empty short-circuit touches no disk — merge seam is never invoked.
@@ -180,6 +183,7 @@ describe('runReconcile — never-throws boundary', () => {
       eligible: 0,
       proposed: 0,
       rejected: 0,
+      capped: 0,
       written: false,
     });
     expect(result.proposals).toEqual([]);
@@ -238,6 +242,117 @@ describe('runReconcile — minRuleDays / minInsightChars param forwarding (#741.
     // (7d) would have floored this to 2026-07-02 (now+7d) instead of the
     // requested 2026-07-10 (now+15d) — the assertion below is the fix under test.
     expect(result.proposals[0].content).toContain('expires-at: 2026-07-10');
+  });
+});
+
+describe('runReconcile — max-proposals-per-run volume brake (#900 D, default cap 10)', () => {
+  it('caps 15 eligible learnings to the 10 highest-confidence proposals; summary.capped reflects the cut', async () => {
+    const learnings = Array.from({ length: 15 }, (_, i) =>
+      eligibleLearning({
+        subject: `vol-brake-${i}`,
+        confidence: 0.5 + i * 0.03, // strictly increasing: 0.50 .. 0.92
+        file_paths: [`scripts/lib/vol-brake/${i}.mjs`],
+      }),
+    );
+
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { learnings },
+    );
+
+    expect(result.summary.totalLearnings).toBe(15);
+    expect(result.summary.eligible).toBe(15);
+    expect(result.summary.proposed).toBe(10);
+    expect(result.summary.rejected).toBe(5);
+    expect(result.summary.capped).toBe(5);
+    expect(result.proposals).toHaveLength(10);
+
+    // Highest-confidence-first: the 5 LOWEST-confidence subjects (indices
+    // 0..4, confidence 0.50..0.62) must be the ones cut — never proposed.
+    const proposedKeys = result.proposals.map((p) => p.learningKey);
+    expect(proposedKeys).not.toContain('fragile-pattern/vol-brake-0');
+    expect(proposedKeys).not.toContain('fragile-pattern/vol-brake-4');
+    expect(proposedKeys).toContain('fragile-pattern/vol-brake-14');
+    expect(proposedKeys).toContain('fragile-pattern/vol-brake-5');
+
+    // Cut entries are recorded as `capped` rejections, not silently dropped.
+    const cappedRejections = result.rejected.filter((r) => r.reason.startsWith('capped —'));
+    expect(cappedRejections).toHaveLength(5);
+  });
+
+  it('does not cap when maxProposalsPerRun is explicitly raised above the eligible count', async () => {
+    const learnings = Array.from({ length: 15 }, (_, i) =>
+      eligibleLearning({
+        subject: `vol-brake-raised-${i}`,
+        confidence: 0.5 + i * 0.01,
+        file_paths: [`scripts/lib/vol-brake-raised/${i}.mjs`],
+      }),
+    );
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: 20 },
+      { learnings },
+    );
+    expect(result.summary.proposed).toBe(15);
+    expect(result.summary.capped).toBe(0);
+    expect(result.summary.rejected).toBe(0);
+  });
+
+  it('a maxProposalsPerRun of 0 falls back to the default cap of 10 (fail-closed, never uncapped)', async () => {
+    const learnings = Array.from({ length: 12 }, (_, i) =>
+      eligibleLearning({
+        subject: `vol-brake-zero-${i}`,
+        confidence: 0.5 + i * 0.01,
+        file_paths: [`scripts/lib/vol-brake-zero/${i}.mjs`],
+      }),
+    );
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: 0 },
+      { learnings },
+    );
+    expect(result.summary.proposed).toBe(10);
+    expect(result.summary.capped).toBe(2);
+  });
+});
+
+describe('runReconcile — #900 brandmauer guard: an aliased type without scope never reaches the emitter', () => {
+  it('rejects a gotcha (aliased -> anti-pattern) learning with no file_paths and no host_class: 0 proposals, 1 rejection, no rule content minted', async () => {
+    // gotcha aliases to anti-pattern (already ruleConvertible:true) via
+    // normalizeDialects — exactly what the engine's default loader applies
+    // before eligibility runs. This record deliberately carries NEITHER
+    // file_paths NOR host_class, so it must be rejected on the FILE gate
+    // inside classifyLearning() — never reach toActivationMetadata(), which
+    // would otherwise throw (no activation axis) on a bare `anti-pattern`
+    // record. A rejection reason of "empty file_paths[]" proves the
+    // eligibility gate caught it; a reason of "emit/render error: ..." would
+    // mean the eligibility gate was bypassed and only the emitter's own
+    // throw-based brandmauer caught it — a strictly weaker second line of
+    // defense this test also distinguishes against.
+    const rawLearning = {
+      type: 'gotcha',
+      subject: 'no-scope-gotcha',
+      insight: 'A real insight describing a pattern with no scoping information at all.',
+      confidence: 0.8,
+      created_at: '2026-06-21T00:00:00Z',
+    };
+    const learning = normalizeDialects(rawLearning);
+    expect(learning.type).toBe('anti-pattern'); // sanity: alias resolved
+
+    const result = await runReconcile(
+      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { learnings: [learning] },
+    );
+
+    expect(result.summary.proposed).toBe(0);
+    expect(result.summary.rejected).toBe(1);
+    expect(result.proposals).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].reason).toMatch(/empty file_paths/);
+    expect(result.rejected[0].reason).not.toMatch(/emit\/render error/);
+
+    // No rule object was ever minted — there is nothing with empty globs or
+    // alwaysApply !== false anywhere in the result, because nothing reached
+    // the emitter at all.
+    expect(result.proposals.every((p) => typeof p.content === 'string' && p.content.length > 0)).toBe(true);
   });
 });
 

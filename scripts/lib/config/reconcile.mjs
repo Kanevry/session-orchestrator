@@ -16,6 +16,7 @@ import { matchBlockHeader } from './block-header.mjs';
  *     'confidence-floor': number,
  *     'min-rule-days': number,
  *     'min-insight-chars': number,
+ *     'max-proposals-per-run': number,
  *   }
  *
  * Tolerant parser: malformed values silently fall back to defaults.
@@ -51,6 +52,12 @@ import { matchBlockHeader } from './block-header.mjs';
  *                                          gating the eligibility placeholder-insight check
  *                                          (issue #741.2). Malformed, absent, or negative
  *                                          values fall back to 24.
+ *   reconcile.max-proposals-per-run: 10  — positive integer (min 1); volume brake (issue
+ *                                          #900 D) — the reconcile engine sorts eligible
+ *                                          learnings by confidence DESC and proposes at
+ *                                          most this many per run, recording the cut count
+ *                                          in the run summary (`summary.capped`). Malformed,
+ *                                          absent, or non-positive values fall back to 10.
  *
  * YAML shape:
  *   reconcile:
@@ -61,6 +68,7 @@ import { matchBlockHeader } from './block-header.mjs';
  *     confidence-floor: 0.5
  *     min-rule-days: 7
  *     min-insight-chars: 24
+ *     max-proposals-per-run: 10
  *
  * @param {string} content — full file contents
  * @returns {{
@@ -71,6 +79,7 @@ import { matchBlockHeader } from './block-header.mjs';
  *   'confidence-floor': number,
  *   'min-rule-days': number,
  *   'min-insight-chars': number,
+ *   'max-proposals-per-run': number,
  * }}
  */
 export function _parseReconcile(content) {
@@ -82,6 +91,7 @@ export function _parseReconcile(content) {
     'confidence-floor': 0.5,
     'min-rule-days': 7,
     'min-insight-chars': 24,
+    'max-proposals-per-run': 10,
   };
 
   const lines = content.split(/\r?\n/);
@@ -108,6 +118,7 @@ export function _parseReconcile(content) {
   let confidenceFloor = 0.5;
   let minRuleDays = 7;
   let minInsightChars = 24;
+  let maxProposalsPerRun = 10;
 
   for (const rawLine of blockLines) {
     // Strip inline comments and trailing whitespace
@@ -183,6 +194,15 @@ export function _parseReconcile(content) {
         break;
       }
 
+      case 'max-proposals-per-run': {
+        if (/^\d+$/.test(v)) {
+          const n = parseInt(v, 10);
+          if (n >= 1) maxProposalsPerRun = n;
+          // 0 or malformed: silently ignore, keep default 10
+        }
+        break;
+      }
+
       // targets inline-list with no brackets (e.g. targets: repo-local) — single value
       case 'targets': {
         if (v && !v.startsWith('[')) {
@@ -201,5 +221,6 @@ export function _parseReconcile(content) {
     'confidence-floor': confidenceFloor,
     'min-rule-days': minRuleDays,
     'min-insight-chars': minInsightChars,
+    'max-proposals-per-run': maxProposalsPerRun,
   };
 }

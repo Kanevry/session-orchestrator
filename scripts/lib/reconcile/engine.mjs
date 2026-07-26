@@ -62,6 +62,14 @@
  * @property {number} eligible
  * @property {number} proposed
  * @property {number} rejected
+ * @property {number} capped   - count of eligible learnings that were NOT proposed
+ *        this run purely because of the `maxProposalsPerRun` volume brake (issue
+ *        #900 D — confidence-sorted, lowest-confidence entries cut first). Each
+ *        capped learning is ALSO counted inside `rejected` (with a `capped — ...`
+ *        reason) — `totalLearnings === proposed + rejected` still holds unchanged;
+ *        `capped` is a diagnostic sub-count that lets a report distinguish
+ *        "genuinely ineligible" rejections from "eligible but cut by the volume
+ *        brake" ones at a glance.
  * @property {boolean} written
  *
  * @typedef {Object} ReconcileResult
@@ -84,6 +92,14 @@ import { makeCandidateId, mergeCandidates as realMergeCandidates } from './idemp
 const DEFAULT_LEARNINGS_PATH = '.orchestrator/metrics/learnings.jsonl';
 
 /**
+ * Default volume brake (issue #900 D) — mirrors the `reconcile.max-proposals-
+ * per-run` Session Config default in `scripts/lib/config/reconcile.mjs`. Applied
+ * even when a caller omits `maxProposalsPerRun` entirely, so the engine never
+ * silently proposes an unbounded number of rules in one run.
+ */
+const DEFAULT_MAX_PROPOSALS_PER_RUN = 10;
+
+/**
  * Build a fully-zeroed result (the empty / error shape). Touches no disk.
  * @param {string} [error]
  * @returns {ReconcileResult}
@@ -98,6 +114,7 @@ function zeroedResult(error) {
       eligible: 0,
       proposed: 0,
       rejected: 0,
+      capped: 0,
       written: false,
     },
   };
@@ -236,6 +253,11 @@ function buildCandidate({ id, learningKey, slug, status, reason, confidence, cre
  *        eligibility placeholder-insight check (forwarded to `filterEligible`). Inert
  *        (no additional rejections) when omitted.
  * @param {number|Date} [params.now]      - injectable clock (emitter fallback + candidate `created_at`).
+ * @param {number} [params.maxProposalsPerRun] - volume brake (issue #900 D): after
+ *        sorting eligible learnings by confidence DESC, only the top N are proposed;
+ *        the rest are recorded as `capped` rejections. Defaults to
+ *        {@link DEFAULT_MAX_PROPOSALS_PER_RUN} (10) when omitted, non-finite, or < 1
+ *        — the brake is ALWAYS active, matching the Session Config default.
  * @param {boolean} [params.dryRun]       - when true, compute proposals but SKIP the merge entirely
  *        (also accepted as `opts.dryRun`; either location sets it).
  * @param {Object} [opts]                 - DI seams (all default to real behaviour).
@@ -249,7 +271,15 @@ function buildCandidate({ id, learningKey, slug, status, reason, confidence, cre
  * @returns {Promise<ReconcileResult>}
  */
 export async function runReconcile(
-  { repoRoot, ruleExpiryDays, minRuleDays, minInsightChars, now, dryRun: dryRunParam } = {},
+  {
+    repoRoot,
+    ruleExpiryDays,
+    minRuleDays,
+    minInsightChars,
+    now,
+    maxProposalsPerRun: maxProposalsPerRunParam,
+    dryRun: dryRunParam,
+  } = {},
   opts = {},
 ) {
   try {
@@ -258,6 +288,12 @@ export async function runReconcile(
     // (the documented DI seam) — either location flips it on.
     const dryRun = dryRunParam === true || opts.dryRun === true;
     const merge = typeof opts.merge === 'function' ? opts.merge : realMergeCandidates;
+    // Volume brake (#900 D) — always active; a missing/invalid override falls
+    // back to the same default the Session Config parser uses.
+    const maxProposalsPerRun =
+      Number.isFinite(maxProposalsPerRunParam) && maxProposalsPerRunParam >= 1
+        ? Math.floor(maxProposalsPerRunParam)
+        : DEFAULT_MAX_PROPOSALS_PER_RUN;
 
     // --- Pipeline step 1 — load learnings ----------------------------------
     /** @type {Array<Record<string, unknown>>} */
@@ -289,6 +325,21 @@ export async function runReconcile(
       minInsightChars,
     });
 
+    // --- Pipeline step 3b — volume brake (#900 D) ---------------------------
+    // Sort eligible learnings by confidence DESC (ties keep their original,
+    // stable relative order) and keep only the top `maxProposalsPerRun`. The
+    // rest are cut BEFORE they ever reach the emitter — never proposed this
+    // run — and recorded as `capped` rejections in step 4b below so a report
+    // stays honest about the cut instead of silently dropping them.
+    const confidenceOf = (l) =>
+      l && typeof l === 'object' && typeof l.confidence === 'number' ? l.confidence : 0;
+    const sortedEligible = eligible
+      .map((learning, index) => ({ learning, index }))
+      .sort((a, b) => confidenceOf(b.learning) - confidenceOf(a.learning) || a.index - b.index)
+      .map(({ learning }) => learning);
+    const keptEligible = sortedEligible.slice(0, maxProposalsPerRun);
+    const cappedEligible = sortedEligible.slice(maxProposalsPerRun);
+
     /** @type {ReconcileProposal[]} */
     const proposals = [];
     /** @type {ReconcileRejection[]} */
@@ -297,7 +348,7 @@ export async function runReconcile(
     const candidates = [];
 
     // --- Pipeline step 4 — per eligible learning (wrapped per-item) ---------
-    for (const learning of eligible) {
+    for (const learning of keptEligible) {
       try {
         const metadata = toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDays });
         const { slug, path, content } = renderRule(learning, metadata);
@@ -352,6 +403,34 @@ export async function runReconcile(
       }
     }
 
+    // --- Pipeline step 4b — capped-eligible learnings (#900 D) --------------
+    // Learnings that passed eligibility but were cut by the volume brake are
+    // NEVER passed to the emitter — recorded directly as rejections (with a
+    // `capped — ...` reason) so a report distinguishes this from a genuine
+    // ineligibility rejection.
+    for (const learning of cappedEligible) {
+      const learningKey = rejectedLearningKey(learning);
+      const type = learningType(learning);
+      const reason = `capped — max-proposals-per-run (${maxProposalsPerRun}) reached; ${cappedEligible.length} lower-confidence eligible learning(s) not proposed this run`;
+      rejected.push({
+        learningKey,
+        type,
+        reason,
+        status: 'rejected',
+      });
+      candidates.push(
+        buildCandidate({
+          id: makeCandidateId(learningKey ?? '', `rejected-${type}`),
+          learningKey,
+          slug: '',
+          status: 'rejected',
+          reason,
+          confidence: confidenceOf(learning),
+          createdAt,
+        }),
+      );
+    }
+
     // --- Pipeline step 5 — per rejected learning (eligibility rejects) ------
     for (const { learning, reason } of rejectedLearnings) {
       const learningKey = rejectedLearningKey(learning);
@@ -401,6 +480,7 @@ export async function runReconcile(
         eligible: eligible.length,
         proposed: proposals.length,
         rejected: rejected.length,
+        capped: cappedEligible.length,
         written,
       },
     };

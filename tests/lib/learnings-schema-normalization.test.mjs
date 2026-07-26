@@ -22,6 +22,8 @@ import {
   normalizeDialects,
   normalizeLearning,
   migrateLegacyLearning,
+  LEARNING_TYPE_ALIASES,
+  LEARNING_TYPE_REGISTRY,
 } from '../../scripts/lib/learnings/schema.mjs';
 import { classifyLearning } from '../../scripts/lib/reconcile/eligibility.mjs';
 
@@ -63,6 +65,56 @@ describe('normalizeDialects — files → file_paths', () => {
     const r = normalizeDialects({ files: ['legacy.mjs'], file_paths: ['canon.mjs'] });
     expect(r.file_paths).toEqual(['canon.mjs']);
     expect('files' in r).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeDialects — type alias resolution (#900)
+// ---------------------------------------------------------------------------
+
+describe('normalizeDialects — type alias resolution (#900)', () => {
+  it('rewrites `pattern` to the canonical `proven-pattern`', () => {
+    const r = normalizeDialects({ type: 'pattern' });
+    expect(r.type).toBe('proven-pattern');
+  });
+
+  it('rewrites `gotcha` to the canonical `anti-pattern`', () => {
+    const r = normalizeDialects({ type: 'gotcha' });
+    expect(r.type).toBe('anti-pattern');
+  });
+
+  it('leaves an already-canonical type untouched', () => {
+    const r = normalizeDialects({ type: 'anti-pattern' });
+    expect(r.type).toBe('anti-pattern');
+  });
+
+  it('leaves a type with no alias entry untouched (unknown/free-form type)', () => {
+    const r = normalizeDialects({ type: 'process' });
+    expect(r.type).toBe('process');
+  });
+
+  it('leaves a record with no type field at all untouched (no throw)', () => {
+    const r = normalizeDialects({ subject: 'no-type-here' });
+    expect('type' in r).toBe(false);
+  });
+
+  it('no LEARNING_TYPE_ALIASES key collides with a LEARNING_TYPE_REGISTRY key', () => {
+    // FALSIFICATION: adding an alias key that duplicates a canonical registry
+    // key would silently rewrite an already-canonical type into a different
+    // one — this guard fails loudly instead.
+    const collisions = Object.keys(LEARNING_TYPE_ALIASES).filter(
+      (key) => key in LEARNING_TYPE_REGISTRY,
+    );
+    expect(collisions).toEqual([]);
+  });
+
+  it('every LEARNING_TYPE_ALIASES value IS a registered LEARNING_TYPE_REGISTRY key', () => {
+    // FALSIFICATION: aliasing to a non-existent canonical type would leave the
+    // resolved type permanently unregistered (no TTL, never proposable/convertible).
+    const danglingTargets = Object.values(LEARNING_TYPE_ALIASES).filter(
+      (target) => !(target in LEARNING_TYPE_REGISTRY),
+    );
+    expect(danglingTargets).toEqual([]);
   });
 });
 
@@ -259,5 +311,17 @@ describe('migrateLegacyLearning — write funnel applies dialects + stamps schem
     expect(classifyLearning(legacy).eligible).toBe(false); // pre-migration: no file_paths
     const migrated = migrateLegacyLearning(legacy);
     expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: file_paths present
+  });
+
+  it('makes a migrated gotcha+files record reconcile-eligible (#900 end-to-end: alias + files)', () => {
+    // #900: a free-form `gotcha` type carrying legacy `files` was doubly
+    // invisible pre-fix (wrong type name AND wrong scope field). Migration
+    // resolves BOTH: gotcha -> anti-pattern, files -> file_paths.
+    const legacyGotcha = { ...BASE(), id: 'mig-elig-900-1', type: 'gotcha', files: ['scripts/y.mjs'] };
+    expect(classifyLearning(legacyGotcha).eligible).toBe(false); // pre-migration: unknown type + no file_paths
+    const migrated = migrateLegacyLearning(legacyGotcha);
+    expect(migrated.type).toBe('anti-pattern');
+    expect(migrated.file_paths).toEqual(['scripts/y.mjs']);
+    expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: canonical type + file_paths present
   });
 });
