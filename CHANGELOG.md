@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`skills/contract-version-bump/`** — reusable, distributable skill for version-bumping machine-readable contracts (JSON Schema, API specs, config schemas): classifies the change against the contract's OWN versioning rule (not generic semver instinct), finds every version literal and vendored copy across this repo and `cross-repos:`, checks whether every known consumer evaluates each new/changed schema keyword, applies the bump consistently, writes a Keep-a-Changelog entry, and reports downstream drift. Codifies three traps from a real case (GitLab issue #17, `aiat-enablement` repo, 2026-07-25). Ships with `/contract-version-bump`.
+
 ## [3.17.0] - 2026-07-21
 
 Telemetry & curation release. Headline: **opt-in anonymous usage telemetry** (#841) — a

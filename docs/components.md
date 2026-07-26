@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>44 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>24 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>46 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>25 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>15 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,10 +18,10 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (45 user-facing)
+## Skills (46 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
-- **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`
+- **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`, `contract-version-bump`
 - **Planning & discovery:** `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`
 - **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
@@ -31,9 +31,9 @@ flowchart LR
 - **Content review:** `persona-panel`
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (24)
+## Commands (25)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/contract-version-bump`.
 
 ## Agents (15 typed sub-agents)
 
