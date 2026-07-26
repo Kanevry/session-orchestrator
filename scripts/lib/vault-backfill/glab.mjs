@@ -36,6 +36,14 @@ export function assertGlabExists(dieFn) {
 
 /**
  * Run a glab command, return { ok, stdout, stderr }.
+ *
+ * Host-pinning (#872): deliberately ambient — this module runs instance-wide
+ * queries (e.g. `glab repo list -g <group>`) that are not scoped to a single
+ * repo/project, so there is no single `-R`/`--repo` spec to pin. If a
+ * caller ever needs single-repo host-pinning here, use `--hostname` (the
+ * flag `glab api` and instance-wide subcommands accept), NOT `-R`/`--repo` —
+ * see `scripts/lib/vcs-repo-spec.mjs` for the `resolveRepoSpec` (`-R`) vs
+ * `resolveRepoHost` (`--hostname`) contract this repo already established.
  */
 export function glabRun(glabArgs) {
   vlog(`glab ${glabArgs.join(' ')}`);

@@ -1,5 +1,28 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkCiStatus, DEFAULT_TIMEOUT_MS } from '@lib/ci-status-banner.mjs';
+import { checkCiStatus as checkCiStatusReal, DEFAULT_TIMEOUT_MS } from '@lib/ci-status-banner.mjs';
+
+// ── #872 host-pinning DI default ────────────────────────────────────────────
+//
+// checkCiStatus now resolves a `-R`/`--hostname` host-pinning spec via
+// `vcs-repo-spec.mjs`'s `resolveRepoSpec`/`resolveRepoHost`, which by
+// default shell out to the REAL `git remote get-url` (via execFileSync —
+// a separate mechanism from this file's `deps.execFile` async mock). Every
+// pre-#872 test below is unaware of this and asserts an EXACT execFileSync
+// call sequence for just the glab/gh calls it mocks — so `checkCiStatus`
+// (the name used throughout this file) is a local wrapper that injects
+// no-op resolvers (`() => undefined`, matching pre-#872 "no -R/--hostname
+// appended" behaviour) as the DEFAULT, keeping every unmodified test
+// hermetic (no real subprocess spawn) and its call-sequence assertions
+// byte-for-byte identical. Tests that specifically exercise #872
+// host-pinning call `checkCiStatusReal` directly with explicit
+// `resolveRepoSpec`/`resolveRepoHost` overrides.
+function checkCiStatus(opts, deps = {}) {
+  return checkCiStatusReal(opts, {
+    resolveRepoSpec: () => undefined,
+    resolveRepoHost: () => undefined,
+    ...deps,
+  });
+}
 
 // ── DI helpers ────────────────────────────────────────────────────────────────
 //
@@ -471,5 +494,120 @@ describe('checkCiStatus — never throws', () => {
     );
 
     expect(result).toBeNull();
+  });
+});
+
+// ── Test 15: #872 host-pinning — GitLab (-R on repo view, --hostname on api) ──
+
+describe('checkCiStatus — #872 GitLab host-pinning', () => {
+  it('pins `glab repo view` with -R <spec> and `glab api` calls with --hostname <host>', async () => {
+    const spec = 'https://gitlab.example.com/example-group/example-project.git';
+    const host = 'gitlab.example.com';
+    const pipelines = [
+      { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      { cmd: 'glab', args: ['repo', 'view', '--output', 'json', '-R', spec], stdout: GLAB_REPO_VIEW },
+      {
+        cmd: 'glab',
+        args: [
+          'api',
+          'projects/42/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          '--hostname',
+          host,
+        ],
+        stdout: JSON.stringify(pipelines),
+      },
+    ]);
+
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => host },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('green');
+
+    const [, repoViewArgs] = mockExecFile.mock.calls.find(
+      ([cmd, args]) => cmd === 'glab' && args.includes('view'),
+    );
+    expect(repoViewArgs).toContain('-R');
+    expect(repoViewArgs).not.toContain('--hostname');
+
+    const [, pipelinesArgs] = mockExecFile.mock.calls.find(
+      ([cmd, args]) => cmd === 'glab' && args.includes('api'),
+    );
+    expect(pipelinesArgs).toContain('--hostname');
+    expect(pipelinesArgs).not.toContain('-R');
+  });
+
+  it('omits both -R and --hostname when resolveRepoSpec/resolveRepoHost return undefined (graceful degradation)', async () => {
+    const pipelines = [
+      { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      glabRepoViewResponse,
+      glabPipelinesResponse(pipelines),
+    ]);
+
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => undefined, resolveRepoHost: () => undefined },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('green');
+
+    for (const [cmd, args] of mockExecFile.mock.calls) {
+      if (cmd !== 'glab') continue;
+      expect(args).not.toContain('-R');
+      expect(args).not.toContain('--hostname');
+    }
+  });
+});
+
+// ── Test 16: #872 host-pinning — GitHub (-R on repo view, --hostname on api) ──
+
+describe('checkCiStatus — #872 GitHub host-pinning', () => {
+  it('pins `gh repo view` with -R <spec> and `gh api` calls with --hostname <host>', async () => {
+    const spec = 'github.example.com/owner/repo';
+    const host = 'github.example.com';
+    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      { cmd: 'gh', args: ['repo', 'view', '--json', 'nameWithOwner', '-R', spec], stdout: GH_REPO_VIEW },
+      {
+        cmd: 'gh',
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', host],
+        stdout: JSON.stringify({ check_runs: checkRuns }),
+      },
+    ]);
+
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => host },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('green');
+
+    const [, repoViewArgs] = mockExecFile.mock.calls.find(
+      ([cmd, args]) => cmd === 'gh' && args.includes('view'),
+    );
+    expect(repoViewArgs).toContain('-R');
+    expect(repoViewArgs).not.toContain('--hostname');
+
+    const [, checkRunsArgs] = mockExecFile.mock.calls.find(
+      ([cmd, args]) => cmd === 'gh' && args.includes('api'),
+    );
+    expect(checkRunsArgs).toContain('--hostname');
+    expect(checkRunsArgs).not.toContain('-R');
   });
 });

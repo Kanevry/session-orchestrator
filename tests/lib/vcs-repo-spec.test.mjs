@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveRepoSpec, defaultGlabRepo } from '../../scripts/lib/vcs-repo-spec.mjs';
+import { resolveRepoSpec, resolveRepoHost, defaultGlabRepo } from '../../scripts/lib/vcs-repo-spec.mjs';
 
 describe('resolveRepoSpec — gitlab (default vcs)', () => {
   it('prefers the gitlab remote URL over origin', () => {
@@ -59,24 +59,24 @@ describe('resolveRepoSpec — gitlab (default vcs)', () => {
   });
 });
 
-describe('resolveRepoSpec — github', () => {
-  it('prefers the github remote URL over origin', () => {
+describe('resolveRepoSpec — github (normalized HOST/OWNER/REPO, #872)', () => {
+  it('prefers the github remote URL over origin, normalized to HOST/OWNER/REPO', () => {
     const fn = (args) => {
-      if (args.includes('github')) return { ok: true, stdout: 'https://github.com/org/repo.git\n', stderr: '' };
-      return { ok: true, stdout: 'https://github.com/org/other.git\n', stderr: '' };
+      if (args.includes('github')) return { ok: true, stdout: 'https://github.example.com/owner/repo.git\n', stderr: '' };
+      return { ok: true, stdout: 'https://github.example.com/owner/other.git\n', stderr: '' };
     };
     expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
-      'https://github.com/org/repo.git',
+      'github.example.com/owner/repo',
     );
   });
 
-  it('falls back to origin when github remote is absent', () => {
+  it('falls back to origin when github remote is absent, normalized to HOST/OWNER/REPO', () => {
     const fn = (args) =>
       args.includes('origin')
-        ? { ok: true, stdout: 'git@github.com:org/repo.git\n', stderr: '' }
+        ? { ok: true, stdout: 'git@github.example.com:owner/repo.git\n', stderr: '' }
         : { ok: false, stdout: '', stderr: 'no such remote' };
     expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
-      'git@github.com:org/repo.git',
+      'github.example.com/owner/repo',
     );
   });
 
@@ -89,6 +89,27 @@ describe('resolveRepoSpec — github', () => {
     resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn });
     expect(seen).toEqual(['github', 'origin']);
     expect(seen).not.toContain('gitlab');
+  });
+
+  it('normalizes an HTTPS github URL to host/owner/repo, stripping the .git suffix', () => {
+    const fn = () => ({ ok: true, stdout: 'https://github.example.com/owner/repo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'github.example.com/owner/repo',
+    );
+  });
+
+  it('normalizes an SSH github URL to host/owner/repo, stripping the .git suffix', () => {
+    const fn = () => ({ ok: true, stdout: 'git@github.example.com:owner/repo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'github.example.com/owner/repo',
+    );
+  });
+
+  it('lowercases the host but preserves owner/repo casing during normalization', () => {
+    const fn = () => ({ ok: true, stdout: 'https://GitHub.Example.Com/Owner/Repo.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'github.example.com/Owner/Repo',
+    );
   });
 });
 
@@ -154,14 +175,58 @@ describe('resolveRepoSpec — cross-VCS-family fallback guard (#839 follow-up)',
     );
   });
 
-  it('still resolves the correct-family public host normally (github.com under vcs:github)', () => {
+  it('still resolves the correct-family public host normally (github.com under vcs:github), normalized', () => {
     const fn = (args) =>
       args.includes('origin')
         ? { ok: true, stdout: 'https://github.com/example-group/example-project.git\n', stderr: '' }
         : { ok: false, stdout: '', stderr: 'no such remote' };
     expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
-      'https://github.com/example-group/example-project.git',
+      'github.com/example-group/example-project',
     );
+  });
+});
+
+describe('resolveRepoSpec — github normalization malformed-input fallback', () => {
+  it('falls back to the raw URL when the remote does not match a two-segment owner/repo shape', () => {
+    const fn = () => ({ ok: true, stdout: 'https://github.example.com/just-one-segment\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe(
+      'https://github.example.com/just-one-segment',
+    );
+  });
+});
+
+describe('resolveRepoHost (#872)', () => {
+  it('extracts the host from an HTTPS gitlab remote', () => {
+    const fn = () => ({ ok: true, stdout: 'https://gitlab.example.com/example-group/example-project.git\n', stderr: '' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBe('gitlab.example.com');
+  });
+
+  it('extracts the host from an SSH github remote', () => {
+    const fn = () => ({ ok: true, stdout: 'git@github.example.com:owner/repo.git\n', stderr: '' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe('github.example.com');
+  });
+
+  it('extracts the host from an HTTPS github remote', () => {
+    const fn = () => ({ ok: true, stdout: 'https://github.example.com/owner/repo.git\n', stderr: '' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBe('github.example.com');
+  });
+
+  it('returns undefined when no remote resolves', () => {
+    const fn = () => ({ ok: false, stdout: '', stderr: 'no such remote' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
+
+  it('returns undefined when the resolved URL has no extractable host', () => {
+    const fn = () => ({ ok: true, stdout: 'not-a-url\n', stderr: '' });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
+
+  it('defaults vcs to gitlab when omitted, matching resolveRepoSpec default', () => {
+    const fn = (args) =>
+      args.includes('gitlab')
+        ? { ok: true, stdout: 'https://gitlab.example.com/example-group/example-project.git\n', stderr: '' }
+        : { ok: false, stdout: '', stderr: '' };
+    expect(resolveRepoHost({ repoRoot: '/repo', gitRun: fn })).toBe('gitlab.example.com');
   });
 });
 

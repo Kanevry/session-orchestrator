@@ -25,7 +25,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import {
   mkdtempSync,
   mkdirSync,
@@ -33,6 +33,7 @@ import {
   rmSync,
   chmodSync,
   existsSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
@@ -551,5 +552,97 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     expect(result.status).toBe(0);
     // Must emit the no-op notice
     expect(result.stderr).toContain('cross-repo: no projects configured');
+  });
+
+  // ── Tests 14-16: -R/--repo host-pinning wiring (#872) ─────────────────────
+  //
+  // Reads every glab invocation's argv from the stub's GLAB_CALL_LOG (one
+  // JSON array per line, appended by STUB_GLAB_SOURCE before it pattern-
+  // matches on args[0..2] — trailing -R additions never affect that match).
+
+  function readCallLog(callLogPath) {
+    return readFileSync(callLogPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+  }
+
+  it('--repo <spec> override pins every glab call to -R <spec>', () => {
+    const spec = 'https://gitlab.example.com/override-group/override-project.git';
+    writeIssueFixture(tmp, '303', 'closed');
+    writeIssueFixture(tmp, '304', 'closed');
+    writeIssueFixture(tmp, '305', 'opened');
+    writeCommentsFixture(tmp, '305', []);
+
+    const callLog = join(tmp, 'call-log.jsonl');
+    const result = runWatcher(
+      ['--issue', '305', '--dep-issues', '303,304', '--dry-run', '--repo', spec],
+      { fixtureDir: tmp, cwd: tmp, callLog }
+    );
+
+    expect(result.status).toBe(0);
+
+    const calls = readCallLog(callLog);
+    // fetchComments + fetchIssues×2 + the tracking-issue view = 4 glab reads
+    // in this scenario (postComment is skipped under --dry-run).
+    expect(calls.length).toBeGreaterThan(0);
+    for (const args of calls) {
+      expect(args).toContain('-R');
+      expect(args[args.indexOf('-R') + 1]).toBe(spec);
+    }
+  });
+
+  it('no --repo override + non-git cwd → no -R appended anywhere (graceful degradation, never "-R undefined")', () => {
+    writeIssueFixture(tmp, '303', 'closed');
+    writeIssueFixture(tmp, '304', 'closed');
+    writeIssueFixture(tmp, '305', 'opened');
+    writeCommentsFixture(tmp, '305', []);
+
+    const callLog = join(tmp, 'call-log.jsonl');
+    const result = runWatcher(
+      ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
+      { fixtureDir: tmp, cwd: tmp, callLog }
+    );
+
+    expect(result.status).toBe(0);
+
+    const calls = readCallLog(callLog);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const args of calls) {
+      expect(args).not.toContain('-R');
+      expect(args).not.toContain('undefined');
+    }
+  });
+
+  it('production default (no --repo): a real `gitlab` git remote on cwd resolves the -R spec through the real resolveRepoSpec chain', () => {
+    const spec = 'https://gitlab.example.com/example-group/example-project.git';
+    // Real (uncontrolled-by-mock) git chain: init a throwaway repo in `tmp`
+    // with a `gitlab` remote so resolveRepoSpec's real `git remote get-url`
+    // call resolves deterministically — proves the module-level REPO_SPEC
+    // default wiring (no --repo override) shells out to the real chain, not
+    // a stub.
+    execFileSync('git', ['init', '-q'], { cwd: tmp });
+    execFileSync('git', ['remote', 'add', 'gitlab', spec], { cwd: tmp });
+
+    writeIssueFixture(tmp, '303', 'closed');
+    writeIssueFixture(tmp, '304', 'closed');
+    writeIssueFixture(tmp, '305', 'opened');
+    writeCommentsFixture(tmp, '305', []);
+
+    const callLog = join(tmp, 'call-log.jsonl');
+    const result = runWatcher(
+      ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
+      { fixtureDir: tmp, cwd: tmp, callLog }
+    );
+
+    expect(result.status).toBe(0);
+
+    const calls = readCallLog(callLog);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const args of calls) {
+      expect(args).toContain('-R');
+      expect(args[args.indexOf('-R') + 1]).toBe(spec);
+    }
   });
 });

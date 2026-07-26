@@ -13,6 +13,8 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
+
 const realExecFile = promisify(execFileCb);
 
 // ---------------------------------------------------------------------------
@@ -112,13 +114,22 @@ export function validateMrInputs(title, description) {
  * @param {'glab'|'gh'} opts.vcs
  * @param {string} opts.branchName
  * @param {Function} [opts.execFile] - defaults to promisified execFile from node:child_process
+ * @param {string} [opts.repoRoot] - defaults to process.cwd()
+ * @param {(opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string | undefined} [opts.resolveRepoSpecFn]
+ *   Injectable seam for the `-R`/`--repo` host-pinning resolution (#872) —
+ *   defaults to the real `resolveRepoSpec` (shells out to `git remote
+ *   get-url`); tests inject a stub instead of shelling out.
  * @returns {Promise<{hasMR: boolean, mrIid: number|null, mrUrl: string|null}>}
  */
 export async function checkExistingMR(opts) {
-  const { vcs, branchName } = opts;
+  const { vcs, branchName, repoRoot = process.cwd() } = opts;
   const execFile = typeof opts.execFile === 'function' ? opts.execFile : realExecFile;
+  const resolveRepoSpecFn =
+    typeof opts.resolveRepoSpecFn === 'function' ? opts.resolveRepoSpecFn : resolveRepoSpec;
 
   if (vcs === 'glab') {
+    // Resolve the -R/--repo host-pinning spec ONCE for this call (#872).
+    const spec = resolveRepoSpecFn({ repoRoot, vcs: 'gitlab' });
     const args = [
       'mr',
       'list',
@@ -129,6 +140,7 @@ export async function checkExistingMR(opts) {
       '--output',
       'json',
     ];
+    if (spec) args.push('-R', spec);
     const { stdout } = await execFile('glab', args, { shell: false, timeout: 5_000 });
     let mrs;
     try {
@@ -148,7 +160,10 @@ export async function checkExistingMR(opts) {
   }
 
   if (vcs === 'gh') {
+    // Resolve the -R/--repo host-pinning spec ONCE for this call (#872).
+    const spec = resolveRepoSpecFn({ repoRoot, vcs: 'github' });
     const args = ['pr', 'list', '--head', branchName, '--state', 'open', '--json', 'number,url'];
+    if (spec) args.push('-R', spec);
     const { stdout } = await execFile('gh', args, { shell: false, timeout: 5_000 });
     let prs;
     try {
@@ -391,6 +406,11 @@ export function buildMrBody(ctx) {
  * @param {object} [opts]
  * @param {Function} [opts.execFile]
  * @param {(level: string, msg: string) => void} [opts.log]
+ * @param {string} [opts.repoRoot] - defaults to process.cwd()
+ * @param {(opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string | undefined} [opts.resolveRepoSpecFn]
+ *   Injectable seam for the `-R`/`--repo` host-pinning resolution (#872) —
+ *   defaults to the real `resolveRepoSpec` (shells out to `git remote
+ *   get-url`); tests inject a stub instead of shelling out.
  * @returns {Promise<{created: boolean, deferred?: boolean, existing?: boolean, mrUrl?: string|null, error?: string}>}
  */
 export async function maybeCreateDraftMR(loop, opts = {}) {
@@ -399,6 +419,9 @@ export async function maybeCreateDraftMR(loop, opts = {}) {
       ? opts.log
       : (_level, _msg) => {}; // no-op default
   const execFile = typeof opts.execFile === 'function' ? opts.execFile : realExecFile;
+  const repoRoot = typeof opts.repoRoot === 'string' ? opts.repoRoot : process.cwd();
+  const resolveRepoSpecFn =
+    typeof opts.resolveRepoSpecFn === 'function' ? opts.resolveRepoSpecFn : resolveRepoSpec;
 
   const { draftMrPolicy, vcs, issueIid, issueTitle, branchName, parentRunId, worktreePath } = loop;
 
@@ -442,6 +465,11 @@ export async function maybeCreateDraftMR(loop, opts = {}) {
       worktreePath,
     });
 
+    // Resolve the -R/--repo host-pinning spec ONCE (#872); reuse the same
+    // resolved value for both the collision check and the create call below
+    // (mirrors #839's spiral-carryover.mjs / issue-close-strip-labels.mjs idiom).
+    const spec = resolveRepoSpecFn({ repoRoot, vcs });
+
     // Collision check — skip if MR already exists
     let existingCheck;
     try {
@@ -449,6 +477,7 @@ export async function maybeCreateDraftMR(loop, opts = {}) {
         vcs: vcsBin, // 'glab' or 'gh'
         branchName,
         execFile,
+        resolveRepoSpecFn: () => spec,
       });
     } catch (err) {
       log('error', `mr-draft: collision check failed — ${err.message}`);
@@ -491,6 +520,7 @@ export async function maybeCreateDraftMR(loop, opts = {}) {
         branchName,
       ];
     }
+    if (spec) createArgs.push('-R', spec);
 
     // Execute MR/PR creation
     try {

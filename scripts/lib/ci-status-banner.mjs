@@ -12,6 +12,7 @@
 
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { resolveRepoSpec, resolveRepoHost } from './vcs-repo-spec.mjs';
 
 const execFileAsync = promisify(_execFile);
 
@@ -77,14 +78,19 @@ async function getHeadSha(repoRoot, deps = {}) {
 /**
  * Get GitLab project ID via glab.
  *
+ * #872: pins to `deps.repoSpec` via `-R` when resolved (host-pinning —
+ * `glab repo view` otherwise falls back to the ambient `GITLAB_HOST`).
+ *
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string }} deps
  * @returns {Promise<number>}
  */
 async function getGlabProjectId(repoRoot, deps = {}) {
+  const args = ['repo', 'view', '--output', 'json'];
+  if (deps.repoSpec) args.push('-R', deps.repoSpec);
   const result = await execWithTimeout(
     'glab',
-    ['repo', 'view', '--output', 'json'],
+    args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
   const parsed = JSON.parse(result.stdout);
@@ -94,15 +100,21 @@ async function getGlabProjectId(repoRoot, deps = {}) {
 /**
  * Run `glab api <path>` and return parsed JSON.
  *
+ * #872: `glab api` has no repo/`-R` concept — it accepts only `--hostname`
+ * to pin which GitLab instance the request targets. Pinned via
+ * `deps.repoHost` when resolved.
+ *
  * @param {string} apiPath
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
  * @returns {Promise<unknown>}
  */
 async function glabApi(apiPath, repoRoot, deps = {}) {
+  const args = ['api', apiPath];
+  if (deps.repoHost) args.push('--hostname', deps.repoHost);
   const result = await execWithTimeout(
     'glab',
-    ['api', apiPath],
+    args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
   return JSON.parse(result.stdout);
@@ -111,15 +123,20 @@ async function glabApi(apiPath, repoRoot, deps = {}) {
 /**
  * Run `gh api <path>` and return parsed JSON.
  *
+ * #872: `gh api` has no repo/`-R` concept either — pinned via `--hostname`
+ * from `deps.repoHost` when resolved.
+ *
  * @param {string} apiPath
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
  * @returns {Promise<unknown>}
  */
 async function ghApi(apiPath, repoRoot, deps = {}) {
+  const args = ['api', apiPath];
+  if (deps.repoHost) args.push('--hostname', deps.repoHost);
   const result = await execWithTimeout(
     'gh',
-    ['api', apiPath],
+    args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
   return JSON.parse(result.stdout);
@@ -144,7 +161,7 @@ function ageDaysFrom(isoDate, now) {
  *
  * @param {string} repoRoot
  * @param {number} now
- * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string }} deps
  * @returns {Promise<object|null>}
  */
 async function checkGitlab(repoRoot, now, deps = {}) {
@@ -268,15 +285,21 @@ async function checkGitlab(repoRoot, now, deps = {}) {
 /**
  * GitHub CI status check (v1 — red/green only; lastGreen not implemented).
  *
+ * #872: pins the `gh repo view` lookup to `deps.repoSpec` via `-R` when
+ * resolved (host-pinning — `gh repo view` otherwise falls back to the
+ * ambient `GH_HOST`).
+ *
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string }} deps
  * @returns {Promise<object|null>}
  */
 async function checkGithub(repoRoot, deps = {}) {
   // Resolve owner/repo from gh to keep the API path generic.
+  const repoViewArgs = ['repo', 'view', '--json', 'nameWithOwner'];
+  if (deps.repoSpec) repoViewArgs.push('-R', deps.repoSpec);
   const repoViewResult = await execWithTimeout(
     'gh',
-    ['repo', 'view', '--json', 'nameWithOwner'],
+    repoViewArgs,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
   const { nameWithOwner } = JSON.parse(repoViewResult.stdout);
@@ -354,7 +377,12 @@ async function checkGithub(repoRoot, deps = {}) {
  * }} opts
  * @param {{
  *   execFile?: Function,
- * }} deps  Dependency-injection seam for testing.
+ *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
+ *   resolveRepoHost?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
+ * }} deps  Dependency-injection seam for testing. `resolveRepoSpec`/
+ *   `resolveRepoHost` default to the real `vcs-repo-spec.mjs` exports
+ *   (#872 host-pinning — see that module for the `-R` vs `--hostname`
+ *   contract).
  * @returns {Promise<null | {
  *   status: 'green'|'red'|'unknown',
  *   ok: boolean,
@@ -381,6 +409,9 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     ? promisify(deps.execFile)
     : execFileAsync;
 
+  const resolveRepoSpecDep = deps.resolveRepoSpec ?? resolveRepoSpec;
+  const resolveRepoHostDep = deps.resolveRepoHost ?? resolveRepoHost;
+
   const depsWithExec = { execFile: execFileDep, timeoutMs };
 
   try {
@@ -395,13 +426,22 @@ export async function checkCiStatus(opts = {}, deps = {}) {
       }
     }
 
+    // Step 1b (#872): resolve the -R/--hostname host-pinning spec ONCE per
+    // checkCiStatus call — a bare glab/gh spawn falls back to the ambient
+    // GITLAB_HOST/GH_HOST env var, which can silently target the wrong
+    // instance on a multi-instance host. `cwd: repoRoot` alone does not fix
+    // this (ambient env still wins over cwd).
+    const repoSpec = resolveRepoSpecDep({ repoRoot, vcs });
+    const repoHost = resolveRepoHostDep({ repoRoot, vcs });
+    const depsWithPinning = { ...depsWithExec, repoSpec, repoHost };
+
     // Step 2: dispatch to VCS-specific implementation.
     if (vcs === 'gitlab') {
-      return await checkGitlab(repoRoot, now, depsWithExec);
+      return await checkGitlab(repoRoot, now, depsWithPinning);
     }
 
     if (vcs === 'github') {
-      return await checkGithub(repoRoot, depsWithExec);
+      return await checkGithub(repoRoot, depsWithPinning);
     }
 
     // Unknown VCS value — silent no-op.

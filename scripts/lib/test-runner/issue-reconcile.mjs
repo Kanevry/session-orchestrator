@@ -38,6 +38,7 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fingerprintFinding } from './fingerprint.mjs';
+import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
 
 const realExecFile = promisify(execFileCb);
 
@@ -293,6 +294,9 @@ function levenshtein(a, b) {
  * @param {Set<string>} opts.existingFingerprints - fingerprints of issues already filed
  * @param {boolean} [opts.dryRun] - if true, return command without spawning
  * @param {Function} [opts.execFile] - DI seam for testing; defaults to node:child_process execFile
+ * @param {string} [opts.project] - GitLab project path (passed via --repo if provided; #872: otherwise auto-detected)
+ * @param {string} [opts.repoRoot=process.cwd()] - cwd passed to resolveRepoSpecFn for remote auto-detection
+ * @param {(o: { repoRoot: string, vcs: 'gitlab' }) => string|undefined} [opts.resolveRepoSpecFn] - injectable `--repo` auto-detector; defaults to the real `resolveRepoSpec`
  * @returns {Promise<{action: 'create'|'noop', iid?: number, command?: string[]}>}
  */
 export async function reconcileFinding({
@@ -300,6 +304,9 @@ export async function reconcileFinding({
   existingFingerprints,
   dryRun = false,
   execFile: execFileOpt,
+  project,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
 }) {
   // Resolve execFile — DI seam for tests; never caller-supplied binary path (ADR-364 §C5 HIGH fix).
   const execFileFn = typeof execFileOpt === 'function' ? execFileOpt : realExecFile;
@@ -354,6 +361,18 @@ export async function reconcileFinding({
     body,
   ];
 
+  // #872: explicit project always wins; otherwise auto-detect a --repo spec
+  // from the local git remotes (host-pinning — a bare glab spawn falls back
+  // to the ambient GITLAB_HOST, which can silently target the wrong
+  // instance on a multi-instance host).
+  const effectiveProject = project ?? resolveRepoSpecFn({ repoRoot, vcs: 'gitlab' });
+  if (effectiveProject !== undefined) {
+    if (ARG_BOUNDARY_DANGEROUS.test(effectiveProject)) {
+      throw new ReconcileError('project contains forbidden characters', 'VALIDATION');
+    }
+    cmd.push('--repo', effectiveProject);
+  }
+
   if (dryRun) {
     return { action: 'create', command: cmd };
   }
@@ -385,10 +404,12 @@ export async function reconcileFinding({
  * fingerprints from issue bodies for downstream dedup.
  *
  * @param {object} [opts]
- * @param {string} [opts.project] - GitLab project path (passed via --repo if provided)
+ * @param {string} [opts.project] - GitLab project path (passed via --repo if provided; #872: otherwise auto-detected)
  * @param {string} [opts.label='from:test-runner'] - label filter for the query
  * @param {number} [opts.maxBuffer=4194304] - maxBuffer for execFile (4 MB default, #389)
  * @param {Function} [opts.execFile] - DI seam for testing; defaults to node:child_process execFile
+ * @param {string} [opts.repoRoot=process.cwd()] - cwd passed to resolveRepoSpecFn for remote auto-detection
+ * @param {(o: { repoRoot: string, vcs: 'gitlab' }) => string|undefined} [opts.resolveRepoSpecFn] - injectable `--repo` auto-detector; defaults to the real `resolveRepoSpec`
  * @returns {Promise<
  *   {ok: true, issues: Array<{iid: number, title: string, body: string}>, fingerprints: Set<string>}
  *   | {ok: false, error: {code: string, message: string}}
@@ -399,6 +420,8 @@ export async function listExistingFindings({
   label = 'from:test-runner',
   maxBuffer = DEFAULT_MAX_BUFFER,
   execFile: execFileOpt,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
 } = {}) {
   // Binary is always the allowlisted value — never caller-supplied (ADR-364 §C5 HIGH fix).
   const bin = RECONCILE_ALLOWLISTED_BINS.glab;
@@ -414,15 +437,18 @@ export async function listExistingFindings({
 
   const args = ['issue', 'list', '--label', label, '--output', 'json'];
 
-  // Optionally scope to a specific project (--repo flag)
-  if (project !== undefined) {
-    if (ARG_BOUNDARY_DANGEROUS.test(project)) {
+  // Optionally scope to a specific project (--repo flag). #872: explicit
+  // project always wins; otherwise auto-detect a --repo spec from the local
+  // git remotes (host-pinning).
+  const effectiveProject = project ?? resolveRepoSpecFn({ repoRoot, vcs: 'gitlab' });
+  if (effectiveProject !== undefined) {
+    if (ARG_BOUNDARY_DANGEROUS.test(effectiveProject)) {
       return {
         ok: false,
         error: { code: 'VALIDATION', message: 'project contains forbidden characters' },
       };
     }
-    args.push('--repo', project);
+    args.push('--repo', effectiveProject);
   }
 
   let stdout;
@@ -501,7 +527,7 @@ export async function listExistingFindings({
  * Create a new finding as a GitLab issue.
  *
  * @param {object} opts
- * @param {string} [opts.project] - GitLab project path (--repo)
+ * @param {string} [opts.project] - GitLab project path (--repo; #872: otherwise auto-detected)
  * @param {string} opts.fingerprint - 16-hex fingerprint (appended as sentinel)
  * @param {string} opts.title - issue title (no [Test] prefix added here — caller decides)
  * @param {string} opts.body - issue description body; must not exceed 65536 bytes (#389)
@@ -509,6 +535,8 @@ export async function listExistingFindings({
  * @param {boolean} [opts.dryRun=false] - if true, return command without spawning
  * @param {number} [opts.maxBuffer=4194304] - maxBuffer for execFile (4 MB, #389)
  * @param {Function} [opts.execFile] - DI seam for testing; defaults to node:child_process execFile
+ * @param {string} [opts.repoRoot=process.cwd()] - cwd passed to resolveRepoSpecFn for remote auto-detection
+ * @param {(o: { repoRoot: string, vcs: 'gitlab' }) => string|undefined} [opts.resolveRepoSpecFn] - injectable `--repo` auto-detector; defaults to the real `resolveRepoSpec`
  * @returns {Promise<
  *   {ok: true, action: 'create', iid?: number, command?: string[]}
  *   | {ok: false, error: {code: string, message: string}}
@@ -523,6 +551,8 @@ export async function createFinding({
   dryRun = false,
   maxBuffer = DEFAULT_MAX_BUFFER,
   execFile: execFileOpt,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
 }) {
   // --- Input validation ---
   if (typeof title !== 'string' || title.length === 0) {
@@ -562,14 +592,17 @@ export async function createFinding({
 
   const args = ['issue', 'create', '--title', title, '--label', labels, '--description', body];
 
-  if (project !== undefined) {
-    if (ARG_BOUNDARY_DANGEROUS.test(project)) {
+  // #872: explicit project always wins; otherwise auto-detect a --repo spec
+  // from the local git remotes (host-pinning).
+  const effectiveProject = project ?? resolveRepoSpecFn({ repoRoot, vcs: 'gitlab' });
+  if (effectiveProject !== undefined) {
+    if (ARG_BOUNDARY_DANGEROUS.test(effectiveProject)) {
       return {
         ok: false,
         error: { code: 'VALIDATION', message: 'project contains forbidden characters' },
       };
     }
-    args.push('--repo', project);
+    args.push('--repo', effectiveProject);
   }
 
   if (dryRun) {
@@ -616,12 +649,14 @@ export async function createFinding({
  * Add a comment to an existing finding issue.
  *
  * @param {object} opts
- * @param {string} [opts.project] - GitLab project path (--repo)
+ * @param {string} [opts.project] - GitLab project path (--repo; #872: otherwise auto-detected)
  * @param {number} opts.iid - issue IID to comment on
  * @param {string} opts.comment - comment body; must not exceed 65536 bytes (#389)
  * @param {boolean} [opts.dryRun=false] - if true, return command without spawning
  * @param {number} [opts.maxBuffer=4194304] - maxBuffer for execFile (4 MB, #389)
  * @param {Function} [opts.execFile] - DI seam for testing; defaults to node:child_process execFile
+ * @param {string} [opts.repoRoot=process.cwd()] - cwd passed to resolveRepoSpecFn for remote auto-detection
+ * @param {(o: { repoRoot: string, vcs: 'gitlab' }) => string|undefined} [opts.resolveRepoSpecFn] - injectable `--repo` auto-detector; defaults to the real `resolveRepoSpec`
  * @returns {Promise<
  *   {ok: true, action: 'comment', command?: string[]}
  *   | {ok: false, error: {code: string, message: string}}
@@ -634,6 +669,8 @@ export async function updateFinding({
   dryRun = false,
   maxBuffer = DEFAULT_MAX_BUFFER,
   execFile: execFileOpt,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
 }) {
   // --- Input validation ---
   if (!Number.isInteger(iid) || iid < 1) {
@@ -657,14 +694,17 @@ export async function updateFinding({
   // iid is a number — safe to convert to string; no arg-boundary concerns
   const args = ['issue', 'note', String(iid), '--message', comment];
 
-  if (project !== undefined) {
-    if (ARG_BOUNDARY_DANGEROUS.test(project)) {
+  // #872: explicit project always wins; otherwise auto-detect a --repo spec
+  // from the local git remotes (host-pinning).
+  const effectiveProject = project ?? resolveRepoSpecFn({ repoRoot, vcs: 'gitlab' });
+  if (effectiveProject !== undefined) {
+    if (ARG_BOUNDARY_DANGEROUS.test(effectiveProject)) {
       return {
         ok: false,
         error: { code: 'VALIDATION', message: 'project contains forbidden characters' },
       };
     }
-    args.push('--repo', project);
+    args.push('--repo', effectiveProject);
   }
 
   if (dryRun) {

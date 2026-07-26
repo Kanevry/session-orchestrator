@@ -117,6 +117,59 @@ describe('openRepairMr — happy path', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #872 — repoRoot (+ optional resolveRepoSpecFn passthrough) plumbed into the
+// createMr seam's opts, so maybeCreateDraftMR's -R/--repo host-pinning
+// resolution (#872 in mr-draft.mjs) resolves against the CORRECT repo rather
+// than process.cwd().
+// ---------------------------------------------------------------------------
+
+describe('openRepairMr — repoRoot passthrough to createMr (#872)', () => {
+  it('calls the createMr seam with repoRoot in the second (opts) argument', async () => {
+    const createMr = vi.fn(createMrOk);
+    await openRepairMr(
+      { candidate: CANDIDATE, diff: PROSE_DIFF, repoRoot: REPO, vcs: 'gitlab' },
+      { git: makeGit(), leakageScan: leakClean, createMr, writeFile: async () => {} },
+    );
+
+    expect(createMr).toHaveBeenCalledWith(
+      expect.objectContaining({ draftMrPolicy: 'on-loop-start' }),
+      expect.objectContaining({ repoRoot: REPO }),
+    );
+  });
+
+  it('passes a caller-supplied resolveRepoSpecFn through to the createMr seam unchanged', async () => {
+    const createMr = vi.fn(createMrOk);
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+    await openRepairMr(
+      { candidate: CANDIDATE, diff: PROSE_DIFF, repoRoot: REPO, vcs: 'gitlab' },
+      {
+        git: makeGit(),
+        leakageScan: leakClean,
+        createMr,
+        writeFile: async () => {},
+        resolveRepoSpecFn,
+      },
+    );
+
+    expect(createMr).toHaveBeenCalledWith(
+      expect.objectContaining({ draftMrPolicy: 'on-loop-start' }),
+      expect.objectContaining({ repoRoot: REPO, resolveRepoSpecFn }),
+    );
+  });
+
+  it('passes resolveRepoSpecFn:undefined through when the caller supplies none (createMr falls back to its own default)', async () => {
+    const createMr = vi.fn(createMrOk);
+    await openRepairMr(
+      { candidate: CANDIDATE, diff: PROSE_DIFF, repoRoot: REPO, vcs: 'gitlab' },
+      { git: makeGit(), leakageScan: leakClean, createMr, writeFile: async () => {} },
+    );
+
+    const [, draftOpts] = createMr.mock.calls[0];
+    expect(draftOpts.resolveRepoSpecFn).toBeUndefined();
+  });
+});
+
 describe('openRepairMr — target_path escape guard (R5)', () => {
   it('blocks and does not write when a content-diff target_path escapes the repo', async () => {
     const writeFile = vi.fn(async () => {});

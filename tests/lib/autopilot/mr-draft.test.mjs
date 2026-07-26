@@ -14,14 +14,54 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import {
+
+// ---------------------------------------------------------------------------
+// #872 Gap-3 fixture — mock ONLY `execFileSync` (the sync git-remote layer
+// `vcs-repo-spec.mjs`'s default `resolveRepoSpec` shells out through) so the
+// production-default-wiring tests below can control `git remote get-url`
+// without ever touching a real repo. `execFile` (the async fn mr-draft.mjs
+// itself uses) stays the REAL implementation — every test in this file
+// always supplies `opts.execFile` as a mock, so it is never invoked for real.
+// Uses top-level await + dynamic import (precedent:
+// tests/lib/spiral-carryover.test.mjs:22-41) so the mock registers before the
+// module under test is imported.
+// ---------------------------------------------------------------------------
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, execFileSync: vi.fn() };
+});
+
+const { execFileSync } = await import('node:child_process');
+const {
   MrDraftError,
   validateMrInputs,
-  checkExistingMR,
+  checkExistingMR: checkExistingMRReal,
   buildMrBody,
   buildEvidenceBlock,
-  maybeCreateDraftMR,
-} from '@lib/autopilot/mr-draft.mjs';
+  maybeCreateDraftMR: maybeCreateDraftMRReal,
+} = await import('@lib/autopilot/mr-draft.mjs');
+
+// ---------------------------------------------------------------------------
+// #872 host-pinning shim
+//
+// checkExistingMR/maybeCreateDraftMR now resolve a `-R`/`--repo` spec via an
+// injectable `resolveRepoSpecFn` (default: the real `resolveRepoSpec`, which
+// shells out to `git remote get-url`). The tests below this shim block
+// predate #872 and assert an EXACT/arrayContaining execFile call shape
+// without any `-R` — so these local wrappers inject a no-op resolver
+// (`() => undefined`, matching pre-#872 "no -R appended" behaviour) as the
+// DEFAULT, keeping every existing test's call shape byte-for-byte identical
+// without editing a single one of them. Precedent:
+// tests/lib/spiral-carryover.test.mjs:57-67. The "#872 host pinning" describe
+// blocks further down call the `*Real` functions directly with an explicit
+// resolveRepoSpecFn (or omit it to exercise the production default).
+// ---------------------------------------------------------------------------
+function checkExistingMR(opts) {
+  return checkExistingMRReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function maybeCreateDraftMR(loop, opts = {}) {
+  return maybeCreateDraftMRReal(loop, { resolveRepoSpecFn: () => undefined, ...opts });
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -794,5 +834,298 @@ describe('maybeCreateDraftMR — issueTitle validation boundary', () => {
         execFile: mockExec,
       }),
     ).resolves.toMatchObject({ created: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkExistingMR — #872 -R/--repo host-pinning wiring
+// ---------------------------------------------------------------------------
+
+describe('checkExistingMR — #872 host pinning (glab)', () => {
+  it('appends -R <spec> to the glab mr list call when resolveRepoSpecFn resolves', async () => {
+    const spec = 'https://gitlab.example.com/example-group/example-project.git';
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'glab',
+      branchName: 'issue-1',
+      execFile: mockExec,
+      resolveRepoSpecFn: () => spec,
+    });
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).toEqual(
+      expect.arrayContaining(['mr', 'list', '--source-branch', 'issue-1', '-R', spec]),
+    );
+    expect(args[args.indexOf('-R') + 1]).toBe(spec);
+  });
+
+  it('omits -R entirely when resolveRepoSpecFn returns undefined (never emits "-R undefined")', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'glab',
+      branchName: 'issue-1',
+      execFile: mockExec,
+      resolveRepoSpecFn: () => undefined,
+    });
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).not.toContain('-R');
+  });
+
+  it('calls resolveRepoSpecFn exactly once for a single checkExistingMR call', async () => {
+    const spec = 'https://gitlab.example.com/example-group/example-project.git';
+    const resolveRepoSpecFn = vi.fn(() => spec);
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'glab',
+      branchName: 'issue-1',
+      execFile: mockExec,
+      resolveRepoSpecFn,
+    });
+    expect(resolveRepoSpecFn).toHaveBeenCalledTimes(1);
+    expect(resolveRepoSpecFn).toHaveBeenCalledWith({ repoRoot: process.cwd(), vcs: 'gitlab' });
+  });
+});
+
+describe('checkExistingMR — #872 host pinning (gh)', () => {
+  it('appends -R <spec> to the gh pr list call when resolveRepoSpecFn resolves', async () => {
+    const spec = 'https://github.example.com/example-org/example-repo.git';
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'gh',
+      branchName: 'issue-5',
+      execFile: mockExec,
+      resolveRepoSpecFn: () => spec,
+    });
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).toEqual(expect.arrayContaining(['pr', 'list', '--head', 'issue-5', '-R', spec]));
+    expect(args[args.indexOf('-R') + 1]).toBe(spec);
+  });
+
+  it('omits -R entirely when resolveRepoSpecFn returns undefined', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'gh',
+      branchName: 'issue-5',
+      execFile: mockExec,
+      resolveRepoSpecFn: () => undefined,
+    });
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).not.toContain('-R');
+  });
+
+  it('resolveRepoSpecFn receives vcs: "github" (token-mapped from the glab/gh CLI-bin value)', async () => {
+    const resolveRepoSpecFn = vi.fn(() => undefined);
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({
+      vcs: 'gh',
+      branchName: 'issue-5',
+      execFile: mockExec,
+      resolveRepoSpecFn,
+    });
+    expect(resolveRepoSpecFn).toHaveBeenCalledWith({ repoRoot: process.cwd(), vcs: 'github' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maybeCreateDraftMR — #872 -R/--repo host-pinning wiring
+// ---------------------------------------------------------------------------
+
+describe('maybeCreateDraftMR — #872 host pinning (gitlab)', () => {
+  it('pins both the glab mr list AND the glab mr create call to -R <spec>', async () => {
+    const spec = 'https://gitlab.example.com/example-group/example-project.git';
+    const mockExec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '[]', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'https://gitlab.example.com/-/mr/99\n', stderr: '' });
+
+    const result = await maybeCreateDraftMRReal(makeLoop(), {
+      execFile: mockExec,
+      resolveRepoSpecFn: () => spec,
+    });
+
+    expect(result.created).toBe(true);
+
+    const [listCmd, listArgs] = mockExec.mock.calls[0];
+    expect(listCmd).toBe('glab');
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(spec);
+
+    const [createCmd, createArgs] = mockExec.mock.calls[1];
+    expect(createCmd).toBe('glab');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(spec);
+  });
+
+  it('resolves the -R spec exactly ONCE per run, reusing it for both the list and create call', async () => {
+    const spy = vi.fn(() => 'https://gitlab.example.com/example-group/example-project.git');
+    const mockExec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '[]', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'https://gitlab.example.com/-/mr/1\n', stderr: '' });
+
+    await maybeCreateDraftMRReal(makeLoop(), { execFile: mockExec, resolveRepoSpecFn: spy });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still resolves the spec exactly once when the collision check short-circuits (existing MR found)', async () => {
+    const spy = vi.fn(() => 'https://gitlab.example.com/example-group/example-project.git');
+    const mockExec = makeExistingGlabExec(77, 'https://gitlab.example.com/-/mr/77');
+
+    const result = await maybeCreateDraftMRReal(makeLoop(), {
+      execFile: mockExec,
+      resolveRepoSpecFn: spy,
+    });
+
+    expect(result.existing).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    // Only the list call happened (collision short-circuit) — it must still
+    // carry -R, proving the spec was resolved BEFORE the collision check.
+    const [, listArgs] = mockExec.mock.calls[0];
+    expect(listArgs).toContain('-R');
+  });
+
+  it('appends no -R at all when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    const mockExec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '[]', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'https://gitlab.example.com/-/mr/1\n', stderr: '' });
+
+    await maybeCreateDraftMRReal(makeLoop(), {
+      execFile: mockExec,
+      resolveRepoSpecFn: () => undefined,
+    });
+
+    for (const [, args] of mockExec.mock.calls) {
+      expect(args).not.toContain('-R');
+    }
+  });
+});
+
+describe('maybeCreateDraftMR — #872 host pinning (github)', () => {
+  it('pins both the gh pr list AND the gh pr create call to -R <spec>', async () => {
+    const spec = 'https://github.example.com/example-org/example-repo.git';
+    const mockExec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '[]', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'https://github.example.com/example-org/example-repo/pull/9\n', stderr: '' });
+
+    const result = await maybeCreateDraftMRReal(makeLoop({ vcs: 'github' }), {
+      execFile: mockExec,
+      resolveRepoSpecFn: () => spec,
+    });
+
+    expect(result.created).toBe(true);
+
+    const [listCmd, listArgs] = mockExec.mock.calls[0];
+    expect(listCmd).toBe('gh');
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(spec);
+
+    const [createCmd, createArgs] = mockExec.mock.calls[1];
+    expect(createCmd).toBe('gh');
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(spec);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #872 Gap 3 (QA follow-up, mirrors tests/lib/spiral-carryover.test.mjs's
+// "default resolveRepoSpecFn wires the REAL module" block) — every #872 test
+// above injects an explicit resolveRepoSpecFn stub, so a mis-wired production
+// DEFAULT (e.g. the wrong import, or a default that silently swallows its own
+// vcs argument) would pass every test above without detection. These tests
+// call the `*Real` functions with resolveRepoSpecFn OMITTED so the production
+// default (`resolveRepoSpec`, imported at module top) runs for real — through
+// to the mocked `execFileSync('git', ...)` call (see the file-top mock).
+// ---------------------------------------------------------------------------
+
+describe('checkExistingMR — default resolveRepoSpecFn wires the REAL module (Gap 3)', () => {
+  // execFileSync is a vi.fn() created inside the vi.mock('node:child_process')
+  // factory. Per .claude/rules/testing.md's Vitest Mocking Gotchas, mock
+  // history for factory-scoped vi.fn()s is not reliably wiped by the file's
+  // global `afterEach(() => vi.restoreAllMocks())` — clear it explicitly at
+  // the top of every Gap-3 test so `.mock.calls` assertions are call-count
+  // exact, not a leak from a sibling test's git-call sequence.
+  beforeEach(() => {
+    execFileSync.mockClear();
+  });
+
+  it('derives the -R spec through the real resolveRepoSpec → git remote get-url chain when resolveRepoSpecFn is omitted', async () => {
+    const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git' && args.at(-1) === 'gitlab') return `${remoteUrl}\n`;
+      const err = new Error('fatal: no such remote');
+      err.stderr = 'fatal: no such remote';
+      throw err;
+    });
+
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({ vcs: 'glab', branchName: 'issue-1', execFile: mockExec });
+
+    // The real chain actually shelled out to `git remote get-url` — proof
+    // the default parameter is wired to the real module, not a no-op.
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['remote', 'get-url', 'gitlab']),
+      expect.anything(),
+    );
+
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).toContain('-R');
+    expect(args[args.indexOf('-R') + 1]).toBe(remoteUrl);
+  });
+
+  it('appends no -R at all when the real chain finds no matching remote (graceful degradation, default resolver)', async () => {
+    execFileSync.mockImplementation(() => {
+      const err = new Error('fatal: no such remote');
+      err.stderr = 'fatal: no such remote';
+      throw err;
+    });
+
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    await checkExistingMRReal({ vcs: 'glab', branchName: 'issue-1', execFile: mockExec });
+
+    const [, args] = mockExec.mock.calls[0];
+    expect(args).not.toContain('-R');
+  });
+});
+
+describe('maybeCreateDraftMR — default resolveRepoSpecFn wires the REAL module (Gap 3)', () => {
+  // See the sibling checkExistingMR Gap-3 describe block above for why this
+  // explicit clear is needed (factory-scoped vi.fn() mock-history gotcha).
+  beforeEach(() => {
+    execFileSync.mockClear();
+  });
+
+  it('derives the -R spec through the real resolveRepoSpec chain and pins BOTH the list and create call when resolveRepoSpecFn is omitted', async () => {
+    const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git' && args.at(-1) === 'gitlab') return `${remoteUrl}\n`;
+      const err = new Error('fatal: no such remote');
+      err.stderr = 'fatal: no such remote';
+      throw err;
+    });
+
+    const mockExec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '[]', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'https://gitlab.example.com/-/mr/1\n', stderr: '' });
+
+    const result = await maybeCreateDraftMRReal(makeLoop(), { execFile: mockExec });
+
+    expect(result.created).toBe(true);
+
+    // Exactly one real `git remote get-url gitlab` spawn — the resolve-once
+    // contract holds even through the production default.
+    const gitCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'git');
+    expect(gitCalls).toHaveLength(1);
+
+    const [, listArgs] = mockExec.mock.calls[0];
+    expect(listArgs).toContain('-R');
+    expect(listArgs[listArgs.indexOf('-R') + 1]).toBe(remoteUrl);
+
+    const [, createArgs] = mockExec.mock.calls[1];
+    expect(createArgs).toContain('-R');
+    expect(createArgs[createArgs.indexOf('-R') + 1]).toBe(remoteUrl);
   });
 });

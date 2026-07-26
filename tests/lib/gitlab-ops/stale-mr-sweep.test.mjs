@@ -16,10 +16,36 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   DEFAULT_THRESHOLD_DAYS,
   filterStaleMRs,
-  findStaleMRs,
-  findStaleMRsMultiRepo,
-  main,
+  findStaleMRs as findStaleMRsReal,
+  findStaleMRsMultiRepo as findStaleMRsMultiRepoReal,
+  main as mainReal,
 } from '@lib/gitlab-ops/stale-mr-sweep.mjs';
+
+// ---------------------------------------------------------------------------
+// #872 host-pinning DI default
+//
+// findStaleMRs (and, transitively, findStaleMRsMultiRepo + main) now
+// auto-detects a `--repo` spec via an injectable `resolveRepoSpecFn`, which
+// by default shells out to the REAL `git remote get-url` (via execFileSync
+// in vcs-repo-spec.mjs — a separate mechanism from this file's `exec` async
+// mock). Every pre-#872 test below is unaware of this and asserts an EXACT
+// execFile call-args array — so `findStaleMRs`/`findStaleMRsMultiRepo`/
+// `main` (the names used throughout this file) are local wrappers that
+// inject a no-op resolver (`() => undefined`, matching pre-#872 "no --repo
+// appended when repo is omitted" behaviour) as the DEFAULT, keeping every
+// unmodified test hermetic (no real subprocess spawn against this actual
+// git checkout) and its call-args assertions byte-for-byte identical. Tests
+// that specifically exercise #872 host-pinning call the `*Real` exports
+// directly with an explicit `resolveRepoSpecFn` override.
+function findStaleMRs(opts = {}) {
+  return findStaleMRsReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function findStaleMRsMultiRepo(opts = {}) {
+  return findStaleMRsMultiRepoReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function main(argv, deps = {}) {
+  return mainReal(argv, { resolveRepoSpecFn: () => undefined, ...deps });
+}
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -258,6 +284,121 @@ describe('findStaleMRs — unresolvable vcs', () => {
     expect(result.stale).toEqual([]);
     expect(result.total).toBe(0);
     expect(mockExec).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findStaleMRs — #872 --repo host-pinning (auto-detection + precedence)
+// ---------------------------------------------------------------------------
+
+describe('findStaleMRs — #872 --repo host-pinning', () => {
+  it('appends --repo <spec> from resolveRepoSpecFn when no explicit repo is provided', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    const resolveRepoSpecFn = vi.fn(() => 'https://gitlab.example.com/example-group/example-project.git');
+
+    await findStaleMRsReal({
+      vcs: 'gitlab',
+      repoRoot: '/fake/repo',
+      exec: mockExec,
+      now: FIXED_NOW,
+      resolveRepoSpecFn,
+    });
+
+    expect(resolveRepoSpecFn).toHaveBeenCalledWith({ repoRoot: '/fake/repo', vcs: 'gitlab' });
+    expect(mockExec).toHaveBeenCalledWith(
+      'glab',
+      [
+        'mr',
+        'list',
+        '--state',
+        'opened',
+        '--output',
+        'json',
+        '--repo',
+        'https://gitlab.example.com/example-group/example-project.git',
+      ],
+      expect.objectContaining({ shell: false }),
+    );
+  });
+
+  it('an explicit repo always wins over the auto-detected spec (resolveRepoSpecFn not consulted)', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    const resolveRepoSpecFn = vi.fn(() => 'https://gitlab.example.com/should-not-be-used.git');
+
+    await findStaleMRsReal({
+      vcs: 'gitlab',
+      repo: 'group/explicit-proj',
+      exec: mockExec,
+      now: FIXED_NOW,
+      resolveRepoSpecFn,
+    });
+
+    expect(resolveRepoSpecFn).not.toHaveBeenCalled();
+    expect(mockExec).toHaveBeenCalledWith(
+      'glab',
+      ['mr', 'list', '--state', 'opened', '--output', 'json', '--repo', 'group/explicit-proj'],
+      expect.objectContaining({ shell: false }),
+    );
+  });
+
+  it('omits --repo entirely when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+
+    await findStaleMRsReal({
+      vcs: 'gitlab',
+      exec: mockExec,
+      now: FIXED_NOW,
+      resolveRepoSpecFn: () => undefined,
+    });
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'glab',
+      ['mr', 'list', '--state', 'opened', '--output', 'json'],
+      expect.objectContaining({ shell: false }),
+    );
+  });
+
+  it('pins the gh path too, with the same precedence', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    const resolveRepoSpecFn = vi.fn(() => 'github.example.com/owner/repo');
+
+    await findStaleMRsReal({
+      vcs: 'github',
+      repoRoot: '/fake/repo',
+      exec: mockExec,
+      now: FIXED_NOW,
+      resolveRepoSpecFn,
+    });
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--state',
+        'open',
+        '--json',
+        'number,title,url,createdAt,updatedAt,author,headRefName',
+        '--repo',
+        'github.example.com/owner/repo',
+      ],
+      expect.objectContaining({ shell: false }),
+    );
+  });
+
+  it('labels result.repo with the auto-detected spec when no explicit repo is provided', async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
+    const resolveRepoSpecFn = vi.fn(() => 'https://gitlab.example.com/example-group/example-project.git');
+
+    const result = await findStaleMRsReal({
+      vcs: 'gitlab',
+      repoRoot: '/fake/repo',
+      exec: mockExec,
+      now: FIXED_NOW,
+      resolveRepoSpecFn,
+    });
+
+    expect(result.repo).toBe('https://gitlab.example.com/example-group/example-project.git');
   });
 });
 

@@ -23,6 +23,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { detectVcsForRepo, discoverVaultRepos } from '../gitlab-portfolio/vcs-detect.mjs';
+import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
 
 const realExecFile = promisify(execFileCb);
 
@@ -94,22 +95,31 @@ export function filterStaleMRs(mrs, opts = {}) {
  *   2. `detectVcsForRepo({ repo })` if `opts.repo` is provided
  *   3. 'gitlab' (cross-project default per CLAUDE.md / AGENTS.md Session Config `vcs: gitlab`) —
  *      only reached when neither vcs nor repo is provided, i.e. the caller
- *      intends "the repo at `repoRoot`", and glab/gh both auto-detect the
- *      remote from the local git checkout when no --repo flag is given.
+ *      intends "the repo at `repoRoot`".
+ *
+ * `--repo` host-pinning (#872): a bare `glab`/`gh` spawn (no `--repo`) falls
+ * back to the ambient `GITLAB_HOST`/`GH_HOST` env var to pick a host, which
+ * can silently target the WRONG instance on a multi-instance host — `cwd:
+ * repoRoot` alone does not fix this (ambient env still wins over cwd). When
+ * `opts.repo` is not explicitly provided, this function auto-detects a
+ * `--repo` spec via `resolveRepoSpecFn` (default: the real `resolveRepoSpec`
+ * from `vcs-repo-spec.mjs`, which shells out to `git remote get-url`).
+ * Explicit `opts.repo` always wins over the auto-detected spec.
  *
  * Never throws: CLI failure (missing binary, non-zero exit, timeout) and
  * malformed JSON output both resolve to a graceful `{ ok: false, error, stale: [], total: 0 }`
  * result plus a diagnostic line on stderr — never an unhandled rejection.
  *
  * @param {object} [opts]
- * @param {string} [opts.repoRoot=process.cwd()] - cwd for the CLI invocation (used for local-checkout auto-detection by glab/gh)
- * @param {string} [opts.repo] - explicit "owner/repo" or GitLab path identifier; when set, passed via `--repo`
+ * @param {string} [opts.repoRoot=process.cwd()] - cwd for the CLI invocation (also passed to resolveRepoSpecFn for remote auto-detection)
+ * @param {string} [opts.repo] - explicit "owner/repo" or GitLab path identifier; when set, passed via `--repo` and skips auto-detection
  * @param {'gitlab'|'github'} [opts.vcs] - explicit VCS override (skips detectVcsForRepo)
  * @param {number} [opts.thresholdDays=14]
  * @param {'created'|'updated'} [opts.field='updated']
  * @param {Function} [opts.exec] - injectable execFile-like function `(cmd, args, options) => Promise<{stdout, stderr}>`; defaults to the real promisified execFile
  * @param {number} [opts.now=Date.now()]
  * @param {number} [opts.timeoutMs=8000]
+ * @param {(o: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined} [opts.resolveRepoSpecFn] - injectable `--repo` auto-detector; defaults to the real `resolveRepoSpec`
  * @returns {Promise<
  *   { ok: true, repo: string, vcs: 'gitlab'|'github', total: number, stale: Array<object> } |
  *   { ok: false, error: string, repo: string|null, vcs: 'gitlab'|'github'|null, total: 0, stale: [] }
@@ -125,6 +135,7 @@ export async function findStaleMRs(opts = {}) {
     exec = realExecFile,
     now = Date.now(),
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    resolveRepoSpecFn = resolveRepoSpec,
   } = opts;
 
   const resolvedVcs = vcsOverride ?? (repo ? detectVcsForRepo({ repo }) : 'gitlab');
@@ -144,11 +155,15 @@ export async function findStaleMRs(opts = {}) {
     cmd = 'gh';
     args = ['pr', 'list', '--state', 'open', '--json', GH_PR_JSON_FIELDS];
   }
-  if (repo) {
-    args.push('--repo', repo);
+
+  // #872: explicit repo always wins; otherwise auto-detect a --repo spec
+  // from the local git remotes (host-pinning — see docblock above).
+  const effectiveRepo = repo ?? resolveRepoSpecFn({ repoRoot, vcs: resolvedVcs });
+  if (effectiveRepo) {
+    args.push('--repo', effectiveRepo);
   }
 
-  const repoLabel = repo ?? repoRoot;
+  const repoLabel = effectiveRepo ?? repoRoot;
 
   let stdout;
   try {
@@ -209,6 +224,7 @@ export async function findStaleMRs(opts = {}) {
  * @param {number} [opts.now=Date.now()]
  * @param {number} [opts.timeoutMs=8000]
  * @param {typeof discoverVaultRepos} [opts.discoverRepos] - injectable for tests
+ * @param {(o: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined} [opts.resolveRepoSpecFn] - passed through to each per-repo `findStaleMRs` call; unused in practice since discovered repos always carry an explicit `repo`
  * @returns {Promise<Array<{ slug: string } & Awaited<ReturnType<typeof findStaleMRs>>>>}
  */
 export async function findStaleMRsMultiRepo(opts = {}) {
@@ -220,6 +236,7 @@ export async function findStaleMRsMultiRepo(opts = {}) {
     now = Date.now(),
     timeoutMs = DEFAULT_TIMEOUT_MS,
     discoverRepos = discoverVaultRepos,
+    resolveRepoSpecFn = resolveRepoSpec,
   } = opts;
 
   const repos = await discoverRepos({ vaultDir });
@@ -227,7 +244,7 @@ export async function findStaleMRsMultiRepo(opts = {}) {
 
   const results = await Promise.all(
     repos.map((r) =>
-      findStaleMRs({ repo: r.repo, vcs: r.vcs, thresholdDays, field, exec, now, timeoutMs }),
+      findStaleMRs({ repo: r.repo, vcs: r.vcs, thresholdDays, field, exec, now, timeoutMs, resolveRepoSpecFn }),
     ),
   );
 
@@ -362,6 +379,7 @@ export async function main(argv, deps = {}) {
     repoRoot = process.cwd(),
     discoverRepos = discoverVaultRepos,
     homedir = () => process.env.HOME ?? '',
+    resolveRepoSpecFn = resolveRepoSpec,
   } = deps;
 
   const flags = parseArgs(argv);
@@ -386,6 +404,7 @@ export async function main(argv, deps = {}) {
       exec,
       now,
       discoverRepos,
+      resolveRepoSpecFn,
     });
 
     if (flags.json) {
@@ -410,6 +429,7 @@ export async function main(argv, deps = {}) {
     field: flags.field,
     exec,
     now,
+    resolveRepoSpecFn,
   });
 
   if (!result.ok) {

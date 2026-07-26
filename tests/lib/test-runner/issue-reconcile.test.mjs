@@ -35,14 +35,44 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  reconcileFinding,
+  reconcileFinding as reconcileFindingReal,
   ReconcileError,
   triageDecision,
-  createFinding,
-  listExistingFindings,
-  updateFinding,
+  createFinding as createFindingReal,
+  listExistingFindings as listExistingFindingsReal,
+  updateFinding as updateFindingReal,
 } from '@lib/test-runner/issue-reconcile.mjs';
 import { fingerprintFinding } from '@lib/test-runner/fingerprint.mjs';
+
+// ---------------------------------------------------------------------------
+// #872 host-pinning DI default
+//
+// reconcileFinding/createFinding/listExistingFindings/updateFinding now
+// auto-detect a `--repo`/`project` spec via an injectable `resolveRepoSpecFn`,
+// which by default shells out to the REAL `git remote get-url` (via
+// execFileSync in vcs-repo-spec.mjs — a separate mechanism from this file's
+// `execFile` DI seam). Every pre-#872 test below is unaware of this and
+// asserts dryRun command shapes / execFile call args without a `--repo` flag
+// (grep-verified: zero `--repo` assertions in this file pre-#872) — so the
+// 4 names used throughout this file are local wrappers that inject a no-op
+// resolver (`() => undefined`, matching pre-#872 "no --repo appended"
+// behaviour) as the DEFAULT, keeping every unmodified test hermetic (no real
+// subprocess spawn against this actual git checkout) and its assertions
+// byte-for-byte identical. Tests that specifically exercise #872 host-pinning
+// call the `*Real` exports directly with an explicit `resolveRepoSpecFn`
+// override.
+function reconcileFinding(opts) {
+  return reconcileFindingReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function createFinding(opts) {
+  return createFindingReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function listExistingFindings(opts = {}) {
+  return listExistingFindingsReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+function updateFinding(opts) {
+  return updateFindingReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
 
 // ---------------------------------------------------------------------------
 // Shared test-finding factory
@@ -968,5 +998,179 @@ describe('Security MED-2 — sanitizeRecommendation gi flag covers case variants
     const body = result.command[descIdx + 1];
     expect(body).toContain('__Fingerprint__');
     expect(body).not.toContain('**FingerPrint:**');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #872 — --repo/project host-pinning (auto-detection + precedence)
+// ---------------------------------------------------------------------------
+
+describe('reconcileFinding — #872 --repo host-pinning', () => {
+  it('appends --repo <spec> from resolveRepoSpecFn when no explicit project is provided', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+    const result = await reconcileFindingReal({
+      finding: validFinding(),
+      existingFingerprints: new Set(),
+      dryRun: true,
+      repoRoot: '/fake/repo',
+      resolveRepoSpecFn,
+    });
+    expect(result.command).toContain('--repo');
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('https://gitlab.example.com/example-group/example-project.git');
+  });
+
+  it('an explicit project always wins over the auto-detected spec', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/should-not-be-used.git';
+    const result = await reconcileFindingReal({
+      finding: validFinding(),
+      existingFingerprints: new Set(),
+      dryRun: true,
+      project: 'group/explicit-proj',
+      resolveRepoSpecFn,
+    });
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('group/explicit-proj');
+  });
+
+  it('omits --repo entirely when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    const result = await reconcileFindingReal({
+      finding: validFinding(),
+      existingFingerprints: new Set(),
+      dryRun: true,
+      resolveRepoSpecFn: () => undefined,
+    });
+    expect(result.command).not.toContain('--repo');
+  });
+
+  it('throws ReconcileError(VALIDATION) when the auto-detected spec contains a forbidden character', async () => {
+    await expect(
+      reconcileFindingReal({
+        finding: validFinding(),
+        existingFingerprints: new Set(),
+        dryRun: true,
+        resolveRepoSpecFn: () => 'bad\nrepo',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+});
+
+describe('createFinding — #872 --repo host-pinning', () => {
+  it('appends --repo <spec> from resolveRepoSpecFn when no explicit project is provided', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+    const result = await createFindingReal({
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'a title',
+      body: 'a body',
+      dryRun: true,
+      resolveRepoSpecFn,
+    });
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('https://gitlab.example.com/example-group/example-project.git');
+  });
+
+  it('an explicit project always wins over the auto-detected spec', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/should-not-be-used.git';
+    const result = await createFindingReal({
+      project: 'group/explicit-proj',
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'a title',
+      body: 'a body',
+      dryRun: true,
+      resolveRepoSpecFn,
+    });
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('group/explicit-proj');
+  });
+
+  it('omits --repo entirely when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    const result = await createFindingReal({
+      fingerprint: 'aaaa0000bbbb1111',
+      title: 'a title',
+      body: 'a body',
+      dryRun: true,
+      resolveRepoSpecFn: () => undefined,
+    });
+    expect(result.command).not.toContain('--repo');
+  });
+});
+
+describe('listExistingFindings — #872 --repo host-pinning', () => {
+  it('passes --repo <spec> to execFile when no explicit project is provided', async () => {
+    let capturedArgs;
+    const fakeExecFile = async (_bin, args) => {
+      capturedArgs = args;
+      return { stdout: '[]' };
+    };
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+
+    await listExistingFindingsReal({ execFile: fakeExecFile, resolveRepoSpecFn });
+
+    expect(capturedArgs).toContain('--repo');
+    const idx = capturedArgs.indexOf('--repo');
+    expect(capturedArgs[idx + 1]).toBe('https://gitlab.example.com/example-group/example-project.git');
+  });
+
+  it('an explicit project always wins over the auto-detected spec', async () => {
+    let capturedArgs;
+    const fakeExecFile = async (_bin, args) => {
+      capturedArgs = args;
+      return { stdout: '[]' };
+    };
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/should-not-be-used.git';
+
+    await listExistingFindingsReal({ project: 'group/explicit-proj', execFile: fakeExecFile, resolveRepoSpecFn });
+
+    const idx = capturedArgs.indexOf('--repo');
+    expect(capturedArgs[idx + 1]).toBe('group/explicit-proj');
+  });
+
+  it('omits --repo entirely when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    let capturedArgs;
+    const fakeExecFile = async (_bin, args) => {
+      capturedArgs = args;
+      return { stdout: '[]' };
+    };
+
+    await listExistingFindingsReal({ execFile: fakeExecFile, resolveRepoSpecFn: () => undefined });
+
+    expect(capturedArgs).not.toContain('--repo');
+  });
+});
+
+describe('updateFinding — #872 --repo host-pinning', () => {
+  it('appends --repo <spec> from resolveRepoSpecFn when no explicit project is provided', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+    const result = await updateFindingReal({
+      iid: 5,
+      comment: 'a comment',
+      dryRun: true,
+      resolveRepoSpecFn,
+    });
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('https://gitlab.example.com/example-group/example-project.git');
+  });
+
+  it('an explicit project always wins over the auto-detected spec', async () => {
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/should-not-be-used.git';
+    const result = await updateFindingReal({
+      project: 'group/explicit-proj',
+      iid: 5,
+      comment: 'a comment',
+      dryRun: true,
+      resolveRepoSpecFn,
+    });
+    const idx = result.command.indexOf('--repo');
+    expect(result.command[idx + 1]).toBe('group/explicit-proj');
+  });
+
+  it('omits --repo entirely when resolveRepoSpecFn returns undefined (graceful degradation)', async () => {
+    const result = await updateFindingReal({
+      iid: 5,
+      comment: 'a comment',
+      dryRun: true,
+      resolveRepoSpecFn: () => undefined,
+    });
+    expect(result.command).not.toContain('--repo');
   });
 });

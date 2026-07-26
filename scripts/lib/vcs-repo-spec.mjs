@@ -23,6 +23,14 @@
  * this as "could not auto-detect" and omit the `-R`/`--repo` flag entirely
  * (never emit `-R undefined`).
  *
+ * Spec format (#872 follow-up): `resolveRepoSpec` returns the RAW remote URL
+ * for `vcs: 'gitlab'`, but a NORMALIZED `HOST/OWNER/REPO` string for
+ * `vcs: 'github'` — `gh -R`/`--repo` documents only `[HOST/]OWNER/REPO` as
+ * its accepted spec shape, unlike `glab -R` which explicitly accepts a full
+ * URL. See `resolveRepoSpec`'s own docblock for the full rationale. This
+ * module also exports `resolveRepoHost` for the `glab api`/`gh api`
+ * call sites, which accept neither `-R` nor a URL — only `--hostname`.
+ *
  * Lifted out of `scripts/archive-closed-prds.mjs::defaultGlabRepo` (that
  * script's docblock described this exact problem months before #839 was
  * filed) into a shared `scripts/lib/` module so
@@ -90,7 +98,36 @@ function extractHost(url) {
 }
 
 /**
- * Resolve the raw remote URL to pass as a glab/gh `-R`/`--repo` spec.
+ * Normalize a github remote URL (HTTPS or SSH) into the `HOST/OWNER/REPO`
+ * shape `gh -R`/`--repo` documents as its accepted spec format. gh does NOT
+ * accept a raw remote URL the way `glab -R` does — only `[HOST/]OWNER/REPO`.
+ * Strips a trailing `.git` suffix and any trailing slash.
+ *
+ * Falls back to returning `url` unchanged when it does not match the
+ * expected `host/owner/repo` shape (never throws) — a raw URL is still
+ * strictly better than omitting `-R` entirely.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+function normalizeGithubSpec(url) {
+  const httpsMatch = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
+  if (httpsMatch) {
+    const [, host, owner, repo] = httpsMatch;
+    return `${host.toLowerCase()}/${owner}/${repo}`;
+  }
+  const sshMatch = /^[^@\s]+@([^:\s]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
+  if (sshMatch) {
+    const [, host, owner, repo] = sshMatch;
+    return `${host.toLowerCase()}/${owner}/${repo}`;
+  }
+  return url;
+}
+
+/**
+ * Resolve the raw remote URL for the requested vcs — shared by
+ * `resolveRepoSpec` and `resolveRepoHost` so both apply the identical
+ * remote-preference-order + cross-family-guard resolution.
  *
  * Cross-family guard (#839 follow-up): a candidate URL whose host is the
  * OTHER platform's well-known public host (`github.com` under vcs:'gitlab',
@@ -107,7 +144,7 @@ function extractHost(url) {
  * }} [opts]
  * @returns {string|undefined}
  */
-export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun } = {}) {
+function resolveRawRemoteUrl({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun } = {}) {
   const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
   const root = repoRoot ?? process.cwd();
   const wrongFamilyHost = WRONG_FAMILY_HOST[vcsResolved];
@@ -120,6 +157,64 @@ export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitR
     return url;
   }
   return undefined;
+}
+
+/**
+ * Resolve the glab/gh `-R`/`--repo` host-pinning spec.
+ *
+ * Format contract differs by vcs, because `glab -R` and `gh -R` accept
+ * different spec shapes:
+ *   - `vcs: 'gitlab'` (default): the RAW remote URL, verbatim. `glab -R`
+ *     explicitly accepts a full URL, and GitLab group namespaces can nest
+ *     arbitrarily deep (`group/subgroup/project`), which makes a reliable
+ *     `OWNER/REPO` derivation impossible from the URL alone — so the raw URL
+ *     is the only unambiguous spec here.
+ *   - `vcs: 'github'`: the NORMALIZED `HOST/OWNER/REPO` form (see
+ *     `normalizeGithubSpec`). `gh -R`/`--repo` documents ONLY
+ *     `[HOST/]OWNER/REPO` as accepted input — a raw URL is not guaranteed to
+ *     parse the same way, and GitHub repos are always exactly two path
+ *     segments (owner/repo), so the derivation is unambiguous.
+ *
+ * Returns `undefined` when no matching remote resolves — callers MUST treat
+ * this as "could not auto-detect" and omit the `-R`/`--repo` flag entirely
+ * (never emit `-R undefined`).
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   vcs?: 'gitlab' | 'github',
+ *   gitRun?: (args: string[]) => { ok: boolean, stdout: string, stderr: string }
+ * }} [opts]
+ * @returns {string|undefined}
+ */
+export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun } = {}) {
+  const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
+  const url = resolveRawRemoteUrl({ repoRoot, vcs: vcsResolved, gitRun });
+  if (!url) return undefined;
+  return vcsResolved === 'github' ? normalizeGithubSpec(url) : url;
+}
+
+/**
+ * Resolve the bare hostname of the matching remote, for use with
+ * `glab api --hostname`/`gh api --hostname` — the `api` subcommand of both
+ * CLIs does NOT accept `-R`/`--repo` (it has no repo concept), only a
+ * `--hostname` flag to pin which instance the request targets. This is the
+ * host-pinning counterpart to `resolveRepoSpec` for those api-only call
+ * sites.
+ *
+ * Applies the identical remote-preference-order + cross-family-guard
+ * resolution as `resolveRepoSpec`, just returning the host instead of the
+ * full spec — same contract: `undefined` ⇒ caller omits the flag entirely.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   vcs?: 'gitlab' | 'github',
+ *   gitRun?: (args: string[]) => { ok: boolean, stdout: string, stderr: string }
+ * }} [opts]
+ * @returns {string|undefined}
+ */
+export function resolveRepoHost({ repoRoot, vcs, gitRun } = {}) {
+  const url = resolveRawRemoteUrl({ repoRoot, vcs, gitRun });
+  return url ? (extractHost(url) ?? undefined) : undefined;
 }
 
 /**

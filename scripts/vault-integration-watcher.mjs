@@ -9,6 +9,9 @@
  * CLI usage:
  *   node scripts/vault-integration-watcher.mjs [--dry-run] [--issue <id>] [--verbose]
  *     [--glab-bin <path>]        override glab binary (used by tests)
+ *     [--repo <spec>]            override the -R/--repo host-pinning spec (#872;
+ *                                used by tests — default: resolveRepoSpec() against
+ *                                the process cwd, degrading gracefully to no -R)
  *     [--issue <id>]             override tracking issue (default: 305)
  *     [--dep-issues <id,id>]     override dependency issues (default: 303,304)
  *     [--dry-run]                compute + print, no glab posts
@@ -32,6 +35,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
+import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -48,6 +52,17 @@ const TRACKING_ISSUE = getArg('--issue') ?? '305';
 const DEP_ISSUES_RAW = getArg('--dep-issues') ?? '303,304';
 const DEP_ISSUES = DEP_ISSUES_RAW.split(',').map((s) => s.trim());
 const GLAB_BIN = getArg('--glab-bin') ?? process.env.GLAB_BIN ?? 'glab';
+
+// -R/--repo host-pinning spec (#872) — resolved ONCE at module load, reused
+// by every glab call site below (glabJson + postComment cover all 4 call
+// sites: fetchIssues, fetchComments, the tracking-issue view in main(), and
+// the note-add write). `--repo <spec>` is an explicit override (analogous to
+// `--glab-bin`, used by tests); otherwise falls back to the real
+// `resolveRepoSpec` (shells out to `git remote get-url`). Graceful
+// degradation: undefined ⇒ no -R appended anywhere, matching the ambient
+// glab/GITLAB_HOST fallback this watcher always used pre-#872 — never a hard
+// fail, per #839's "never emit -R undefined" contract.
+const REPO_SPEC = getArg('--repo') ?? resolveRepoSpec({ repoRoot: process.cwd(), vcs: 'gitlab' });
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -66,13 +81,17 @@ function emit(action) {
 // ── glab helpers ──────────────────────────────────────────────────────────────
 
 /**
- * Run a glab command and return parsed JSON output.
+ * Run a glab command and return parsed JSON output. Every call is pinned to
+ * -R <REPO_SPEC> (#872) when a spec resolved — appended centrally here so
+ * all glabJson call sites (fetchIssues, fetchComments, main()'s tracking-issue
+ * view) inherit the pin without each needing to build it themselves.
  * @param {string[]} args
  * @returns {unknown}
  */
 function glabJson(args) {
-  verbose(`glab ${args.join(' ')}`);
-  const result = spawnSync(GLAB_BIN, args, { encoding: 'utf8', timeout: 30_000 });
+  const fullArgs = REPO_SPEC ? [...args, '-R', REPO_SPEC] : args;
+  verbose(`glab ${fullArgs.join(' ')}`);
+  const result = spawnSync(GLAB_BIN, fullArgs, { encoding: 'utf8', timeout: 30_000 });
   if (result.error) {
     log(`glab spawn error: ${result.error.message}`);
     process.exit(2);
@@ -90,7 +109,7 @@ function glabJson(args) {
 }
 
 /**
- * Post a comment to an issue.
+ * Post a comment to an issue. Pinned to -R <REPO_SPEC> (#872) — see glabJson.
  * @param {string} issueId
  * @param {string} body
  */
@@ -101,11 +120,9 @@ function postComment(issueId, body) {
     return;
   }
   verbose(`posting comment to #${issueId}`);
-  const result = spawnSync(
-    GLAB_BIN,
-    ['issue', 'note', 'add', issueId, '--message', body],
-    { encoding: 'utf8', timeout: 30_000 }
-  );
+  const args = ['issue', 'note', 'add', issueId, '--message', body];
+  if (REPO_SPEC) args.push('-R', REPO_SPEC);
+  const result = spawnSync(GLAB_BIN, args, { encoding: 'utf8', timeout: 30_000 });
   if (result.error) {
     log(`glab note add spawn error: ${result.error.message}`);
     process.exit(2);

@@ -11,9 +11,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve, sep, delimiter } from 'node:path';
 
 // checker.mjs emits `file` fields using path.relative, which uses the runtime's
 // path.sep. Normalize to forward slashes in assertions for Windows portability.
@@ -21,8 +21,8 @@ const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 
 const CHECKER = resolve(process.cwd(), 'skills/claude-md-drift-check/checker.mjs');
 
-function runChecker(vaultDir, args = []) {
-  const env = { ...process.env, VAULT_DIR: vaultDir, PATH: process.env.PATH };
+function runChecker(vaultDir, args = [], extraEnv = {}) {
+  const env = { ...process.env, VAULT_DIR: vaultDir, PATH: process.env.PATH, ...extraEnv };
   // Hermetic subprocess env (mirrors rule-scoping.test.mjs's hardened idiom):
   // an ambient TYPECHECK_CMD/TEST_CMD/LINT_CMD/FILES/SESSION_START_REF from an
   // outer quality-gate invocation must never leak into the spawned checker.
@@ -334,6 +334,46 @@ describe('check 3: issue-reference-freshness (auto-skip without glab)', () => {
     const r = runChecker(vault, ['--skip-issue-refs']);
     const j = parseJson(r.stdout);
     expect(j.status).toBe('ok');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// check 3: issue-reference-freshness — #872 --repo host-pinning
+//
+// Real git repo (vault dir), SSH remote pointing at a neutral, fictional
+// host (#494 owner-leakage discipline — never a real GitLab instance). A
+// PATH-shimmed `glab` stub captures the argv it was invoked with, so the
+// resolved --repo value (derived by resolveRepoSpec from the SSH remote) is
+// observable from the black-box subprocess test.
+// ---------------------------------------------------------------------------
+
+describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH remote)', () => {
+  it('auto-detects a --repo spec from an SSH remote and passes a value containing the host to glab', () => {
+    spawnSync('git', ['init', '--quiet'], { cwd: vault });
+    spawnSync(
+      'git',
+      ['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'],
+      { cwd: vault },
+    );
+    writeFileSync(join(vault, 'CLAUDE.md'), "## What's Next\n- #123 upcoming\n");
+
+    // PATH-shim a fake `glab` binary ahead of any real one so the resolved
+    // --repo value is observable without depending on real GitLab auth.
+    const binDir = mkdtempSync(join(tmpdir(), 'drift-check-glab-stub-'));
+    const captureFile = join(binDir, 'capture.txt');
+    const glabStub = join(binDir, 'glab');
+    writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
+    chmodSync(glabStub, 0o755);
+
+    try {
+      const r = runChecker(vault, [], { PATH: `${binDir}${delimiter}${process.env.PATH}` });
+      expect(r.code).toBe(0);
+      const capture = existsSync(captureFile) ? readFileSync(captureFile, 'utf8') : '';
+      expect(capture).toContain('--repo');
+      expect(capture).toContain('gitlab.example.com');
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 });
 

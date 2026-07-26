@@ -36,6 +36,7 @@ import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
 import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
+import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -434,13 +435,20 @@ function buildSurfaceDescriptors(vaultDir, commandsDir) {
   ];
 }
 
-const REPO_SHAPE_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/;
-
-function detectRepo(vaultDir) {
-  const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: vaultDir, encoding: 'utf8' }).trim();
-  const m = /[:/]([^:/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(url);
-  const candidate = m ? m[1] : null;
-  return candidate && REPO_SHAPE_RE.test(candidate) ? candidate : null;
+/**
+ * Guard for a `--repo`/`-R` argv value before it is passed to `glab`
+ * (host-pinning, #872). Replaces the old `REPO_SHAPE_RE` "owner/repo" shape
+ * check — `resolveRepoSpec` for `vcs: 'gitlab'` returns the raw remote URL
+ * (which `glab -R`/`--repo` explicitly accepts), so the guard only needs to
+ * reject the same argv-corrupting characters checked elsewhere in this repo
+ * (see `ARG_BOUNDARY_DANGEROUS` in scripts/lib/test-runner/issue-reconcile.mjs):
+ * non-empty and free of whitespace/newlines.
+ *
+ * @param {unknown} spec
+ * @returns {boolean}
+ */
+function isSafeRepoSpec(spec) {
+  return typeof spec === 'string' && spec.length > 0 && !/\s/.test(spec);
 }
 
 function hasGlab() {
@@ -450,11 +458,18 @@ function hasGlab() {
   } catch { return false; }
 }
 
-function lookupIssueState(iid, repo, cache) {
+function lookupIssueState(iid, repo, cache, vaultDir) {
   if (cache.has(iid)) return cache.get(iid);
   let state = 'unknown';
   try {
+    // #872: cwd: vaultDir — without it, a bare `cwd`-less spawn resolves the
+    // ambient GITLAB_HOST relative to the PROCESS cwd (not vaultDir), which
+    // can silently target the wrong instance on a multi-instance host even
+    // though `--repo <repo>` is already present (host-pinning consistency
+    // with detectRepo's git-remote resolution above, which DOES use
+    // `cwd: vaultDir` via resolveRepoSpec).
     const out = execFileSync('glab', ['issue', 'view', iid, '--repo', repo], {
+      cwd: vaultDir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -730,13 +745,20 @@ function main() {
   const commandSurface = activeSurfaces.find((s) => s.id === 'command-count');
   const actualCommandCount = commandSurface ? commandSurface.actual : null;
 
+  // #872: CLI --repo always wins; otherwise auto-detect a --repo spec from
+  // the local git remotes (host-pinning — a bare glab spawn falls back to
+  // the ambient GITLAB_HOST, which can silently target the wrong instance
+  // on a multi-instance host).
   let repo = args.repo;
   const glabPresent = !args.skipIssueRefs && hasGlab();
   if (!args.skipIssueRefs && !glabPresent) {
     checksSkipped.push('issue-reference-freshness: glab not found in PATH');
   }
   if (!args.skipIssueRefs && glabPresent && !repo) {
-    try { repo = detectRepo(vaultDir); } catch { /* ignore */ }
+    try {
+      const resolved = resolveRepoSpec({ repoRoot: vaultDir, vcs: 'gitlab' });
+      repo = resolved && isSafeRepoSpec(resolved) ? resolved : null;
+    } catch { /* ignore */ }
     if (!repo) checksSkipped.push('issue-reference-freshness: could not detect origin repo (use --repo)');
   }
   const runIssueCheck = !args.skipIssueRefs && glabPresent && !!repo;
@@ -1359,7 +1381,7 @@ function main() {
         let m;
         while ((m = issueRegex.exec(line)) !== null) {
           const iid = m[1];
-          const state = lookupIssueState(iid, repo, issueCache);
+          const state = lookupIssueState(iid, repo, issueCache, vaultDir);
           if (state === 'closed') {
             errors.push({
               check: 'issue-reference-freshness', file: rel, line: lineNum,

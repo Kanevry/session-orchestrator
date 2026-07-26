@@ -30,6 +30,9 @@
  *   - opts.vcsDetect  — ({ config, projectRoot }) => { bin } VCS detector
  *   - opts.createMr   — async (loop, draftOpts) => { created, mrUrl } MR opener
  *   - opts.log        — (level, msg) => void diagnostic logger
+ *   - opts.resolveRepoSpecFn — optional passthrough to the createMr seam's own
+ *     -R/--repo host-pinning resolver (#872); undefined lets createMr fall
+ *     back to its own real-resolveRepoSpec default.
  */
 
 import { execFile as execFileCb, spawnSync } from 'node:child_process';
@@ -468,6 +471,11 @@ export async function openRepairMr(
   }
 
   // Delegate MR creation to the mr-draft seam (collision check + draft create).
+  // repoRoot is passed through so maybeCreateDraftMR's -R/--repo host-pinning
+  // resolution (#872) resolves against THIS repo, not process.cwd() (which
+  // may differ inside a dispatched agent/worktree context); resolveRepoSpecFn
+  // is an optional passthrough seam for tests — undefined here simply means
+  // maybeCreateDraftMR falls back to its own real-resolveRepoSpec default.
   let mrResult;
   try {
     mrResult = await createMr(
@@ -480,7 +488,7 @@ export async function openRepairMr(
         parentRunId: `repair/${candidate.id}`,
         worktreePath: candidate.target_path ?? '(unknown)',
       },
-      { execFile: opts.execFile, log },
+      { execFile: opts.execFile, log, repoRoot, resolveRepoSpecFn: opts.resolveRepoSpecFn },
     );
   } catch (err) {
     const msg = err instanceof MrDraftError ? err.message : String(err?.message ?? err);

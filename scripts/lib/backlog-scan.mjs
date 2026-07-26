@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 
 import { normalizeLabel } from './label-scope.mjs';
+import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 export const STALE_THRESHOLD_DAYS = 30;
 
@@ -133,7 +134,10 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
 
 /**
  * Scan the project's open backlog and return a structural summary suitable for
- * `signals.backlog`. Caches the result per (vcs, limit) within the running process.
+ * `signals.backlog`. Caches the result per (vcs, limit, spec) within the
+ * running process — `spec` (the resolved `-R`/`--repo` host-pinning value,
+ * #872) is part of the cache key so two different repos scanning the SAME
+ * (vcs, limit) pair never collide on a shared cache entry.
  *
  * Returns null on any of:
  *  - VCS cannot be detected (no git origin)
@@ -142,7 +146,20 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
  *
  * Never throws.
  *
- * @param {{limit?: number, vcs?: 'github'|'gitlab'|null, nowMs?: number}} [opts]
+ * @param {{
+ *   limit?: number,
+ *   vcs?: 'github'|'gitlab'|null,
+ *   nowMs?: number,
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string | undefined,
+ *   runJsonFn?: (bin: string, args: string[]) => Array | null
+ * }} [opts]
+ *   `repoRoot` defaults to `process.cwd()`. `resolveRepoSpecFn` is the
+ *   injectable seam for the `-R`/`--repo` host-pinning resolution (#872) —
+ *   defaults to the real `resolveRepoSpec` (shells out to `git remote
+ *   get-url`); tests inject a stub instead of shelling out. `runJsonFn` is
+ *   the injectable seam for the CLI runner — defaults to the real `runJson`
+ *   (shells out to `glab`/`gh`).
  * @returns {Promise<null | {criticalCount: number, highCount: number, staleCount: number, byLabel: Record<string, number>, total: number, vcs: string, limit: number}>}
  */
 export async function scanBacklog(opts = {}) {
@@ -155,7 +172,16 @@ export async function scanBacklog(opts = {}) {
 
   if (vcs !== 'github' && vcs !== 'gitlab') return null;
 
-  const cacheKey = JSON.stringify({ vcs, limit });
+  const repoRoot = typeof opts.repoRoot === 'string' ? opts.repoRoot : process.cwd();
+  const resolveRepoSpecFn =
+    typeof opts.resolveRepoSpecFn === 'function' ? opts.resolveRepoSpecFn : resolveRepoSpec;
+  const runJsonFn = typeof opts.runJsonFn === 'function' ? opts.runJsonFn : runJson;
+
+  // Resolve the -R/--repo host-pinning spec ONCE (#872), mirroring the
+  // #839 idiom in spiral-carryover.mjs / issue-close-strip-labels.mjs.
+  const spec = resolveRepoSpecFn({ repoRoot, vcs });
+
+  const cacheKey = JSON.stringify({ vcs, limit, spec });
   if (_cache.has(cacheKey)) return _cache.get(cacheKey);
 
   const bin = vcs === 'github' ? 'gh' : 'glab';
@@ -163,8 +189,9 @@ export async function scanBacklog(opts = {}) {
     vcs === 'github'
       ? ['issue', 'list', '--limit', String(limit), '--json', 'number,labels,updatedAt,state']
       : ['issue', 'list', '--per-page', String(limit), '--output', 'json'];
+  if (spec) args.push('-R', spec);
 
-  const issues = runJson(bin, args);
+  const issues = runJsonFn(bin, args);
   if (issues === null) {
     _cache.set(cacheKey, null);
     return null;
