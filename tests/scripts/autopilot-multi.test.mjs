@@ -8,6 +8,10 @@
  *   2. parseFlags (unit, no spawnSync)
  *   3. buildOrchestratorState (unit, pure function)
  *   4. main via spawnSync (full CLI behaviour)
+ *   5. finalize (unit) — #905 success/exitCode/no-work classification
+ *   6. fetchReadyBacklog (unit) — #904 glab -R host-pinning
+ *   7. runApplyLoop (integration-ish, DI-stubbed wtPipeline/probe, real
+ *      dep-graph + multi-killswitch) — #905 sweep regression guard
  *
  * Falsification: every assertion uses hardcoded expected values.
  * Anti-pattern check: no branching inside it() blocks.
@@ -17,6 +21,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import * as depGraphMod from '@lib/autopilot/dep-graph.mjs';
+import * as mkLibMod from '@lib/autopilot/multi-killswitch.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -288,5 +294,199 @@ describe('main (CLI via spawnSync)', () => {
     const r = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--apply'], { encoding: 'utf8' });
     expect(r.status).toBe(1);
     expect(norm(r.stderr)).toContain('mutually exclusive');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. finalize (unit) — #905 success/exitCode/no-work classification
+// ---------------------------------------------------------------------------
+
+describe('finalize (unit)', () => {
+  async function getFinalize() {
+    const mod = await import(SCRIPT);
+    return mod.finalize;
+  }
+
+  it('5 no-work (fallback-to-manual) + 2 failed loops report success:false, exitCode 3', async () => {
+    const finalize = await getFinalize();
+    const allLoops = [
+      { status: 'no-work', fallbackToManual: true },
+      { status: 'no-work', fallbackToManual: true },
+      { status: 'no-work', fallbackToManual: true },
+      { status: 'no-work', fallbackToManual: true },
+      { status: 'no-work', fallbackToManual: true },
+      { status: 'failed', fallbackToManual: false },
+      { status: 'failed', fallbackToManual: false },
+    ];
+
+    const result = finalize(allLoops, 'backlog-empty', Date.now());
+
+    expect(result.data.completed).toBe(0);
+    expect(result.data.noWork).toBe(5);
+    expect(result.data.failed).toBe(2);
+    expect(result.data.fellBackToManual).toBe(5);
+    expect(result.success).toBe(false);
+    expect(result.exitCode).toBe(3);
+  });
+
+  it('empty backlog (zero registered loops) reports success:true, exitCode 0 (regression guard)', async () => {
+    const finalize = await getFinalize();
+
+    const result = finalize([], 'backlog-empty', Date.now());
+
+    expect(result.success).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('1 complete + 1 no-work loop reports success:true (at least one productive loop)', async () => {
+    const finalize = await getFinalize();
+    const allLoops = [
+      { status: 'complete', fallbackToManual: false },
+      { status: 'no-work', fallbackToManual: true },
+    ];
+
+    const result = finalize(allLoops, 'backlog-empty', Date.now());
+
+    expect(result.success).toBe(true);
+    expect(result.data.completed).toBe(1);
+    expect(result.data.noWork).toBe(1);
+    expect(result.exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. fetchReadyBacklog (unit) — #904 glab -R host-pinning
+// ---------------------------------------------------------------------------
+
+describe('fetchReadyBacklog (unit)', () => {
+  async function getFetchReadyBacklog() {
+    const mod = await import(SCRIPT);
+    return mod.fetchReadyBacklog;
+  }
+
+  it('appends trailing -R <spec> when resolveRepoSpecFn resolves a spec', async () => {
+    const fetchReadyBacklog = await getFetchReadyBacklog();
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '[]' });
+    const resolveRepoSpecFn = () => 'https://gitlab.example.com/example-group/example-project.git';
+
+    await fetchReadyBacklog(execFileFn, { repoRoot: '/tmp/example-repo', resolveRepoSpecFn });
+
+    expect(execFileFn).toHaveBeenCalledWith(
+      'glab',
+      [
+        'issue', 'list', '--label', 'status:ready', '--per-page', '50', '--output', 'json',
+        '-R', 'https://gitlab.example.com/example-group/example-project.git',
+      ],
+      { shell: false, timeout: 30_000 },
+    );
+  });
+
+  it('omits -R entirely when resolveRepoSpecFn returns undefined (never emits "-R undefined")', async () => {
+    const fetchReadyBacklog = await getFetchReadyBacklog();
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '[]' });
+    const resolveRepoSpecFn = () => undefined;
+
+    await fetchReadyBacklog(execFileFn, { repoRoot: '/tmp/example-repo', resolveRepoSpecFn });
+
+    expect(execFileFn).toHaveBeenCalledWith(
+      'glab',
+      ['issue', 'list', '--label', 'status:ready', '--per-page', '50', '--output', 'json'],
+      { shell: false, timeout: 30_000 },
+    );
+  });
+
+  it('calls resolveRepoSpecFn exactly once with {repoRoot, vcs: "gitlab"}', async () => {
+    const fetchReadyBacklog = await getFetchReadyBacklog();
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '[]' });
+    const resolveRepoSpecFn = vi.fn().mockReturnValue(undefined);
+
+    await fetchReadyBacklog(execFileFn, { repoRoot: '/tmp/example-repo', resolveRepoSpecFn });
+
+    expect(resolveRepoSpecFn).toHaveBeenCalledOnce();
+    expect(resolveRepoSpecFn).toHaveBeenCalledWith({ repoRoot: '/tmp/example-repo', vcs: 'gitlab' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. runApplyLoop (integration-ish) — #905 sweep regression guard
+//
+// Uses the REAL dep-graph.mjs + multi-killswitch.mjs modules (pure, no I/O)
+// and DI-stubs only wtPipeline.runStoryPipeline + probe.probe. No live glab
+// calls anywhere in this describe block.
+// ---------------------------------------------------------------------------
+
+describe('runApplyLoop (integration-ish)', () => {
+  async function getRunApplyLoop() {
+    const mod = await import(SCRIPT);
+    return mod.runApplyLoop;
+  }
+
+  function makeFlags() {
+    return {
+      maxStories: 1,
+      maxHours: 8,
+      inactivityTimeoutMs: 300000,
+      draftMrPolicy: 'off',
+      stallTimeoutSeconds: 600,
+    };
+  }
+
+  it(
+    'a fallback-to-manual StoryResult (0 iterations) registers as no-work, ' +
+      'the loop terminates, and success is false (sweep regression guard, #905)',
+    { timeout: 5000 },
+    async () => {
+      const runApplyLoop = await getRunApplyLoop();
+      const state = {
+        issues: [{ iid: 501, title: 'No-op issue', blocks: [], blockedBy: [], labels: ['status:ready'] }],
+        parentRunId: 'test-run-no-work',
+        flags: makeFlags(),
+      };
+      const libs = {
+        depGraph: depGraphMod,
+        wtPipeline: {
+          runStoryPipeline: vi.fn().mockResolvedValue({
+            killSwitch: null,
+            iterationsCompleted: 0,
+            fallbackToManual: true,
+          }),
+        },
+        mkLib: mkLibMod,
+        probe: { probe: vi.fn().mockResolvedValue(null) },
+      };
+
+      const result = await runApplyLoop(state, libs, {});
+
+      expect(result.success).toBe(false);
+      expect(result.data.noWork).toBe(1);
+      expect(result.data.completed).toBe(0);
+    },
+  );
+
+  it('a productive StoryResult (3 iterations, no fallback) registers as complete and reports success', async () => {
+    const runApplyLoop = await getRunApplyLoop();
+    const state = {
+      issues: [{ iid: 502, title: 'Productive issue', blocks: [], blockedBy: [], labels: ['status:ready'] }],
+      parentRunId: 'test-run-complete',
+      flags: makeFlags(),
+    };
+    const libs = {
+      depGraph: depGraphMod,
+      wtPipeline: {
+        runStoryPipeline: vi.fn().mockResolvedValue({
+          killSwitch: null,
+          iterationsCompleted: 3,
+          fallbackToManual: false,
+        }),
+      },
+      mkLib: mkLibMod,
+      probe: { probe: vi.fn().mockResolvedValue(null) },
+    };
+
+    const result = await runApplyLoop(state, libs, {});
+
+    expect(result.success).toBe(true);
+    expect(result.data.completed).toBe(1);
+    expect(result.data.noWork).toBe(0);
   });
 });

@@ -17,6 +17,7 @@ import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
+import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -48,7 +49,9 @@ OPTIONS:
 EXIT CODES:
   0  Success
   1  User error (bad flags)
-  2  System error (libs/binaries/probe failed)
+  2  System error (libs/binaries/probe failed) — or a terminal stop reason
+     (kill-switch / spiral / cohort-abort / spawn-error)
+  3  no productive work — apply run completed but zero loops did any work
 `;
 
 const FLAGS = {
@@ -274,15 +277,34 @@ function extractRefs(_issue, _field) {
  * Fetch the ready-backlog from GitLab via `glab issue list`.
  * Uses execFile (shell: false) per SEC-014 / cli-design rules.
  *
+ * Host-pinning (#904): a bare `glab` spawn (no shell wrapper, no `-R`) falls
+ * back to the ambient `GITLAB_HOST` config default, which can silently
+ * resolve to the WRONG GitLab instance on a multi-host machine. Injecting
+ * `GITLAB_HOST` into the spawn env is NOT a fix — it is live-refuted whenever
+ * `~/.ssh/config` maps the hostname to a `HostName` IP alias (glab then
+ * reports "none of the git remotes ... correspond to the GITLAB_HOST"). Only
+ * `-R <spec>` survives that mismatch. See scripts/lib/vcs-repo-spec.mjs
+ * docblock; reference idiom: scripts/lib/spiral-carryover.mjs.
+ *
  * @param {Function} execFileFn  Promisified execFile
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot]  Repo root to resolve the `-R` spec from (default: process.cwd())
+ * @param {'gitlab'|'github'} [opts.vcs]  VCS backend (default: 'gitlab')
+ * @param {(o: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined} [opts.resolveRepoSpecFn]
+ *   DI seam for `resolveRepoSpec` (testability).
  * @returns {Promise<Array<{iid: number, title: string, blocks: number[], blockedBy: number[], labels: string[]}>>}
  */
-async function fetchReadyBacklog(execFileFn) {
-  const { stdout } = await execFileFn(
-    'glab',
-    ['issue', 'list', '--label', 'status:ready', '--per-page', '50', '--output', 'json'],
-    { shell: false, timeout: 30_000 },
-  );
+async function fetchReadyBacklog(execFileFn, opts = {}) {
+  const resolveRepoSpecFn = opts.resolveRepoSpecFn ?? resolveRepoSpec;
+  const vcs  = opts.vcs === 'github' ? 'github' : 'gitlab';
+  const spec = resolveRepoSpecFn({ repoRoot: opts.repoRoot ?? process.cwd(), vcs });
+
+  const args = ['issue', 'list', '--label', 'status:ready', '--per-page', '50', '--output', 'json'];
+  // Never emit '-R undefined' — resolveRepoSpec returns undefined when it
+  // cannot auto-detect a remote; omit the flag entirely in that case.
+  if (spec) args.push('-R', spec);
+
+  const { stdout } = await execFileFn('glab', args, { shell: false, timeout: 30_000 });
   const issues = JSON.parse(stdout);
   return issues.map((i) => ({
     iid:       i.iid ?? i.id,
@@ -296,11 +318,19 @@ async function fetchReadyBacklog(execFileFn) {
 /**
  * Summarise a completed apply run into a canonical result envelope.
  *
+ * Success/exit-code semantics (#905): a `reason` that is not a terminal
+ * stop-reason (see `terminalReasons`) used to be reported as `success: true`
+ * even when every registered loop did zero productive work (e.g. the inner
+ * loop fell back to manual mode with 0 iterations completed) — the classic
+ * "fallback counts as complete" bug. `success` now additionally requires
+ * either an empty backlog (no loops were ever registered — the legitimate
+ * "nothing to do" case) or at least one loop that actually completed work.
+ *
  * @param {import('./lib/autopilot/multi-killswitch.mjs').LoopRegistration[]} allLoops
  * @param {string} reason
  * @param {number} startMs
  * @param {{ kill: string, detail: string }|null} [killDetail]
- * @returns {{ success: boolean, data: object }}
+ * @returns {{ success: boolean, exitCode: number, data: object }}
  */
 function finalize(allLoops, reason, startMs, killDetail = null) {
   const terminalReasons = new Set([
@@ -310,15 +340,35 @@ function finalize(allLoops, reason, startMs, killDetail = null) {
     'spawn-error',
     STALE_SUBAGENT_MIN,
   ]);
+  const isTerminal = terminalReasons.has(reason);
+  const completed        = allLoops.filter((l) => l.status === 'complete').length;
+  const failed           = allLoops.filter((l) => l.status === 'failed').length;
+  const noWork           = allLoops.filter((l) => l.status === 'no-work').length;
+  const fellBackToManual = allLoops.filter((l) => l.fallbackToManual === true).length;
+
+  // Empty-backlog regression guard: zero registered loops is a legitimate
+  // "nothing to do" outcome, not a "no productive work" outcome — do not
+  // conflate the two.
+  const success = !isTerminal && (allLoops.length === 0 || completed > 0);
+
+  // Exit-code triage: success -> 0; a terminal stop-reason -> 2 (unchanged;
+  // this is the only way `!success` can coincide with an empty allLoops); a
+  // non-terminal reason with >=1 registered loop but zero productive loops
+  // -> 3 ("no productive work" — the run completed cleanly but nothing landed).
+  const exitCode = success ? 0 : (isTerminal ? 2 : 3);
+
   return {
-    success: !terminalReasons.has(reason),
+    success,
+    exitCode,
     data: {
       reason,
-      loopCount:   allLoops.length,
-      completed:   allLoops.filter((l) => l.status === 'complete').length,
-      failed:      allLoops.filter((l) => l.status === 'failed').length,
-      elapsedMs:   Date.now() - startMs,
-      killDetail:  killDetail ?? null,
+      loopCount:        allLoops.length,
+      completed,
+      failed,
+      noWork,
+      fellBackToManual,
+      elapsedMs:        Date.now() - startMs,
+      killDetail:       killDetail ?? null,
     },
   };
 }
@@ -430,6 +480,8 @@ async function runApplyLoop(state, libs, opts) {
         issueIid:            issue.iid,
         status:              'running',
         killSwitch:          null,
+        iterationsCompleted: 0,
+        fallbackToManual:    false,
         spiralRecoveryCount: 0,
         startedAt:           Date.now(),
         lastActivityAt:      Date.now(),
@@ -453,7 +505,20 @@ async function runApplyLoop(state, libs, opts) {
         //   yet signal "first green test"; wire once runStoryPipeline
         //   propagates a firstGreenAt timestamp in StoryResult.
       }).then((result) => {
-        registration.status      = result.killSwitch ? 'failed' : 'complete';
+        // Three-way classification (#905): a StoryResult with no kill-switch
+        // AND zero completed iterations (or an explicit fallback-to-manual
+        // flag) is NOT the same as a completed loop — it did no productive
+        // work. Conflating the two used to make an empty apply run report
+        // false success. See finalize() for the corresponding success/
+        // exit-code semantics and multi-killswitch.mjs's LoopRegistration
+        // typedef (out of scope here) for the 'queued'|'running'|'complete'|
+        // 'failed' status enum this 'no-work' value extends locally.
+        registration.iterationsCompleted = result.iterationsCompleted ?? 0;
+        registration.fallbackToManual    = result.fallbackToManual === true;
+        registration.status =
+          result.killSwitch ? 'failed'
+          : (registration.fallbackToManual || registration.iterationsCompleted === 0) ? 'no-work'
+          : 'complete';
         registration.killSwitch  = result.killSwitch ?? null;
         completed.add(issue.iid);
         lastCompletionAt = Date.now();
@@ -493,9 +558,17 @@ async function runApplyLoop(state, libs, opts) {
         Promise.race(Array.from(inFlight.values()).map((v) => v.promise.then(() => null))),
         new Promise((r) => setTimeout(r, 5000)),
       ]);
-      // Sweep completed / failed entries.
+      // Sweep completed / failed / no-work entries. 'no-work' MUST be swept
+      // here exactly like 'complete'/'failed' — omitting it leaves a settled
+      // promise permanently registered as active, which starves
+      // shouldStopOrchestrator's "backlog-empty" (activeLoops.length === 0)
+      // condition and hangs the orchestrator forever (#905 sweep regression).
       for (const [id, { registration }] of inFlight.entries()) {
-        if (registration.status === 'complete' || registration.status === 'failed') {
+        if (
+          registration.status === 'complete' ||
+          registration.status === 'failed' ||
+          registration.status === 'no-work'
+        ) {
           inFlight.delete(id);
         }
       }
@@ -714,7 +787,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   } else {
     // Apply path: fetch real issues via glab (execFile, shell: false — SEC-014).
     try {
-      issues = await fetchReadyBacklog(execFile);
+      issues = await fetchReadyBacklog(execFile, { repoRoot: process.cwd() });
     } catch (err) {
       const msg = `glab issue list failed: ${err.message}`;
       process.stderr.write(`autopilot-multi: ${msg}\n`);
@@ -783,12 +856,22 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   } else {
     console.log(
       `Multi-story apply complete: ${result.data.reason}` +
-      ` — ${result.data.completed}/${result.data.loopCount} loops succeeded`,
+      ` — ${result.data.completed}/${result.data.loopCount} loops succeeded, ` +
+      `${result.data.failed} failed, ${result.data.noWork} did no work` +
+      ` (${result.data.fellBackToManual} fell back to manual)`,
     );
   }
 
-  exitFn(result.success ? 0 : 2);
+  exitFn(result.exitCode);
 }
+
+// ---------------------------------------------------------------------------
+// Test-only exports — internal functions exercised directly by
+// tests/scripts/autopilot-multi.test.mjs (no behaviour change on the CLI
+// path; mirrors the export pattern in scripts/archive-closed-prds.mjs).
+// ---------------------------------------------------------------------------
+
+export { finalize, fetchReadyBacklog, runApplyLoop };
 
 // ---------------------------------------------------------------------------
 // CLI guard — prevents top-level execution on import (deep-2 #368)

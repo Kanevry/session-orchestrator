@@ -65,6 +65,9 @@ import { SEMANTIC_ID_RE } from '../session-id.mjs';
  * @property {string|null} killSwitch
  * @property {string|null} killSwitchDetail
  * @property {number} iterationsCompleted
+ * @property {boolean} fallbackToManual  - Mirrors loop.mjs's `fallback_to_manual` (#905): true
+ *   when the inner loop broke out with no mode recommendation instead of doing real work.
+ *   The caller (autopilot-multi.mjs) MUST NOT treat a true value as a completed loop.
  * @property {number} spiralRecoveryCount
  * @property {string|null} commitDependency
  * @property {boolean} abortedByCohort
@@ -393,6 +396,7 @@ export async function runStoryPipeline(context, opts = {}) {
       kill_switch: 'failed-wave',
       kill_switch_detail: err?.message ?? String(err),
       iterations_completed: 0,
+      fallback_to_manual: false,
       stall_recovery_count: 0,
     };
   }
@@ -409,6 +413,7 @@ export async function runStoryPipeline(context, opts = {}) {
     killSwitch: loopState.kill_switch ?? null,
     killSwitchDetail: loopState.kill_switch_detail ?? null,
     iterationsCompleted: loopState.iterations_completed ?? 0,
+    fallbackToManual: loopState.fallback_to_manual === true,
     spiralRecoveryCount: loopState.stall_recovery_count ?? 0,
     commitDependency: null,
     abortedByCohort: loopState.kill_switch === 'peer-abort',

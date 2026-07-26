@@ -546,4 +546,36 @@ describe('runStoryPipeline', () => {
     // gcOnExit must have been called before the re-throw.
     expect(opts.gcOnExit).toHaveBeenCalledOnce();
   });
+
+  // #905: fallback-to-manual propagation from loop.mjs's `fallback_to_manual`
+  // state field through to StoryResult.fallbackToManual — the missing link in
+  // the "fallback counts as complete" bug chain (loop.mjs -> worktree-pipeline
+  // -> autopilot-multi.mjs classification).
+  it('propagates fallback_to_manual:true from loopRunner result to StoryResult.fallbackToManual', async () => {
+    const wtRoot = path.join(tmp, 'wt-root');
+    mkdirSync(wtRoot, { recursive: true });
+
+    const opts = makeOpts({
+      loopRunner: vi.fn().mockResolvedValue(
+        makeLoopResult({ kill_switch: null, fallback_to_manual: true, iterations_completed: 0 }),
+      ),
+    });
+    const ctx = makeContext({ repoRoot: tmp, worktreeRoot: wtRoot });
+
+    const result = await runStoryPipeline(ctx, opts);
+
+    expect(result.fallbackToManual).toBe(true);
+  });
+
+  it('defaults StoryResult.fallbackToManual to false (not undefined) for a normal loopRunner result', async () => {
+    const wtRoot = path.join(tmp, 'wt-root');
+    mkdirSync(wtRoot, { recursive: true });
+
+    const opts = makeOpts(); // makeLoopResult() default has no fallback_to_manual field
+    const ctx = makeContext({ repoRoot: tmp, worktreeRoot: wtRoot });
+
+    const result = await runStoryPipeline(ctx, opts);
+
+    expect(result.fallbackToManual).toBe(false);
+  });
 });
