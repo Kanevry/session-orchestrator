@@ -23,6 +23,7 @@ import {
   teardownWorktree,
   runStoryPipeline,
 } from '@lib/autopilot/worktree-pipeline.mjs';
+import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // DI factory helpers
@@ -122,14 +123,12 @@ describe('WORKTREE_ROOT_DEFAULT', () => {
 // ---------------------------------------------------------------------------
 
 describe('WorktreeBoundaryError', () => {
-  it('is an instance of Error', () => {
-    const err = new WorktreeBoundaryError('test message');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('has name === WorktreeBoundaryError', () => {
-    const err = new WorktreeBoundaryError('test message');
-    expect(err.name).toBe('WorktreeBoundaryError');
+  it('carries the Error prototype chain, .name and .message', () => {
+    assertErrorShape(new WorktreeBoundaryError('test message'), {
+      ctor: WorktreeBoundaryError,
+      name: 'WorktreeBoundaryError',
+      message: 'test message',
+    });
   });
 
   it('carries the message and meta fields', () => {
@@ -148,14 +147,12 @@ describe('WorktreeBoundaryError', () => {
 // ---------------------------------------------------------------------------
 
 describe('WorktreeLockedError', () => {
-  it('is an instance of Error', () => {
-    const err = new WorktreeLockedError('locked');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('has name === WorktreeLockedError', () => {
-    const err = new WorktreeLockedError('locked');
-    expect(err.name).toBe('WorktreeLockedError');
+  it('carries the Error prototype chain, .name and .message', () => {
+    assertErrorShape(new WorktreeLockedError('locked'), {
+      ctor: WorktreeLockedError,
+      name: 'WorktreeLockedError',
+      message: 'locked',
+    });
   });
 
   it('stores existingLock and lockReason from meta', () => {

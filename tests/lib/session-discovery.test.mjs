@@ -21,7 +21,6 @@ import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import {
   discoverActiveSessions,
-  DEFAULT_DISCOVERY_TIMEOUT_MS,
 } from '@lib/session-discovery.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
@@ -328,9 +327,6 @@ describe('Group F — branch & shape', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('DEFAULT_DISCOVERY_TIMEOUT_MS is exported and equals 2000', () => {
-    expect(DEFAULT_DISCOVERY_TIMEOUT_MS).toBe(2000);
-  });
 });
 
 // ---------------------------------------------------------------------------

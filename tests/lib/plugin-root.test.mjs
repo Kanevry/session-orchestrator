@@ -19,6 +19,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,11 +70,13 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('PluginRootResolutionError', () => {
-  it('is an instance of Error with correct name', () => {
+  it('carries the Error prototype chain, .name, .message and .triedPaths', () => {
     const err = new PluginRootResolutionError('test', ['a', 'b']);
-    expect(err).toBeInstanceOf(Error);
-    expect(err.name).toBe('PluginRootResolutionError');
-    expect(err.message).toBe('test');
+    assertErrorShape(err, {
+      ctor: PluginRootResolutionError,
+      name: 'PluginRootResolutionError',
+      message: 'test',
+    });
     expect(err.triedPaths).toEqual(['a', 'b']);
   });
 });

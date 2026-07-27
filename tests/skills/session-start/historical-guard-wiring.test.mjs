@@ -12,7 +12,9 @@
  * (`scripts/lib/historical-guard.mjs`) ships green even when SKILL.md drops the
  * banner, and the documented crashed-session-resume incident class re-opens.
  *
- * Mirrors tests/skills/session-start/vault-staleness-skill-wiring.test.mjs.
+ * Follows the skill-prose wiring pattern: read the live SKILL.md, assert the
+ * banner is present at each injection point, and tie the asserted string to
+ * the real `HISTORICAL_GUARD_BANNER` export so a rename on either side fails.
  */
 
 import { describe, it, expect } from 'vitest';

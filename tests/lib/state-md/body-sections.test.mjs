@@ -9,7 +9,6 @@ import {
   markExpressPathComplete,
   appendWhatNotToRetry,
   readWhatNotToRetry,
-  MAX_WHAT_NOT_TO_RETRY,
   readOpenQuestions,
   appendOpenQuestion,
   markOpenQuestionAnswered,
@@ -419,10 +418,6 @@ describe('appendWhatNotToRetry', () => {
     expect(topLevelBullets).toHaveLength(10);
   });
 
-  it('MAX_WHAT_NOT_TO_RETRY constant is 10', () => {
-    expect(MAX_WHAT_NOT_TO_RETRY).toBe(10);
-  });
-
   it('round-trips: append → serialize → parse → readWhatNotToRetry returns all 4 fields', () => {
     const out = appendWhatNotToRetry(WNTR_NO_SECTION, ENTRY);
     const entries = readWhatNotToRetry(out);
@@ -781,10 +776,6 @@ describe('appendOpenQuestion', () => {
     expect(questions).not.toContain('question-2?');
     expect(questions[0]).toBe('question-3?');
     expect(questions[MAX_OPEN_QUESTIONS_STORED - 1]).toBe(`question-${MAX_OPEN_QUESTIONS_STORED + 2}?`);
-  });
-
-  it('MAX_OPEN_QUESTIONS_STORED constant is 20', () => {
-    expect(MAX_OPEN_QUESTIONS_STORED).toBe(20);
   });
 
   it('format-lockstep roundtrip: readOpenQuestions(appendOpenQuestion(c, entry)) returns the entry back', () => {

@@ -48,10 +48,12 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('constants', () => {
-  it('DEFAULT_TTL_HOURS is 4', () => {
-    expect(DEFAULT_TTL_HOURS).toBe(4);
-  });
-
+  // LOCK_PATH stays pinned: this literal is independently duplicated in .gitignore
+  // and in 8+ non-test sites (scripts/lib/sessions-staleness-banner.mjs,
+  // harness-audit/categories/category4.mjs, skills/{session-start,wave-executor,
+  // session-end}/*.md), so a silent constant change would desync them.
+  // The DEFAULT_TTL_HOURS pin was dropped — it is consumed symbolically only, and
+  // the acquire tests below already assert lock.ttl_hours === DEFAULT_TTL_HOURS.
   it('LOCK_PATH is .orchestrator/session.lock', () => {
     expect(LOCK_PATH).toBe('.orchestrator/session.lock');
   });

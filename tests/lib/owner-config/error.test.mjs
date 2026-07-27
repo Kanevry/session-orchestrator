@@ -8,26 +8,15 @@
 import { describe, it, expect } from 'vitest';
 
 import { OwnerConfigError } from '@lib/owner-config/error.mjs';
+import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
 describe('OwnerConfigError', () => {
-  it('is an instance of Error', () => {
-    const err = new OwnerConfigError('something went wrong');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('is an instance of OwnerConfigError', () => {
-    const err = new OwnerConfigError('something went wrong');
-    expect(err).toBeInstanceOf(OwnerConfigError);
-  });
-
-  it('sets name to OwnerConfigError', () => {
-    const err = new OwnerConfigError('msg');
-    expect(err.name).toBe('OwnerConfigError');
-  });
-
-  it('stores the message on .message', () => {
-    const err = new OwnerConfigError('validation failed');
-    expect(err.message).toBe('validation failed');
+  it('carries the Error prototype chain, its own prototype, .name and .message', () => {
+    assertErrorShape(new OwnerConfigError('validation failed'), {
+      ctor: OwnerConfigError,
+      name: 'OwnerConfigError',
+      message: 'validation failed',
+    });
   });
 
   it('defaults .errors to empty array when not provided', () => {

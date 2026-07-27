@@ -43,6 +43,7 @@ import {
   updateFinding as updateFindingReal,
 } from '@lib/test-runner/issue-reconcile.mjs';
 import { fingerprintFinding } from '@lib/test-runner/fingerprint.mjs';
+import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // #872 host-pinning DI default
@@ -96,24 +97,13 @@ function validFinding(overrides = {}) {
 // ---------------------------------------------------------------------------
 
 describe('ReconcileError', () => {
-  it('is an instance of Error', () => {
-    const e = new ReconcileError('something failed', 'VALIDATION');
-    expect(e).toBeInstanceOf(Error);
-  });
-
-  it('stores the provided code on .code', () => {
-    const e = new ReconcileError('msg', 'EXEC_FAILURE');
-    expect(e.code).toBe('EXEC_FAILURE');
-  });
-
-  it('has .name === ReconcileError', () => {
-    const e = new ReconcileError('msg', 'BINARY_NOT_FOUND');
-    expect(e.name).toBe('ReconcileError');
-  });
-
-  it('stores the message', () => {
-    const e = new ReconcileError('custom message', 'VALIDATION');
-    expect(e.message).toBe('custom message');
+  it('carries the Error prototype chain, .name, .message and .code', () => {
+    assertErrorShape(new ReconcileError('custom message', 'EXEC_FAILURE'), {
+      ctor: ReconcileError,
+      name: 'ReconcileError',
+      message: 'custom message',
+      code: 'EXEC_FAILURE',
+    });
   });
 });
 

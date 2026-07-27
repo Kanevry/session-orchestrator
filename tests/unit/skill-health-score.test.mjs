@@ -13,8 +13,6 @@ import { describe, it, expect } from 'vitest';
 
 import {
   scoreSkillHealth,
-  MIN_SAMPLES_FOR_VERDICT,
-  STRONG_APPLIED_NO_FLOOR,
 } from '@lib/skill-health/score.mjs';
 
 // ---------------------------------------------------------------------------
@@ -49,19 +47,10 @@ function judgments({
   };
 }
 
-// ---------------------------------------------------------------------------
-// Exported constants
-// ---------------------------------------------------------------------------
-
-describe('scoreSkillHealth — exported constants', () => {
-  it('MIN_SAMPLES_FOR_VERDICT is 20', () => {
-    expect(MIN_SAMPLES_FOR_VERDICT).toBe(20);
-  });
-
-  it('STRONG_APPLIED_NO_FLOOR is 2', () => {
-    expect(STRONG_APPLIED_NO_FLOOR).toBe(2);
-  });
-});
+// MIN_SAMPLES_FOR_VERDICT / STRONG_APPLIED_NO_FLOOR literal pins were dropped —
+// both are consumed symbolically only (score.mjs, sunset/walker.mjs), and their
+// thresholds are exercised behaviourally by the "insufficient signal" and
+// strong-appliedNo verdict suites below.
 
 // ---------------------------------------------------------------------------
 // Empty / null inputs

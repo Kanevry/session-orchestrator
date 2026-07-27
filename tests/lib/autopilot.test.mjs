@@ -10,9 +10,7 @@ import {
   KILL_SWITCHES,
   FLAG_BOUNDS,
   SCHEMA_VERSION,
-  DEFAULT_PEER_ABORT_THRESHOLD,
   DEFAULT_JSONL_PATH,
-  DEFAULT_CARRYOVER_THRESHOLD,
 } from '@lib/autopilot.mjs';
 import { buildLiveSignals } from '@lib/build-live-signals.mjs';
 import { selectMode } from '@lib/mode-selector.mjs';
@@ -52,16 +50,14 @@ describe('autopilot — exported constants', () => {
     expect(values).toContain('carryover-too-high');
   });
 
-  it('DEFAULT_PEER_ABORT_THRESHOLD is 6', () => {
-    expect(DEFAULT_PEER_ABORT_THRESHOLD).toBe(6);
-  });
-
+  // DEFAULT_JSONL_PATH stays pinned: this literal is independently duplicated in
+  // 10+ non-test sites (scripts/lib/autopilot/*, skills/{dispatcher,evolve,
+  // session-end}/*.md), so a silent constant change would desync them.
+  // DEFAULT_PEER_ABORT_THRESHOLD / DEFAULT_CARRYOVER_THRESHOLD pins were dropped —
+  // both are consumed symbolically only, and their behaviour is covered by the
+  // resource-overload and carryover-too-high kill-switch tests below.
   it('DEFAULT_JSONL_PATH is .orchestrator/metrics/autopilot.jsonl', () => {
     expect(DEFAULT_JSONL_PATH).toBe('.orchestrator/metrics/autopilot.jsonl');
-  });
-
-  it('DEFAULT_CARRYOVER_THRESHOLD is 0.5', () => {
-    expect(DEFAULT_CARRYOVER_THRESHOLD).toBe(0.5);
   });
 
   it('FLAG_BOUNDS encodes spec defaults', () => {

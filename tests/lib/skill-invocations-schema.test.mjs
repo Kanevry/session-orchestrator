@@ -28,6 +28,7 @@ import {
   appendSkillInvocation,
   readSkillInvocations,
 } from '@lib/skill-invocations-schema.mjs';
+import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -83,14 +84,12 @@ describe('constants', () => {
 // ---------------------------------------------------------------------------
 
 describe('ValidationError', () => {
-  it('is an instance of Error', () => {
-    const err = new ValidationError('bad input', 'skill');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('has name ValidationError', () => {
-    const err = new ValidationError('bad input');
-    expect(err.name).toBe('ValidationError');
+  it('carries the Error prototype chain, .name and .message', () => {
+    assertErrorShape(new ValidationError('bad input', 'skill'), {
+      ctor: ValidationError,
+      name: 'ValidationError',
+      message: 'bad input',
+    });
   });
 
   it('exposes the field property when provided', () => {

@@ -17,7 +17,6 @@ import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import {
   discoverActiveSessions,
-  DEFAULT_DISCOVERY_TIMEOUT_MS,
 } from '@lib/session-discovery.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
@@ -235,10 +234,6 @@ describe('Group C — A1 fallback dead-PID and cross-host filtering', () => {
 // ---------------------------------------------------------------------------
 
 describe('Group D — default timeoutMs (DEFAULT_DISCOVERY_TIMEOUT_MS = 2000)', () => {
-  it('DEFAULT_DISCOVERY_TIMEOUT_MS is 2000', () => {
-    expect(DEFAULT_DISCOVERY_TIMEOUT_MS).toBe(2000);
-  });
-
   it('does NOT trigger timeout when listWorktreesImpl resolves in 50ms (well under 2000ms default)', async () => {
     // A 50ms resolve is well within the 2000ms default timeout window.
     // If no timeout fires, no WARN is emitted to stderr.

@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // #872 Gap-3 fixture — mock ONLY `execFileSync` (the sync git-remote layer
@@ -103,24 +104,13 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('MrDraftError', () => {
-  it('is instanceof Error', () => {
-    const e = new MrDraftError('something failed', 'VALIDATION');
-    expect(e).toBeInstanceOf(Error);
-  });
-
-  it('stores the provided code on .code', () => {
-    const e = new MrDraftError('msg', 'EXEC_FAILURE');
-    expect(e.code).toBe('EXEC_FAILURE');
-  });
-
-  it('has .name === MrDraftError', () => {
-    const e = new MrDraftError('msg', 'POLICY_OFF');
-    expect(e.name).toBe('MrDraftError');
-  });
-
-  it('stores the message', () => {
-    const e = new MrDraftError('custom message', 'UNSUPPORTED_VCS');
-    expect(e.message).toBe('custom message');
+  it('carries the Error prototype chain, .name, .message and .code', () => {
+    assertErrorShape(new MrDraftError('custom message', 'EXEC_FAILURE'), {
+      ctor: MrDraftError,
+      name: 'MrDraftError',
+      message: 'custom message',
+      code: 'EXEC_FAILURE',
+    });
   });
 });
 

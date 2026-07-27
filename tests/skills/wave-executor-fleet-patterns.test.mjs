@@ -8,9 +8,9 @@
  *   - Over-delivery capture (step 7 metrics, #730/H4) + Wave History header format
  *   - Reviewer-finding-overridden Deviation format (#730/H5)
  *
- * Style mirrors tests/skills/wave-executor-dispatch-batch.test.mjs
- * (indexOf-bounded region extraction, REPO_ROOT resolution, content-presence
- * assertions against the live skill files — no mocks, no subprocess spawn).
+ * Style: indexOf-bounded region extraction, REPO_ROOT resolution, and
+ * content-presence assertions against the live skill files — no mocks, no
+ * subprocess spawn.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';

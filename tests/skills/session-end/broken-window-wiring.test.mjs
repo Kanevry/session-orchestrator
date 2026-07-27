@@ -8,9 +8,9 @@
  * dropped Gate-condition, or a hyphenated event-name typo would silently break
  * the prose with no test catching it — the prose is never executed.
  *
- * Mirrors tests/skills/session-end/what-not-to-retry-wiring.test.mjs (read the
- * SKILL.md, slice the phase region, assert prose anchors) and the load-bearing
- * "symbols are ACTUALLY exported" guard from handover-gate-wiring.test.mjs.
+ * Follows the skill-prose wiring pattern (read the SKILL.md, slice the phase
+ * region, assert prose anchors) plus the load-bearing "symbols are ACTUALLY
+ * exported" guard from tests/skills/session-end/handover-gate-wiring.test.mjs.
  *
  * T3 additionally validates the two NEW event names against the real
  * events-schema regex — a hyphenated typo (`orchestrator.broken-window.filed`)

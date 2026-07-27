@@ -9,10 +9,9 @@
  * silently break the prose with no test catching it, because the prose is
  * never executed directly.
  *
- * Mirrors tests/skills/session-end/what-not-to-retry-wiring.test.mjs (the
- * #623 sibling feature's wiring test): asserts the doc wiring is present and
- * correctly scoped, PLUS ties the string assertions to the real exports so a
- * rename on either side of the seam fails this test.
+ * Follows the skill-prose wiring pattern: asserts the doc wiring is present
+ * and correctly scoped, PLUS ties the string assertions to the real exports so
+ * a rename on either side of the seam fails this test.
  */
 
 import { describe, it, expect } from 'vitest';

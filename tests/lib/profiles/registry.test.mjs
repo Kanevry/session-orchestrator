@@ -25,6 +25,7 @@ import {
   validateProfile,
   ProfileRegistryError,
 } from '@lib/profiles/registry.mjs';
+import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Path to the seed registry shipped in the repo
@@ -38,19 +39,13 @@ const SEED_PROFILES_PATH = path.resolve(
 // ---------------------------------------------------------------------------
 
 describe('ProfileRegistryError', () => {
-  it('has a .code property matching what was passed to the constructor', () => {
-    const err = new ProfileRegistryError('FILE_NOT_FOUND', 'file not found');
-    expect(err.code).toBe('FILE_NOT_FOUND');
-  });
-
-  it('is an instance of Error', () => {
-    const err = new ProfileRegistryError('PARSE_ERROR', 'bad json');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('carries the message argument', () => {
-    const err = new ProfileRegistryError('SCHEMA_INVALID', 'schema mismatch');
-    expect(err.message).toBe('schema mismatch');
+  it('carries the Error prototype chain, .name, .message and .code', () => {
+    assertErrorShape(new ProfileRegistryError('SCHEMA_INVALID', 'schema mismatch'), {
+      ctor: ProfileRegistryError,
+      name: 'ProfileRegistryError',
+      message: 'schema mismatch',
+      code: 'SCHEMA_INVALID',
+    });
   });
 });
 

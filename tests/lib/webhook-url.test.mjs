@@ -16,6 +16,7 @@ import {
   resolveWebhookUrl,
   WebhookConfigError,
 } from '@lib/webhook-url.mjs';
+import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
 // ---------------------------------------------------------------------------
 // Env-variable cleanup helpers
@@ -41,14 +42,12 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('WebhookConfigError', () => {
-  it('is an instance of Error', () => {
-    const err = new WebhookConfigError('slack');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('has name "WebhookConfigError"', () => {
-    const err = new WebhookConfigError('generic');
-    expect(err.name).toBe('WebhookConfigError');
+  it('carries the Error prototype chain, .name and the custom message override', () => {
+    assertErrorShape(new WebhookConfigError('generic', 'custom message'), {
+      ctor: WebhookConfigError,
+      name: 'WebhookConfigError',
+      message: 'custom message',
+    });
   });
 
   it('exposes the kind field', () => {
@@ -60,11 +59,6 @@ describe('WebhookConfigError', () => {
     const err = new WebhookConfigError('slack');
     expect(err.message).toContain('slack');
     expect(err.message).toContain('SO_WEBHOOK_SLACK_URL');
-  });
-
-  it('accepts a custom message override', () => {
-    const err = new WebhookConfigError('generic', 'custom message');
-    expect(err.message).toBe('custom message');
   });
 });
 
