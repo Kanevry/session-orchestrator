@@ -35,6 +35,13 @@ review-date: 2026-10-23
 - **`vi.spyOn` on ESM named exports fails** with "Cannot redefine property" (e.g. `import * as fs from 'node:fs'`). Inject the failure through the real dependency instead (e.g. `chmodSync(dir, 0o555)`). Qualifies "`vi.spyOn()` for partial mocking" above.
 - **Centralizing `process.env` reads behind a `@/lib/env` Zod export breaks `vi.stubEnv()`-only tests** — the module caches at load and Zod runs on `.parse()`, so `stubEnv` alone won't re-evaluate. Add `vi.resetModules()` in `beforeEach` + a dynamic `import` AFTER `stubEnv`. (Zod also rejects empty-string URLs that nullish-coalescing previously accepted.)
 
+### Fixtures Mirror Production Data (Golden Records)
+
+Fixtures for producer/consumer formats (`sessions.jsonl`, `learnings.jsonl`, on-disk configs, event records) MUST be derived from REAL production records — copy a live record, then redact — never hand-shaped to match what the reading code expects. A hand-written fixture encodes the reader's assumption, so a writer that emits a different shape stays green forever (the "unfaithful double" class below; it once hid a producer/consumer mismatch that matched 0 of 70 live records).
+
+- Keep the golden record's exact field set, ordering, and optional-field presence; strip only secrets/PII.
+- When the writer's schema changes, re-harvest the golden record instead of patching the fixture by hand.
+
 ## Integration Test Patterns
 - Use `supertest` for HTTP endpoint testing in Express services.
 - Test the full middleware chain: auth → validation → handler → response.
@@ -182,7 +189,7 @@ Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-
 - Coverage thresholds enforced in `vitest.config.ts`:
   - `statements: 70`, `branches: 70`, `functions: 70`, `lines: 70`
 - Critical paths (auth, payments, RLS): aim for 90%+.
-- New code must maintain or improve coverage. Never reduce.
+- **Corridor, not ratchet:** the 70% floor is the regression guard and always binds; an advisory tests:src LOC ceiling of 1.2 bounds the other end. A coverage drop caused by REMOVING worthless tests (per `test-value.md` TV-002) is legitimate — record which tests were removed and why in the session report. "Never reduce" applies to bugs caught, not to test lines. See `test-value.md` § TV-003 for the corridor rule.
 - Use `--coverage` flag in CI. Fail pipeline if thresholds not met.
 
 ## Accessibility Testing
@@ -387,7 +394,9 @@ A fake/mock returns data or state that could never occur in production (e.g. a
 fake `ownerConfig` populated with entries when the real default is empty). The
 test passes against invented data and misses the bug the real state triggers.
 Doubles MUST mirror a real, reachable state — verify against the actual
-default/schema, not a convenient fixture.
+default/schema, not a convenient fixture. For producer/consumer record formats
+the concrete remedy is a golden record harvested from production data — see
+"Fixtures Mirror Production Data (Golden Records)" above.
 
 ### Quality Checklist (Apply Before Writing Every Test)
 
@@ -483,5 +492,12 @@ expect(exportCount).toBeLessThanOrEqual(500);
 - S73 (3rd — zod-schemas exports.test.ts + index.test.ts)
 - learning `count-drift-recurrence` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9)
 
+### Lint-Enforceable Test Bans (recommendation)
+
+Two anti-patterns above are mechanically detectable and are cheaper to block at lint time than to catch in review. Recommended for this repo and as a baseline hint for consumer repos (an ESLint/AST rule over `tests/**`, or a grep-based CI check):
+
+- **Ban exact count assertions on dynamic sets** — `toHaveLength(<literal>)`, `toBe(<literal>)` on a `.length`, or an equality assert on a `count` derived from a directory walk / registry / export map. Use the floor/ceiling pattern from "Dynamic Artifact Counts" above instead. Documented integrity anchors stay allowed (fixed-width hashes/IDs, protocol-fixed tuple sizes) — carve them out explicitly by name, not by loosening the rule.
+- **Ban `readFileSync` on `.md` docs or CI configs for prose-presence asserts** — a test asserting that a sentence, heading, or badge exists in documentation pins wording, not behaviour; it goes red on every legitimate edit and catches no bug (`test-value.md` TV-002c). Assert on the parsed/derived value the doc describes instead, or delete the test.
+
 ## See Also
-development.md · security.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md
+development.md · security.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md · test-value.md

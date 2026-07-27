@@ -182,9 +182,9 @@ review-date: 2026-10-23
 
 ### Current fleet state (as migrated by #880)
 
-All 14 handwritten rules in this repo's own `.claude/rules/` now carry a `review-date` (added 2026-07-25, +90 days from the session date). None gained a new `globs:`/`paths:` axis — every file's pre-existing activation-axis state (`tier:`, with or without `globs:`) is unchanged; only the `review-date:` line was added. The 4 auto-generated rules are untouched by this section (they already satisfy the FA4 invariant in full).
+**Every** handwritten rule in this repo's own `.claude/rules/` carries a `review-date`: the #880 migration added one to the then-current set (2026-07-25, +90 days from the session date), and every rule added since ships with one from the start. None gained a new `globs:`/`paths:` axis — every file's pre-existing activation-axis state (`tier:`, with or without `globs:`) is unchanged; only the `review-date:` line was added. The auto-generated rules are untouched by this section (they already satisfy the FA4 invariant in full).
 
-Of the 14, four (`loop-and-monitor.md`, `lsp.md`, `mvp-scope.md`, `owner-persona.md`) carry `tier: coordinator-only` — genuinely excluded from wave context, not part of the wave-time always-on budget despite lacking `globs:`. The remaining ten carry `tier: always` (7 files) or `tier: wave-only` + `globs:` (3 files: `bash-harness-pitfalls.md`, `cli-design.md`, `testing.md`) — the 7 `tier: always` files are the genuinely unconditional, every-context, every-wave cohort.
+Four of them (`loop-and-monitor.md`, `lsp.md`, `mvp-scope.md`, `owner-persona.md`) carry `tier: coordinator-only` — genuinely excluded from wave context, not part of the wave-time always-on budget despite lacking `globs:`. The rest carry either `tier: always` or `tier: wave-only` + `globs:` (`bash-harness-pitfalls.md`, `cli-design.md`, `testing.md`) — the `tier: always` cohort is the genuinely unconditional, every-context, every-wave one.
 
 ## Learning Type-Taxonomy, TTL & Provenance Standard (issue #723 B6 / #733)
 

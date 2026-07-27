@@ -9,9 +9,9 @@
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["done", "partial", "blocked"],
+      "enum": ["done", "no-tests-needed", "partial", "blocked"],
       "deprecated": true,
-      "description": "DEPRECATED (#472): emit `verdict` instead. Removed in v4.0. Mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED."
+      "description": "DEPRECATED (#472): emit `verdict` instead. Removed in v4.0. Mapping: done→PROCEED, partial→PROCEED_WITH_FOLLOWUPS, blocked→BLOCKED. `no-tests-needed` is a SUCCESS status (also →PROCEED): the scope was analysed and no test was worth adding; it requires a written justification and is neither `partial` nor `blocked`."
     },
     "verdict": {
       "type": "string",
@@ -38,10 +38,68 @@
         }
       }
     },
+    "test_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Net effect on the test suite. Supersedes `coverage_delta` — removals and merges are first-class outcomes, not regressions. A negative `net_loc` alongside a green suite is a good result.",
+      "properties": {
+        "added": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tests added. Each one needs a matching `justifications[]` entry."
+        },
+        "removed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tests deleted because they failed the falsification check, duplicated a sibling, or only exercised framework/language/prose-presence behaviour. Each removal is justified individually in the prose report."
+        },
+        "consolidated": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Pre-existing tests folded into parameterised or merged cases (counted as the number of source tests absorbed)."
+        },
+        "net_loc": {
+          "type": "integer",
+          "description": "Signed line delta across all touched test files. MAY be negative."
+        },
+        "happy_path": { "type": "integer", "minimum": 0 },
+        "error_path": { "type": "integer", "minimum": 0 },
+        "boundary": { "type": "integer", "minimum": 0 },
+        "falsification_check": {
+          "type": "string",
+          "description": "Summary of falsification check results."
+        }
+      }
+    },
+    "justifications": {
+      "type": "array",
+      "description": "One entry per ADDED test, naming the concrete bug it catches that no existing test catches. Required in substance whenever `test_delta.added > 0`; kept structurally optional for backward-compatibility with pre-#472 consumers. 'Improves coverage' is not a bug and is not an acceptable `bug_caught` value. Omit when `added` is 0.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["test", "bug_caught"],
+        "properties": {
+          "test": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The test name as written in the suite."
+          },
+          "bug_caught": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The specific bug this test catches that no existing test catches."
+          }
+        }
+      }
+    },
     "coverage_delta": {
       "type": "object",
       "additionalProperties": false,
+      "deprecated": true,
+      "description": "DEPRECATED: emit `test_delta` instead. Retained as an alias so pre-existing consumers keep validating; counts only additions and therefore cannot express consolidation. Do not emit alongside `test_delta`.",
       "properties": {
+        "added": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "integer", "minimum": 0 },
         "happy_path": { "type": "integer", "minimum": 0 },
         "error_path": { "type": "integer", "minimum": 0 },
         "boundary": { "type": "integer", "minimum": 0 },

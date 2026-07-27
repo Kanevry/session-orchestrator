@@ -27,6 +27,33 @@
         "low": { "type": "integer", "minimum": 0 }
       }
     },
+    "redundancy_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Over-testing findings — the symmetric counterpart to `gap_counts`. A high count here calls for consolidation/deletion, never for writing more tests.",
+      "properties": {
+        "duplicate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tests exercising the same branch with equivalent inputs; all but one can be deleted without losing catch-power."
+        },
+        "worthless": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tests that still pass when the implementation body is replaced with `throw new Error()` — tautological computations, assert-nothing bodies, overly-generous assertions."
+        },
+        "framework_only": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tests verifying the language, the framework, or the presence of a string in a document rather than this repo's behaviour."
+        }
+      }
+    },
+    "test_to_src_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Test LOC divided by source LOC over the reviewed scope. A signal, not a verdict — interpret only alongside `redundancy_counts`."
+    },
     "source_files_reviewed": {
       "type": "integer",
       "minimum": 0,

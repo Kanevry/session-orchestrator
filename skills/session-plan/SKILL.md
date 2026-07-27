@@ -180,7 +180,7 @@ For each task from Step 1, assign exactly one role. Use these signal-to-role map
 **Disambiguation rules:**
 - If a task involves BOTH exploration AND implementation → split it: Discovery agent reads/validates, Impl-Core agent implements. Create two separate task entries.
 - If a task is "fix something from a previous session" (not from this session's Impl-Core) → classify as **Impl-Core** (it is new work for this session).
-- If a task is "write tests for new feature code being built this session" → classify as **Quality** (not Impl-Core). Tests run after implementation.
+- A "write tests for new feature code being built this session" task is created ONLY when Discovery or a qa-strategist run reported a **named gap** — a concrete bug or regression the current suite would let through, stated as such. When that gap exists, classify the task as **Quality** (not Impl-Core); tests run after implementation. "Feature X was built" is NOT by itself evidence of test demand: with no named gap, no Quality task is created — do not synthesize one to give the role something to do. A dispatched `test-writer` may correspondingly report `no-tests-needed` as a SUCCESS status, not a failure.
 - If unsure between Impl-Core and Impl-Polish → if the task is on the critical path (other tasks depend on it), it is **Impl-Core**. If independent polish, it is **Impl-Polish**.
 - **Docs role** is only active when `docs-orchestrator.enabled: true` in Session Config. When disabled (default), documentation-update tasks fall into **Impl-Polish** (inline doc changes alongside code) or **Finalization** (standalone doc/SSOT updates) as today.
 
@@ -421,6 +421,10 @@ Score the session scope to determine optimal agent counts per wave. Skip for hou
 | housekeeping | (fixed) | — | 2 | 1 | 1 | 1 |
 
 > Housekeeping sessions skip Discovery (tasks are predefined) and use fixed agent counts regardless of complexity.
+
+> **The Quality column is a CAP, not a target.** Every other column sizes to briefed work; the Quality column historically sized to the tier alone, so capacity went looking for work (tests written because a slot existed, not because a gap was measured). Quality capacity must be EARNED by measured demand. Compute the effective count as `min(<tier cap>, ceil((HIGH + MED gaps from the most recent qa-strategist run) / 3))`.
+> - **0 HIGH and 0 MED gaps → the Quality role has 0 test-writing tasks**, and its wave is skipped by the Step 2 empty-role rule. This does NOT touch the read-only review panel (security-reviewer / qa-strategist / architect-reviewer) — that panel reviews, it does not write tests, and it keeps running as configured.
+> - **No qa-strategist signal at all** (no prior measurement this session): allocate a conservative 1-2 test-writers. Never spend the full tier cap blind — an unmeasured tier cap is a guess, and the guess has historically been too high.
 
 The `agents-per-wave` Session Config value caps the maximum regardless of tier.
 

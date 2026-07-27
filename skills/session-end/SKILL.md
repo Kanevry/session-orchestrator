@@ -1069,7 +1069,7 @@ Present to the user:
   - Wave 1 (Discovery): [duration] — [N agents] — [K files]
   - Wave 2 (Impl-Core): [duration] — [N agents] — [K files]
   - ...
-- Tests: [passing/total]
+- Tests: [passing/total] · Δ this session: +[added] / −[removed] / ~[consolidated] · tests:src LOC ratio [x.xx] (advisory ceiling 1.20)
 - TypeScript: 0 errors
 - Commits: [N] pushed to [branch]
 - Mirror: [synced/skipped]
@@ -1090,6 +1090,8 @@ Present to the user:
 - Type: [housekeeping/feature/deep recommended]
 - Notes: [any context for next session]
 ```
+
+> **Test-delta anchor:** the `Δ this session` figures are aggregated from the `test_delta` field of this session's agent reports (added / removed / consolidated test cases); the `tests:src LOC ratio` is `wc -l` over `tests/` divided by `wc -l` over `scripts/` + `hooks/`. A bare `passing/total` count is not a progress signal — a growing suite reads as progress even when the growth is redundant, which is exactly why the delta and the ratio are reported alongside it. When the ratio exceeds the advisory ceiling, recommend that the NEXT session's Quality wave run as a **consolidation wave**: no new test lands without a redundant one being removed in the same change. This is advisory only — it never blocks the close.
 
 > **Documentation Coverage anchor:** If Phase 3.2 ran and produced task verification results (i.e. `docs-orchestrator.enabled: true` and `docs-tasks` were found), the results appear here as a `### Documentation Coverage (docs-orchestrator)` subsection emitted by Phase 3.2 Step 7. The content is written dynamically — it is not pre-populated in this template. When `docs-orchestrator.enabled` is `false` or `docs-tasks` were absent, this subsection is omitted entirely.
 

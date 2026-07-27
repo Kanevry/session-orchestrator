@@ -32,6 +32,8 @@ For each wave, define agents with:
 
 Read `agents-per-wave` from Session Config to cap the maximum.
 
+> **The Quality column is a CAP, not a target.** Quality capacity is need-gated: the effective count is `min(<column cap>, ceil((HIGH + MED gaps from the most recent qa-strategist run) / 3))`. 0 gaps → 0 test-writing tasks and the wave is skipped (the read-only review panel is unaffected); no qa-strategist signal at all → a conservative 1-2, never the blind cap. Full rule: `SKILL.md` § Agent Count by Tier footnote.
+
 > **Note:** For feature and deep sessions, prefer the complexity-based agent counts from Step 3. This table provides defaults when complexity scoring is skipped (housekeeping) or as a fallback.
 
 > \* Housekeeping sessions use single-wave serial execution (see wave-executor). Agent counts are for the single consolidated wave, not per-role.

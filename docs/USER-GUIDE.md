@@ -484,6 +484,8 @@ One or two agents update SSOT files, close or update issues, write session hando
 
 The `agents-per-wave` config value caps the maximum. These counts are guidelines — the orchestrator adjusts based on task complexity.
 
+The **Quality column is a cap, not a target**: since this version, test-writing capacity is need-gated on measured demand — roughly one test-writer per three HIGH/MED gaps the review panel actually found, capped by the number above. If no gaps were measured, the Quality wave writes no tests and is skipped (the read-only review panel still runs); with no measurement signal at all, the orchestrator allocates a conservative 1-2 rather than the full cap.
+
 ### Inter-Wave Checkpoints
 
 Between each wave, the orchestrator:

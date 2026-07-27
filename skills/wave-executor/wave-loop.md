@@ -580,7 +580,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    - After **Impl-Polish**: Incremental quality checks + integration verification
    - **Simplification pass** (at the start of the Quality wave, before test/review agents):
      1. Identify all files changed in this session: `git diff --name-only $SESSION_START_REF..HEAD`
-     2. Filter to production files only (exclude `*.test.*`, `*.spec.*`, `__tests__/`). If no production files changed, skip the simplification pass entirely — proceed directly to test/review agents.
+     2. Partition the list into **production files** (exclude `*.test.*`, `*.spec.*`, `__tests__/`) and **test files** (exactly that excluded set). Both branches below are independent: skip a branch when its partition is empty; skip the pass entirely only when BOTH partitions are empty — then proceed directly to test/review agents.
      3. Dispatch 1-2 simplification agents with:
         - Changed file list (production files only — exclude `*.test.*`, `*.spec.*`, `__tests__/`)
         - Reference: `slop-patterns.md` from the discovery skill directory — include the actual patterns in the agent prompt
@@ -589,7 +589,16 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
         - Instruction: "Review each changed file for AI-generated code patterns. Apply targeted simplifications: remove unnecessary try-catch around non-throwing operations, delete over-documentation (params that repeat the name, returns that say 'the result'), replace re-implemented stdlib functions with standard alternatives, simplify redundant boolean logic (if/else returning true/false, double negation, explicit boolean comparisons). Do NOT change functionality. Do NOT touch files you weren't given. Do NOT commit."
         - Tools: Read, Edit, Grep, Glob
         - Model: sonnet
-     4. After simplification agents complete, proceed to Quality test/review agents
+     4. **Test-consolidation branch** — in the SAME dispatch round as step 3, dispatch exactly 1 test-consolidation agent with:
+        - File list: the test partition from step 2 (this session's changed test files) plus their immediate neighbours (sibling test files covering the same module — resolve via the production file's basename, e.g. `foo.mjs` → `tests/**/foo*.test.mjs`)
+        - Instruction: "Consolidate this test corpus. (a) Merge duplicated tests that differ only in input/expected values into ONE parameterized test (table-driven / `it.each`). (b) DELETE any test that fails the falsification check — ask for each test: *would this test go RED if a real bug were introduced in the code it claims to cover?* If no, it catches nothing; remove it. (c) DELETE getter/setter tests, framework-behaviour tests, and prose-presence tests (assertions that a doc/skill file merely CONTAINS a phrase) — see `.claude/rules/testing.md` § 'Test Quality — False-Positive Prevention' and § 'When NOT to Write Tests'. Do NOT touch production files. Do NOT commit."
+        - **Contract**: the set of bugs the suite catches may only stay the same or GROW. Never delete a test that is the sole falsifier of a real behaviour — when in doubt, keep and report it. Deletions are a SUCCESS outcome, not a regression: a net-negative test LOC with an unchanged bug-catch set is the intended result of this branch.
+        - **Report**: the agent MUST emit `test_delta: {added, removed, consolidated, net_loc}` in its report so the coordinator can record the pass's effect.
+        - Tools: Read, Edit, Grep, Glob
+        - Model: sonnet
+     5. After the simplification and test-consolidation agents complete, proceed to Quality test/review agents
+   - **Review panel = primary bug-catch mechanism (Quality wave)**: the Quality wave's central verification instrument is a multi-persona review panel — `security-reviewer`, `qa-strategist`, `architect-reviewer` — dispatched read-only (Read/Grep/Glob, no Edit/Write) and scoped to the FULL session diff `$SESSION_START_REF..HEAD`, not to a single wave's file scope. Test-writing in this wave is need-gated, not default (see `SKILL.md` § "Agent Prompt Best Practices" point 5): an agent writes a test only for a bug it can name.
+     Rationale — 2026-07 evidence: the HIGH/MED product bugs actually caught in this repo's sessions came from panel review (argument injection in a base-branch value, a fail-open config gate, a never-wired max-proposals cap, a glob-metacharacter bypass), not from growth of the test corpus. Panel breadth over the full diff also catches coordinator-written code, which per-wave agent scopes never cover.
    - After **Quality**: Full Gate quality checks per quality-gates (typecheck + test + lint, must all pass)
      (Full Gate is NEVER skipped regardless of cache state — this is the close-safety invariant. As of #724 this mandate is MECHANICAL, not prose-only: the Baseline cache check above passes `waveRole: 'Quality'`, so `shouldSkipIncremental` hard-returns `skip: false` before any cache/diff logic. A targeted/incremental pass is necessary but NOT sufficient — the Quality-wave completion requires the full typecheck + test + lint run.)
    - After **Finalization**: final git status check
