@@ -451,6 +451,62 @@ if (existsSync(agentsDir)) {
   }
 }
 
+// ============================================================================
+// Check 10: PSA-007 git-write ban on repo-write agents (#724).
+//   Every agent that can write the repo (tools list contains an *Edit tool AND
+//   Write) MUST carry the subagent git-write prohibition in its BODY: a
+//   `PSA-007` reference plus the explicit `git stash` ban line. The git index
+//   and stash are shared working-copy resources — a dispatched agent that
+//   stages or stashes races its siblings and can silently discard their
+//   work-in-progress (.claude/rules/parallel-sessions.md § PSA-007).
+//   Structural invariant, so it lives in the gate rather than in a test
+//   (.claude/rules/test-value.md § TV-005). Bug it catches: a NEW repo-write
+//   agent ships with no ban — exactly the docs-writer gap #724 closed.
+//   Agents are discovered dynamically; no hardcoded roster to drift.
+// ============================================================================
+console.log('');
+console.log('--- Check 10: PSA-007 git-write ban (repo-write agents) ---');
+
+if (existsSync(agentsDir)) {
+  const psaMdFiles = readdirSync(agentsDir).filter(isAgentDefFile);
+  let repoWriteCount = 0;
+
+  for (const agentFile of psaMdFiles) {
+    const filePath = join(agentsDir, agentFile);
+    const content = readFileSync(filePath, 'utf8');
+    const fm = extractFrontmatter(content);
+    if (!fm) continue; // already caught by Check 6
+
+    const toolsArray = parseToolsValue(getField(fm, 'tools'));
+    // *Edit covers Edit / MultiEdit / NotebookEdit — all repo-mutating.
+    const canEdit = toolsArray.some((t) => /Edit$/.test(t));
+    if (!canEdit || !toolsArray.includes('Write')) continue;
+
+    repoWriteCount++;
+
+    // Body only: a `description:` that happens to mention PSA-007 must not
+    // satisfy the ban — the instruction has to reach the agent's rules.
+    const body = content.slice(content.indexOf(`\n---`, 3) + 4);
+    const missing = [];
+    if (!body.includes('PSA-007')) missing.push('a PSA-007 reference');
+    if (!body.includes('git stash')) missing.push('the `git stash` ban line');
+
+    if (missing.length > 0) {
+      fail(
+        `${agentFile}: repo-write agent (Edit+Write) is missing ${missing.join(' and ')} ` +
+          '— see .claude/rules/parallel-sessions.md § PSA-007 and agents/AGENTS.md § Authoring Convention',
+      );
+    } else {
+      pass(`${agentFile}: PSA-007 git-write ban present`);
+    }
+  }
+
+  if (repoWriteCount === 0) {
+    // No repo-write agents in this plugin root — nothing to enforce.
+    console.log('  (no repo-write agents found — check skipped)');
+  }
+}
+
 console.log('');
 console.log(`Results: ${passed} passed, ${failed} failed`);
 

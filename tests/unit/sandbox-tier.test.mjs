@@ -325,6 +325,10 @@ sandbox-tier: repo-write
 ---
 
 # Valid Agent
+
+- Do NOT run ANY git write operation (\`git add\`, \`git commit\`, \`git stash\`,
+  \`git push\`) — the index and stash are shared session resources (PSA-007);
+  the coordinator handles ALL VCS operations.
 `,
     );
     const r = runCheckAgents(dir);
@@ -374,6 +378,10 @@ sandbox-tier: dangerous
 ---
 
 # Dangerous Agent
+
+- Do NOT run ANY git write operation (\`git add\`, \`git commit\`, \`git stash\`,
+  \`git push\`) — the index and stash are shared session resources (PSA-007);
+  the coordinator handles ALL VCS operations.
 `,
     );
     const r = runCheckAgents(dir);

@@ -1,25 +1,32 @@
 #!/usr/bin/env sh
 # Husky v9+ — pre-commit hook
 #
-# Four stages, fail-fast:
+# Blocking stages, fail-fast:
 #   1. check-package-manager (#715) — package-manager recurrence guard. Fires
 #      HERE (not via npm's `preinstall`/`pretest` lifecycle hooks) because
 #      this repo's `.npmrc` sets `ignore-scripts=true` (SEC-020), which makes
 #      npm silently skip lifecycle hooks — a git-native hook is the only
 #      place this guard reliably fires before a commit lands. Cheapest check
 #      (Node-stdlib-only, no deps needed), so it runs first.
-#   2. gitleaks (#350) — scan staged changes for secrets.
+#   2. nul-byte-guard (K7) — reject NUL bytes in staged TEXT files. Binary
+#      corruption of a source file survives BOTH vitest and eslint; git's
+#      "Bin" diff marker is the only cheap signal, so this gate reads the
+#      staged BLOBS (`git show :<path>`), never the worktree copies.
+#   3. gitleaks (#350) — scan staged changes for secrets.
 #      Skipped silently if gitleaks is not installed locally
 #      (CI still runs it via gitleaks-scan job in .gitlab-ci.yml).
-#   3. check-owner-leakage (#494) — scan tracked files for P1–P7 owner-privacy
+#   4. check-owner-leakage (#494) — scan tracked files for P1–P7 owner-privacy
 #      leakage (personal paths, private GitLab host, private slugs, etc.). The
 #      scanner reads via `git ls-files`, which sees staged-but-not-committed
 #      files — closing the gap where `git add <leak> && git commit` slipped
 #      through 3× before (deep-1, deep-2, deep-3). Reuses the same scanner CI
 #      runs in the owner-leakage validate job, so local/CI parity is exact.
-#   4. lint-staged (#352) — eslint --fix on staged *.mjs.
+#   5. check-test-fixture-shapes (#556) — live-credential shapes in tests/.
+#   6. lint-staged (#352) — eslint --fix on staged *.mjs.
+# Plus one ADVISORY (never blocking) stage: check-test-value-bans over staged
+# test files only.
 # Skipped silently when the guard script is absent (vendored-hook consumers,
-# test fixtures) — mirrors the gitleaks not-installed skip in stage 2.
+# test fixtures) — mirrors the gitleaks not-installed skip in stage 3.
 if [ -f scripts/check-package-manager.mjs ]; then
   node scripts/check-package-manager.mjs >/dev/null 2>&1 || {
     echo "✗ check-package-manager: package-manager drift detected (see #715). Commit blocked." >&2
@@ -28,6 +35,56 @@ if [ -f scripts/check-package-manager.mjs ]; then
     exit 1
   }
 fi
+
+# --- nul-byte-guard:begin (K7) ---
+# NUL bytes in a staged TEXT file mean silent binary corruption: it survives
+# vitest AND eslint, and only git's "Bin" diff marker hints at it. Block here.
+# SUBJECT = THE STAGED BLOB, never the worktree copy: `git show ":$f"` reads
+# the index, so `git add <corrupt>` followed by a worktree repair cannot smuggle
+# corruption past this gate, and an unrelated dirty worktree cannot false-block.
+# Portability: `tr -d '\000' | wc -c` is POSIX and works on BSD/macOS + GNU.
+# `grep -P '\x00'` is GNU-only, `$'\x00'` is a bashism dash cannot parse, and
+# `cmp - <(git show ...)` is a bash process substitution — all three silently
+# degrade this gate to a no-op under `sh`. Do not "simplify" here.
+# The tests/husky/ suite EXECUTES this exact block between the markers.
+nul_hits=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -Ei '\.(mjs|cjs|js|mts|ts|md|json|ya?ml|sh|txt)$' \
+  | while IFS= read -r f; do
+      # Allowlist — path-exact (NO globs) files whose NUL bytes are DELIBERATE.
+      # Verified 2026-07-27 as the complete set: the detection expression below,
+      # run over `git ls-files`, matches exactly these three. Reasons:
+      #   nul-allowed hooks/config-protection.mjs — masking sentinel: the
+      #     secret-redaction pass replaces a matched token with a same-length
+      #     run of NUL before diffing (~L185).
+      #   nul-allowed tests/lib/config/dispatcher-autonomy.test.mjs —
+      #     adversarial fixture: asserts the config parser survives a
+      #     NUL/control-byte garbage payload (~L222).
+      #   nul-allowed tests/scripts/lib/frontend-detect/detect.test.mjs —
+      #     adversarial fixture: asserts frontend-detect survives a
+      #     50-NUL-prefixed pathological input string (~L219).
+      # The leading `(` on each pattern is REQUIRED, not decoration: bash 3.2
+      # (macOS /bin/sh) mis-parses a bare `pattern)` inside `$( ... )` as the
+      # end of the command substitution — "syntax error near unexpected token
+      # `;;'". The `(pattern)` form is POSIX and parses everywhere.
+      case "$f" in
+        (hooks/config-protection.mjs) continue ;;
+        (tests/lib/config/dispatcher-autonomy.test.mjs) continue ;;
+        (tests/scripts/lib/frontend-detect/detect.test.mjs) continue ;;
+      esac
+      raw=$(git show ":$f" | wc -c | tr -cd '0-9')
+      stripped=$(git show ":$f" | LC_ALL=C tr -d '\000' | wc -c | tr -cd '0-9')
+      [ "$raw" = "$stripped" ] || printf '%s\n' "$f"
+    done)
+if [ -n "$nul_hits" ]; then
+  echo "✗ nul-byte-guard: NUL byte(s) in staged text file(s). Commit blocked." >&2
+  printf '%s\n' "$nul_hits" | sed 's/^/    /' >&2
+  echo "  Binary corruption survives vitest + eslint — recover the file with" >&2
+  echo "  \`git show HEAD:<file> > <file>\` (NOT 'git checkout --', see PSA-003)," >&2
+  echo "  then re-stage it: the STAGED blob is what this gate reads." >&2
+  echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
+  exit 1
+fi
+# --- nul-byte-guard:end ---
 
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks protect --staged --redact --no-banner --config .gitleaks.toml || {
@@ -56,6 +113,18 @@ node scripts/lib/validate/check-test-fixture-shapes.mjs "$(git rev-parse --show-
   echo "  Or 'git commit --no-verify' to bypass (only after triaging)." >&2
   exit 1
 }
+
+# --- test-value-bans-advisory:begin ---
+# ADVISORY ONLY — never blocks (warn-only v1). Scans just the STAGED test
+# files (not the whole corpus) for the two lint-enforceable test bans from
+# .claude/rules/testing.md § "Lint-Enforceable Test Bans": exact count
+# assertions on dynamic sets, and suspected .md prose pins.
+if [ -f scripts/lib/validate/check-test-value-bans.mjs ]; then
+  git diff --cached --name-only --diff-filter=ACM \
+    | grep -E '^tests/.*\.test\.mjs$' \
+    | node scripts/lib/validate/check-test-value-bans.mjs --stdin --quiet || true
+fi
+# --- test-value-bans-advisory:end ---
 
 npx lint-staged
 
