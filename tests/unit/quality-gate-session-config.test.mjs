@@ -415,6 +415,88 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C4: no changes betw
   });
 });
 
+// ---------------------------------------------------------------------------
+// Group D: resolveCommands precedence — the WIRING, not the leaf
+//
+// Group A above proves `loadCommandsFromSessionConfig` can READ the Session
+// Config. It does not prove `runQualityGateWithRetry` ever CALLS it: every
+// other test in this file (and in quality-gate-autofix.test.mjs) passes an
+// explicit `commands` override, which short-circuits the session-config branch
+// of `resolveCommands`. These two tests are the only ones that run the gate
+// with NO override, so the precedence chain override > session-config >
+// DEFAULT_COMMANDS is exercised end-to-end.
+//
+// Observation seam: the session-config `test-command` writes a marker file
+// into repoRoot. The built-in default (`npm test`) writes no marker and fails
+// in a package.json-less tmpdir, so "marker present with the expected content"
+// is a positive, unambiguous witness of WHICH command was spawned.
+// ---------------------------------------------------------------------------
+
+const MARKER_FILE = 'qg-marker.txt';
+const MARKER_CONTENT = 'session-config-test-cmd';
+
+/**
+ * Write a CLAUDE.md whose Session Config supplies all three gate commands.
+ * lint/typecheck are no-op passes; `test` writes MARKER_FILE into cwd (the
+ * gate spawns with cwd = repoRoot).
+ *
+ * @param {string} dir
+ */
+function writeMarkerSessionConfig(dir) {
+  writeFileSync(
+    join(dir, 'CLAUDE.md'),
+    [
+      '# Marker Project',
+      '## Session Config',
+      'lint-command: node -e "process.exit(0)"',
+      'typecheck-command: node -e "process.exit(0)"',
+      `test-command: node -e "require('fs').writeFileSync('${MARKER_FILE}','${MARKER_CONTENT}')"`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
+describe('resolveCommands — D1: Session Config beats DEFAULT_COMMANDS with no override', () => {
+  it('spawns the Session Config test-command when runQualityGateWithRetry is called without commands', { timeout: 15_000 }, async () => {
+    initGitRepo(repoRoot);
+    writeMarkerSessionConfig(repoRoot);
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      // NOTE: no `commands` key — this is the whole point of the test.
+    });
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(repoRoot, MARKER_FILE))).toBe(true);
+    expect(readFileSync(join(repoRoot, MARKER_FILE), 'utf8')).toBe('session-config-test-cmd');
+  });
+});
+
+describe('resolveCommands — D2: whitespace-only override falls through to Session Config', () => {
+  it('ignores a "   " test override and spawns the Session Config test-command instead', { timeout: 15_000 }, async () => {
+    initGitRepo(repoRoot);
+    writeMarkerSessionConfig(repoRoot);
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: async () => {},
+      repoRoot,
+      // Whitespace-only value — the env-var-fallback whitespace trap
+      // (.claude/rules/development.md). Without resolveCommands' `.trim()`
+      // guard this is spawned verbatim: `sh -c "   "` exits 0, so the gate
+      // reports green while running NOTHING and the marker never appears.
+      commands: { test: '   ' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(repoRoot, MARKER_FILE))).toBe(true);
+    expect(readFileSync(join(repoRoot, MARKER_FILE), 'utf8')).toBe('session-config-test-cmd');
+  });
+});
+
 describe('listChangedFiles (via runQualityGateWithRetry) — C5: paths with spaces', () => {
   it('changedFiles contains the exact path with spaces for a file in a directory named "my dir"', { timeout: 5_000 }, async () => {
     initGitRepo(repoRoot, 'start.txt', 'init');

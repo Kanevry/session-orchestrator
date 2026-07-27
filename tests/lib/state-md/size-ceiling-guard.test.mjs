@@ -358,3 +358,20 @@ describe('writeStateMd — size-ceiling guard: exact-boundary (ratio)', () => {
     expect(readFileSync(statePath, 'utf8')).toBe('a'.repeat(1000));
   });
 });
+
+// ─── Absolute ceiling value pin ──────────────────────────────────────────────
+//
+// Every other assertion in this file expresses its expectation RELATIVE to
+// DEFAULT_STATE_MD_SIZE_CEILING_BYTES ('x'.repeat(CEILING + 1), …), so the
+// suite stays green no matter what the constant is set to — a tautology that
+// lets an accidental ten-fold widening (262144 → 2621440) ship unnoticed. On
+// FIRST writes the ratio check is skipped by design (`before === ''`), so this
+// absolute number is the only bound standing between a corrupt transformer and
+// the STATE.md ballooning incident class (#739). One literal pin closes that.
+
+describe('DEFAULT_STATE_MD_SIZE_CEILING_BYTES — absolute value', () => {
+  // integrity-anchor: absolute STATE.md ceiling — sole guard on first-writes (#739); change requires deliberate decision
+  it('is exactly 262144 bytes (256 KB)', () => {
+    expect(DEFAULT_STATE_MD_SIZE_CEILING_BYTES).toBe(262144);
+  });
+});

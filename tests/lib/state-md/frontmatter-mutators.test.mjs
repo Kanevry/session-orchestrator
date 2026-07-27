@@ -159,4 +159,27 @@ describe('resolveStateMdPath', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Pins the full SO_PLATFORM → state-dir routing table. Without it, a
+  // regression in preferredStateMdCandidate's switch (e.g. `case 'codex'`
+  // falling through to '.claude/STATE.md') is invisible: on a Codex / Cursor /
+  // pi repo the create-on-first-write branch would silently plant STATE.md in
+  // the wrong platform directory, and every later read resolves the stale one.
+  // SO_STATE_DIR is neutralised per row because it short-circuits the switch.
+  it.each([
+    ['claude', '.claude'],
+    ['codex', '.codex'],
+    ['cursor', '.cursor'],
+    ['pi', '.pi'],
+  ])('routes SO_PLATFORM=%s to the %s state dir when no STATE.md exists yet', (platform, stateDir) => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-route-'));
+    try {
+      vi.stubEnv('SO_STATE_DIR', '');
+      vi.stubEnv('SO_PLATFORM', platform);
+
+      expect(resolveStateMdPath(root)).toBe(join(root, stateDir, 'STATE.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
