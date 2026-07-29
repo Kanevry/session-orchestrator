@@ -558,6 +558,179 @@ describe('post-subagent-discovery-validator hook', () => {
   // in events.jsonl.
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // #908 — bare-cardinal repo-state facts.
+  //
+  // Bug caught: a Discovery brief stating "14 commits" / "92 learnings" /
+  // "5 dirty files" / "412 lines" carried NO quantifier trigger, so the six
+  // #567 patterns were structurally blind to it. That is the exact drift the
+  // #908 session recorded (briefed 9 commits vs. actual 14, briefed 40
+  // learnings vs. actual 92) — the coordinator propagated stale numbers into
+  // every Impl prompt for hours.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['commit count', 'The repo has 14 commits since the session-start ref.'],
+    ['learnings count', 'The metrics store holds 92 learnings.'],
+    ['dirty-file count', 'The working tree shows 5 dirty files.'],
+    ['line count', 'The largest module is 412 lines.'],
+  ])('#908 bare cardinal "%s" without a measurement block → violation', (_label, claim) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([claim]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe(claim);
+  });
+
+  // -------------------------------------------------------------------------
+  // #908 — the extended MEASUREMENT command set.
+  //
+  // Bug caught: repo-state counts are measured with `git log | wc -l`, `jq`
+  // over a JSONL metrics file or `git status --porcelain`, none of which the
+  // grep/rg/find-only fence check recognised. An agent that DID quote its
+  // measurement was still reported as a violator — punishing the honest path
+  // is how a warn-only validator earns its way onto the ignore list.
+  // -------------------------------------------------------------------------
+
+  it('#908 four repo-state facts WITH a git/wc/jq measurement block → no violation', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        'Measured 2026-07-29 at HEAD:',
+        '```bash',
+        'git log --oneline session-start..HEAD | wc -l',
+        'jq -s length .orchestrator/metrics/learnings.jsonl',
+        'git status --porcelain | wc -l',
+        '```',
+        'The repo has 14 commits, 92 learnings and 5 dirty files.',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('#908 inline-code measurement quote counts as evidence (no fence required)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      'Counted with `git log --oneline | wc -l` → 14 commits.',
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // #908 — false-positive lock-in for the greedy cardinal pattern.
+  //
+  // Bug caught: an unguarded `\d+ <noun>` fires on every issue reference,
+  // version literal, ISO date, line-number suffix, percentage and slash-
+  // separated gate summary in a normal report. A validator that flags every
+  // report gets switched off — strictly worse than no validator at all.
+  // Measured over 32 real agent-stop windows from this repo's transcripts,
+  // the unguarded variant fired 93 times (2.9 per stop).
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['issue reference', 'Fixes #906 and #908 in this wave.'],
+    ['version literal', 'Shipped in v3.17.0 with 2 follow-ups tracked.'],
+    ['line-number suffix', 'See hooks/post-subagent-discovery-validator.mjs:162 for the gate.'],
+    ['ISO date', 'The gate ran green on 2026-07-29 across the fleet.'],
+    ['percentage', 'Coverage sits at 70% across the board.'],
+    ['slash-separated summary', 'Full Gate reported 12615/0/11 on the last SHA.'],
+    ['rule identifier', 'PSA-006 and PSA-007 both apply to this wave.'],
+    ['inline-code span', 'Use `14 commits` as the example string in the docs.'],
+    ['stopword between number and noun', 'The summary lists 2 sections below the commits table.'],
+  ])('#908 false-positive class "%s": does NOT flag', (_label, benign) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([benign]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('#908 numbers inside a fenced tool-output block are evidence, not claims', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      ['Captured output:', '```text', '5129 files changed', '12 commits pending', '```'].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('#908 "every <repo-state noun>" stays out of scope (no numeric anchor)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      'every commit must be signed and every rule is always-on',
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // #908 — measurement-TIMESTAMP advisory (Baustein 2 input).
+  //
+  // Bug caught: an undated measurement is indistinguishable from a fresh one,
+  // which is what let a 9-hour-old Discovery count be briefed as current. v1
+  // records the signal as an ADVISORY inside the existing warn — promoting it
+  // to a violation before the authoring habit exists would buy friction, not
+  // accuracy. This test pins "advisory, never a violation".
+  // -------------------------------------------------------------------------
+
+  it('#908 verified-but-undated claim is reported as advisory, never as a violation', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        '```bash',
+        'git log --oneline | wc -l',
+        '```',
+        'The repo has 14 commits.',
+        'filler 1', 'filler 2', 'filler 3', 'filler 4', 'filler 5', 'filler 6', 'filler 7',
+        'The metrics store holds 92 learnings.',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    // Only the UNVERIFIED claim is a violation; the undated-but-verified one is not.
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe('The metrics store holds 92 learnings.');
+    // …and the advisory count is surfaced to the coordinator.
+    const ctx = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('1 verified claim(s) carry no measurement timestamp (advisory).');
+  });
+
+  it('#908 remains non-blocking: a violating cardinal claim still exits 0 without decision:block', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const out = JSON.parse(result.stdout);
+    expect(out.decision).toBeUndefined();
+    expect(out.hookSpecificOutput.permissionDecision).toBeUndefined();
+  });
+
   it('ENABLED + 10-record transcript: only claims inside last-8 records are flagged', () => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const outOfWindowClaim = '100% of call sites use the legacy pattern.';
@@ -585,5 +758,62 @@ describe('post-subagent-discovery-validator hook', () => {
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].claim_text).toBe(inWindowClaim);
+  });
+
+  // -------------------------------------------------------------------------
+  // #908 — pattern-7 KNOWN BOUNDARY (deliberate silence, recorded not assumed).
+  //
+  // Bug caught: a later widening of the cardinal detector — one more noun in
+  // CARDINAL_NOUN, one relaxed character in the trigger lookahead — lands as a
+  // one-token diff that no test opposes, and ships WITHOUT the false-positive
+  // re-measurement that is the whole reason the pattern is this narrow.
+  // Unguarded, the cardinal variant fired 93 times over 32 real agent-stop
+  // windows (2.9 per stop — the zone where a warn-only validator gets switched
+  // off, which is strictly worse than no validator). The four forms below are
+  // silent TODAY BY CHOICE; pinning them makes the next widening a DECISION:
+  // whoever widens must re-measure the FP rate and move the case out of this
+  // table, instead of learning about the regression later as validator fatigue.
+  //
+  // This is explicitly NOT a claim that every silence here is desirable. The
+  // first row is the notation PSA-006 itself demands ("Quote the numerator AND
+  // denominator") and the trigger cannot see it. It is recorded as a known gap
+  // with a named cost — strictly better than an unrecorded one.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    // The trigger rejects `12` through its lookahead (?![\d.%:/-]) — the digit is
+    // glued to `/` — and `14` through its lookbehind (?<![\w#$:/.-]). Those two
+    // guards are exactly what keeps `12615/0/11` gate summaries quiet (see the
+    // false-positive table above), so admitting the slash form re-opens that
+    // class. Silent despite `files` being a CARDINAL_NOUN.
+    ['PSA-006 numerator/denominator slash form', 'Coverage across 12/14 files is complete.'],
+
+    // `tests` and `hooks` are outside the closed six-noun CARDINAL_NOUN set
+    // (commits|learnings|issues|branches|lines|files). They were measured as
+    // pure FP cost and left to the six quantifier-triggered patterns, which
+    // carry a lexical anchor. Note `callers` — PSA-006's own canonical noun —
+    // is in the same excluded position.
+    ['noun outside the closed CARDINAL_NOUN set', 'I reviewed 27 tests and 9 hooks in this pass.'],
+
+    // Order-sensitive by construction: the pattern is <number> … <noun>, so a
+    // count reported noun-first with the digit trailing has no noun AFTER the
+    // trigger to match. Relaxing the order would make every `foo: 12` config
+    // line and every table cell a candidate.
+    ['count reported noun-first (colon form)', 'Commits since session-start: 14, learnings: 92'],
+
+    // No digit at all — CARDINAL_TRIGGER is \d{1,9}. Spelled-out numerals would
+    // need a separate word-numeral alternation, which is a different pattern
+    // with its own FP budget, not a tweak to this one.
+    ['spelled-out numeral', 'There are fourteen commits in the window.'],
+  ])('#908 pattern-7 KNOWN BOUNDARY "%s": deliberately does NOT flag', (_label, text) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([text]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+    // No additionalContext either — the coordinator sees nothing at all.
+    expect(result.stdout.trim()).toBe('');
   });
 });

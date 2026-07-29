@@ -207,6 +207,49 @@ Before dispatching each agent whose fileScope contains a NEW (non-existent) file
 
 **If 0 candidates:** dispatch unchanged — same silent-no-op convention as Grounding Injection / Frontmatter-Guard above. Never blocks dispatch.
 
+#### Pre-Dispatch: Fact-Staleness Annotation (#908)
+
+Facts an earlier wave measured get quoted into this wave's prompts as briefing truth — and they decay. In the #908 incident the impl agents found 14 commits where the brief said 9, a clean tree where it said 5 dirty, 92 learnings where it said 40, a file that no longer existed, and a closed epic briefed as critical-open; the worst class was line numbers, which drifted three times and forced 225 citations onto symbol+grep form. Annotating a fact costs one prompt line. Re-briefing a wave on wrong numbers costs the wave.
+
+**What is a fact here:** any repo-state value carried from an earlier wave's report into this prompt — counts (commits, files, tests, issues, learnings), line numbers, file existence, "session X is running", issue/epic open-closed state. NOT design decisions, task assignments, or judgements: those do not decay.
+
+**Trigger — annotate when ANY of these holds (no judgement call):**
+
+1. `now − measured_at ≥ 5 min`
+2. `measured_at` is absent
+3. the peer probe below reported `live: true` for the repo the fact is about
+
+Threshold derived from `.orchestrator/metrics/subagents.jsonl` (n=340 wave boundaries, agent runtime median 3.5 min): a fact's age at its FIRST cross-wave citation brackets [median 2.5 min, median 9.9 min] depending on where in the producing agent's run it was measured. 5 min sits at the conservative end of that bracket; the cost asymmetry breaks the tie downward. **Corollary: a fact from an earlier wave almost always trips rule 1 — when in doubt, annotate.** `measured_at` comes from the producing agent's report, which `hooks/post-subagent-discovery-validator.mjs` already asks for (PSA-006 point 4).
+
+**Peer signal — once per wave, plus once per distinct foreign repo cited:**
+
+```bash
+node "$PLUGIN_ROOT/scripts/lib/peer-discovery.mjs" --check-live "<repoRoot>" --json
+# → {"live":false,"reason":"no-lock","probe":"lock-only","peerCount":0,"peer":null}
+```
+
+Read `live` from the payload; the exit code reports whether the probe RAN (`0` verdict produced, `1` usage error, `2` internal failure), never the verdict itself. Probe selection is automatic and needs no flag: the coordinator's own working copy takes the `full` probe (worktrees + registry + STATE.md), any other repo takes `lock-only` (two sync calls, no git). Own-vs-foreign is decided by repo IDENTITY, not path nesting — a parent directory that is itself a repo (`~/Projects/<workspace>`) is foreign, not "mine".
+
+Call it for the coordinator's own repo even when every cited fact is about that repo — the own-repo probe self-excludes this session and answers "is another operator session writing into my working copy right now", which is exactly the #908 "14 vs 9 commits" class. `live: true` sets the threshold to **0** for that repo: every state fact about it is asserted, never established, however fresh. The probe is fail-safe (unmeasurable ⇒ `live: true`, including `probe: "full-degraded"` when the peer surfaces returned demonstrably incomplete data), so a probe failure annotates more, never less — and so does a non-zero exit: treat exit `1`/`2` as `live: true`.
+
+**Annotation format** — in the agent prompt, replace the bare value with:
+
+    ASSERTED (age <N> min, source W<k>/<agent>): <value>. Verify command: <cmd>. Run it before relying on this.
+
+**When no measurement command can be named** (rule 2, and the case the validator is meant to catch upstream), do not restate the value at all — a number nobody can re-derive is not a fact:
+
+    UNVERIFIED (no measurement command, source W<k>/<agent>): <claim>. Establish it yourself before relying on this.
+
+**Worked examples:**
+
+| Fact | Decision |
+|---|---|
+| "13 broken paths", W1-D2, `measured_at` 10:35, cited at 11:20 | Rule 1 (45 min ≥ 5) → `ASSERTED (age 45 min, source W1/D2): 13 broken paths. Verify command: <the grep D2 ran>. Run it before relying on this.` |
+| "the coordinator mis-measured 4 numbers" — no measurement command | Rule 2 → `UNVERIFIED` form; the value is dropped, the claim becomes the agent's own task |
+| Any count about a foreign repo whose peer probe reports `live: true` | Rule 3 → annotate regardless of age; age may still be printed but is not the reason |
+
+**Never blocks dispatch** — same silent-no-op convention as the injectors above. When facts cannot be annotated for any reason, dispatch proceeds; annotating more is always the safe direction.
+
 #### Agent-Type Resolution
 
 Each agent in the session plan specifies a `subagent_type`. Use that value directly when dispatching:
@@ -220,6 +263,7 @@ For each agent in this wave:
       - Which files to read/modify (exact paths)
       - Acceptance criteria (how to verify done)
       - Relevant patterns — injected automatically as the <APPLICABLE-RULES> block (see Pre-Dispatch: Glob-Scoped Rule Injection below)
+      - Any repo-state fact carried from an earlier wave: in the ASSERTED/UNVERIFIED form, never as a bare value (see Pre-Dispatch: Fact-Staleness Annotation above)
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
       >",
@@ -1004,7 +1048,7 @@ This frames the nudge: the persistent artefacts (plan, scope, STATE.md, git diff
 
 | Wave boundary (completed → next) | Compact? | Why |
 |---|---|---|
-| Discovery → Impl-Core | Yes | Research/audit context is bulky; the plan + wave-scope.json is the distilled output. |
+| Discovery → Impl-Core | Yes — **but only after** Discovery's repo-state facts are written into the plan in annotated form (value + measurement command + `measured_at`) | Research/audit context is bulky and the plan + wave-scope.json is the distilled output. But compacting discards the raw evidence and leaves the briefing text as the only source of truth — the structural amplifier of the #908 damage. Un-annotated facts: re-measure or record them first, else **No**. See Pre-Dispatch: Fact-Staleness Annotation. |
 | Impl-Core → Impl-Polish (long Core) | Maybe | Compact only if Polish targets different files; keep if Polish builds on Core's changes. |
 | Impl-Polish → Quality | No | Quality references the just-written code; losing it is costly. |
 | Quality → Finalization | No | Finalization needs the full session diff. |

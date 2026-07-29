@@ -3,8 +3,9 @@
  * post-subagent-discovery-validator.mjs — SubagentStop hook that mechanically
  * enforces PSA-006 (distributional claims need adjacent grep transcripts).
  *
- * Issue #567. Non-blocking v1 (log + warn only). EXIT 0 ALWAYS — exit 2
- * (blocking) is RESERVED for a future hard-gate and MUST NOT be used here.
+ * Issue #567 (v1), Issue #908 (repo-state facts). Non-blocking (log + warn
+ * only). EXIT 0 ALWAYS — exit 2 (blocking) is RESERVED for a future hard-gate
+ * and MUST NOT be used here.
  *
  * Decision flow:
  *   1. shouldRunHook('post-subagent-discovery-validator') gate — exit 0 when disabled.
@@ -13,10 +14,17 @@
  *      Default OFF — exit 0 immediately unless explicitly enabled.
  *   4. Read `input.transcript_path` (whole-session JSONL of assistant/user records),
  *      scan the TAIL (last ~8 `type:"assistant"` records), concat text blocks.
- *   5. Regex-scan the concatenated text for 6 distributional-claim patterns.
- *   6. For each match, check whether a fenced ```bash block containing grep/rg/find
- *      appears within ±5 lines. If a claim has NO adjacent grep block → record a
+ *   5. Regex-scan the concatenated text for 7 claim patterns — 6 quantifier-
+ *      triggered distributional claims plus the #908 bare-cardinal repo-state
+ *      fact ("14 commits", "92 learnings", "5 dirty files", "412 lines").
+ *   6. For each match, check whether a fenced ```bash block containing a
+ *      MEASUREMENT command (grep/rg/find/git/wc/jq/ls/node/npm) appears within
+ *      ±5 lines. If a claim has NO adjacent measurement block → record a
  *      `discovery_validator_violation` event in events.jsonl + a stderr WARN.
+ *   7. ADVISORY (#908 Baustein 2 input): for claims that ARE verified, check
+ *      whether the adjacent block also carries a measurement TIMESTAMP (ISO
+ *      date, `HEAD`, "as of", "measured at"). Undated-but-verified claims are
+ *      counted and reported in the warn text — they are NOT violations in v1.
  *
  * Why read the transcript: the SubagentStop stdin payload has NO output_text
  * field. The agent's text lives in `input.transcript_path`.
@@ -61,28 +69,117 @@ const CLAIM_TEXT_MAX = 200;
  */
 const CTX = '(?:call\\s?sites?|callers?|sites?|references?|instances?|files?|consumers?|imports?|matches|match|occurrences?|usages?|modules?|tests?|places?|functions?|dependenc(?:y|ies)|endpoints?|hooks?)';
 
+/**
+ * Repo-STATE nouns (#908). The four documented #908 drift cases were counts of
+ * repository state, not of code locations: "14 commits", "92 learnings",
+ * "5 dirty files", "412 lines". None of them contains a CTX noun, so the
+ * original six patterns could not see them.
+ *
+ * Vocabulary taken from this repo's own artefacts (`.orchestrator/metrics/*.jsonl`
+ * record kinds, `.claude/rules/`, `skills/`, `agents/`, `hooks/`) rather than a
+ * generic English list — a noun that never names a countable repo artefact here
+ * only buys false positives.
+ */
+const STATE = '(?:commits?|learnings?|issues?|branches?|lines?|entries|records?|sessions?|rules?|skills?|probes?|waves?|proposals?|worktrees?)';
+
+/**
+ * The noun class the BARE-CARDINAL pattern may use — deliberately a strict
+ * subset of STATE ∪ CTX, restricted to the artefact kinds the #908 drift was
+ * actually measured in (commit counts, learnings counts, open-issue counts,
+ * branch counts, line counts, dirty-file counts).
+ *
+ * Measured, not guessed: over 32 real agent-stop windows from this repo's own
+ * transcripts, admitting the full CTX ∪ STATE set fired 93 times (2.9 per
+ * stop — the "validator gets switched off" zone). Every noun below earns its
+ * place by naming one of the documented #908 facts; the ones that only cost
+ * false positives (`tests`, `references`, `matches`, `agents`, `files` without
+ * a state adjective) are excluded here and remain reachable through the six
+ * quantifier-triggered patterns above, which have a lexical anchor.
+ */
+const CARDINAL_NOUN = '(?:commits?|learnings?|issues?|branches?|lines?|files?)';
+
+/**
+ * Wide noun class = code-distribution nouns ∪ repo-state nouns. Used by the six
+ * QUANTIFIER-triggered patterns ("N of M", "100% of", "all N", "no remaining",
+ * "none of") — each of those carries a strong lexical trigger, so widening the
+ * noun set there is low-risk.
+ *
+ * Deliberately NOT used by the `every <noun>` pattern: `every` has no numeric
+ * anchor, so `every commit must be signed` / `every rule is always-on` are
+ * ordinary prose, not measured claims. That pattern keeps the narrow CTX.
+ */
+const WIDE = `(?:${CTX}|${STATE})`;
+
 /** Bounded same-line gap between a trigger and its context noun. */
 const CTX_GAP = '[^\\n]{0,40}?';
 
 /**
  * Distributional-claim patterns (case-insensitive). A match is a PSA-006 claim
- * that requires an adjacent grep/rg/find transcript.
+ * that requires an adjacent measurement transcript.
  *
- * Each pattern requires a code-distribution context noun (CTX) within a small,
- * bounded same-line window of the trigger. The `[^\n]{0,40}?` gap is a bounded
- * lazy character class (linear-time — the ReDoS-safety the W2 reviewer verified
- * is preserved). True claims ("4 of 4 callers opt-in", "every caller imports X",
- * "no remaining references to Y") still flag; benign strings ("Turn 3 of 25
- * complete", "every developer should test", "100% of users love it") do not.
+ * Each pattern requires a context noun within a small, bounded same-line window
+ * of the trigger. The `[^\n]{0,40}?` gap is a bounded lazy character class
+ * (linear-time — the ReDoS-safety the W2 reviewer verified is preserved). True
+ * claims ("4 of 4 callers opt-in", "every caller imports X", "no remaining
+ * references to Y") still flag; benign strings ("Turn 3 of 25 complete",
+ * "every developer should test", "100% of users love it") do not.
  */
 const CLAIM_PATTERNS = [
-  new RegExp(`\\b\\d+ of \\d+\\b${CTX_GAP}\\b${CTX}\\b`, 'i'),
-  new RegExp(`100% of\\b${CTX_GAP}\\b${CTX}\\b`, 'i'),
-  new RegExp(`\\ball \\d+\\b${CTX_GAP}\\b${CTX}\\b`, 'i'),
-  new RegExp(`no remaining\\b${CTX_GAP}\\b${CTX}\\b`, 'i'),
+  new RegExp(`\\b\\d+ of \\d+\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
+  new RegExp(`100% of\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
+  new RegExp(`\\ball \\d+\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
+  new RegExp(`no remaining\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
   new RegExp(`every ${CTX}\\b`, 'i'),
-  new RegExp(`none of\\b${CTX_GAP}\\b${CTX}\\b`, 'i'),
+  new RegExp(`none of\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
 ];
+
+/**
+ * Pattern 7 (#908) — the BARE CARDINAL repo-state fact. `14 commits` has no
+ * quantifier trigger at all, which is exactly why the #908 drift went unseen.
+ *
+ * A naive `\d+` would fire on every issue reference, version literal, date,
+ * line number and percentage in a normal report — and a validator that fires on
+ * every report gets switched off, which is strictly worse than no validator.
+ * Precision is therefore bought three ways:
+ *
+ *   1. TRIGGER: a digit run that is not glued to identifier punctuation.
+ *      Lookbehind rejects `#906`, `v3`, `PSA-006`, `W2`, `foo.mjs:123`;
+ *      lookahead rejects `3.17`, `70%`, `2026-07-29`, `12615/0`.
+ *   2. GAP: at most two intervening ADJECTIVE-like words, and never a
+ *      preposition/article/copula. "5 dirty files" matches; "3 of 5 stars" and
+ *      "2 sections below the rules" do not.
+ *   3. SCOPE: evaluated only on prose lines with inline-code spans masked out —
+ *      fenced blocks are skipped entirely (see `findViolations`), because a
+ *      number inside a fence is tool OUTPUT (the evidence itself), not an
+ *      unverified assertion about it.
+ *
+ * All quantifiers are bounded ({1,9}, {0,2}) — linear-time, ReDoS-safe.
+ */
+const CARDINAL_TRIGGER = '(?<![\\w#$:/.-])\\d{1,9}(?![\\d.%:/-])';
+const CARDINAL_STOPWORDS =
+  'of|in|on|at|for|to|the|a|an|and|or|is|are|was|were|from|with|by|that|than|per|out|over|into|onto|via|but|as';
+const CARDINAL_GAP = `(?:\\s+(?!(?:${CARDINAL_STOPWORDS})\\b)[A-Za-z][\\w-]*){0,2}`;
+const CARDINAL_PATTERN = new RegExp(`${CARDINAL_TRIGGER}${CARDINAL_GAP}\\s+${CARDINAL_NOUN}\\b`, 'i');
+
+/** Inline-code spans are masked before the cardinal pattern runs. */
+const INLINE_CODE_RE = /`[^`\n]*`/g;
+
+/**
+ * Commands that count as a MEASUREMENT inside a fenced block. `grep|rg|find`
+ * (the #567 set) only covers text search; the #908 facts are measured with
+ * `git log --oneline | wc -l`, `jq` over a JSONL metrics file, `ls | wc -l`,
+ * or a `node`/`npm` script. Refusing to recognise those made the honest,
+ * evidence-quoting path fail verification.
+ */
+const MEASUREMENT_CMD_RE = /\b(grep|rg|find|git|wc|jq|ls|node|npm)\b/;
+
+/**
+ * Markers that date a measurement (#908 Baustein 2 input). ADVISORY in v1:
+ * an undated-but-verified claim is counted and reported, never a violation —
+ * a hard contract without an established authoring habit buys friction, not
+ * accuracy. Baustein 2 can escalate this to a violation once the habit exists.
+ */
+const TIMESTAMP_MARKER_RE = /\b\d{4}-\d{2}-\d{2}\b|\bHEAD\b|\bas of\b|\bmeasured (?:at|on)\b|\brev-parse\b/i;
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — Stop-family hooks exit 0 always, never deny)
@@ -192,15 +289,23 @@ async function readTranscriptTail(transcriptPath) {
 // ---------------------------------------------------------------------------
 
 /**
- * Identify the 0-based line indices that open or close a fenced ```bash (or ```sh
- * / bare ```) block whose body contains a grep/rg/find invocation. Returns the
- * set of line indices that belong to such a verification block.
+ * Single fence walk. Returns two disjoint-purpose index sets:
+ *   - `measurementLines`: lines belonging to a fenced block whose body contains
+ *     a MEASUREMENT_CMD_RE invocation (the evidence a claim can lean on).
+ *   - `fencedLines`: lines belonging to ANY fenced block (evidence or not).
+ *     Used only to keep the greedy #908 cardinal pattern out of tool output;
+ *     the six quantifier patterns are unchanged and still scan fenced lines.
+ *
+ * An unterminated trailing fence is treated as fenced-to-EOF (conservative for
+ * false-positive suppression) but never as a measurement block (its body was
+ * never closed, so we cannot claim it verified anything).
  *
  * @param {string[]} lines
- * @returns {Set<number>} indices of lines inside a grep/rg/find fenced block
+ * @returns {{ measurementLines: Set<number>, fencedLines: Set<number> }}
  */
-function grepBlockLineIndices(lines) {
-  const indices = new Set();
+function scanFences(lines) {
+  const measurementLines = new Set();
+  const fencedLines = new Set();
   let fenceStart = -1;
   let buffer = [];
   let inFence = false;
@@ -215,8 +320,10 @@ function grepBlockLineIndices(lines) {
     if (isFence) {
       // closing fence — evaluate the buffered body
       const body = buffer.join('\n');
-      if (/\b(grep|rg|find)\b/.test(body)) {
-        for (let j = fenceStart; j <= i; j++) indices.add(j);
+      const isMeasurement = MEASUREMENT_CMD_RE.test(body);
+      for (let j = fenceStart; j <= i; j++) {
+        fencedLines.add(j);
+        if (isMeasurement) measurementLines.add(j);
       }
       inFence = false;
       fenceStart = -1;
@@ -225,37 +332,89 @@ function grepBlockLineIndices(lines) {
       buffer.push(lines[i]);
     }
   }
-  return indices;
+
+  // Unterminated trailing fence — suppress cardinal matches, grant no evidence.
+  if (inFence) {
+    for (let j = fenceStart; j < lines.length; j++) fencedLines.add(j);
+  }
+
+  // INLINE-code evidence: PSA-006 asks for "the exact pattern executed" to be
+  // quoted — an inline `git log --oneline | wc -l` satisfies that exactly as
+  // well as a fenced block, and one-line findings are commonly written that
+  // way. Refusing to count it would penalise the honest path.
+  for (let i = 0; i < lines.length; i++) {
+    if (fencedLines.has(i)) continue;
+    for (const span of lines[i].match(INLINE_CODE_RE) ?? []) {
+      if (MEASUREMENT_CMD_RE.test(span)) { measurementLines.add(i); break; }
+    }
+  }
+
+  return { measurementLines, fencedLines };
 }
 
 /**
- * Scan concatenated transcript text for distributional claims lacking an
- * adjacent grep/rg/find fenced block (within ±GREP_PROXIMITY_LINES).
+ * True when any line in `indices` sits within ±GREP_PROXIMITY_LINES of `i`.
+ *
+ * @param {Set<number>} indices
+ * @param {number} i
+ * @returns {boolean}
+ */
+function nearIndex(indices, i) {
+  for (let j = i - GREP_PROXIMITY_LINES; j <= i + GREP_PROXIMITY_LINES; j++) {
+    if (indices.has(j)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when a measurement TIMESTAMP marker appears within the same proximity
+ * window used for the measurement block itself.
+ *
+ * @param {string[]} lines
+ * @param {number} i
+ * @returns {boolean}
+ */
+function hasMeasurementTimestamp(lines, i) {
+  const from = Math.max(0, i - GREP_PROXIMITY_LINES);
+  const to = Math.min(lines.length - 1, i + GREP_PROXIMITY_LINES);
+  for (let j = from; j <= to; j++) {
+    if (TIMESTAMP_MARKER_RE.test(lines[j])) return true;
+  }
+  return false;
+}
+
+/**
+ * Scan concatenated transcript text for claims lacking an adjacent measurement
+ * block (within ±GREP_PROXIMITY_LINES).
  *
  * @param {string} text
- * @returns {string[]} truncated claim-text snippets for each violation
+ * @returns {{ violations: string[], undatedVerified: number }}
+ *   `violations` — truncated claim-text snippets; `undatedVerified` — count of
+ *   claims that ARE verified but carry no measurement timestamp (advisory).
  */
 function findViolations(text) {
-  if (!text) return [];
+  if (!text) return { violations: [], undatedVerified: 0 };
   const lines = text.split(/\r?\n/);
-  const grepLines = grepBlockLineIndices(lines);
+  const { measurementLines, fencedLines } = scanFences(lines);
   const violations = [];
+  let undatedVerified = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const matched = CLAIM_PATTERNS.some((re) => re.test(line));
+    let matched = CLAIM_PATTERNS.some((re) => re.test(line));
+    if (!matched && !fencedLines.has(i)) {
+      matched = CARDINAL_PATTERN.test(line.replace(INLINE_CODE_RE, ' '));
+    }
     if (!matched) continue;
 
-    // A claim is verified if any grep-block line sits within the proximity window.
-    let verified = false;
-    for (let j = i - GREP_PROXIMITY_LINES; j <= i + GREP_PROXIMITY_LINES; j++) {
-      if (grepLines.has(j)) { verified = true; break; }
+    if (nearIndex(measurementLines, i)) {
+      if (!hasMeasurementTimestamp(lines, i)) undatedVerified++;
+      continue;
     }
-    if (verified) continue;
 
     violations.push(line.trim().slice(0, CLAIM_TEXT_MAX));
   }
-  return violations;
+  return { violations, undatedVerified };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +493,7 @@ async function main() {
   if (!(await isEnabled())) return;
 
   const text = await readTranscriptTail(input.transcript_path);
-  const violations = findViolations(text);
+  const { violations, undatedVerified } = findViolations(text);
   if (violations.length === 0) return;
 
   const agentForDedup = firstNonEmptyString(input, ['agent_type'], null);
@@ -361,9 +520,15 @@ async function main() {
     });
   }
 
+  // Advisory only (#908 item 4) — never promoted to a violation in v1.
+  const undatedNote = undatedVerified > 0
+    ? ` ${undatedVerified} verified claim(s) carry no measurement timestamp (advisory).`
+    : '';
+
   const warnText =
-    `⚠ PSA-006: ${violations.length} distributional claim(s) from agent "${agent}" ` +
-    `lack an adjacent grep/rg/find transcript (non-blocking). ` +
+    `⚠ PSA-006: ${violations.length} repo-state/distributional claim(s) from agent "${agent}" ` +
+    `lack an adjacent measurement transcript (grep/rg/find/git/wc/jq/ls/node/npm) (non-blocking).` +
+    `${undatedNote} ` +
     `See .claude/rules/parallel-sessions.md § PSA-006.`;
   process.stderr.write(warnText + '\n');
 

@@ -178,11 +178,12 @@ serialization, so this lock remains necessary on that axis too.
 
 *Axis: orthogonal — Discovery grep-verification discipline, unrelated to operator-session vs in-run isolation (and unaffected by Agent Teams).*
 
-Discovery agents and W1 explorers MUST verify any distributional claim — "100% of callers opt-in", "N of M sites use pattern X", "no remaining references to Y", "all instances replaced", etc. — with an EXECUTED `grep` or `rg` invocation. The Discovery output MUST quote:
+Discovery agents and W1 explorers MUST verify any distributional claim — "100% of callers opt-in", "N of M sites use pattern X", "no remaining references to Y", "all instances replaced" — **and any bare number describing repo state** ("14 commits since the ref", "92 learnings", "5 dirty files", "412 lines") with an EXECUTED measurement command: `grep`/`rg`/`find` for code locations, `git`/`wc`/`jq`/`ls`/`node` for repo state. The output MUST quote:
 
-1. The exact pattern executed (e.g., `grep -rn "pathMatchesPattern" hooks/ scripts/ tests/`)
+1. The exact command executed (e.g., `grep -rn "pathMatchesPattern" hooks/ scripts/ tests/`)
 2. The file scope passed to the tool
 3. The resulting count or zero-match assertion
+4. WHEN it was measured — an ISO date, or the SHA / `HEAD` it was measured at. A fact re-used by a downstream wave hours later is a claim about the PAST unless it carries its measurement time (#908: Discovery counts briefed as current for 9 hours were already 5 commits and 52 learnings stale)
 
 Untestable adoption claims based on inference, partial sampling, or LLM recall are **forbidden** — they previously triggered a mid-session STATE.md correction (deep-1647 W1-D3 → W3-P2 mismatch: claimed "4 of 4 callers opt-in" to `canonicalizeRoot`, actual state was "10 default + 4 opt-in", surfaced only when a W3 polish agent grep-verified `pathMatchesPattern` callers).
 
@@ -191,7 +192,7 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 **When PSA-006 applies:**
 - W1 Discovery scope-mapping claims ("all callers do X", "no test exercises Y", "every consumer imports Z").
 - W3 Impl-Polish "this caller is unaffected" claims (the W3-P2 deep-1647 incident class).
-- Any agent that asserts a count, percentage, or distribution of code locations.
+- Any agent that asserts a count, percentage, or distribution — of code locations OR of repo state (commits, learnings, issues, branches, dirty files, line counts).
 
 **When PSA-006 does NOT apply:**
 - Inline single-file reads — the `Read` tool result IS the verification.
@@ -199,11 +200,11 @@ Coordinators reviewing Discovery output MUST REJECT claims that lack a quoted gr
 - Hypotheticals stated as such ("if all callers opted in, ..." is a question, not a claim).
 
 **PSA-006 anti-patterns:**
-- "All 4 callers already use pattern X" — without a quoted grep transcript and the file scope grepped.
+- "All 4 callers already use pattern X" / "100% adoption" — without a quoted transcript and the file scope grepped. A percentage is a distributional claim: quote the numerator AND denominator from the tool output.
 - "There are no remaining references to the old API" — without `grep -rn` evidence pinned to the current SHA.
-- "100% adoption" — a percentage is a distributional claim. Quote the numerator AND denominator from grep output.
+- "The repo has 14 commits since the ref" — a bare repo-state count re-briefed downstream without the `git`/`wc`/`jq` command that produced it and the time it ran.
 
-**Mechanical enforcement (#567).** When `discovery-validator.enabled: true` in Session Config (default `false`), the `SubagentStop` hook `hooks/post-subagent-discovery-validator.mjs` scans the subagent's transcript tail for the distributional-claim patterns above and records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` (plus a stderr WARN) whenever such a claim lacks an adjacent fenced grep/rg/find transcript. v1 is log + warn only and never blocks the agent — it complements the behavioural rule rather than replacing the coordinator's REJECT obligation above.
+**Mechanical enforcement (#567, #908).** When `discovery-validator.enabled: true` in Session Config (default `false`), the `SubagentStop` hook `hooks/post-subagent-discovery-validator.mjs` scans the subagent's transcript tail for the claim patterns above — six quantifier-triggered distributional patterns plus the #908 bare-cardinal repo-state fact — and records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` (plus a stderr WARN) whenever such a claim lacks an adjacent measurement transcript (`grep`/`rg`/`find`/`git`/`wc`/`jq`/`ls`/`node`/`npm`, fenced or inline-quoted). Item 4 (measurement time) is ADVISORY in the hook: an undated-but-verified claim is counted and surfaced in the warn text, never recorded as a violation. The hook is log + warn only and never blocks the agent — it complements the behavioural rule rather than replacing the coordinator's REJECT obligation above.
 
 ## PSA-007 — Subagent Git-Write Prohibition (#724)
 

@@ -17,11 +17,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { findPeers } from '@lib/peer-discovery.mjs';
+import { findPeers, checkLiveForeignSession } from '@lib/peer-discovery.mjs';
 import { repoPathHash } from '@lib/session-registry.mjs';
 
 // ---------------------------------------------------------------------------
@@ -726,5 +728,492 @@ describe('Group H — self-exclusion (#798)', () => {
     expect(result.peers).toHaveLength(1);
     expect(result.peers[0].source).toBe('discovered');
     expect(result.peers[0].sessionId).toBe('sess-foreign-H5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group I — checkLiveForeignSession (#908)
+//
+// One question, three ways to answer it wrongly — each of the first three
+// tests pins one of them:
+//
+//   I1  id-space: findPeers self-excludes on Surface A+B against the lock UUID
+//       only. A caller passing its SEMANTIC id gets its own heartbeat back as a
+//       "peer" of itself (observed live). checkLiveForeignSession must derive
+//       the ids from the lock and ignore what the caller passes.
+//   I2/I3 liveness: heartbeat, never PID. A dead lease is NOT live (I2); a
+//       fresh heartbeat with a DEAD pid IS live (I3) — session-discovery.mjs
+//       module header, #799 "explicit NO-GO, do not re-attempt".
+//   I5/I6 double-count: findPeers deliberately does not dedupe across sources,
+//       so one session can appear as both 'discovered' and 'state-md'. A raw
+//       peers.length over-counts (I5) and treats a leftover STATE.md as a
+//       running session (I6).
+//
+// I4 pins that a foreign repo takes the cheap two-sync-call path (no git),
+// I7/I8/I9 pin the fail-safe direction: unmeasurable ⇒ live:true, while a
+// successful measurement that found nothing ⇒ live:false.
+// ---------------------------------------------------------------------------
+
+describe('Group I — checkLiveForeignSession (#908)', () => {
+  const MY_UUID = 'dd3ebe61-6095-409f-8f60-6581dee998b9';
+  const MY_SEMANTIC = 'main-2026-07-29-deep-1';
+
+  /** Pinned clock — all lock-path assertions are time-controlled, never waited out. */
+  const NOW = Date.parse('2026-07-29T12:00:00.000Z');
+
+  /** A pid that can never be live: above pid_max on both macOS and Linux. */
+  const DEAD_PID = 2147483647;
+
+  /** ISO timestamp `h` hours before `ms`. */
+  function hoursBefore(ms, h) {
+    return new Date(ms - h * 3600 * 1000).toISOString();
+  }
+
+  /** A cwd OUTSIDE repoRoot — makes repoRoot a foreign working copy. */
+  let foreignCwd;
+
+  beforeEach(() => {
+    foreignCwd = mkdtempSync(join(tmpdir(), 'peer-discovery-cwd-'));
+  });
+
+  afterEach(() => {
+    rmSync(foreignCwd, { recursive: true, force: true });
+  });
+
+  /**
+   * Registry entry keyed to the CANONICAL (realpath'd) repo root. The real
+   * registry writer hashes the path it got from process.cwd(), which is
+   * symlink-free — on macOS the tmp path (/var/…) and its realpath
+   * (/private/var/…) hash differently, so the fixture must use the canonical
+   * form to mirror a production record.
+   */
+  function ownRepoRegEntry(overrides = {}) {
+    return {
+      ...regEntry(),
+      repo_path_hash: repoPathHash(realpathSync(repoRoot)),
+      ...overrides,
+    };
+  }
+
+  it('I1: own repo — caller passes its SEMANTIC id (wrong id-space); own UUID lock AND own semantic-id registry entry are both self-excluded', async () => {
+    // The live #798/#908 shape: the lock carries the UUID, the caller only has
+    // the semantic id. Additionally a registry entry recorded under the
+    // SEMANTIC id (as a non-Claude harness would write it) — findPeers cannot
+    // exclude that one from the UUID alone, so the post-filter must.
+    writeLock(repoRoot, lockBody({
+      session_id: MY_UUID,
+      semantic_session_id: MY_SEMANTIC,
+      pid: process.pid,
+    }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      mySessionId: MY_SEMANTIC, // ← exactly the mistake made live
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [ownRepoRegEntry({ session_id: MY_SEMANTIC })],
+    });
+
+    expect(verdict.probe).toBe('full');
+    expect(verdict.live).toBe(false);
+    expect(verdict.reason).toBe('no-peers');
+    expect(verdict.peerCount).toBe(0);
+    expect(verdict.peer).toBeNull();
+  });
+
+  it('I1b: own repo — a caller-supplied id can NEVER suppress a real peer (mySessionId is ignored, not trusted)', async () => {
+    // Control for I1: proves the self-exclusion is not just "filter everything".
+    // The caller claims the FOREIGN session's id as its own; an implementation
+    // that forwarded mySessionId would drop the peer and report live:false.
+    writeLock(repoRoot, lockBody({
+      session_id: MY_UUID,
+      semantic_session_id: MY_SEMANTIC,
+      pid: process.pid,
+    }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      mySessionId: 'sess-foreign-I1b',
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [ownRepoRegEntry({ session_id: 'sess-foreign-I1b' })],
+    });
+
+    expect(verdict.live).toBe(true);
+    expect(verdict.reason).toBe('live-peer-discovered');
+    expect(verdict.peerCount).toBe(1);
+    expect(verdict.peer.sessionId).toBe('sess-foreign-I1b');
+  });
+
+  it('I2: foreign repo — lock whose heartbeat is older than ttl_hours is NOT live (time-controlled, same fixture live under an earlier clock)', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: 'sess-foreign-I2',
+      started_at: hoursBefore(NOW, 6),
+      last_heartbeat: hoursBefore(NOW, 5),
+      ttl_hours: 4,
+      pid: process.pid,
+    }));
+
+    const expired = await checkLiveForeignSession(repoRoot, { cwd: foreignCwd, now: NOW });
+    expect(expired.live).toBe(false);
+    expect(expired.reason).toBe('lock-expired');
+    expect(expired.peerCount).toBe(0);
+
+    // Control: identical lock, clock rewound 4h → heartbeat is 1h old → live.
+    // Proves the fixture is otherwise valid and the verdict tracks the clock.
+    const live = await checkLiveForeignSession(repoRoot, {
+      cwd: foreignCwd,
+      now: NOW - 4 * 3600 * 1000,
+    });
+    expect(live.live).toBe(true);
+    expect(live.reason).toBe('live-peer-lock');
+  });
+
+  it('I3: foreign repo — fresh heartbeat + DEAD pid counts as LIVE (#799 NO-GO: pid is the hook pid, not the session pid)', async () => {
+    // Precondition: the pid really is dead, so the assertion below is faithful
+    // rather than a lucky coincidence.
+    expect(() => process.kill(DEAD_PID, 0)).toThrow();
+
+    writeLock(repoRoot, lockBody({
+      session_id: 'sess-deadpid-I3',
+      started_at: hoursBefore(NOW, 2),
+      last_heartbeat: hoursBefore(NOW, 0.5),
+      ttl_hours: 4,
+      pid: DEAD_PID,
+    }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, { cwd: foreignCwd, now: NOW });
+
+    expect(verdict.live).toBe(true);
+    expect(verdict.reason).toBe('live-peer-lock');
+    expect(verdict.peer.pid).toBe(DEAD_PID);
+    // ageHours is session age (from started_at) — the string a consumer needs
+    // for "live foreign session, 2h old" without measuring a second time.
+    expect(verdict.peer.ageHours).toBeCloseTo(2, 6);
+  });
+
+  it('I4: foreign repo takes the cheap path — findPeers is never invoked and the verdict still comes from the lock', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: 'sess-foreign-I4',
+      started_at: hoursBefore(NOW, 3),
+      last_heartbeat: hoursBefore(NOW, 1),
+      pid: process.pid,
+    }));
+
+    const findPeersCalls = [];
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: foreignCwd,
+      now: NOW,
+      // Returns an EMPTY peer list: if the full path were taken, the verdict
+      // would be live:false — so live:true proves the lock answered it.
+      findPeersImpl: async (...args) => {
+        findPeersCalls.push(args);
+        return { peers: [] };
+      },
+      listWorktreesImpl: async () => {
+        throw new Error('git worktree list must not run on the cheap path');
+      },
+    });
+
+    expect(findPeersCalls).toHaveLength(0);
+    expect(verdict.probe).toBe('lock-only');
+    expect(verdict.live).toBe(true);
+    expect(verdict.peer.sessionId).toBe('sess-foreign-I4');
+  });
+
+  it('I5: own repo — one session seen by BOTH surfaces counts ONCE (raw peers.length would be 2)', async () => {
+    // findPeers emits the same sessionId twice by design (defense-in-depth
+    // provenance, see module header) — the source filter is what keeps the
+    // count honest.
+    writeLock(repoRoot, lockBody({ session_id: MY_UUID, pid: process.pid }));
+    writeActivePeerStateMd('sess-dup-I5', { wave: 3 });
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [ownRepoRegEntry({ session_id: 'sess-dup-I5' })],
+    });
+
+    expect(verdict.live).toBe(true);
+    expect(verdict.peerCount).toBe(1);
+    expect(verdict.peer.source).toBe('discovered');
+    expect(verdict.peer.sessionId).toBe('sess-dup-I5');
+  });
+
+  it('I6: own repo — an active STATE.md with no live lock behind it is NOT a running session', async () => {
+    // A committed STATE.md outlives the session that wrote it (crash → stale
+    // artifact). Only 'discovered' (live lock / fresh registry heartbeat) is
+    // evidence of a RUNNING peer.
+    writeLock(repoRoot, lockBody({ session_id: MY_UUID, pid: process.pid }));
+    writeActivePeerStateMd('sess-statemd-only-I6', { wave: 2 });
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(verdict.live).toBe(false);
+    expect(verdict.reason).toBe('no-peers');
+    expect(verdict.peerCount).toBe(0);
+  });
+
+  it('I7: fail-safe — every state that PREVENTS measurement yields live:true', async () => {
+    // (a) lock present but unparseable: something wrote it, liveness unknowable.
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'session.lock'), '{ truncated', 'utf8');
+    const corrupt = await checkLiveForeignSession(repoRoot, { cwd: foreignCwd, now: NOW });
+    expect(corrupt).toMatchObject({ live: true, reason: 'lock-unreadable', probe: 'none' });
+
+    // (b) repo root gone (unmounted / renamed / racing worktree removal).
+    const missing = await checkLiveForeignSession(join(repoRoot, 'no-such-dir'), {
+      cwd: foreignCwd,
+      now: NOW,
+    });
+    expect(missing).toMatchObject({ live: true, reason: 'repo-root-missing', probe: 'none' });
+
+    // (c) unusable argument.
+    const invalid = await checkLiveForeignSession('', { cwd: foreignCwd, now: NOW });
+    expect(invalid).toMatchObject({ live: true, reason: 'invalid-repo-root', probe: 'none' });
+  });
+
+  it('I8: absence of a lock is a MEASUREMENT, not an unknown → live:false (guards against a fail-safe that always says true)', async () => {
+    const verdict = await checkLiveForeignSession(repoRoot, { cwd: foreignCwd, now: NOW });
+
+    expect(verdict).toEqual({
+      live: false,
+      reason: 'no-lock',
+      probe: 'lock-only',
+      peerCount: 0,
+      peer: null,
+    });
+  });
+
+  it('I9: never throws — a throwing findPeers resolves to the fail-safe verdict', async () => {
+    writeLock(repoRoot, lockBody({ session_id: MY_UUID, pid: process.pid }));
+
+    const promise = checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      findPeersImpl: async () => {
+        throw new Error('boom: findPeers regressed');
+      },
+    });
+
+    await expect(promise).resolves.toMatchObject({ live: true, reason: 'probe-error' });
+  });
+
+  // -------------------------------------------------------------------------
+  // I10 / I10b — own-vs-foreign is REPO IDENTITY, not path containment.
+  //
+  // The full probe's peer enumeration runs `git worktree list` in
+  // process.cwd() (worktree/listing.mjs:31 — `dollar({ cwd: process.cwd() })`),
+  // so it only ever measures the working copy the PROCESS is in. Selecting it
+  // for a repo that merely CONTAINS (or is contained by) the cwd measures the
+  // wrong repository and reports its emptiness as the target's verdict.
+  //
+  // Reachable on a real host (verified 2026-07-29): the portfolio workspace
+  // directory one level above this repo is itself a git repo with its own
+  // `.orchestrator/` state — `ls -d <workspace>/.git` and
+  // `ls <workspace>/.orchestrator` both succeed — and it is an ancestor of the
+  // process cwd, so pure containment classified it as "my working copy".
+  // -------------------------------------------------------------------------
+
+  it('I10: an ANCESTOR directory that is a DIFFERENT repo is foreign — its live lock must be seen (containment ≠ identity)', async () => {
+    // ancestor/ is its own working copy with a live lock; child/ is a separate
+    // working copy nested inside it and is the cwd.
+    const ancestor = mkdtempSync(join(tmpdir(), 'peer-ancestor-'));
+    try {
+      mkdirSync(join(ancestor, '.git'));
+      writeLock(ancestor, lockBody({
+        session_id: 'sess-ancestor-I10',
+        started_at: hoursBefore(NOW, 2),
+        last_heartbeat: hoursBefore(NOW, 0.5),
+        ttl_hours: 4,
+        pid: process.pid,
+      }));
+
+      const child = join(ancestor, 'child-repo');
+      mkdirSync(child);
+      mkdirSync(join(child, '.git'));
+
+      // Models what the full probe actually yields here: it enumerates the
+      // CHILD's worktrees, finds nothing about the ancestor, and would report
+      // `no-peers` / live:false while the ancestor's lock is fresh.
+      const findPeersCalls = [];
+
+      const verdict = await checkLiveForeignSession(ancestor, {
+        cwd: child,
+        now: NOW,
+        findPeersImpl: async (...args) => {
+          findPeersCalls.push(args);
+          return { peers: [] };
+        },
+      });
+
+      expect(findPeersCalls).toHaveLength(0);
+      expect(verdict.probe).toBe('lock-only');
+      expect(verdict.live).toBe(true);
+      expect(verdict.reason).toBe('live-peer-lock');
+      expect(verdict.peer.sessionId).toBe('sess-ancestor-I10');
+    } finally {
+      rmSync(ancestor, { recursive: true, force: true });
+    }
+  });
+
+  it('I10b: control — a SUBDIRECTORY of the same working copy still selects the full probe (the fix is identity, not "always lock-only")', async () => {
+    mkdirSync(join(repoRoot, '.git'));
+    const sub = join(repoRoot, 'scripts', 'lib');
+    mkdirSync(sub, { recursive: true });
+    writeLock(repoRoot, lockBody({ session_id: MY_UUID, pid: process.pid }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: sub,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [ownRepoRegEntry({ session_id: 'sess-foreign-I10b' })],
+    });
+
+    expect(verdict.probe).toBe('full');
+    expect(verdict.live).toBe(true);
+    expect(verdict.peer.sessionId).toBe('sess-foreign-I10b');
+  });
+
+  // -------------------------------------------------------------------------
+  // I11 — the full path must not report "nobody home" when the discovered
+  // surface produced literally nothing although our OWN live lock had to be in
+  // it (A1 fallback guarantees the own worktree is read even when git fails).
+  // -------------------------------------------------------------------------
+
+  it('I11: own repo — discovered surface returns nothing although our own live lock exists → degraded, not "no peers"', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: MY_UUID,
+      started_at: hoursBefore(NOW, 2),
+      last_heartbeat: hoursBefore(NOW, 0.5),
+      ttl_hours: 4,
+      pid: process.pid,
+    }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      now: NOW,
+      // Both surfaces broke internally: findPeers fails open per surface and
+      // can only ever say `{ peers: [] }` — indistinguishable from "measured,
+      // found nothing" WITHOUT the own-lock canary.
+      findPeersImpl: async () => ({ peers: [] }),
+    });
+
+    expect(verdict.live).toBe(true);
+    expect(verdict.reason).toBe('probe-degraded');
+    expect(verdict.probe).toBe('full-degraded');
+    expect(verdict.peerCount).toBe(0);
+  });
+
+  it('I11b: control — the canary is satisfied by our own entry, so a genuinely quiet repo still reports live:false', async () => {
+    // Same live own lock as I11; this time the surface DOES return it. The
+    // verdict must stay `no-peers` — otherwise the canary would be a
+    // "fail-safe that always says true" (the I8 failure mode, full-path twin).
+    writeLock(repoRoot, lockBody({
+      session_id: MY_UUID,
+      started_at: hoursBefore(NOW, 2),
+      last_heartbeat: hoursBefore(NOW, 0.5),
+      ttl_hours: 4,
+      pid: process.pid,
+    }));
+
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      now: NOW,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(verdict.live).toBe(false);
+    expect(verdict.reason).toBe('no-peers');
+    expect(verdict.probe).toBe('full');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group J — CLI entry (#908 Befund 3)
+//
+// The staleness-annotation rule (skills/wave-executor/wave-loop.md, Trigger 3)
+// is executed by a coordinator LLM, which has Bash and cannot run an ESM
+// `import`. Without an executable entry point the rule is inert. Contract
+// mirrors scripts/lib/fetch-baseline.mjs (a lib module with a documented CLI):
+// data → stdout, diagnostics → stderr, exit 0 = probe ran, 1 = usage error.
+// ---------------------------------------------------------------------------
+
+describe('Group J — checkLiveForeignSession CLI entry (#908)', () => {
+  const CLI = fileURLToPath(new URL('../../scripts/lib/peer-discovery.mjs', import.meta.url));
+
+  /** Run the CLI with the test's registry isolation intact. */
+  function runCli(args) {
+    return spawnSync(process.execPath, [CLI, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, SO_SESSION_REGISTRY_DIR: registryDir },
+    });
+  }
+
+  it('J1: --check-live --json on a lock-free repo → exit 0 and a parseable verdict on stdout', () => {
+    const foreignCwd = mkdtempSync(join(tmpdir(), 'peer-cli-cwd-'));
+    try {
+      const res = runCli(['--check-live', repoRoot, '--cwd', foreignCwd, '--json']);
+
+      expect(res.status).toBe(0);
+      const verdict = JSON.parse(res.stdout);
+      expect(verdict).toEqual({
+        live: false,
+        reason: 'no-lock',
+        probe: 'lock-only',
+        peerCount: 0,
+        peer: null,
+      });
+    } finally {
+      rmSync(foreignCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('J2: --check-live --json on a repo with a live lock → live:true (exit stays 0 — the verdict is the payload, not the exit code)', () => {
+    const foreignCwd = mkdtempSync(join(tmpdir(), 'peer-cli-cwd-'));
+    try {
+      writeLock(repoRoot, lockBody({ session_id: 'sess-cli-J2', pid: process.pid }));
+
+      const res = runCli(['--check-live', repoRoot, '--cwd', foreignCwd, '--json']);
+
+      expect(res.status).toBe(0);
+      const verdict = JSON.parse(res.stdout);
+      expect(verdict.live).toBe(true);
+      expect(verdict.reason).toBe('live-peer-lock');
+      expect(verdict.peer.sessionId).toBe('sess-cli-J2');
+    } finally {
+      rmSync(foreignCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('J3: missing <repoRoot> operand → exit 1, message on stderr, stdout stays empty (pipe-safe)', () => {
+    const res = runCli(['--check-live']);
+
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain('--check-live');
+  });
+
+  it('J4: no mode flag → exit 1 usage error (the module is a library first; the CLI is opt-in)', () => {
+    const res = runCli([]);
+
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe('');
+  });
+
+  it('J5: human (non---json) output names the verdict fields on stdout', () => {
+    const foreignCwd = mkdtempSync(join(tmpdir(), 'peer-cli-cwd-'));
+    try {
+      const res = runCli(['--check-live', repoRoot, '--cwd', foreignCwd]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('live=false');
+      expect(res.stdout).toContain('reason=no-lock');
+      expect(res.stdout).toContain('probe=lock-only');
+    } finally {
+      rmSync(foreignCwd, { recursive: true, force: true });
+    }
   });
 });
