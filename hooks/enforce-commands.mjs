@@ -13,10 +13,18 @@
  *   G5 enforcement != "off"
  *   G6 blocked pattern match against .blockedCommands[], or
  *      fallback safety list when .blockedCommands is empty
- *   G7 strict → deny (exit 2); warn → stderr + allow (exit 0); otherwise allow
+ *   G7 strict → deny; warn → stderr + allow; otherwise allow
+ *
+ * DECISION CHANNEL (post-#906): a deny is signalled by the single nested
+ *   PreToolUse JSON envelope emitDeny() writes to stdout, with exit **0** —
+ *   NOT by exit 2. The docs forbid the mixed form ("Exit 2 … Claude Code
+ *   ignores stdout and any JSON in it"), which silently discarded the reason
+ *   and surfaced to the operator as a crash. Do not reintroduce `exit 2` here.
+ *   Corollary: exit 0 alone no longer distinguishes allow from deny — the
+ *   envelope's presence does, and a malformed envelope fails OPEN.
  *
  * SECURITY-REQ-01: try/catch on main(). emitDeny on any unhandled error —
- *   exit 2, never exit 1. Null-guard readStdin() return.
+ *   fail-closed, never a bare exit 1. Null-guard readStdin() return.
  * SECURITY-REQ-07: FALLBACK_BLOCKED includes 'git push -f' and 'drop table'
  *   (short form + case variant gaps in the original Bash fallback list).
  * SECURITY-REQ-08: scope file read exactly once per invocation.

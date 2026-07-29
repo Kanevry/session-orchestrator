@@ -5,18 +5,37 @@
  *
  * The hook is a PreToolUse Edit|Write guard that intercepts edits to a small
  * allow-list of quality-gate config files (eslint / vitest / tsconfig /
- * prettier / commitlint / gitleaks) and WARNs (stderr + event, exit 0) — or, in
- * `strict` mode, BLOCKS (deny JSON, exit 2) — when an edit LOOSENS a gate.
- * First-time creation, tightening, neutral edits, non-config files, and a
- * Session Config bypass are always allowed.
+ * prettier / commitlint / gitleaks) and WARNs (stderr + event) — or, in
+ * `strict` mode, BLOCKS — when an edit LOOSENS a gate. First-time creation,
+ * tightening, neutral edits, non-config files, and a Session Config bypass are
+ * always allowed.
+ *
+ * DECISION CHANNEL (post-#906): both warn and block exit **0**. A block is
+ * signalled ONLY by the nested PreToolUse deny envelope on stdout
+ * ({hookSpecificOutput:{hookEventName,permissionDecision,permissionDecisionReason},
+ * systemMessage}) — the pre-#906 `exit 2` + flat {decision,reason} form is what
+ * the hooks docs forbid ("Exit 2 … Claude Code ignores stdout and any JSON in
+ * it"). Consequence for these tests: the exit code no longer discriminates
+ * warn from block, so warn/allow cases assert on the ABSENCE of that envelope
+ * (`expectNoDeny`) and block cases assert the parsed envelope (`expectDeny`).
  *
  * Strategy (mirrors tests/hooks/post-tool-batch.test.mjs + the CLAUDE.md-fixture
  * pattern from tests/hooks/post-subagent-discovery-validator.test.mjs): spawn
  * the hook via node with stdin piped, CLAUDE_PROJECT_DIR pointing to a tmp
  * sandbox, fixture config files written into the sandbox. For Write-loosening
  * cases the OLD file is pre-written; for Edit cases old_string/new_string are
- * passed directly. Assert exit code + the contents of events.jsonl (behaviour,
- * not implementation).
+ * passed directly. Assert the decision via `expectNoDeny`/`expectDeny` + the
+ * contents of events.jsonl (behaviour, not implementation).
+ *
+ * NO BARE `expect(result.status).toBe(0)` BELONGS IN THIS FILE. Under the
+ * post-#906 envelope the exit code is 0 for warn AND for block, so a bare
+ * exit-0 assertion is an assert-nothing: a per-rule warn→deny regression keeps
+ * `status === 0`, keeps the event (it is emitted BEFORE the decision split) and
+ * keeps `file`/`reasons` — every assertion in such a block stays green while the
+ * guard silently starts blocking edits. Verified empirically: forcing
+ * `disable-directive-added` to deny left all 27 tests green while the raw
+ * exit-0 form was in place. `expectNoDeny` adds the empty-stdout half that
+ * actually discriminates allow/warn from deny.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -30,6 +49,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { expectDeny, expectAllow as expectNoDeny } from '../_helpers/hook-decision.mjs';
 
 const HOOK = new URL('../../hooks/config-protection.mjs', import.meta.url).pathname;
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
@@ -162,7 +183,10 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 50, branches: 70 } } };\n')
     );
 
-    expect(result.status).toBe(0);
+    // Warn mode must NOT emit the deny envelope. Paired with test (2) below
+    // (same fixture, mode:strict) this is the warn-vs-block discriminator that
+    // the exit code used to carry (0 vs 2) and no longer can.
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe('orchestrator.config.protection_warning');
@@ -171,8 +195,8 @@ describe('config-protection hook', () => {
     expect(events[0].reasons.some((r) => r.startsWith('threshold-lowered'))).toBe(true);
   });
 
-  // (2) same edit + mode:strict → exit 2, deny JSON, action:blocked.
-  it('strict mode + threshold lowered → exit 2, deny JSON, action:blocked', () => {
+  // (2) same edit + mode:strict → deny envelope, action:blocked.
+  it('strict mode + threshold lowered → deny envelope, action:blocked', () => {
     writeClaudeMd(CLAUDE_MD_STRICT);
     const file = writeFixture(
       'vitest.config.ts',
@@ -183,10 +207,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 50 } } };\n')
     );
 
-    expect(result.status).toBe(2);
-    const out = JSON.parse(result.stdout.trim());
-    expect(out.permissionDecision).toBe('deny');
-    expect(out.reason).toContain('vitest.config.ts');
+    expectDeny(result, 'vitest.config.ts');
 
     const events = readEvents();
     expect(events).toHaveLength(1);
@@ -208,7 +229,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('eslint.config.mjs');
@@ -227,7 +248,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('.gitleaks.toml');
@@ -246,7 +267,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 90 } } };\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -266,7 +287,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -279,7 +300,7 @@ describe('config-protection hook', () => {
       editPayload(file, '// old comment\n', '// new comment, no rule change\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -293,7 +314,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 10 } } };\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -309,7 +330,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 50 } } };\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(result.stderr).toContain('config-protection bypassed');
     expect(readEvents()).toEqual([]);
   });
@@ -323,7 +344,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export const statements = 10;\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -339,7 +360,7 @@ describe('config-protection hook', () => {
       writePayload(file, 'export default { test: { coverage: { statements: 50 } } };\n')
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -359,7 +380,7 @@ describe('config-protection hook', () => {
       timeout: 10_000,
     });
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -372,7 +393,7 @@ describe('config-protection hook', () => {
       tool_input: { content: 'export default {};\n' },
     });
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -389,7 +410,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('tsconfig.json');
@@ -410,7 +431,7 @@ describe('config-protection hook', () => {
 
     const result = runHook(editPayload(file, '90', '10'));
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('vitest.config.ts');
@@ -440,7 +461,7 @@ describe('config-protection hook', () => {
 
     const result = runHook(editPayload(file, '      statements: 90,\n', ''));
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('vitest.config.base.ts');
@@ -458,7 +479,7 @@ describe('config-protection hook', () => {
 
     const result = runHook(editPayload(file, '70', '90'));
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -473,7 +494,7 @@ describe('config-protection hook', () => {
 
     const result = runHook(editPayload(file, 'nonexistent-anchor', '10'));
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -497,7 +518,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('eslint.config.mjs');
@@ -520,7 +541,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].reasons.some((r) => r.startsWith('rule-relaxed'))).toBe(true);
@@ -542,7 +563,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
@@ -568,7 +589,8 @@ describe('config-protection hook', () => {
       },
     });
 
-    expect(result.status).toBe(0);
+    // Warn-vs-block discriminator for the MultiEdit path (paired with F3c).
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('vitest.config.ts');
@@ -596,12 +618,12 @@ describe('config-protection hook', () => {
       },
     });
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     expect(readEvents()).toEqual([]);
   });
 
-  // (F3c) MultiEdit in strict mode that loosens → exit 2, deny, action:blocked.
-  it('MultiEdit loosening in strict mode → exit 2, deny JSON, action:blocked', () => {
+  // (F3c) MultiEdit in strict mode that loosens → deny envelope, action:blocked.
+  it('MultiEdit loosening in strict mode → deny envelope, action:blocked', () => {
     writeClaudeMd(CLAUDE_MD_STRICT);
     const file = writeFixture(
       'vitest.config.ts',
@@ -617,10 +639,7 @@ describe('config-protection hook', () => {
       },
     });
 
-    expect(result.status).toBe(2);
-    const out = JSON.parse(result.stdout.trim());
-    expect(out.permissionDecision).toBe('deny');
-    expect(out.reason).toContain('vitest.config.ts');
+    expectDeny(result, 'vitest.config.ts');
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].action).toBe('blocked');
@@ -642,7 +661,7 @@ describe('config-protection hook', () => {
 
     const result = runHook(editPayload(file, '"no-console": 2', '"no-console": 0'));
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('.eslintrc.json');
@@ -665,7 +684,7 @@ describe('config-protection hook', () => {
       )
     );
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].file).toBe('.eslintrc.cjs');
@@ -690,7 +709,7 @@ describe('config-protection hook', () => {
       },
     });
 
-    expect(result.status).toBe(0);
+    expectNoDeny(result);
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('main-2026-06-04-deep-1');

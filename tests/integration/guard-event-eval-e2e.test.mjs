@@ -42,6 +42,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { evaluateSession } from '@lib/eval/engine.mjs';
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -186,7 +187,9 @@ describe('guard-event → eval-engine E2E chain', { timeout: 30000 }, () => {
     const command = 'git reset --hard HEAD~1';
 
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(2);
+    // Deny travels on stdout under exit 0 (#906) — the reason must reach the
+    // operator, which `exit 2` structurally cannot deliver.
+    expectDeny(result, 'git reset --hard');
 
     const blockedEvents = readEvents(dir).filter(
       (e) => e.event === 'orchestrator.destructive_guard.blocked',
@@ -237,7 +240,10 @@ describe('guard-event → eval-engine E2E chain', { timeout: 30000 }, () => {
     const command = 'git status';
 
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(0);
+    // Exit 0 alone no longer separates allow from deny — both exit 0 since #906.
+    // The empty stdout is what makes this an allow assertion rather than a
+    // tautology that would also pass on a deny.
+    expectAllow(result);
 
     // Confirms the negative claim via the REAL chain: the allowed command
     // produced no destructive_guard.blocked event at all.

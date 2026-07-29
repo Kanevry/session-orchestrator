@@ -15,16 +15,23 @@
  *   5. Command with bypass_pattern passes through even with templates present
  *   6. No template files in repo → always pass through
  *
- * Design note: tests will be RED until Agent A commits
- * hooks/pre-bash-templates-first.mjs and .orchestrator/policy/templates-policy.json.
- * This is expected per the wave plan.
+ * Decision contract (#906): a block is `exit 0` + a `hookSpecificOutput`
+ * envelope on stdout — NOT `exit 2`, under which Claude Code discards stdout
+ * and the operator sees only "hook error … No stderr output". Because BOTH
+ * outcomes now exit 0, the exit code alone no longer discriminates: the deny
+ * carries exactly one envelope line on stdout, the allow carries nothing.
+ * expectDeny/expectAllow (tests/_helpers/hook-decision.mjs) assert that.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+// No bare `expect` here: every assertion in this file goes through the shared
+// decision helpers, which own the allow/deny contract (see the docblock above).
+import { describe, it, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -241,31 +248,34 @@ async function mkRepoTracked(opts) {
 // ---------------------------------------------------------------------------
 
 describe('glab mr create — gitlab MR template present, no ack', { timeout: 20000 }, () => {
-  it('exits 2 (blocked) for `glab mr create --title foo --description bar`', async () => {
+  it('denies `glab mr create --title foo --description bar`', async () => {
     const dir = await mkRepoTracked({ withGitlabMrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo --description bar'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
-  it('stderr lists the template path (.gitlab/merge_request_templates/Default.md)', async () => {
+  it('deny reason lists the template path (.gitlab/merge_request_templates/Default.md)', async () => {
     const dir = await mkRepoTracked({ withGitlabMrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expect(result.stderr).toContain('Default.md');
+    // Pre-#906 this rode on stderr under exit 2 — where Claude Code kept it but
+    // the JSON envelope was discarded. The template list now travels inside
+    // permissionDecisionReason, the only channel the operator actually sees.
+    expectDeny(result, 'Default.md');
   });
 
-  it('stderr contains the templates-ack bypass hint', async () => {
+  it('the deny reason contains the templates-ack bypass hint', async () => {
     const dir = await mkRepoTracked({ withGitlabMrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expect(result.stderr).toContain('templates-ack');
+    expectDeny(result, 'templates-ack');
   });
 });
 
@@ -274,7 +284,7 @@ describe('glab mr create — gitlab MR template present, no ack', { timeout: 200
 // ---------------------------------------------------------------------------
 
 describe('glab mr create — ack file present for current session', { timeout: 20000 }, () => {
-  it('exits 0 when templates-acknowledged.json contains the current session_id', async () => {
+  it('allows (exit 0, empty stdout) when templates-acknowledged.json contains the current session_id', async () => {
     const sessionId = 'integration-ack-session-xyz';
     const dir = await mkRepoTracked({
       withGitlabMrTemplate: true,
@@ -284,10 +294,11 @@ describe('glab mr create — ack file present for current session', { timeout: 2
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo', sessionId),
     });
-    expect(result.code).toBe(0);
+    // Empty stdout is the allow signal — exit 0 alone would also pass on a deny.
+    expectAllow(result);
   });
 
-  it('exits 2 when ack file exists but records a different session_id', async () => {
+  it('denies when ack file exists but records a different session_id', async () => {
     const dir = await mkRepoTracked({
       withGitlabMrTemplate: true,
       ackSessionId: 'old-session-from-yesterday',
@@ -296,7 +307,7 @@ describe('glab mr create — ack file present for current session', { timeout: 2
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo', 'current-session-not-acked'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -305,22 +316,22 @@ describe('glab mr create — ack file present for current session', { timeout: 2
 // ---------------------------------------------------------------------------
 
 describe('gh pr create — github PR template present, no ack', { timeout: 20000 }, () => {
-  it('exits 2 (blocked) for `gh pr create --title "my PR" --body "changes"`', async () => {
+  it('denies `gh pr create --title "my PR" --body "changes"`', async () => {
     const dir = await mkRepoTracked({ withGithubPrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh pr create --title "my PR" --body "changes"'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
-  it('stderr lists the template path (PULL_REQUEST_TEMPLATE.md)', async () => {
+  it('deny reason lists the template path (PULL_REQUEST_TEMPLATE.md)', async () => {
     const dir = await mkRepoTracked({ withGithubPrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh pr create --title "my PR"'),
     });
-    expect(result.stderr).toContain('PULL_REQUEST_TEMPLATE.md');
+    expectDeny(result, 'PULL_REQUEST_TEMPLATE.md');
   });
 });
 
@@ -329,22 +340,22 @@ describe('gh pr create — github PR template present, no ack', { timeout: 20000
 // ---------------------------------------------------------------------------
 
 describe('gh issue new — github issue template present, no ack', { timeout: 20000 }, () => {
-  it('exits 2 (blocked) for `gh issue new --title "bug" --body "desc"`', async () => {
+  it('denies `gh issue new --title "bug" --body "desc"`', async () => {
     const dir = await mkRepoTracked({ withGithubIssueTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh issue new --title "bug" --body "desc"'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
-  it('stderr lists the issue template path (ISSUE_TEMPLATE/bug_report.md)', async () => {
+  it('deny reason lists the issue template path (ISSUE_TEMPLATE/bug_report.md)', async () => {
     const dir = await mkRepoTracked({ withGithubIssueTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh issue new --title "bug"'),
     });
-    expect(result.stderr).toContain('bug_report.md');
+    expectDeny(result, 'bug_report.md');
   });
 });
 
@@ -353,22 +364,22 @@ describe('gh issue new — github issue template present, no ack', { timeout: 20
 // ---------------------------------------------------------------------------
 
 describe('bypass_pattern — always passes through', { timeout: 20000 }, () => {
-  it('exits 0 for `glab mr create --dry-run` when --dry-run is in bypass_patterns', async () => {
+  it('allows `glab mr create --dry-run` when --dry-run is in bypass_patterns', async () => {
     const dir = await mkRepoTracked({ withGitlabMrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --dry-run --title foo'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
-  it('exits 0 for `gh pr create --help` when --help is in bypass_patterns', async () => {
+  it('allows `gh pr create --help` when --help is in bypass_patterns', async () => {
     const dir = await mkRepoTracked({ withGithubPrTemplate: true });
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh pr create --help'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -377,23 +388,23 @@ describe('bypass_pattern — always passes through', { timeout: 20000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('no template files present → always allow', { timeout: 20000 }, () => {
-  it('exits 0 for `glab mr create` when no .gitlab/merge_request_templates/ exists', async () => {
+  it('allows `glab mr create` when no .gitlab/merge_request_templates/ exists', async () => {
     // Policy present but no templates in the repo
     const dir = await mkRepoTracked();
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
-  it('exits 0 for `gh pr create` when no .github/PULL_REQUEST_TEMPLATE.md exists', async () => {
+  it('allows `gh pr create` when no .github/PULL_REQUEST_TEMPLATE.md exists', async () => {
     const dir = await mkRepoTracked();
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('gh pr create --title my-pr'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -402,7 +413,7 @@ describe('no template files present → always allow', { timeout: 20000 }, () =>
 // ---------------------------------------------------------------------------
 
 describe('multiple template directories present', { timeout: 20000 }, () => {
-  it('exits 2 for `glab mr create` when both gitlab and github templates exist', async () => {
+  it('denies `glab mr create` when both gitlab and github templates exist', async () => {
     const dir = await mkRepoTracked({
       withGitlabMrTemplate: true,
       withGithubPrTemplate: true,
@@ -411,10 +422,10 @@ describe('multiple template directories present', { timeout: 20000 }, () => {
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
-  it('stderr for glab lists at least the gitlab template (not only github)', async () => {
+  it('deny reason for glab lists at least the gitlab template (not only github)', async () => {
     const dir = await mkRepoTracked({
       withGitlabMrTemplate: true,
       withGithubPrTemplate: true,
@@ -423,7 +434,7 @@ describe('multiple template directories present', { timeout: 20000 }, () => {
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expect(result.stderr).toContain('Default.md');
+    expectDeny(result, 'Default.md');
   });
 });
 
@@ -432,7 +443,7 @@ describe('multiple template directories present', { timeout: 20000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('ack file written by hook persists for session', { timeout: 20000 }, () => {
-  it('second run with same session_id still exits 0 after ack', async () => {
+  it('second run with same session_id is still allowed after ack', async () => {
     const sessionId = 'reuse-ack-session-abc';
     const dir = await mkRepoTracked({
       withGitlabMrTemplate: true,
@@ -444,13 +455,13 @@ describe('ack file written by hook persists for session', { timeout: 20000 }, ()
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo', sessionId),
     });
-    expect(first.code).toBe(0);
+    expectAllow(first);
 
     // Second run in same session — ack file still present, still allowed
     const second = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title bar', sessionId),
     });
-    expect(second.code).toBe(0);
+    expectAllow(second);
   });
 });

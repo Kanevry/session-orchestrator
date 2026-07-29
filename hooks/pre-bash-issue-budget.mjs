@@ -24,7 +24,7 @@
  *      the session-end promises at SKILL.md:319 and :1113 intact.
  *   G6 charge the counter in .orchestrator/runtime/issue-budget.json.
  *      under cap → allow; over cap + `warn` → allow with stderr notice;
- *      over cap + `strict` → park in `overflow[]`, deny, exit 2.
+ *      over cap + `strict` → park in `overflow[]`, then deny via emitDeny.
  *
  * Fail-safe posture: any internal exception is swallowed in main().catch and
  * the hook exits 0 (allow). Same rationale as pre-bash-templates-first.mjs —
@@ -32,11 +32,13 @@
  * missed enforcement.
  *
  * Exit codes:
- *   0  — pass-through (G1-G5 short-circuits, under cap, warn mode, error)
- *   2  — deny + structured JSON on stdout
+ *   0  — every path. Pass-through (G1-G5 short-circuits, under cap, warn mode,
+ *        error) emits nothing; the strict over-cap path emits the deny envelope
+ *        on stdout. Exit 2 is NEVER used: Claude Code discards stdout on exit 2,
+ *        which would throw away the deny envelope entirely (#906).
  */
 
-import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { isIssueCreate, extractTitle } from './_lib/vcs-create-matcher.mjs';
@@ -141,12 +143,15 @@ async function main() {
   }
 
   if (verdict.decision === 'block') {
-    const reason = formatBlockReason(verdict);
-    process.stderr.write(reason + '\n');
-    process.stdout.write(
-      JSON.stringify({ permissionDecision: 'deny', reason }) + '\n',
-    );
-    process.exit(2);
+    // Single channel (#906). formatBlockReason's multi-line text — overflow
+    // store path, the [Backlog-Sammel] fold-in promise, the exemption list and
+    // the cap-raising hint — used to go to stderr AND to a duplicated `exit 2`
+    // stdout envelope, the mixed form the hook docs forbid. None of that
+    // guidance is lost: it now rides in permissionDecisionReason, which is fed
+    // to Claude (the actor that must re-file or defer the issue), while the
+    // operator gets the first line as the systemMessage headline. Under exit 0
+    // a stderr write would only reach the debug log — dead, but alive-looking.
+    emitDeny(formatBlockReason(verdict));
   }
 
   // 'allow' / 'off'

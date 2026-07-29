@@ -6,7 +6,16 @@
  * Strategy: spawn the hook as a subprocess, pipe JSON on stdin,
  * assert exit code and stderr for each behavioural case.
  *
- * Issue: #155 (deliverable 2)
+ * Exit-code contract (#906): EVERY path exits 0. A deny is signalled by the
+ * `hookSpecificOutput` envelope on stdout, never by exit 2 — Claude Code
+ * discards stdout on exit 2, so the whole deny reason would be thrown away.
+ * Because allow and deny now share exit 0, a bare `expect(code).toBe(0)` no
+ * longer distinguishes them: use `expectDeny` / `expectAllow` below, which
+ * assert on the stdout envelope. That distinction is the whole point of these
+ * assertions — without it a regression that lost the envelope would read as a
+ * silent ALLOW of a destructive command and the suite would stay green.
+ *
+ * Issue: #155 (deliverable 2), #906 (deny-envelope migration)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -15,6 +24,8 @@ import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
+
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -194,6 +205,10 @@ function nonBashPayload() {
   return JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' } });
 }
 
+// ---------------------------------------------------------------------------
+// Deny / allow assertions (#906 PreToolUse envelope contract)
+// ---------------------------------------------------------------------------
+
 /** Read + parse a project's events.jsonl records (skips blank lines). */
 function readEvents(projectDir) {
   const p = path.join(projectDir, EVENTS_REL);
@@ -213,7 +228,7 @@ describe('tool filter', { timeout: 15000 }, () => {
   it('exits 0 for non-Bash tool (Edit)', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: nonBashPayload() });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -230,7 +245,7 @@ describe('missing policy file', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('policy file not found');
   });
 });
@@ -248,7 +263,7 @@ describe('allow-destructive-ops bypass', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('bypassed');
   });
 
@@ -258,7 +273,7 @@ describe('allow-destructive-ops bypass', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -273,17 +288,7 @@ describe('severity block — git reset --hard', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(2);
-  });
-
-  it('stdout contains permissionDecision deny', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('git reset --hard HEAD~1'),
-    });
-    const json = JSON.parse(result.stdout);
-    expect(json.permissionDecision).toBe('deny');
+    expectDeny(result);
   });
 
   it('deny reason references the pattern and rule id', async () => {
@@ -292,8 +297,9 @@ describe('severity block — git reset --hard', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.stdout).toContain('git reset --hard');
-    expect(result.stdout).toContain('git-reset-hard');
+    const reason = expectDeny(result).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain('git reset --hard');
+    expect(reason).toContain('git-reset-hard');
   });
 
   it('deny reason includes Override hint', async () => {
@@ -302,7 +308,42 @@ describe('severity block — git reset --hard', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.stdout).toContain('allow-destructive-ops');
+    expectDeny(result, 'allow-destructive-ops');
+  });
+
+  // #906 anti-regression anchor. The pre-#906 hook wrote a flat
+  // `{permissionDecision, reason}` object to stdout and exited 2 — under which
+  // Claude Code discards stdout and reads stderr, and this hook wrote NO
+  // stderr. The operator therefore saw `hook error: … No stderr output`, i.e.
+  // what reads as a crash, for a block that had in fact fired. No test caught
+  // that because every assertion pinned `exit 2`, the defect itself. This test
+  // pins the repaired contract end to end: the multi-line reason must survive
+  // whole for Claude, AND the operator must get a visible headline.
+  it('#906: denies via a single exit-0 envelope that keeps the full 4-line reason and an operator headline', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard HEAD~1'),
+    });
+    const reason = expectDeny(result).hookSpecificOutput.permissionDecisionReason;
+
+    // All four reason lines reach Claude verbatim through the JSON escaping.
+    expect(reason.split('\n')).toEqual([
+      "Destructive command blocked: 'git reset --hard' (rule: git-reset-hard)",
+      'Reason: Destroys staged or committed work that may belong to another session.',
+      'Override: Set `allow-destructive-ops: true` in Session Config if intentional.',
+      'See: issue #155, .claude/rules/parallel-sessions.md (PSA-003)',
+    ]);
+
+    // The operator half: a short, visible headline derived from line 1.
+    const out = JSON.parse(result.stdout);
+    expect(out.systemMessage).toBe(
+      "⛔ Destructive command blocked: 'git reset --hard' (rule: git-reset-hard)",
+    );
+
+    // The deprecated flat form must not come back alongside the envelope.
+    expect(out.permissionDecision).toBeUndefined();
+    expect(out.reason).toBeUndefined();
   });
 });
 
@@ -313,7 +354,7 @@ describe('severity block — git push --force', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git push --force origin main'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('exits 2 for "git push -f" short form', async () => {
@@ -322,7 +363,7 @@ describe('severity block — git push --force', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git push -f origin main'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -333,7 +374,7 @@ describe('severity block — git clean -f', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git clean -f'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -344,7 +385,7 @@ describe('severity block — git restore .', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git restore .'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -359,7 +400,7 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf src/'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('exits 0 (allowed) for "rm -rf .orchestrator/tmp/foo"', async () => {
@@ -368,7 +409,7 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(`rm -rf ${path.join(dir, '.orchestrator/tmp/foo')}`),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('exits 0 (allowed) for relative path .orchestrator/tmp/something', async () => {
@@ -377,7 +418,7 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf .orchestrator/tmp/something'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('exits 0 (allowed) for "rm -rf node_modules"', async () => {
@@ -386,7 +427,7 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf node_modules'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('exits 2 (blocked) for "rm -rf /" (root)', async () => {
@@ -395,7 +436,7 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf /'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -410,7 +451,7 @@ describe('#641 rm -rf /tmp allowlist (exit 0)', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
@@ -419,7 +460,7 @@ describe('#641 rm -rf /tmp allowlist (exit 0)', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf /private/tmp/foo'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
@@ -429,7 +470,7 @@ describe('#641 rm -rf /tmp allowlist (exit 0)', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(`rm -rf ${target}`),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -446,7 +487,7 @@ describe('#641 quoted-payload false positives (exit 0)', { timeout: 15000 }, () 
     const evidence = 'see ' + 'git ' + 'reset --hard note';
     const command = `node scripts/memory-propose.mjs --insight "${insight}" --evidence "${evidence}"`;
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows node script with a force-push warning string in a quoted arg', async () => {
@@ -454,14 +495,14 @@ describe('#641 quoted-payload false positives (exit 0)', { timeout: 15000 }, () 
     const msg = 'do not run ' + 'git ' + 'push --force';
     const command = `node x.mjs --msg "${msg}"`;
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows echo of a quoted destructive literal', async () => {
     const dir = await mkProjectTracked();
     const command = 'echo "' + 'rm ' + '-rf /"';
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -490,14 +531,14 @@ describe('#641 bypass vectors still blocked (exit 2)', { timeout: 30000 }, () =>
   it.each(vectors)('blocks bypass vector: %s', async (_label, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks mixed chain where one rm target is non-allowlisted', async () => {
     const dir = await mkProjectTracked();
     const command = `${RMRF} /tmp/x; ${RMRF} src/`;
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -519,7 +560,7 @@ describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 1500
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/../etc'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "rm -rf /tmp/x/../../etc" (deeper traversal escapes to /etc)', async () => {
@@ -528,7 +569,7 @@ describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 1500
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/x/../../etc'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "rm -rf /private/tmp/../etc" (macOS canonical /tmp traversal escape)', async () => {
@@ -537,7 +578,7 @@ describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 1500
       projectDir: dir,
       stdin: bashPayload('rm -rf /private/tmp/../etc'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "rm -rf /tmp/ /etc" (one allowlisted + one non-allowlisted target)', async () => {
@@ -546,7 +587,7 @@ describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 1500
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/ /etc'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -557,7 +598,7 @@ describe('#641 rm -rf /tmp allowlist legit controls (exit 0)', { timeout: 15000 
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/x'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows "rm -rf /tmp/wondraiwork-632" (original #641 FP case)', async () => {
@@ -566,7 +607,7 @@ describe('#641 rm -rf /tmp allowlist legit controls (exit 0)', { timeout: 15000 
       projectDir: dir,
       stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -581,7 +622,7 @@ describe('#641 rm flag-form gap closures (exit 2)', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -r -f /data'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "rm -fr /data" (reordered combined flags)', async () => {
@@ -590,7 +631,7 @@ describe('#641 rm flag-form gap closures (exit 2)', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -fr /data'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -610,7 +651,7 @@ describe('#642 rm whitespace-obfuscation gap closures (exit 2)', { timeout: 1500
       projectDir: dir,
       stdin: bashPayload(command),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -622,7 +663,7 @@ describe('#642 TMPDIR allowlist confinement', { timeout: 15000 }, () => {
       stdin: bashPayload('rm -rf /etc/sneaky'),
       env: { TMPDIR: '/etc' },
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('allows inherited TMPDIR when it stays under a canonical temp root', async () => {
@@ -633,7 +674,7 @@ describe('#642 TMPDIR allowlist confinement', { timeout: 15000 }, () => {
       stdin: bashPayload(`rm -rf ${tmp}/scratch`),
       env: { TMPDIR: tmp },
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -649,7 +690,7 @@ describe('git-stash-any — conditional warn', { timeout: 30000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git stash'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     // Should be silent (no ⚠ stash warning)
     expect(result.stderr).not.toContain('git-stash-any');
   });
@@ -671,7 +712,7 @@ describe('git-stash-any — conditional warn', { timeout: 30000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git stash'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('git-stash-any');
   });
 });
@@ -692,7 +733,7 @@ describe('malformed policy', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('malformed');
   });
 
@@ -704,7 +745,7 @@ describe('malformed policy', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git reset --hard HEAD~1'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('rules');
   });
 });
@@ -720,7 +761,7 @@ describe('no match → allow', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git status'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('exits 0 for "ls -la"', async () => {
@@ -729,7 +770,7 @@ describe('no match → allow', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('ls -la'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -744,7 +785,7 @@ describe('severity warn — git revert', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git revert HEAD'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('⚠');
     expect(result.stderr).toContain('git-revert-commit');
   });
@@ -761,7 +802,7 @@ describe('shell-operator bypass — conservative blocking', { timeout: 15000 }, 
       projectDir: dir,
       stdin: bashPayload('ls; git reset --hard HEAD'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('exits 2 for subshell: "(git reset --hard HEAD)"', async () => {
@@ -770,7 +811,7 @@ describe('shell-operator bypass — conservative blocking', { timeout: 15000 }, 
       projectDir: dir,
       stdin: bashPayload('(git reset --hard HEAD)'),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
@@ -800,7 +841,7 @@ describe('policy cache mtime-invalidation — #250', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('foo-destructive-marker --yes'),
     });
-    expect(first.code).toBe(0);
+    expectAllow(first);
 
     // Modify policy on disk: same pattern now blocks. Advance mtime to ensure
     // the cache-invalidation contract (mtime comparison) would trigger a reload
@@ -830,11 +871,8 @@ describe('policy cache mtime-invalidation — #250', { timeout: 15000 }, () => {
       stdin: bashPayload('foo-destructive-marker --yes'),
     });
 
-    // Assert: hook now blocks (exit 2, deny in stdout).
-    expect(second.code).toBe(2);
-    const json = JSON.parse(second.stdout);
-    expect(json.permissionDecision).toBe('deny');
-    expect(second.stdout).toContain('foo-marker');
+    // Assert: hook now denies.
+    expectDeny(second, 'foo-marker');
   });
 });
 
@@ -847,7 +885,7 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
     const dir = await mkProjectTracked();
     const command = 'git reset --hard HEAD~1';
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(2);
+    expectDeny(result);
 
     const events = readEvents(dir).filter((e) => e.event === 'orchestrator.destructive_guard.blocked');
     expect(events).toHaveLength(1);
@@ -864,7 +902,7 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
     const dir = await mkProjectTracked();
     const command = 'git revert HEAD';
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expect(result.code).toBe(0);
+    expectAllow(result);
 
     const events = readEvents(dir).filter((e) => e.event === 'orchestrator.destructive_guard.warned');
     expect(events).toHaveLength(1);
@@ -875,7 +913,7 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
     expect(raw).not.toContain(command);
   });
 
-  it('still blocks (exit 2) when the events.jsonl destination is unwritable', async () => {
+  it('still denies when the events.jsonl destination is unwritable', async () => {
     const dir = await mkProjectTracked();
     // Route SO_PROJECT_DIR (events.mjs resolution) at an unwritable path so
     // emitEvent's fs.mkdir throws — the block-decision path (found via
@@ -886,8 +924,6 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
       stdin: bashPayload('git reset --hard HEAD~1'),
       env: { CLAUDE_PROJECT_DIR: unwritablePath('destructive-guard-events') },
     });
-    expect(result.code).toBe(2);
-    const json = JSON.parse(result.stdout);
-    expect(json.permissionDecision).toBe('deny');
+    expectDeny(result, 'git-reset-hard');
   });
 });

@@ -16,7 +16,7 @@
  *   G4 policy load: .orchestrator/policy/blocked-commands.json
  *      Missing → exit 0 (warn). Malformed → exit 0 (warn).
  *   G5 rule evaluation per rule in policy.rules
- *      severity:"block" → exit 2 with deny message
+ *      severity:"block" → deny envelope on stdout via emitDeny, exit 0 (#906)
  *      severity:"warn"  → emit warning, exit 0 (allow)
  *      Special cases:
  *        git-stash-any: only warn when stash is non-empty
@@ -31,7 +31,7 @@
  * finalized; a telemetry failure never changes the guard's decision.
  */
 
-import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
 import { commandMatchesBlocked, tokenizeCommand } from '../scripts/lib/hardening.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
@@ -115,14 +115,28 @@ function resolveSessionId(input) {
 }
 
 /**
- * Block a command: write structured deny JSON to stdout + exit 2.
- * Uses raw process.exit(2) rather than emitDeny to emit the exact
- * multi-line message format required by the spec.
+ * Block a command: emit the PreToolUse deny envelope via emitDeny (exit 0).
+ *
+ * Until #906 this used a raw `process.exit(2)` plus its own stdout write,
+ * justified by a claim that the multi-line message "required by the spec"
+ * could not go through emitDeny. That claim was false in both halves:
+ *   - Claude Code DISCARDS stdout on exit 2 and reads stderr instead — and
+ *     this function wrote nothing to stderr, so the operator saw only
+ *     `hook error: … No stderr output`, i.e. what looks like a crash. This
+ *     was the single worst instance of that symptom in the repo.
+ *   - emitDeny preserves multi-line reasons verbatim: JSON.stringify escapes
+ *     the newlines, so the exact 4-line reason below round-trips unchanged
+ *     inside `permissionDecisionReason` on ONE stdout line (verified against
+ *     this very reason string). The operator additionally gets the first line
+ *     as the `systemMessage` headline.
  *
  * Emits a best-effort `orchestrator.destructive_guard.blocked` telemetry
- * event BEFORE exiting. Emission failure (e.g. unwritable events.jsonl path)
+ * event BEFORE denying. Emission failure (e.g. unwritable events.jsonl path)
  * must NEVER change the block outcome — the guard's block-decision is
- * strictly independent of telemetry success.
+ * strictly independent of telemetry success. emitDeny never returns, so it
+ * MUST stay the last statement here.
+ *
+ * @returns {Promise<never>}
  */
 async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
   const reason = [
@@ -142,9 +156,8 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
     // Best-effort — telemetry must never block or alter the guard decision.
   }
 
-  // Structured deny for Claude Code hook protocol
-  process.stdout.write(JSON.stringify({ permissionDecision: 'deny', reason }) + '\n');
-  process.exit(2);
+  // Structured deny for the Claude Code PreToolUse hook protocol. Never returns.
+  emitDeny(reason);
 }
 
 /**

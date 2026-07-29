@@ -7,7 +7,24 @@
  * and stdout/stderr for each behavioural case derived from the baseline spec
  * (v3-wave-hooks-baseline.md Part 4) plus security regressions.
  *
- * Issues: #137 (hook implementation), #143–#145 (test migration wave)
+ * ## Deny channel contract (#906)
+ *
+ * A deny is `exit 0` + exactly one JSON line on stdout — never `exit 2`. The
+ * official hook docs are explicit: "Exit 2 means a blocking error. Claude Code
+ * ignores stdout and any JSON in it" and "You must choose one approach per hook,
+ * not both". The pre-#906 hook did both at once, so the denial reason was
+ * discarded and the operator saw `hook error: … No stderr output` — a block that
+ * looks like a crash.
+ *
+ * Assertions here therefore go through `expectDeny` / `expectAllow`, which
+ * JSON.parse stdout. They deliberately do NOT substring-match
+ * `'"permissionDecision":"deny"'`: that substring survives ANY re-nesting of the
+ * envelope (it stayed byte-for-byte intact when the flat top-level form moved
+ * inside `hookSpecificOutput`), so the ~19 assertions written that way passed
+ * straight through the very protocol change they looked like they were pinning.
+ * They were the softest assertions in the corpus, disguised as the hardest.
+ *
+ * Issues: #137 (hook implementation), #143–#145 (test migration wave), #906 (deny channel)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -16,11 +33,17 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/enforce-scope.mjs');
+
+// ---------------------------------------------------------------------------
+// Contract assertions — #906
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,7 +143,7 @@ function editPayload(filePath, tool = 'Edit') {
 // ---------------------------------------------------------------------------
 
 describe('tool filter', { timeout: 15000 }, () => {
-  it('exits 0 when tool_name is Bash (not Edit, Write, or MultiEdit)', async () => {
+  it('allows silently when tool_name is Bash (not Edit, Write, or MultiEdit)', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -132,7 +155,7 @@ describe('tool filter', { timeout: 15000 }, () => {
         tool_input: { command: 'echo hi' },
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -141,7 +164,7 @@ describe('tool filter', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('allow path — strict mode', { timeout: 15000 }, () => {
-  it('exits 0 when file is inside an allowedPaths directory prefix', async () => {
+  it('allows a file inside an allowedPaths directory prefix', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/', 'lib/'],
@@ -150,10 +173,29 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
-  it('exits 0 when file matches a recursive glob pattern in a nested subdirectory', async () => {
+  it('emits NOTHING on stdout for an allowed path — the only discriminator from deny under exit 0 (#906)', async () => {
+    // Both allow and deny now exit 0. If an allow ever printed an envelope — or a
+    // deny ever printed nothing — the harness could not tell them apart, and the
+    // ambiguous case resolves as "nothing to say" ⇒ the tool call goes through.
+    // This test pins the silent half of that pair explicitly, so a future edit
+    // that makes emitAllow chatty is caught here and not in production.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
+  it('allows a file matching a recursive glob pattern in a nested subdirectory', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/**/*.tsx'],
@@ -163,10 +205,10 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'components', 'Button.tsx')),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
-  it('exits 0 when MultiEdit targets an allowed path', async () => {
+  it('allows MultiEdit targeting an allowed path', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -175,7 +217,7 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts'), 'MultiEdit'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -184,7 +226,7 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('deny path — strict mode', { timeout: 15000 }, () => {
-  it('exits 2 when file is outside allowedPaths in strict mode', async () => {
+  it('denies a file outside allowedPaths in strict mode', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/', 'lib/'],
@@ -193,22 +235,31 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 
-  it('stdout JSON contains permissionDecision deny when path is blocked', async () => {
+  it('denies with exit code 0, never 2 — mixing channels makes Claude Code discard the JSON (#906)', async () => {
+    // Regression lock on the exact defect: the hook used to print the envelope
+    // AND exit 2. Per the docs, exit 2 "ignores stdout and any JSON in it" and
+    // feeds stderr back instead — but this hook writes no stderr on deny, so the
+    // reason vanished and the operator saw `hook error: … No stderr output`.
     const dir = await mkProjectTracked({
       enforcement: 'strict',
-      allowedPaths: ['src/', 'lib/'],
+      allowedPaths: ['src/'],
     });
     const result = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
     });
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expect(result.code).toBe(0);
+    expect(result.code).not.toBe(2);
+    // Exactly one line on stdout — consumers that parse stdout line-wise
+    // (scripts/lib/pi-hook-bridge.mjs) depend on the single-line shape.
+    expect(result.stdout.trim().split('\n')).toHaveLength(1);
+    expectDeny(result);
   });
 
-  it('exits 2 when allowedPaths is empty and any file is edited', async () => {
+  it('denies when allowedPaths is empty and any file is edited', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: [],
@@ -217,10 +268,10 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'README.md')),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 
-  it('exits 2 when MultiEdit targets an out-of-scope path', async () => {
+  it('denies MultiEdit targeting an out-of-scope path', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -229,20 +280,7 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts'), 'MultiEdit'),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
-  });
-
-  it('stdout JSON contains permissionDecision deny for empty allowedPaths', async () => {
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: [],
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'README.md')),
-    });
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result);
   });
 });
 
@@ -251,7 +289,10 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('warn mode', { timeout: 15000 }, () => {
-  it('exits 0 when enforcement is warn and file is out-of-scope', async () => {
+  it('allows an out-of-scope write in warn mode and emits NO deny envelope on stdout', async () => {
+    // emitWarn = stderr + exit 0. The stdout-empty half is load-bearing: if warn
+    // ever routed through emitDeny it would still exit 0, so only the empty
+    // stdout distinguishes "warned but permitted" from "blocked".
     const dir = await mkProjectTracked({
       enforcement: 'warn',
       allowedPaths: ['src/'],
@@ -261,6 +302,7 @@ describe('warn mode', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'tests', 'x.ts')),
     });
     expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('writes a warning containing ⚠ to stderr in warn mode', async () => {
@@ -273,6 +315,7 @@ describe('warn mode', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'tests', 'x.ts')),
     });
     expect(result.stderr).toContain('⚠');
+    expect(result.stderr).toContain('not in allowed paths');
   });
 });
 
@@ -281,7 +324,7 @@ describe('warn mode', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('enforcement off', { timeout: 15000 }, () => {
-  it('exits 0 regardless of file path when enforcement is off', async () => {
+  it('allows regardless of file path when enforcement is off', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'off',
       allowedPaths: ['src/'],
@@ -290,7 +333,7 @@ describe('enforcement off', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'etc', 'something.ts')),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -299,7 +342,7 @@ describe('enforcement off', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('gate disabled — path-guard=false', { timeout: 15000 }, () => {
-  it('exits 0 even for out-of-scope files when gates.path-guard is false', async () => {
+  it('allows out-of-scope files when gates.path-guard is false', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -309,7 +352,7 @@ describe('gate disabled — path-guard=false', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'forbidden', 'file.ts')),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -318,7 +361,7 @@ describe('gate disabled — path-guard=false', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('no scope file', { timeout: 15000 }, () => {
-  it('exits 0 when .claude/wave-scope.json does not exist', async () => {
+  it('allows when .claude/wave-scope.json does not exist', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-noscope-'));
     tmpDirs.push(dir);
     const { $ } = await import('zx');
@@ -329,7 +372,7 @@ describe('no scope file', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -338,7 +381,7 @@ describe('no scope file', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('path outside project root', { timeout: 15000 }, () => {
-  it('exits 2 in strict mode when file_path is outside the project root', async () => {
+  it('denies in strict mode when file_path is outside the project root', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -347,19 +390,7 @@ describe('path outside project root', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload('/etc/passwd'),
     });
-    expect(result.code).toBe(2);
-  });
-
-  it('stdout JSON contains permissionDecision deny for path outside project root', async () => {
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: ['src/'],
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload('/etc/passwd'),
-    });
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'path outside project root' });
   });
 });
 
@@ -368,7 +399,7 @@ describe('path outside project root', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('relative file_path resolution — SECURITY-REQ-06', { timeout: 15000 }, () => {
-  it('exits 0 for relative path "src/app.ts" resolved against CLAUDE_PROJECT_DIR when in-scope', async () => {
+  it('allows relative path "src/app.ts" resolved against CLAUDE_PROJECT_DIR when in-scope', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
       allowedPaths: ['src/'],
@@ -377,7 +408,7 @@ describe('relative file_path resolution — SECURITY-REQ-06', { timeout: 15000 }
       projectDir: dir,
       stdin: editPayload('src/app.ts'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -387,7 +418,7 @@ describe('relative file_path resolution — SECURITY-REQ-06', { timeout: 15000 }
 
 describe('symlink-escape regression — SECURITY-REQ-03 / F-02', { timeout: 15000 }, () => {
   it.skipIf(process.platform === 'win32')(
-    'exits 2 in strict mode when file_path resolves via symlink to a path outside project root',
+    'denies in strict mode when file_path resolves via symlink to a path outside project root',
     async () => {
       const dir = await mkProjectTracked({
         enforcement: 'strict',
@@ -406,8 +437,7 @@ describe('symlink-escape regression — SECURITY-REQ-03 / F-02', { timeout: 1500
         stdin: editPayload(symlinkPath),
       });
       // After realpath resolution /etc/passwd is outside project root → deny
-      expect(result.code).toBe(2);
-      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      expectDeny(result, { reasonContains: 'path outside project root' });
     },
   );
 });
@@ -424,8 +454,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(statePath),
     });
-    expect(result.code).toBe(0);
-    expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+    expectAllow(result);
   });
 
   it('allows STATE.md write when allowedPaths does not include it (strict)', async () => {
@@ -439,7 +468,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(statePath),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows .pi/STATE.md write when allowedPaths does not include it (strict)', async () => {
@@ -455,7 +484,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(statePath),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows wave-scope.json write (the manifest the hook itself reads)', async () => {
@@ -468,7 +497,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(scopePath, 'Write'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('does NOT carve out sibling files in .claude/ (narrow allowlist)', async () => {
@@ -482,8 +511,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(sibling),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: '.claude/notes.md' });
   });
 
   it('does NOT carve out a file that merely contains STATE.md in its name', async () => {
@@ -497,7 +525,7 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(fake),
     });
-    expect(result.code).toBe(2);
+    expectDeny(result, { reasonContains: '.claude/STATE.md.bak' });
   });
 });
 
@@ -526,9 +554,10 @@ describe('Discovery-wave deny-all semantics — #256 NO-OP regression lock', { t
       stdin: editPayload(path.join(dir, 'README.md')),
     });
     // Deny semantics MUST be preserved: empty allowedPaths in strict mode
-    // means "Discovery wave — read-only". Exit code non-zero + deny decision.
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    // means "Discovery wave — read-only". A lazy-skip would turn this into a
+    // silent allow, which under the exit-0 contract is an EMPTY stdout — so the
+    // envelope assertion, not the exit code, is what catches the regression now.
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 });
 
@@ -560,14 +589,13 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'my file.ts')),
     });
-    expect(allowed.code).toBe(0);
+    expectAllow(allowed);
 
     const denied = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'myfile.ts')),
     });
-    expect(denied.code).toBe(2);
-    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(denied, { reasonContains: 'src/myfile.ts' });
   });
 
   it('does NOT match a sibling directory whose name shares the allowed prefix without a slash boundary', async () => {
@@ -584,8 +612,7 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'scripts', 'src_backup', 'foo.ts')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'scripts/src_backup/foo.ts' });
   });
 
   it('allows files matching either pattern when allowedPaths mixes a directory prefix and a recursive glob', async () => {
@@ -601,13 +628,13 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'foo.ts')),
     });
-    expect(prefixHit.code).toBe(0);
+    expectAllow(prefixHit);
 
     const globHit = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'components', 'Button.tsx')),
     });
-    expect(globHit.code).toBe(0);
+    expectAllow(globHit);
   });
 });
 
@@ -615,15 +642,17 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
 // Malformed allowedPaths shape — fail-closed coercion — #558 Unnumbered 1
 // ---------------------------------------------------------------------------
 //
-// Defends the line-92 guard in hooks/enforce-scope.mjs:
+// Defends the guard in hooks/enforce-scope.mjs:
 //   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
 //
 // Any non-array allowedPaths shape MUST be coerced to [] (fail-closed deny-all
-// in strict mode). The hook MUST NOT crash on malformed input — it MUST exit
-// with a structured deny decision (exit 2 + JSON `permissionDecision: deny`).
-// The structured-deny contract is more important than the exact exit code
-// because a crash would be exit 1 (unhandled rejection → SECURITY-REQ-01 catch),
-// not exit 2 — distinguishing "fail-closed via Gate 7" from "blew up".
+// in strict mode). The hook MUST NOT crash on malformed input — it MUST emit the
+// structured deny envelope.
+//
+// #906 sharpens this: a crash now exits non-zero WITHOUT the envelope, which
+// Claude Code treats as a non-blocking error and ALLOWS the tool call. So the
+// envelope assertion is what separates "fail-closed via Gate 7" from "blew up
+// and failed OPEN" — the exit code can no longer tell them apart.
 // ---------------------------------------------------------------------------
 
 describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeout: 15000 }, () => {
@@ -638,8 +667,7 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
     });
     // Fail-closed: Array.isArray(null) === false → allowedPaths = []
     // → no pattern matches → strict mode → deny.
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 
   it('coerces allowedPaths: "src/" (string) to [] (deny all writes in strict mode)', async () => {
@@ -653,8 +681,7 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 
   it('coerces allowedPaths: { "src/": true } (object) to [] (deny all writes in strict mode)', async () => {
@@ -668,8 +695,7 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 });
 
@@ -677,7 +703,7 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
 // Corrupt wave-scope.json — fail-closed on JSON.parse failure — #794 GAP-5
 // ---------------------------------------------------------------------------
 //
-// Defends the readJson() catch path in hooks/enforce-scope.mjs (~L96-101):
+// Defends the readJson() catch path in hooks/enforce-scope.mjs:
 //   try { scope = await readJson(scopePath); } catch { scope = {}; }
 //
 // A wave-scope.json that exists but fails to JSON.parse (truncated write,
@@ -685,8 +711,7 @@ describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeo
 // malformed-shape block above: scope = {} → enforcement defaults to 'strict'
 // (scope.enforcement ?? 'strict'), allowedPaths defaults to [] (Array.isArray
 // guard) → deny-all under strict enforcement, never a crash and never a
-// silent allow. Same structured-deny contract as #558: exit 2 + JSON
-// `permissionDecision: deny`, not an unhandled-rejection exit 1.
+// silent allow. Same structured-deny contract as #558.
 // ---------------------------------------------------------------------------
 
 describe('corrupt wave-scope.json — fail-closed on JSON.parse failure (#794 GAP-5)', { timeout: 15000 }, () => {
@@ -698,8 +723,7 @@ describe('corrupt wave-scope.json — fail-closed on JSON.parse failure (#794 GA
     });
     // readJson() throws SyntaxError → catch → scope = {} → enforcement
     // defaults 'strict', allowedPaths defaults [] → Gate 7 denies (deny-all).
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 });
 
@@ -750,8 +774,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(vault, 'note.md')),
     });
-    expect(result.code).toBe(0);
-    expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+    expectAllow(result);
   });
 
   it('(ii) denies the SAME out-of-repo path when no absolute grant is present', async () => {
@@ -764,9 +787,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(vault, 'note.md')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
-    expect(result.stdout).toContain('path outside project root');
+    expectDeny(result, { reasonContains: 'path outside project root' });
   });
 
   it('(iii) invariant (a): relative `**` and `../**` entries can NOT match out-of-repo', async () => {
@@ -781,8 +802,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
     });
     // Both entries are RELATIVE → filtered out by path.isAbsolute → helper false
     // → Gate 6 denies. A relative glob must never become a repo-escape hatch.
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'path outside project root' });
   });
 
   it('(iv) invariant (c): ../../etc/passwd traversal stays denied under allowedPaths [src/]', async () => {
@@ -794,8 +814,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, '..', '..', 'etc', 'passwd')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'path outside project root' });
   });
 
   it('scopes the grant to its OWN subtree — a sibling ungranted vault is still denied', async () => {
@@ -810,8 +829,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(otherVault, 'note.md')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    expectDeny(result, { reasonContains: 'path outside project root' });
   });
 
   it('invariant (b): with NO absolute entry an in-repo out-of-scope path denies exactly as before', async () => {
@@ -825,9 +843,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
     });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
-    expect(result.stdout).toContain('not in allowed paths');
+    expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -853,8 +869,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
         projectDir: dir,
         stdin: editPayload(path.join(linkPath, 'note.md')),
       });
-      expect(result.code).toBe(2);
-      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      expectDeny(result, { reasonContains: 'path outside project root' });
     },
   );
 });

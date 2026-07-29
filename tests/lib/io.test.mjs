@@ -40,6 +40,10 @@ function runDriver(mode, args = [], stdinData = '') {
     input: stdinData,
     encoding: 'utf8',
     timeout: 8000,
+    // Oversize-envelope tests deliberately push ~200 KB through stdout; the
+    // 1 MB default would turn a genuine "the writer delivered everything"
+    // result into a harness-side truncation and mask the very bug under test.
+    maxBuffer: 8 * 1024 * 1024,
   });
   // EPIPE is expected when the child exits before we finish writing stdin
   // (e.g. the 1 MB byte-guard test). Any other error is genuine.
@@ -139,41 +143,162 @@ describe('emitAllow', () => {
 // emitDeny
 // ---------------------------------------------------------------------------
 
+// Contract under test (code.claude.com/docs/en/hooks): a PreToolUse hook signals
+// EITHER via exit code alone OR via exit 0 + structured JSON — never both. Under
+// `exit 2` Claude Code "ignores stdout and any JSON in it", so the pre-#906 mixed
+// form (stdout JSON + exit 2) silently discarded every deny reason. These tests
+// are written to go RED on a relapse into that mixed form, not merely to mirror
+// the current shape.
 describe('emitDeny', () => {
-  it('exits with code 2', () => {
+  it('exits 0 — exit 2 would make Claude Code discard the stdout JSON entirely', () => {
     const { status } = runDriver('emit-deny', ['Scope violation']);
-    expect(status).toBe(2);
+    expect(status).toBe(0);
   });
 
-  it('outputs a single JSON line to stdout containing permissionDecision "deny"', () => {
+  it('outputs a single JSON line carrying the decision inside hookSpecificOutput', () => {
     const { stdout } = runDriver('emit-deny', ['Scope violation']);
     const lines = stdout.trim().split('\n');
     expect(lines).toHaveLength(1);
     const obj = JSON.parse(lines[0]);
-    expect(obj.permissionDecision).toBe('deny');
+    expect(obj.hookSpecificOutput).toEqual({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'Scope violation',
+    });
   });
 
-  it('reason field equals the provided reason when no suggestion given', () => {
+  it('permissionDecisionReason equals the provided reason when no suggestion given', () => {
     const { stdout } = runDriver('emit-deny', ['File outside project root']);
     const obj = JSON.parse(stdout.trim());
-    expect(obj.reason).toBe('File outside project root');
+    expect(obj.hookSpecificOutput.permissionDecisionReason).toBe('File outside project root');
   });
 
-  it('reason field combines reason and suggestion with " — " separator', () => {
+  it('permissionDecisionReason combines reason and suggestion with " — " separator', () => {
     const { stdout } = runDriver('emit-deny', ['Blocked command', 'Use git revert instead']);
     const obj = JSON.parse(stdout.trim());
-    expect(obj.reason).toBe('Blocked command — Use git revert instead');
+    expect(obj.hookSpecificOutput.permissionDecisionReason).toBe('Blocked command — Use git revert instead');
   });
 
-  it('stdout JSON has exactly the two expected keys when reason only', () => {
+  // Exclusivity guard. The deprecated flat form (`permissionDecision` / `reason`
+  // at the top level) and the top-level `decision` field used by PostToolUse/Stop
+  // must never reappear here — a hook that emits both shapes is the ambiguity the
+  // contract forbids.
+  it('emits no top-level decision keys — only hookSpecificOutput and systemMessage', () => {
     const { stdout } = runDriver('emit-deny', ['Test reason']);
     const obj = JSON.parse(stdout.trim());
-    expect(Object.keys(obj).sort()).toEqual(['permissionDecision', 'reason']);
+    expect(Object.keys(obj).sort()).toEqual(['hookSpecificOutput', 'systemMessage']);
+    expect(obj.permissionDecision).toBeUndefined();
+    expect(obj.reason).toBeUndefined();
+    expect(obj.decision).toBeUndefined();
   });
 
-  it('produces no stderr output', () => {
-    const { stderr } = runDriver('emit-deny', ['Some reason']);
+  // Channel test (replaces the old "produces no stderr output"). Empty stderr on
+  // its own is not the point — the point is WHERE the reason travels. Under the
+  // mixed form the reason would have to reach Claude via stderr; under the
+  // structured form it must reach Claude via stdout JSON and the operator via
+  // systemMessage. Asserting both sides makes a relapse red on either half.
+  it('routes the reason through stdout JSON, never through the exit-2/stderr channel', () => {
+    const { stdout, stderr, status } = runDriver('emit-deny', ['Some reason']);
+    expect(status).toBe(0);
     expect(stderr).toBe('');
+    const obj = JSON.parse(stdout.trim());
+    expect(obj.hookSpecificOutput.permissionDecisionReason).toBe('Some reason');
+    // Operator-facing mirror — without it a human sees a blocked call with no cause.
+    expect(obj.systemMessage).toBe('⛔ Some reason');
+  });
+
+  // Multi-line reasons are load-bearing: hooks/pre-bash-destructive-guard.mjs
+  // emits a 4-line rationale, and scripts/lib/pi-hook-bridge.mjs parses hook
+  // stdout LINE-WISE. A reason written out raw (or a formatter that split on
+  // newlines) would break that parse and drop the block on the pi lane.
+  it('keeps a multi-line reason on one stdout line and round-trips it intact', () => {
+    const reason = [
+      "Destructive command blocked: 'git reset --hard' (rule: psa-003-reset)",
+      'Reason: destroys work that may belong to another session.',
+      'Override: Set `allow-destructive-ops: true` in Session Config if intentional.',
+    ].join('\n');
+    const { stdout, status } = runDriver('emit-deny', [reason]);
+    expect(status).toBe(0);
+    expect(stdout.trim().split('\n')).toHaveLength(1);
+    const obj = JSON.parse(stdout.trim());
+    expect(obj.hookSpecificOutput.permissionDecisionReason).toBe(reason);
+    // Operator headline stays short: first line only.
+    expect(obj.systemMessage).toBe("⛔ Destructive command blocked: 'git reset --hard' (rule: psa-003-reset)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitDeny — envelope delivery under size pressure
+// ---------------------------------------------------------------------------
+
+// Regression guard for the fail-OPEN bug introduced when emitDeny moved from
+// `exit 2` to `exit 0` + structured JSON. On macOS a piped stdout is
+// asynchronous, so `console.log` + `process.exit(0)` drops everything past the
+// 65 536-byte kernel pipe buffer. Under `exit 2` that truncation was harmless
+// (the exit code blocked regardless); under `exit 0` a truncated envelope reads
+// as "no structured output" and the tool call is ALLOWED.
+//
+// Reproduced against the real helper before the fix — stdout capped at exactly
+// 65 536 bytes, JSON unparseable, no decision delivered:
+//   reasonLen=1000    stdoutBytes=1337    parses=true  decision=deny
+//   reasonLen=60000   stdoutBytes=60337   parses=true  decision=deny
+//   reasonLen=70000   stdoutBytes=65536   parses=false decision=NONE
+//   reasonLen=200000  stdoutBytes=65536   parses=false decision=NONE
+//
+// Directly exploitable via hooks/pre-bash-templates-first.mjs, which puts the
+// full, unbounded, agent-controlled bash command into the reason.
+describe('emitDeny — oversize envelope delivery', () => {
+  // 60 000 was the largest size that still parsed before the fix, 70 000 the
+  // first that did not, 200 000 an unambiguous overrun. Parametrized across the
+  // boundary so a partial fix (one that merely moves the cliff) stays red.
+  for (const reasonLen of [60_000, 70_000, 200_000]) {
+    it(`delivers a parseable deny envelope for a ${reasonLen}-character reason`, () => {
+      const { stdout, status } = runDriver('emit-deny-big', [String(reasonLen)]);
+      expect(status).toBe(0);
+      const obj = JSON.parse(stdout.trim());
+      expect(obj.hookSpecificOutput.permissionDecision).toBe('deny');
+    });
+  }
+
+  it('clamps the reason to 16 000 characters and marks the cut', () => {
+    const { stdout } = runDriver('emit-deny-big', ['200000']);
+    const reason = JSON.parse(stdout.trim()).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toHaveLength(16_000);
+    expect(reason).toContain('[truncated: showing 16000 of 200000 characters]');
+  });
+
+  // The other side of the clamp: a budget tightened without re-measuring would
+  // mutilate a legitimate reason. 9 068 characters is the measured worst case
+  // across all live call sites — hooks/enforce-scope.mjs joins the wave's
+  // `allowedPaths` union into BOTH the reason and the suggestion, so a deep
+  // 18-agent wave with a 144-path union lands there. It must survive intact.
+  it('passes the largest legitimate reason (9 068 chars) through unclamped', () => {
+    const { stdout } = runDriver('emit-deny-big', ['9068']);
+    const reason = JSON.parse(stdout.trim()).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toBe('R'.repeat(9068));
+  });
+
+  // Defence in depth: the clamp bounds what CALLERS produce, the synchronous
+  // writer bounds nothing but guarantees delivery. Exercising the writer alone
+  // keeps the truncation guard alive even if a future caller routes around the
+  // clamp (e.g. via opts) — and makes this test, not the clamp, the thing that
+  // goes red on a relapse to console.log.
+  it('writeStdoutLineSync delivers a 200 000-byte line in full before exit', () => {
+    const { stdout, status } = runDriver('write-line', ['200000']);
+    expect(status).toBe(0);
+    expect(Buffer.byteLength(stdout, 'utf8')).toBe(200_001); // line + '\n'
+  });
+
+  // A missing reason used to throw a TypeError. In pre-bash-destructive-guard,
+  // pre-bash-issue-budget, pre-bash-templates-first and config-protection that
+  // throw unwinds into `main().catch(() => emitAllow())` — so the deny became an
+  // ALLOW. The programmer-error signal now travels on stderr; the decision still
+  // has to be deny.
+  it('denies (never throws) when the reason is empty, and says so on stderr', () => {
+    const { stdout, stderr, status } = runDriver('emit-deny-empty');
+    expect(status).toBe(0);
+    expect(JSON.parse(stdout.trim()).hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(stderr).toContain('emitDeny called without a reason');
   });
 });
 

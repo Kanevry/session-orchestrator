@@ -411,3 +411,70 @@ describe('check-unicode-safety — --write idempotence', () => {
     expect(r2.stdout).not.toContain('stripped dangerous-invisibles');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 12: curated emoji allow-list — EXACT-SET pin (growth guard).
+//
+// Bug caught: the allow-list grows by APPEND whenever the gate blocks a newly
+// introduced banner glyph — 0x26D4 (⛔) was appended exactly that way when the
+// #906 deny envelope made validate-plugin report 11 FAILs. Every other test in
+// this file asserts the BEHAVIOUR of two representatives (⚠ passes, 🚀 is
+// flagged); none pins the SET. So the append itself is invisible: the strict-
+// context emoji gate widens one glyph at a time, and the smuggling surface it
+// was built to bound grows with it, with no reviewer ever seeing a decision.
+//
+// The set is derived BEHAVIOURALLY rather than parsed out of the source: every
+// code point the scanner's emoji matcher can match is planted in a STRICT .mjs
+// context, and the ones it stays SILENT on are — by definition — the effective
+// allow-list. Adding a code point to ALLOWED_EMOJI_CODEPOINTS turns this red.
+// That is the intent, not a nuisance: widening a security gate must be a
+// reviewed decision, never a green-the-build reflex. When the addition IS
+// wanted, extend the list below in the same commit and say why.
+// ---------------------------------------------------------------------------
+
+/** The same union the scanner matches on (check-unicode-safety.mjs `EMOJI_RE`). */
+const EMOJI_UNIVERSE_RE = /(?:\p{Extended_Pictographic}|\p{Regional_Indicator})/u;
+
+/** Curated deliberate symbols, ascending by code point. */
+const EXPECTED_ALLOWED_EMOJI = [
+  0x00a9, 0x00ae, 0x2122, // © ® ™ — defensive (ecc allow-list)
+  0x2139, 0x2194, 0x26a0, // information / left-right arrow / warning
+  0x26d4, // ⛔ — emitDeny's operator-visible systemMessage headline (#906)
+  0x2705, 0x274c, 0x2b50, // check / cross / star
+  0x1f3af, 0x1f465, 0x1f4ca, 0x1f4cb, 0x1f4da, 0x1f501,
+  0x1f50d, 0x1f527, 0x1f534, 0x1f5a5, 0x1f6a6, 0x1f6a8,
+];
+
+describe('check-unicode-safety — curated emoji allow-list (exact-set pin)', () => {
+  it('exactly the curated code points survive the STRICT emoji gate — every other pictographic is flagged', () => {
+    const root = makeFixture();
+
+    const universe = [];
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue; // lone surrogates are not text
+      if (EMOJI_UNIVERSE_RE.test(String.fromCodePoint(cp))) universe.push(cp);
+    }
+    // One code point per line inside a STRICT (.mjs) context — a non-curated one
+    // must surface as kind:'emoji'.
+    writeTracked(
+      root,
+      'emoji-probe.mjs',
+      universe.map((cp) => String.fromCodePoint(cp)).join('\n') + '\n',
+    );
+
+    // Subtract EVERY flagged code point regardless of kind: "passes the gate"
+    // means the scanner said nothing at all about it.
+    const flagged = new Set(
+      collectUnicodeViolations(root).map((v) => Number.parseInt(v.codePoint.slice(2), 16)),
+    );
+    const silent = universe.filter((cp) => !flagged.has(cp));
+
+    expect(silent).toEqual(EXPECTED_ALLOWED_EMOJI);
+
+    // Derivation guard (floor, not an exact count — \p{Extended_Pictographic}
+    // grows with the runtime's Unicode version). Without it, a matcher that
+    // stopped matching would empty `universe` and make the assertion above pass
+    // vacuously on two empty arrays.
+    expect(universe.length).toBeGreaterThan(2000);
+  });
+});

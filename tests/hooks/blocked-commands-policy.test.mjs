@@ -19,6 +19,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -163,68 +165,73 @@ describe('production policy file structure', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Section 2 — Hook integration: blocked commands (exit 2)
+// Section 2 — Hook integration: blocked commands (deny envelope on stdout)
+//
+// Since #906 a deny is `exit 0` + a `hookSpecificOutput` envelope, NOT `exit 2`
+// — under `exit 2` Claude Code discards stdout, so the reason never reaches the
+// operator. The exit code alone therefore no longer distinguishes allow from
+// deny; expectDeny/expectAllow assert on stdout, which does.
 // ---------------------------------------------------------------------------
 
-describe('hook blocks dangerous commands (exit 2)', { timeout: 20000 }, () => {
+describe('hook blocks dangerous commands (deny envelope)', { timeout: 20000 }, () => {
   it('blocks "git reset --hard HEAD~1" (rule: git-reset-hard)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git reset --hard HEAD~1' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "git checkout -- ." (rule: git-checkout-discard) — REGRESSION TEST', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git checkout -- .' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "git checkout -- src/file.ts" (rule: git-checkout-discard)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git checkout -- src/file.ts' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "git clean -fd" (rule: git-clean)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git clean -fd' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "git push --force" (rule: git-push-force)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git push --force' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "git push -f origin main" (rule: git-push-force short form)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'git push -f origin main' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "rm -rf /var/data" (rm-rf outside safe paths)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf /var/data' });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Section 3 — Hook allows safe rm -rf paths (exit 0)
+// Section 3 — Hook allows safe rm -rf paths (exit 0 + SILENT stdout)
 // ---------------------------------------------------------------------------
 
-describe('hook allows rm -rf on safe paths (exit 0)', { timeout: 20000 }, () => {
+describe('hook allows rm -rf on safe paths (exit 0, empty stdout)', { timeout: 20000 }, () => {
   it('allows "rm -rf node_modules" (safe path exception)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf node_modules' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows "rm -rf .orchestrator/tmp/cache" (safe path exception)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf .orchestrator/tmp/cache' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -252,7 +259,7 @@ describe('warn severity: git stash (exit 0, ⚠ on stderr)', { timeout: 20000 },
     await $`git -C ${dir} stash`.catch(() => {});
 
     const result = await runGuard({ projectDir: dir, command: 'git stash' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     expect(result.stderr).toContain('⚠');
   });
 });
@@ -273,7 +280,7 @@ describe('allow-destructive-ops: true in CLAUDE.md overrides block', { timeout: 
 
     const dir = await mkTempProject({ claudeMd });
     const result = await runGuard({ projectDir: dir, command: 'git reset --hard' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
@@ -286,28 +293,28 @@ describe('allow-destructive-ops: true in CLAUDE.md overrides block', { timeout: 
 // shell command line (the guard hook is active on the test runner itself).
 // ---------------------------------------------------------------------------
 
-describe('#641 — /tmp allowlist allows agent-owned scratch (exit 0)', { timeout: 20000 }, () => {
+describe('#641 — /tmp allowlist allows agent-owned scratch (exit 0, empty stdout)', { timeout: 20000 }, () => {
   it('allows "rm -rf /tmp/wondraiwork-632" (FP1 — agent tmp clone)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf /tmp/wondraiwork-632' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf /private/tmp/foo' });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
     const dir = await mkTempProject();
     const target = path.join(os.tmpdir(), 'agent-scratch-641');
     const result = await runGuard({ projectDir: dir, command: `rm -rf ${target}` });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
-describe('#641 — quoted-payload guard removes false positives (exit 0)', { timeout: 20000 }, () => {
+describe('#641 — quoted-payload guard removes false positives (exit 0, empty stdout)', { timeout: 20000 }, () => {
   it('allows memory-propose with blocked substrings inside quoted args (FP2)', async () => {
     const dir = await mkTempProject();
     // The FP2 command: blocked patterns live ONLY inside quoted --insight / --evidence.
@@ -315,7 +322,7 @@ describe('#641 — quoted-payload guard removes false positives (exit 0)', { tim
     const evidence = 'see ' + 'git ' + 'reset --hard note';
     const command = `node scripts/memory-propose.mjs --insight "${insight}" --evidence "${evidence}"`;
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows node script with a force-push warning string in a quoted arg', async () => {
@@ -323,18 +330,18 @@ describe('#641 — quoted-payload guard removes false positives (exit 0)', { tim
     const msg = 'do not run ' + 'git ' + 'push --force';
     const command = `node x.mjs --msg "${msg}"`;
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 
   it('allows echo of a quoted destructive literal', async () => {
     const dir = await mkTempProject();
     const command = 'echo "' + 'rm ' + '-rf /"';
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(0);
+    expectAllow(result);
   });
 });
 
-describe('#641 — bypass vectors still blocked against real policy (exit 2)', { timeout: 30000 }, () => {
+describe('#641 — bypass vectors still blocked against real policy (deny envelope)', { timeout: 30000 }, () => {
   // Build each attack string from fragments so no literal blocked substring
   // appears on the test-runner shell command line.
   const RMRF = 'rm ' + '-rf';
@@ -355,32 +362,32 @@ describe('#641 — bypass vectors still blocked against real policy (exit 2)', {
   it.each(interpreterVectors)('blocks bypass vector: %s', async (_label, command) => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks "ls && git reset --hard HEAD" (chained git reset)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: `ls && ${RESET} HEAD` });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks bare "git reset --hard HEAD~1"', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: `${RESET} HEAD~1` });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks psql -c "DROP TABLE users" (SQL executor)', async () => {
     const dir = await mkTempProject();
     const command = 'psql -c "' + 'DROP ' + 'TABLE users"';
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 
   it('blocks mixed chain where one rm target is non-allowlisted', async () => {
     const dir = await mkTempProject();
     const command = `${RMRF} /tmp/x; ${RMRF} src/`;
     const result = await runGuard({ projectDir: dir, command });
-    expect(result.code).toBe(2);
+    expectDeny(result);
   });
 });

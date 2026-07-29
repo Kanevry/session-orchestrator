@@ -22,8 +22,8 @@
  *   G7 transcript inspection via hooks/_lib/transcript-history.mjs.
  *      If any prior Read tool call matches one of the host-specific template
  *      paths from the policy, exit 0.
- *   G8 fall-through: emit deny via stdout JSON + structured stderr listing the
- *      template paths, and exit 2.
+ *   G8 fall-through: emit the PreToolUse deny envelope on stdout via emitDeny
+ *      (exit 0) with the template-path list + ack hint inside the reason.
  *
  * Fail-safe posture: any internal exception is swallowed in main().catch and
  * the hook exits 0 (allow). Rationale matches pre-bash-destructive-guard.mjs:
@@ -31,11 +31,13 @@
  * worst case is a missed enforcement, not a wedged session.
  *
  * Exit codes:
- *   0  — pass-through (G1-G3 short-circuits, bypass match, acknowledgement, Read found, error)
- *   2  — deny + structured JSON on stdout (PRD § 3 Gherkin Pattern 3)
+ *   0  — every path. Pass-through (G1-G3 short-circuits, bypass match,
+ *        acknowledgement, Read found, error) emits nothing; G8 emits the deny
+ *        envelope on stdout. Exit 2 is NEVER used: Claude Code discards stdout
+ *        on exit 2, which would throw away the deny envelope entirely (#906).
  */
 
-import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
@@ -72,9 +74,21 @@ const DEFAULT_ACK_PATH = '.orchestrator/runtime/templates-acknowledged.json';
 // ---------------------------------------------------------------------------
 
 /**
- * Block the create command: write structured deny JSON to stdout + exit 2.
- * Mirrors the exact format from pre-bash-destructive-guard.mjs blockCommand()
- * so downstream Claude Code rendering is consistent.
+ * Block the create command: emit the PreToolUse deny envelope via emitDeny
+ * (exit 0). Mirrors pre-bash-destructive-guard.mjs blockCommand() so downstream
+ * Claude Code rendering is consistent.
+ *
+ * PRD § 3 Gherkin Pattern 3 requires the template-path list plus the
+ * `/templates-ack` hint to reach the reader. That requirement is UNCHANGED —
+ * only the channel moved (#906). Until #906 this text was written to stderr AND
+ * duplicated into an `exit 2` stdout envelope, the mixed form the hook docs
+ * forbid ("choose one approach per hook, not both"). Under exit 0, stderr is
+ * only surfaced in the debug log — invisible to both operator and model — so a
+ * stderr write would look alive while being dead. The full multi-line text
+ * therefore travels as the emitDeny `reason`, landing in
+ * `permissionDecisionReason`, which is fed to **Claude** — the actor that has
+ * to read the template or run `/templates-ack`. The operator sees the first
+ * line via the derived `systemMessage` headline.
  *
  * @param {{ host: string, command: string, templatePaths: string[],
  *           ackFile: string }} ctx
@@ -94,14 +108,9 @@ function blockCreate(ctx) {
     `See: issue #519, "gsd Pattern Adoption Quick-Wins" (archived in the private Meta-Vault) (Pattern 3)`,
   ].join('\n');
 
-  // PRD § 3 Gherkin Pattern 3 spec: stderr lists template paths + ack hint.
-  // We emit BOTH stderr (human-readable per spec) AND the structured stdout
-  // JSON envelope (machine-readable for Claude Code hook protocol).
-  process.stderr.write(reason + '\n');
-  process.stdout.write(
-    JSON.stringify({ permissionDecision: 'deny', reason }) + '\n',
-  );
-  process.exit(2);
+  // Single channel: the full multi-line reason (template paths + ack hint)
+  // rides in permissionDecisionReason. Never returns.
+  emitDeny(reason);
 }
 
 /**

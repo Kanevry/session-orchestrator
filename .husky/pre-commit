@@ -51,11 +51,18 @@ nul_hits=$(git diff --cached --name-only --diff-filter=ACM \
   | grep -Ei '\.(mjs|cjs|js|mts|ts|md|json|ya?ml|sh|txt)$' \
   | while IFS= read -r f; do
       # Allowlist — path-exact (NO globs) files whose NUL bytes are DELIBERATE.
-      # Verified 2026-07-27 as the complete set: the detection expression below,
-      # run over `git ls-files`, matches exactly these three. Reasons:
-      #   nul-allowed hooks/config-protection.mjs — masking sentinel: the
-      #     secret-redaction pass replaces a matched token with a same-length
-      #     run of NUL before diffing (~L185).
+      # Verified 2026-07-29 as the complete set: the detection expression below,
+      # run over `git ls-files`, matches exactly these two. Both are TEST
+      # FIXTURES, where a raw NUL is the payload under test.
+      #
+      # PRODUCTION CODE IS DELIBERATELY NOT ALLOWLISTED — hooks/config-protection.mjs
+      # was removed from this list on 2026-07-29. Its masking sentinel now uses the
+      # escaped form ('\0'.repeat(...)), which is byte-identical at runtime but
+      # keeps the file TEXT on disk. Rationale: one raw NUL makes a file binary to
+      # ugrep / `grep -I` (Claude Code's Grep tool), which then skips it SILENTLY —
+      # a live deny-path census missed that security hook's emitDeny call exactly
+      # that way. Do not re-add a production file here; fix the source instead.
+      # Reasons for the two that remain:
       #   nul-allowed tests/lib/config/dispatcher-autonomy.test.mjs —
       #     adversarial fixture: asserts the config parser survives a
       #     NUL/control-byte garbage payload (~L222).
@@ -67,7 +74,6 @@ nul_hits=$(git diff --cached --name-only --diff-filter=ACM \
       # end of the command substitution — "syntax error near unexpected token
       # `;;'". The `(pattern)` form is POSIX and parses everywhere.
       case "$f" in
-        (hooks/config-protection.mjs) continue ;;
         (tests/lib/config/dispatcher-autonomy.test.mjs) continue ;;
         (tests/scripts/lib/frontend-detect/detect.test.mjs) continue ;;
       esac

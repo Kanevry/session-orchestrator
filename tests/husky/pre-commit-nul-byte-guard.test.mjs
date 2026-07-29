@@ -20,8 +20,10 @@
  *   5. gate reads the WORKTREE instead of the staged blob → `git add <corrupt>`
  *      + worktree repair smuggles corruption into the commit the gate exists
  *      to stop (and, symmetrically, an unrelated dirty worktree false-blocks)
- *   6. allowlisted deliberate-NUL file gets blocked → the three intentional
+ *   6. allowlisted deliberate-NUL fixture gets blocked → the two intentional
  *      carriers become uncommittable on their next edit
+ *   7. production code gets (re-)allowlisted → hooks/config-protection.mjs goes
+ *      binary again and drops out of every grep-based audit
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -127,15 +129,33 @@ describe('.husky/pre-commit — nul-byte-guard (K7)', () => {
     expect(res.stderr).toBe('');
   });
 
-  it('does not block an allowlisted file whose NUL bytes are deliberate', () => {
-    // bug_caught: the three tracked files that carry INTENTIONAL NUL bytes
-    // (masking sentinel + two adversarial fixtures) become uncommittable on
-    // their next edit, so the gate gets bypassed with --no-verify or deleted.
-    const sentinel = `      working = working.split(token).join('${NUL}'.repeat(token.length));\n`;
-    const res = runGuardWithStaged({ 'hooks/config-protection.mjs': sentinel });
+  it('does not block an allowlisted fixture whose NUL bytes are deliberate', () => {
+    // bug_caught: the two tracked adversarial FIXTURES that carry INTENTIONAL
+    // NUL bytes become uncommittable on their next edit, so the gate gets
+    // bypassed with --no-verify or deleted outright.
+    const fixture = `const garbage = '${NUL}${NUL}${NUL}payload';\n`;
+    const res = runGuardWithStaged({
+      'tests/lib/config/dispatcher-autonomy.test.mjs': fixture,
+    });
 
     expect(res.status).toBe(0);
     expect(res.stderr).toBe('');
+  });
+
+  it('BLOCKS a raw NUL in hooks/config-protection.mjs (production is not allowlisted)', () => {
+    // bug_caught: the allowlist entry for the config-protection security hook is
+    // restored (or a raw NUL is pasted back into its masking sentinel), silently
+    // re-making that file BINARY to ugrep / `grep -I` — which then skips it with
+    // exit 1 and NO output, so the hook goes invisible to every grep-based audit.
+    // That is not hypothetical: a live deny-path census missed its emitDeny call
+    // exactly that way, which is why the entry was removed on 2026-07-29.
+    // The escaped form (' '.repeat(...)) is byte-identical at runtime, so
+    // there is no legitimate reason for this file to carry a raw NUL again.
+    const sentinel = `      working = working.split(token).join('${NUL}'.repeat(token.length));\n`;
+    const res = runGuardWithStaged({ 'hooks/config-protection.mjs': sentinel });
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('hooks/config-protection.mjs');
   });
 
   it('passes clean staged text files', () => {

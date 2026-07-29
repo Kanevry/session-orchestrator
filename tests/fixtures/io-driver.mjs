@@ -11,7 +11,18 @@
  *                            write "null" to stdout on null result. Exits 0.
  *   emit-allow             — calls emitAllow(). Exits 0 silently.
  *   emit-deny <reason> [suggestion]
- *                          — calls emitDeny(reason, suggestion?). Exits 2.
+ *                          — calls emitDeny(reason, suggestion?). Exits 0 with a
+ *                            single hookSpecificOutput JSON line on stdout.
+ *                            `reason` may contain newlines (argv is passed raw).
+ *   emit-deny-big <n>      — calls emitDeny() with an n-character reason built
+ *                            IN THIS CHILD. Generating it here rather than
+ *                            passing it through argv keeps the 200 000-char case
+ *                            clear of ARG_MAX; the payload is the point, not the
+ *                            argv path.
+ *   emit-deny-empty        — calls emitDeny('') — the missing-reason path.
+ *   write-line <n>         — writeStdoutLineSync() with an n-character line, then
+ *                            process.exit(0). Exercises the stdout writer alone,
+ *                            with no reason clamp in front of it.
  *   emit-warn <message>    — calls emitWarn(message). Exits 0, stderr output.
  *   emit-system <message>  — calls emitSystemMessage(message). Exits 0.
  */
@@ -20,7 +31,14 @@
 // (spawnSync(process.execPath, [DRIVER, ...])). The child Node process does NOT
 // run under vitest, so it has no `@lib` alias resolution. Keep this import as a
 // raw relative path — do not convert to `@lib/io.mjs` (#407 alias rollout exempt).
-import { readStdin, emitAllow, emitDeny, emitWarn, emitSystemMessage } from '../../scripts/lib/io.mjs';
+import {
+  readStdin,
+  emitAllow,
+  emitDeny,
+  emitWarn,
+  emitSystemMessage,
+  writeStdoutLineSync,
+} from '../../scripts/lib/io.mjs';
 
 const [, , mode, ...rest] = process.argv;
 
@@ -52,6 +70,22 @@ switch (mode) {
     const suggestion = rest[1]; // may be undefined
     emitDeny(reason, suggestion);
     break; // never reached
+  }
+
+  case 'emit-deny-big': {
+    emitDeny('R'.repeat(Number(rest[0])));
+    break; // never reached
+  }
+
+  case 'emit-deny-empty': {
+    emitDeny('');
+    break; // never reached
+  }
+
+  case 'write-line': {
+    writeStdoutLineSync('W'.repeat(Number(rest[0])));
+    process.exit(0);
+    break;
   }
 
   case 'emit-warn': {

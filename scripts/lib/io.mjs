@@ -17,7 +17,7 @@
  */
 
 import { writeFile, rename, mkdir } from 'node:fs/promises';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, writeSync } from 'node:fs';
 import path, { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
@@ -27,12 +27,153 @@ import { randomBytes, randomUUID } from 'node:crypto';
 
 /**
  * Build the deny reason string, optionally appending a suggestion.
+ *
+ * Multi-line `reason` values are passed through verbatim — callers that need a
+ * several-line rationale (e.g. hooks/pre-bash-destructive-guard.mjs) rely on
+ * this. `JSON.stringify` later escapes the newlines, so the emitted payload
+ * still occupies exactly one stdout line.
+ *
  * @param {string} reason
  * @param {string|undefined} suggestion
  * @returns {string}
  */
 function _formatReason(reason, suggestion) {
   return suggestion ? `${reason} — ${suggestion}` : reason;
+}
+
+/** Max length of the operator-facing `systemMessage` headline. */
+const DENY_HEADLINE_MAX = 200;
+
+/**
+ * Hard ceiling (in characters) for `permissionDecisionReason`.
+ *
+ * Rationale is empirical, not a round number pulled from the air. Measured
+ * worst-case reason lengths across all 12 live `emitDeny` call sites:
+ *
+ * | call site                                    | measured chars |
+ * |----------------------------------------------|----------------|
+ * | pre-bash-destructive-guard (worst of 13 rules) | 435          |
+ * | pre-bash-templates-first (fixed part)         | 348 + command |
+ * | pre-bash-issue-budget (formatBlockReason)     | 652           |
+ * | config-protection (all 6 reasons at once)     | 432           |
+ * | enforce-scope (LIVE wave-scope, 18 paths)     | 1 322         |
+ * | enforce-scope (deep wave, 144-path union)     | ~9 068        |
+ *
+ * `enforce-scope` joins `allowedPaths` into BOTH the reason and the suggestion,
+ * so its length grows at ~2× the union. A deep session (18 agents) with a wide
+ * union is the binding constraint at ~9 k — which is why the ceiling is NOT the
+ * 8 000 originally proposed: that would clip a legitimate deep-wave scope
+ * violation exactly when the operator most needs the path list. 16 000 sits
+ * ~1.8× above that worst case and ~12× above the largest measured live reason,
+ * while staying ~4× below the 65 536-byte kernel pipe buffer — so even the clamp
+ * ALONE keeps a typical-ASCII envelope inside one buffer.
+ */
+const DENY_REASON_MAX = 16_000;
+
+/**
+ * Reason substituted when a caller denies without supplying one.
+ *
+ * A guard must never fail on its own bookkeeping: throwing here used to land in
+ * the fail-open `main().catch(() => emitAllow())` of four hooks
+ * (pre-bash-destructive-guard, pre-bash-issue-budget, pre-bash-templates-first,
+ * config-protection) and turn a deny into an ALLOW. The programmer-error signal
+ * is preserved as a stderr diagnostic instead of a throw.
+ */
+const EMPTY_REASON_FALLBACK =
+  'Denied by a session-orchestrator guard that did not supply a reason (guard bug — see stderr). '
+  + 'Blocking rather than allowing: a guard must fail closed.';
+
+/** stdout file descriptor. */
+const STDOUT_FD = 1;
+
+/** Backoff between EAGAIN retries in the synchronous stdout writer. */
+const STDOUT_EAGAIN_BACKOFF_MS = 1;
+
+/**
+ * Clip `text` to `max` characters, marking the cut with an ellipsis.
+ *
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function _clip(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Derive the short operator-facing headline from a (possibly multi-line) reason.
+ * First line only, clipped — the full text stays in `permissionDecisionReason`.
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+function _denyHeadline(reason) {
+  return `⛔ ${_clip(reason.split('\n')[0].trim(), DENY_HEADLINE_MAX)}`;
+}
+
+/**
+ * Clamp a deny reason to {@link DENY_REASON_MAX}, appending a visible marker
+ * that names how much was dropped. The marker is budgeted INSIDE the ceiling,
+ * so the returned string never exceeds it.
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+function _clampReason(reason) {
+  if (reason.length <= DENY_REASON_MAX) return reason;
+  const marker = `\n… [truncated: showing ${DENY_REASON_MAX} of ${reason.length} characters]`;
+  return reason.slice(0, DENY_REASON_MAX - marker.length) + marker;
+}
+
+/**
+ * Synchronously write one line (a trailing `\n` is appended) to stdout,
+ * looping until every byte is handed to the kernel.
+ *
+ * ## Why this exists instead of `console.log`
+ *
+ * `process.stdout` is **asynchronous when it is a pipe on macOS** (Node docs,
+ * "process I/O": "Pipes and sockets: … asynchronous on macOS") — exactly the
+ * configuration every Claude Code hook runs under. `console.log` therefore only
+ * QUEUES the write: whatever does not fit into the 65 536-byte kernel pipe
+ * buffer stays in libuv's write queue, and `process.exit()` discards it. The
+ * observable result is a truncated, unparseable JSON envelope delivered with
+ * exit 0.
+ *
+ * Before #906 that truncation was harmless: `emitDeny` exited **2**, which
+ * blocks regardless of stdout. Once the helper moved to `exit 0` + structured
+ * JSON, the same truncation flipped the guard layer from fail-CLOSED to
+ * fail-OPEN — a >64 KB reason meant the harness saw no structured output and
+ * ALLOWED the tool call. `writeSync` bypasses the libuv queue entirely, so the
+ * bytes are in the kernel before `process.exit` runs.
+ *
+ * EAGAIN is expected when fd 1 is non-blocking and the pipe is momentarily
+ * full; the loop backs off and retries rather than dropping the tail. Any other
+ * error (EPIPE — reader gone) is reported to the caller, which must then decide
+ * how to signal WITHOUT stdout. Never throws.
+ *
+ * @param {string} line  Payload without trailing newline.
+ * @returns {{ ok: true, bytesWritten: number } | { ok: false, bytesWritten: number, error: string }}
+ */
+export function writeStdoutLineSync(line) {
+  const buf = Buffer.from(`${line}\n`, 'utf8');
+  let offset = 0;
+  while (offset < buf.length) {
+    let written;
+    try {
+      written = writeSync(STDOUT_FD, buf, offset, buf.length - offset);
+    } catch (err) {
+      const code = err?.code;
+      if (code === 'EAGAIN' || code === 'EINTR') {
+        // Synchronous backoff: Atomics.wait is the only event-loop-free sleep,
+        // and the event loop is precisely what we cannot yield to here.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, STDOUT_EAGAIN_BACKOFF_MS);
+        continue;
+      }
+      return { ok: false, bytesWritten: offset, error: code ?? String(err) };
+    }
+    offset += written;
+  }
+  return { ok: true, bytesWritten: offset };
 }
 
 // ---------------------------------------------------------------------------
@@ -124,15 +265,125 @@ export function emitAllow() {
 }
 
 /**
- * Deny the current hook invocation with a structured JSON reason on stdout, then exit 2.
- * @param {string} reason  Non-empty human-readable denial reason.
+ * Deny the current **PreToolUse** hook invocation: emit exactly one JSON object
+ * on stdout, then exit **0**.
+ *
+ * ## The contract (code.claude.com/docs/en/hooks), verbatim
+ *
+ * > "**Exit 2** means a blocking error. Claude Code **ignores stdout and any
+ * > JSON in it**. Instead, stderr text is fed back to Claude as an error
+ * > message."
+ *
+ * > "You must choose one approach per hook, **not both**: either use exit codes
+ * > alone for signaling, or exit 0 and print JSON for structured control."
+ *
+ * > "Unlike other hooks that use a top-level `decision` field, **PreToolUse
+ * > returns its decision inside a `hookSpecificOutput` object**" — which
+ * > "requires a `hookEventName` field set to the event name."
+ *
+ * > PreToolUse top-level `decision` / `reason` are deprecated: "Use
+ * > `hookSpecificOutput.permissionDecision` and
+ * > `hookSpecificOutput.permissionDecisionReason` instead."
+ *
+ * Until #906 this function emitted stdout JSON **and** `exit 2` — the mixed
+ * form the second quote forbids. The block still bit, but the reason was
+ * discarded wholesale and the operator saw only `hook error: … No stderr
+ * output`, i.e. what looks like a crash. Do not reintroduce either half of that
+ * mixed form: `exit 2` here, or a flat top-level `{permissionDecision, reason}`.
+ *
+ * ## Emitted payload (single stdout line, nothing else on stdout)
+ *
+ * ```json
+ * {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<reason — suggestion>"},"systemMessage":"⛔ <first line of reason>"}
+ * ```
+ *
+ * `permissionDecisionReason` is fed to **Claude**; the universal `systemMessage`
+ * field is what the **operator** sees. Both are emitted on purpose: operator
+ * visibility is the entire point of the #906 repair, and a `deny` whose cause is
+ * invisible to the human is what pushed wave agents into circumventing the
+ * enforcement layer. The headline is deliberately short (first line, clipped) —
+ * the long text belongs in `permissionDecisionReason`.
+ *
+ * Multi-line reasons survive intact: `JSON.stringify` escapes the newlines, so
+ * the payload stays exactly one line and consumers that parse stdout line-wise
+ * (e.g. `scripts/lib/pi-hook-bridge.mjs`) keep working.
+ *
+ * ## PRECONDITION — PreToolUse hooks only
+ *
+ * `hookEventName` is hardcoded to `PreToolUse`. PostToolUse / Stop /
+ * SubagentStop signal through a **top-level** `decision` / `reason` pair and
+ * MUST NOT be routed through this helper.
+ *
+ * ## Delivery is part of the contract, not an implementation detail
+ *
+ * The envelope goes out through {@link writeStdoutLineSync}, never
+ * `console.log`. On macOS a piped stdout is asynchronous, so `console.log` +
+ * `process.exit(0)` silently drops everything past the 65 536-byte kernel pipe
+ * buffer — a truncated envelope reads as "no structured output" and the tool
+ * call is ALLOWED. Two independent bounds keep that from happening:
+ *
+ *  1. `permissionDecisionReason` is clamped to {@link DENY_REASON_MAX}, and the
+ *     `opts.systemMessage` override to {@link DENY_HEADLINE_MAX}, so no caller
+ *     — including one that funnels attacker-controlled tool input into the
+ *     reason, as pre-bash-templates-first does with the raw bash command — can
+ *     inflate the envelope past the buffer.
+ *  2. The write itself is synchronous and loops to completion, so even an
+ *     envelope that somehow exceeds the buffer still lands in full.
+ *
+ * Both are load-bearing: the clamp alone would not survive a caller that
+ * bypasses it, and the synchronous write alone would ship 200 KB envelopes to
+ * the harness. If stdout cannot be written at all (EPIPE — the reader is gone),
+ * the helper exits **2**: with no structured channel left, the exit code is the
+ * only remaining way to block, and the "never both" rule is not violated
+ * because no parseable JSON was delivered.
+ *
+ * @param {string} reason  Human-readable denial reason. May be multi-line. When
+ *        blank/absent the call still DENIES (with a generic reason plus a stderr
+ *        diagnostic) — see {@link EMPTY_REASON_FALLBACK} for why this does not
+ *        throw.
  * @param {string} [suggestion]  Optional remediation hint appended after " — ".
+ * @param {object} [opts]
+ * @param {string} [opts.systemMessage]  Override the derived operator headline.
+ *        Ignored when blank; clipped to one short line.
  * @returns {never}
  */
-export function emitDeny(reason, suggestion) {
-  if (!reason) throw new TypeError('io.mjs: emitDeny requires a non-empty reason string');
-  console.log(JSON.stringify({ permissionDecision: 'deny', reason: _formatReason(reason, suggestion) }));
-  process.exit(2);
+export function emitDeny(reason, suggestion, opts = {}) {
+  // Coerce defensively and never throw: a throw inside a deny path unwinds into
+  // the fail-open `main().catch(() => emitAllow())` that four hooks install,
+  // turning the deny into an ALLOW. A guard must never fail open on its own
+  // bookkeeping — so a missing reason degrades to a generic deny plus a loud
+  // stderr diagnostic, which keeps the programmer-error signal without the
+  // fail-open blast radius.
+  const raw = typeof reason === 'string'
+    ? reason
+    : (reason === null || reason === undefined ? '' : String(reason));
+  const missingReason = raw.trim() === '';
+  if (missingReason) {
+    try {
+      process.stderr.write(
+        '⚠ io.mjs: emitDeny called without a reason — denying with a generic message (guard bug)\n',
+      );
+    } catch { /* stderr may be closed; the deny below is what matters */ }
+  }
+  const permissionDecisionReason = _clampReason(
+    String(_formatReason(missingReason ? EMPTY_REASON_FALLBACK : raw, suggestion)),
+  );
+  const override = typeof opts?.systemMessage === 'string' ? opts.systemMessage.trim() : '';
+  const line = JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason,
+    },
+    systemMessage: override !== ''
+      ? _clip(override, DENY_HEADLINE_MAX)
+      : _denyHeadline(permissionDecisionReason),
+  });
+  const result = writeStdoutLineSync(line);
+  // stdout delivered → exit 0 (structured channel). stdout unwritable → exit 2,
+  // the only blocking signal left. Never exit 0 on a failed write: that is the
+  // fail-open case this whole helper exists to prevent.
+  process.exit(result.ok ? 0 : 2);
 }
 
 /**

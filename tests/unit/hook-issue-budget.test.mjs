@@ -7,9 +7,18 @@
  * hook as a subprocess, pipe JSON on stdin, assert exit code + stderr. No
  * mocking of production logic.
  *
- * Exit-code contract:
- *   0 — allow (under cap, exempt, warn mode, off mode, non-issue command)
- *   2 — block (over cap in strict mode)
+ * Exit-code contract (#906): EVERY path exits 0. A deny is signalled by the
+ * `hookSpecificOutput` envelope on stdout, never by exit 2 — Claude Code
+ * discards stdout on exit 2. Because allow (under cap, exempt, warn mode, off
+ * mode, non-issue command) and deny (over cap in strict mode) now share exit 0,
+ * a bare `expect(code).toBe(0)` no longer distinguishes them: use `expectDeny`
+ * / `expectAllow`, which assert on the stdout envelope.
+ *
+ * Channel note (#906): formatBlockReason's guidance — the overflow store path,
+ * the [Backlog-Sammel] fold-in promise, the exemption list — used to be written
+ * to stderr. It now travels inside the envelope's `permissionDecisionReason`,
+ * which is what reaches Claude, the actor that must re-file or defer. The
+ * assertions below moved with it; the CONTENT requirement is unchanged.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -19,6 +28,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { matchVcsCreate, isIssueCreate, extractTitle } from '../../hooks/_lib/vcs-create-matcher.mjs';
+
+import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-issue-budget.mjs');
 
@@ -115,25 +126,25 @@ describe('shared vcs-create matcher', () => {
 // ---------------------------------------------------------------------------
 
 describe('pass-through', { timeout: 20000 }, () => {
-  it('exits 0 for a non-Bash tool', async () => {
+  it('allows a non-Bash tool', async () => {
     const dir = await mkProject();
     const r = await runHook({
       projectDir: dir,
       stdin: { session_id: 's', tool_name: 'Edit', tool_input: { file_path: 'README.md' } },
     });
-    expect(r.code).toBe(0);
+    expectAllow(r);
   });
 
-  it('exits 0 for an unrelated shell command', async () => {
+  it('allows an unrelated shell command', async () => {
     const dir = await mkProject();
     const r = await runHook({ projectDir: dir, stdin: bashPayload('git status') });
-    expect(r.code).toBe(0);
+    expectAllow(r);
   });
 
-  it('exits 0 for MR creation even when the issue budget is 0', async () => {
+  it('allows MR creation even when the issue budget is 0', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
     const r = await runHook({ projectDir: dir, stdin: bashPayload('glab mr create --title "x"') });
-    expect(r.code).toBe(0);
+    expectAllow(r);
   });
 });
 
@@ -142,34 +153,37 @@ describe('pass-through', { timeout: 20000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('cap enforcement', { timeout: 30000 }, () => {
-  it('allows up to the cap, then blocks with exit 2', async () => {
+  it('allows up to the cap, then denies', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 2\n  mode: strict' });
-    expect((await fill(dir, 2)).code).toBe(0);
+    expectAllow(await fill(dir, 2));
     const blocked = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab issue create --title "third" --label "type::chore,priority::low"'),
     });
-    expect(blocked.code).toBe(2);
-    expect(blocked.stderr).toContain('issue-budget');
+    expectDeny(blocked, 'issue-budget');
   });
 
-  it('names the overflow store in stderr so the agent knows where the item went', async () => {
+  it('names the overflow store in the deny reason so the agent knows where the item went', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
     await fill(dir, 1);
     const blocked = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab issue create --title "parked"'),
     });
-    expect(blocked.code).toBe(2);
-    expect(blocked.stderr).toContain('.orchestrator/runtime/issue-budget.json');
-    expect(blocked.stderr).toContain('Backlog-Sammel');
+    const reason = expectDeny(blocked).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain('.orchestrator/runtime/issue-budget.json');
+    expect(reason).toContain('Backlog-Sammel');
   });
 
-  it('emits a deny envelope on stdout', async () => {
+  it('emits a deny envelope on stdout with a short operator headline', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
     const blocked = await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "x"') });
-    expect(blocked.code).toBe(2);
-    expect(JSON.parse(blocked.stdout.trim()).permissionDecision).toBe('deny');
+    expectDeny(blocked);
+    // The operator half of the #906 repair: first line only, not the whole
+    // 8-line reason, and not silence.
+    expect(JSON.parse(blocked.stdout).systemMessage).toBe(
+      '⛔ issue-budget: session cap reached — 0/0 issues already created.',
+    );
   });
 
   it('records the blocked request in the counter file (lossless overflow)', async () => {
@@ -192,14 +206,14 @@ describe('modes', { timeout: 30000 }, () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: warn' });
     await fill(dir, 1);
     const r = await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "over"') });
-    expect(r.code).toBe(0);
+    expectAllow(r);
     expect(r.stderr).toContain('cap exceeded');
   });
 
   it('off is a full no-op — no counter file, no block', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: off' });
     const r = await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "x"') });
-    expect(r.code).toBe(0);
+    expectAllow(r);
     await expect(
       fs.access(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json')),
     ).rejects.toThrow();
@@ -212,7 +226,7 @@ describe('modes', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "x"'),
       extraEnv: { SO_DISABLED_HOOKS: 'pre-bash-issue-budget' },
     });
-    expect(r.code).toBe(0);
+    expectAllow(r);
   });
 });
 
@@ -227,7 +241,7 @@ describe('exemptions', { timeout: 30000 }, () => {
       projectDir: dir,
       stdin: bashPayload('gh issue create --title "prod down" --label "type::bug,priority::critical"'),
     });
-    expect(r.code).toBe(0);
+    expectAllow(r);
     expect(r.stderr).toContain('exempt');
   });
 
@@ -239,7 +253,7 @@ describe('exemptions', { timeout: 30000 }, () => {
         'glab issue create --title "[Carryover] [SPIRAL] wedged task" --label "type::carryover,priority::high"',
       ),
     });
-    expect(r.code).toBe(0);
+    expectAllow(r);
     expect(r.stderr).toContain('exempt');
   });
 
@@ -251,7 +265,7 @@ describe('exemptions', { timeout: 30000 }, () => {
         'glab issue create --title "[Backlog-Sammel] s1, 4 zurückgestellte Punkte" --label "type::backlog,priority::low"',
       ),
     });
-    expect(r.code).toBe(0);
+    expectAllow(r);
   });
 
   it('an ordinary discovery issue is NOT exempt', async () => {
@@ -260,6 +274,6 @@ describe('exemptions', { timeout: 30000 }, () => {
       projectDir: dir,
       stdin: bashPayload('glab issue create --title "[Discovery] dead export" --label "type::discovery,priority::low"'),
     });
-    expect(r.code).toBe(2);
+    expectDeny(r);
   });
 });

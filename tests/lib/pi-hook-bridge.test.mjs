@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
@@ -20,11 +21,13 @@ import {
   loadPiHookManifest,
   mapPiToolName,
   normalizePiHookPayload,
+  readHookDecision,
   runPiHookEvent,
   selectPiHooks,
 } from '@lib/pi-hook-bridge.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const IO_DRIVER = fileURLToPath(new URL('../fixtures/io-driver.mjs', import.meta.url));
 
 describe('mapPiToolName', () => {
   it('maps Pi built-in tool names to Claude/Codex hook names', () => {
@@ -185,7 +188,11 @@ describe('runPiHookEvent', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('returns a Pi block response when an underlying hook denies', async () => {
+  // NOTE: the fixture written in beforeEach deliberately uses the LEGACY deny
+  // protocol (flat `{permissionDecision, reason}` + exit 2). Third-party hooks
+  // outside this repo still speak it, so this test pins backwards compatibility.
+  // Do not migrate it to the current envelope — the test below covers that.
+  it('returns a Pi block response when an underlying hook denies (legacy flat form + exit 2)', async () => {
     const result = await runPiHookEvent(
       'tool_call',
       { toolName: 'bash', input: { command: 'rm -rf /tmp/x' } },
@@ -196,6 +203,47 @@ describe('runPiHookEvent', () => {
     expect(result.block).toBe(true);
     expect(result.reason).toBe('blocked Bash');
     expect(result.results).toHaveLength(1);
+  });
+
+  // Regression guard for the #906 protocol migration. Under the current contract
+  // a denying hook exits 0 and nests its decision in `hookSpecificOutput`. The
+  // pre-migration bridge keyed on `status === 2 || parsed.permissionDecision`,
+  // so this shape produced block=false — the deny vanished silently on the pi
+  // lane while every existing (legacy-format) fixture stayed green.
+  it('blocks on the current hookSpecificOutput envelope emitted with exit 0', async () => {
+    writeFileSync(
+      path.join(tmp, 'hooks', 'deny.mjs'),
+      [
+        'let raw = "";',
+        'process.stdin.on("data", (chunk) => { raw += chunk; });',
+        'process.stdin.on("end", () => {',
+        '  const payload = JSON.parse(raw);',
+        '  console.log(JSON.stringify({',
+        '    hookSpecificOutput: {',
+        '      hookEventName: "PreToolUse",',
+        '      permissionDecision: "deny",',
+        '      permissionDecisionReason: `blocked ${payload.tool_name}`,',
+        '    },',
+        '    systemMessage: "\\u26d4 blocked",',
+        '  }));',
+        '  process.exit(0);',
+        '});',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await runPiHookEvent(
+      'tool_call',
+      { toolName: 'bash', input: { command: 'rm -rf /tmp/x' } },
+      { cwd: tmp },
+      { pluginRoot: tmp },
+    );
+
+    expect(result.block).toBe(true);
+    expect(result.results[0].status).toBe(0);
+    // Must be the reason from inside the envelope — not the raw JSON line, which
+    // is what the stdout.trim() fallback would surface.
+    expect(result.reason).toBe('blocked Bash');
   });
 
   it('sets PI_PLUGIN_ROOT for hook subprocesses', async () => {
@@ -271,5 +319,116 @@ describe('runPiHookEvent', () => {
 
     expect(result.block).toBe(true);
     expect(result.reason).toContain('missing.mjs');
+  });
+
+  // Bug this catches: with every in-repo hook now denying at exit 0 (#906), the
+  // stdout parse is the SOLE remaining block signal on the pi lane. A deny
+  // envelope truncated mid-flight parsed as nothing, `deny` stayed false, and
+  // the status-based net could not fire because the status was 0 — measured
+  // block=false before this guard. A guard whose output channel broke must not
+  // read as "allow".
+  it('fails closed when a PreToolUse decision envelope arrives truncated', async () => {
+    writeFileSync(
+      path.join(tmp, 'hooks', 'deny.mjs'),
+      [
+        'process.stdout.write(\'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionRea\');',
+        'process.exit(0);',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await runPiHookEvent(
+      'tool_call',
+      { toolName: 'bash', input: { command: 'rm -rf /tmp/x' } },
+      { cwd: tmp },
+      { pluginRoot: tmp },
+    );
+
+    expect(result.block).toBe(true);
+    expect(result.results[0].status).toBe(0);
+    // Diagnosis, not an echo of the mangled blob — `stdout.trim()` would dump
+    // the whole truncated payload into the operator-facing reason.
+    expect(result.reason).toContain('not a parseable decision envelope');
+  });
+
+  // Bug this catches: the scan used to take the LAST parseable JSON line, so any
+  // line printed after the verdict — `emitSystemMessage`, or a third-party
+  // hook's trailing JSON — shadowed the deny and the bridge read "no decision"
+  // ⇒ allow. First-envelope-wins skips non-decision lines instead.
+  it('honours the first decision envelope, not the last JSON line', async () => {
+    writeFileSync(
+      path.join(tmp, 'hooks', 'deny.mjs'),
+      [
+        'console.log(JSON.stringify({ hookSpecificOutput: {',
+        '  hookEventName: "PreToolUse",',
+        '  permissionDecision: "deny",',
+        '  permissionDecisionReason: "policy X",',
+        '} }));',
+        'console.log(JSON.stringify({ systemMessage: "trailing note" }));',
+        'process.exit(0);',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await runPiHookEvent(
+      'tool_call',
+      { toolName: 'bash', input: { command: 'rm -rf /tmp/x' } },
+      { cwd: tmp },
+      { pluginRoot: tmp },
+    );
+
+    expect(result.block).toBe(true);
+    expect(result.reason).toBe('policy X');
+  });
+
+  // Bug this catches: over-blocking. The naive fail-closed rule ("stdout
+  // non-empty but unparseable ⇒ block") makes every third-party hook that logs
+  // progress a permanent blocker — the bridge spawns whatever the Pi manifest
+  // points at, not just hooks this repo owns. An earlier cut of
+  // `looksLikeBrokenEnvelope` treated a leading `[` as a JSON opener and blocked
+  // on the progress bar below; this pins the carve-out.
+  it('does not block on non-JSON chatter from an allowing hook', async () => {
+    writeFileSync(
+      path.join(tmp, 'hooks', 'deny.mjs'),
+      [
+        'console.log("checking policy...");',
+        'console.log("[####----] 50%");',
+        'process.exit(0);',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await runPiHookEvent(
+      'tool_call',
+      { toolName: 'bash', input: { command: 'echo ok' } },
+      { cwd: tmp },
+      { pluginRoot: tmp },
+    );
+
+    expect(result.block).toBe(false);
+    expect(result.reason).toBe(null);
+  });
+});
+
+// Wiring test (`.claude/rules/test-value.md` TV-005): producer and consumer of
+// the deny envelope are otherwise only ever tested against their own doubles —
+// `tests/lib/io.test.mjs` asserts what `emitDeny` writes, this file asserts what
+// the bridge reads, and neither ever sees the other. Renaming
+// `hookSpecificOutput` in io.mjs turns io.test.mjs red while every hand-built
+// fixture here stays green, exactly while the bridge starts letting every deny
+// through. This spawns the REAL producer and feeds its REAL stdout to the
+// consumer, so that rename lands red here too.
+describe('readHookDecision ↔ emitDeny wiring', () => {
+  it('reads a deny out of the envelope emitDeny actually emits', () => {
+    const produced = spawnSync(process.execPath, [IO_DRIVER, 'emit-deny', 'policy violation'], {
+      encoding: 'utf8',
+    });
+
+    expect(produced.status).toBe(0);
+    expect(readHookDecision(produced.stdout)).toMatchObject({
+      deny: true,
+      reason: 'policy violation',
+      malformed: false,
+    });
   });
 });

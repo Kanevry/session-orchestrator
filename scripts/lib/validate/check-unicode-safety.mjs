@@ -187,6 +187,7 @@ const ALLOWED_EMOJI_CODEPOINTS = new Set([
   0x2139, //  ℹ
   0x2194, //  ↔
   0x26a0, //  ⚠
+  0x26d4, //  ⛔ (deny headline in emitDeny's operator systemMessage — #906)
   0x2705, //  ✅
   0x274c, //  ❌
   0x2b50, //  ⭐

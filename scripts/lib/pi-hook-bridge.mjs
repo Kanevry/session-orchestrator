@@ -205,20 +205,132 @@ export function selectPiHooks(manifest, piEventName, event = {}) {
 }
 
 /**
- * @param {string} stdout
- * @returns {Record<string, unknown>|null}
+ * Substrings that identify a line as an *attempted* decision envelope even when
+ * it no longer parses — the tell-tale of a truncated `emitDeny` payload.
  */
-function parseLastJsonLine(stdout) {
-  const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const parsed = JSON.parse(lines[i]);
-      if (parsed && typeof parsed === 'object') return parsed;
-    } catch {
-      // Try the previous line.
-    }
+const DECISION_MARKERS = Object.freeze(['permissionDecision', 'hookSpecificOutput']);
+
+/**
+ * Decide whether an unparseable stdout line is corrupt hook PROTOCOL output
+ * (fail closed) or merely human-facing chatter (fail open).
+ *
+ * The discriminator is deliberately narrow. "stdout is non-empty but nothing
+ * parsed ⇒ block" — the obvious fail-closed rule — would turn every third-party
+ * hook that prints a progress line or a debug trace into a permanent blocker,
+ * because the Pi bridge spawns whatever the manifest points at. A line that
+ * OPENS A JSON OBJECT, or that name-drops a decision field, is by contrast
+ * malformed by its own protocol's standard; no legitimate log line looks like
+ * that.
+ *
+ * `[` is deliberately NOT an opener here even though it opens a JSON array: a
+ * decision envelope is always an object, so an array line can never be a
+ * truncated one — while `[####----] 50%` is a perfectly ordinary progress bar.
+ * Treating `[` as protocol output blocked that hook in an earlier cut of this
+ * function; `tests/lib/pi-hook-bridge.test.mjs` pins the carve-out.
+ *
+ * @param {string} line  Trimmed, non-empty stdout line that failed JSON.parse.
+ * @returns {boolean}
+ */
+function looksLikeBrokenEnvelope(line) {
+  if (line.startsWith('{')) return true;
+  return DECISION_MARKERS.some((marker) => line.includes(marker));
+}
+
+/**
+ * Pull `{decision, reason}` out of ONE parsed envelope, accepting both
+ * generations of the deny protocol.
+ *
+ * @param {unknown} parsed
+ * @returns {{ decision: string|null, reason: string|null }}
+ */
+function decisionFromEnvelope(parsed) {
+  const envelope = objectOrEmpty(parsed);
+  const hookSpecific = objectOrEmpty(envelope.hookSpecificOutput);
+
+  const decision = typeof hookSpecific.permissionDecision === 'string'
+    ? hookSpecific.permissionDecision
+    : (typeof envelope.permissionDecision === 'string' ? envelope.permissionDecision : null);
+
+  const reason = typeof hookSpecific.permissionDecisionReason === 'string'
+    ? hookSpecific.permissionDecisionReason
+    : (typeof envelope.reason === 'string' ? envelope.reason : null);
+
+  return { decision, reason };
+}
+
+/**
+ * Extract the permission decision + reason from a hook's stdout, accepting BOTH
+ * generations of the deny protocol.
+ *
+ * - **Current** (`scripts/lib/io.mjs#emitDeny`, exit 0):
+ *   `{ hookSpecificOutput: { hookEventName, permissionDecision, permissionDecisionReason } }`
+ * - **Legacy** (pre-#906 in-repo hooks, and third-party hooks outside this repo
+ *   that still emit the deprecated flat shape): `{ permissionDecision, reason }`
+ *
+ * Legacy support is NOT optional: the bridge spawns whatever commands the Pi
+ * manifest points at, including hooks this repo does not own. Dropping the flat
+ * form would silently stop honouring their denies.
+ *
+ * Reading the reason out of the envelope also avoids the failure mode where the
+ * caller falls through to `stdout.trim()` and surfaces the raw JSON string as
+ * the human-readable block reason.
+ *
+ * ## Why this reads raw stdout, and why the FIRST envelope wins
+ *
+ * Since #906 every in-repo PreToolUse hook denies with **exit 0** plus this
+ * envelope, so on the Pi lane `status === 2` no longer fires and the stdout read
+ * is the ONLY surviving block signal. Two ways the previous last-parseable-line
+ * scan dropped that signal:
+ *
+ * 1. **Anything printed after the envelope shadowed it.** `emitSystemMessage`,
+ *    or any third-party hook's trailing JSON, became "the" decision line and the
+ *    deny read as "no decision" ⇒ allow. Scanning forward and keeping the first
+ *    line that actually carries a `permissionDecision` removes that shadowing:
+ *    non-decision JSON lines are now skipped rather than mistaken for a verdict.
+ * 2. **A truncated envelope parsed as nothing at all** ⇒ allow. `malformed`
+ *    reports that case up to {@link runPiHookCommand}, which fails closed for
+ *    PreToolUse. It stays set even when a later line does carry a decision:
+ *    garbage interleaved with a verdict is a protocol violation, and a mangled
+ *    line is exactly as likely to have been a deny as an allow.
+ *
+ * @param {unknown} input  Raw hook stdout (preferred), or an already-parsed
+ *        envelope object. Non-string input skips the line scan and can never
+ *        report `malformed`.
+ * @returns {{ decision: string|null, reason: string|null, deny: boolean, malformed: boolean }}
+ */
+export function readHookDecision(input) {
+  if (typeof input !== 'string') {
+    const { decision, reason } = decisionFromEnvelope(input);
+    return { decision, reason, deny: decision === 'deny', malformed: false };
   }
-  return null;
+
+  let found = null;
+  let malformed = false;
+
+  for (const rawLine of input.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '') continue;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      if (looksLikeBrokenEnvelope(line)) malformed = true;
+      continue;
+    }
+
+    if (found !== null) continue;
+    const candidate = decisionFromEnvelope(parsed);
+    if (candidate.decision !== null) found = candidate;
+  }
+
+  const decision = found?.decision ?? null;
+  return {
+    decision,
+    reason: found?.reason ?? null,
+    deny: decision === 'deny',
+    malformed,
+  };
 }
 
 /**
@@ -261,19 +373,36 @@ export function runPiHookCommand(hook, payload, options) {
 
   const stdout = result.stdout ?? '';
   const stderr = result.stderr ?? '';
-  const parsed = parseLastJsonLine(stdout);
+  const decision = readHookDecision(stdout);
   const isPreToolUse = payload.hook_event_name === 'PreToolUse';
+  // Since #906 in-repo hooks deny with exit 0, so `status` alone carries no block
+  // signal any more and `decision` is load-bearing on its own. `decision.malformed`
+  // is therefore counted as an infrastructure failure: a hook whose decision
+  // channel is corrupt has told us nothing, and for a PreToolUse guard "nothing"
+  // must not read as "allow".
   const infraFailure = Boolean(result.error) ||
     result.status === null ||
-    (result.status !== 0 && result.status !== 2);
+    (result.status !== 0 && result.status !== 2) ||
+    decision.malformed;
+  // `status === 2` stays: legacy/third-party hooks still signal a block that way.
+  // `decision.deny` covers both the current exit-0 envelope and the legacy flat form.
   const blocked = result.status === 2 ||
-    parsed?.permissionDecision === 'deny' ||
+    decision.deny ||
     (isPreToolUse && infraFailure);
-  const reason = typeof parsed?.reason === 'string'
-    ? parsed.reason
-    : (blocked
-        ? (result.error?.message || stdout.trim() || stderr.trim() || `Hook command blocked: ${command}`)
-        : null);
+
+  let reason = decision.reason;
+  if (reason === null && blocked) {
+    // Prefer a diagnosis over echoing the corrupt payload: `stdout.trim()` on a
+    // truncated envelope would surface the whole mangled JSON blob as the
+    // operator-facing block reason.
+    reason = result.error?.message
+      || (decision.malformed
+        ? `Hook stdout is not a parseable decision envelope (possible truncated output) — failing closed: ${command}`
+        : '')
+      || stdout.trim()
+      || stderr.trim()
+      || `Hook command blocked: ${command}`;
+  }
 
   return {
     command,
