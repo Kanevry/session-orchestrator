@@ -490,22 +490,36 @@ This is **best-effort**, exactly like the Phase 4 banners: a board-write failure
 Run these checks as ONE parallel Bash block — background the independent git ops with `&` and `wait`:
 
 ```bash
+# Refresh remote-tracking refs BEFORE reading them. Without this, `origin/main`
+# is a snapshot from the last fetch or clone, and every ahead/behind derivation
+# below silently compares against stale data — a repo can read "in sync" while
+# the real remote is many commits ahead. Best-effort and non-blocking: connect
+# timeouts are bounded (no `timeout(1)` — it is absent on macOS by default) and
+# any failure (offline, no remote, auth prompt) falls through to `|| true`,
+# leaving the previous behaviour of reading whatever refs are on disk.
+GIT_SSH_COMMAND='ssh -o ConnectTimeout=5 -o BatchMode=yes' \
+  git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 \
+  fetch --quiet --prune 2>/dev/null || true
+
 # Independent ops — launch in parallel, collect output via tmpfiles
 git branch -a > /tmp/so-branches.$$ &
 git log --oneline -N > /tmp/so-commits.$$ &        # N from Session Config `recent-commits` (default 20)
 git status --short > /tmp/so-status.$$ &
-git log origin/main..HEAD --oneline > /tmp/so-ahead.$$ &
+# `--left-right --count A...B` emits "<behind>\t<ahead>": commits reachable only
+# from origin/main, then only from HEAD. The older `git log origin/main..HEAD`
+# form could express ahead ONLY, so "behind" was structurally unreportable.
+git rev-list --left-right --count origin/main...HEAD > /tmp/so-divergence.$$ 2>/dev/null &
 wait
 # Then read the 4 tmpfiles in a single step and derive: branch state, recent commits,
 # unpushed/uncommitted, open branches. Clean up tmpfiles once derivations are done:
-rm -f /tmp/so-branches.$$ /tmp/so-commits.$$ /tmp/so-status.$$ /tmp/so-ahead.$$
+rm -f /tmp/so-branches.$$ /tmp/so-commits.$$ /tmp/so-status.$$ /tmp/so-divergence.$$
 ```
 
 Checks to run (derived from the collected output):
 
-1. **Branch state**: current branch (from `branch -a`), ahead/behind origin (from `ahead` tmpfile)
+1. **Branch state**: current branch (from `branch -a`), ahead/behind origin (from the `divergence` tmpfile — field 1 is behind, field 2 is ahead). Report BOTH directions. A non-zero behind count means the local branch is missing remote work: surface it, because agents reading repo instructions from a stale checkout will follow superseded guidance. An empty `divergence` tmpfile means no `origin/main` ref resolved (no remote, or a differently-named default branch) — report that as unknown, never as zero.
 2. **Recent commits**: parse `commits` tmpfile — identify last session's work by commit patterns
-3. **Unpushed/uncommitted**: `status` tmpfile + `ahead` tmpfile combined
+3. **Unpushed/uncommitted**: `status` tmpfile + the ahead field of the `divergence` tmpfile combined
 4. **Open branches**: parse `branch -a` tmpfile, identify which are mergeable to develop/main
 5. **Stale branches**: run AFTER the parallel block — requires iterating over branches (depends on `branch -a` output). Use `git log -1 --format=%ct <branch>` per branch; flag those with no commits in more than `stale-branch-days` (default: 7) days.
 
@@ -668,7 +682,8 @@ Group issues by:
 
    Additionally, if the current repo has a configured `origin` remote and `glab` (GitLab) or `gh` (GitHub) is available, invoke the CI-status probe (`scripts/lib/ci-status-banner.mjs`) via `checkCiStatus({ repoRoot: process.cwd() })`. The helper returns `null` (silent no-op) when no VCS remote, no CLI tool, parse failure, or CLI timeout (8s default). When `result.status === 'red'`, render a banner alongside the bootstrap-lock and vault-staleness warnings:
    - **Red** (`status === 'red'`): `"🚨 CI RED on HEAD (pipeline #<currentPipelineId>) — last green: #<lastGreen.pipelineId> (commit <SHA-7>, <redCount> pipelines ago). Failing job: <failingJobName>"`
-   - **Green** or **unknown**: silent (no banner) — informational only.
+   - **Green with soft failures** (`status === 'green'` AND `result.allowFailureJobs` is present): `"⚠ CI green on HEAD, but <N> allow_failure job(s) FAILED: <names>. A pipeline reports success regardless of these — a job red on every run stays invisible at the pipeline level."` Render this even though the pipeline passed: the whole point is that pipeline status cannot express it.
+   - **Green** (no `allowFailureJobs`) or **unknown**: silent (no banner) — informational only.
 
    The banner is non-blocking — display in the Session Overview, do not halt the session. If `ci-status-banner.mjs` is absent (pre-#369 plugin install), skip silently.
 

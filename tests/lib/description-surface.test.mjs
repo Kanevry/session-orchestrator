@@ -414,9 +414,11 @@ describe('measureDescriptionSurface — nested instruction files excluded', () =
       'real-agent',
       '---\nname: real-agent\ndescription: A real agent.\n---\nBody.\n',
     );
-    // No frontmatter at all — mirrors the real agents/AGENTS.md shape: a
-    // spec doc with an example line that starts with `description:` deep in
-    // the body, at column 0.
+    // No frontmatter at all — the shape agents/AGENTS.md had when #878 was
+    // found: a spec doc with an example line starting with `description:` deep
+    // in the body, at column 0. The real file now carries containment
+    // frontmatter (it was registering as a full-tool agent), but the exclusion
+    // must keep holding for the frontmatter-less shape, so the fixture stays.
     writeAgent(
       root,
       'AGENTS',

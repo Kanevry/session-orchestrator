@@ -153,6 +153,74 @@ describe('checkCiStatus — GitLab green', () => {
   });
 });
 
+// ── Test 1b: GitLab green hiding a failed allow_failure job ───────────────────
+//
+// Bug this catches: a pipeline reports `status: success` even when a job with
+// `allow_failure: true` failed. Reading only the pipeline status reports a
+// clean green and stays silent, so a job that is red on every single pipeline
+// (observed in the field: 4 of 4 consecutive runs) never surfaces at all.
+// Every pre-existing green test asserts `status === 'green'` only, so none of
+// them would fail if the job list were ignored again.
+
+describe('checkCiStatus — GitLab green with a soft-failed job', () => {
+  it('names failed allow_failure jobs while still reporting green', async () => {
+    const pipelines = [
+      { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+    const jobs = [
+      { name: 'build', status: 'success', allow_failure: false },
+      { name: 'test lighthouse', status: 'failed', allow_failure: true },
+      { name: 'audit', status: 'failed', allow_failure: true },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      glabRepoViewResponse,
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(101, jobs),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    // The pipeline genuinely is green — that verdict must not flip.
+    expect(result.status).toBe('green');
+    expect(result.ok).toBe(true);
+    // ...but the soft failures are now nameable.
+    expect(result.allowFailureJobs).toEqual(['test lighthouse', 'audit']);
+  });
+
+  it('omits allowFailureJobs when every job passed', async () => {
+    const pipelines = [
+      { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+    // A job may carry allow_failure: true and still succeed — that is not a finding.
+    const jobs = [
+      { name: 'build', status: 'success', allow_failure: false },
+      { name: 'test lighthouse', status: 'success', allow_failure: true },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      glabRepoViewResponse,
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(101, jobs),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('green');
+    expect(result.allowFailureJobs).toBeUndefined();
+  });
+});
+
 // ── Test 2: GitLab red with last-green ────────────────────────────────────────
 
 describe('checkCiStatus — GitLab red with last-green', () => {

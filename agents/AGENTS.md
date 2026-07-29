@@ -1,3 +1,9 @@
+---
+name: agents-authoring-spec
+description: NOT A DISPATCHABLE AGENT — never select this. It is the authoring specification that the agent definitions in this directory must follow, loaded as a nested instruction file. Claude Code's plugin loader registers every agents/*.md as an agent by directory convention, and the manifest's `agents` key is additive-only, so it cannot exclude a path. Without this frontmatter the file registered as an unnamed agent with FULL tool access; the minimal `tools` line below is what bounds that. If you need agent-authoring rules, read this file — do not dispatch it.
+tools: Read
+---
+
 # `agents/` — Sub-Agent Authoring Conventions
 
 > Nested instruction file for the `agents/` subtree. Claude Code / Cursor IDE
@@ -9,7 +15,18 @@
 > This is **not** an agent definition — it is the authoring spec the agent
 > `*.md` definitions in this directory must follow. The plugin validator
 > (`scripts/lib/validate/check-agents.mjs`) excludes `AGENTS.md` / `CLAUDE.md`
-> from agent-frontmatter validation by name.
+> from agent-frontmatter validation by name, and `measureDescriptionSurface`
+> excludes them from its walked corpus (#878).
+>
+> **Claude Code's plugin loader makes no such exception.** It registers every
+> `agents/*.md` as a dispatchable agent by directory convention, and the
+> manifest's `agents` key is documented as *additive* ("in addition to those in
+> the `agents/` directory"), so it cannot exclude a path. With no frontmatter
+> this file therefore registered as an agent named `AGENTS` with **full tool
+> access**. The frontmatter above is the containment: it names the file for what
+> it is, states in the `description` that it must never be dispatched, and caps
+> `tools` at `Read`. Do not remove it — and if you add another non-agent doc to
+> this directory, give it the same treatment.
 >
 > Sibling spec: for `.claude/rules/*.md` frontmatter (conditional loading via
 > globs/mode/host-class/expiry, plus the never-always-on invariant for

@@ -193,9 +193,32 @@ async function checkGitlab(repoRoot, now, deps = {}) {
   const pipelineStatus = currentPipeline.status;
 
   if (pipelineStatus === 'success') {
+    // A pipeline reports `success` even when jobs marked `allow_failure: true`
+    // failed. Those jobs are invisible at the pipeline level, so a permanently
+    // red allow-failure job (observed: 4/4 consecutive pipelines) would never
+    // surface. Inspect the job list to name them. Non-fatal: a failed job query
+    // still yields a plain green result.
+    let allowFailureJobs;
+    try {
+      const jobs = await glabApi(
+        `projects/${projectId}/pipelines/${currentPipeline.id}/jobs`,
+        repoRoot,
+        deps,
+      );
+      if (Array.isArray(jobs)) {
+        const softFailed = jobs
+          .filter((j) => j.status === 'failed' && j.allow_failure === true)
+          .map((j) => j.name);
+        if (softFailed.length > 0) allowFailureJobs = softFailed;
+      }
+    } catch {
+      // Non-fatal — report green without the allow-failure detail.
+    }
+
     return {
       status: 'green',
       ok: true,
+      ...(allowFailureJobs ? { allowFailureJobs } : {}),
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
