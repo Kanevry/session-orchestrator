@@ -101,7 +101,7 @@ Read by: `skills/quality-gates/SKILL.md`, `skills/session-end/SKILL.md`. The thr
 ## Discovery
 
 ```yaml
-discovery-on-close: auto               # session-type aware: housekeeping=false, feature/deep=true (#264)
+discovery-on-close: auto               # auto = true for every session type (was housekeeping=false until 2026-07-29)
 discovery-probes: [all]                # all | code | infra | ui | arch | session | audit | vault | feature
 discovery-exclude-paths: []            # globs (e.g. "vendor/**", "dist/**")
 discovery-severity-threshold: low      # critical | high | medium | low

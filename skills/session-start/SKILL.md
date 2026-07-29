@@ -1062,6 +1062,15 @@ Cross-reference: GitLab #845 (Epic #841); `docs/prd/2026-07-20-anonymous-usage-t
 - Focus on git cleanup, documentation currency, CI health
 - Skip deep research — prioritize operational tasks
 - Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
+- **Run the drift check as a work-list, not as a gate:**
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/skills/claude-md-drift-check/checker.mjs" --mode warn
+  ```
+  `--mode warn` always exits 0 and returns findings as JSON — it must never block session-start. Summarise `errors[]` and `warnings[]` by check name in the Session Overview and offer them as candidate scope in the Phase 8 Q&A.
+
+  **Why here and not only at close.** The same checker already runs at session-end (`skills/session-end/SKILL.md` Phase 2), where it verifies the work just done. That is the wrong moment to *discover* drift: doc-vs-reality drift was the single most frequently confirmed finding in the six-repo diagnostic run (6 of 6 repos), and a housekeeping session that only learns about it at close cannot act on it. Running it at the start turns it into the session's work-list. It is deliberately scoped to `housekeeping` — for `feature`/`deep` sessions this list is a distraction from the agreed scope, and the close-time run still covers them.
+
+  **Read the output critically.** In a consumer repo the checker reported 69 errors of which zero concerned that repo — all were dangling `## See Also` citations inside vendored, never-curated baseline rule copies. Before proposing any of it as scope, check whether a finding points at repo-owned content or at vendored files; report the split rather than the raw count.
 
 ## Phase 7.1: Issue Premise Verification (#730/H3)
 

@@ -167,7 +167,7 @@ verification-auto-fix:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discovery-on-close` | boolean | session-type aware: `false` for `housekeeping`, `true` for `feature`/`deep` (#264) | Run discovery probes automatically during `/close`. Default is `false` for housekeeping sessions and `true` for feature and deep sessions when not explicitly configured. An explicit value always overrides the session-type default. |
+| `discovery-on-close` | boolean | `true` for every session type | Run discovery probes automatically during `/close`. An explicit value always wins. Was session-type aware until 2026-07-29 (`false` for `housekeeping`, #264); measurement showed the probes are the system's main project-hygiene surface, so defaulting them off for the cleanup session type left it as the only one closing without hygiene diagnostics. Set `false` explicitly for a faster close. |
 | `discovery-probes` | list | `[all]` | Probe categories to run: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature`. |
 | `discovery-exclude-paths` | list | `[]` | Glob patterns to exclude from discovery scanning (e.g., `vendor/**`, `dist/**`). |
 | `discovery-severity-threshold` | string | `low` | Minimum severity for reported findings: `critical`, `high`, `medium`, `low`. |
