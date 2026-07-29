@@ -17,7 +17,9 @@ A test MAY be deleted or consolidated without approval ceremony when it (a) fail
 
 ## TV-003: Budget Corridor (advisory)
 
-Target a tests:src LOC ratio of ≤ 1.2. Above that ceiling, the next Quality wave is a CONSOLIDATION wave: no new test lands without removing a redundant one. The corridor bounds test VOLUME only — the 70% coverage floor (`testing.md` § Coverage Enforcement) is unchanged and still binds.
+Target a tests:src LOC ratio of ≤ 1.60. Above that ceiling, the next Quality wave is a CONSOLIDATION wave: no new test lands without removing a redundant one. The corridor bounds test VOLUME only — the 70% coverage floor (`testing.md` § Coverage Enforcement) is unchanged and still binds.
+
+The ceiling is derived from measurement, not aspiration (2026-07-29: 190,949 test LOC / 109,494 src LOC = 1.74). Its predecessor 1.20 was unreachable: it demanded cutting 31% of the suite, where the last full test diet (`f69578f`) removed 6,716 lines — a ninth of that, and the cheap ninth. Nor is the volume where a diet would look: `tests/lib/` carries 55% of the test mass at ratio 1.30, already inside the corridor, so a blanket cut lands on the best-covered surface first. An unreachable ceiling only manufactures standing deletion pressure with no nameable target per file — the precise thing TV-001 and TV-002 forbid. The consolidation rule above is the operative instrument; the ratio is merely the trigger that switches it on.
 
 ## TV-004: Duplication Check Before Writing
 

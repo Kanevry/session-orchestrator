@@ -15,6 +15,19 @@
  *   4. --json loses a key → the hook / CI consumers that parse it break.
  *   5. The check starts exiting non-zero → it becomes a blocking gate on a
  *      366-finding corpus, which is not what warn-only v1 promises.
+ *   6. B3 stops seeing a bare `expect(res.status).toBe(0)` in a deny-capable
+ *      hook test → the #906 assert-nothing regrows and a hook that flips from
+ *      allow to deny keeps its tests green (both directions exit 0).
+ *   7. B3's scope gate widens to non-deny hooks or husky/CLI spawns → 200+
+ *      legitimate exit-0 assertions light up, the advisory becomes noise and
+ *      gets muted. (Measured 2026-07-29: 223 findings without the gate, 0 with.)
+ *   8. B3's discriminator set shrinks → migrated `expectAllow`/`expectDeny`/
+ *      stdout blocks get flagged, same mute-it failure mode from the other side.
+ *   9. B4 stops seeing a restated decision envelope → the 6 local helper copies
+ *      and 21 soft `toContain('"permissionDecision":"deny"')` substring asserts
+ *      regrow and survive the next protocol change verbatim.
+ *  10. B4 starts flagging comment prose, helper-routed reads or absence guards →
+ *      12 docblock lines + the sanctioned `expectDeny(...)` usage go red.
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -144,6 +157,157 @@ describe('check-test-value-bans — B2 suspected prose pins', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// B3 / B4 — the hook-decision bans
+// ---------------------------------------------------------------------------
+
+/** A deny-capable hook: its source emits the permission-decision envelope. */
+const DENY_HOOK_SRC = "import { emitDeny } from '../scripts/lib/io.mjs';\nemitDeny('nope');\n";
+/** A hook with no deny channel at all — exit 0 there is unambiguous. */
+const PLAIN_HOOK_SRC = "process.stdout.write('');\n";
+
+/**
+ * Build a hook-test fixture: a module-level HOOK constant plus one `it(` block.
+ * @param {string} hookFile basename under hooks/
+ * @param {string[]} body lines inside the it-block
+ * @param {string[]} [extraTop] extra module-level lines (e.g. a second subject)
+ */
+const hookTest = (hookFile, body, extraTop = []) =>
+  [
+    `const HOOK = path.resolve(import.meta.dirname, '../../hooks/${hookFile}');`,
+    ...extraTop,
+    "it('runs', () => {",
+    '  const result = spawnSync(process.execPath, [HOOK]);',
+    ...body,
+    '});',
+    '',
+  ].join('\n');
+
+describe('check-test-value-bans — B3 bare exit-code on a deny-capable hook', () => {
+  it('flags a bare exit-0 assertion when nothing in the block tells allow from deny', () => {
+    const { res, json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/guard.test.mjs': hookTest('guard.mjs', ['  expect(result.status).toBe(0);']),
+    });
+
+    expect(res.status).toBe(0); // still advisory
+    expect(json.counts['B3-bare-hook-exit-code']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/guard.test.mjs',
+      line: 4,
+      ban: 'B3-bare-hook-exit-code',
+      match: 'expect(result.status).toBe(0);',
+    });
+  });
+
+  it.each([
+    ['expectAllow', '  expectAllow(result);'],
+    ['expectDeny', "  expectDeny(result, 'blocked');"],
+    ['stdout assertion', "  expect(result.stdout.trim()).toBe('');"],
+  ])('stays silent when the block carries a %s discriminator', (_label, discriminator) => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/guard.test.mjs': hookTest('guard.mjs', [
+        '  expect(result.status).toBe(0);',
+        discriminator,
+      ]),
+    });
+
+    expect(json.counts['B3-bare-hook-exit-code']).toBe(0);
+  });
+
+  it('ignores a hook with no deny channel — exit 0 is unambiguous there', () => {
+    const { json } = scan({
+      'hooks/on-session-start.mjs': PLAIN_HOOK_SRC,
+      'tests/plain.test.mjs': hookTest('on-session-start.mjs', [
+        '  expect(result.status).toBe(0);',
+      ]),
+    });
+
+    expect(json.counts['B3-bare-hook-exit-code']).toBe(0);
+  });
+
+  it('ignores a file that also drives a non-deny hook (mixed subject)', () => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'hooks/run-node.sh': '#!/bin/sh\n',
+      'tests/mixed.test.mjs': hookTest('guard.mjs', ['  expect(result.status).toBe(0);'], [
+        "const SHIM = path.join(REPO_ROOT, 'hooks', 'run-node.sh');",
+      ]),
+    });
+
+    expect(json.counts['B3-bare-hook-exit-code']).toBe(0);
+  });
+
+  it('ignores a file that declares no hook subject at all (CLI / husky test)', () => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/cli.test.mjs': [
+        "const SCRIPT = resolve(__dirname, '../../scripts/validate-wave-scope.mjs');",
+        "it('exits 0', () => {",
+        '  const r = spawnSync(process.execPath, [SCRIPT]);',
+        '  expect(r.status).toBe(0);',
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B3-bare-hook-exit-code']).toBe(0);
+  });
+});
+
+describe('check-test-value-bans — B4 decision contract copied outside its owner', () => {
+  it('flags a restated envelope-key literal (the soft substring-assert shape)', () => {
+    const { json } = scan({
+      'tests/soft.test.mjs':
+        '  expect(result.stdout).toContain(\'"permissionDecision":"deny"\');\n',
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/soft.test.mjs',
+      line: 1,
+      ban: 'B4-hook-decision-contract-copy',
+    });
+  });
+
+  it('flags a hand-rolled positive assertion instead of the helper', () => {
+    const { json } = scan({
+      'tests/local.test.mjs': [
+        'const parsed = JSON.parse(result.stdout);',
+        "expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');",
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(1);
+    expect(json.findings[0]).toMatchObject({ line: 2 });
+  });
+
+  it.each([
+    ['comment prose', ' * to stderr. It now travels inside `permissionDecisionReason`,'],
+    ['line comment', '// substring \'"permissionDecision":"deny"\' survives re-nesting'],
+    ['helper-routed read', 'const r = expectDeny(result).hookSpecificOutput.permissionDecisionReason;'],
+    ['absence guard', 'expect(out.permissionDecision).toBeUndefined();'],
+  ])('stays silent on %s', (_label, line) => {
+    const { json } = scan({ 'tests/ok.test.mjs': line + '\n' });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(0);
+  });
+
+  it('exempts the declared contract owners (producer + bridge tests)', () => {
+    const violation = "expect(obj.hookSpecificOutput.permissionDecision).toBe('deny');\n";
+    const owned = scan({
+      'tests/lib/io.test.mjs': violation,
+      'tests/lib/pi-hook-bridge.test.mjs': violation,
+    }).json;
+    const foreign = scan({ 'tests/lib/other.test.mjs': violation }).json;
+
+    expect(owned.counts['B4-hook-decision-contract-copy']).toBe(0);
+    expect(foreign.counts['B4-hook-decision-contract-copy']).toBe(1);
+  });
+});
+
 describe('check-test-value-bans — CLI contract', () => {
   it('--json emits the advisory/scanned/counts/findings shape consumers parse', () => {
     const { json } = scan({ 'tests/shape.test.mjs': 'expect(a).toHaveLength(9);\n' });
@@ -151,7 +315,12 @@ describe('check-test-value-bans — CLI contract', () => {
     expect(json).toMatchObject({
       advisory: true,
       scanned: 1,
-      counts: { 'B1-exact-count': 1, 'B2-prose-pin-suspected': 0 },
+      counts: {
+        'B1-exact-count': 1,
+        'B2-prose-pin-suspected': 0,
+        'B3-bare-hook-exit-code': 0,
+        'B4-hook-decision-contract-copy': 0,
+      },
     });
     expect(Array.isArray(json.findings)).toBe(true);
     expect(Object.keys(json.findings[0]).sort()).toEqual(['ban', 'file', 'hint', 'line', 'match']);
@@ -163,6 +332,22 @@ describe('check-test-value-bans — CLI contract', () => {
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('B1-exact-count');
     expect(res.stdout).toContain('tests/human.test.mjs:1');
+  });
+
+  // bug_caught: a `process.exit(0)` tail truncated stdout on a PIPE once the
+  // payload passed the ~64 KiB pipe buffer — `--json | jq` got cut-off JSON
+  // while `--json > file` was complete. Scanning the real corpus is the only
+  // way to exceed that buffer, so this test uses the repo root, not a fixture.
+  it('emits complete JSON through a pipe on the full corpus (no exit-truncation)', () => {
+    const res = spawnSync(
+      '/bin/sh',
+      ['-c', `"${process.execPath}" "${SCRIPT}" "${REPO_ROOT}" --json | cat`],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+
+    expect(res.status).toBe(0);
+    expect(res.stdout.length).toBeGreaterThan(65_536); // past the pipe buffer
+    expect(() => JSON.parse(res.stdout)).not.toThrow();
   });
 
   it('exits 2 on an unknown flag (tool error, per cli-design.md)', () => {

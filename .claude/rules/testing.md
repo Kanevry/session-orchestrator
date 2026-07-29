@@ -189,7 +189,7 @@ Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-
 - Coverage thresholds enforced in `vitest.config.ts`:
   - `statements: 70`, `branches: 70`, `functions: 70`, `lines: 70`
 - Critical paths (auth, payments, RLS): aim for 90%+.
-- **Corridor, not ratchet:** the 70% floor is the regression guard and always binds; an advisory tests:src LOC ceiling of 1.2 bounds the other end. A coverage drop caused by REMOVING worthless tests (per `test-value.md` TV-002) is legitimate — record which tests were removed and why in the session report. "Never reduce" applies to bugs caught, not to test lines. See `test-value.md` § TV-003 for the corridor rule.
+- **Corridor, not ratchet:** the 70% floor is the regression guard and always binds; an advisory tests:src LOC ceiling of 1.60 bounds the other end. A coverage drop caused by REMOVING worthless tests (per `test-value.md` TV-002) is legitimate — record which tests were removed and why in the session report. "Never reduce" applies to bugs caught, not to test lines. See `test-value.md` § TV-003 for the corridor rule.
 - Use `--coverage` flag in CI. Fail pipeline if thresholds not met.
 
 ## Accessibility Testing
