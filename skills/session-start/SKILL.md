@@ -748,6 +748,18 @@ Group issues by:
 
    Non-blocking. Cross-reference: `scripts/lib/instruction-budget-guard.mjs` (sibling directive-COUNT probe over `.claude/rules/*.md` — this probe measures raw-file PROPERTIES of CLAUDE.md/AGENTS.md itself, a distinct dimension) and issue #878 (FA2b).
 
+   Additionally, invoke the project-hygiene probe family (`scripts/lib/project-hygiene.mjs`) via `checkProjectHygiene({ repoRoot })` (synchronous — no await). **This is the only probe in Phase 4 besides `ci-status` that inspects the PROJECT rather than the orchestrator's own substrate** — every other probe above measures vault, peer-cards, loop readiness, instruction budget, or this tool's own ledger. It is deliberately NOT config-gated: a hygiene check nobody enables finds nothing, which is how the equivalent coverage was lost before (see `skills/session-end/discovery-scan.md` — the discovery scan defaults OFF for exactly the `housekeeping` session type that most needs it).
+
+   The helper returns `null` (silent no-op) when `repoRoot` is missing/non-string, when the path is not a git repository, or when every check passes. When a non-null result is returned (`{ severity: 'warn', message, findings, mechanical }`), render `result.message` alongside the other banners:
+   - **Findings present**: render the message verbatim. It already leads with the count and the mechanically-fixable subset, then names the top 3 and summarises the remainder — this shape was chosen because a flat list stops being read past roughly 25 findings.
+   - **Healthy repo**: silent (no banner).
+
+   Use `result.mechanical` when proposing session scope: findings with `fixable: true` (aged artifacts, ignored ballast, a missing CI audit step) are safe batch work, while the rest (release cadence, absent CI, undocumented configuration) need an operator decision and belong in the Q&A, not in an auto-fix batch.
+
+   The checks are: release-tag/CHANGELOG distance from HEAD, ignored working-tree ballast plus files that are neither tracked nor ignored, aged `.orchestrator/` artifacts, CI pipeline presence and dependency-audit coverage, and `.env.example` presence. Two high-yield checks are intentionally NOT here: **docs-drift** is already covered by `claude-md-drift-check` (it only runs at session-END, so the gap is scheduling, not implementation), and **env completeness** is omitted because diffing `process.env` reads against `.env.example` produced a 100% false-positive rate against code that reads configuration through a central schema module.
+
+   Non-blocking. Cross-reference: `scripts/lib/ci-status-banner.mjs` (the sibling project-facing probe) and `.claude/rules/test-value.md` § TV-005 (why structural gates beat unit-test volume).
+
    All banners are non-blocking — display in the Session Overview, do not halt the session. If `bootstrap-lock-freshness.mjs` is absent (pre-#186 plugin install) or `peer-cards/staleness-banner.mjs` is absent (pre-#503 plugin install) or `loop-readiness-banner.mjs` is absent (pre-#633 plugin install) or `instruction-budget-guard.mjs` is absent (pre-#687 plugin install) or `reconcile-nudge-banner.mjs` is absent (pre-#723 plugin install) or `sessions-staleness-banner.mjs` is absent (pre-#724 plugin install) or `owner-config-banner.mjs` is absent (pre-#820 plugin install) or `moc-staleness-banner.mjs` / `context-coverage-banner.mjs` are absent (pre-#831 plugin install) or `claude-md-budget-lint.mjs` is absent (pre-#878 plugin install), skip silently.
 
 ## Phase 4.5: Resource Health (v3.1.0)
