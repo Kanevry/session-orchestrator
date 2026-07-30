@@ -289,10 +289,17 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('warn mode', { timeout: 15000 }, () => {
-  it('allows an out-of-scope write in warn mode and emits NO deny envelope on stdout', async () => {
-    // emitWarn = stderr + exit 0. The stdout-empty half is load-bearing: if warn
-    // ever routed through emitDeny it would still exit 0, so only the empty
-    // stdout distinguishes "warned but permitted" from "blocked".
+  // REPLACES the `expect(result.stdout.trim()).toBe('')` half of this test.
+  //
+  // What it pinned: "warn is not a deny" — via stdout being empty.
+  // Why the new state is right: emitWarn used to be stderr-only, and stderr is
+  // not surfaced under exit 0, so the operator was never told (#916). The
+  // warning now rides the visible top-level `systemMessage`.
+  // What is pinned instead: warn emits a notice that carries NO decision. The
+  // discriminator the old comment cared about is preserved and sharpened — it is
+  // now the ABSENCE of permissionDecision, asserted on the parsed object, rather
+  // than the absence of output.
+  it('allows an out-of-scope write in warn mode and emits a notice, not a deny envelope', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'warn',
       allowedPaths: ['src/'],
@@ -302,7 +309,14 @@ describe('warn mode', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'tests', 'x.ts')),
     });
     expect(result.code).toBe(0);
-    expect(result.stdout.trim()).toBe('');
+
+    const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const obj = JSON.parse(lines[0]);
+    // Exclusivity guard — hookSpecificOutput/permissionDecision must be absent,
+    // or the harness would read this as a block.
+    expect(Object.keys(obj)).toEqual(['systemMessage']);
+    expect(obj.systemMessage).toContain('not in allowed paths');
   });
 
   it('writes a warning containing ⚠ to stderr in warn mode', async () => {

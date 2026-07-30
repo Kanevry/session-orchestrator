@@ -317,9 +317,47 @@ describe('emitWarn', () => {
     expect(stderr.trim()).toBe('⚠ watch out');
   });
 
-  it('produces no stdout output', () => {
+  // REPLACES 'produces no stdout output' (`expect(stdout).toBe('')`).
+  //
+  // What that pinned: "warn does not emit a decision envelope" — expressed as
+  // absolute stdout silence, which was only ever a PROXY for it.
+  // Why the new state is right: under exit 0, stderr is not surfaced at all
+  // (docs/plugin-architecture-v3.md, skills/hook-development/SKILL.md), so
+  // silence-on-stdout meant the warning reached nobody (#916).
+  // What is pinned instead: stdout carries exactly ONE line whose ONLY key is
+  // `systemMessage` — a notice with no decision. Strictly stronger than the old
+  // assertion, which stayed green for the very bug it looked like it covered
+  // (emitting nothing at all passes `toBe('')`).
+  it('emits exactly one systemMessage-only line — a notice the harness cannot read as a block', () => {
     const { stdout } = runDriver('emit-warn', ['anything']);
-    expect(stdout).toBe('');
+    const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const obj = JSON.parse(lines[0]);
+    // Exclusivity guard: the absence of hookSpecificOutput/permissionDecision is
+    // what keeps warn non-blocking. A regression that routed warn through
+    // emitDeny would add those keys and fail here.
+    expect(Object.keys(obj)).toEqual(['systemMessage']);
+  });
+
+  it('carries the warning text verbatim in the operator-visible systemMessage', () => {
+    const { stdout } = runDriver('emit-warn', ['file', 'not', 'found']);
+    const obj = JSON.parse(stdout.trim());
+    expect(obj.systemMessage).toBe('⚠ file not found');
+  });
+
+  // 64-KiB pipe-buffer guard. macOS stdout is async on a pipe, so console.log +
+  // process.exit() drops everything past 65 536 bytes. That matters more here
+  // than for a lost warning: pi-hook-bridge classifies an unparseable
+  // `{`-prefixed line as `malformed`, which fails CLOSED for PreToolUse — a
+  // truncated notice would silently turn `enforcement: warn` into a hard block.
+  it('clamps an oversized message and still delivers ONE parseable line through the pipe', () => {
+    const { stdout, status } = runDriver('emit-warn', ['W'.repeat(200_000)]);
+    expect(status).toBe(0);
+    const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const obj = JSON.parse(lines[0]);
+    expect(obj.systemMessage).toContain('truncated: showing 16000 of 200000 characters');
+    expect(obj.systemMessage.length).toBeLessThan(16_100);
   });
 
   it('warning prefix is the exact unicode warning sign followed by a space', () => {

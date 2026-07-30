@@ -162,6 +162,50 @@ describe('validateSubagent', () => {
     expect(() => validateSubagent(entry)).toThrow(ValidationError);
   });
 
+  // -------------------------------------------------------------------------
+  // #917 — duration_ms: 0 is a fabricated value, null is an honest unknown.
+  // The write path rejects 0; readers/migrations stay lenient for the corpus
+  // written before the fix.
+  // -------------------------------------------------------------------------
+
+  it('accepts duration_ms: null on stop (explicit "duration unknown")', () => {
+    const entry = { ...validStop(), duration_ms: null };
+    expect(() => validateSubagent(entry)).not.toThrow();
+    expect(() => validateSubagent(entry, { strictDuration: true })).not.toThrow();
+  });
+
+  it('accepts duration_ms: 0 by DEFAULT so the pre-#917 corpus still validates', () => {
+    // Every stop record written before #917 carries a fabricated 0 (measured
+    // 2026-07-30: 2794 of 2797 in the live ledger). migrate-subagents-jsonl.mjs
+    // validates that corpus, so the default must not reject it.
+    const entry = { ...validStop(), duration_ms: 0 };
+    expect(() => validateSubagent(entry)).not.toThrow();
+  });
+
+  it('rejects duration_ms: 0 under strictDuration (the write path)', () => {
+    const entry = { ...validStop(), duration_ms: 0 };
+    expect(() => validateSubagent(entry, { strictDuration: true })).toThrow(ValidationError);
+    expect(() => validateSubagent(entry, { strictDuration: true })).toThrow(/duration_ms/);
+  });
+
+  it('accepts a positive duration_ms under strictDuration', () => {
+    const entry = { ...validStop(), duration_ms: 1 };
+    expect(() => validateSubagent(entry, { strictDuration: true })).not.toThrow();
+  });
+
+  it('rejects a negative duration_ms in BOTH modes', () => {
+    const entry = { ...validStop(), duration_ms: -1 };
+    expect(() => validateSubagent(entry)).toThrow(ValidationError);
+    expect(() => validateSubagent(entry, { strictDuration: true })).toThrow(ValidationError);
+  });
+
+  it('rejects a MISSING duration_ms on stop in both modes (omission is a producer bug)', () => {
+    const entry = validStop();
+    delete entry.duration_ms;
+    expect(() => validateSubagent(entry)).toThrow(/duration_ms/);
+    expect(() => validateSubagent(entry, { strictDuration: true })).toThrow(/duration_ms/);
+  });
+
   it('event=start does not require duration_ms', () => {
     const entry = validStart();
     // No duration_ms — must not throw
@@ -256,6 +300,22 @@ describe('appendSubagent', () => {
     const filePath = join(tmp, 'subagents.jsonl');
     const bad = { ...validStart(), event: 'invalid' };
     await expect(appendSubagent(filePath, bad)).rejects.toThrow(ValidationError);
+  });
+
+  it('rejects a stop record with duration_ms: 0 — the write path is strict (#917)', async () => {
+    const filePath = join(tmp, 'strict.jsonl');
+    await expect(
+      appendSubagent(filePath, { ...validStop(), duration_ms: 0 }),
+    ).rejects.toThrow(ValidationError);
+    // Nothing may be written when validation rejects.
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('writes a stop record with duration_ms: null (honest unknown) (#917)', async () => {
+    const filePath = join(tmp, 'nulldur.jsonl');
+    await appendSubagent(filePath, { ...validStop(), duration_ms: null });
+    const [rec] = await readSubagents(filePath);
+    expect(rec.duration_ms).toBeNull();
   });
 });
 

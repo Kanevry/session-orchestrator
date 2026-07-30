@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -399,5 +399,108 @@ describe('subagent-telemetry hook', () => {
     // Hardcoded literals — absent output side contributes 0, not null.
     expect(records[0].token_input).toBe(300);
     expect(records[0].token_output).toBe(60);
+  });
+
+  // -------------------------------------------------------------------------
+  // #917 — duration_ms is measured by joining to the agent's own start record,
+  // never defaulted to a fabricated 0.
+  // -------------------------------------------------------------------------
+
+  describe('#917 duration_ms', () => {
+    const stopPayload = (extra = {}) =>
+      JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'dur-agent', ...extra });
+
+    it('stop after a start recovers a positive duration when the harness omits duration_ms', async () => {
+      // The real SubagentStop payload carries no duration_ms — that omission is
+      // precisely what made every pre-#917 record read 0.
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'dur-agent' }));
+      await new Promise((r) => setTimeout(r, 60));
+      const result = runHook(stopPayload());
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stop = records.find((r) => r.event === 'stop');
+      // Bounded rather than exact: the value is a real wall-clock measurement, so
+      // pinning a literal would be pinning the machine's scheduling noise. The
+      // floor is what the regression is about — it must never be 0 again.
+      expect(stop.duration_ms).toBeGreaterThan(0);
+      expect(stop.duration_ms).toBeLessThan(60_000);
+      expect(Number.isInteger(stop.duration_ms)).toBe(true);
+    });
+
+    it('stop with NO matching start record yields null, not 0', async () => {
+      const result = runHook(stopPayload({ agent_id: 'orphan-agent' }));
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      // null is the honest "unknown". Roughly half of real stop traffic lands
+      // here (no start record exists for that agent_id), so this is a main path.
+      expect(records[0].duration_ms).toBeNull();
+    });
+
+    it('a harness-supplied positive duration_ms stays authoritative over the join', async () => {
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'dur-agent' }));
+      runHook(stopPayload({ duration_ms: 45000 }));
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stop = records.find((r) => r.event === 'stop');
+      expect(stop.duration_ms).toBe(45000);
+    });
+
+    it('a harness-supplied duration_ms of 0 is NOT written through as 0', async () => {
+      // The exact regression pin: 0 from the harness is not a measurement. It must
+      // fall through to the join (and here, with no start record, to null).
+      const result = runHook(stopPayload({ agent_id: 'zero-agent', duration_ms: 0 }));
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      expect(records[0].duration_ms).toBeNull();
+    });
+
+    it('joins to the MOST RECENT start when an agent_id is reused', async () => {
+      // agent_id reuse is real (measured 2026-07-30: 22 of 1420 distinct start
+      // ids appear more than once). The backwards scan must pick the latest start,
+      // otherwise a reused id reports the age of a long-finished agent.
+      const stale = new Date(Date.now() - 3_600_000).toISOString();
+      mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
+      // Seed the stale start FIRST so the fresh one below sits later in the file —
+      // the backwards scan must reach the fresh one first.
+      writeFileSync(
+        join(tmp, JSONL_REL),
+        JSON.stringify({ timestamp: stale, event: 'start', agent_id: 'dur-agent', schema_version: 1 }) + '\n',
+        'utf8',
+      );
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'dur-agent' }));
+      runHook(stopPayload());
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stop = records.find((r) => r.event === 'stop');
+      // Must reflect the fresh start (~0s), never the hour-old one.
+      expect(stop.duration_ms).toBeLessThan(60_000);
+    });
+
+    it('ignores a start record belonging to a DIFFERENT agent_id', async () => {
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'someone-else' }));
+      runHook(stopPayload({ agent_id: 'lonely-agent' }));
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stop = records.find((r) => r.event === 'stop');
+      expect(stop.duration_ms).toBeNull();
+    });
+
+    it('survives a torn/malformed line in the ledger while scanning backwards', async () => {
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'dur-agent' }));
+      // A partially-flushed line must not throw the hook or abort the scan.
+      appendFileSync(join(tmp, JSONL_REL), '{"timestamp":"2026-07-30T00:00:00.0\n', 'utf8');
+      await new Promise((r) => setTimeout(r, 60));
+      const result = runHook(stopPayload());
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stop = records.find((r) => r.event === 'stop');
+      expect(stop.duration_ms).toBeGreaterThan(0);
+    });
   });
 });

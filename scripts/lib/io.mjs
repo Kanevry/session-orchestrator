@@ -71,6 +71,25 @@ const DENY_HEADLINE_MAX = 200;
 const DENY_REASON_MAX = 16_000;
 
 /**
+ * Hard ceiling (in characters) for the operator-facing `systemMessage` that
+ * {@link emitWarn} emits.
+ *
+ * Same ceiling as {@link DENY_REASON_MAX}, and for the same measured reason:
+ * the warn path shares its call sites with the deny path — `enforce-scope` calls
+ * `emitDeny(reason, suggestion)` under `strict` and `emitWarn(reason — suggestion)`
+ * under `warn`, on the identical text. The binding case is therefore identical
+ * too (a deep wave's 144-path allowedPaths union, ~9 068 chars, interpolated into
+ * both halves), so a tighter warn ceiling would clip exactly the path list the
+ * operator needs. 16 000 stays ~4× below the 65 536-byte kernel pipe buffer.
+ *
+ * NOT reused as a shared alias by accident: `emitDeny` splits its text across a
+ * clipped 200-char headline plus the full `permissionDecisionReason`, whereas
+ * `systemMessage` is the warn path's ONLY carrier — this constant is what makes
+ * that difference explicit rather than incidental.
+ */
+const WARN_MESSAGE_MAX = 16_000;
+
+/**
  * Reason substituted when a caller denies without supplying one.
  *
  * A guard must never fail on its own bookkeeping: throwing here used to land in
@@ -112,17 +131,18 @@ function _denyHeadline(reason) {
 }
 
 /**
- * Clamp a deny reason to {@link DENY_REASON_MAX}, appending a visible marker
- * that names how much was dropped. The marker is budgeted INSIDE the ceiling,
- * so the returned string never exceeds it.
+ * Clamp a reason/message to `max` characters, appending a visible marker that
+ * names how much was dropped. The marker is budgeted INSIDE the ceiling, so the
+ * returned string never exceeds it.
  *
  * @param {string} reason
+ * @param {number} [max=DENY_REASON_MAX]
  * @returns {string}
  */
-function _clampReason(reason) {
-  if (reason.length <= DENY_REASON_MAX) return reason;
-  const marker = `\n… [truncated: showing ${DENY_REASON_MAX} of ${reason.length} characters]`;
-  return reason.slice(0, DENY_REASON_MAX - marker.length) + marker;
+function _clampReason(reason, max = DENY_REASON_MAX) {
+  if (reason.length <= max) return reason;
+  const marker = `\n… [truncated: showing ${max} of ${reason.length} characters]`;
+  return reason.slice(0, max - marker.length) + marker;
 }
 
 /**
@@ -387,12 +407,76 @@ export function emitDeny(reason, suggestion, opts = {}) {
 }
 
 /**
- * Emit a warning message to stderr and exit 0 (allow with notice).
- * @param {string} message  Warning text written to stderr prefixed with "⚠ ".
+ * Emit an operator-visible warning and exit **0** — "allow, with a notice".
+ *
+ * ## Why this is not stderr-only (#916)
+ *
+ * Until #916 this helper wrote only to stderr. Under the exit-0 branch of the
+ * hook contract that channel goes nowhere: `docs/plugin-architecture-v3.md`
+ * states "stderr | Only for debugging. Not surfaced to the user.", and
+ * `skills/hook-development/SKILL.md` puts it plainly — "When the hook exits 0
+ * here it is **silent** — no stdout, no stderr". So every `enforcement: warn`
+ * scope/command violation was announced to a debug log and to nobody else. A
+ * warning that reaches neither the operator nor the model is not a warning.
+ *
+ * The visible channel is the universal top-level `systemMessage` field — the
+ * same one {@link emitDeny} already rides for its ⛔ headline, and the one
+ * {@link emitSystemMessage} documents. It is emitted here WITHOUT any
+ * `hookSpecificOutput` / `permissionDecision`, which is precisely what keeps
+ * warn non-blocking: the harness sees a message but no decision.
+ *
+ * stderr is retained unchanged for debug-log and CI-capture parity.
+ *
+ * ## Consumer contract — stdout in the warn path is no longer empty
+ *
+ * `scripts/lib/pi-hook-bridge.mjs#readHookDecision` scans stdout line-wise and
+ * keeps the first line that actually carries a `permissionDecision`; a
+ * decision-less JSON line (this one) is skipped, so the Pi lane reports
+ * `{decision: null, deny: false, malformed: false}` ⇒ not blocked. Verified
+ * empirically, not assumed. Codex does not wire these hooks at all
+ * (`hooks/hooks-codex.json` has `"PreToolUse": []`), and `hooks/hooks-cursor.json`
+ * is a documentation-only mapping reference with no in-repo executor.
+ *
+ * ## Delivery: the same two bounds {@link emitDeny} uses, for a sharper reason
+ *
+ * The write goes through {@link writeStdoutLineSync}, never `console.log`, and
+ * the message is clamped to {@link WARN_MESSAGE_MAX}. On macOS a piped stdout is
+ * asynchronous, so `console.log` + `process.exit(0)` drops everything past the
+ * 65 536-byte kernel pipe buffer — and `enforce-scope` interpolates the whole
+ * `allowedPaths` union into its warn text TWICE, so this path genuinely reaches
+ * five figures. A truncated line here is worse than a lost warning: the Pi
+ * bridge classifies an unparseable `{`-prefixed line as `malformed`, which for
+ * PreToolUse fails CLOSED — i.e. pipe truncation would silently convert
+ * `enforcement: warn` into a hard block. Both bounds are load-bearing.
+ *
+ * ## Deliberate asymmetry to emitDeny: an unwritable stdout still exits 0
+ *
+ * {@link emitDeny} exits 2 when stdout cannot be written, because with no
+ * structured channel left the exit code is its only way to block. The warn path
+ * inverts that: its decision is "allow", so a failed write must cost the
+ * NOTICE, never the permission. Exiting non-zero here would turn a dropped
+ * warning into a blocked tool call.
+ *
+ * @param {string} message  Warning text. Emitted on stderr and as the
+ *        `systemMessage` payload, both prefixed with "⚠ ".
  * @returns {never}
  */
 export function emitWarn(message) {
-  console.error(`⚠ ${message}`);
+  // Coerce defensively: a throw here would unwind into the callers' top-level
+  // `main().catch(() => emitDeny(...))`, turning an allow-with-notice into a DENY.
+  const raw = typeof message === 'string'
+    ? message
+    : (message === null || message === undefined ? '' : String(message));
+  const text = `⚠ ${_clampReason(raw, WARN_MESSAGE_MAX)}`;
+
+  // Debug channel — unchanged. Invisible under exit 0, kept for log/CI capture.
+  try {
+    console.error(text);
+  } catch { /* stderr may be closed; the visible channel below is what matters */ }
+
+  // Visible channel. Return value is deliberately ignored — see the asymmetry
+  // note above: a warning that cannot be delivered must not become a block.
+  writeStdoutLineSync(JSON.stringify({ systemMessage: text }));
   process.exit(0);
 }
 

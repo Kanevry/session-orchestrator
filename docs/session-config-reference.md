@@ -227,7 +227,7 @@ slopcheck:
 | `learnings-surface-top-n` | integer | `15` | Cap on how many learnings the session-start Phase 5.6 and session-plan Step 0.5 sections surface, ranked by confidence descending. `0` = do not surface any learnings. Applies to Project Intelligence output. |
 | `learning-decay-rate` | float (0.0 ≤ x < 1.0) | `0.05` | Confidence decay applied to every untouched learning at session-end (after touched-set update, before prune). `0.0` = disable decay. A learning starting at `0.5` confidence survives ~10 untouched sessions with default decay. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
-| `enforcement-gates` | object | null | Per-gate toggles for enforcement hooks. Keys: `path-guard`, `command-guard`, `post-edit-validate`. Values are booleans. Missing keys default to enabled. Example: `{ path-guard: true, command-guard: true, post-edit-validate: false }`. Combined with `enforcement` (which controls strict/warn/off globally). |
+| `enforcement-gates` | object | null | Per-gate toggles for enforcement hooks. Keys: `path-guard`, `command-guard`, `post-edit-validate`, `bash-write-guard`, `bash-write-verify`. Values are booleans. **Missing keys default to enabled — with one deliberate exception: `bash-write-guard` defaults to DISABLED** (see below). Example: `{ path-guard: true, command-guard: true, post-edit-validate: false }`. Combined with `enforcement` (which controls strict/warn/off globally). |
 | `allow-destructive-ops` | boolean | `false` | When `true`, disables the main-session destructive-command guard (`hooks/pre-bash-destructive-guard.mjs`). Set to `true` for intentional maintenance sessions that need `git reset --hard`, `rm -rf`, etc. Defaults to `false` (safe). See issue #155 and `.claude/rules/parallel-sessions.md` (PSA-003). Example: `allow-destructive-ops: true` |
 | `reasoning-output` | boolean | `false` | Enable STATE:/PLAN: structured reasoning markers in agent prompts. When true, agents emit short transparency lines before tool calls. Opt-in — adds prompt overhead. |
 | `grounding-check` | boolean | `true` | Enable file-level grounding verification in session-end Phase 1.1a (planned vs touched files). When true, session-end compares each agent's declared file scope against `git diff --name-only $SESSION_START_REF..HEAD` and reports scope creep + incomplete coverage. Informational — does not block session close. |
@@ -235,6 +235,113 @@ slopcheck:
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. Explicit `worktree` or `none` overrides the graduation. See [isolation graduation](#isolation-graduation) below. |
 | `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
 | `auto-commit-per-wave` | boolean | `false` | Automatically commit each wave's work after the Quality-Lite gate passes. Checkpoint commits per wave reduce the risk of data loss from `git stash` collisions in parallel sessions (V3.3 RESCUE incident — see GitLab #214). When `false`, all work is committed at session-end via `/close`. Requires `persistence: true`; the flag is silently ignored when `persistence: false`. Trade-off: each wave produces an additional commit; git log shows N+1 commits instead of 1. Use `/simplify` or `git rebase -i --autosquash` before final close to squash if a clean history is desired. **Implementation note:** the procedural commit sequence (`scripts/lib/auto-commit.mjs`) is deferred to V3.6. Until then, setting this flag to `true` triggers a session-start warning that auto-commits are not yet active — the flag is a no-op but is validated so projects can opt in early. |
+
+### enforcement-gates: the five gate keys (#800/#915)
+
+`enforcement-gates` is surfaced to the hook layer as `gates` inside the wave's
+`wave-scope.json`. Five keys are read today:
+
+| Gate key | Hook | Event | Default when the key is ABSENT | Effect |
+|----------|------|-------|-------------------------------|--------|
+| `path-guard` | `hooks/enforce-scope.mjs` | PreToolUse `Edit\|Write\|MultiEdit` | **enabled** | Denies (strict) / warns (warn) on a file path outside `allowedPaths`. |
+| `command-guard` | `hooks/enforce-commands.mjs` | PreToolUse `Bash` | **enabled** | Denies (strict) / warns (warn) on a blocked command pattern. |
+| `post-edit-validate` | `hooks/post-edit-validate.mjs` | PostToolUse `Edit\|Write` | **enabled** | Per-file validation after a successful edit. |
+| `bash-write-guard` | `hooks/enforce-commands.mjs` | PreToolUse `Bash` | **DISABLED — inverted default** | Warn-only; parses likely shell write targets out of the command and warns for each one outside `allowedPaths`. |
+| `bash-write-verify` | `hooks/post-bash-write-verify.mjs` | PostToolUse `Bash` | **enabled** | Warn-only; observes the actual working-tree delta after a Bash call and reports files changed outside `allowedPaths`. |
+
+**`bash-write-guard` is the one gate whose missing key means OFF.** Every other
+key follows "absent → enabled", so a reader who has internalised that convention
+will assume a repo without an explicit entry is covered. It is not. The hook
+requires `gates['bash-write-guard'] === true` **literally** —
+`enforce-commands.mjs` tests for the boolean `true`, not for "not false".
+
+That silent assumption is why this row exists at all (#915): the gate shipped in
+#800, was documented nowhere for two releases, and consequently ran in zero
+sessions while the enforcement layer was believed to cover Bash writes. It does
+not by default — and `enforce-scope.mjs` gates only `Edit`/`Write`/`MultiEdit`,
+so a plain `echo x > out-of-scope.mjs` passes every PreToolUse path check.
+
+The inverted default is deliberate, not an oversight: parsing write targets out
+of an arbitrary shell command is heuristic (quoting, `>$VAR`, process
+substitution, heredocs), so a false positive is cheap to produce. Measured over
+2 528 real Bash calls from 41 archived sessions of this repo, the parser flagged
+56 calls (2.22 %) — of which the majority were parse artefacts (`EOF`, `{`,
+`0.3`) that never touched the filesystem. Keeping it opt-in until that rate is
+driven down is correct; leaving it undocumented was not.
+
+`bash-write-verify` (#915) is the complementary, non-heuristic half: it reports
+what the filesystem actually shows rather than what the command appeared to say,
+which is why it can default to enabled. It is warn-only and cannot block — a
+PostToolUse hook fires after the command already ran. Its purpose is to produce
+the evidence needed to flip `bash-write-guard` to `true` with confidence. See
+§ Bash-Write Verify below.
+
+## Bash-Write Verify (PostToolUse Bash diff, #915)
+
+`hooks/post-bash-write-verify.mjs` closes the observability half of the Bash
+bypass class. After every `Bash` tool call it runs
+`git --no-optional-locks status --porcelain -z`, subtracts a baseline snapshot
+taken on the previous invocation, and reports paths that appeared or changed
+**outside** the wave's `allowedPaths`.
+
+Properties that matter:
+
+- **Warn-only, always.** stderr line plus a PostToolUse `additionalContext`
+  string. Never a deny; PostToolUse cannot block a command that already ran.
+- **Delta, not absolute.** Reporting the whole dirty tree on every call would
+  fire on every Bash call for the rest of the session once a single file is
+  edited. Only paths that are new *relative to the previous Bash call* are
+  reported, and each path is reported **once**.
+- **Silent re-baseline.** First call of a session, and any call after the wave's
+  `allowedPaths` change, records the current dirty set without warning — that
+  dirt was not caused by the call being observed.
+- **Snapshot lives outside the repo** (`$TMPDIR/so-bash-write-verify/<hash>.json`),
+  so the guard can never report its own bookkeeping.
+- **Ignore list is part of the contract**, not an implementation detail — see
+  the table in the hook's header comment. It covers sibling-hook writes under
+  `.orchestrator/`, coordinator status files under `.claude/`/`.codex/`/`.cursor/`/`.pi/`,
+  package-manager artefacts (`node_modules/`, lockfiles), build/coverage output,
+  and `tmp+rename` residue (`*.tmp*`). These are mostly `.gitignore`d in this
+  repo, but the guard must not depend on a consumer repo's `.gitignore` being
+  complete.
+
+**Measured cost and noise.** All figures below were measured on 2026-07-30
+against this repo at 1 507 tracked files (`git ls-files | wc -l`); the corpus is
+this repo's 51 archived Claude Code transcripts (the per-project `*.jsonl`
+files under the host-local Claude Code projects directory), of which 41 contain
+at least one `Bash` tool call.
+
+| Metric | Value |
+|--------|-------|
+| Hook end-to-end, per Bash call | **94.8 ms** (10 runs, wall clock) |
+| …of which node cold start (paid by every hook process anyway) | ~67 ms — an existing PreToolUse Bash hook, `enforce-commands.mjs`, measures 66.9 ms on the same loop |
+| …marginal cost of the `git status` this hook adds | **~28 ms** |
+| `git … status --porcelain -z --untracked-files=all` | 25.0 ms/call (`--untracked-files=normal` measured 28.7 ms — `all` is not the slower option here, because the expensive subtrees are `.gitignore`d) |
+| Bash calls in the corpus | 2 528 |
+| Calls containing any write construct at all | 732 (29.0 %) |
+| Calls writing a real in-repo, non-ignored path | **23 (0.91 %)** |
+| Distinct such paths per session | **median 1, max 5** |
+
+So a typical session sees ~1 warning and a worst-case session sees 5. Two
+design choices produce that number rather than the naive one: the ignore list,
+and — more importantly — report-once. Without report-once the guard emits a
+line on *every* Bash call from the first out-of-scope write to the end of the
+session, because `git status` reports the cumulative dirty tree, not a delta.
+
+Live cross-check on the session that added this hook: with a 29-entry
+`allowedPaths` union, the snapshot recorded **0** out-of-scope paths — i.e. zero
+warnings across the session's Bash calls.
+
+**Turning it off:** `enforcement-gates: { bash-write-verify: false }`, or
+`enforcement: off`, or the standard `SO_DISABLED_HOOKS=post-bash-write-verify`
+profile-gate env var.
+
+**Making it bite.** This hook can never become blocking — the escalation path is
+to flip `bash-write-guard` (PreToolUse, *can* deny) to `true` once its
+false-positive rate has been measured down. Prerequisite before that flip: a
+session's worth of `bash-write-verify` warnings compared against the same
+session's `bash-write-guard` warnings, showing the parser produces no warning
+that the filesystem diff does not confirm.
 
 ## STATE.md Lock (#518)
 
@@ -1317,6 +1424,7 @@ SO_DISABLED_HOOKS=enforce-scope,enforce-commands claude ...
 | `enforce-commands` | PreToolUse/Bash |
 | `enforce-scope` | PreToolUse/Edit\|Write |
 | `post-edit-validate` | PostToolUse/Edit\|Write |
+| `post-bash-write-verify` | PostToolUse/Bash |
 | `on-stop` | Stop + SubagentStop |
 
 ### Implementation

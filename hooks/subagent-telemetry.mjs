@@ -47,6 +47,22 @@ const JSONL_PATH = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics', 'subage
  */
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // ~50 MB
 
+/**
+ * Tail window scanned backwards to join a stop event to its own start record (#917).
+ *
+ * The ledger is append-only and grows without bound (1.4 MB / 4201 lines on
+ * 2026-07-30), so reading it whole on EVERY SubagentStop would be a hot-path
+ * regression that worsens for the life of the repo. A fixed-size tail keeps the
+ * join O(1) in file size.
+ *
+ * Sized from the real distribution, not a guess: measured over the live ledger on
+ * 2026-07-30, the byte distance from a start record to its matching stop was
+ * p50 1,380 · p90 3,255 · p99 24,229 · max 36,636. 256 KiB is ~7× the observed
+ * maximum, so a start that falls outside the window is far rarer than the
+ * no-start-record case the null fallback already handles honestly.
+ */
+const START_JOIN_TAIL_BYTES = 256 * 1024;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -179,6 +195,110 @@ function extractTranscriptUsage(transcriptPath) {
   }
 }
 
+/**
+ * Scan the tail of the ledger backwards for the most recent 'start' record with
+ * the given agent_id and return its timestamp in epoch-ms (#917).
+ *
+ * Reads only the last START_JOIN_TAIL_BYTES rather than the whole file — see that
+ * constant for the measured sizing rationale. Scanning backwards means the FIRST
+ * hit is the most recent start, which is the correct one when an agent_id is
+ * reused across sessions (measured 2026-07-30: 22 of 1420 distinct start ids
+ * appeared more than once).
+ *
+ * NEVER throws. Any failure (missing file, unreadable, no match, unparseable
+ * timestamp) yields null so the caller falls back to an honest "unknown".
+ *
+ * @param {string} filePath — ledger path
+ * @param {string} agentId — the stopping agent's id
+ * @returns {number|null} epoch-ms of the matching start, or null
+ */
+function findStartTimestampMs(filePath, agentId) {
+  let fd;
+  try {
+    if (typeof agentId !== 'string' || !agentId.trim()) return null;
+    if (!fs.existsSync(filePath)) return null;
+
+    const { size } = fs.statSync(filePath);
+    if (size === 0) return null;
+
+    const readLen = Math.min(size, START_JOIN_TAIL_BYTES);
+    const from = size - readLen;
+    const buf = Buffer.allocUnsafe(readLen);
+    fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buf, 0, readLen, from);
+
+    const lines = buf.toString('utf8').split('\n');
+    // When the window does not cover the whole file, the first element is a
+    // record sliced mid-line (possibly mid-UTF-8-sequence). Drop it rather than
+    // feed a corrupt fragment to JSON.parse.
+    if (from > 0) lines.shift();
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      // Cheap pre-filter — skip JSON.parse for the ~99% of lines that cannot match.
+      if (!line.includes(agentId)) continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue; // tolerate a torn/malformed line, keep scanning
+      }
+      if (!obj || obj.event !== 'start' || obj.agent_id !== agentId) continue;
+      const ms = Date.parse(obj.timestamp);
+      return Number.isFinite(ms) ? ms : null;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Resolve duration_ms for a stop event (#917).
+ *
+ * Precedence:
+ *   1. A usable harness-supplied duration_ms — authoritative when present.
+ *      In practice Claude Code's SubagentStop payload does NOT carry this field,
+ *      which is exactly why every pre-#917 record read 0.
+ *   2. Wall-clock join: now − the timestamp of this agent's own start record.
+ *   3. null — the honest value when the duration is genuinely unknowable.
+ *
+ * Why null and not 0: a stop that took zero milliseconds never happened, so a 0
+ * is indistinguishable from "we never measured". Roughly half the stop traffic
+ * has no recoverable start record at all (measured 2026-07-30: 1349 of 2770 stop
+ * records have no start record with their agent_id anywhere in the ledger), so
+ * this branch is a major path, not a corner case — writing 0 there would keep
+ * fabricating exactly the value this change removes.
+ *
+ * @param {object} input — raw stdin payload
+ * @param {string} agentId — resolved agent id
+ * @returns {number|null} duration in ms, or null when unknown
+ */
+function resolveDurationMs(input, agentId) {
+  const supplied = input.duration_ms;
+  if (typeof supplied === 'number' && Number.isFinite(supplied) && supplied > 0) {
+    return Math.round(supplied);
+  }
+
+  // 'unknown' is the agent-id fallback for a payload with no usable id — joining
+  // on it would collide across unrelated agents, so never trust it.
+  if (agentId === 'unknown') return null;
+
+  const startedAtMs = findStartTimestampMs(JSONL_PATH, agentId);
+  if (startedAtMs === null) return null;
+
+  const elapsed = Date.now() - startedAtMs;
+  // A non-positive elapsed means a clock jump or a start recorded in the future —
+  // not a measurement. Report unknown rather than invent a plausible number.
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return null;
+  return Math.round(elapsed);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -215,11 +335,9 @@ async function main() {
   };
 
   if (event === 'stop') {
-    // duration_ms is required for stop events; default to 0 if harness omits it.
-    record.duration_ms =
-      typeof input.duration_ms === 'number' && input.duration_ms >= 0
-        ? Math.round(input.duration_ms)
-        : 0;
+    // duration_ms (#917): prefer the harness value, else join backwards to this
+    // agent's own start record, else null. Never 0 — see resolveDurationMs().
+    record.duration_ms = resolveDurationMs(input, agentId);
 
     // Tokens are NOT sent on stdin (#624) — recover them from the transcript's
     // per-assistant-turn usage blocks, deduped by requestId. Any failure → null.

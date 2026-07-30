@@ -14,7 +14,20 @@
  *   schema_version    1 (integer)
  *
  * Required for event='stop':
- *   duration_ms       positive integer — wall-clock time from start to stop
+ *   duration_ms       positive integer | null — wall-clock time from start to stop.
+ *                     null means "unknown": the producer could not recover a
+ *                     matching 'start' record to measure against (#917). null is
+ *                     an honest absence and is NOT interchangeable with 0.
+ *
+ * duration_ms provenance (#917) — why the write path and the read path differ:
+ *   Before #917 the producer defaulted duration_ms to 0 whenever the harness
+ *   omitted it, which it always does. Every stop record written up to that point
+ *   therefore carries a fabricated 0 (measured 2026-07-30: 2770 of 2770 stop
+ *   records in .orchestrator/metrics/subagents.jsonl). Those records still have
+ *   to read and migrate cleanly, so validation is lenient BY DEFAULT and accepts
+ *   0. Callers on the WRITE path opt into `{ strictDuration: true }`, which
+ *   rejects 0 outright — appendSubagent() does this, so no new record can
+ *   reintroduce the fabricated zero.
  *
  * Optional:
  *   agent_type        string | null — e.g. 'explore', 'writer', 'test-writer'
@@ -70,14 +83,21 @@ export class ValidationError extends Error {
  * violation. Does NOT mutate the input.
  *
  * Required fields: timestamp, event, agent_id, schema_version.
- * Additional requirement when event='stop': duration_ms (positive integer).
+ * Additional requirement when event='stop': duration_ms (integer or null).
  * Optional: agent_type, parent_session_id, token_input, token_output.
  *
  * @param {object} entry
+ * @param {object} [options]
+ * @param {boolean} [options.strictDuration=false] — when true, a stop record's
+ *   duration_ms must be a POSITIVE integer or null; 0 is rejected. Write-path
+ *   callers set this; readers/migrations leave it false so the pre-#917 corpus
+ *   (every stop record carrying a fabricated 0) still validates. See the module
+ *   header § duration_ms provenance.
  * @returns {object} the entry (unchanged) — validation is side-effect-free
  * @throws {ValidationError}
  */
-export function validateSubagent(entry) {
+export function validateSubagent(entry, options = {}) {
+  const strictDuration = options?.strictDuration === true;
   if (!entry || typeof entry !== 'object') {
     throw new ValidationError('subagent record must be a non-null object');
   }
@@ -114,15 +134,24 @@ export function validateSubagent(entry) {
     throw new ValidationError('agent_id must be a non-empty string', 'agent_id');
   }
 
-  // duration_ms — required for stop events
-  if (entry.event === 'stop') {
+  // duration_ms — required for stop events.
+  //
+  // null is an explicit, honest "duration unknown" (#917) — the producer found no
+  // matching 'start' record to measure against. It is deliberately distinct from
+  // 0, which under strictDuration is rejected as the signature of the pre-#917
+  // fabricated default. `undefined` still throws in BOTH modes: a stop record
+  // that omits the field entirely is a producer bug, not an unknown duration.
+  if (entry.event === 'stop' && entry.duration_ms !== null) {
+    const floor = strictDuration ? 1 : 0;
     if (
       typeof entry.duration_ms !== 'number' ||
       !Number.isInteger(entry.duration_ms) ||
-      entry.duration_ms < 0
+      entry.duration_ms < floor
     ) {
       throw new ValidationError(
-        'duration_ms must be a non-negative integer when event=stop',
+        strictDuration
+          ? 'duration_ms must be a positive integer or null when event=stop (0 is not a measurement)'
+          : 'duration_ms must be a non-negative integer or null when event=stop',
         'duration_ms',
       );
     }
@@ -252,10 +281,15 @@ export function migrateLegacySubagent(entry) {
  * Steps:
  *   1. Stamp schema_version if missing.
  *   2. Normalize (apply optional-field defaults).
- *   3. Validate — throws ValidationError on bad input.
+ *   3. Validate with strictDuration — throws ValidationError on bad input.
  *   4. Serialize to JSON + newline.
  *   5. mkdir(dirname, recursive: true).
  *   6. appendFile (POSIX append ≤ PIPE_BUF is atomic for typical JSONL lines).
+ *
+ * This is the WRITE path, so it validates with `{ strictDuration: true }`: a stop
+ * record may carry a positive duration or an explicit null, never 0 (#917). The
+ * historic corpus is unaffected — it is only ever read, and readers/migrations use
+ * the lenient default. See the module header § duration_ms provenance.
  *
  * @param {string} filePath — absolute path to target .jsonl file
  * @param {object} entry — candidate subagent record
@@ -268,7 +302,7 @@ export async function appendSubagent(filePath, entry) {
     schema_version: entry?.schema_version ?? CURRENT_SCHEMA_VERSION,
   };
   const normalized = normalizeSubagent(stamped);
-  const validated = validateSubagent(normalized);
+  const validated = validateSubagent(normalized, { strictDuration: true });
   const line = JSON.stringify(validated) + '\n';
   await mkdir(path.dirname(filePath), { recursive: true });
   await appendFile(filePath, line, 'utf8');

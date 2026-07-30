@@ -9,7 +9,7 @@
     },
     "beforeShellExecution": {
       "script": "hooks/enforce-commands.mjs",
-      "note": "Blocks dangerous commands before shell execution. Direct equivalent of Claude Code's PreToolUse Bash hook."
+      "note": "NOT WIRED (#919) — silent no-op on a Cursor payload, NOT a block. The handler reads Claude Code's PreToolUse field names (tool_name === 'Bash', tool_input.command) and emits a Claude Code PreToolUse envelope (hookSpecificOutput.permissionDecision). Fed a Cursor beforeShellExecution payload it short-circuits at gate G1 and writes 0 bytes to stdout AND stderr with exit 0 — the harness sees no decision, so the command runs. Cursor needs an input/output adapter like scripts/lib/pi-hook-bridge.mjs; none exists. Treat this entry as the intended mapping, not as live enforcement."
     }
   }
 }

@@ -542,6 +542,29 @@ async function main() {
     });
   } catch { /* hook must remain non-blocking */ }
 
+  // Epic #926 — close-through backfill at SessionStart (decoupled from /close).
+  // hooks/on-session-end.mjs already backfills, but SessionEnd only fires on a
+  // REGULAR close: a session killed by Ctrl-C, a timeout or a crash leaves no
+  // ledger entry, and the backfill then waits for the NEXT clean close. Running
+  // it here reconstructs the PREVIOUS abandoned session whatever killed it.
+  //
+  // ORDERING IS LOAD-BEARING — this MUST stay before the
+  // `orchestrator.session.started` emit at the end of main(). That ordering is
+  // this session's structural self-exclusion: our own started-event is not in
+  // events.jsonl yet, so we are not a backfill candidate at all. (On a
+  // clear/compact/resume re-fire an earlier started-event IS present; that case
+  // is caught by the core's own `skipped-own-live-lock` guard against the lock
+  // bootstrapped above.) A live FOREIGN session is likewise protected: the core
+  // evaluates lock ownership against the CANDIDATE, so a candidate holding a
+  // live lock is skipped before the dead-by-age relaxation is consulted.
+  //
+  // Best-effort like every other probe here: any failure is swallowed so a
+  // backfill problem can never block a session start.
+  try {
+    const { backfillOnSessionStart } = await import('../scripts/backfill-abandoned-sessions.mjs');
+    await backfillOnSessionStart({ repoRoot: projectRoot });
+  } catch { /* hook must remain non-blocking */ }
+
   let peers = [];
   try {
     await sweepZombies().catch(() => ({ removed: [], logged: 0 }));
