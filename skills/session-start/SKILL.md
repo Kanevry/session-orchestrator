@@ -758,6 +758,12 @@ Group issues by:
 
    Non-blocking. Cross-reference: `scripts/lib/instruction-budget-guard.mjs` (sibling directive-COUNT probe over `.claude/rules/*.md` — this probe measures raw-file PROPERTIES of CLAUDE.md/AGENTS.md itself, a distinct dimension) and issue #878 (FA2b).
 
+   Additionally, invoke the tests:src-ratio probe (`scripts/lib/tests-src-ratio.mjs`) via `checkTestsSrcRatio({ repoRoot })` (synchronous — no await). It returns `null` (silent no-op) when the ratio is inside the TV-003 corridor, when `repoRoot` is missing, or on any measurement failure. When a non-null result is returned (`{ severity: 'warn', message, ratio, ceiling }`), render `result.message` alongside the other banners.
+
+   **Why this is a banner and not a gate.** `.claude/rules/test-value.md` § TV-003 names the ceiling as the trigger for a CONSOLIDATION wave — the rule's operative instrument. Before this wiring the trigger fired into a void: the only references were two rule files asking a human to run the command, so the condition could be true for months with nothing saying so (it was true, at 1.70, on the commit that introduced the script). The rule's refusal of a bidirectional ratchet stands unchanged — this surfaces the trigger, it does not block on it. `--check` remains deliberately unwired from CI.
+
+   Non-blocking. Cross-reference: `.claude/rules/test-value.md` § TV-003 (the corridor rule and why a ratchet was rejected), `.claude/rules/testing.md` § Coverage Enforcement (the 70% floor that binds independently), and issue #930.
+
    Additionally, invoke the project-hygiene probe family (`scripts/lib/project-hygiene.mjs`) via `checkProjectHygiene({ repoRoot })` (synchronous — no await). **This is the only probe in Phase 4 besides `ci-status` that inspects the PROJECT rather than the orchestrator's own substrate** — every other probe above measures vault, peer-cards, loop readiness, instruction budget, or this tool's own ledger. It is deliberately NOT config-gated: a hygiene check nobody enables finds nothing, which is how the equivalent coverage was lost before (see `skills/session-end/discovery-scan.md` — the discovery scan defaults OFF for exactly the `housekeeping` session type that most needs it).
 
    The helper returns `null` (silent no-op) when `repoRoot` is missing/non-string, when the path is not a git repository, or when every check passes. When a non-null result is returned (`{ severity: 'warn', message, findings, mechanical }`), render `result.message` alongside the other banners:

@@ -274,7 +274,14 @@ function headRef(root) {
  */
 function isDirty(root) {
   try {
-    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+    // --no-optional-locks is load-bearing, not tidiness: a plain `git status`
+    // opportunistically refreshes and therefore LOCKS .git/index, which races a
+    // parallel session's index write (PSA-007). This matters here specifically
+    // because .claude/rules/test-value.md now instructs agents to run this
+    // script, so it executes inside live sessions. Measured on git 2.50.1 with
+    // stale stat info: plain status rewrote .git/index, the flagged form did not.
+    // Same flag, same reason as hooks/post-bash-write-verify.mjs.
+    const out = execFileSync('git', ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
@@ -297,6 +304,63 @@ const USAGE =
   'Usage: tests-src-ratio.mjs [<repo-root>] [--json] [--check] [--ceiling <n>] [--stdin]';
 
 /** @param {string[]} argv */
+/**
+ * Session-start Phase 4 banner probe.
+ *
+ * WHY THIS EXISTS: without it this module had zero consumers. TV-003 defines the
+ * ceiling as the trigger for a consolidation wave — and the trigger fired into a
+ * void, since the only references were two rule files asking a human to type the
+ * command. "Not a blocking gate" was conflated with "not wired at all"; the
+ * counter-example shipped in the same commit range, where `checkInstructionBudget`
+ * is equally non-blocking and does get a Phase 4 banner. This closes that asymmetry
+ * WITHOUT making the ratio a build gate — the arguments against a bidirectional
+ * ratchet in `.claude/rules/test-value.md` § TV-003 stand unchanged.
+ *
+ * Contract matches the sibling probes (`checkInstructionBudget`, `checkCiStatus`,
+ * `checkMocStaleness`): returns `null` for "nothing to say", or a single
+ * `{ severity, message }` record. Never throws — any failure degrades to silence,
+ * because a measurement problem must not block a session start.
+ *
+ * @param {{ repoRoot?: string, ceiling?: number }} [opts]
+ * @returns {{ severity: 'warn', message: string, ratio: number, ceiling: number } | null}
+ */
+export function checkTestsSrcRatio({ repoRoot, ceiling = DEFAULT_CEILING } = {}) {
+  try {
+    if (!repoRoot || typeof repoRoot !== 'string') return null;
+    const root = resolve(repoRoot);
+    if (!existsSync(root)) return null;
+
+    const files = trackedFiles(root);
+    const readFile = (rel) => {
+      const abs = join(root, rel);
+      try {
+        if (!statSync(abs).isFile()) return null;
+        return readFileSync(abs, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+
+    const result = measure({ files, readFile, ceiling });
+    if (result.ratio === null || result.withinCorridor) return null;
+
+    const dirty = isDirty(root);
+    return {
+      severity: 'warn',
+      ratio: result.ratio,
+      ceiling: result.ceiling,
+      message:
+        `⚠ tests:src ${result.ratio.toFixed(4)} > ceiling ${result.ceiling} — ` +
+        `TV-003 consolidation wave is ON: no new test lands without removing a redundant one ` +
+        `(${result.testLoc} test LOC / ${result.srcLoc} src LOC across ` +
+        `${result.testFiles} + ${result.srcFiles} files${dirty ? ', dirty tree' : ''}). ` +
+        `Detail: node scripts/lib/tests-src-ratio.mjs --json`,
+    };
+  } catch {
+    return null; // never block a session start on a measurement failure
+  }
+}
+
 export function parseArgs(argv) {
   const KNOWN = new Set(['--json', '--check', '--stdin', '--ceiling', '--help']);
   const positionals = [];

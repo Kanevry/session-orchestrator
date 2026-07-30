@@ -1355,6 +1355,15 @@ allow-config-weakening: false          # per-session bypass (mirrors allow-destr
 
 Always-on directive-budget banner. At session-start Phase 4 the probe (`scripts/lib/instruction-budget-guard.mjs`, `checkInstructionBudget`) sums the structural directives (bullets, ordered items, headings ≥ depth 2 — fenced code and YAML frontmatter excluded) across the always-on `.claude/rules/*.md` files (membership delegated to `rule-loader.mjs`; glob-scoped rules excluded) and renders a **warn-only / non-blocking** banner when the total **exceeds** `ceiling`. It is a *growth-ratchet*: the current baseline (~457 structural directives across 11 always-on rules) sits under the default ceiling of `480`, so the banner is silent today and only fires when NEW always-on directives push the count over the ceiling — "mechanism over discipline". Default ON (this is a guard, not an opt-in feature) — set `enabled: false` or `mode: off` to silence it.
 
+**Two axes, not one (#931a).** Since the byte dimension shipped in #877 it was measured but never judged: `overBudget` followed from the directive count alone, and the banner text never named a byte. It now reads `overDirectiveBudget || overByteBudget`, and the banner names only the axis that actually broke (re-sorting the top-files list by bytes when bytes were the trigger, because the count ordering points at the wrong file).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `instruction-budget.ceiling` | `480` | Structural-directive ceiling. Baseline ~457, i.e. +5% headroom. |
+| `instruction-budget.byte-ceiling` | `114000` | Byte ceiling over the same always-on corpus. Baseline 108,589 measured 2026-07-30, i.e. the same +5% headroom — the two axes are calibrated alike so neither is accidentally the stricter one. |
+
+Why both: a 9 KB prose rule carrying three bullets is nearly invisible to the directive count while consuming real prompt payload. Why the headroom rather than the measured value: a ceiling that reddens the current state is switched off within a session and then measures nothing.
+
 All fields live under a top-level `instruction-budget` object inside the `## Session Config` block of your host file (`CLAUDE.md` or `AGENTS.md`):
 
 ```yaml

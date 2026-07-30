@@ -197,14 +197,22 @@ describe('fetchRepoIssues — happy path', () => {
 
 describe('fetchRepoIssues — error paths', () => {
   it('returns ok:false when CLI throws (no exception propagated)', async () => {
-    const mockExecFile = vi.fn().mockRejectedValue(new Error('glab: command not found'));
+    // The seam is `spawn`, not `execFile` — fetchRepoIssues destructures
+    // `spawn = _spawn` and ignores any other key. Injecting the wrong name
+    // silently fell through to the REAL glab binary: green wherever glab is
+    // absent (CI), a 10s timeout wherever it is installed, and in neither case
+    // a statement about the mocked failure path. The mock-was-called assertion
+    // below is the anti-vacuity anchor — it is what turns a mis-named seam from
+    // a silent pass into a red test.
+    const mockSpawn = makeSpawnMock('', '', 0, new Error('glab: command not found'));
 
     const result = await fetchRepoIssues({
       repo: 'org/repo',
       vcs: 'gitlab',
-      execFile: mockExecFile,
+      spawn: mockSpawn,
     });
 
+    expect(mockSpawn).toHaveBeenCalled();
     expect(result.ok).toBe(false);
     expect(typeof result.error).toBe('string');
     expect(result.error).toContain('org/repo');

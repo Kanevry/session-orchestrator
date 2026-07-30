@@ -23,7 +23,8 @@ $ find .claude/rules -name '*.md' -exec cat {} + | wc -c
 ```
 
 All 26 reach the agent through Claude Code's **native project-instruction loading**.
-Three independent checks establish that nothing in this repo performs the injection:
+Three independent checks establish that no `*.mjs` code path in this repo performs
+the injection:
 
 ```console
 $ grep -c "^@" CLAUDE.md
@@ -66,18 +67,45 @@ glob-scoped rules whose globs do **not** intersect this wave's `allowedPaths`
 
 This is introspective evidence about one context window, not a command transcript;
 it is **corroborating**, not load-bearing. The load-bearing evidence is §1's three
-grep/`node` checks, which show no code path capable of applying the scoping.
+grep/`node` checks, which show no `*.mjs` code path capable of applying the scoping.
 
-### 1.2 The repo documents a saving it does not deliver
+### 1.2 There IS a second call site — and the census that missed it is this repo's own anti-pattern
 
-`docs/rule-authoring.md:8` states:
+§1's third check greps `-- '*.mjs'`. The wave-executor of this repo is **not a
+module**; it is a skill body, executed as prose by the coordinator. The filter
+therefore excludes the one consumer class that matters:
 
-> "The wave-executor calls it at each wave boundary with the wave's `allowedPaths`
-> […] so a wave that touches only frontend files does not pay the token cost of
-> backend or Swift rules."
+```console
+$ git grep -ln "print-applicable-rules" -- 'skills'
+skills/_shared/config-reading.md
+skills/wave-executor/SKILL.md
+skills/wave-executor/wave-loop.md
+```
 
-No wave-executor call site exists (§1). This is documentation-vs-reality drift and
-should be corrected regardless of the decision below.
+`skills/wave-executor/wave-loop.md` § "Pre-Dispatch: Glob-Scoped Rule Injection
+(#336/#694)" does not describe the injection as optional. It instructs the
+coordinator to run `print-applicable-rules.mjs --context wave` once per wave and
+**prepend the result to EACH agent's prompt**. That is the same execution mechanism
+as every other wave-executor step.
+
+So `docs/rule-authoring.md:8` — "The wave-executor calls it at each wave boundary
+[…] so a wave that touches only frontend files does not pay the token cost" — is
+**not** documentation-vs-reality drift about a missing call site. The call site
+exists as prose. What is wrong there is the *saving*: §2 measures it at 4.0% on a
+real wave, not at the "does not pay" the sentence implies.
+
+**This matters beyond bookkeeping.** §5 concludes that injecting alongside
+undiminished native delivery costs +72% and is harmful — and a coordinator who
+follows `wave-loop.md` literally does exactly that. The coordinator of the session
+that produced this document noticed the size at dispatch time and declined to inject,
+recording the deviation; the instruction itself was left standing. Naming the
+diagnosis while leaving the instruction in place is the failure mode Epic #929 exists
+to remove.
+
+Note the shape of the mistake, because this repo already has a rule for it: a census
+keyed on the payload (`loadApplicableRules` in `*.mjs`) misses every consumer that
+pins only the channel (`print-applicable-rules.mjs` invoked from prose). See
+`.claude/rules/anti-pattern-a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel-18f3d0a.md`.
 
 ### 1.3 A second delivery source outside this repo's control
 

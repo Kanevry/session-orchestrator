@@ -925,6 +925,11 @@ loop-guard:
 instruction-budget:
   enabled: true            # always-on directive-budget banner; off-by-config silences it
   ceiling: 480             # structural-directive ceiling (baseline ~457; ratchet guards growth)
+  byte-ceiling: 114000     # byte ceiling for the SAME corpus (baseline ~108589, +5% headroom —
+                           # deliberately the same relative slack the directive ceiling carries,
+                           # so neither axis is accidentally the stricter one). Either axis alone
+                           # puts the banner over budget: a 9 KB prose rule with three bullets is
+                           # invisible to the directive count but costs real payload (#931a).
   mode: warn               # warn (surface banner) | off (silent no-op)
 
 # Config-protection guard (ecc-analysis / #622)
