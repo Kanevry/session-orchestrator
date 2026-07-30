@@ -23,14 +23,23 @@
 #   bash scripts/measure-context-overhead.sh --ablate <repo-root>
 #
 # --ablate builds throwaway copies of <repo-root>'s instruction surface
-# (CLAUDE.md + .claude/rules/) under $TMPDIR and measures the full / reduced /
-# stripped variants, so the cost of each layer can be attributed. It never
-# writes to, and never deletes from, the source repository.
+# (CLAUDE.md (or AGENTS.md on Codex CLI) + .claude/rules/) under $TMPDIR and
+# measures the full / reduced / stripped variants, so the cost of each layer can
+# be attributed. It never writes to, and never deletes from, the source repository.
 #
-# Baseline recorded 2026-07-30 (claude-opus-5[1m], CLI 2.1.220), this repo:
+# Instruction-file resolution follows skills/_shared/instruction-file-resolution.md:
+# CLAUDE.md wins, AGENTS.md is the Codex CLI alias, empty counts as absent, and
+# exactly ONE of the two is ever read. The resolved file is copied into every
+# variant under the name the measuring harness reads (`claude -p` -> CLAUDE.md),
+# so an AGENTS.md-only repo gets its instruction layer measured instead of
+# silently reported as 0 bytes.
+#
+# Baseline recorded 2026-07-30 (claude-opus-5[1m], CLI 2.1.220) for THIS repo,
+# which resolves to CLAUDE.md — a repo resolving to AGENTS.md has its own:
 #   full 110687 tok | no top-3 rules 83138 | no rules 43291 | nothing 42001
-# Reading: the 26 rule files account for 67396 tokens (61% of total); CLAUDE.md
-# itself accounts for 1290. Optimising CLAUDE.md is optimising the wrong file.
+# Reading: the 26 rule files account for 67396 tokens (61% of total); the
+# instruction file itself accounts for 1290. Optimising the instruction file is
+# optimising the wrong file.
 
 set -uo pipefail
 
@@ -70,13 +79,37 @@ header() { printf 'LABEL\tCONTEXT_TOK\tcache_create\tcache_read\toutput\tUSD\n';
 if [ "${1:-}" = "--ablate" ]; then
   SRC="${2:-$(pwd)}"
   [ -d "$SRC" ] || { echo "not a directory: $SRC" >&2; exit 1; }
+
+  # Resolve the project-instruction file. CLAUDE.md wins; AGENTS.md is the
+  # Codex CLI alias; an empty file counts as absent; never both.
+  if   [ -s "$SRC/CLAUDE.md" ]; then INSTR_SRC="$SRC/CLAUDE.md"
+  elif [ -s "$SRC/AGENTS.md" ]; then INSTR_SRC="$SRC/AGENTS.md"
+  else
+    echo "no project-instruction file in $SRC (looked for CLAUDE.md, then AGENTS.md)." >&2
+    echo "Refusing to ablate: v2-no-rules and v3-bare differ ONLY by that file, so" >&2
+    echo "the table would render as 'the instruction layer costs 0 tokens' — the" >&2
+    echo "one reading this tool must never produce without evidence." >&2
+    exit 1
+  fi
+  # The measuring harness is `claude -p`, whose instruction file is CLAUDE.md.
+  # Copy the resolved source under THAT name so the content is actually loaded,
+  # whichever of the two aliases the source repo happens to use.
+  INSTR_DEST="CLAUDE.md"
+  echo "instruction file: $INSTR_SRC -> <variant>/$INSTR_DEST" >&2
+  src_rules=("$SRC"/.claude/rules/*.md)
+  [ -e "${src_rules[0]}" ] || \
+    echo "note: no .claude/rules/*.md in $SRC — the rule layers measure as zero." >&2
+
   BASE="${TMPDIR:-/tmp}/so-ablation-$$"
   mkdir -p "$BASE"
   # Copy ONLY the instruction surface. No git, no source, no side effects.
   build() {
     local v="$BASE/$1"
     mkdir -p "$v/.claude/rules"
-    cp "$SRC/CLAUDE.md" "$v/CLAUDE.md" 2>/dev/null || true
+    cp "$INSTR_SRC" "$v/$INSTR_DEST" || {
+      echo "failed to copy $INSTR_SRC -> $v/$INSTR_DEST" >&2
+      exit 1
+    }
     cp "$SRC"/.claude/rules/*.md "$v/.claude/rules/" 2>/dev/null || true
   }
   build v0-full
@@ -87,11 +120,11 @@ if [ "${1:-}" = "--ablate" ]; then
   build v2-no-rules
   rm -f "$BASE"/v2-no-rules/.claude/rules/*.md
   build v3-bare
-  rm -f "$BASE"/v3-bare/.claude/rules/*.md "$BASE/v3-bare/CLAUDE.md"
+  rm -f "$BASE"/v3-bare/.claude/rules/*.md "$BASE/v3-bare/$INSTR_DEST"
 
   echo "=== instruction bytes on disk ==="
   for v in v0-full v1-no-top3 v2-no-rules v3-bare; do
-    b=$(cat "$BASE/$v/CLAUDE.md" "$BASE/$v"/.claude/rules/*.md 2>/dev/null | wc -c | tr -d ' ')
+    b=$(cat "$BASE/$v/$INSTR_DEST" "$BASE/$v"/.claude/rules/*.md 2>/dev/null | wc -c | tr -d ' ')
     n=$(ls "$BASE/$v"/.claude/rules/*.md 2>/dev/null | wc -l | tr -d ' ')
     printf '  %-14s %8s B  rules=%s\n' "$v" "${b:-0}" "${n:-0}"
   done

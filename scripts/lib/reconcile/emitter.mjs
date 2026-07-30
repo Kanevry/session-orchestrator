@@ -195,8 +195,13 @@ function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
  * @param {object} [opts]
  * @param {number} [opts.ruleExpiryDays] - explicit expiry window in days; when a
  *   finite number, overrides the per-type TTL.
- * @param {number|Date} [opts.now] - injectable clock used ONLY as a fallback when
- *   `created_at` is missing/unparseable (keeps expiry deterministic in tests).
+ * @param {number|Date} [opts.now] - injectable clock (defaults to `Date.now()`).
+ *   Used for BOTH the born-dead expiry floor (`now + minRuleDays`, applied on
+ *   every call — see {@link computeExpiresAt}) and, secondarily, as the base
+ *   date when `created_at` is missing/unparseable. Because the floor consults
+ *   it unconditionally, any test asserting a literal `expiresAt` MUST inject
+ *   `now` — otherwise the wall clock eventually raises the floor past the
+ *   derived expiry and the assertion silently starts measuring the floor.
  * @param {number} [opts.minRuleDays] - floor window (days) applied to the
  *   emitted expiry so it never falls in the past — see
  *   {@link computeExpiresAt} and {@link MIN_RULE_DAYS_DEFAULT}. Defaults

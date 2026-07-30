@@ -28,6 +28,14 @@
  *      regrow and survive the next protocol change verbatim.
  *  10. B4 starts flagging comment prose, helper-routed reads or absence guards →
  *      12 docblock lines + the sanctioned `expectDeny(...)` usage go red.
+ *  11. B5 stops seeing a hardcoded date asserted against a subject that takes an
+ *      injectable clock elsewhere in the same file → the `test-fixture-time-bomb`
+ *      class regrows and CI turns red on a calendar date nobody chose (it did:
+ *      2026-07-30, tests/lib/reconcile/emitter.test.mjs, with no code change).
+ *  12. B5's seam-proof gate widens to "any date literal" → 150 legitimate date
+ *      assertions light up, the advisory becomes noise and gets muted.
+ *      (Measured 2026-07-30: 150 naive hits across tests/, 3 with the gate —
+ *      exactly the three real bombs.)
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -308,6 +316,104 @@ describe('check-test-value-bans — B4 decision contract copied outside its owne
   });
 });
 
+// ---------------------------------------------------------------------------
+// B5 — date-literal time bombs
+// ---------------------------------------------------------------------------
+
+/** The seam-proving block every B5 fixture needs: a call that hands over a clock. */
+const SEAM_BLOCK = [
+  "it('honours the injected clock', () => {",
+  "  const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });",
+  "  expect(meta.expiresAt).toBe('2026-07-12');",
+  '});',
+];
+
+const EMITTER_IMPORT = "import { toActivationMetadata } from '../scripts/lib/reconcile/emitter.mjs';";
+
+describe('check-test-value-bans — B5 date-literal time bombs', () => {
+  it('flags a pinned date in a block that ignores the seam its siblings use', () => {
+    const { res, json } = scan({
+      'tests/bomb.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        "it('derives the per-type expiry', () => {",
+        '  const meta = toActivationMetadata(learning, {});',
+        "  expect(meta.expiresAt).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(res.status).toBe(0); // warn-only, like every other ban here
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/bomb.test.mjs',
+      line: 10,
+      ban: 'B5-date-time-bomb',
+      match: ".toBe('2026-08-05') — toActivationMetadata() called without its clock seam",
+    });
+  });
+
+  it('says nothing when no block in the file ever injects a clock', () => {
+    // The seam proof is what puts a subject in scope. A pure input→output date
+    // function never grows a `now` parameter, so it is out of scope by
+    // construction — this is the passthrough false-positive class.
+    const { json } = scan({
+      'tests/no-seam.test.mjs': [
+        "import { deriveExpiresAt } from '../scripts/lib/learnings.mjs';",
+        '',
+        "it('adds the 60d default to the supplied date', () => {",
+        "  const out = deriveExpiresAt('2026-05-01T00:00:00Z', 'unknown-type');",
+        "  expect(out).toBe('2026-06-30T00:00:00.000Z');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+    expect(json.findings).toEqual([]);
+  });
+
+  it('exempts a block that freezes the global clock instead of using the seam', () => {
+    const { json } = scan({
+      'tests/frozen.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        "it('derives the per-type expiry under a frozen clock', () => {",
+        "  vi.setSystemTime(new Date('2026-07-05T00:00:00Z'));",
+        '  const meta = toActivationMetadata(learning, {});',
+        "  expect(meta.expiresAt).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('ignores date literals in INPUT position — only expected values are read', () => {
+    const { json } = scan({
+      'tests/passthrough.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        "it('passes created_at through untouched', () => {",
+        "  const meta = toActivationMetadata({ created_at: '2026-06-21T00:00:00Z' }, {});",
+        '  expect(meta.createdAt).toBe(input.created_at);',
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+});
+
 describe('check-test-value-bans — CLI contract', () => {
   it('--json emits the advisory/scanned/counts/findings shape consumers parse', () => {
     const { json } = scan({ 'tests/shape.test.mjs': 'expect(a).toHaveLength(9);\n' });
@@ -320,6 +426,7 @@ describe('check-test-value-bans — CLI contract', () => {
         'B2-prose-pin-suspected': 0,
         'B3-bare-hook-exit-code': 0,
         'B4-hook-decision-contract-copy': 0,
+        'B5-date-time-bomb': 0,
       },
     });
     expect(Array.isArray(json.findings)).toBe(true);

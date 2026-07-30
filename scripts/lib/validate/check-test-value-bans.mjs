@@ -56,6 +56,28 @@
  *                     and absence guards (`.toBeUndefined()`, `.not.`), which
  *                     assert the key is missing rather than re-stating it.
  *
+ *   B5 (clock-bomb)   A hardcoded absolute-date literal asserted against a
+ *                     subject that HAS an injectable clock seam, in a block that
+ *                     does not use it. The expected value is then a function of
+ *                     the wall clock, so the test goes red on a calendar date
+ *                     nobody chose (learning `test-fixture-time-bomb`, conf 0.9:
+ *                     CI turned red on 2026-07-30 with no code change).
+ *
+ *                     The seam is PROVEN from the file itself: an id is in scope
+ *                     only when some OTHER block in the same file passes an
+ *                     explicit clock argument (`now:` / `nowMs:` / `clock:`) to
+ *                     it. A function whose public API exposes a clock parameter
+ *                     reads the clock on its main path — that is why the seam
+ *                     exists. Absent that proof the check says nothing, so a
+ *                     pure input→output date function is out of scope by
+ *                     construction rather than by exception list.
+ *
+ *                     NOT flagged: blocks that control the clock (`now:` arg,
+ *                     `vi.useFakeTimers` / `vi.setSystemTime`); date literals in
+ *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
+ *                     expected values are read), which leaves the passthrough
+ *                     class (input date === output date) untouched.
+ *
  * Per-file opt-out: `// @test-value-bans-allowed` in the first 5 lines skips
  * the file entirely (same convention as check-test-fixture-shapes.mjs's
  * `// @secret-shape-allowed`). Used by this check's own test file, which must
@@ -105,6 +127,7 @@ if (flags.has('--help')) {
   console.log('  B2  suspected prose pins (.md readFileSync + >=3 toContain/toMatch)');
   console.log('  B3  bare exit-0 assertion on a deny-capable hook (allow and deny both exit 0)');
   console.log('  B4  hook decision contract restated outside tests/_helpers/hook-decision.mjs');
+  console.log('  B5  hardcoded date asserted against a clock-seamed subject without using the seam');
   console.log('');
   console.log('  <repo-root>  repository root (default: cwd)');
   console.log('  --stdin      scan newline-separated paths from stdin (staged-only mode)');
@@ -168,6 +191,11 @@ const B4_HINT =
   'the hook decision contract lives in tests/_helpers/hook-decision.mjs — import expectDeny/' +
   'expectAllow instead of restating the envelope here; hand-rolled copies survive the next ' +
   'protocol change verbatim (the #906 class: 6 helper copies + 21 soft substring asserts)';
+const B5_HINT =
+  'this subject takes an injectable clock elsewhere in the same file — pass it here too ' +
+  '(`{ now: new Date("…") }`) or freeze the clock with vi.setSystemTime(); a hardcoded date ' +
+  'compared against a now-dependent value is a time bomb that goes red on a calendar date ' +
+  'nobody chose (learning test-fixture-time-bomb — CI red 2026-07-30, no code change)';
 
 // --- B3: deny-capable-hook exit-code discrimination -------------------------
 
@@ -214,6 +242,25 @@ const POSITIVE_MATCHER = /\.(?:toBe|toEqual|toStrictEqual|toContain|toMatch|toMa
 const ABSENCE_ASSERT = /\.toBeUndefined\(|\.toBeNull\(|\.not\./;
 /** A quoted JSON-key literal — the soft-substring-assert shape from #906. */
 const DECISION_KEY_LITERAL = new RegExp(`["'\\\\]+${DECISION_KEY}["'\\\\]+\\s*:`);
+
+// --- B5: date-literal time bombs --------------------------------------------
+
+/**
+ * An absolute date pinned as the EXPECTED value of an equality assertion.
+ * Input-position date literals (`created_at: '2026-06-21T…'`) do not match —
+ * that is what keeps the passthrough class (input date === output date) out.
+ */
+const DATE_EXPECTATION =
+  /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
+
+/** An explicit clock handed to a callee — the seam this ban asks tests to use. */
+const CLOCK_ARG = /\b(?:now|nowMs|nowIso|clock|currentDate)\s*:/;
+
+/** Freezing the global clock — equally valid control, but not a seam PROOF. */
+const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
+
+/** `import { a, b as c } from './rel.mjs'` — SUT candidates live behind these. */
+const RELATIVE_IMPORT = /import\s+([^;]+?)\s+from\s+['"](\.[^'"]+)['"]/g;
 
 // ---------------------------------------------------------------------------
 // File enumeration
@@ -349,6 +396,100 @@ function testBlocks(lines) {
 }
 
 /**
+ * Identifiers this test file imports from the repo's OWN modules (relative
+ * specifiers). These are the subject-under-test candidates for B5; framework
+ * (`vitest`) and stdlib (`node:*`) imports are structurally excluded because
+ * their specifiers are not relative.
+ * @param {string} content
+ * @returns {string[]}
+ */
+function importedLocalIdentifiers(content) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const m of content.matchAll(RELATIVE_IMPORT)) {
+    const clause = m[1];
+    // `{ a, b as c }` → c ; `x` / `* as ns` → x / ns
+    for (const part of clause.replace(/[{}]/g, ',').split(',')) {
+      const t = part.trim();
+      if (!t) continue;
+      const alias = /\bas\s+([A-Za-z_$][\w$]*)\s*$/.exec(t);
+      const name = alias ? alias[1] : /^([A-Za-z_$][\w$]*)$/.exec(t)?.[1];
+      if (name && name !== 'type') ids.add(name);
+    }
+  }
+  return [...ids];
+}
+
+/** True when `id` is invoked anywhere in these lines. */
+function callsIdentifier(lines, id) {
+  const re = new RegExp(`\\b${id}\\s*\\(`);
+  return lines.some((l) => !isCommentLine(l) && re.test(l));
+}
+
+/**
+ * B5 findings for one file.
+ *
+ * Two passes over the file's `it`/`test` blocks:
+ *   1. PROVE the seam — an imported id called from a block that also hands over
+ *      an explicit clock argument is clock-seamed. A public API only grows a
+ *      `now` parameter because the function reads the clock on its main path.
+ *   2. FLAG — in blocks with NO clock control at all, any equality assertion
+ *      pinning an absolute date against such a subject is a time bomb.
+ *
+ * Recall is deliberately traded for precision: a clock-dependent function that
+ * never exposes a seam is invisible here, and that is the correct failure
+ * direction for an advisory a developer can mute.
+ *
+ * @param {string} relPath
+ * @param {string} content
+ * @param {string[]} lines
+ * @returns {Array<{file: string, line: number, ban: string, match: string, hint: string}>}
+ */
+function scanClockBombs(relPath, content, lines) {
+  const findings = [];
+  const sutIds = importedLocalIdentifiers(content);
+  if (sutIds.length === 0) return findings;
+
+  const blocks = testBlocks(lines).map(({ start, end }) => {
+    const body = lines.slice(start, end);
+    const live = body.filter((l) => !isCommentLine(l));
+    return {
+      start,
+      body,
+      hasClockArg: live.some((l) => CLOCK_ARG.test(l)),
+      hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
+    };
+  });
+
+  /** @type {Set<string>} */
+  const seamed = new Set();
+  for (const b of blocks) {
+    if (!b.hasClockArg) continue;
+    for (const id of sutIds) if (callsIdentifier(b.body, id)) seamed.add(id);
+  }
+  if (seamed.size === 0) return findings;
+
+  for (const b of blocks) {
+    if (b.hasClockArg || b.hasFakeTimer) continue;
+    const subject = [...seamed].find((id) => callsIdentifier(b.body, id));
+    if (!subject) continue;
+    b.body.forEach((line, k) => {
+      if (isCommentLine(line)) return;
+      const m = DATE_EXPECTATION.exec(line);
+      if (!m) return;
+      findings.push({
+        file: relPath,
+        line: b.start + k + 1,
+        ban: 'B5-date-time-bomb',
+        match: `${m[0].trim()} — ${subject}() called without its clock seam`,
+        hint: B5_HINT,
+      });
+    });
+  }
+  return findings;
+}
+
+/**
  * Scan one file's content, returning its findings.
  * @param {string} relPath
  * @param {string} content
@@ -443,6 +584,9 @@ function scanContent(relPath, content, denyHooks = new Set()) {
     });
   }
 
+  // --- B5: date literal pinned against a clock-seamed subject -------------
+  findings.push(...scanClockBombs(relPath, content, lines));
+
   return findings;
 }
 
@@ -478,6 +622,7 @@ const counts = {
   'B4-hook-decision-contract-copy': findings.filter(
     (f) => f.ban === 'B4-hook-decision-contract-copy',
   ).length,
+  'B5-date-time-bomb': findings.filter((f) => f.ban === 'B5-date-time-bomb').length,
 };
 
 if (jsonMode) {
@@ -493,6 +638,7 @@ if (jsonMode) {
   if (counts['B2-prose-pin-suspected'] > 0) console.log(`  B2 hint: ${B2_HINT}`);
   if (counts['B3-bare-hook-exit-code'] > 0) console.log(`  B3 hint: ${B3_HINT}`);
   if (counts['B4-hook-decision-contract-copy'] > 0) console.log(`  B4 hint: ${B4_HINT}`);
+  if (counts['B5-date-time-bomb'] > 0) console.log(`  B5 hint: ${B5_HINT}`);
   console.log('  (advisory — this check never blocks; see .claude/rules/testing.md § Lint-Enforceable Test Bans)');
 }
 
