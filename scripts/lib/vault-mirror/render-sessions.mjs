@@ -19,6 +19,79 @@ import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
 /**
+ * Session-ledger status → vault-frontmatter status mapping (#909).
+ *
+ * ── WHY A MAPPING AND NOT A PASS-THROUGH ───────────────────────────────────
+ *
+ * The two value ranges are DISJOINT:
+ *
+ *   `sessions.jsonl` `status` — `completed` | `abandoned`, or absent/null on
+ *     every pre-#724 record (SESSION_STATUS, scripts/lib/session-schema/validator.mjs).
+ *   vault frontmatter `status` — `draft` | `active` | `verified` | `archived` |
+ *     `production` | `mvp` | `idea` (vaultNoteStatusSchema, skills/vault-sync/validator.mjs).
+ *
+ * Neither `completed` nor `abandoned` is a legal vault status. Emitting
+ * `session.status` verbatim would therefore write an off-schema frontmatter
+ * value and hard-fail `vault-sync`, which runs as a session-end Phase 1 gate.
+ *
+ * ── WHAT THIS REPLACES ─────────────────────────────────────────────────────
+ *
+ * All three generators previously hard-coded `status: verified` (frontmatter
+ * line + `status/verified` tag) and never read `session.status` at all — so
+ * every mirrored session claimed "verified" regardless of how it ended. A false
+ * `verified` in a knowledge store is worse than a missing note: it is a claim
+ * downstream readers cannot distinguish from a true one.
+ *
+ * ── THE MAPPING ────────────────────────────────────────────────────────────
+ *
+ *   completed    → verified   (closed through the full /close flow incl. gates)
+ *   abandoned    → draft      (phantom stub synthesized by the SessionEnd
+ *                              backfill from events.jsonl; incomplete fields,
+ *                              never gate-verified — `draft` is the honest
+ *                              "unfinished" value)
+ *   absent/null  → verified   (pre-#724 records predate the field; per
+ *                              filters.mjs's fail-open contract these are
+ *                              genuine sessions, and this keeps the 200+
+ *                              already-mirrored notes byte-identical → no
+ *                              re-write churn on the next mirror run)
+ *   anything else→ draft      (fail-safe: the ledger enum is additive-optional
+ *                              and has grown once already; an unmapped future
+ *                              value must never be able to emit an off-schema
+ *                              vault status, and must never silently claim
+ *                              `verified`)
+ */
+const VAULT_STATUS_BY_SESSION_STATUS = Object.freeze({
+  completed: 'verified',
+  abandoned: 'draft',
+});
+
+/** Vault status for a record that carries no `status` field (pre-#724). */
+const VAULT_STATUS_WHEN_ABSENT = 'verified';
+
+/** Vault status for a ledger value outside the known enum (fail-safe). */
+const VAULT_STATUS_FALLBACK = 'draft';
+
+/**
+ * Resolve the vault-frontmatter `status` for a session record.
+ *
+ * Guaranteed to return a member of vaultNoteStatusSchema for ANY input —
+ * including `null`, a non-object, or a hostile string such as `'constructor'`
+ * (hence `Object.hasOwn` rather than a bare property read, which would return
+ * an inherited `Object.prototype` member).
+ *
+ * @param {unknown} entry — a parsed sessions.jsonl record
+ * @returns {'verified'|'draft'}
+ */
+export function vaultStatusForSession(entry) {
+  if (entry === null || typeof entry !== 'object') return VAULT_STATUS_WHEN_ABSENT;
+  const raw = entry.status;
+  if (raw === null || raw === undefined || raw === '') return VAULT_STATUS_WHEN_ABSENT;
+  return Object.hasOwn(VAULT_STATUS_BY_SESSION_STATUS, raw)
+    ? VAULT_STATUS_BY_SESSION_STATUS[raw]
+    : VAULT_STATUS_FALLBACK;
+}
+
+/**
  * Frontmatter line emitter — skips emission when value is null/undefined/empty
  * to avoid template-literal coercion bugs (e.g. `platform: undefined` → "undefined").
  * Returns the formatted line with trailing newline, or empty string to skip.
@@ -128,7 +201,9 @@ export function generateSessionNote(entry, options = {}) {
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
   const noteId = slugifyIdSafe(session_id) ?? session_id;
-  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
+  // #909: the real ledger status, mapped into the vault enum — never hard-coded.
+  const vaultStatus = vaultStatusForSession(entry);
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
 
   // Build wave table rows
   const waveRows = waves
@@ -152,7 +227,7 @@ export function generateSessionNote(entry, options = {}) {
 id: ${noteId}
 type: session
 title: ${title}
-status: verified
+status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
@@ -217,7 +292,9 @@ export function generateSessionNoteV2(entry, options = {}) {
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
   const noteId = slugifyIdSafe(session_id) ?? session_id;
-  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
+  // #909: the real ledger status, mapped into the vault enum — never hard-coded.
+  const vaultStatus = vaultStatusForSession(entry);
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
 
   const waveRows = waves
     .map((w) => `| ${w.wave} | ${w.role} | ${w.agents ?? '?'} | ${w.dispatch ?? '?'} | ${w.duration_s ?? '?'}s | ${w.agents_done ?? 0}/${w.agents_partial ?? 0}/${w.agents_failed ?? 0} |`)
@@ -236,7 +313,7 @@ export function generateSessionNoteV2(entry, options = {}) {
 id: ${noteId}
 type: session
 title: ${title}
-status: verified
+status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
@@ -328,7 +405,9 @@ export function generateSessionNoteV3(entry, options = {}) {
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
   const noteId = slugifyIdSafe(session_id) ?? session_id;
-  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', 'verified'])}]`;
+  // #909: the real ledger status, mapped into the vault enum — never hard-coded.
+  const vaultStatus = vaultStatusForSession(entry);
+  const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
 
   const platformBullet = platform === null || platform === undefined || platform === '' ? '' : ` · **Platform:** ${platform}`;
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
@@ -342,7 +421,7 @@ export function generateSessionNoteV3(entry, options = {}) {
 id: ${noteId}
 type: session
 title: ${title}
-status: verified
+status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}

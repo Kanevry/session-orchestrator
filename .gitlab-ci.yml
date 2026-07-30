@@ -1,7 +1,16 @@
 # GitLab CI/CD — session-orchestrator
-# Version: 1.1 | 2026-04-19
+# Version: 1.2 | 2026-07-30
 #
-# Pipeline: test → verify (schema-drift-check)
+# Pipeline: security → validate → test → verify → coverage → gate
+#
+# The LAST stage is a fan-in (`pipeline-gate`). Before it existed, dropping a
+# gate from this file — or having one silently ruled out — produced a GREEN
+# pipeline that had verified nothing. Two measured incidents drove #929/#933:
+#   - pipeline 6808 (push, feat/instruction-ablation): GREEN with exactly ONE
+#     job (plugin-schema-validate). No lint, no typecheck, no test, no coverage.
+#   - pipeline 6815 (MR !24): schema-drift-check reported SUCCESS in 17s — far
+#     too fast to clone the baseline repo; it had taken the soft-skip path.
+# See the `pipeline-gate` job for how each of those is now caught.
 #
 # Why GitLab CI rather than GitHub Actions:
 #   The canonical vault-frontmatter schema lives in a *private* GitLab repo
@@ -14,8 +23,12 @@
 #
 # GitHub Actions mirror:
 #   .github/workflows/test.yml intentionally runs a *subset* of CI: lint,
-#   typecheck, and the bash + vitest test suites (no schema-drift check).
-#   Leave that file untouched — it serves the public GitHub mirror only.
+#   typecheck, and the bash + vitest test suites (no schema-drift check — it
+#   needs a token for a private GitLab project). It carries a `gate` job that
+#   mirrors `pipeline-gate` below, because GitHub has the same class of hole in
+#   a different shape: a dependent job there is silently SKIPPED rather than
+#   failed, and a skipped check is not a failing check. Keep the two fan-ins in
+#   step; the rest of that file remains a deliberate subset.
 
 # 2026-05-20 — Phase-4 Stufe-B cutover to hetzner-autoscaler-v2 (runner_id=3)
 default:
@@ -27,7 +40,42 @@ stages:
   - test
   - verify
   - coverage
+  - gate
   - scheduled
+
+# ---------------------------------------------------------------------------
+# workflow:rules — exactly ONE pipeline per change (#933 Loch 2)
+#
+# The gate jobs below now also run on plain branch pipelines (previously only
+# on MRs + the default branch, which left a pushed branch protected by a single
+# manifest check — measured: pipeline 6808 was green with 1 job). Running the
+# gates on branch pipelines AND on the MR pipeline would double every push once
+# an MR is open, so this is the canonical GitLab "avoid duplicate pipelines"
+# workflow: while an MR is open for the source branch, only the MR pipeline runs.
+#
+# Consequence to be aware of: tag pushes no longer create a pipeline. They
+# previously created one with zero matching jobs (a config error), so this is a
+# strict improvement — but a future release job must add a $CI_COMMIT_TAG rule
+# HERE as well as on the job.
+# ---------------------------------------------------------------------------
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+# Shared rule set for every blocking gate. Anchored rather than repeated so a
+# gate cannot drift out of the set unnoticed. Schedules are excluded because a
+# scheduled pipeline exists only to run `vault-watcher` — $CI_COMMIT_BRANCH is
+# set on scheduled pipelines too, so without the first rule every schedule would
+# drag the whole test suite along.
+.gate-rules: &gate-rules
+  - if: $CI_PIPELINE_SOURCE == "schedule"
+    when: never
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH
 
 variables:
   # Pinned to a specific 24.x patch (SEC-020: no floating minor/patch drift).
@@ -109,9 +157,7 @@ gitleaks-scan:
   timeout: 5m
   script:
     - gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 npm-audit:
   stage: security
@@ -126,9 +172,7 @@ npm-audit:
     # --audit-level: high by default; set AUDIT_LEVEL=critical via CI
     # variable to temporarily lower the bar while triaging a false positive.
     - npm audit --audit-level=${AUDIT_LEVEL} --omit=dev
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 # ---------------------------------------------------------------------------
 # Stage: validate
@@ -154,9 +198,7 @@ lint:
   script:
     # npm run lint → `eslint .`
     - npm run lint
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 typecheck:
   stage: validate
@@ -167,9 +209,7 @@ typecheck:
   script:
     # npm run typecheck → `node scripts/typecheck.mjs`
     - npm run typecheck
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 owner-leakage:
   stage: validate
@@ -179,9 +219,7 @@ owner-leakage:
   allow_failure: false
   script:
     - node scripts/lib/validate/check-owner-leakage.mjs "$CI_PROJECT_DIR"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 # fixture-shape — scan tracked tests/**/*.{mjs,ts,js} for live-credential
 # shape patterns (sk_live_, xoxb-<digits>, AKIA…, AIzaSy…) that would block
@@ -194,9 +232,7 @@ fixture-shape:
   allow_failure: false
   script:
     - node scripts/lib/validate/check-test-fixture-shapes.mjs "$CI_PROJECT_DIR"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 plugin-schema-validate:
   stage: validate
@@ -205,10 +241,13 @@ plugin-schema-validate:
   timeout: 5m
   script:
     - node scripts/validate-plugin-manifests.mjs "$CI_PROJECT_DIR"
-  rules:
-    - changes:
-        - .claude-plugin/*.json
-        - .gitlab-ci.yml
+  # Was `rules: changes: [.claude-plugin/*.json, .gitlab-ci.yml]`. Dropped for
+  # two reasons: (1) a `changes:` rule is itself a fail-open shape — a manifest
+  # can break from a change to a file OUTSIDE the list and the gate never fires;
+  # (2) it was the ONLY job that ran on a plain branch pipeline, which is how
+  # pipeline 6808 came out green with a single job. Now uniform with every other
+  # gate, and hard-needed by pipeline-gate.
+  rules: *gate-rules
   allow_failure: false
 
 # package-manager-guard — recurrence guard for the pnpm/npm working-tree drift
@@ -232,9 +271,7 @@ package-manager-guard:
   allow_failure: false
   script:
     - node scripts/check-package-manager.mjs
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 # ---------------------------------------------------------------------------
 # Stage: test
@@ -295,9 +332,7 @@ test:
     - 'timeout --preserve-status 600s npm test -- --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=json --outputFile=/tmp/vitest-result-$CI_NODE_INDEX.json --no-color 2>&1 | tee /tmp/vitest-$CI_NODE_INDEX.log || true'
     - 'tail -40 /tmp/vitest-$CI_NODE_INDEX.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result-$CI_NODE_INDEX.json --min-tests=3000 --log=/tmp/vitest-$CI_NODE_INDEX.log'
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  rules: *gate-rules
 
 # ---------------------------------------------------------------------------
 # Stage: coverage (#263)
@@ -336,6 +371,11 @@ coverage:
     - 'test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"'
     # Threshold gate: vitest prints "Coverage for X (n%) does not meet … below".
     - '! grep -q "Coverage for .* .* below" /tmp/cov.log'
+    # Marker for pipeline-gate — MUST stay the LAST script line. `artifacts.when`
+    # is `always` here (the cobertura report is wanted even on failure), so the
+    # marker's guarantee is its POSITION, not the upload condition: any failing
+    # line above aborts the job before the marker is ever written.
+    - 'mkdir -p .ci-markers && echo "coverage verified $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-markers/coverage.ok'
   coverage: '/^Lines\s+:\s+\d+(?:\.\d+)?%/'
   artifacts:
     when: always
@@ -345,8 +385,18 @@ coverage:
         path: coverage/cobertura-coverage.xml
     paths:
       - coverage/
+      - .ci-markers/
     expire_in: 2 weeks
+  # Deliberately NOT *gate-rules: coverage is the single most expensive job in
+  # the pipeline (measured 148s in pipeline 6816 — every other job is ≤ 100s)
+  # and it re-runs the SAME suite the `test` job already ran on every branch
+  # pipeline, only under v8 instrumentation. Its unique signal is the threshold
+  # check, which is a merge-boundary concern. So it stays on MR + default only,
+  # and `pipeline-gate` states in plain text on every branch pipeline that
+  # coverage was NOT measured — absent, but never silently absent.
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -357,9 +407,13 @@ coverage:
 # SCHEMA_DRIFT_TOKEN with read-only access to infrastructure/projects-baseline
 # (project ID 52). See docs/ci-setup.md for step-by-step token creation.
 #
-# If SCHEMA_DRIFT_TOKEN is unset (e.g. on a fork or before the variable is
-# configured), the job emits a warning and exits 0 so it does not block the
-# pipeline. Set the variable to activate the check.
+# If SCHEMA_DRIFT_TOKEN is unset, the job no longer exits 0 (#933 Loch 1).
+# A green tick meant "verified" to every reader, and pipeline 6815 showed
+# schema-drift-check SUCCESS after 17s — a shallow clone plus a schema diff
+# cannot finish in 17s, so that tick was the soft-skip, not a check. The job now
+# exits 3, which `allow_failure.exit_codes` renders as an amber WARNING: not a
+# pass, and still not a hard block while the token is genuinely unconfigured.
+# Set SCHEMA_DRIFT_OPTIONAL=false once the token exists to make it fail closed.
 # ---------------------------------------------------------------------------
 
 schema-drift-check:
@@ -367,18 +421,34 @@ schema-drift-check:
   stage: verify
   interruptible: true
   timeout: 10m
-  allow_failure: false
+  # exit 3 == "no token AND the absence is explicitly declared acceptable".
+  # EVERY other non-zero exit stays a hard pipeline failure — notably exit 1
+  # from real drift, and exit 1 from a missing token without the opt-out.
+  allow_failure:
+    exit_codes:
+      - 3
   needs:
     - test
+  variables:
+    # Committed, review-visible opt-out. Measured 2026-07-30 via
+    # `glab variable list` → the project has ZERO CI variables, so
+    # SCHEMA_DRIFT_TOKEN is unset and a hard failure here would redden every
+    # pipeline immediately. Flip to "false" the moment the token is configured
+    # (docs/ci-setup.md § Activating the hard gate).
+    SCHEMA_DRIFT_OPTIONAL: "true"
   script:
-    # Guard: skip gracefully when the token variable is not configured.
-    # This avoids blocking pipelines on forks or fresh environments where
-    # SCHEMA_DRIFT_TOKEN has not yet been set in GitLab CI/CD settings.
+    # Fail-visible guard. The old form was `exit 0` — a job that had checked
+    # nothing reported the same green as a job that had checked everything.
     - >
       if [ -z "${SCHEMA_DRIFT_TOKEN}" ]; then
-        echo "WARNING: schema-drift-check skipped — SCHEMA_DRIFT_TOKEN is not set.";
+        echo "NOT VERIFIED: SCHEMA_DRIFT_TOKEN is not set — no schema drift check was performed.";
         echo "See docs/ci-setup.md to configure a deploy token for infrastructure/projects-baseline.";
-        exit 0;
+        if [ "${SCHEMA_DRIFT_OPTIONAL}" = "true" ]; then
+          echo "SCHEMA_DRIFT_OPTIONAL=true -> exiting 3 (allowed failure). This job is a WARNING, never a pass.";
+          exit 3;
+        fi;
+        echo "SCHEMA_DRIFT_OPTIONAL is not 'true' -> failing closed.";
+        exit 1;
       fi
     # Clone the canonical schema source using a deploy token or PAT.
     # SCHEMA_DRIFT_TOKEN must be a masked CI variable with read_repository
@@ -394,9 +464,103 @@ schema-drift-check:
       node scripts/sync-vault-schema.mjs
       --check
       --canonical /tmp/projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Marker — reachable ONLY from the path where the check actually ran and
+    # passed. The exit-3 soft path returns long before this line, so the marker's
+    # presence is the one honest answer to "did this pipeline verify the schema?"
+    - 'mkdir -p .ci-markers && echo "schema-drift verified $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-markers/schema-drift.ok'
+  artifacts:
+    when: on_success
+    paths:
+      - .ci-markers/
+    expire_in: 1 day
+  rules: *gate-rules
+
+# ---------------------------------------------------------------------------
+# Stage: gate — fan-in (#933 Loch 3)
+#
+# Before this job, nothing depended on anything: the two `needs:` edges in the
+# file (coverage→test, schema-drift-check→test) had no consumer, so deleting a
+# gate — or having one quietly ruled out — cost nothing and showed nothing.
+#
+# Two different mechanisms are needed, because "gate is gone" and "gate ran but
+# verified nothing" are different failures:
+#
+# 1. HARD `needs:` for every gate that runs on every non-scheduled pipeline.
+#    VERIFIED, not assumed (2026-07-30, POST /projects/74/ci/lint dry_run on
+#    GitLab 18.11.2-ee): needing a job that is absent from the pipeline is a
+#    pipeline-CREATION ERROR, not a silent skip —
+#      "'job_b_hard_needs' job needs 'job_a' job, but 'job_a' does not exist in
+#       the pipeline. This might be because of the only, except, or rules
+#       keywords. To need a job that sometimes does not exist in the pipeline,
+#       use needs:optional."
+#    So deleting a gate from this file can no longer yield a green pipeline; it
+#    yields no pipeline at all. That is the loudest available failure mode, and
+#    it is why these needs are deliberately NOT optional.
+#
+# 2. MARKER ARTIFACTS for the two conditional jobs. A hard `needs:` on them
+#    would break pipeline creation on the very pipelines where their absence is
+#    legitimate, and — worse for schema-drift-check — an allow_failure job never
+#    blocks a dependent job, so `needs:` alone cannot see the amber warning.
+#    Each writes its marker only on the path where it truly verified something.
+# ---------------------------------------------------------------------------
+
+pipeline-gate:
+  stage: gate
+  image: node:${NODE_VERSION}
+  interruptible: true
+  timeout: 5m
+  allow_failure: false
+  variables:
+    # Must mirror schema-drift-check's value: one flag, two enforcement points.
+    SCHEMA_DRIFT_OPTIONAL: "true"
+  needs:
+    # Hard — absence is a pipeline-creation error (see mechanism 1 above).
+    - gitleaks-scan
+    - npm-audit
+    - lint
+    - typecheck
+    - owner-leakage
+    - fixture-shape
+    - plugin-schema-validate
+    - package-manager-guard
+    - test
+    # Optional + artifacts — conditionally absent, judged by marker (mechanism 2).
+    - job: coverage
+      optional: true
+      artifacts: true
+    - job: schema-drift-check
+      optional: true
+      artifacts: true
+  script:
+    # One folded block on purpose: a single shell scope, one exit decision, and
+    # no value ever passes through a `$(...)` capture that a stray echo could
+    # corrupt (.claude/rules/bash-harness-pitfalls.md #2/#3).
+    - >
+      set -u;
+      failed=0;
+      echo "[gate] pipeline=$CI_PIPELINE_ID source=$CI_PIPELINE_SOURCE ref=${CI_COMMIT_BRANCH:-merge-request}";
+      if [ -d .ci-markers ]; then ls -la .ci-markers; else echo "[gate] no .ci-markers/ directory present"; fi;
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] || [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ]; then
+        if [ -f .ci-markers/coverage.ok ]; then
+          echo "[gate] coverage:     VERIFIED";
+        else
+          echo "[gate] coverage:     MISSING — required on MR and $CI_DEFAULT_BRANCH pipelines, but no marker was produced";
+          failed=1;
+        fi;
+      else
+        echo "[gate] coverage:     NOT REQUIRED here — this branch pipeline did NOT measure coverage (MR + $CI_DEFAULT_BRANCH only)";
+      fi;
+      if [ -f .ci-markers/schema-drift.ok ]; then
+        echo "[gate] schema-drift: VERIFIED";
+      elif [ "$SCHEMA_DRIFT_OPTIONAL" = "true" ]; then
+        echo "[gate] schema-drift: NOT VERIFIED — SCHEMA_DRIFT_TOKEN unset and SCHEMA_DRIFT_OPTIONAL=true (see docs/ci-setup.md)";
+      else
+        echo "[gate] schema-drift: NOT VERIFIED and not declared optional";
+        failed=1;
+      fi;
+      if [ "$failed" -ne 0 ]; then echo "[gate] RESULT: FAIL"; exit 1; fi;
+      echo "[gate] RESULT: PASS — every hard-needed gate succeeded"
+  rules: *gate-rules
 
 # ---------------------------------------------------------------------------
 # Stage: scheduled
