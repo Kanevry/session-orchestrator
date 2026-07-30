@@ -51,7 +51,7 @@ typecheck-command: npm run typecheck
 lint-command: npm run lint
 stale-branch-days: 7
 plugin-freshness-days: 30
-plan-baseline-path: ~/Projects/projects-baseline
+plan-baseline-path: OVERRIDE-IN-owner.yaml   # placeholder, NOT a real path — resolve host-locally
 plan-prd-location: docs/prd
 plan-retro-location: docs/retro
 plan-default-visibility: internal

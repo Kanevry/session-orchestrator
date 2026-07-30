@@ -873,8 +873,12 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input)
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
 3. **`## Wave History`**: append an entry for the completed wave (the `(planned … → actual …, over-delivery …)` parenthetical is omitted when `grounding-check: false`, since the counts are unavailable):
+   > **Record the SUITE COUNT, not just "gates green" — and name the platform (#944).** The wave line MUST carry the full-suite pass/fail count from the gate that just ran (`<passed>/<failed>`), not merely that typecheck and lint were clean. A deep session on 2026-07-30 logged typecheck/lint/validate-plugin for every wave and no suite count; a test that had been vacuous for its entire life sat red on HEAD through three waves and was found only by the review panel — in a session whose own premise was turning CI from red to green.
+   >
+   > **A green gate on one platform is not evidence for another.** That same session's local gate reported 541/541 three times on a tree CI could not build: two tests encoded macOS assumptions (a `TMPDIR` that carries a trailing slash; an `ARG_MAX` that tolerates a 200 KB argv entry). Both passed locally and failed on the Linux runner. When the wave touched anything platform-sensitive — spawn/argv shapes, `os.tmpdir()`, path separators, file modes, `$PATH` lookups of external binaries — say so in the wave line, and treat CI, not the local run, as the verdict.
+
    ```
-   ### Wave N — <Role> (planned <P> files → actual <A>, over-delivery <R>)
+   ### Wave N — <Role> (planned <P> files → actual <A>, over-delivery <R>) — suite <passed>/<failed> on <platform>
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    ```
