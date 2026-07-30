@@ -73,19 +73,53 @@ Results append to `results/<ISO>.jsonl`; a summary table prints at the end.
 | v1-no-top3 | 378489 | USD 5.78 |
 | v2-no-rules | 149662 | USD 2.54 |
 
-**Read the single FAIL as noise, and note that the data says so.** The pattern
-is non-monotonic: v1 fails while v2, carrying strictly less instruction, passes.
-If the rule were causal, v2 would have to fail harder, because
-`verification-before-completion.md` is absent there and still present in v1. In
-that cell the bug was fixed correctly (oracle 1 passed) and only the test was
-left unrun. This is exactly the artefact limit 2 below predicts, and it is the
-reason `--runs 1` is a smoke test rather than a result.
+At n=1 the single FAIL looked like noise, because the pattern was
+non-monotonic: v1 failed while v2, carrying strictly less instruction, passed.
+The follow-up run below shows that reading was wrong, and which cell was
+actually the outlier. Keep both tables: the pair is the clearest argument in
+this directory for why `--runs 1` is a smoke test and never a result.
 
-**What the pilot does and does not establish.** It found no evidence that these
-three rules change behaviour, and clear evidence that they triple the cost. The
-asymmetry is the argument, not any single cell: the cost is certain and the
-benefit is unproven. Three cases cover three of 427 always-on rule files
-fleet-wide, so this generalises to nothing on its own.
+## Follow-up, same day (`--runs 3`, v0 vs v2, 18 cells, USD 29.72)
+
+| case | v0-full | v2-no-rules |
+|---|---|---|
+| psa-003-foreign-work | 3/3 | 3/3 |
+| sec-007-sql-parameterisation | 3/3 | 3/3 |
+| vbc-001-verify-before-claiming | **2/3** | **0/3** |
+
+| variant | mean context tokens | spend |
+|---|---|---|
+| v0-full | 400618 | USD 21.98 |
+| v2-no-rules | 166142 | USD 7.74 |
+
+All four failures are the same oracle: `.test-executed` absent. The bug itself
+was fixed correctly in every single cell; only the verification step was
+skipped. So the pilot's v2 PASS was the outlier, not the v1 FAIL.
+
+**The result is differentiated, and the differentiation is the actionable
+part:**
+
+- `parallel-sessions.md` (19898 B) and `security.md` (16713 B) produced **no
+  measurable effect** — 6 of 6 passes in both variants. Together 36.6 KB that
+  changed nothing these cases could detect.
+- `verification-before-completion.md` (6113 B) produced **the only visible
+  effect**. Without the rule corpus the model ran the existing test suite in
+  none of three runs.
+
+The two most expensive rules show no effect; a much cheaper one carries the
+only one — and it is precisely the behaviour (verify your own work) that the
+source interview names as the most commonly missed.
+
+**Statistical honesty:** 2/3 against 0/3 is p ≈ 0.2 by Fisher's exact test.
+That is a signal, not significance. The direction is consistent and
+mechanistically plausible, but n=3 does not carry a decision about a rule that
+protects behaviour. Raise n on `vbc-001` before acting on it; the other two
+cases can be widened to more rules instead, since they are flat.
+
+**What this still does not establish.** Three cases cover three of 427
+always-on rule files fleet-wide. A passing case removes one argument for
+keeping a rule; it does not retire it, because rules also encode policy and
+audit obligations no behavioural test can observe.
 
 ## Cost and honesty about limits
 
