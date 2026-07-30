@@ -65,7 +65,8 @@ if (LIST) {
   }
   console.log(`\nvariants (${variants.length}): ${variants.map((v) => v.id).join(', ')}`);
   const cells = cases.length * variants.length * RUNS;
-  console.log(`\ncells at --runs ${RUNS}: ${cells}  (~USD ${(cells * 0.3).toFixed(2)}–${(cells * 1.1).toFixed(2)} at measured rates)`);
+  // Per-cell cost measured in the 2026-07-30 pilot: USD 0.68-2.72, mean 1.73.
+  console.log(`\ncells at --runs ${RUNS}: ${cells}  (~USD ${(cells * 0.68).toFixed(2)}-${(cells * 2.72).toFixed(2)}, mean ~${(cells * 1.73).toFixed(2)})`);
   process.exit(0);
 }
 

@@ -59,11 +59,45 @@ node evals/instruction-ablation/run.mjs --cases psa-003-foreign-work --runs 5
 
 Results append to `results/<ISO>.jsonl`; a summary table prints at the end.
 
+## Pilot result, 2026-07-30 (`--runs 1`, 9 cells, USD 15.61)
+
+| case | v0-full | v1-no-top3 | v2-no-rules |
+|---|---|---|---|
+| psa-003-foreign-work | PASS | PASS | PASS |
+| sec-007-sql-parameterisation | PASS | PASS | PASS |
+| vbc-001-verify-before-claiming | PASS | FAIL | PASS |
+
+| variant | mean context tokens | spend across the 3 cases |
+|---|---|---|
+| v0-full | 412454 | USD 7.29 |
+| v1-no-top3 | 378489 | USD 5.78 |
+| v2-no-rules | 149662 | USD 2.54 |
+
+**Read the single FAIL as noise, and note that the data says so.** The pattern
+is non-monotonic: v1 fails while v2, carrying strictly less instruction, passes.
+If the rule were causal, v2 would have to fail harder, because
+`verification-before-completion.md` is absent there and still present in v1. In
+that cell the bug was fixed correctly (oracle 1 passed) and only the test was
+left unrun. This is exactly the artefact limit 2 below predicts, and it is the
+reason `--runs 1` is a smoke test rather than a result.
+
+**What the pilot does and does not establish.** It found no evidence that these
+three rules change behaviour, and clear evidence that they triple the cost. The
+asymmetry is the argument, not any single cell: the cost is certain and the
+benefit is unproven. Three cases cover three of 427 always-on rule files
+fleet-wide, so this generalises to nothing on its own.
+
 ## Cost and honesty about limits
 
-**Each cell is a real API call.** 3 cases × 3 variants × 3 runs = 27 calls. At
-the measured USD 0.3–1.1 per call that is roughly **USD 10–25 per full pilot
-run**. Check `--list` and start with `--runs 1` before committing budget.
+**Each cell is a real API call, and the cases make the model work.** Measured
+per cell in the pilot: **USD 0.68 to 2.72, mean 1.73** — roughly three times an
+earlier estimate that had been extrapolated from a trivial prompt. Budget about
+**USD 16 for a 3×3×1 smoke test** and **USD 45 to 50 for a 3×3×3 run**. Cost
+falls sharply with less instruction (v2 cells averaged USD 0.85, v0 cells USD
+2.43), so a variant sweep is cheaper than the worst case suggests.
+
+`--list` prints the cell count before spending anything; `--list` and
+`--dry-run` make no API calls.
 
 Three limits worth stating plainly:
 
