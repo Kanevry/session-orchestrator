@@ -53,6 +53,27 @@
  * - scripts/lib/qg-command-drift-banner.mjs (banner-shape convention)
  * - scripts/lib/ci-status-banner.mjs (never-throws convention)
  * - issue #877 (FA2 — byte dimension + surface split)
+ * - SISTER GUARD / KNOWN DIVERGENCE (#906.3): the projects-baseline repo
+ *   (resolved via `plan-baseline-path` / owner.yaml `baseline-path`) ships
+ *   `scripts/check-instruction-budget.sh` under rule CCU-009c. It measures the
+ *   SAME `.claude/rules/*.md` corpus and its total is NOT comparable to ours —
+ *   it diverges on BOTH axes, in OPPOSITE directions:
+ *     (a) MEMBERSHIP — it classifies a file as path-scoped only on a `paths:`
+ *         frontmatter key, so this repo's `globs:`-scoped rules stay inside ITS
+ *         always-on set: 26 files where `loadApplicableRules` yields 12 here.
+ *     (b) HEURISTIC — it counts only rule-ID anchors and imperative-keyword
+ *         BULLET lines outside code fences, where `countDirectives` below
+ *         counts every bullet, ordered-list item and `##`-or-deeper heading.
+ *   The narrower heuristic outweighs the wider file set, so its total runs
+ *   LOWER than ours: measured 2026-07-30 against this repo's corpus, 263 (its
+ *   heuristic) vs 471 (ours) ≈ 1.79x; its own header reports a ~2-3x spread on
+ *   the baseline repo's corpus, so the factor is corpus-dependent, not a
+ *   constant. Never diff or reconcile the two totals — each is only meaningful
+ *   against its OWN ceiling, and on that same corpus the two already disagree
+ *   on the verdict (263 > its max of 200 → over budget; 471 <= our 480 → ok).
+ *   Their ceilings are not the same kind of number either: its 200 is an
+ *   unvalidated placeholder it explicitly retracts in its own header, ours is a
+ *   self-relative growth ratchet calibrated just above our own baseline.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
