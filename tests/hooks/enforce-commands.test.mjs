@@ -213,6 +213,16 @@ describe('explicit blockedCommands — strict mode', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('warn mode', { timeout: 15000 }, () => {
+  // REPLACES `expectAllow(result)` here.
+  //
+  // What it pinned: warn ≠ deny — via expectAllow's empty-stdout half.
+  // Why the new state is right: emitWarn was stderr-only, and stderr is not
+  // surfaced under exit 0, so an `enforcement: warn` block notice reached nobody
+  // (#916). The notice now rides the visible top-level `systemMessage`, so this
+  // path is no longer a SILENT allow and expectAllow (correctly) no longer fits.
+  // What is pinned instead: an allow-WITH-NOTICE envelope — one line, only
+  // `systemMessage`, no permissionDecision. The warn/strict discriminator the
+  // old comment protected survives intact, asserted on the parsed object.
   it('allows (no deny envelope) when enforcement is warn even if command matches', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'warn',
@@ -222,10 +232,13 @@ describe('warn mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf /'),
     });
-    // expectAllow (not a bare exit-code check): warn mode must NOT emit a deny
-    // envelope. Since deny also exits 0 now, the silent-stdout half is the only
-    // thing separating warn from strict here.
-    expectAllow(result);
+    expect(result.code).toBe(0);
+
+    const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const obj = JSON.parse(lines[0]);
+    expect(Object.keys(obj)).toEqual(['systemMessage']);
+    expect(obj.systemMessage).toContain("Blocked command: 'rm -rf' found in command");
   });
 
   it('writes a warning containing ⚠ to stderr in warn mode', async () => {

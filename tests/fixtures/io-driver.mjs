@@ -94,6 +94,15 @@ switch (mode) {
     break; // never reached
   }
 
+  // Takes a LENGTH, not the string — mirrors emit-deny-big. Passing 200 000
+  // characters through argv works on macOS and dies with E2BIG on Linux, where
+  // ARG_MAX is far smaller; generating the payload in the child removes the
+  // platform from the test entirely. (CI red on 3a27817 for exactly this.)
+  case 'emit-warn-big': {
+    emitWarn('W'.repeat(Number(rest[0])));
+    break; // never reached
+  }
+
   case 'emit-system': {
     const msg = rest.join(' ');
     emitSystemMessage(msg);

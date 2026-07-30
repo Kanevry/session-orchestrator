@@ -39,6 +39,7 @@ import { spawnSync } from 'node:child_process';
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
 import { emitEvent } from './lib/events.mjs';
+import { readLock } from './lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -202,6 +203,37 @@ if (result.error) {
   die(`Failed to run gate script: ${result.error.message}`);
 }
 
+/**
+ * Session attribution for gate telemetry (#928a).
+ *
+ * Mirrors the field shape of `orchestrator.session.lock.acquired` — BOTH the
+ * UUID `session_id` and the `semantic_session_id` — so gate events join against
+ * the same keys existing consumers already read (see session-close-backfill.mjs).
+ *
+ * Without a lock (CI runs have none) BOTH keys are OMITTED rather than filled
+ * with a placeholder. A fabricated id ('unknown-session') would silently collide
+ * across every unattributed run and read as a real session; an empty string
+ * would satisfy a truthiness check while attributing to nothing. An absent key
+ * is the only honest encoding of "not attributable", and lets a consumer
+ * distinguish it from a genuine id.
+ */
+function sessionAttribution() {
+  try {
+    const lock = readLock({ repoRoot });
+    if (!lock) return {};
+    const out = {};
+    if (typeof lock.session_id === 'string' && lock.session_id.trim()) {
+      out.session_id = lock.session_id;
+    }
+    if (typeof lock.semantic_session_id === 'string' && lock.semantic_session_id.trim()) {
+      out.semantic_session_id = lock.semantic_session_id;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // Quality-gate telemetry — one canonical event per gate run via emitEvent
 // (single emission path). Best-effort: a telemetry failure must NEVER alter the
 // gate's authoritative exit code.
@@ -210,6 +242,7 @@ try {
   await emitEvent(`orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`, {
     variant,
     exit_code: exitCode,
+    ...sessionAttribution(),
   });
 } catch { /* best-effort telemetry — gate result is authoritative */ }
 

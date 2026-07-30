@@ -27,6 +27,7 @@ import {
   _parseInstructionBudget,
   countDirectives,
   DEFAULT_CEILING,
+  DEFAULT_BYTE_CEILING,
 } from '@lib/instruction-budget-guard.mjs';
 
 // ---------------------------------------------------------------------------
@@ -709,11 +710,241 @@ describe('checkInstructionBudget — banner wrapper', () => {
 
     expect(banner).not.toBeNull();
     expect(banner.severity).toBe('warn');
-    expect(banner.message).toContain('11 always-on directives');
-    expect(banner.message).toContain('over ceiling 5');
-    // Top file (alpha.md, 6) appears in the Top-files line.
-    expect(banner.message).toContain('alpha.md (6)');
+    expect(banner.message).toContain('directives 11 > 5');
+    expect(banner.message).toContain('across 3 always-on rules');
+    // Top file (alpha.md, 6 directives / 164 B) appears in the Top-files line.
+    expect(banner.message).toContain(`alpha.md (6 dir, ${ALPHA_BYTES} B)`);
     expect(banner.message).toContain('instruction-budget audit (#687; archived in the private Meta-Vault)');
+  });
+
+  // #931a — the banner must say WHICH axis broke, not just "over budget".
+  it('names ONLY the byte axis when the directive axis is healthy', () => {
+    const dir = makeFullFixture(); // 11 directives, 320 bytes
+
+    const banner = checkInstructionBudget({ rulesDir: dir, ceiling: 1000, byteCeiling: 100 });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain(
+      `bytes ${ALPHA_BYTES + BETA_BYTES + DELTA_BYTES} > 100`,
+    );
+    // The healthy directive axis is NOT mentioned — a banner that lists a
+    // passing axis pads the line without giving the operator an action.
+    expect(banner.message).not.toContain('directives');
+  });
+
+  it('names BOTH axes when both are breached', () => {
+    const dir = makeFullFixture();
+
+    const banner = checkInstructionBudget({ rulesDir: dir, ceiling: 5, byteCeiling: 100 });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('directives 11 > 5');
+    expect(banner.message).toContain(`bytes ${ALPHA_BYTES + BETA_BYTES + DELTA_BYTES} > 100`);
+  });
+
+  it('ranks Top files by BYTES when only the byte axis broke, not by directive count', () => {
+    // heavy.md: ONE directive but a large body; alpha.md: 6 directives, 164 B.
+    // A directive-count ranking would put alpha.md first and point the operator
+    // at the wrong file for a byte-axis breach.
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'alpha.md', ALPHA);
+    writeRule(dir, 'heavy.md', `- one bullet\n${'x'.repeat(5000)}\n`);
+
+    const byteBanner = checkInstructionBudget({ rulesDir: dir, ceiling: 1000, byteCeiling: 100 });
+    const directiveBanner = checkInstructionBudget({ rulesDir: dir, ceiling: 3, byteCeiling: 100000 });
+
+    // Byte breach → heavy.md leads.
+    expect(byteBanner.message).toMatch(/Top files: heavy\.md \(1 dir, \d+ B\), alpha\.md /);
+    // Directive breach → the pre-existing DESC-by-count ordering is preserved.
+    expect(directiveBanner.message).toMatch(/Top files: alpha\.md \(6 dir, \d+ B\), heavy\.md /);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #931a — byte-ceiling as a VERDICT axis (was data-only since #877).
+//
+// The verdict rule under test: overBudget === overDirectiveBudget ||
+// overByteBudget. Each test below pins one quadrant of that truth table, so a
+// regression to either single-axis form (directive-only = the pre-#931a bug,
+// or byte-only) goes red.
+// ---------------------------------------------------------------------------
+
+const FULL_FIXTURE_BYTES = ALPHA_BYTES + BETA_BYTES + DELTA_BYTES; // 320
+const FULL_FIXTURE_DIRECTIVES = 11;
+
+describe('computeInstructionBudget — byte ceiling as a verdict axis (#931a)', () => {
+  it('flags overBudget from the BYTE axis alone while the directive axis is healthy', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000, // 11 directives — far under
+      byteCeiling: 100, // 320 bytes — over
+    });
+
+    expect(result.totalBytes).toBe(FULL_FIXTURE_BYTES);
+    expect(result.overDirectiveBudget).toBe(false);
+    expect(result.overByteBudget).toBe(true);
+    expect(result.overBudget).toBe(true);
+    expect(result.severity).toBe('warn');
+  });
+
+  it('fake-regression control: the SAME fixture with a byte ceiling ABOVE the total is ok (proves the flag above tracks the ceiling, not the fixture)', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      byteCeiling: 100000,
+    });
+
+    expect(result.totalBytes).toBe(FULL_FIXTURE_BYTES);
+    expect(result.overByteBudget).toBe(false);
+    expect(result.overBudget).toBe(false);
+    expect(result.severity).toBe('ok');
+  });
+
+  it('still flags overBudget from the DIRECTIVE axis alone (pre-#931a behaviour preserved)', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 5, // 11 directives — over
+      byteCeiling: 100000, // 320 bytes — under
+    });
+
+    expect(result.totalDirectives).toBe(FULL_FIXTURE_DIRECTIVES);
+    expect(result.overDirectiveBudget).toBe(true);
+    expect(result.overByteBudget).toBe(false);
+    expect(result.overBudget).toBe(true);
+  });
+
+  it('is ok only when BOTH axes are within their ceilings', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000, byteCeiling: 100000 });
+
+    expect(result.overDirectiveBudget).toBe(false);
+    expect(result.overByteBudget).toBe(false);
+    expect(result.overBudget).toBe(false);
+  });
+
+  it('does not flag the byte axis when totalBytes exactly equals byteCeiling (strict >, mirroring the directive boundary)', () => {
+    const dir = makeFullFixture();
+
+    const atBoundary = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      byteCeiling: FULL_FIXTURE_BYTES,
+    });
+    const oneUnder = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      byteCeiling: FULL_FIXTURE_BYTES - 1,
+    });
+
+    expect(atBoundary.overByteBudget).toBe(false);
+    expect(oneUnder.overByteBudget).toBe(true);
+  });
+
+  it('defaults byteCeiling to DEFAULT_BYTE_CEILING (114000) when not supplied', () => {
+    const dir = makeFullFixture();
+
+    const result = computeInstructionBudget({ rulesDir: dir });
+
+    expect(result.byteCeiling).toBe(114000);
+    expect(DEFAULT_BYTE_CEILING).toBe(114000);
+    expect(result.overByteBudget).toBe(false);
+  });
+
+  it('narrows totalBytes by context, so the byte verdict follows the SURFACE being measured', () => {
+    // A coordinator-only file inflates the coordinator surface but never
+    // reaches a wave agent — a byte verdict must not charge the wave surface
+    // for bytes it never receives.
+    const dir = makeAsymmetricTierFixture(); // coordinator 70 B, wave 14 B
+
+    const waveResult = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      byteCeiling: 20,
+      context: 'wave',
+    });
+    const coordinatorResult = computeInstructionBudget({
+      rulesDir: dir,
+      ceiling: 1000,
+      byteCeiling: 20,
+      context: 'coordinator',
+    });
+
+    expect(waveResult.totalBytes).toBe(14);
+    expect(waveResult.overByteBudget).toBe(false);
+    expect(coordinatorResult.totalBytes).toBe(70);
+    expect(coordinatorResult.overByteBudget).toBe(true);
+  });
+});
+
+describe('checkInstructionBudget — byte-ceiling config wiring (#931a)', () => {
+  it('honors instruction-budget.byte-ceiling from Session Config with no explicit opt', () => {
+    // Config byte-ceiling 100 < fixture total 320 → banner fires on the byte
+    // axis even though the directive ceiling (999) is comfortably clear.
+    const { repoRoot, rulesDir } = makeConfigFixture(
+      [
+        'instruction-budget:',
+        '  enabled: true',
+        '  ceiling: 999',
+        '  byte-ceiling: 100',
+        '  mode: warn',
+      ].join('\n'),
+    );
+
+    const banner = checkInstructionBudget({ repoRoot, rulesDir });
+
+    expect(banner).not.toBeNull();
+    expect(banner.severity).toBe('warn');
+    expect(banner.message).toContain(`bytes ${FULL_FIXTURE_BYTES} > 100`);
+  });
+
+  it('fake-regression control: the SAME config with a high byte-ceiling stays silent', () => {
+    const { repoRoot, rulesDir } = makeConfigFixture(
+      [
+        'instruction-budget:',
+        '  enabled: true',
+        '  ceiling: 999',
+        '  byte-ceiling: 100000',
+        '  mode: warn',
+      ].join('\n'),
+    );
+
+    expect(checkInstructionBudget({ repoRoot, rulesDir })).toBeNull();
+  });
+
+  it('mode: off silences a byte-axis breach too', () => {
+    const { repoRoot, rulesDir } = makeConfigFixture(
+      [
+        'instruction-budget:',
+        '  enabled: true',
+        '  ceiling: 999',
+        '  byte-ceiling: 100',
+        '  mode: off',
+      ].join('\n'),
+    );
+
+    expect(checkInstructionBudget({ repoRoot, rulesDir })).toBeNull();
+  });
+
+  it('an explicit opts.byteCeiling wins over the config byte-ceiling', () => {
+    // Config would fire (100 < 320); the explicit opt (100000) must silence it.
+    const { repoRoot, rulesDir } = makeConfigFixture(
+      [
+        'instruction-budget:',
+        '  enabled: true',
+        '  ceiling: 999',
+        '  byte-ceiling: 100',
+        '  mode: warn',
+      ].join('\n'),
+    );
+
+    expect(checkInstructionBudget({ repoRoot, rulesDir, byteCeiling: 100000 })).toBeNull();
   });
 });
 
@@ -725,13 +956,16 @@ describe('never throws on a missing rulesDir', () => {
   const missingDir = join(tmpdir(), 'instr-budget-does-not-exist-xyz-987');
 
   it('computeInstructionBudget returns the safe empty shape', () => {
-    const result = computeInstructionBudget({ rulesDir: missingDir, ceiling: 480 });
+    const result = computeInstructionBudget({ rulesDir: missingDir, ceiling: 480, byteCeiling: 114000 });
 
     expect(result).toEqual({
       totalDirectives: 0,
       totalBytes: 0,
       perFile: [],
       ceiling: 480,
+      byteCeiling: 114000,
+      overDirectiveBudget: false,
+      overByteBudget: false,
       overBudget: false,
       severity: 'ok',
       bySurface: { coordinator: 0, wave: 0, always: 0 },
@@ -772,7 +1006,7 @@ function makeConfigFixture(configBlock) {
 }
 
 describe('_parseInstructionBudget — block parser', () => {
-  const FALLBACK = { enabled: true, ceiling: 480, mode: 'warn' };
+  const FALLBACK = { enabled: true, ceiling: 480, 'byte-ceiling': 114000, mode: 'warn' };
 
   it('returns fallback for empty / absent block', () => {
     expect(_parseInstructionBudget('', FALLBACK)).toEqual(FALLBACK);
@@ -792,6 +1026,7 @@ describe('_parseInstructionBudget — block parser', () => {
     expect(_parseInstructionBudget(block, FALLBACK)).toEqual({
       enabled: false,
       ceiling: 300,
+      'byte-ceiling': 114000,
       mode: 'off',
     });
   });
@@ -807,6 +1042,53 @@ describe('_parseInstructionBudget — block parser', () => {
     expect(_parseInstructionBudget(block, FALLBACK)).toEqual({
       enabled: true,
       ceiling: 480,
+      'byte-ceiling': 114000,
+      mode: 'warn',
+    });
+  });
+
+  // #931a — byte-ceiling parsing, mirroring the `ceiling` cases above.
+  it('parses a byte-ceiling override independently of the directive ceiling', () => {
+    const block = [
+      'instruction-budget:',
+      '  enabled: true',
+      '  ceiling: 300',
+      '  byte-ceiling: 90000',
+      '  mode: warn',
+    ].join('\n');
+
+    expect(_parseInstructionBudget(block, FALLBACK)).toEqual({
+      enabled: true,
+      ceiling: 300,
+      'byte-ceiling': 90000,
+      mode: 'warn',
+    });
+  });
+
+  it('keeps the default byte-ceiling for a malformed or non-positive value', () => {
+    const nonPositive = [
+      'instruction-budget:',
+      '  byte-ceiling: 0          # invalid → default kept',
+    ].join('\n');
+    const malformed = ['instruction-budget:', '  byte-ceiling: not-a-number'].join('\n');
+
+    expect(_parseInstructionBudget(nonPositive, FALLBACK)['byte-ceiling']).toBe(114000);
+    expect(_parseInstructionBudget(malformed, FALLBACK)['byte-ceiling']).toBe(114000);
+  });
+
+  it('supplies DEFAULT_BYTE_CEILING when the caller passes a pre-#931a defaults object without the key', () => {
+    // A stale caller must never disable the byte axis by omission — the missing
+    // key falls back to the module default, not to undefined (which would make
+    // `totalBytes > undefined` false forever, i.e. a silent fail-open).
+    const legacyDefaults = { enabled: true, ceiling: 480, mode: 'warn' };
+
+    expect(_parseInstructionBudget('', legacyDefaults)['byte-ceiling']).toBe(DEFAULT_BYTE_CEILING);
+    expect(
+      _parseInstructionBudget('instruction-budget:\n  ceiling: 300\n', legacyDefaults),
+    ).toEqual({
+      enabled: true,
+      ceiling: 300,
+      'byte-ceiling': DEFAULT_BYTE_CEILING,
       mode: 'warn',
     });
   });
@@ -821,6 +1103,20 @@ describe('loadInstructionBudgetConfig — disk read', () => {
     expect(loadInstructionBudgetConfig(repoRoot)).toEqual({
       enabled: true,
       ceiling: 5,
+      'byte-ceiling': DEFAULT_BYTE_CEILING,
+      mode: 'warn',
+    });
+  });
+
+  it('reads a byte-ceiling from a repo CLAUDE.md (#931a)', () => {
+    const { repoRoot } = makeConfigFixture(
+      ['instruction-budget:', '  enabled: true', '  byte-ceiling: 200', '  mode: warn'].join('\n'),
+    );
+
+    expect(loadInstructionBudgetConfig(repoRoot)).toEqual({
+      enabled: true,
+      ceiling: 480,
+      'byte-ceiling': 200,
       mode: 'warn',
     });
   });
@@ -832,6 +1128,7 @@ describe('loadInstructionBudgetConfig — disk read', () => {
     expect(loadInstructionBudgetConfig(emptyRoot)).toEqual({
       enabled: true,
       ceiling: 480,
+      'byte-ceiling': DEFAULT_BYTE_CEILING,
       mode: 'warn',
     });
   });
@@ -869,8 +1166,8 @@ describe('checkInstructionBudget — Session Config gates', () => {
 
     expect(banner).not.toBeNull();
     expect(banner.severity).toBe('warn');
-    expect(banner.message).toContain('11 always-on directives');
-    expect(banner.message).toContain('over ceiling 5');
+    expect(banner.message).toContain('directives 11 > 5');
+    expect(banner.message).toContain('across 3 always-on rules');
   });
 
   it('a high config ceiling keeps the banner silent', () => {
@@ -894,6 +1191,6 @@ describe('checkInstructionBudget — Session Config gates', () => {
     const banner = checkInstructionBudget({ repoRoot: emptyRoot, rulesDir, ceiling: 5 });
 
     expect(banner).not.toBeNull();
-    expect(banner.message).toContain('over ceiling 5');
+    expect(banner.message).toContain('directives 11 > 5');
   });
 });

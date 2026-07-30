@@ -10,6 +10,7 @@ import {
   generateSessionNote,
   generateSessionNoteV2,
   generateSessionNoteV3,
+  vaultStatusForSession,
 } from '@lib/vault-mirror/render-sessions.mjs';
 
 // ── detectSessionSchema ───────────────────────────────────────────────────────
@@ -505,4 +506,91 @@ describe('normalizeSessionEntry (#635 producer-alias normalization)', () => {
     expect(detectSessionSchema(e)).toBe('v3');
     expect(() => generateSessionNoteV3(e, { repoNs: 'org-repo' })).not.toThrow();
   });
+});
+
+// ── #909: vault `status` reflects the real ledger status ──────────────────────
+//
+// All three generators previously hard-coded `status: verified` and never read
+// `entry.status`, so every mirrored session claimed "verified" no matter how it
+// ended. These tests pin the mapping AND the invariant that makes it mandatory:
+// the ledger enum (completed|abandoned) and the vault enum are DISJOINT, so a
+// raw pass-through would emit an off-schema value and hard-fail vault-sync.
+
+describe('#909 vaultStatusForSession — ledger status → vault status mapping', () => {
+  // Source of truth: vaultNoteStatusSchema, skills/vault-sync/validator.mjs.
+  // A value outside this set hard-fails vault-sync (session-end Phase 1 gate).
+  const VAULT_STATUS_ENUM = ['draft', 'active', 'verified', 'archived', 'production', 'mvp', 'idea'];
+
+  it('maps completed → verified', () => {
+    expect(vaultStatusForSession({ status: 'completed' })).toBe('verified');
+  });
+
+  it('maps abandoned → draft (the phantom-stub case that must never claim verified)', () => {
+    expect(vaultStatusForSession({ status: 'abandoned' })).toBe('draft');
+  });
+
+  it('maps an absent status → verified, keeping pre-#724 notes byte-identical', () => {
+    expect(vaultStatusForSession({ session_id: 'x' })).toBe('verified');
+    expect(vaultStatusForSession({ status: null })).toBe('verified');
+    expect(vaultStatusForSession({ status: '' })).toBe('verified');
+  });
+
+  it('maps an unrecognised ledger status → draft, never the raw off-schema value', () => {
+    // The ledger enum is additive-optional and has grown once already (#724).
+    // Passing a future value through verbatim would write `status: interrupted`
+    // into frontmatter and hard-fail vault-sync.
+    expect(vaultStatusForSession({ status: 'interrupted' })).toBe('draft');
+  });
+
+  it('never returns an inherited Object.prototype member for a hostile status string', () => {
+    // A bare `MAP[raw]` lookup returns a FUNCTION for 'constructor'/'toString',
+    // which would interpolate `function Object() { [native code] }` into YAML.
+    expect(vaultStatusForSession({ status: 'constructor' })).toBe('draft');
+    expect(vaultStatusForSession({ status: 'toString' })).toBe('draft');
+    expect(vaultStatusForSession({ status: '__proto__' })).toBe('draft');
+  });
+
+  it('returns a schema-legal value for every input, including non-objects', () => {
+    for (const input of [null, undefined, 'abandoned', 42, [], { status: 'completed' }, { status: {} }]) {
+      expect(VAULT_STATUS_ENUM).toContain(vaultStatusForSession(input));
+    }
+  });
+});
+
+describe('#909 generators emit the mapped status in BOTH frontmatter and tag', () => {
+  const statusLine = (md) => (md.match(/^status: (.*)$/m) || [])[1];
+  const tagsLine = (md) => (md.match(/^tags: (.*)$/m) || [])[1];
+
+  const RENDERERS = [
+    ['v1', generateSessionNote, makeV1Entry],
+    ['v2', generateSessionNoteV2, makeV2Entry],
+    ['v3', generateSessionNoteV3, makeV3Entry],
+  ];
+
+  for (const [label, render, makeEntry] of RENDERERS) {
+    it(`${label}: an abandoned session renders status draft, not verified`, () => {
+      const md = render(makeEntry({ status: 'abandoned' }));
+      expect(statusLine(md)).toBe('draft');
+      expect(tagsLine(md)).toContain('status/draft');
+      expect(tagsLine(md)).not.toContain('status/verified');
+    });
+
+    it(`${label}: an unrecognised status renders draft, not the raw value`, () => {
+      const md = render(makeEntry({ status: 'interrupted' }));
+      expect(statusLine(md)).toBe('draft');
+      expect(md).not.toContain('status: interrupted');
+    });
+
+    it(`${label}: a completed session still renders verified`, () => {
+      const md = render(makeEntry({ status: 'completed' }));
+      expect(statusLine(md)).toBe('verified');
+      expect(tagsLine(md)).toContain('status/verified');
+    });
+
+    it(`${label}: a status-less record still renders verified (no re-write churn)`, () => {
+      const md = render(makeEntry());
+      expect(statusLine(md)).toBe('verified');
+      expect(tagsLine(md)).toContain('status/verified');
+    });
+  }
 });

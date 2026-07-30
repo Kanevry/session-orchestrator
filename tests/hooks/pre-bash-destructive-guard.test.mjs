@@ -20,7 +20,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
-import { promises as fs, existsSync, readFileSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
@@ -675,6 +675,168 @@ describe('#642 TMPDIR allowlist confinement', { timeout: 15000 }, () => {
       env: { TMPDIR: tmp },
     });
     expectAllow(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #935 — $TMPDIR spelling + symlink canonicalisation
+//
+// Two independent reasons a legitimate agent scratch cleanup was blocked:
+//   (1) the guard sees the UNEXPANDED shell string, so `${TMPDIR}scratch` reads
+//       as a RELATIVE path to path.isAbsolute() and never reaches the /tmp-class
+//       prefix check at all (it gets resolved against the project dir instead);
+//   (2) `tempRoots` listed /var/folders but not its canonical macOS spelling
+//       /private/var/folders, so a TMPDIR handed over already canonicalised was
+//       dropped by the confinement check and contributed NO prefix whatsoever.
+//
+// The same fix CLOSES a hole the literal prefix match left open: a symlink under
+// a temp root pointing OUT of it was allowlisted by its spelling alone. Measured
+// pre-fix, `rm -rf <tmpdir>/link-to-etc/passwd-dir` was ALLOWED while the delete
+// would have landed in /etc. The deny assertions below are the fake-regression
+// anchor for that: drop canonicalizeRmTarget and they flip back to allow.
+// ---------------------------------------------------------------------------
+
+describe('#935 $TMPDIR token expansion (exit 0)', { timeout: 15000 }, () => {
+  // TMPDIR is pinned per case instead of inherited. The braced forms concatenate
+  // WITHOUT a separator — `${TMPDIR}so-x` — which is what the real incident looked
+  // like, and it only lands inside the temp root when TMPDIR carries a trailing
+  // slash. macOS exports exactly that (`/var/folders/…/T/`); a Linux CI container
+  // leaves TMPDIR unset, so the fallback is `/tmp` and the same string becomes
+  // `/tmpso-x` — outside every temp root and correctly DENIED. The hook is right in
+  // both cases; inheriting the ambient value is what made the assertion
+  // platform-dependent (CI red on 3a27817, macOS green). Pin the shape each case
+  // actually means.
+  it.each([
+    ['bare $TMPDIR/', 'rm -rf $TMPDIR/so-ablation-eval-x', false],
+    ['braced ${TMPDIR}', 'rm -rf ${TMPDIR}so-ablation-eval-x', true],
+    ['braced + quoted "${TMPDIR}"', 'rm -rf "${TMPDIR}"so-ablation-eval-x', true],
+  ])('allows an unexpanded %s target', async (_label, command, needsTrailingSlash) => {
+    const dir = await mkProjectTracked();
+    const tmp = realpathSync(os.tmpdir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(command),
+      env: { TMPDIR: needsTrailingSlash ? `${tmp}/` : tmp },
+    });
+    expectAllow(result);
+  });
+
+  it('denies the braced form when TMPDIR has NO trailing slash (concatenation escapes the temp root)', async () => {
+    // The counterpart to the pinning above: this is not a gap, it is the shell's
+    // own semantics. `${TMPDIR}so-x` with TMPDIR=/tmp is /tmpso-x, and /tmpso-x is
+    // not under /tmp/. Pinning it stops a future reader from "fixing" the guard to
+    // accept a path bash itself would never have produced.
+    const dir = await mkProjectTracked();
+    const tmp = realpathSync(os.tmpdir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf ${TMPDIR}so-ablation-eval-x'),
+      env: { TMPDIR: tmp },
+    });
+    expectDeny(result);
+  });
+
+  it('still blocks $TMPDIR expansion when TMPDIR points outside every temp root', async () => {
+    // Expansion must not become a bypass: the expanded path still has to land
+    // under a CONFINED prefix, so an inherited TMPDIR=/etc stays blocked (#642).
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf $TMPDIR/sneaky'),
+      env: { TMPDIR: '/etc' },
+    });
+    expectDeny(result);
+  });
+
+  it('does not expand $TMPDIRX (no word boundary → stays a relative target)', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf $TMPDIRX/y'),
+    });
+    expectDeny(result);
+  });
+});
+
+describe('#935 canonical vs lexical temp spelling (exit 0)', { timeout: 15000 }, () => {
+  it('allows the lexical os.tmpdir() spelling', async () => {
+    const dir = await mkProjectTracked();
+    const target = path.join(os.tmpdir(), 'agent-scratch-935');
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(`rm -rf ${target}`) });
+    expectAllow(result);
+  });
+
+  it('allows the canonical realpath spelling of the SAME dir (/private/var/folders on macOS)', async () => {
+    const dir = await mkProjectTracked();
+    const target = path.join(realpathSync.native(os.tmpdir()), 'agent-scratch-935');
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(`rm -rf ${target}`) });
+    expectAllow(result);
+  });
+
+  it('allows a TMPDIR inherited in canonical /private/var/folders spelling', async () => {
+    const dir = await mkProjectTracked();
+    const tmp = '/private/var/folders/session-orchestrator-test/T';
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`rm -rf ${tmp}/scratch`),
+      env: { TMPDIR: tmp },
+    });
+    expectAllow(result);
+  });
+});
+
+describe('#935 symlink laundering must STILL block (exit 2)', { timeout: 15000 }, () => {
+  it('blocks a temp-rooted symlink that points OUT of every temp root', async () => {
+    const dir = await mkProjectTracked();
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'guard-935-link-'));
+    tmpDirs.push(scratch);
+    const link = path.join(scratch, 'link-to-etc');
+    await fs.symlink('/etc', link);
+    try {
+      // Lexically this sits under $TMPDIR; canonically it is /etc/passwd-dir.
+      const result = await runHook({
+        projectDir: dir,
+        stdin: bashPayload(`rm -rf ${link}/passwd-dir`),
+      });
+      expectDeny(result);
+    } finally {
+      await fs.unlink(link);
+    }
+  });
+
+  it('blocks a PROJECT-RELATIVE symlink that points INTO a temp root', async () => {
+    // The relative branch is deliberately NOT symlink-resolved: resolving it
+    // would make `rm -rf link-to-tmp` — which destroys a project entry — read as
+    // a safe temp delete.
+    const dir = await mkProjectTracked();
+    const link = path.join(dir, 'link-to-tmp');
+    await fs.symlink(os.tmpdir(), link);
+    try {
+      const result = await runHook({ projectDir: dir, stdin: bashPayload('rm -rf link-to-tmp') });
+      expectDeny(result);
+    } finally {
+      await fs.unlink(link);
+    }
+  });
+
+  it('blocks a TMPDIR that is itself a temp-rooted symlink out of the temp area', async () => {
+    // addTemp confines the value BOTH as written and after symlink resolution;
+    // the lexical half alone would promote /etc to an allowlisted prefix here.
+    const dir = await mkProjectTracked();
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'guard-935-tmpdir-'));
+    tmpDirs.push(scratch);
+    const link = path.join(scratch, 'tmpdir-escape');
+    await fs.symlink('/etc', link);
+    try {
+      const result = await runHook({
+        projectDir: dir,
+        stdin: bashPayload(`rm -rf ${link}/sneaky`),
+        env: { TMPDIR: link },
+      });
+      expectDeny(result);
+    } finally {
+      await fs.unlink(link);
+    }
   });
 });
 

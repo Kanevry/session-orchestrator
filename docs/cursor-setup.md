@@ -47,12 +47,25 @@ vcs: github
 
 Note: `agents-per-wave` is ignored on Cursor since tasks execute sequentially (no parallel Agent dispatch).
 
-### Hooks (Optional)
+### Hooks (Optional — not yet enforcing)
 
-Cursor supports hooks via Settings > Hooks. Configure:
+> **The hook handlers do not currently fire on Cursor (#919).** Both are written
+> against Claude Code's `PreToolUse` payload — they require `tool_name === "Bash"`
+> plus `tool_input.command`, and they signal a decision with a Claude Code
+> `hookSpecificOutput` envelope. Fed a Cursor `beforeShellExecution` payload,
+> `hooks/enforce-commands.mjs` short-circuits at its first gate and writes **0
+> bytes to stdout and 0 bytes to stderr, exit 0** — so the harness sees no
+> decision and **the command runs**. It is a silent no-op, not a block and not
+> even a warning. Making this real needs a Cursor input/output adapter, the way
+> Pi has `scripts/lib/pi-hook-bridge.mjs`; no such adapter exists yet.
+>
+> Until then, treat `hooks/hooks-cursor.json` as the *intended* mapping and do
+> not rely on it for command or scope enforcement on Cursor.
 
-- **afterFileEdit**: Run `hooks/enforce-scope.sh` for scope enforcement (post-hoc warning)
-- **beforeShellExecution**: Run `hooks/enforce-commands.sh` to block dangerous commands
+Cursor supports hooks via Settings > Hooks. The intended mapping is:
+
+- **afterFileEdit**: `hooks/enforce-scope.mjs` for scope enforcement (post-hoc warning)
+- **beforeShellExecution**: `hooks/enforce-commands.mjs` for dangerous-command enforcement
 
 See `hooks/hooks-cursor.json` for the hook mapping reference.
 
@@ -75,15 +88,15 @@ Commands work the same as in Claude Code:
 | State directory | .claude/ | .cursor/ |
 | Config file | CLAUDE.md | CLAUDE.md (same!) |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
-| Pre-edit enforcement | PreToolUse hook (blocks) | afterFileEdit hook (warns after) |
-| Command enforcement | PreToolUse hook (blocks) | beforeShellExecution hook (blocks) |
+| Pre-edit enforcement | PreToolUse hook (blocks) | None today — `afterFileEdit` handler is a no-op (#919) |
+| Command enforcement | PreToolUse hook (blocks) | None today — `beforeShellExecution` handler is a no-op (#919) |
 | Model | Claude via API | Model selected in Cursor settings |
 | Plan mode | EnterPlanMode tool | Instruction-based |
 
 ## Limitations
 
 1. **No parallel agents** — All wave tasks execute sequentially. Sessions take longer than in Claude Code.
-2. **Post-hoc scope enforcement** — Cursor's `afterFileEdit` fires after the edit, not before. It can warn but not prevent out-of-scope edits.
+2. **No hook enforcement yet (#919)** — the handlers in `hooks/hooks-cursor.json` are Claude Code `PreToolUse` handlers. On a Cursor payload both `enforce-commands.mjs` and `enforce-scope.mjs` short-circuit at their first gate and produce **0 bytes on stdout and stderr with exit 0** — a silent no-op, so nothing is blocked and nothing is warned. Two independent adapters are missing: Cursor's payload field names differ from `tool_name` / `tool_input.*`, and Cursor does not read Claude Code's `hookSpecificOutput` decision envelope. Even once adapted, Cursor's `afterFileEdit` fires *after* the edit, so scope enforcement could at best warn, never prevent.
 3. **Model preference advisory** — The `model-preference-cursor` frontmatter in skills is advisory only. Select your model in Cursor settings.
 4. **No native plugin loader** — Skills are delivered as `.cursor/rules/*.mdc` files, not loaded from a plugin directory.
 

@@ -41,11 +41,18 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { backfillAbandonedSession } from './lib/session-close-backfill.mjs';
+import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
 import { SO_PROJECT_DIR } from './lib/platform.mjs';
 
 const LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
 const SESSION_STARTED = 'orchestrator.session.started';
+
+/**
+ * Default cap on how many candidates may reach the (expensive) shared core in a
+ * single run. Only the SessionStart path passes a limit; the CLI stays uncapped.
+ * See `backfillOnSessionStart` for the latency rationale.
+ */
+export const SESSION_START_LIMIT = 25;
 
 /** Read a JSONL file into parsed objects; missing → []; malformed lines skipped. */
 function readJsonl(filePath) {
@@ -102,17 +109,83 @@ export function planSessions({ repoRoot }) {
 }
 
 /**
+ * Cheap pre-filter (#926): the set of session ids ALREADY present in
+ * sessions.jsonl.
+ *
+ * WHY THIS EXISTS — latency. `backfillAbandonedSession` re-reads the whole
+ * events.jsonl on every call whose id cannot be resolved without it. On a
+ * mature store that is O(candidates x events-file): measured 1.26 s for 187
+ * candidates over a 1.77 MB events.jsonl, of which 183 were already recorded
+ * and therefore pure waste. Reading the (much smaller) sessions.jsonl ONCE up
+ * front lets us skip those without entering the core at all.
+ *
+ * This is a pure latency optimisation with NO behavioural change: it reproduces
+ * exactly the core's own early-dedupe branch (same `recordId` derivation, same
+ * defensive UUID check) and reports the same `skipped-already-recorded` key.
+ * Candidates whose id CANNOT be resolved cheaply (a bare UUID with no
+ * lock.acquired bridge — the synthetic-id mint needs events) are never
+ * pre-filtered; they still go through the core untouched.
+ *
+ * @param {string} repoRoot
+ * @returns {Set<string>}
+ */
+function readRecordedIds(repoRoot) {
+  const records = readJsonl(path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl'));
+  const ids = new Set();
+  for (const r of records) {
+    if (r && typeof r.session_id === 'string') ids.add(r.session_id);
+  }
+  return ids;
+}
+
+/**
+ * Resolve the sessions.jsonl record id for a planned candidate WITHOUT reading
+ * events.jsonl. Mirrors the core's own two-phase resolution: a known semantic
+ * id, or a `sessionId` that is already semantic. Returns null when the id can
+ * only be resolved from events (bare UUID → lock bridge or synthetic mint).
+ */
+function cheapRecordId({ sessionId, semanticSessionId }) {
+  if (semanticSessionId) return semanticSessionId;
+  if (sessionId && !isUuid(sessionId)) return sessionId;
+  return null;
+}
+
+/**
  * Run the migration over every planned session.
  *
  * `relaxDeadByAge: true` is ALWAYS passed to the shared core (#731) — see the
  * module docblock for why. `assumeDeadBeforeMs` is forwarded as-is (null when
  * `--assume-dead-before` was not given).
  *
- * @param {{ repoRoot: string, apply: boolean, assumeDeadBeforeMs?: number|null }} args
+ * @param {object} args
+ * @param {string}  args.repoRoot
+ * @param {boolean} args.apply
+ * @param {number|null} [args.assumeDeadBeforeMs]
+ * @param {number|null} [args.limit=null]
+ *   #926 — cap on how many candidates may reach the shared core. Pre-filtered
+ *   (already-recorded) candidates do NOT count against it, since they cost
+ *   nothing. On hitting the cap the run stops early and sets
+ *   `summary.truncated = true`; the remainder is picked up by the next run.
+ *   `null` (CLI default) means uncapped.
+ * @param {boolean} [args.newestFirst=false]
+ *   #926 — walk the plan most-recent-first. Load-bearing whenever `limit` is
+ *   set: a bare-UUID candidate with no lock.acquired bridge cannot be
+ *   pre-filtered (its synthetic id is only derivable from events), so it always
+ *   spends a core call just to be told "already recorded". In first-seen order
+ *   those ancient candidates exhaust the whole budget before the run ever
+ *   reaches the genuinely-abandoned recent ones. Measured on a copy of this
+ *   repo's live store: first-seen order → backfilled 0, truncated true.
  * @returns {Promise<object>} aggregate summary
  */
-export async function runMigration({ repoRoot, apply, assumeDeadBeforeMs = null }) {
-  const plan = planSessions({ repoRoot });
+export async function runMigration({
+  repoRoot,
+  apply,
+  assumeDeadBeforeMs = null,
+  limit = null,
+  newestFirst = false,
+}) {
+  const planned = planSessions({ repoRoot });
+  const plan = newestFirst ? [...planned].reverse() : planned;
   const summary = {
     repoRoot,
     mode: apply ? 'apply' : 'dry-run',
@@ -124,6 +197,10 @@ export async function runMigration({ repoRoot, apply, assumeDeadBeforeMs = null 
     skipped: {},
   };
 
+  // Pre-filter pass — costs ONE sessions.jsonl read for the whole run.
+  const recordedIds = readRecordedIds(repoRoot);
+  let considered = 0;
+
   // Dry-run has no incremental sessions.jsonl write, so two started-UUIDs that
   // bridge to the SAME semantic id (a session that cleared/compacted mid-run)
   // would both report 'would-backfill' and over-count. Track projected ids
@@ -131,6 +208,24 @@ export async function runMigration({ repoRoot, apply, assumeDeadBeforeMs = null 
   const projected = new Set();
 
   for (const item of plan) {
+    // -- Cheap pre-filter: already recorded → skip WITHOUT entering the core --
+    const known = cheapRecordId(item);
+    if (
+      (known !== null && recordedIds.has(known)) ||
+      (isUuid(item.sessionId) && recordedIds.has(item.sessionId))
+    ) {
+      summary.skipped['skipped-already-recorded'] =
+        (summary.skipped['skipped-already-recorded'] ?? 0) + 1;
+      continue;
+    }
+
+    // -- Latency cap (#926, SessionStart path only) --------------------------
+    if (typeof limit === 'number' && considered >= limit) {
+      summary.truncated = true;
+      break;
+    }
+    considered += 1;
+
     const res = await backfillAbandonedSession({
       repoRoot,
       sessionId: item.sessionId,
@@ -143,6 +238,10 @@ export async function runMigration({ repoRoot, apply, assumeDeadBeforeMs = null 
       case 'backfilled':
         summary.backfilled += 1;
         if (res.deadByAge) summary.dead_by_age += 1;
+        // Keep the pre-filter snapshot in step with what we just wrote, so a
+        // second candidate bridging to the SAME semantic id is skipped cheaply
+        // instead of re-entering the core (which would reach the same verdict).
+        if (typeof res.sessionId === 'string') recordedIds.add(res.sessionId);
         break;
       case 'would-backfill':
         if (projected.has(res.sessionId)) {
@@ -162,6 +261,63 @@ export async function runMigration({ repoRoot, apply, assumeDeadBeforeMs = null 
     }
   }
   return summary;
+}
+
+/**
+ * SessionStart entry point (#926) — decouple the backfill from the /close path.
+ *
+ * THE BUG THIS FIXES: `hooks/on-session-end.mjs` calls the backfill correctly,
+ * but SessionEnd only fires on a REGULAR close. A session killed by Ctrl-C, a
+ * timeout, or a crash leaves no ledger entry at all, and the backfill then waits
+ * for the NEXT clean close — which may never come. Observed on this repo:
+ * sessions.jsonl 18.9 h behind events.jsonl with 8 commits and 0 records.
+ * Running at SessionStart closes the loop: the PREVIOUS abandoned session is
+ * reconstructed by the NEXT session's start, whatever killed it.
+ *
+ * ── SAFETY (the two ways this could do damage) ───────────────────────────────
+ *  (1) NEVER record the CURRENTLY-STARTING session as abandoned. Two
+ *      independent defences:
+ *        a. STRUCTURAL — the caller invokes this BEFORE emitting
+ *           `orchestrator.session.started`, so this session is not yet in
+ *           events.jsonl and therefore not a candidate at all (`planSessions`
+ *           enumerates started-events only).
+ *        b. GUARD — on a clear/compact/resume re-fire, an EARLIER
+ *           `session.started` for the same logical session IS present. It
+ *           resolves to our own semantic id, whose lock is live, so the core's
+ *           `skipped-own-live-lock` branch (#863) rejects it.
+ *  (2) NEVER record a RUNNING FOREIGN session as abandoned. The core evaluates
+ *      lock ownership against the CANDIDATE (not the running process): a
+ *      candidate that holds a live lock returns `skipped-own-live-lock` BEFORE
+ *      the dead-by-age relaxation is ever consulted. Verified against a fixture
+ *      where the live lock holder is >4 h stale and thus relaxation-eligible.
+ *
+ * Residual risk, stated explicitly: a session that is live but does NOT hold
+ * the lock (it lost the acquire race — `bootstrapLock` leaves the foreign lock
+ * in place and bails) AND has emitted no event for longer than the lock TTL
+ * (`DEFAULT_TTL_HOURS` = 4 h) could still be relaxed past. That candidate is
+ * one the system's OWN liveness model already considers dead, since its lock
+ * would have expired; we deliberately reuse that same TTL rather than inventing
+ * a second notion of liveness.
+ *
+ * Never throws — a backfill failure must NEVER block a session start.
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @param {number|null} [args.limit=SESSION_START_LIMIT]
+ * @returns {Promise<object|null>} the summary, or null when disabled/failed
+ */
+export async function backfillOnSessionStart({ repoRoot, limit = SESSION_START_LIMIT } = {}) {
+  try {
+    // Escape hatch for operators who never want ledger writes at session start.
+    if (process.env.SO_DISABLE_STARTUP_BACKFILL === '1') return null;
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+    // newestFirst is mandatory here — see runMigration's param docs for the
+    // measured failure (budget burned on ancient already-recorded candidates).
+    return await runMigration({ repoRoot, apply: true, limit, newestFirst: true });
+  } catch {
+    // Swallowed by contract — see the docblock. The hook is informational-only.
+    return null;
+  }
 }
 
 function renderHuman(summary) {

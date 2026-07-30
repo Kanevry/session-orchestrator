@@ -155,3 +155,43 @@ jobs:
           node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json --min-tests=6000
           test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"
           ! grep -q "Coverage for .* .* below" /tmp/cov.log
+
+  # Fan-in — mirror of the `pipeline-gate` job in .gitlab-ci.yml (#933 Loch 3).
+  #
+  # GitHub's counterpart to GitLab's "needs: on an absent job" trap is SKIPPING:
+  # a job with `needs: [a, b]` and no `if:` is silently SKIPPED when a dependency
+  # fails or is skipped, and a skipped check is not a failed check — so a run can
+  # finish with no job reporting failure. `if: always()` forces this job to run
+  # in every outcome, and the assertions below turn anything that is not an
+  # explicit `success` into a red check.
+  #
+  # There is deliberately NO schema-drift counterpart: that gate needs a token
+  # for a private GitLab project (see the header of .gitlab-ci.yml), so it
+  # cannot exist here. Coverage needs none either — it runs as a step inside the
+  # Linux `test` job above, not as a separate conditional job.
+  gate:
+    needs: [security, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert every required job succeeded
+        shell: bash
+        env:
+          SECURITY_RESULT: ${{ needs.security.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          echo "[gate] security=$SECURITY_RESULT test=$TEST_RESULT"
+          failed=0
+          for pair in "security:$SECURITY_RESULT" "test:$TEST_RESULT"; do
+            name=${pair%%:*}
+            result=${pair#*:}
+            if [ "$result" = "success" ]; then
+              echo "[gate] $name: OK"
+            else
+              echo "[gate] $name: NOT SUCCESSFUL (result=$result)"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then echo "[gate] RESULT: FAIL"; exit 1; fi
+          echo "[gate] RESULT: PASS"

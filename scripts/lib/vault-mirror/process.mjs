@@ -10,6 +10,7 @@ import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
+import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
 import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
@@ -462,6 +463,35 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // ENAMETOOLONG when the filename exceeds the 255-byte limit.
   if (session_id.length > 240) {
     session_id = session_id.slice(0, 240).replace(/-+$/, '');
+  }
+
+  // #909 ABANDONED FILTER: a phantom stub backfilled from events.jsonl for a
+  // session that never ran /close is legitimate DATA in the ledger but not
+  // legitimate SIGNAL in a knowledge store — it records that a start happened,
+  // with 0 waves, 0 agents and synthesized fields. Mirroring it would add a note
+  // whose every number is a placeholder.
+  //
+  // The predicate is `isRealSession` from scripts/lib/session-schema/filters.mjs
+  // (fail-open: only an explicit `status: 'abandoned'` is filtered; the absent-
+  // status pre-#724 majority passes through). Reused rather than re-implemented
+  // so the ledger's definition of "real" lives in exactly one place.
+  //
+  // Placed BEFORE repoNs resolution and BEFORE the quality-gate render: skipping
+  // early avoids a git subprocess and a wasted render for a record we discard.
+  // This is deliberately REDUNDANT with the renderer's status mapping (#909,
+  // render-sessions.mjs) — see that module's header. The filter removes one
+  // status from the vault; the mapping keeps every OTHER status honest, and
+  // guards the generators' other entry point (the render.mjs barrel).
+  if (!isRealSession(entry)) {
+    emitAction({
+      action: 'skipped-abandoned',
+      path: null,
+      kind,
+      id: session_id,
+      vaultDir,
+      meta: { reason: `status:${entry?.status}` },
+    });
+    return;
   }
 
   // #732: resolve the leak-guarded repo namespace ONCE per session, BEFORE the

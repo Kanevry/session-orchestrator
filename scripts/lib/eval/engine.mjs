@@ -34,6 +34,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { resolvePluginRoot } from '../common.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './schema.mjs';
 import { resolveSession, computeWindow, findPeerOverlap } from './session-resolve.mjs';
@@ -41,8 +42,33 @@ import { resolveSession, computeWindow, findPeerOverlap } from './session-resolv
 /** The rubric version this engine scores against. */
 export const RUBRIC_VERSION = 'rubric-v1';
 
-/** Default rubric location (created in W3; absent until then ⇒ rubric_sha256 null). */
-export const DEFAULT_RUBRIC_PATH = 'skills/eval/rubric-v1.md';
+/** Rubric location relative to the plugin root. */
+export const RUBRIC_RELATIVE_PATH = 'skills/eval/rubric-v1.md';
+
+/**
+ * Default rubric location, resolved against the PLUGIN root rather than the
+ * caller's cwd (#927).
+ *
+ * The previous cwd-relative literal only ever resolved when `/eval` happened to
+ * run from the plugin checkout itself. In a consumer repo — the normal install
+ * shape — it pointed at a non-existent `<consumer>/skills/eval/rubric-v1.md`,
+ * `computeRubricHash` returned null, and `validateEvalRecord` then rejected the
+ * record on `provenance.rubric_sha256` (schema.mjs), so the run produced no
+ * output at all.
+ *
+ * Resolution is best-effort by design: `resolvePluginRoot` THROWS when it cannot
+ * locate a plugin root, and this constant is evaluated at module load. A throw
+ * here would make the module unimportable, so we degrade to the relative literal
+ * — preserving the previous behaviour instead of turning a degraded path into a
+ * hard import failure.
+ */
+export const DEFAULT_RUBRIC_PATH = (() => {
+  try {
+    return path.join(resolvePluginRoot(import.meta.url), RUBRIC_RELATIVE_PATH);
+  } catch {
+    return RUBRIC_RELATIVE_PATH;
+  }
+})();
 
 /** Ordered rubric-v1 dimension ids — the canonical scoring order. */
 export const RUBRIC_DIMENSION_IDS = Object.freeze([
@@ -372,13 +398,29 @@ function extractKpis(record) {
 // Provenance / harness / model helpers
 // ---------------------------------------------------------------------------
 
-/** sha256 hex of the rubric file, or null when the file does not exist yet. */
+/**
+ * sha256 hex of the rubric file, or null when it cannot be read.
+ *
+ * A null return is NOT benign: `validateEvalRecord` requires a non-empty
+ * `provenance.rubric_sha256`, so a miss here aborts the whole append downstream.
+ * The downstream WARNs name the validation failure but never the path that was
+ * tried, which is the one fact needed to diagnose it — so name it here (#927).
+ */
 function computeRubricHash(rubricPath) {
   try {
-    if (!rubricPath || !existsSync(rubricPath)) return null;
+    if (!rubricPath || !existsSync(rubricPath)) {
+      process.stderr.write(
+        `[eval-engine] WARN: rubric not found at '${rubricPath ?? '<unset>'}' — ` +
+        'provenance.rubric_sha256 will be null and the record will fail validation.\n',
+      );
+      return null;
+    }
     const buf = readFileSync(rubricPath);
     return createHash('sha256').update(buf).digest('hex');
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `[eval-engine] WARN: could not hash rubric at '${rubricPath}': ${err?.message ?? String(err)}\n`,
+    );
     return null;
   }
 }

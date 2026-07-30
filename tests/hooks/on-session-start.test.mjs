@@ -961,3 +961,90 @@ describe('own-repo lock reaper splice (#724)', { timeout: 15000 }, () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Close-through backfill at SessionStart (#926)
+//
+// The SessionEnd hook already backfills, but SessionEnd only fires on a REGULAR
+// close: a session killed by Ctrl-C, a timeout or a crash leaves NO ledger entry
+// and the backfill then waits for the next clean close. These tests pin that the
+// NEXT session's start reconstructs it — and that doing so can never (a) block
+// the start, or (b) record a session that is still running.
+// ---------------------------------------------------------------------------
+
+describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, () => {
+  const SESSIONS_RELPATH = path.join('.orchestrator', 'metrics', 'sessions.jsonl');
+
+  /** Seed one long-dead, never-closed session in events.jsonl. */
+  async function seedAbandonedSession(dir) {
+    await fs.mkdir(path.join(dir, '.orchestrator', 'metrics'), { recursive: true });
+    const lines = [
+      { timestamp: '2026-01-01T09:00:00.000Z', event: 'orchestrator.session.started', session_id: 'eeeeeeee-1111-4111-8111-111111111111', branch: 'main', project: 'demo' },
+      { timestamp: '2026-01-01T09:01:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: 'eeeeeeee-1111-4111-8111-111111111111', semantic_session_id: 'main-2026-01-01-session-9', mode: 'deep' },
+    ];
+    await fs.writeFile(path.join(dir, EVENTS_RELPATH), lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+  }
+
+  async function readSessionsJsonl(dir) {
+    try {
+      const raw = await fs.readFile(path.join(dir, SESSIONS_RELPATH), 'utf8');
+      return raw.split('\n').filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  }
+
+  it('reconstructs a previous never-closed session into sessions.jsonl', async () => {
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    expect(result.code).toBe(0);
+
+    const records = await readSessionsJsonl(dir);
+    const recovered = records.find((r) => r.session_id === 'main-2026-01-01-session-9');
+    expect(recovered).toBeDefined();
+    expect(recovered.status).toBe('abandoned');
+  });
+
+  it('never records the session that is starting right now', async () => {
+    // Structural self-exclusion: the backfill runs BEFORE this session emits
+    // its own orchestrator.session.started, so it is not a candidate at all.
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    const result = await runHook({ projectDir: dir, useCwd: true, stdin: JSON.stringify({ session_id: 'ffffffff-2222-4222-8222-222222222222' }) });
+    expect(result.code).toBe(0);
+
+    const records = await readSessionsJsonl(dir);
+    // Only the genuinely-dead predecessor may be recorded.
+    expect(records.map((r) => r.session_id)).toEqual(['main-2026-01-01-session-9']);
+  });
+
+  it('re-running the hook writes no duplicate stub (idempotent across starts)', async () => {
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    expect((await runHook({ projectDir: dir, useCwd: true })).code).toBe(0);
+    const afterFirst = await readSessionsJsonl(dir);
+    expect(afterFirst).toHaveLength(1);
+
+    expect((await runHook({ projectDir: dir, useCwd: true })).code).toBe(0);
+    const afterSecond = await readSessionsJsonl(dir);
+    expect(afterSecond).toHaveLength(1);
+  });
+
+  it('still exits 0 and still emits its own event when the ledger is unwritable', async () => {
+    // sessions.jsonl seeded as a DIRECTORY → every append fails. The backfill
+    // must swallow it; session start must complete regardless.
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+    await fs.mkdir(path.join(dir, SESSIONS_RELPATH), { recursive: true });
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expect(result.code).toBe(0);
+    const events = await readEvents(dir);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+  });
+});
