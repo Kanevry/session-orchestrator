@@ -351,7 +351,9 @@ describe('emitWarn', () => {
   // `{`-prefixed line as `malformed`, which fails CLOSED for PreToolUse — a
   // truncated notice would silently turn `enforcement: warn` into a hard block.
   it('clamps an oversized message and still delivers ONE parseable line through the pipe', () => {
-    const { stdout, status } = runDriver('emit-warn', ['W'.repeat(200_000)]);
+    // Length, not payload: a 200 000-char argv entry exceeds Linux ARG_MAX
+    // (spawnSync → E2BIG) while passing on macOS. The child builds the string.
+    const { stdout, status } = runDriver('emit-warn-big', ['200000']);
     expect(status).toBe(0);
     const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
     expect(lines).toHaveLength(1);

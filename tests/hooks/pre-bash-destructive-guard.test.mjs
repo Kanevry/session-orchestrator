@@ -697,14 +697,43 @@ describe('#642 TMPDIR allowlist confinement', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('#935 $TMPDIR token expansion (exit 0)', { timeout: 15000 }, () => {
+  // TMPDIR is pinned per case instead of inherited. The braced forms concatenate
+  // WITHOUT a separator — `${TMPDIR}so-x` — which is what the real incident looked
+  // like, and it only lands inside the temp root when TMPDIR carries a trailing
+  // slash. macOS exports exactly that (`/var/folders/…/T/`); a Linux CI container
+  // leaves TMPDIR unset, so the fallback is `/tmp` and the same string becomes
+  // `/tmpso-x` — outside every temp root and correctly DENIED. The hook is right in
+  // both cases; inheriting the ambient value is what made the assertion
+  // platform-dependent (CI red on 3a27817, macOS green). Pin the shape each case
+  // actually means.
   it.each([
-    ['bare $TMPDIR/', 'rm -rf $TMPDIR/so-ablation-eval-x'],
-    ['braced ${TMPDIR}', 'rm -rf ${TMPDIR}so-ablation-eval-x'],
-    ['braced + quoted "${TMPDIR}"', 'rm -rf "${TMPDIR}"so-ablation-eval-x'],
-  ])('allows an unexpanded %s target', async (_label, command) => {
+    ['bare $TMPDIR/', 'rm -rf $TMPDIR/so-ablation-eval-x', false],
+    ['braced ${TMPDIR}', 'rm -rf ${TMPDIR}so-ablation-eval-x', true],
+    ['braced + quoted "${TMPDIR}"', 'rm -rf "${TMPDIR}"so-ablation-eval-x', true],
+  ])('allows an unexpanded %s target', async (_label, command, needsTrailingSlash) => {
     const dir = await mkProjectTracked();
-    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    const tmp = realpathSync(os.tmpdir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(command),
+      env: { TMPDIR: needsTrailingSlash ? `${tmp}/` : tmp },
+    });
     expectAllow(result);
+  });
+
+  it('denies the braced form when TMPDIR has NO trailing slash (concatenation escapes the temp root)', async () => {
+    // The counterpart to the pinning above: this is not a gap, it is the shell's
+    // own semantics. `${TMPDIR}so-x` with TMPDIR=/tmp is /tmpso-x, and /tmpso-x is
+    // not under /tmp/. Pinning it stops a future reader from "fixing" the guard to
+    // accept a path bash itself would never have produced.
+    const dir = await mkProjectTracked();
+    const tmp = realpathSync(os.tmpdir());
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf ${TMPDIR}so-ablation-eval-x'),
+      env: { TMPDIR: tmp },
+    });
+    expectDeny(result);
   });
 
   it('still blocks $TMPDIR expansion when TMPDIR points outside every temp root', async () => {
