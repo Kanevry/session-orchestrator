@@ -115,3 +115,79 @@ describe('emitEvent — opts.filePath override (#611)', () => {
     expect(overrideRecords[0].event).toBe('override.dest');
   });
 });
+
+describe('emitEvent / eventsFilePath — opts.repoRoot parameter (#941)', () => {
+  // The clean interface that replaced the hand-built `join(repoRoot, …)` recipes
+  // at quality-gate.mjs and lock-reaper.mjs. `otherRepo` is a SECOND tree,
+  // distinct from the SO_PROJECT_DIR default (= tmpDir) — so a regression to the
+  // bare default would write to tmpDir and the "default NOT written" assertion
+  // fails (the fake-regression guard).
+  let tmpDir;
+  let otherRepo;
+  const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-reporoot-default-'));
+    otherRepo = await mkdtemp(path.join(tmpdir(), 'so-events-reporoot-target-'));
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origClaudeProjectDir === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+    }
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(otherRepo, { recursive: true, force: true });
+  });
+
+  it('eventsFilePath(repoRoot) resolves under the SUPPLIED repoRoot, not SO_PROJECT_DIR', async () => {
+    const { eventsFilePath } = await importEventsWithDir(tmpDir);
+
+    // Bare call → SO_PROJECT_DIR default (= tmpDir).
+    expect(eventsFilePath()).toBe(path.join(tmpDir, '.orchestrator', 'metrics', 'events.jsonl'));
+    // Explicit repoRoot → that tree.
+    expect(eventsFilePath(otherRepo)).toBe(
+      path.join(otherRepo, '.orchestrator', 'metrics', 'events.jsonl'),
+    );
+  });
+
+  it('emitEvent(type, payload, { repoRoot }) writes to the repoRoot-local log, NOT the global default', async () => {
+    const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
+
+    await emitEvent('orchestrator.quality_gate.passed', { variant: 'auto-fix-loop' }, { repoRoot: otherRepo });
+
+    // The repoRoot-local events.jsonl got the record.
+    const targetPath = path.join(otherRepo, '.orchestrator', 'metrics', 'events.jsonl');
+    const content = await readFile(targetPath, 'utf8');
+    const record = JSON.parse(content.trim().split('\n')[0]);
+    expect(record.event).toBe('orchestrator.quality_gate.passed');
+    expect(record.variant).toBe('auto-fix-loop');
+
+    // Fake-regression guard: the SO_PROJECT_DIR-global default (= tmpDir) must
+    // NOT have been written. If emitEvent ignored opts.repoRoot (the pre-#941
+    // behaviour that pinned every call to SO_PROJECT_DIR), this record would land
+    // in the global log and this assertion would go red.
+    await expect(access(eventsFilePath())).rejects.toThrow();
+  });
+
+  it('opts.filePath still wins over opts.repoRoot (explicit path is the strongest override)', async () => {
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    const overridePath = path.join(otherRepo, 'explicit', 'pinned.jsonl');
+
+    await emitEvent('override.precedence', {}, { filePath: overridePath, repoRoot: otherRepo });
+
+    // filePath wins.
+    await expect(access(overridePath)).resolves.toBeUndefined();
+    // The repoRoot-derived path was NOT used.
+    await expect(
+      access(path.join(otherRepo, '.orchestrator', 'metrics', 'events.jsonl')),
+    ).rejects.toThrow();
+  });
+});

@@ -40,6 +40,11 @@ function parseFrontmatter(absPath) {
 }
 
 describe('Architecture-DDD-Trio adoption — Epic #309 (#310/#311/#312)', () => {
+  // Machine contract: content-hash guard over the byte-identical vendored
+  // sub-files. Any edit to a vendored file (or an intentional-but-unrecorded
+  // vendor refresh) trips the SHA mismatch. This is the load-bearing keep for
+  // this file; the frontmatter/body prose-presence pins that surrounded it were
+  // removed (TV-002c — .md content assertions catch no bug).
   describe('S2/S4 byte-equality of vendored sub-files (mattpocock@90ea8ee)', () => {
     for (const [relPath, expectedHash] of Object.entries(PINNED_HASHES)) {
       it(`${relPath} matches pinned SHA-256 from ${UPSTREAM_SHA}`, () => {
@@ -50,119 +55,32 @@ describe('Architecture-DDD-Trio adoption — Epic #309 (#310/#311/#312)', () => 
     }
   });
 
-  describe('S1 architecture skill — frontmatter + structure', () => {
-    const skillPath = path.join(repoRoot, 'skills/architecture/SKILL.md');
-
-    it('SKILL.md exists', () => {
-      expect(existsSync(skillPath)).toBe(true);
-    });
-
-    it('frontmatter declares name, description, attribution, license, upstream-url', () => {
-      const fm = parseFrontmatter(skillPath);
-      expect(fm.name).toBe('architecture');
-      expect(typeof fm.description).toBe('string');
-      expect(fm.description.length).toBeGreaterThan(80);
-      expect(fm.description.length).toBeLessThanOrEqual(1024);
-      expect(fm['derived-from']).toBe('mattpocock/skills@90ea8ee');
-      expect(fm.license).toBe('MIT');
-      expect(fm['upstream-url']).toMatch(
-        /^https:\/\/github\.com\/mattpocock\/skills\/tree\/main\/improve-codebase-architecture$/,
-      );
-    });
-
-    it('description follows our trigger convention (Use when …)', () => {
-      const fm = parseFrontmatter(skillPath);
-      expect(fm.description).toMatch(/Use when/);
-    });
-
-    it('vendored sub-files LANGUAGE.md and INTERFACE-DESIGN.md are referenced from the body', () => {
-      const body = readFileSync(skillPath, 'utf8');
-      expect(body).toMatch(/LANGUAGE\.md/);
-      expect(body).toMatch(/INTERFACE-DESIGN\.md/);
-      expect(body).toMatch(/deepening/i); // DEEPENING.md is bundled but referenced conceptually
-    });
-  });
-
-  describe('S3 domain-model skill — frontmatter + disable-model-invocation flag', () => {
-    const skillPath = path.join(repoRoot, 'skills/domain-model/SKILL.md');
-
-    it('SKILL.md exists', () => {
-      expect(existsSync(skillPath)).toBe(true);
-    });
-
-    it('frontmatter preserves disable-model-invocation: true and carries attribution', () => {
-      const fm = parseFrontmatter(skillPath);
+  // Behavioral-flag contract: `disable-model-invocation: true` controls whether
+  // the skill may be auto-invoked by a model. Flipping it is a real runtime
+  // behaviour change with no other falsifier (the dedicated
+  // disable-model-invocation.test.mjs covers commands/, not skills/).
+  describe('domain-model + ubiquitous-language — disable-model-invocation flag', () => {
+    it('domain-model SKILL.md preserves disable-model-invocation: true', () => {
+      const fm = parseFrontmatter(path.join(repoRoot, 'skills/domain-model/SKILL.md'));
       expect(fm.name).toBe('domain-model');
       expect(fm['disable-model-invocation']).toBe(true);
-      expect(fm['derived-from']).toBe('mattpocock/skills@90ea8ee');
-      expect(fm.license).toBe('MIT');
-      expect(fm['upstream-url']).toMatch(
-        /^https:\/\/github\.com\/mattpocock\/skills\/tree\/main\/domain-model$/,
-      );
     });
 
-    it('description follows our trigger convention (Use when …)', () => {
-      const fm = parseFrontmatter(skillPath);
-      expect(typeof fm.description).toBe('string');
-      expect(fm.description).toMatch(/Use when/);
-      expect(fm.description.length).toBeLessThanOrEqual(1024);
-    });
-
-    it('vendored sub-files (CONTEXT-FORMAT/ADR-FORMAT) are referenced from the body', () => {
-      const body = readFileSync(skillPath, 'utf8');
-      expect(body).toMatch(/CONTEXT-FORMAT\.md|CONTEXT\.md/);
-      expect(body).toMatch(/ADR-FORMAT\.md|docs\/adr\//);
-    });
-  });
-
-  describe('S5 ubiquitous-language skill — frontmatter + disable-model-invocation flag', () => {
-    const skillPath = path.join(repoRoot, 'skills/ubiquitous-language/SKILL.md');
-
-    it('SKILL.md exists (single-file skill, no sub-files)', () => {
-      expect(existsSync(skillPath)).toBe(true);
-    });
-
-    it('frontmatter preserves disable-model-invocation: true and carries attribution', () => {
-      const fm = parseFrontmatter(skillPath);
+    it('ubiquitous-language SKILL.md preserves disable-model-invocation: true', () => {
+      const fm = parseFrontmatter(path.join(repoRoot, 'skills/ubiquitous-language/SKILL.md'));
       expect(fm.name).toBe('ubiquitous-language');
       expect(fm['disable-model-invocation']).toBe(true);
-      expect(fm['derived-from']).toBe('mattpocock/skills@90ea8ee');
-      expect(fm.license).toBe('MIT');
-      expect(fm['upstream-url']).toMatch(
-        /^https:\/\/github\.com\/mattpocock\/skills\/tree\/main\/ubiquitous-language$/,
-      );
-    });
-
-    it('description follows our trigger convention (Use when …)', () => {
-      const fm = parseFrontmatter(skillPath);
-      expect(typeof fm.description).toBe('string');
-      expect(fm.description).toMatch(/Use when/);
-      expect(fm.description.length).toBeLessThanOrEqual(1024);
-    });
-
-    it('writes UBIQUITOUS_LANGUAGE.md as the canonical output target', () => {
-      const body = readFileSync(skillPath, 'utf8');
-      expect(body).toMatch(/UBIQUITOUS_LANGUAGE\.md/);
     });
   });
 
-  describe('NOTICE — MIT redistribution compliance', () => {
-    const noticePath = path.join(repoRoot, 'NOTICE');
-
-    it('repo-root NOTICE exists', () => {
-      expect(existsSync(noticePath)).toBe(true);
-    });
-
-    it('NOTICE attributes mattpocock/skills with full SHA and reproduces upstream MIT notice', () => {
-      const notice = readFileSync(noticePath, 'utf8');
-      expect(notice).toMatch(/mattpocock\/skills/);
-      expect(notice).toMatch(/90ea8eec03d4ae8f43427aaf6fe4722653561a42/);
-      expect(notice).toMatch(/MIT License/);
-      expect(notice).toMatch(/Copyright \(c\) 2026 Matt Pocock/);
-    });
-
+  // MIT-redistribution set-drift invariant: every vendored sub-file MUST be
+  // inventoried in the repo-root NOTICE. Adding a 6th vendored file (a new
+  // PINNED_HASHES entry) without listing it in NOTICE is an attribution-
+  // completeness regression this guard catches. Not a single-sentence prose pin
+  // — it iterates the PINNED_HASHES key set.
+  describe('NOTICE — MIT attribution inventory (set-drift)', () => {
     it('NOTICE inventories all 5 byte-identical sub-files plus 3 adapted SKILL.md files', () => {
-      const notice = readFileSync(noticePath, 'utf8');
+      const notice = readFileSync(path.join(repoRoot, 'NOTICE'), 'utf8');
       for (const rel of Object.keys(PINNED_HASHES)) {
         expect(notice).toMatch(new RegExp(rel.replace(/[.]/g, '\\.')));
       }

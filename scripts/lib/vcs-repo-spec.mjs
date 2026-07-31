@@ -31,6 +31,16 @@
  * module also exports `resolveRepoHost` for the `glab api`/`gh api`
  * call sites, which accept neither `-R` nor a URL — only `--hostname`.
  *
+ * Credential safety (#907, CWE-214): every value returned by `resolveRepoSpec`
+ * / `resolveRepoHost` has any embedded userinfo credential
+ * (`https://user:token@host/...`, the GitLab-CI checkout pattern) stripped at
+ * the source, so a credential can never reach a `-R`/`--repo`/`--hostname`
+ * argv position (visible via `ps` / `/proc/<pid>/cmdline`). A scp-like SSH
+ * login (`git@host:path`) is NOT a credential and is preserved verbatim. The
+ * exported `redactUrlCredentials` is the log-line defense-in-depth counterpart
+ * for values that bypass the source strip (e.g. a `--repo` override). See
+ * `stripUrlCredentials` / `userinfoIsCredential`.
+ *
  * Lifted out of `scripts/archive-closed-prds.mjs::defaultGlabRepo` (that
  * script's docblock described this exact problem months before #839 was
  * filed) into a shared `scripts/lib/` module so
@@ -62,6 +72,84 @@ const UNSAFE_ARGV_CHARS_RE = /[\s\x00-\x1f]/;
  */
 function isUnsafeForArgv(value) {
   return typeof value === 'string' && UNSAFE_ARGV_CHARS_RE.test(value);
+}
+
+/**
+ * Embedded-credential guard (#907, CWE-214). A `scheme://userinfo@host/...`
+ * remote URL carries its userinfo (`user:password`, or a bare `token`) in the
+ * clear. The GitLab-CI checkout pattern
+ * `https://gitlab-ci-token:<MASKED>@host/group/project.git` is the canonical
+ * source. If that raw URL reaches a `-R`/`--repo` argv position it is visible
+ * via `ps` / `/proc/<pid>/cmdline`, and if it reaches a `--verbose` log line
+ * it is written to CI job output — either way the credential leaks. The
+ * 2026-07-26 argv-boundary guard ({@link UNSAFE_ARGV_CHARS_RE}) does NOT catch
+ * this: an embedded credential contains no whitespace or control character.
+ *
+ * Matches ONLY the `scheme://` URL forms (`https://`, `http://`, `ssh://`,
+ * `git+ssh://`, …). The scp-like SSH form `git@host:path` has no `://` and is
+ * therefore never matched — a bare SSH login user is not a credential. The
+ * `[^/@\s]+@` userinfo class stops at the first `/`, so an `@` that appears in
+ * a PATH (e.g. `.../path@ref`) is never mistaken for userinfo.
+ */
+const URL_WITH_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/@\s]+)@/gi;
+
+/**
+ * Decide whether a matched `scheme://userinfo@` is a CREDENTIAL (strip/redact)
+ * or a legitimate login username (leave untouched).
+ *
+ * A credential is either:
+ *   - any userinfo carrying a password component (`user:pass`, a `:` present) —
+ *     for ANY scheme, including `ssh://user:pass@host`; or
+ *   - a bare userinfo on an `http`/`https` scheme (`https://token@host`) — HTTPS
+ *     git auth passes tokens/PATs through the userinfo slot, so a bare userinfo
+ *     there is a token, never a plain username.
+ *
+ * A bare userinfo on a non-HTTP scheme (`ssh://git@host`) is a login username,
+ * NOT a credential — SSH authenticates with keys, never a URL-embedded secret —
+ * so it is left untouched, consistent with the scp-like `git@host:path` case.
+ *
+ * @param {string} scheme e.g. `https://` (includes the trailing `://`)
+ * @param {string} userinfo the substring between `scheme` and `@`
+ * @returns {boolean}
+ */
+function userinfoIsCredential(scheme, userinfo) {
+  if (userinfo.includes(':')) return true;
+  return /^https?:\/\/$/i.test(scheme);
+}
+
+/**
+ * Strip credential userinfo from a single remote URL, returning the URL with
+ * host/path/project-spec EXACTLY preserved. A credential-free URL (and the
+ * scp-like `git@host:path` SSH form) is returned BYTE-IDENTICAL — the strip is
+ * a no-op unless {@link userinfoIsCredential} classifies the userinfo as a
+ * secret. Never throws; a non-string returns unchanged.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function stripUrlCredentials(url) {
+  if (typeof url !== 'string') return url;
+  return url.replace(URL_WITH_USERINFO_RE, (match, scheme, userinfo) =>
+    userinfoIsCredential(scheme, userinfo) ? scheme : match,
+  );
+}
+
+/**
+ * Defense-in-depth redactor for LOG output: replace any credential userinfo in
+ * an arbitrary text string (e.g. a verbose `glab … -R <spec>` line) with a
+ * `***` marker, leaving the surrounding text and the URL host/path intact. Used
+ * by `scripts/vault-integration-watcher.mjs`'s `verbose()` to cover the
+ * `--repo <spec>` override path, which bypasses the source-level strip in
+ * {@link resolveRawRemoteUrl}. Never throws; a non-string returns unchanged.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function redactUrlCredentials(text) {
+  if (typeof text !== 'string') return text;
+  return text.replace(URL_WITH_USERINFO_RE, (match, scheme, userinfo) =>
+    userinfoIsCredential(scheme, userinfo) ? `${scheme}***@` : match,
+  );
 }
 
 /**
@@ -160,6 +248,14 @@ function normalizeGithubSpec(url) {
  * unambiguous check only; it does not attempt to validate self-hosted
  * domains, which cannot be distinguished from a URL string alone.
  *
+ * Credential guard (#907, CWE-214): the raw `git remote get-url` output can
+ * be `https://user:token@host/...` (GitLab-CI checkout pattern). The userinfo
+ * is stripped HERE, at the single source both `resolveRepoSpec` and
+ * `resolveRepoHost` flow through, BEFORE the cross-family host check and
+ * before the value can reach any `-R`/`--repo`/`--hostname` argv position —
+ * see {@link stripUrlCredentials}. A credential-free URL is unchanged
+ * (byte-identical), so #839/#872 behaviour is preserved.
+ *
  * @param {{
  *   repoRoot?: string,
  *   vcs?: 'gitlab' | 'github',
@@ -174,7 +270,7 @@ function resolveRawRemoteUrl({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun 
 
   for (const remote of REMOTE_PREFERENCE[vcsResolved]) {
     const { ok, stdout } = gitRun(['-C', root, 'remote', 'get-url', remote]);
-    const url = ok ? stdout.trim() : '';
+    const url = ok ? stripUrlCredentials(stdout.trim()) : '';
     if (!url) continue;
     if (extractHost(url) === wrongFamilyHost) continue;
     return url;

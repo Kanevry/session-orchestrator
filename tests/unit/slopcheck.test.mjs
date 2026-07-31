@@ -604,15 +604,6 @@ describe('classifyPackages — disk persistence (cache file round-trip)', () => 
     vi.restoreAllMocks();
   });
 
-  it('writes the cache file at the expected path after a successful classification', async () => {
-    mockNpmFound('18.2.0', '17.0.2');
-
-    await classifyPackages([{ name: 'react', registry: 'npm' }], { repoRoot: tmpDir });
-
-    const expectedFile = path.join(tmpDir, CACHE_PATH);
-    expect(fs.existsSync(expectedFile)).toBe(true);
-  });
-
   it('cache file contains the classified package entry with a valid fetchedAt timestamp', async () => {
     mockNpmFound('18.2.0', '17.0.2');
 

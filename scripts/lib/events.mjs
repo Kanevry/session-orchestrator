@@ -12,17 +12,61 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SO_PROJECT_DIR, SO_SHARED_DIR } from './platform.mjs';
+import { readLock } from './session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the absolute path to .orchestrator/metrics/events.jsonl in the project root.
+ * Returns the absolute path to `.orchestrator/metrics/events.jsonl` under `repoRoot`.
+ *
+ * `repoRoot` defaults to the module-level `SO_PROJECT_DIR` constant, so the
+ * zero-arg call is unchanged for every existing caller (#941). Pass an explicit
+ * `repoRoot` when the destination must be pinned to a tree other than the
+ * CWD/env-resolved project — e.g. a unit test running the gate against a tmp
+ * repo, which must NOT append synthetic records to the real fleet telemetry.
+ *
+ * @param {string} [repoRoot=SO_PROJECT_DIR] — project root the events log lives under.
  * @returns {string}
  */
-export function eventsFilePath() {
-  return path.join(SO_PROJECT_DIR, SO_SHARED_DIR, 'metrics', 'events.jsonl');
+export function eventsFilePath(repoRoot = SO_PROJECT_DIR) {
+  return path.join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl');
+}
+
+/**
+ * Session attribution for gate/lifecycle telemetry (#928a, hoisted here #941).
+ *
+ * The natural shared home the two former call-site copies (`quality-gate.mjs`,
+ * `run-quality-gate.mjs`) both named. Emits BOTH the UUID `session_id` and the
+ * `semantic_session_id`, mirroring the field shape of
+ * `orchestrator.session.lock.acquired` so gate events join against the same keys
+ * existing consumers already read (see `session-close-backfill.mjs`).
+ *
+ * Without a lock (CI runs have none) BOTH keys are OMITTED rather than filled
+ * with a placeholder: a fabricated id would silently collide across every
+ * unattributed run and read as a real session; an empty string would satisfy a
+ * truthiness check while attributing to nothing. An absent key is the only
+ * honest encoding of "not attributable".
+ *
+ * @param {string} [repoRoot] — repo whose `session.lock` is read for attribution.
+ * @returns {{session_id?: string, semantic_session_id?: string}}
+ */
+export function sessionAttribution(repoRoot) {
+  try {
+    const lock = readLock({ repoRoot });
+    if (!lock) return {};
+    const out = {};
+    if (typeof lock.session_id === 'string' && lock.session_id.trim()) {
+      out.session_id = lock.session_id;
+    }
+    if (typeof lock.semantic_session_id === 'string' && lock.semantic_session_id.trim()) {
+      out.semantic_session_id = lock.semantic_session_id;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -43,6 +87,11 @@ export function eventsFilePath() {
  *   Used by `scripts/emit-event.mjs --file` so shell callers (e.g.
  *   compute-grounding-injection.sh) can target a pre-resolved EVENTS_JSONL path
  *   without depending on platform.mjs CWD/env resolution (#611).
+ * @param {string} [opts.repoRoot] — pin the destination to `<repoRoot>/.orchestrator/
+ *   metrics/events.jsonl` instead of the module-level `SO_PROJECT_DIR` default
+ *   (#941). Ignored when `opts.filePath` is given (explicit path wins). This is
+ *   the clean interface replacing the hand-built `join(repoRoot, …)` recipes that
+ *   used to open-code this destination at each call-site.
  * @returns {Promise<void>}
  */
 export async function emitEvent(type, payload = {}, opts = {}) {
@@ -50,10 +99,13 @@ export async function emitEvent(type, payload = {}, opts = {}) {
   const record = { timestamp: new Date().toISOString(), event: type, ...payload };
   const line = JSON.stringify(record) + '\n';
 
-  // Ensure the destination directory exists before appending. The default
-  // resolution is unchanged for 2-arg callers — only an explicit opts.filePath
-  // overrides it (#611, additive).
-  const filePath = opts.filePath ?? eventsFilePath();
+  // Ensure the destination directory exists before appending. Resolution order:
+  //   1. explicit opts.filePath (a pre-resolved path — #611)
+  //   2. opts.repoRoot → <repoRoot>/.orchestrator/metrics/events.jsonl (#941)
+  //   3. the SO_PROJECT_DIR default (unchanged for 2-arg callers)
+  // eventsFilePath(undefined) falls through to its SO_PROJECT_DIR default param,
+  // so a caller passing neither behaves EXACTLY as before (additive).
+  const filePath = opts.filePath ?? eventsFilePath(opts.repoRoot);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');
 

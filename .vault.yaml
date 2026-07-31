@@ -17,7 +17,7 @@ metadata:
   owner: bernhard
 
 spec:
-  techStack: [bash, markdown, claude-code-plugin]
+  techStack: [nodejs, markdown, claude-code-plugin]
   status: production
   tags: [plugin, orchestration, infrastructure, ai-agent]
   summary: "Claude Code plugin for multi-wave session orchestration with role-based agent dispatch, discovery, planning, scope enforcement, and evolve primitives."
