@@ -15,6 +15,8 @@
  *     ram_used_pct: 78,
  *     cpu_load_1m: 2.4,
  *     cpu_load_pct: 65,
+ *     cpu_load_5m: 1.8,
+ *     cpu_load_5m_pct: 45 | null,   // 5m load-average as pct-of-cores; null on Windows/zero-load (#943)
  *     claude_processes_count: 3 | null,
  *     codex_processes_count: 0 | null,
  *     other_node_processes: 12 | null,
@@ -37,6 +39,7 @@
  *   - scripts/lib/resource-probe/evaluate.mjs     — verdict + threshold logic
  */
 
+import os from 'node:os';
 import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctFree, ramAvailableGb } from './resource-probe/probe-platform.mjs';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +66,20 @@ export async function probe(opts = {}) {
   const start = Date.now();
   const ram = ramSnapshot();
   const cpu = cpuSnapshot();
+
+  // #943: additionally sample the 5-minute load average. The wave-resource-gate
+  // runs, by construction, right after the coordinator's own CPU-saturating
+  // quality-gate run — the 1m average still carries that decaying tail
+  // (observed 2026-07-30: 96% → 91% → 78% → 75% within 36s after a Full Gate at
+  // 813% CPU), while the 5m average smooths it. Consumers (evaluate(),
+  // wave-resource-gate) judge CPU on min(1m, 5m) when the 5m signal exists.
+  // Windows reports loadavg [0,0,0] → cpu_load_5m_pct stays null there and
+  // consumers fall back to cpu_load_pct alone (which cpuSnapshot() derives from
+  // per-core times on Windows).
+  const load5m = os.loadavg()[1];
+  const cpuCores = (os.cpus() || []).length || 1;
+  const cpu_load_5m = Math.round(load5m * 10) / 10;
+  const cpu_load_5m_pct = load5m > 0 ? Math.min(100, Math.round((load5m / cpuCores) * 100)) : null;
   const zombieThresholdMin = opts.zombieThresholdMin ?? null;
   const procs = opts.skipProcessCounts
     ? { claude_processes_count: null, codex_processes_count: null, other_node_processes: null, zombie_processes_count: null }
@@ -84,6 +101,8 @@ export async function probe(opts = {}) {
     timestamp: new Date().toISOString(),
     ...ram,
     ...cpu,
+    cpu_load_5m,
+    cpu_load_5m_pct,
     ...procs,
     swap_used_mb,
     memory_pressure_pct_free,

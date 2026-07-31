@@ -29,10 +29,18 @@
  *
  *   G1  profile gate (`SO_HOOK_PROFILE` / `SO_DISABLED_HOOKS`)
  *   G2  tool_name === 'Bash'
- *   G3  wave-scope.json exists
+ *   G3  wave-scope.json exists (disappearance after a recorded scope → notice)
  *   G4  gates['bash-write-verify'] !== false   (absent ⇒ ENABLED)
  *   G5  enforcement !== 'off'
  *   G6  git status delta vs. snapshot → filter → report NEW out-of-scope paths
+ *
+ * G4/G5 are evaluated on the scope state RECORDED IN THE SNAPSHOT — the state
+ * in effect BEFORE the observed call — never on the live file (#938 vector 1):
+ * a Bash call that rewrites wave-scope.json to `enforcement: "off"` cannot
+ * silence the hook for its own evaluation. The rewrite itself is always
+ * reported (content-hash comparison against the snapshot, because the file is
+ * typically gitignored and thus invisible to `git status`), and the new value
+ * takes effect from the NEXT call on.
  *
  * ## Three properties that keep this from becoming noise
  *
@@ -43,10 +51,14 @@
  *    relative to the previous invocation are reported.
  * 2. **Report-once.** A reported path is folded into the snapshot, so a file
  *    written by ten consecutive `sed -i` calls warns once, not ten times.
- * 3. **Silent re-baseline.** No snapshot yet (first Bash call of a session), or
- *    a changed `allowedPaths` signature (new wave): record the current dirty
- *    set WITHOUT warning. That dirt predates the call being observed; blaming
- *    the observed call for it is a false positive.
+ * 3. **Re-baseline without amnesia (#938).** No snapshot yet (first Bash call
+ *    of a session — or a deleted sidecar, vector 2), or a changed
+ *    `allowedPaths` signature (new wave, vector 3): fold the current dirty set
+ *    into the snapshot, but stay silent ONLY about paths whose mtime predates
+ *    the wave-scope.json write. That dirt predates the wave; blaming the
+ *    observed call for it is a false positive. Dirt NEWER than the scope file
+ *    appeared during this wave — a re-baseline (which the observed actor can
+ *    force by deleting the `$TMPDIR` sidecar) must not swallow it.
  *
  * ## Ignore list (contract, not implementation detail)
  *
@@ -57,11 +69,18 @@
  *   | class                          | patterns                                            |
  *   |--------------------------------|-----------------------------------------------------|
  *   | sibling-hook + own event writes| `.orchestrator/{metrics,debug,eval}/**`, `current-session.json`, `host.json`, `session.lock`, `state.lock`, `STATE.md` |
- *   | coordinator status files       | `.claude|.codex|.cursor|.pi/{STATE.md,wave-scope.json,metrics/**,worktrees/**,*.lock}` |
+ *   | coordinator status files       | `.claude|.codex|.cursor|.pi/{STATE.md,hooks.json,metrics/**,worktrees/**,*.lock}` |
  *   | package-manager artefacts      | `node_modules/**`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb` |
  *   | build / coverage output        | `coverage/**`, `dist/**`, `build/**`, `.next/**`, `junit.xml`, `*.log` |
  *   | tmp+rename residue             | `*.tmp`, `*.tmp-*`, `*.tmp.*`, `.tmp.*` (io.mjs `writeJsonAtomicSync`, `post-tool-failure-corrective-context.mjs` `.tmp-ptf-*`) |
  *   | OS noise                       | `.DS_Store`, `Thumbs.db`                            |
+ *
+ * `wave-scope.json` is deliberately ABSENT from the list since #938: the
+ * scope-control file is the one path whose change must ALWAYS be surfaced. An
+ * ignore entry here plus a `.gitignore` entry made it doubly invisible, so the
+ * observed actor could rewrite the gate unreported. Because the file is
+ * typically gitignored, `git status` cannot see it anyway — change detection
+ * for it is content-hash-based against the snapshot (`formatControlNotice`).
  *
  * The hook's OWN snapshot lives in `$TMPDIR`, never inside the repo, so it is
  * structurally incapable of reporting its own bookkeeping.
@@ -101,14 +120,14 @@ if (!shouldRunHook('post-bash-write-verify')) process.exit(0);
 
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs';
-import { readJson } from '../scripts/lib/common.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -139,8 +158,10 @@ export const IGNORED_PATH_PATTERNS = Object.freeze([
   // sibling-hook + own event writes
   /^\.orchestrator\/(metrics|debug|eval)\//,
   /^\.orchestrator\/(current-session\.json|host\.json|session\.lock|state\.lock|STATE\.md)$/,
-  // coordinator status files, all four harness state dirs
-  /^\.(claude|codex|cursor|pi)\/(STATE\.md|wave-scope\.json|hooks\.json)$/,
+  // coordinator status files, all four harness state dirs.
+  // `wave-scope.json` is deliberately NOT here (#938 vector 1): the guard's
+  // own control file must never be exempt from reporting.
+  /^\.(claude|codex|cursor|pi)\/(STATE\.md|hooks\.json)$/,
   /^\.(claude|codex|cursor|pi)\/(metrics|worktrees)\//,
   /^\.(claude|codex|cursor|pi)\/[^/]*\.lock$/,
   // package-manager artefacts
@@ -248,14 +269,25 @@ export function snapshotPathFor(repoRoot) {
 /**
  * Core decision: which out-of-scope paths are NEW since the last invocation?
  *
+ * On a re-baseline (no snapshot, or a changed scope signature) the pre-#938
+ * behaviour was total silence. That let the observed actor buy blindness by
+ * deleting the `$TMPDIR` sidecar (vector 2), and made the first call after
+ * every wave rollover blind (vector 3). The mtime rule closes both: dirt
+ * whose mtime is NEWER than the wave-scope.json write happened during THIS
+ * wave and is reported even on a re-baseline; older dirt predates the wave
+ * and stays silent (pre-wave dirt is never blamed on the observed call).
+ *
  * @param {object} args
  * @param {string[]} args.dirtyPaths     repo-relative paths from git status
  * @param {string[]} args.allowedPaths   wave allowedPaths
  * @param {object|null} args.snapshot    previous `{ signature, paths[] }`, or null
  * @param {string} args.signature        current scope signature
+ * @param {number|null} [args.scopeMtimeMs] mtime (ms) of wave-scope.json, or null
+ * @param {(relPath: string) => (number|null)} [args.mtimeMs] mtime lookup for a
+ *   dirty path; null = not attributable (deleted path / stat failure)
  * @returns {{ report: string[], nextSnapshot: { signature: string, paths: string[] }, rebaselined: boolean }}
  */
-export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature }) {
+export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null }) {
   const outOfScope = dirtyPaths
     .filter((p) => !isIgnoredPath(p))
     .filter((p) => !isInScope(p, allowedPaths));
@@ -263,8 +295,21 @@ export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature })
   const rebaselined = !snapshot || snapshot.signature !== signature;
   const seen = rebaselined || !Array.isArray(snapshot?.paths) ? new Set() : new Set(snapshot.paths);
 
-  // Report-once: only paths absent from the previous snapshot.
-  const report = rebaselined ? [] : outOfScope.filter((p) => !seen.has(p));
+  let report;
+  if (!rebaselined) {
+    // Report-once: only paths absent from the previous snapshot.
+    report = outOfScope.filter((p) => !seen.has(p));
+  } else if (typeof scopeMtimeMs === 'number' && typeof mtimeMs === 'function') {
+    // #938 vectors 2+3: a re-baseline is only silent about PRE-WAVE dirt.
+    report = outOfScope.filter((p) => {
+      const m = mtimeMs(p);
+      return typeof m === 'number' && m > scopeMtimeMs;
+    });
+  } else {
+    // No mtime signal (scope-file stat failed / caller supplied none): degrade
+    // to the conservative silent re-baseline rather than blame pre-wave dirt.
+    report = [];
+  }
 
   // Fold everything observed into the next snapshot, so a path reported now is
   // never reported again for this wave.
@@ -290,6 +335,39 @@ export function formatMessage(report, allowedCount) {
     + 'Warn-only (#915): PostToolUse cannot block a command that already ran. '
     + 'If this was unintended, revert it; Bash writes are NOT covered by the PreToolUse path gate.';
   return msg.length > MAX_CONTEXT_CHARS ? `${msg.slice(0, MAX_CONTEXT_CHARS - 1)}…` : msg;
+}
+
+/**
+ * Render the control-file-change notice (#938 vector 1).
+ *
+ * Fired whenever the wave-scope.json CONTENT differs from the state recorded
+ * in the snapshot. The coordinator's per-wave rollover legitimately triggers
+ * this once per wave — that case reads as information, not alarm
+ * (`weakened: false`). A change that turns enforcement off, disables the
+ * bash-write-verify gate, or makes the file unparseable is a weakening
+ * (`weakened: true`): exactly the write an actor silencing the guard must
+ * make, so it is the one line the operator must not miss.
+ *
+ * @param {string} relScopePath repo-relative path of the scope file
+ * @param {{ hash: string, enforcement: string, gateOn: boolean }} prev
+ * @param {{ hash: string, enforcement: string, gateOn: boolean }} cur
+ * @returns {{ text: string, weakened: boolean }}
+ */
+export function formatControlNotice(relScopePath, prev, cur) {
+  const prevGateOn = prev.gateOn !== false;
+  const curGateOn = cur.gateOn !== false;
+  const deltas = [];
+  if (prev.enforcement !== cur.enforcement) deltas.push(`enforcement ${prev.enforcement}→${cur.enforcement}`);
+  if (prevGateOn !== curGateOn) deltas.push(`gates.bash-write-verify ${prevGateOn ? 'on' : 'off'}→${curGateOn ? 'on' : 'off'}`);
+  const weakened = (cur.enforcement === 'off' && prev.enforcement !== 'off')
+    || cur.enforcement === 'unparseable'
+    || (prevGateOn && !curGateOn);
+  const what = deltas.length > 0 ? deltas.join(', ') : 'allowedPaths/content change';
+  const text = `bash-write-verify: control file ${relScopePath} changed since the last Bash call (${what}). `
+    + (weakened
+      ? 'This weakens or disables the bash-write guard from the NEXT call on; the current call was still evaluated under the previous scope state (#938).'
+      : 'Expected once per wave rollover; scope-control changes are never exempt from reporting (#938).');
+  return { text: text.length > MAX_CONTEXT_CHARS ? `${text.slice(0, MAX_CONTEXT_CHARS - 1)}…` : text, weakened };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +428,38 @@ function writeSnapshot(file, data) {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * A missing snapshot while the scope file is at least this old is flagged as
+ * suspicious (#938 fix 3): a genuine first Bash call happens minutes after the
+ * coordinator wrote wave-scope.json, whereas a long-running wave whose sidecar
+ * suddenly vanished points at `rm -f $TMPDIR/so-bash-write-verify/…`.
+ * Informational only — a TMPDIR purge or reboot produces the same signal once.
+ */
+const SNAPSHOT_MISSING_SUSPICION_MS = 10 * 60 * 1000;
+
+/**
+ * Emit stderr line(s) for the operator + one PostToolUse envelope for Claude.
+ * `warn` selects the stderr glyph: violations and control-file weakenings
+ * alarm (⚠); a plain rollover/teardown notice informs (ℹ).
+ *
+ * @param {string[]} messages
+ * @param {boolean} warn
+ */
+function emitMessages(messages, warn) {
+  const glyph = warn ? '⚠' : 'ℹ';
+  try {
+    for (const m of messages) process.stderr.write(`${glyph} ${m}\n`);
+  } catch {
+    /* stderr may be closed */
+  }
+  writeStdoutLineSync(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      additionalContext: messages.join('\n'),
+    },
+  }));
+}
+
 async function main() {
   const input = await readStdin();
   if (!input) return;
@@ -365,59 +475,153 @@ async function main() {
     repoRoot = repoRootRaw;
   }
 
-  // G3 — no wave scope → nothing defines "outside".
-  const scopePath = findScopeFile(repoRoot);
-  if (!scopePath) return;
+  const snapFile = snapshotPathFor(repoRoot);
+  const snapshot = readSnapshot(snapFile);
+  const prevScopeState = snapshot && typeof snapshot.scopeState === 'object' && snapshot.scopeState !== null
+    ? snapshot.scopeState
+    : null;
 
-  let scope;
-  try {
-    scope = await readJson(scopePath);
-  } catch {
+  // G3 — no wave scope → nothing defines "outside". #938: if a previous call
+  // RECORDED a scope state, the control file's disappearance is itself a
+  // control-file change and gets one visible (non-alarming) notice.
+  const scopePath = findScopeFile(repoRoot);
+  if (!scopePath) {
+    if (prevScopeState && prevScopeState.hash !== 'absent') {
+      writeSnapshot(snapFile, {
+        ...(snapshot ?? { signature: null, paths: [] }),
+        scopeState: { hash: 'absent', enforcement: 'strict', gateOn: true },
+      });
+      emitMessages([
+        'bash-write-verify: control file wave-scope.json was REMOVED since the last Bash call — '
+        + 'the bash-write guard is inert until a new wave scope is written. '
+        + 'Expected at session teardown; scope-control changes are never exempt from reporting (#938).',
+      ], false);
+    }
     return;
   }
 
-  // G4 — gate is ON unless explicitly disabled. Note the contrast with
-  // `bash-write-guard` (=== true): this detector observes the filesystem rather
-  // than parsing a command, so it has no parse-artefact false positives and
-  // does not need the opt-in default.
-  if (scope?.gates?.['bash-write-verify'] === false) return;
+  let raw = null;
+  let scope = null;
+  try {
+    raw = readFileSync(scopePath, 'utf8');
+    scope = JSON.parse(raw);
+  } catch {
+    /* raw stays null (unreadable) or scope stays null (unparseable) */
+  }
+  if (raw === null) return; // file vanished between findScopeFile and read
 
-  // G5 — enforcement:off means nothing is enforced, including advisories.
-  if ((scope.enforcement ?? 'strict') === 'off') return;
+  const relScopePath = path.relative(repoRoot, scopePath) || scopePath;
+  const currentScopeState = {
+    hash: createHash('sha1').update(raw).digest('hex').slice(0, 16),
+    enforcement: scope
+      ? (typeof scope.enforcement === 'string' ? scope.enforcement : 'strict')
+      : 'unparseable',
+    gateOn: scope ? scope?.gates?.['bash-write-verify'] !== false : true,
+  };
+
+  // Unparseable control file: nothing to evaluate paths against, but the
+  // CHANGE is still reported (#938 vector 1 variant — `echo garbage >
+  // wave-scope.json` must not be a free total silencer).
+  if (!scope) {
+    if (prevScopeState && prevScopeState.hash !== currentScopeState.hash) {
+      writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
+      const notice = formatControlNotice(relScopePath, prevScopeState, currentScopeState);
+      emitMessages([notice.text], true);
+    }
+    return;
+  }
+
+  // G4+G5 — evaluated on the PRE-CALL scope state from the snapshot (#938
+  // vector 1); the live values only take effect from the NEXT call on. Falls
+  // back to the live values when no snapshot exists (true first run) or the
+  // snapshot predates the scopeState schema. G4 is ON unless explicitly
+  // disabled — the contrast with `bash-write-guard` (=== true) stands: this
+  // detector observes the filesystem rather than parsing a command. G5:
+  // enforcement:off means nothing is enforced, including advisories.
+  const effEnforcement = prevScopeState && typeof prevScopeState.enforcement === 'string'
+    ? prevScopeState.enforcement
+    : currentScopeState.enforcement;
+  const effGateOn = prevScopeState ? prevScopeState.gateOn !== false : currentScopeState.gateOn;
+  if (!effGateOn || effEnforcement === 'off') {
+    // Refresh only the recorded scope state so a later re-enable is honored on
+    // the next call; signature/paths stay untouched.
+    writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
+    return;
+  }
+
+  const controlNotice = prevScopeState
+    && typeof prevScopeState.hash === 'string'
+    && prevScopeState.hash !== 'absent'
+    && prevScopeState.hash !== currentScopeState.hash
+    ? formatControlNotice(relScopePath, prevScopeState, currentScopeState)
+    : null;
 
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
 
   const dirtyPaths = readDirtyPaths(repoRoot);
-  if (dirtyPaths === null) return; // git unavailable → no signal, never a warning
+  if (dirtyPaths === null) {
+    // git unavailable → no path signal; the control-file notice still stands.
+    writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
+    if (controlNotice) emitMessages([controlNotice.text], controlNotice.weakened);
+    return;
+  }
 
-  const snapFile = snapshotPathFor(repoRoot);
   const signature = scopeSignature(allowedPaths);
+  let scopeMtimeMs = null;
+  try {
+    scopeMtimeMs = statSync(scopePath).mtimeMs;
+  } catch {
+    /* stat failure → computeReport degrades to the silent re-baseline */
+  }
+
   const { report, nextSnapshot } = computeReport({
     dirtyPaths,
     allowedPaths,
-    snapshot: readSnapshot(snapFile),
+    snapshot,
     signature,
+    scopeMtimeMs,
+    mtimeMs: (rel) => {
+      try {
+        return statSync(path.join(repoRoot, rel)).mtimeMs;
+      } catch {
+        return null; // deleted path → not mtime-attributable on a re-baseline
+      }
+    },
   });
 
-  writeSnapshot(snapFile, nextSnapshot);
+  writeSnapshot(snapFile, { ...nextSnapshot, scopeState: currentScopeState });
 
-  if (report.length === 0) return; // silence is the common case (0.91 % fire rate)
-
-  const message = formatMessage(report, allowedPaths.length);
-
-  // stderr for the operator; additionalContext for Claude's next turn.
-  try {
-    process.stderr.write(`⚠ ${message}\n`);
-  } catch {
-    /* stderr may be closed */
+  const messages = [];
+  let warn = false;
+  if (controlNotice) {
+    messages.push(controlNotice.text);
+    warn = warn || controlNotice.weakened;
   }
-  writeStdoutLineSync(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PostToolUse',
-      additionalContext: message,
-    },
-  }));
+  if (!snapshot && typeof scopeMtimeMs === 'number'
+    && Date.now() - scopeMtimeMs > SNAPSHOT_MISSING_SUSPICION_MS) {
+    // #938 fix 3 — a missing sidecar under an OLD scope file is not a clean
+    // first run; say so instead of silently trusting the re-baseline.
+    messages.push(
+      'bash-write-verify: no state snapshot found although the wave scope is '
+      + `${Math.round((Date.now() - scopeMtimeMs) / 60_000)} min old — a deleted state file `
+      + '($TMPDIR/so-bash-write-verify) cannot be ruled out; re-baselined with mtime attribution (#938).',
+    );
+  }
+  if (report.length > 0) {
+    messages.push(formatMessage(report, allowedPaths.length));
+    warn = true;
+  }
+  if (messages.length === 0) return; // silence is the common case (0.91 % fire rate)
+
+  emitMessages(messages, warn);
 }
 
-// Advisory hook: never block, never surface an error to the tool call.
-main().catch(() => {}).finally(() => process.exit(0));
+// Self-execution guard — run only when invoked directly as a hook, never when
+// imported (the test suite imports named exports; a top-level main() then runs
+// on import and its .finally(process.exit(0)) trips vitest's process.exit guard,
+// surfacing as an unhandled rejection that can cause false-positive tests).
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  // Advisory hook: never block, never surface an error to the tool call.
+  main().catch(() => {}).finally(() => process.exit(0));
+}

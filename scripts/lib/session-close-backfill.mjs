@@ -221,9 +221,27 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
 function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
-  const terminalMs = Number.isFinite(gathered.lastTerminalMs) ? gathered.lastTerminalMs : nowMs;
-  // completed_at = last terminal event (or now), never earlier than started_at.
-  const completedIso = new Date(Math.max(startedMs, terminalMs)).toISOString();
+  // completed_at is events-attested, never the backfill-run wall-clock (#914 R1).
+  // A fabricated `nowMs` produced ~64h of phantom runtime on real records
+  // (e.g. main-2026-07-18-session-2: started 2026-07-18, "completed" 2026-07-21).
+  // Precedence, all events-derived — the schema requires a string, so `null`
+  // is not an option (session-schema/validator.mjs rejects non-string):
+  //   1. lastTerminalMs — a real STOPPED/ENDED event: the true end.
+  //   2. lastEventMs — last life-sign; an ESTIMATE (flagged), never the run time.
+  //   3. startedIso — no post-start event at all → duration 0 (flagged).
+  let completedEstimated = false;
+  let completedMs;
+  if (Number.isFinite(gathered.lastTerminalMs)) {
+    completedMs = gathered.lastTerminalMs;
+  } else if (Number.isFinite(gathered.lastEventMs)) {
+    completedMs = gathered.lastEventMs;
+    completedEstimated = true;
+  } else {
+    completedMs = startedMs;
+    completedEstimated = true;
+  }
+  // Guard the same monotonic invariant as before: never earlier than started_at.
+  const completedIso = new Date(Math.max(startedMs, completedMs)).toISOString();
 
   let sessionType = 'housekeeping';
   let inferred = true;
@@ -238,6 +256,10 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
   const incomplete = ['total_waves', 'waves', 'agent_summary', 'total_agents', 'total_files_changed'];
   if (!startedFound) incomplete.push('started_at');
   if (!branchFound) incomplete.push('branch');
+  // completed_at was estimated from lastEventMs (or defaulted to started_at) —
+  // no terminal event was found, so mark it incomplete so downstream duration
+  // consumers can tell an events-attested end apart from an estimate (#914 R1).
+  if (completedEstimated) incomplete.push('completed_at');
 
   const record = {
     session_id: recordId,
@@ -261,6 +283,7 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
   if (branchFound) record.branch = gathered.branch;
   if (inferred) record._session_type_inferred = true;
   if (synthetic) record._synthetic_session_id = true;
+  if (completedEstimated) record._completed_at_estimated = true;
   return record;
 }
 

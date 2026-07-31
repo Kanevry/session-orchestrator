@@ -21,6 +21,21 @@
  *   5. Build canonical record and call appendSubagent().
  *   6. Output: nothing on stdout. Diagnostic errors to stderr only.
  *
+ * Phantom-stop class (#939, measured 2026-07-31 over the live ledger):
+ * the harness fires SubagentStop for an ephemeral agent class that never fires
+ * SubagentStart. Those payloads carry a FRESH agent_id per firing, NO
+ * agent_type/subagent_type, and a transcript_path that points at the PARENT
+ * session transcript (evidence: 1072 of 1395 token-bearing orphan stops share
+ * an exact token_input:token_output:parent_session_id fingerprint with a
+ * concurrent typed stop; 957 of those 1072 fire BEFORE it, p50 97 s; token
+ * totals grow monotonically across the orphan stream). The cause is
+ * harness-side, not hook-side: registration (hooks.json) sends exactly
+ * SubagentStart|SubagentStop here, and the "missing hook_event_name flips
+ * starts to stops" hypothesis is refuted by perfect bimodality — 0 of 1429
+ * typed stops are orphaned, 0 of 1494 orphans carry a type. The hook therefore
+ * records these firings faithfully but marks every stop with
+ * `start_record_found` so readers can filter the phantom class mechanically.
+ *
  * Exit codes: 0 always (informational, never blocking).
  */
 
@@ -265,31 +280,37 @@ function findStartTimestampMs(filePath, agentId) {
  *   1. A usable harness-supplied duration_ms — authoritative when present.
  *      In practice Claude Code's SubagentStop payload does NOT carry this field,
  *      which is exactly why every pre-#917 record read 0.
- *   2. Wall-clock join: now − the timestamp of this agent's own start record.
+ *   2. Wall-clock join: now − the precomputed timestamp of this agent's own
+ *      start record (`startedAtMs`, resolved ONCE by the caller — it also feeds
+ *      the #939 `start_record_found` discriminator).
  *   3. null — the honest value when the duration is genuinely unknowable.
  *
  * Why null and not 0: a stop that took zero milliseconds never happened, so a 0
- * is indistinguishable from "we never measured". Roughly half the stop traffic
- * has no recoverable start record at all (measured 2026-07-30: 1349 of 2770 stop
- * records have no start record with their agent_id anywhere in the ledger), so
- * this branch is a major path, not a corner case — writing 0 there would keep
- * fabricating exactly the value this change removes.
+ * is indistinguishable from "we never measured". The no-start branch is the
+ * DOMINANT path, not a corner case, and worsening (#939, measured 2026-07-31
+ * over the live ledger):
+ *   - lifetime mean: 1494 of 2923 stop records (51.1%) have no start record
+ *     with their agent_id anywhere in the ledger;
+ *   - running traffic is far worse — the lifetime mean flatters it:
+ *       since 2026-07-20:        894 stops, 157 matched (17.6%)
+ *       since 2026-07-29:        408 stops,  62 matched (15.2%)
+ *       since 2026-07-30T17:41:  122 stops,   8 matched ( 6.6%)
+ *     i.e. ~93% of CURRENT stop traffic is orphaned (the harness phantom-stop
+ *     class — see the file header). Writing 0 there would keep fabricating
+ *     exactly the value #917 removed.
  *
  * @param {object} input — raw stdin payload
- * @param {string} agentId — resolved agent id
+ * @param {number|null} startedAtMs — epoch-ms of this agent's own start record,
+ *   or null when no start record is recoverable (phantom stop, 'unknown' id,
+ *   or start outside the tail window)
  * @returns {number|null} duration in ms, or null when unknown
  */
-function resolveDurationMs(input, agentId) {
+function resolveDurationMs(input, startedAtMs) {
   const supplied = input.duration_ms;
   if (typeof supplied === 'number' && Number.isFinite(supplied) && supplied > 0) {
     return Math.round(supplied);
   }
 
-  // 'unknown' is the agent-id fallback for a payload with no usable id — joining
-  // on it would collide across unrelated agents, so never trust it.
-  if (agentId === 'unknown') return null;
-
-  const startedAtMs = findStartTimestampMs(JSONL_PATH, agentId);
   if (startedAtMs === null) return null;
 
   const elapsed = Date.now() - startedAtMs;
@@ -334,10 +355,34 @@ async function main() {
     ...(parentSessionId !== null ? { parent_session_id: parentSessionId } : {}),
   };
 
+  // #939 forensic breadcrumb: registration (hooks.json) sends exactly
+  // SubagentStart|SubagentStop to this script, so any OTHER (or missing) event
+  // name is a payload anomaly. It is still written as 'stop' for
+  // backwards-compat, but the raw name is preserved verbatim so the "missing
+  // hook_event_name silently defaults to stop" hypothesis stays decidable from
+  // the ledger instead of requiring another inference pass. Never stamped on
+  // well-formed payloads — the field's PRESENCE is the anomaly signal.
+  if (eventName !== 'SubagentStart' && eventName !== 'SubagentStop') {
+    record.hook_event_name = typeof eventName === 'string' ? eventName : null;
+  }
+
   if (event === 'stop') {
+    // #939 orphan guard: resolve the start-join ONCE — it feeds both the
+    // duration measurement and the explicit orphan discriminator below.
+    // 'unknown' is the agent-id fallback for a payload with no usable id —
+    // joining on it would collide across unrelated agents, so never scan for it.
+    const startedAtMs = agentId === 'unknown' ? null : findStartTimestampMs(JSONL_PATH, agentId);
+
     // duration_ms (#917): prefer the harness value, else join backwards to this
     // agent's own start record, else null. Never 0 — see resolveDurationMs().
-    record.duration_ms = resolveDurationMs(input, agentId);
+    record.duration_ms = resolveDurationMs(input, startedAtMs);
+
+    // start_record_found (#939): makes the harness phantom-stop class (see file
+    // header) mechanically filterable at read time. false = no start record for
+    // this agent_id in the tail window — for ~93% of current stop traffic this
+    // is the phantom class, whose token fields describe the PARENT transcript,
+    // not a real subagent.
+    record.start_record_found = startedAtMs !== null;
 
     // Tokens are NOT sent on stdin (#624) — recover them from the transcript's
     // per-assistant-turn usage blocks, deduped by requestId. Any failure → null.

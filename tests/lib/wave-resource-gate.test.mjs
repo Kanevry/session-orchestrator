@@ -261,6 +261,75 @@ describe('evaluateWaveResourceGate', () => {
     expect(result.reasons.some((r) => r.includes('RAM free 1.5GB'))).toBe(true);
   });
 
+  // -------------------------------------------------------------------------
+  // Transient-CPU suppression via min(1m, 5m) (#943)
+  //
+  // The gate runs right after the coordinator's own CPU-saturating quality-gate
+  // run by construction — the 1m load average carries that decaying tail
+  // (observed 2026-07-30: 96% → 91% → 78% → 75% within 36s after a Full Gate at
+  // 813% CPU across cores). Fixture realism: live probe() on this host
+  // (2026-07-31) read loadavg [13.27, 14.31] on 18 cores → 1m 74% / 5m 79%;
+  // the incident's inverse shape (1m ≫ 5m) is the standard post-burst decay
+  // state, since a short burst never lifts the 5m average as far as the 1m.
+  // -------------------------------------------------------------------------
+
+  test('#943 incident: 1m CPU 96% but 5m 45% → proceed (decaying transient), NOT reduce', async () => {
+    // Bug this catches: judging CPU on the 1m average alone halves the wave on
+    // the gate's own measurement tail (the exact 2026-07-30 pre-Wave-3 incident).
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 45 }),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
+    expect(result.reasons.some((r) => r.includes('decaying transient') && r.includes('#943'))).toBe(true);
+    expect(result.measurements.cpuLoad5mPct).toBe(45);
+  });
+
+  test('#943 sustained load: 1m 96% AND 5m 92% → still reduce (min is above max)', async () => {
+    // Bug this catches: an over-suppression that bypasses the CPU rule whenever
+    // a 5m signal merely EXISTS, instead of only when the 5m is genuinely calm.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 92 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3);
+    expect(result.reasons.some((r) => r.includes('CPU load 92%') && r.includes('min of 1m 96% / 5m 92%'))).toBe(true);
+  });
+
+  test('#943 min semantics: 1m 40% but 5m 95% (burst ended >1min ago) → proceed', async () => {
+    // Bug this catches: judging on the 5m average ALONE (or max(1m,5m)) — a
+    // load that has already dropped must not reduce the wave.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 4,
+      waveRole: 'Quality',
+      probeOverride: makeOverride({ cpuLoadPct: 40, cpuLoad5mPct: 95 }),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(4);
+    expect(result.reasons).toContain('all thresholds within bounds');
+  });
+
+  test('#943 back-compat: cpuLoad5mPct absent → 1m-only judging still reduces at 90%', async () => {
+    // Pins the legacy fallback: overrides/platforms without a 5m signal
+    // (Windows, older callers) keep the pre-#943 behaviour unchanged.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 4,
+      waveRole: 'Quality',
+      probeOverride: makeOverride({ cpuLoadPct: 90 }), // no cpuLoad5mPct key
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(2);
+    expect(result.measurements.cpuLoad5mPct).toBe(null);
+  });
+
   test('config without resource-thresholds → proceed with "missing" reason (defensive)', async () => {
     const config = { 'resource-awareness': true }; // no resource-thresholds key
     const result = await evaluateWaveResourceGate({

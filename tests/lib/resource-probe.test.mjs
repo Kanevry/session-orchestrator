@@ -57,6 +57,24 @@ describe('resource-probe', () => {
       expect(isValid(s.memory_pressure_pct_free)).toBe(true);
     }, 5000);
 
+    it('emits cpu_load_5m (number) and cpu_load_5m_pct (0..100 or null) — the #943 gate input', async () => {
+      // Bug this catches: probe() stops emitting the 5m fields → evaluate() and
+      // wave-resource-gate silently fall back to 1m-only judging forever, and
+      // the #943 transient-suppression is dead without any test going red.
+      // Reference real output (this host, 2026-07-31): loadavg [13.27, 14.31]
+      // on 18 cores → cpu_load_5m 14.3, cpu_load_5m_pct 79.
+      const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
+      expect(typeof s.cpu_load_5m).toBe('number');
+      const validPct = s.cpu_load_5m_pct === null
+        || (typeof s.cpu_load_5m_pct === 'number' && s.cpu_load_5m_pct >= 0 && s.cpu_load_5m_pct <= 100);
+      expect(validPct).toBe(true);
+      // On Unix hosts with any uptime the 5m average is > 0 → pct is numeric;
+      // null is the Windows/zero-load carve-out.
+      if (process.platform !== 'win32') {
+        expect(typeof s.cpu_load_5m_pct).toBe('number');
+      }
+    });
+
     it('probe_duration_ms is below 200 in the fast path', async () => {
       const s = await probe({ skipProcessCounts: true, skipExtendedSignals: true });
       expect(s.probe_duration_ms).toBeLessThan(200);
@@ -266,6 +284,63 @@ describe('resource-probe', () => {
       const result = evaluate(snap, DEFAULT_THRESHOLDS);
       expect(result.verdict).toBe('critical');
       expect(result.recommended_agents_per_wave_cap).toBe(0);
+    });
+  });
+
+  describe('evaluate() — CPU transient suppression via min(1m, 5m) (#943)', () => {
+    // Incident 2026-07-30 (pre-Wave-3 of a deep session): the gate read
+    // "CPU load 96% > max 80%" from the decaying 1m average of the coordinator's
+    // own just-finished Full Gate (813% CPU); re-measurements 12s apart read
+    // 96% → 91% → 78% → 75%. The 5m average smooths exactly that tail — a short
+    // burst never lifts it as far as the 1m (~2/5 for a 2-minute burst), so
+    // 1m ≫ 5m is the standard reachable post-burst state, verified against live
+    // probe() output (2026-07-31: loadavg [13.27, 14.31], 18 cores).
+    const baseSnapshot = {
+      ram_free_gb: 8,
+      ram_used_pct: 40,
+      cpu_load_1m: 17.3,
+      cpu_load_pct: 96,
+      claude_processes_count: 1,
+      codex_processes_count: 0,
+      other_node_processes: 5,
+      swap_used_mb: null,
+      memory_pressure_pct_free: null,
+    };
+
+    it('1m 96% but 5m 45% → green, no cap, informational transient reason', () => {
+      // Bug this catches: 1m-only judging caps the wave on the gate's own tail.
+      const snap = { ...baseSnapshot, cpu_load_5m_pct: 45 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+      expect(result.recommended_agents_per_wave_cap).toBe(null);
+      expect(result.reasons.some((r) => /decaying transient.*#943/.test(r))).toBe(true);
+    });
+
+    it('1m 96% AND 5m 92% → warn + cap=2 (sustained load, min above threshold)', () => {
+      // Bug this catches: blanket suppression whenever a 5m signal exists.
+      const snap = { ...baseSnapshot, cpu_load_5m_pct: 92 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('CPU load 92%') && r.includes('min of 1m 96% / 5m 92%'))).toBe(true);
+    });
+
+    it('1m 40% but 5m 95% (burst ended >1min ago) → green (min semantics, not max/5m-only)', () => {
+      // Bug this catches: judging on the 5m alone (or max) would cap a load
+      // that has already dropped.
+      const snap = { ...baseSnapshot, cpu_load_pct: 40, cpu_load_5m_pct: 95 };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('green');
+      expect(result.recommended_agents_per_wave_cap).toBe(null);
+      expect(result.reasons).toEqual([]);
+    });
+
+    it('cpu_load_5m_pct null (Windows/zero-load) → legacy 1m-only judging still warns', () => {
+      const snap = { ...baseSnapshot, cpu_load_5m_pct: null };
+      const result = evaluate(snap, DEFAULT_THRESHOLDS);
+      expect(result.verdict).toBe('warn');
+      expect(result.recommended_agents_per_wave_cap).toBe(2);
+      expect(result.reasons.some((r) => r.includes('CPU load 96% above threshold 80%'))).toBe(true);
     });
   });
 
