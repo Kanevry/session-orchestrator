@@ -9,6 +9,8 @@
  *  - Group C: resolveSemanticSessionId — backward-compat / mixed UUID + semantic
  *  - Group D: SEMANTIC_ID_RE and UUID_V4_RE regex validation
  *  - Group E: history-aware n-increment (#585) — sessions.jsonl + STATE.md sources
+ *  - Group F: events.jsonl mint-ledger source (#952)
+ *  - Group G: the sources[] extension point (#956)
  *
  * withStateMdLock is mocked to execute the callback synchronously without
  * acquiring any real lockfile, keeping the suite deterministic and fast.
@@ -37,8 +39,8 @@ import { join } from 'node:path';
 import {
   resolveSemanticSessionId,
   parseSessionId,
+  DEFAULT_SESSION_ID_SOURCES,
   SEMANTIC_ID_RE,
-  UUID_V4_RE,
 } from '@lib/session-id.mjs';
 
 // ---------------------------------------------------------------------------
@@ -247,24 +249,28 @@ describe('Group C — resolveSemanticSessionId: backward-compat and mixed', () =
 });
 
 // ---------------------------------------------------------------------------
-// Group D — regex validation (4 tests)
+// Group D — regex validation (2 tests)
+//
+// SEMANTIC_ID_RE is public API with a production consumer outside this module
+// (scripts/lib/autopilot/worktree-pipeline.mjs enterWorktree), so the direct
+// regex cases below earn their place. Only the DISCRIMINATING inputs remain:
+//
+//   REMOVED (TV-002b): 'SEMANTIC_ID_RE matches a canonical semantic id' and
+//   'UUID_V4_RE matches a valid UUID-v4'. Both were strictly weaker duplicates
+//   of Group A cases on the SAME input strings — Group A's first test parses
+//   'main-2026-05-27-deep-1' into all six fields (impossible unless the regex
+//   matches) and its UUID test parses '550e8400-…-446655440000' into
+//   format:'uuid' (impossible unless UUID_V4_RE matches). No mutation kills the
+//   removed pair while leaving Group A green.
 // ---------------------------------------------------------------------------
 
-describe('Group D — SEMANTIC_ID_RE and UUID_V4_RE regex validation', () => {
-  it('SEMANTIC_ID_RE matches a canonical semantic id', () => {
-    expect(SEMANTIC_ID_RE.test('main-2026-05-27-deep-1')).toBe(true);
-  });
-
+describe('Group D — SEMANTIC_ID_RE regex validation', () => {
   it('SEMANTIC_ID_RE matches a semantic id with leading zeros in n', () => {
     expect(SEMANTIC_ID_RE.test('main-2026-05-27-deep-001')).toBe(true);
   });
 
   it('SEMANTIC_ID_RE rejects uppercase characters', () => {
     expect(SEMANTIC_ID_RE.test('Main-2026-05-27-Deep-1')).toBe(false);
-  });
-
-  it('UUID_V4_RE matches a valid UUID-v4', () => {
-    expect(UUID_V4_RE.test('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
   });
 });
 
@@ -452,8 +458,12 @@ describe('Group E — history-aware n-increment (#585)', () => {
     expect(result).toBe('main-2026-05-27-deep-1');
   });
 
-  it('E8: consultHistory=false + consultStateMd=false → legacy behaviour (activeSessions only)', async () => {
-    // History + STATE.md BOTH have deep-1..deep-5, but opt-out flags ignore them.
+  it('E8: sources=[] → legacy behaviour (activeSessions only)', async () => {
+    // History + STATE.md BOTH have deep-1..deep-5, but the empty source array
+    // ignores them. (#956: the pre-refactor form was
+    // `history: { consultHistory: false, consultStateMd: false }` with
+    // consultEvents left ON — and no events.jsonl fixture, so it contributed
+    // nothing. `sources: []` is the exact same reachable state, stated honestly.)
     writeSessionsJsonl(repoRoot, [
       '{"session_id":"main-2026-05-27-deep-1","status":"closed"}',
       '{"session_id":"main-2026-05-27-deep-2","status":"closed"}',
@@ -467,7 +477,7 @@ describe('Group E — history-aware n-increment (#585)', () => {
       mode: 'deep',
       activeSessions: [],
       repoRoot,
-      history: { consultHistory: false, consultStateMd: false },
+      sources: [],
     });
 
     expect(result).toBe('main-2026-05-27-deep-1');
@@ -495,14 +505,16 @@ describe('Group E — history-aware n-increment (#585)', () => {
       for (let i = 0; i < len; i += 1) {
         historicalNs.push(1 + Math.floor(rand() * 1000)); // n in [1, 1000]
       }
-      const readHistoryImpl = async () =>
+      const historySource = async () =>
         historicalNs.map((n) => `${branch}-${today}-${mode}-${n}`);
       const id = await resolveSemanticSessionId({
         branch,
         mode,
         activeSessions: [],
         repoRoot,
-        history: { readHistoryImpl, consultStateMd: false },
+        // #956: a single stubbed source replaces the former
+        // `{ readHistoryImpl, consultStateMd: false }` DI pair.
+        sources: [historySource],
       });
       const parsed = parseSessionId(id);
       expect(parsed).not.toBeNull();
@@ -586,9 +598,18 @@ describe('Group F — events.jsonl mint-ledger source (#952)', () => {
     expect(result).toBe('main-2026-07-29-session-3');
   });
 
-  it('F2: same fixture with consultEvents=false re-mints the collision (session-2) — the ledger is load-bearing', async () => {
-    // Identical fixture to F1. The ONLY difference is the opt-out flag, so this
+  it('F2: same fixture without the events source re-mints the collision (session-2) — the ledger is load-bearing', async () => {
+    // Identical fixture to F1, and still the REAL readers for A/B/C — the ONLY
+    // difference is that source D is dropped from the default array, so this
     // pins that source D — not some incidental other change — is what lifts n.
+    // (#956: the pre-refactor form was `history: { consultEvents: false }`.)
+    const sourcesWithoutEvents = DEFAULT_SESSION_ID_SOURCES.filter(
+      (read) => read.name !== 'readSessionIdsFromEvents',
+    );
+    // Guard the filter itself: if the reader is ever renamed, the filter would
+    // silently drop nothing and this test would degrade into a copy of F1.
+    expect(sourcesWithoutEvents.length).toBe(DEFAULT_SESSION_ID_SOURCES.length - 1);
+
     writeSessionsJsonl(repoRoot, [
       '{"session_id":"main-2026-07-29-session-1","status":"closed"}',
       '{"session_id":"main-2026-07-29-deep-1","status":"closed"}',
@@ -601,7 +622,7 @@ describe('Group F — events.jsonl mint-ledger source (#952)', () => {
       mode: 'session',
       activeSessions: [],
       repoRoot,
-      history: { consultEvents: false },
+      sources: sourcesWithoutEvents,
     });
 
     expect(result).toBe('main-2026-07-29-session-2');
@@ -624,5 +645,71 @@ describe('Group F — events.jsonl mint-ledger source (#952)', () => {
     });
 
     expect(result).toBe('main-2026-07-29-session-3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group G — the sources[] extension point (#956)
+//
+// The nameable bug (TV-001): an implementation that keeps consulting its three
+// hardcoded readers and treats `sources` only as an opt-out MASK — or that
+// slices the array down to the built-in count — silently ignores any source a
+// caller ADDS. Every other test in this file passes either the default array,
+// a SHORTER array (E8, F2) or a REPLACEMENT of equal-or-smaller size (E9), so
+// that mutant survives the entire suite. This case is the only one that fails
+// it, and it is exactly the claim #956 makes: a fifth source costs zero new
+// interface elements.
+// ---------------------------------------------------------------------------
+
+describe('Group G — sources[] extension point (#956)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-27T12:00:00Z'));
+  });
+
+  it('G1: a caller-supplied FOURTH source is read and lifts n (defaults + extra)', async () => {
+    // Fresh repoRoot: the three default readers all find nothing → n=1.
+    const baseline = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+    });
+
+    expect(baseline).toBe('main-2026-05-27-deep-1');
+
+    // A hypothetical fifth source (e.g. a future cross-host ledger). It is
+    // appended to the default set — nothing else about the call changes.
+    const extraSource = async () => ['main-2026-05-27-deep-41'];
+
+    const extended = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+      sources: [...DEFAULT_SESSION_ID_SOURCES, extraSource],
+    });
+
+    // max over the UNION: the extra source alone lifts n from 1 to 41 → 42.
+    expect(extended).toBe('main-2026-05-27-deep-42');
+  });
+
+  it('G2: a source that rejects is swallowed — the remaining sources still decide n', async () => {
+    // Fail-open contract: one bad reader must never block the mint. Without the
+    // per-source catch this call rejects instead of returning deep-8.
+    const throwingSource = async () => {
+      throw new Error('simulated reader failure');
+    };
+    const goodSource = async () => ['main-2026-05-27-deep-7'];
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+      sources: [throwingSource, goodSource],
+    });
+
+    expect(result).toBe('main-2026-05-27-deep-8');
   });
 });

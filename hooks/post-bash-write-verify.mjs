@@ -539,31 +539,108 @@ function readDirtyPaths(repoRoot) {
 }
 
 /**
- * Milliseconds since the current session started, or null when unknown.
+ * Age in ms of one session clock: a JSON file carrying an ISO start timestamp.
  *
- * Source is `.orchestrator/current-session.json` `timestamp`, written once per
- * session by `hooks/on-session-start.mjs`. Two properties make it the right
- * clock here: it is `.gitignore`d AND on this hook's own ignore list, so
- * reading it can never turn into reporting it; and it is untouched by any write
- * to wave-scope.json, which is exactly the evasion the scope-mtime clock lost
- * to (#945).
+ * Never throws. Absent / unparseable / non-string / non-ISO ⇒ null. A NEGATIVE
+ * age (timestamp in the future) is also null rather than a negative number —
+ * see `sessionAgeMs` for why that matters once two clocks are combined.
  *
- * Never throws. Absent / unparseable / non-numeric ⇒ null ⇒ silence.
+ * @param {string} file  absolute path to the JSON file
+ * @param {string} field name of the ISO-timestamp property
+ * @param {number} now
+ * @returns {number|null}
+ */
+function clockAgeMs(file, field, now) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    const startedAt = Date.parse(parsed?.[field]);
+    if (!Number.isFinite(startedAt)) return null;
+    const age = now - startedAt;
+    return age >= 0 ? age : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Milliseconds since the current session started, or null when unknown — the
+ * MINIMUM of two independently-written session clocks (#957 finding 2):
+ *
+ *   - `.orchestrator/current-session.json` `timestamp`, written once per
+ *     session by `hooks/on-session-start.mjs`;
+ *   - `.orchestrator/session.lock` `started_at`, written by session-start
+ *     Phase 1.2 via `scripts/lib/session-lock.mjs` `acquire()`.
+ *
+ * Both share the two properties that make them the right clocks here: each is
+ * `.gitignore`d AND on this hook's own ignore list (see IGNORED_PATH_PATTERNS),
+ * so reading one can never turn into reporting it; and neither is touched by
+ * any write to wave-scope.json, which is exactly the evasion the scope-mtime
+ * clock lost to (#945).
+ *
+ * ## Why the minimum, and why NOT a staleness cap
+ *
+ * A single clock reads an age of HOURS whenever its file is a leftover from a
+ * previous session on a harness that never rewrote it — firing the lost-snapshot
+ * notice on the first Bash call of a session seconds old. The obvious repair, a
+ * hard "ignore ages above N hours" cap, is the wrong one: it blinds the guard
+ * in precisely the regime it was built for (its own docblock names "a mid-session
+ * `rm -f` sits hours after session start"), so a legitimate long deep session
+ * ages into the blind spot with no attacker action at all — and it converts a
+ * one-sided threshold into a two-sided one, giving a forged timestamp two
+ * winning ranges instead of one.
+ *
+ * `Math.min` fixes the leftover-file case: a session that actually started
+ * acquired a FRESH `session.lock`, so the stale clock is outvoted by the young
+ * one ⇒ silence. After 14 h of a genuine deep session both clocks read 14 h ⇒
+ * the notice fires.
+ *
+ * ## What min() actually costs an attacker (#957/F2 — corrected)
+ *
+ * The notice fires only ABOVE the threshold (`sessionAge >
+ * SESSION_AGE_SUSPICION_MS`), so silence is bought by a YOUNG value, not an old
+ * one. min() therefore narrows the FIRING set (it now takes BOTH clocks reading
+ * old) and correspondingly WIDENS the forgeable target set: a young value in
+ * EITHER file suffices. The price is still one forgery — but the attacker now
+ * chooses which of two files to write, where before there was one. (`max()` is
+ * the operator that would cost two forgeries; it was not chosen, because it
+ * re-admits the leftover-file false positive this change exists to remove. An
+ * earlier draft of this docblock asserted the min() variant cost two — it does
+ * not.) Both files are `.gitignore`d and unwritable-by-convention rather than
+ * by permission, so this is a real widening, judged an acceptable trade against
+ * a guard that otherwise cried wolf on the first Bash call of every session.
+ *
+ * KNOWN SILENCE RANGE (non-adversarial): `acquire()` writes a fresh `started_at`
+ * only when no lock is present — it classifies and returns when one exists
+ * (`scripts/lib/session-lock.mjs`), while `forceAcquire()` overwrites
+ * unconditionally. A session that released and re-acquired, or took over a stale
+ * lock, therefore carries a YOUNG `started_at` against an OLD
+ * `current-session.json`; min() picks the young one and the sessionAge clock
+ * stays blind for the rest of that session however long it runs. Contrary to an
+ * earlier claim here, this change DOES create a new silence range — just not an
+ * adversarial one.
+ *
+ * If that range proves load-bearing, the follow-up worth considering is
+ * per-clock evaluation (fire when ANY clock reads old AND is corroborated)
+ * rather than a single combined age. That is a behaviour change, not a
+ * documentation one, and is deliberately NOT made here.
+ *
+ * Negative ages are dropped rather than kept (see `clockAgeMs`): without that,
+ * a single timestamp in the FUTURE would win the min() and silence the notice
+ * unboundedly — a strictly worse range than the two above.
+ *
+ * Never throws. No clock readable ⇒ null ⇒ silence.
  *
  * @param {string} repoRoot
  * @param {number} [now]
  * @returns {number|null}
  */
 export function sessionAgeMs(repoRoot, now = Date.now()) {
-  try {
-    const raw = readFileSync(path.join(repoRoot, '.orchestrator', 'current-session.json'), 'utf8');
-    const parsed = JSON.parse(raw);
-    const startedAt = Date.parse(parsed?.timestamp);
-    if (!Number.isFinite(startedAt)) return null;
-    return now - startedAt;
-  } catch {
-    return null;
-  }
+  const dir = path.join(repoRoot, '.orchestrator');
+  const ages = [
+    clockAgeMs(path.join(dir, 'current-session.json'), 'timestamp', now),
+    clockAgeMs(path.join(dir, 'session.lock'), 'started_at', now),
+  ].filter((age) => age !== null);
+  return ages.length > 0 ? Math.min(...ages) : null;
 }
 
 /** @returns {object|null} */

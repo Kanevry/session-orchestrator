@@ -18,8 +18,9 @@
  *        token_input / token_output on stdin — they must be extracted from the
  *        transcript's per-assistant-turn `message.usage` blocks, deduped by
  *        requestId keeping the LAST block per id (streaming snapshots repeat the
- *        same requestId ~4-5×, and only the last one is complete — see
- *        extractTranscriptUsage()).
+ *        same requestId a median of 2× — p90 4, max 22, measured 2026-07-31 —
+ *        and only the last one is complete; see extractTranscriptUsage() for the
+ *        measurement and the per-field inflation it causes).
  *        `transcript_path` on stdin points at the PARENT session transcript, so
  *        the subagent's path is DERIVED from it — see resolveSubagentTranscriptPath().
  *   5. Build canonical record and call appendSubagent().
@@ -66,7 +67,9 @@
  * snapshot (typically `output_tokens: 1`). Any record written before #950 —
  * including one already reading its own subagent transcript — therefore
  * understates token_output by roughly the ratio of first-chunk to final size
- * (~145x on the measured agent, 5.3x summed fleet-wide). token_input is
+ * (~145x on the measured agent; ~10x summed over this repo's transcript corpus —
+ * an earlier "5.3x" here did not reproduce, see extractTranscriptUsage()'s
+ * corpus block for the command and the re-measurement). token_input is
  * unaffected: it is constant across a request's snapshots.
  *
  * Exit codes: 0 always (informational, never blocking).
@@ -149,8 +152,41 @@ function readStdinJson() {
  * `{"type":"assistant"}` line carries a `message.usage` block with
  * `{ input_tokens, output_tokens, ... }`. Streaming snapshots repeat the SAME
  * `requestId` across consecutive assistant lines, so a naive Σ over every line
- * double-counts (observed ~4-5× on real transcripts). The correct recipe is to
- * group by `requestId`, keep ONE usage block per id — the LAST — then sum.
+ * double-counts — by a factor that depends on the FIELD, which is why no single
+ * scalar belongs here. The repeats are cumulative, so re-adding them inflates
+ * `input_tokens` (identical in every snapshot, hence re-added once per repeat)
+ * far more than `output_tokens` (the early snapshots are near-empty and add
+ * almost nothing). Measured 2026-07-31 over this repo's own subagent transcripts
+ * (552 files / 13,609 requestId groups): naive Σ vs this function's dedup is
+ * 3.593× on token_input and 1.014× on token_output. On one named transcript,
+ * agent a60348a01ca982b4c (25 usage blocks / 7 groups): 3.57× and
+ * 1.02×. Snapshots per requestId are mean 2.43 · p50 2 · p90 4 · p99 6 · max 22
+ * — the retired "~4-5×" figure sat near that p90 REPEAT COUNT and was never a
+ * token ratio at all.
+ *
+ *   d="$HOME/.claude/projects/$(pwd | tr '/.' '-')" node -e '
+ *     const fs=require("node:fs"),{execSync}=require("node:child_process");
+ *     const F=execSync(`find ${process.env.d} -path "*subagents*" -name "agent-*.jsonl"`,
+ *       {maxBuffer:1<<30}).toString().trim().split("\n").filter(Boolean);
+ *     const add=(a,u)=>{const i=u.input_tokens,o=u.output_tokens;
+ *       if(Number.isInteger(i)&&i>=0)a.in+=i;if(Number.isInteger(o)&&o>=0)a.out+=o;};
+ *     let n={in:0,out:0},D={in:0,out:0},g=0;
+ *     for(const f of F){const b=new Map();
+ *       for(const l of fs.readFileSync(f,"utf8").split("\n")){
+ *         const t=l.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch{continue}
+ *         if(o?.type!=="assistant"||!o.message?.usage||!o.requestId)continue;
+ *         add(n,o.message.usage);b.set(o.requestId,o.message.usage);}
+ *       g+=b.size;for(const u of b.values())add(D,u);}
+ *     console.log(JSON.stringify({files:F.length,groups:g,naive:n,dedup:D,
+ *       ratio_input:+(n.in/D.in).toFixed(3),ratio_output:+(n.out/D.out).toFixed(3)}));'
+ *
+ *   {"files":552,"groups":13609,"naive":{"in":9112051,"out":12244723},
+ *    "dedup":{"in":2536215,"out":12077245},"ratio_input":3.593,"ratio_output":1.014}
+ *
+ * Same live-corpus caveat as the block below: two consecutive runs reproduced
+ * both ratios to three decimals while `groups` grew 13591 → 13609, so the ratios
+ * are the durable part and the totals are not. The correct recipe is to group by
+ * `requestId`, keep ONE usage block per id — the LAST — then sum.
  *
  * Why the LAST and not the first (#950). The repeated blocks are not copies: they
  * are CUMULATIVE snapshots of one in-flight response, and the early ones are
@@ -229,12 +265,52 @@ function readStdinJson() {
  * null). Without per-turn clamping, a final `Number.isInteger(sum) && sum >= 0`
  * aggregate check would nuke the whole input sum to null on one bad value.
  *
- * Dedup assumption (#624): the streaming harness always supplies a `requestId` on
- * assistant turns, so dedup keys on it. A turn with NO requestId is counted
- * individually (no dedup) — this is the documented forward-compat fallback, not a
- * double-count, because the harness never omits requestId in practice. Unkeyed
- * turns are therefore NOT subject to the last-wins collapse: each one is its own
- * turn, not another snapshot of a shared one.
+ * Dedup assumption (#624) — REFUTED AS STATED, measured 2026-07-31. Dedup keys on
+ * `requestId`; a turn without one is counted individually (no dedup). That was
+ * documented as an inert forward-compat fallback rather than a double-count,
+ * "because the harness never omits requestId in practice". Over this repo's own
+ * subagent transcripts that premise is false: 4,684 of 37,771 assistant usage
+ * blocks (12.4%), across 32 of 552 files, carry usage with NO requestId — every
+ * one of them from a non-Anthropic model routed through the same harness
+ * (`gpt-5.6-sol` 4,680, `<synthetic>` 4). They are streaming snapshots, not
+ * distinct turns: those 4,684 blocks collapse to 876 distinct `message.id`
+ * values, so summing them individually — what the loop below does — inflates
+ * their contribution 2.55× on input and 1.84× on output versus a `message.id`
+ * dedup.
+ *
+ *   d="$HOME/.claude/projects/$(pwd | tr '/.' '-')" node -e '
+ *     const fs=require("node:fs"),{execSync}=require("node:child_process");
+ *     const F=execSync(`find ${process.env.d} -path "*subagents*" -name "agent-*.jsonl"`,
+ *       {maxBuffer:1<<30}).toString().trim().split("\n").filter(Boolean);
+ *     const add=(a,u)=>{const i=u.input_tokens,o=u.output_tokens;
+ *       if(Number.isInteger(i)&&i>=0)a.in+=i;if(Number.isInteger(o)&&o>=0)a.out+=o;};
+ *     let blocks=0,unkeyed=0,asIs={in:0,out:0},byMid={in:0,out:0},ids=new Set(),files=new Set();
+ *     const models=new Map();
+ *     for(const f of F){const m=new Map();
+ *       for(const l of fs.readFileSync(f,"utf8").split("\n")){
+ *         const t=l.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch{continue}
+ *         if(o?.type!=="assistant"||!o.message?.usage)continue;
+ *         blocks++;if(o.requestId)continue;
+ *         unkeyed++;files.add(f);add(asIs,o.message.usage);
+ *         models.set(o.message.model,(models.get(o.message.model)||0)+1);
+ *         m.set(o.message.id,o.message.usage);}
+ *       for(const [k,u] of m){ids.add(f+k);add(byMid,u);}}
+ *     console.log(JSON.stringify({blocks,unkeyed,files:files.size,ofFiles:F.length,
+ *       messageIds:ids.size,asIs,byMessageId:byMid,
+ *       inflation_input:+(asIs.in/byMid.in).toFixed(2),
+ *       inflation_output:+(asIs.out/byMid.out).toFixed(2),models:[...models]}));'
+ *
+ *   {"blocks":37771,"unkeyed":4684,"files":32,"ofFiles":552,"messageIds":876,
+ *    "asIs":{"in":15320791,"out":1241596},"byMessageId":{"in":6011144,"out":674105},
+ *    "inflation_input":2.55,"inflation_output":1.84,
+ *    "models":[["gpt-5.6-sol",4680],["<synthetic>",4]]}
+ *
+ * The unkeyed branch is therefore a LIVE double-count on those 32 transcripts,
+ * not the inert fallback it was documented as. It is left as-is deliberately:
+ * re-keying the fallback on `message.id` is a behaviour change beyond the scope
+ * of the documentation pass that measured it (GitLab #958 follow-up). Records
+ * from Anthropic-model transcripts are unaffected — every one of them carried a
+ * requestId in this corpus.
  *
  * Partial-usage assumption (#624): a turn carrying `input_tokens` but no
  * `output_tokens` (or vice-versa) contributes 0 to the absent side — NOT null —
@@ -264,7 +340,12 @@ function extractTranscriptUsage(transcriptPath) {
 
     /** requestId -> the LAST usage block seen for it (#950). */
     const byRequestId = new Map();
-    /** Usage blocks from turns with no requestId — each is its own turn. */
+    /**
+     * Usage blocks from turns with no requestId. Each is counted as its own turn
+     * — which measurably double-counts on non-Anthropic-model transcripts, where
+     * the snapshots carry `message.id` but no requestId (see the Dedup-assumption
+     * block above for the 2026-07-31 measurement and the #958 follow-up).
+     */
     const unkeyed = [];
 
     for (const line of lines) {

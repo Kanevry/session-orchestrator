@@ -9,6 +9,43 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * THE canonical predicate for "this line opens the `## Session Config` block".
+ *
+ * Exported (#959 follow-up) because this repo previously carried FIVE
+ * independent copies of this fact, and the loosest of them —
+ * `scripts/lib/claude-md-budget-lint.mjs` — was the module whose whole job is
+ * to MEASURE the block. That asymmetry was not academic: the lint accepted a
+ * heading decorated with a trailing HTML comment (`## Session Config <!-- … -->`,
+ * a decoration this repo's own convention encourages on sibling headings),
+ * while `_extractConfigSection` below rejected it. An author following the
+ * cited convention therefore got a CLAUDE.md (or AGENTS.md on Codex CLI —
+ * transparent aliases, see skills/_shared/instruction-file-resolution.md)
+ * whose every runtime config key
+ * silently fell back to its default, while the lint simultaneously reported
+ * "148 exempt: '## Session Config'" — the instrument affirming the block is
+ * present and runtime-critical at the exact moment the runtime cannot see it.
+ *
+ * The invariant this export exists to hold: **no consumer's predicate may
+ * accept a heading this one rejects.** Importing beats re-deriving; a copy
+ * that drifts loose is worse than no check at all.
+ *
+ * Intentionally EXACT (not a fuzzy regex) apart from CRLF tolerance — it is
+ * the literal comparison `_extractConfigSection` has always used, merely
+ * given a name. `##  Session Config` (two spaces), a trailing HTML comment,
+ * and `## Session Config Convention` are all correctly rejected.
+ *
+ * Dependency note: this module imports NOTHING. Keep it that way — the budget
+ * lint consumes this predicate at bootstrap-scaffold time, before
+ * `.claude/rules/` (or most of the repo) exists.
+ *
+ * @param {string} line - a single line, with or without a trailing '\r'.
+ * @returns {boolean}
+ */
+export function isSessionConfigHeading(line) {
+  return typeof line === 'string' && line.replace(/\r$/, '') === '## Session Config';
+}
+
+/**
  * Extract the raw ## Session Config block lines from markdown content.
  * - CRLF-tolerant
  * - Skips code fence lines (``` alone on a line)
@@ -24,7 +61,7 @@ export function _extractConfigSection(content) {
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
 
-    if (line === '## Session Config') {
+    if (isSessionConfigHeading(line)) {
       inSection = true;
       continue;
     }

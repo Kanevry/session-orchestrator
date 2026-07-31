@@ -76,6 +76,11 @@
           },
           {
             "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-sessions-ledger-guard.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-templates-first.mjs\"",
             "timeout": 5
           },

@@ -20,6 +20,7 @@ import { join } from 'node:path';
 
 import {
   DEFAULT_STORE_PATH,
+  buildCandidate,
   makeCandidateId,
   loadCandidates,
   isProcessed,
@@ -76,18 +77,100 @@ describe('makeCandidateId', () => {
   });
 });
 
+describe('buildCandidate', () => {
+  // TV-001 — the bug: `buildCandidate` mints the records that `mergeCandidates`
+  // persists, and `readStore`'s shape guard rejects anything without BOTH
+  // `learning_key` and `created_at`. Producer and guard now live in this one
+  // file, so a field renamed/dropped on one side would silently quarantine every
+  // record the engine writes — a full run vanishing on the next merge, with the
+  // banner then reporting "never". No existing test round-trips the constructor
+  // through the guard: the engine tests stub the merge seam, and every store test
+  // here hand-writes its fixture instead of building one.
+  it('produces a record that survives the store shape guard (producer ↔ guard round-trip)', () => {
+    const built = buildCandidate({
+      id: makeCandidateId('anti-pattern/foo', 'anti-pattern-foo-1234567'),
+      learningKey: 'anti-pattern/foo',
+      slug: 'anti-pattern-foo-1234567',
+      status: 'proposed',
+      reason: 'reconciliation engine proposed a conditional rule',
+      confidence: 0.9,
+      createdAt: '2026-07-31T00:00:00.000Z',
+    });
+
+    const result = mergeCandidates({ candidates: [built], storePath });
+    expect(result.written).toBe(true);
+    expect(result.skipped).toBe(0);
+    expect(loadCandidates({ storePath })).toEqual({
+      records: [built],
+      skipped: 0,
+    });
+  });
+
+  it('coerces a null learningKey (rejection path) to the empty string', () => {
+    expect(
+      buildCandidate({
+        id: 'rc-dead0000',
+        learningKey: null,
+        slug: '',
+        status: 'rejected',
+        reason: 'ineligible',
+        confidence: 0,
+        createdAt: '2026-07-31T00:00:00.000Z',
+      }),
+    ).toEqual({
+      id: 'rc-dead0000',
+      schema_version: 1,
+      learning_key: '',
+      slug: '',
+      status: 'rejected',
+      reason: 'ineligible',
+      confidence: 0,
+      created_at: '2026-07-31T00:00:00.000Z',
+      processed_at: null,
+      superseded_by: null,
+    });
+  });
+});
+
 describe('loadCandidates', () => {
-  it('returns an empty array for a missing file (no throw)', () => {
-    expect(loadCandidates({ storePath: join(tmpDir, 'does-not-exist.jsonl') })).toEqual([]);
+  // TV-001 — the bug (GitLab #955 finding 2): a reader that returns only the
+  // array cannot distinguish a MISSING store from one whose every line failed
+  // the shape guard. `reconcile-nudge-banner.mjs` read it that way and reported
+  // "last reconcile run: never" for a store holding 40 quarantined rows —
+  // denying a run whose record was merely unreadable. `skipped` is what
+  // separates them, and it is now on THE reader, not on a longer-named sibling
+  // the next consumer would not reach for.
+  // TV-003 consolidation: the former "returns an empty array for a missing file"
+  // case is folded in here — the missing-store half below asserts strictly more
+  // (`{records: [], skipped: 0}` vs `[]`) over the same input.
+  it('separates a contaminated store from an empty one (both yield records: [])', () => {
+    const foreignPath = join(tmpDir, 'contaminated.jsonl');
+    const foreign = JSON.stringify({ candidate_id: 'rc-1', generated_at: '2026-07-31T07:09:33.905Z', status: 'candidate' });
+    writeFileSync(foreignPath, `${foreign}\n${foreign}\nnot json at all\n`, 'utf8');
+
+    expect(loadCandidates({ storePath: foreignPath })).toEqual({ records: [], skipped: 3 });
+    expect(loadCandidates({ storePath: join(tmpDir, 'missing.jsonl') })).toEqual({
+      records: [],
+      skipped: 0,
+    });
+  });
+
+  it('is read-only — the skipped lines are still on disk afterwards (unlike mergeCandidates)', () => {
+    const foreign = JSON.stringify({ candidate_id: 'rc-1', generated_at: '2026-07-31T07:09:33.905Z' });
+    writeFileSync(storePath, `${foreign}\n`, 'utf8');
+
+    expect(loadCandidates({ storePath }).skipped).toBe(1);
+    expect(loadCandidates({ storePath }).skipped).toBe(1);
   });
 
   it('skips a malformed line and returns the valid records (no throw)', () => {
     const valid = JSON.stringify(candidate({ learning_key: 'fragile-pattern/zx-imports' }));
     writeFileSync(storePath, `${valid}\nthis is not json\n`, 'utf8');
 
-    const loaded = loadCandidates({ storePath });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].learning_key).toBe('fragile-pattern/zx-imports');
+    const { records, skipped } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('fragile-pattern/zx-imports');
+    expect(skipped).toBe(1);
   });
 
   // TV-001 — the bug this catches, which the rest of the suite lets through:
@@ -125,16 +208,18 @@ describe('loadCandidates', () => {
     const valid = candidate({ learning_key: 'fragile-pattern/zx-imports' });
     writeFileSync(storePath, `${JSON.stringify(foreign)}\n${JSON.stringify(valid)}\n`, 'utf8');
 
-    // Read side: the foreign record never reaches a consumer.
+    // Read side: the foreign record never reaches a consumer, and the drop is
+    // reported on the reader itself.
     const loaded = loadCandidates({ storePath });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].learning_key).toBe('fragile-pattern/zx-imports');
+    expect(loaded.records).toHaveLength(1);
+    expect(loaded.records[0].learning_key).toBe('fragile-pattern/zx-imports');
+    expect(loaded.skipped).toBe(1);
 
     // Write side: the drop is reported, not silent, and the store is purged of it.
     const result = mergeCandidates({ candidates: [], storePath });
     expect(result.skipped).toBe(1);
     expect(result.merged.map((r) => r.learning_key)).toEqual(['fragile-pattern/zx-imports']);
-    expect(loadCandidates({ storePath })).toHaveLength(1);
+    expect(loadCandidates({ storePath })).toEqual({ records: loaded.records, skipped: 0 });
   });
 });
 
@@ -143,9 +228,9 @@ describe('mergeCandidates', () => {
     const result = mergeCandidates({ candidates: [candidate()], storePath });
     expect(result.written).toBe(true);
 
-    const loaded = loadCandidates({ storePath });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({
+    const { records } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
       learning_key: 'fragile-pattern/zx-imports',
       status: 'proposed',
       confidence: 0.8,
@@ -156,10 +241,10 @@ describe('mergeCandidates', () => {
     mergeCandidates({ candidates: [candidate({ id: 'rc-old', reason: 'first' })], storePath });
     mergeCandidates({ candidates: [candidate({ id: 'rc-new', reason: 'second' })], storePath });
 
-    const loaded = loadCandidates({ storePath });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].id).toBe('rc-new');
-    expect(loaded[0].reason).toBe('second');
+    const { records } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe('rc-new');
+    expect(records[0].reason).toBe('second');
   });
 
   it('does not overwrite a processed candidate when a new same-key candidate is merged', () => {
@@ -169,29 +254,24 @@ describe('mergeCandidates', () => {
     });
     mergeCandidates({ candidates: [candidate({ id: 'rc-new', processed_at: null })], storePath });
 
-    const loaded = loadCandidates({ storePath });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].id).toBe('rc-done');
-    expect(loaded[0].processed_at).toBe('2026-06-21T12:00:00.000Z');
+    const { records } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe('rc-done');
+    expect(records[0].processed_at).toBe('2026-06-21T12:00:00.000Z');
   });
 });
 
 describe('isProcessed', () => {
-  it('returns true when existing holds the same learning_key with a terminal processed_at', () => {
+  // TV-003 consolidation: the three former cases shared one setup and differed
+  // only in the existing record's (learning_key, processed_at) pair — merged into
+  // a table with no assertion lost. isProcessed is true iff BOTH halves match.
+  it.each([
+    ['same key + terminal processed_at', 'fragile-pattern/zx-imports', '2026-06-21T12:00:00.000Z', true],
+    ['same key but still live', 'fragile-pattern/zx-imports', null, false],
+    ['different key, terminal', 'anti-pattern/other', '2026-06-21T12:00:00.000Z', false],
+  ])('%s → %s', (_label, existingKey, processedAt, expected) => {
     const cand = candidate({ learning_key: 'fragile-pattern/zx-imports' });
-    const existing = [candidate({ learning_key: 'fragile-pattern/zx-imports', processed_at: '2026-06-21T12:00:00.000Z' })];
-    expect(isProcessed(cand, existing)).toBe(true);
-  });
-
-  it('returns false when the matching existing candidate is still live (processed_at null)', () => {
-    const cand = candidate({ learning_key: 'fragile-pattern/zx-imports' });
-    const existing = [candidate({ learning_key: 'fragile-pattern/zx-imports', processed_at: null })];
-    expect(isProcessed(cand, existing)).toBe(false);
-  });
-
-  it('returns false when no existing candidate shares the learning_key', () => {
-    const cand = candidate({ learning_key: 'fragile-pattern/zx-imports' });
-    const existing = [candidate({ learning_key: 'anti-pattern/other', processed_at: '2026-06-21T12:00:00.000Z' })];
-    expect(isProcessed(cand, existing)).toBe(false);
+    const existing = [candidate({ learning_key: existingKey, processed_at: processedAt })];
+    expect(isProcessed(cand, existing)).toBe(expected);
   });
 });

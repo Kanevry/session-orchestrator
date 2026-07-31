@@ -2,8 +2,9 @@
  * session-id.mjs — Semantic session-ID generation and dual-format parsing.
  *
  * Public API:
- *   - resolveSemanticSessionId({ branch, mode, activeSessions, repoRoot, history }): Promise<string>
+ *   - resolveSemanticSessionId({ branch, mode, activeSessions, repoRoot, sources }): Promise<string>
  *   - parseSessionId(id): { format: 'semantic'|'uuid', ...fields, raw } | null
+ *   - DEFAULT_SESSION_ID_SOURCES — the default `sources` array (see below)
  *   - SEMANTIC_ID_RE — source-of-truth regex for semantic session IDs
  *   - UUID_V4_RE     — regex for UUID-v4 format session IDs
  *
@@ -25,11 +26,14 @@
  *      3. STATE.md frontmatter `session:` (last-resort survivor of crashed sessions).
  *      4. events.jsonl `orchestrator.session.lock.acquired` (#952 Teil B —
  *         append-only mint-ledger; the only source written at CLAIM time).
- *    Sources 2-4 are read inside the existing withStateMdLock so their
- *    visibility is consistent with the n-claim that follows. All are opt-out
- *    via opts.history.{consultHistory,consultStateMd,consultEvents} and
- *    DI-overridable via
- *    opts.history.{readHistoryImpl,readStateMdSessionImpl,readEventsImpl} for tests.
+ *    Sources 2-4 are DEFAULT_SESSION_ID_SOURCES — deferred readers invoked
+ *    inside the existing withStateMdLock, so their visibility is consistent
+ *    with the n-claim that follows. They are configured through the single
+ *    `opts.sources` array (#956): opting out is passing a shorter array,
+ *    overriding is passing your own reader, and adding a fifth source costs
+ *    no new interface element. Source 1 stays a separate parameter — it is
+ *    already-resolved data gathered BEFORE the lock, so it is deliberately
+ *    not disguised as a deferred, lock-covered reader.
  *  - Reader helpers never throw: missing files, malformed JSONL lines, and
  *    unparseable frontmatter are all treated as "no signal" (empty/null).
  *  - Production code is silent: no console.log, no console.warn.
@@ -285,9 +289,52 @@ async function readSessionIdFromStateMd(repoRoot) {
   return typeof sessionField === 'string' ? sessionField : null;
 }
 
+/**
+ * Shape adapter for the STATE.md source.
+ *
+ * STATE.md has exactly ONE `session:` slot, so its reader naturally returns
+ * `string|null` while every other source returns `string[]`. This adapter
+ * normalises it to the uniform source signature `(repoRoot) => Promise<string[]>`,
+ * which is what lets `sources` be a single homogeneous array. Before #956 the
+ * mismatch was special-cased twice at the merge site (a `.catch(() => null)`
+ * that differed from its siblings, plus a `stateMdId !== null` spread guard).
+ *
+ * @param {string} repoRoot
+ * @returns {Promise<string[]>}  `[]` when absent/unreadable, else `[sessionId]`.
+ */
+async function readSessionIdsFromStateMd(repoRoot) {
+  const id = await readSessionIdFromStateMd(repoRoot);
+  return id === null ? [] : [id];
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * The default `sources` array for {@link resolveSemanticSessionId} — the three
+ * on-disk candidate-ID readers, in the order they were introduced:
+ *
+ *   1. `readSessionIdsFromHistory`   — `.orchestrator/metrics/sessions.jsonl` (#585)
+ *   2. `readSessionIdsFromStateMd`   — STATE.md frontmatter `session:`        (#585)
+ *   3. `readSessionIdsFromEvents`    — `.orchestrator/metrics/events.jsonl`   (#952)
+ *
+ * Order is irrelevant to the result: aggregation is `max` over the UNION of all
+ * sources, so it is commutative and monotone — an additional source can only
+ * raise `n`, never lower it.
+ *
+ * Exported so callers can derive from it rather than restate it:
+ *   - add a source:  `sources: [...DEFAULT_SESSION_ID_SOURCES, myReader]`
+ *   - drop a source: `sources: DEFAULT_SESSION_ID_SOURCES.filter(s => s !== …)`
+ *   - legacy mode:   `sources: []` (activeSessions only)
+ *
+ * @type {ReadonlyArray<(repoRoot: string) => Promise<string[]>>}
+ */
+export const DEFAULT_SESSION_ID_SOURCES = Object.freeze([
+  readSessionIdsFromHistory,
+  readSessionIdsFromStateMd,
+  readSessionIdsFromEvents,
+]);
 
 /**
  * Parse a session ID string into a structured object.
@@ -349,12 +396,12 @@ export function parseSessionId(id) {
  *
  *   Sources consulted (all merged into a single candidate set):
  *     A. opts.activeSessions  — live sessions (lockfiles + host-wide registry).
- *     B. sessions.jsonl       — closed-session history (opt-out via opts.history.consultHistory=false).
- *     C. STATE.md `session:`  — last-resort survivor (opt-out via opts.history.consultStateMd=false).
- *     D. events.jsonl         — mint ledger, written at CLAIM time
- *                               (opt-out via opts.history.consultEvents=false).
+ *     B. sessions.jsonl       — closed-session history.
+ *     C. STATE.md `session:`  — last-resort survivor.
+ *     D. events.jsonl         — mint ledger, written at CLAIM time.
  *
- *   Defaults for B, C and D are ON — historically only source A was consulted,
+ *   B, C and D are `opts.sources` (default: DEFAULT_SESSION_ID_SOURCES, i.e.
+ *   all three ON) — historically only source A was consulted,
  *   which caused n to reset to 1 once the previous session deregistered itself
  *   (root-cause of duplicate-ID incidents documented in #585).
  *
@@ -366,7 +413,7 @@ export function parseSessionId(id) {
  *   minted twice, 7h57m apart. D would have yielded maxN=2 → `session-3`.
  *
  * Concurrency safety (PSA-005):
- *   All four reads and the n-claim are wrapped in `withStateMdLock` so two
+ *   All `sources` reads and the n-claim are wrapped in `withStateMdLock` so two
  *   concurrent preambles in parallel worktrees observe a consistent view and
  *   cannot assign the same n. The #952 collision was NOT a concurrency defect —
  *   the lock held; the candidate set was incomplete.
@@ -383,26 +430,27 @@ export function parseSessionId(id) {
  * @param {Array<{sessionId: string}>} [opts.activeSessions=[]] - Active sessions
  *   array from session-discovery. Each element must have a `.sessionId` string.
  *   Defaults to an empty array when omitted or undefined.
+ *   Deliberately NOT part of `sources`: it is `{sessionId}` objects rather than
+ *   strings, and it is already-resolved data gathered BEFORE the call (see
+ *   `hooks/on-session-start.mjs` `deriveSemanticCandidate`), so it is the one
+ *   source NOT covered by the lock's consistent-read guarantee. Wrapping it as
+ *   `async () => data` would hide both facts.
  * @param {string} [opts.repoRoot] - Absolute path to the repo root. Used by
- *   `withStateMdLock`, the sessions.jsonl reader, and the STATE.md reader.
+ *   `withStateMdLock` and passed to every entry of `sources`.
  *   Defaults to `process.cwd()` when omitted.
- * @param {object} [opts.history] - Opt-out + DI controls for the history-aware
- *   sources introduced in #585. All fields optional.
- * @param {boolean} [opts.history.consultHistory=true] - When false, the
- *   sessions.jsonl reader is skipped entirely (legacy-only behaviour).
- * @param {boolean} [opts.history.consultStateMd=true] - When false, the
- *   STATE.md `session:` reader is skipped entirely (legacy-only behaviour).
- * @param {boolean} [opts.history.consultEvents=true] - When false, the
- *   events.jsonl mint-ledger reader is skipped entirely (#952).
- * @param {(repoRoot: string) => Promise<string[]>} [opts.history.readHistoryImpl]
- *   Test/DI override for the sessions.jsonl reader. Signature must mirror the
- *   internal helper: returns an array of session_id strings (no throws).
- * @param {(repoRoot: string) => Promise<string|null>} [opts.history.readStateMdSessionImpl]
- *   Test/DI override for the STATE.md reader. Signature must mirror the
- *   internal helper: returns a session_id string or null (no throws).
- * @param {(repoRoot: string) => Promise<string[]>} [opts.history.readEventsImpl]
- *   Test/DI override for the events.jsonl reader. Signature must mirror the
- *   internal helper: returns an array of semantic_session_id strings (no throws).
+ * @param {ReadonlyArray<(repoRoot: string) => Promise<string[]>>} [opts.sources=DEFAULT_SESSION_ID_SOURCES]
+ *   The candidate-ID readers for sources B/C/D — the ONLY DI knob (#956).
+ *   Each entry is a deferred thunk invoked with the effective repo root INSIDE
+ *   `withStateMdLock`, and must resolve to an array of session-ID strings.
+ *   Non-string and unknown-format entries are dropped downstream, so a reader
+ *   may return raw IDs without pre-filtering.
+ *   The default is {@link DEFAULT_SESSION_ID_SOURCES} =
+ *   `[sessions.jsonl reader, STATE.md reader, events.jsonl reader]`.
+ *   Opting a source out = passing a shorter array (`[]` for the pre-#585
+ *   activeSessions-only behaviour); overriding one = passing your own function;
+ *   adding a fifth = appending to the default. Each entry is individually
+ *   error-swallowed (a throwing or rejecting source contributes `[]` and never
+ *   blocks the n-claim), so one bad reader cannot fail the mint.
  * @returns {Promise<string>} The next semantic session ID, e.g. "main-2026-05-27-deep-2".
  * @throws {TypeError} When `branch` is missing, empty, or contains invalid characters.
  * @throws {TypeError} When `mode` is missing, empty, or contains characters other than
@@ -414,7 +462,7 @@ export async function resolveSemanticSessionId({
   mode,
   activeSessions,
   repoRoot,
-  history,
+  sources,
 } = {}) {
   // Input validation — validate before acquiring the lock to fail fast.
   if (!isValidBranch(branch)) {
@@ -428,34 +476,32 @@ export async function resolveSemanticSessionId({
     );
   }
 
-  // Normalise the history opts bag. Both flags default ON — see audit §2.3.
-  const consultHistory = history?.consultHistory !== false;
-  const consultStateMd = history?.consultStateMd !== false;
-  const consultEvents = history?.consultEvents !== false;
-  const historyImpl = history?.readHistoryImpl ?? readSessionIdsFromHistory;
-  const stateMdImpl = history?.readStateMdSessionImpl ?? readSessionIdFromStateMd;
-  const eventsImpl = history?.readEventsImpl ?? readSessionIdsFromEvents;
+  // Resolve the source set. An explicit array (including []) wins; anything
+  // else — omitted, undefined, non-array — falls back to the documented default.
+  const effectiveSources = Array.isArray(sources) ? sources : DEFAULT_SESSION_ID_SOURCES;
   const effectiveRoot = repoRoot ?? process.cwd();
 
   return withStateMdLock(repoRoot, async () => {
     // Derive the current UTC date as YYYY-MM-DD.
     const today = new Date().toISOString().slice(0, 10);
 
-    // Read the three history-aware sources in parallel. Errors from any source
-    // are swallowed (the .catch() guards belt-and-braces; helpers already
-    // never throw, but a third-party DI impl might).
-    const [historicalIds, stateMdId, eventIds] = await Promise.all([
-      consultHistory ? historyImpl(effectiveRoot).catch(() => []) : Promise.resolve([]),
-      consultStateMd ? stateMdImpl(effectiveRoot).catch(() => null) : Promise.resolve(null),
-      consultEvents ? eventsImpl(effectiveRoot).catch(() => []) : Promise.resolve([]),
-    ]);
+    // Read every source in parallel. Each is individually error-swallowed:
+    // the built-in readers already never throw, but a caller-supplied source
+    // might — and one bad reader must never block the n-claim it feeds. The
+    // Promise.resolve().then() wrapper also catches a SYNCHRONOUS throw, which
+    // a bare `.catch()` on the return value would not.
+    const perSourceIds = await Promise.all(
+      effectiveSources.map((read) =>
+        Promise.resolve()
+          .then(() => read(effectiveRoot))
+          .catch(() => []),
+      ),
+    );
 
     // Build a single candidate stream. Duplicates are fine — Math.max handles them.
     const candidateIds = [
       ...(activeSessions ?? []).map((s) => s?.sessionId),
-      ...historicalIds,
-      ...(stateMdId !== null ? [stateMdId] : []),
-      ...(eventIds ?? []),
+      ...perSourceIds.flat(),
     ];
 
     // Match against (branch, date, mode) and project to n.

@@ -77,11 +77,58 @@ export function writeMissionStatus(contents, missionStatusArray) {
 }
 
 /**
+ * Mirrors `status` onto the frontmatter `mission-status` entry whose `id` matches
+ * `taskId`, returning a NEW frontmatter object (copy-on-write at object, array and
+ * entry level — the input is never mutated, which keeps `parseMissionStatus`'s
+ * shallow-copy contract intact for anything else holding the same nested entries).
+ *
+ * UPDATE-ONLY by design: when the key is absent, is not an array, or holds no entry
+ * with a matching `id`, the frontmatter is returned unchanged. It is deliberately
+ * neither created nor an error, because `setMissionStatus(contents, taskId, status)`
+ * knows only `id` and `status` — it lacks the `task` and `wave` fields that
+ * `validateMissionStatusEntry` (mission-status-schema.mjs) requires, so a synthesised
+ * entry would be schema-invalid yet look authoritative to frontmatter consumers such
+ * as `vault-status/narrative-mirror.mjs`. Throwing is likewise excluded by the
+ * never-throw contract of `setMissionStatus`.
+ *
+ * `status` is mirrored verbatim without an enum check on purpose: gating it would
+ * reintroduce the exact divergence (body says X, frontmatter says Y) this sync exists
+ * to remove. An out-of-enum value now lands on BOTH surfaces, where the repo's own
+ * validator can see it.
+ *
+ * @param {object} frontmatter
+ * @param {string} taskId
+ * @param {string} status
+ * @returns {object}
+ */
+function syncFrontmatterMissionStatus(frontmatter, taskId, status) {
+  if (frontmatter === null || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
+    return frontmatter;
+  }
+  const raw = frontmatter['mission-status'];
+  if (!Array.isArray(raw)) return frontmatter;
+  const idx = raw.findIndex(
+    (e) => e !== null && typeof e === 'object' && !Array.isArray(e) && e.id === taskId
+  );
+  if (idx === -1) return frontmatter;
+  const entries = raw.slice();
+  entries[idx] = { ...raw[idx], status };
+  return { ...frontmatter, 'mission-status': entries };
+}
+
+/**
  * Sets (or updates) the mission status for a single task in the `## Mission Status` body
  * section of STATE.md. Creates the section if it does not exist.
  *
  * Format of each entry in the section:
  *   - <taskId>: <status> (updated <ISO timestamp>)
+ *
+ * Also mirrors `status` into the frontmatter `mission-status` entry with the same `id`
+ * (issue #960 — one writer, two sinks). The body section is what the coordinator writes
+ * during a wave; the frontmatter array is what `parseMissionStatus` consumers read
+ * (`vault-status/narrative-mirror.mjs`, session-end Phase 1.9/1.10). Before this sync the
+ * live writer and the reader sat on different surfaces and drifted apart in both
+ * directions. Frontmatter mirroring is UPDATE-ONLY — see `syncFrontmatterMissionStatus`.
  *
  * Pure function — no I/O. Returns original `contents` unchanged on bad input.
  *
@@ -96,6 +143,9 @@ export function setMissionStatus(contents, taskId, status) {
   if (!status || typeof status !== 'string') return contents;
   const parsed = parseStateMd(contents);
   if (parsed === null) return contents;
+
+  // Computed once so every return path below emits the same synced frontmatter.
+  const frontmatter = syncFrontmatterMissionStatus(parsed.frontmatter, taskId, status);
 
   const timestamp = new Date().toISOString();
   const bullet = `- ${taskId}: ${status} (updated ${timestamp})`;
@@ -115,7 +165,7 @@ export function setMissionStatus(contents, taskId, status) {
     let bodyOut = parsed.body;
     if (!bodyOut.endsWith('\n')) bodyOut += '\n';
     bodyOut += `\n## Mission Status\n\n${bullet}\n`;
-    return serializeStateMd({ frontmatter: parsed.frontmatter, body: bodyOut });
+    return serializeStateMd({ frontmatter, body: bodyOut });
   }
 
   // Find end of section: next ## heading or end of lines
@@ -155,11 +205,11 @@ export function setMissionStatus(contents, taskId, status) {
       const before = lines.slice(0, headingIdx + 1);
       const after = lines.slice(insertAt);
       const rebuilt = [...before, '', bullet, ...after];
-      return serializeStateMd({ frontmatter: parsed.frontmatter, body: rebuilt.join('\n') });
+      return serializeStateMd({ frontmatter, body: rebuilt.join('\n') });
     }
   }
 
-  return serializeStateMd({ frontmatter: parsed.frontmatter, body: lines.join('\n') });
+  return serializeStateMd({ frontmatter, body: lines.join('\n') });
 }
 
 /**

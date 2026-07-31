@@ -132,6 +132,42 @@ function repoBasename(repoRoot) {
   return path.basename(repoRoot);
 }
 
+/**
+ * Render a worktree path for an event record: repo-relative, never absolute.
+ *
+ * `events.jsonl` records get quoted into issues and MR descriptions, and this
+ * repo mirrors to a PUBLIC GitHub remote — so an absolute worktree path ships
+ * the operator's home directory (`/Users/<name>/…`) into a public artefact
+ * (#957 finding 3). The forensic value of the field is "WHICH worktree", which
+ * the repo-relative form carries in full.
+ *
+ * Escaping the repo root is expected, not an error: the default worktree root
+ * is `~/.so-worktrees`, so the normal output is a `../…` chain. That form is
+ * still host-agnostic — `path.relative` strips the COMMON PREFIX, which is
+ * exactly where `/Users/<name>` lives.
+ *
+ * Pure string math: no `realpathSync`, no fs access, cannot throw. This runs on
+ * the teardown path where the worktree may already have been removed.
+ *
+ * Residual, deliberately not defended against: a repo root OUTSIDE the home
+ * directory combined with a worktree root INSIDE it (e.g. `/srv/repo` +
+ * `~/.so-worktrees`) shares no prefix, so the `../` chain descends back through
+ * `Users/<name>/`. That configuration is not reachable from this module's
+ * defaults and a heuristic scrub would be less predictable than the plain
+ * relative path.
+ *
+ * @param {string} repoRoot      absolute path to the primary repo
+ * @param {string|null|undefined} worktreePath absolute worktree path, if known
+ * @returns {string|null} repo-relative path, or null when either input is unusable
+ */
+export function relativeWorktreePath(repoRoot, worktreePath) {
+  if (typeof worktreePath !== 'string' || worktreePath.length === 0) return null;
+  // Without a usable base there is no way to strip the host prefix. Report
+  // "unknown" rather than fall back to the absolute path this exists to avoid.
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+  return path.relative(repoRoot, worktreePath);
+}
+
 // ---------------------------------------------------------------------------
 // setupWorktree
 // ---------------------------------------------------------------------------
@@ -313,7 +349,7 @@ export async function teardownWorktree(context, result, opts = {}) {
             ? 'threw'
             : (releaseResult.reason ?? (releaseResult.ok === true ? 'not-deleted' : 'fs-error')),
           caller: 'worktree-pipeline',
-          worktree_path: result.worktreePath ?? null,
+          worktree_path: relativeWorktreePath(repoRoot, result.worktreePath),
           issue_iid: context.issueIid,
         }, { repoRoot });
       } else {
@@ -322,7 +358,7 @@ export async function teardownWorktree(context, result, opts = {}) {
           caller: 'worktree-pipeline',
           outcome: benignAlreadyGone ? 'already-gone' : 'deleted',
           verified: releaseResult.verified === true,
-          worktree_path: result.worktreePath ?? null,
+          worktree_path: relativeWorktreePath(repoRoot, result.worktreePath),
           issue_iid: context.issueIid,
         }, { repoRoot });
       }

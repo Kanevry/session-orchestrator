@@ -61,6 +61,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
+import { extractTestCounts } from './gates/gate-helpers.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
@@ -364,6 +365,32 @@ export function detectSharedLibTouch(opts) {
 }
 
 /**
+ * Parse suite counts out of a test gate's captured output (#954).
+ *
+ * Returns `null` — never a zero triple — whenever the output does not carry a
+ * real measurement. That distinction is the whole point of the field: a
+ * `counts.failed` of `0` means "measured, zero failures", while an ABSENT
+ * `counts` means "not measured". Fabricating `{passed: 0, failed: 0}` for a
+ * gate that never ran (or whose output could not be parsed) would collapse the
+ * two into an indistinguishable record.
+ *
+ * `extractTestCounts` (the shared parser already used by `gate-full.mjs`) has
+ * no "did it match?" channel — it returns `0/0/0` both for "no `<N> passed`
+ * marker in the output" and for a genuinely empty run. `total <= 0` is
+ * therefore the honest rejection: we decline to claim a measurement we cannot
+ * distinguish from a parse miss. Any real suite run yields `total > 0`.
+ *
+ * @param {string} output — captured stdout+stderr tail from the test gate.
+ * @returns {{ passed: number, failed: number, total: number }|null}
+ */
+function suiteCountsFromOutput(output) {
+  if (typeof output !== 'string' || output.length === 0) return null;
+  const { passed, failed, total } = extractTestCounts(output);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { passed, failed, total };
+}
+
+/**
  * Coerce `maxRetries` to [0, MAX_RETRIES_HARD_CAP] integer.
  *
  * @param {unknown} n
@@ -408,9 +435,51 @@ function coerceMaxRetries(n) {
  * records are exactly what `/eval`'s gate-health dimension reads, so the
  * instrument would be scored against its own test fixtures.
  *
+ * `counts` (#954) carries the suite numbers this gate already had in hand. It
+ * is OMITTED — never zero-filled — whenever the final attempt did not reach the
+ * test gate (fail-fast on lint/typecheck) or its output carried no parseable
+ * count. See {@link suiteCountsFromOutput}.
+ *
+ * IT DOES NOT YET REPLACE THE PROSE PATH (#957/F1 — the earlier wording here
+ * claimed it did). `waves[].suite_passed` / `suite_failed` still travel as prose
+ * through two LLM hops: `skills/wave-executor/wave-loop.md` step 7 hand-writes
+ * them, `skills/session-end/metrics-collection.md` § 1.7 parses them back out of
+ * the STATE.md Wave History header into sessions.jsonl. `counts` is a SECOND,
+ * machine-measured emission of the same fact, and as of 2026-07-31 it has zero
+ * readers (`grep -c '"counts"' .orchestrator/metrics/events.jsonl` → 0 across
+ * 4404 `orchestrator.quality_gate.*` records).
+ *
+ * Retiring the prose path needs a producer change no docblock can make:
+ * `waves[].*` is PER-WAVE, and gate events carry no `wave_number` (0 of those
+ * 4404 records). A session-end reader could only attribute a gate event to a
+ * wave by a wall-clock window whose own boundaries (`waves[].started_at` /
+ * `completed_at`) are themselves LLM-written — one LLM hop traded for another,
+ * against the posture `scripts/lib/eval/session-resolve.mjs` already documents
+ * for window-attributed gate events ("a contaminated window means
+ * gate-attribution is unsafe"). The concrete remaining work is named in
+ * `skills/session-end/metrics-collection.md` § 1.7.
+ *
+ * Note also that THIS emitter only runs under `verification-auto-fix.enabled:
+ * true` (default `false`, and `false` in this repo's Session Config). The gate
+ * that actually fires between waves is the `scripts/run-quality-gate.mjs`
+ * wrapper, which emits its own `counts` via `suiteCountsFromGateStdout`.
+ *
+ * Extraction margin: {@link suiteCountsFromOutput} sees only the
+ * `OUTPUT_TAIL_LINES` (50) tail `runCheck` retains. Measured on `npm test`
+ * (vitest 2026-07-31), the `Tests` summary line sits 5 lines from the end — 45
+ * lines of headroom. A runner epilogue longer than that (coverage table, long
+ * unhandled-error dump) pushes the summary out of the window; `counts` is then
+ * omitted, which fails safe but is indistinguishable from "no test gate ran".
+ *
  * Best-effort: never throws, never alters the gate verdict.
+ *
+ * @param {string} repoRoot
+ * @param {boolean} ok
+ * @param {number} attempts
+ * @param {string|null} gate
+ * @param {{passed: number, failed: number, total: number}|null} [counts]
  */
-async function emitGateEvent(repoRoot, ok, attempts, gate) {
+async function emitGateEvent(repoRoot, ok, attempts, gate, counts) {
   try {
     await emitEvent(
       `orchestrator.quality_gate.${ok ? 'passed' : 'failed'}`,
@@ -419,6 +488,7 @@ async function emitGateEvent(repoRoot, ok, attempts, gate) {
         exit_code: ok ? 0 : 1,
         attempts,
         ...(gate ? { gate } : {}),
+        ...(counts ? { counts } : {}),
         ...sessionAttribution(repoRoot),
       },
       { repoRoot },
@@ -468,6 +538,13 @@ export async function runQualityGateWithRetry(opts) {
   const allFailures = [];
   let attempt = 0;
   let lastFailure = null;
+  /**
+   * Suite counts observed in the CURRENT attempt only (#954). Reset at the top
+   * of every attempt so a failure that fail-fasts on lint never re-reports a
+   * stale count from an earlier attempt's test run.
+   * @type {{passed: number, failed: number, total: number}|null}
+   */
+  let testCounts = null;
 
   // Total loop budget = maxRetries + 1 (one initial run + up to maxRetries fixer-driven retries).
   const totalAttempts = maxRetries + 1;
@@ -475,10 +552,17 @@ export async function runQualityGateWithRetry(opts) {
   while (attempt < totalAttempts) {
     attempt += 1;
     let gateFailure = null;
+    testCounts = null;
 
     for (const gate of GATE_ORDER) {
       const cmd = commands[gate];
       const result = runGate(cmd, repoRoot);
+      if (gate === 'test') {
+        // The numbers are in hand right here — capture them at the seam rather
+        // than letting them travel as prose (#954). Non-fatal by construction:
+        // a parse miss yields null, which the emitter omits.
+        testCounts = suiteCountsFromOutput(result.output);
+      }
       if (result.exitCode === 0) {
         process.stderr.write(`🔁 quality-gate attempt ${attempt}/${totalAttempts} (gate=${gate}): pass\n`);
         continue;
@@ -499,7 +583,7 @@ export async function runQualityGateWithRetry(opts) {
     if (gateFailure === null) {
       // All gates passed this attempt.
       writeLastGreenSha(repoRoot);
-      await emitGateEvent(repoRoot, true, attempt, null);
+      await emitGateEvent(repoRoot, true, attempt, null, testCounts);
       return { ok: true, attempts: attempt };
     }
 
@@ -564,7 +648,7 @@ export async function runQualityGateWithRetry(opts) {
     `❌ quality-gate exhausted retries (${attempt}), writing diagnostics to ${bundlePath ?? '<unwritable>'}\n`,
   );
 
-  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null);
+  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null, testCounts);
 
   const out = {
     ok: false,

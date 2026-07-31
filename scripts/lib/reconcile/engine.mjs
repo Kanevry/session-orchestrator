@@ -97,6 +97,7 @@ import { toActivationMetadata } from './emitter.mjs';
 import { renderRule } from './renderer.mjs';
 import {
   DEFAULT_STORE_PATH,
+  buildCandidate,
   makeCandidateId,
   mergeCandidates as realMergeCandidates,
 } from './idempotency.mjs';
@@ -213,36 +214,6 @@ function learningType(learning) {
     if (typeof t === 'string' && t.length > 0) return t;
   }
   return 'unknown';
-}
-
-/**
- * Build a sidecar ReconcileCandidate line-record (idempotency.mjs schema) for a
- * proposed or rejected learning. `created_at` is stamped from the injectable
- * clock so output stays deterministic under test.
- *
- * @param {Object} params
- * @param {string} params.id
- * @param {string|null} params.learningKey
- * @param {string} params.slug
- * @param {'proposed'|'rejected'} params.status
- * @param {string} params.reason
- * @param {number} params.confidence
- * @param {string} params.createdAt - ISO timestamp.
- * @returns {import('./idempotency.mjs').ReconcileCandidate}
- */
-function buildCandidate({ id, learningKey, slug, status, reason, confidence, createdAt }) {
-  return {
-    id,
-    schema_version: 1,
-    learning_key: typeof learningKey === 'string' ? learningKey : '',
-    slug,
-    status,
-    reason,
-    confidence,
-    created_at: createdAt,
-    processed_at: null,
-    superseded_by: null,
-  };
 }
 
 /**

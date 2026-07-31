@@ -13,7 +13,10 @@
  * work-queue in JSON-Lines format (one ReconcileCandidate per line). The store
  * is OWNED by `mergeCandidates`: it is the only sanctioned writer. Nothing else
  * — no report, no analysis run, no agent — may append to it; a read-side shape
- * guard drops any record that is not a ReconcileCandidate.
+ * guard drops any record that is not a ReconcileCandidate and COUNTS the drop.
+ * The count reaches readers through the ONE reader ({@link loadCandidates}
+ * returns `{records, skipped}`) and writers through `mergeCandidates`'s
+ * `skipped` — there is deliberately no lossy array-only variant beside them.
  *
  * Two responsibilities differ from the repair store:
  *   1. The IDEMPOTENCY KEY is the LOGICAL `learning_key` (issue #695), not the
@@ -188,19 +191,74 @@ export function makeCandidateId(learningKey, slug) {
 }
 
 /**
- * Load every ReconcileCandidate currently persisted in the store. Reads JSONL,
- * skips malformed lines AND shape-foreign records (missing `learning_key` /
- * `created_at`), returns `[]` for a missing file. Does NOT create the runtime
- * dir (mkdir -p happens only on write). Never throws. Callers that need the
- * skip count use {@link mergeCandidates}, which reports it as `skipped`.
+ * Build a ReconcileCandidate line-record for a proposed or rejected learning.
+ *
+ * Lives here — beside the {@link ReconcileCandidate} typedef it instantiates and
+ * the read-side `isCandidateShape` guard that judges it — so ONE file decides
+ * which fields a persisted record carries. It deliberately does NOT mint the
+ * `id` (see {@link makeCandidateId}): rejections currently derive their id from
+ * `(learningKey, 'rejected-<type>')` while storing `slug: ''`, so folding the
+ * mint in here using the record's own slug would change every rejection
+ * candidate's id and orphan every rejection row already on disk. Caller-supplied
+ * `id` keeps that decision at the call site.
+ *
+ * `created_at` is caller-supplied (from the engine's injectable clock) so output
+ * stays deterministic under test. `processed_at`/`superseded_by` always start
+ * null — only the merge/approval path stamps them. Never throws.
+ *
+ * @param {Object} params
+ * @param {string} params.id - deterministic physical id, see {@link makeCandidateId}.
+ * @param {string|null} params.learningKey - logical dedupe key; a non-string coerces to `''`.
+ * @param {string} params.slug - `.claude/rules/<slug>.md` slug (`''` for rejections).
+ * @param {'proposed'|'rejected'} params.status
+ * @param {string} params.reason
+ * @param {number} params.confidence
+ * @param {string} params.createdAt - ISO timestamp.
+ * @returns {ReconcileCandidate}
+ */
+export function buildCandidate({ id, learningKey, slug, status, reason, confidence, createdAt }) {
+  return {
+    id,
+    schema_version: 1,
+    learning_key: typeof learningKey === 'string' ? learningKey : '',
+    slug,
+    status,
+    reason,
+    confidence,
+    created_at: createdAt,
+    processed_at: null,
+    superseded_by: null,
+  };
+}
+
+/**
+ * Load the persisted store: every ReconcileCandidate that survives the read-side
+ * shape guard, PLUS the count of lines it rejected. Reads JSONL, skips malformed
+ * lines and shape-foreign records (missing `learning_key` / `created_at`),
+ * yields `{ records: [], skipped: 0 }` for a missing file. Does NOT create the
+ * runtime dir (mkdir -p happens only on write). Never throws.
+ *
+ * `skipped` is part of the return value rather than a second, "diagnostics"
+ * reader beside this one, because `records.length === 0` is AMBIGUOUS on its
+ * own: a missing store and a store whose every line is shape-foreign both yield
+ * `[]`, and a consumer that sees only the array reports "no reconcile run on
+ * record" for a store that in fact holds quarantined evidence of one (the
+ * concrete defect in `scripts/lib/reconcile-nudge-banner.mjs`, GitLab #955
+ * finding 2). Splitting the honest reader off under a longer name left the
+ * OBVIOUS name as the lossy one — the next consumer would reach for
+ * `loadCandidates`, get `[]`, and re-derive the same wrong conclusion. One
+ * reader, one answer.
+ *
+ * Read-only: unlike {@link mergeCandidates} this does NOT rewrite the store, so
+ * the skipped lines are still on disk after this call.
  * @param {Object} [params]
  * @param {string} [params.repoRoot] - repo root; relative `storePath` is resolved against it (defaults to `process.cwd()`).
  * @param {string} [params.storePath] - store path (relative ⇒ joined to repoRoot). Defaults to {@link DEFAULT_STORE_PATH}.
- * @returns {ReconcileCandidate[]}
+ * @returns {{ records: ReconcileCandidate[], skipped: number }}
  */
 export function loadCandidates({ repoRoot, storePath } = {}) {
   const absPath = resolveStorePath(repoRoot, storePath);
-  return readStore(absPath).records;
+  return readStore(absPath);
 }
 
 /**

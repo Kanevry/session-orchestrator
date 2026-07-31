@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync as realRealpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, realpathSync as realRealpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -22,6 +22,7 @@ import {
   setupWorktree,
   teardownWorktree,
   runStoryPipeline,
+  relativeWorktreePath,
 } from '@lib/autopilot/worktree-pipeline.mjs';
 import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 
@@ -381,6 +382,66 @@ describe('teardownWorktree', () => {
     await teardownWorktree(ctx, result, { gcOnExit });
 
     expect(gcOnExit).toHaveBeenCalledOnce();
+  });
+
+  it('writes a REPO-RELATIVE worktree_path into the real events.jsonl record (#957)', async () => {
+    // Bug caught: both lock-release emission sites wrote the ABSOLUTE worktree
+    // path. events.jsonl records get quoted into issues and MR descriptions,
+    // and this repo mirrors to a PUBLIC GitHub remote — so every such record
+    // shipped `/Users/<operator>/…` into a public artefact.
+    //
+    // Asserted through the production call shape (real emitEvent, real file),
+    // not against the helper in isolation: the defect was at the CALL SITE, so
+    // a unit test of the formatter would have stayed green through it.
+    const gcOnExit = vi.fn().mockResolvedValue({});
+    const ctx = makeContext({ repoRoot: tmp, worktreeRoot: tmp, issueIid: 957 });
+    // Default layout: the worktree root is `~/.so-worktrees`, i.e. OUTSIDE the
+    // repo — so the honest relative form is a `../` chain, not a bare name.
+    const worktreePath = path.join(path.dirname(tmp), 'so-worktrees', 'myrepo', '957');
+    // No lock on disk ⇒ release() reports `no-lock` ⇒ the `released` branch.
+    const result = { killSwitch: null, worktreePath, _lockSessionId: 'sess-957' };
+
+    await teardownWorktree(ctx, result, { gcOnExit });
+
+    const raw = readFileSync(path.join(tmp, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8');
+    const record = JSON.parse(raw.trim().split('\n').at(-1));
+
+    expect(record.event).toBe('orchestrator.session.lock.released');
+    expect(record.worktree_path).toBe(path.join('..', 'so-worktrees', 'myrepo', '957'));
+    // The load-bearing assertion: no absolute host path survives anywhere in
+    // the record, however the fields are shaped.
+    expect(path.isAbsolute(record.worktree_path)).toBe(false);
+    expect(raw).not.toContain(tmp);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relativeWorktreePath — the #957 formatter contract
+// ---------------------------------------------------------------------------
+
+describe('relativeWorktreePath', () => {
+  it('strips the shared host prefix and reports null rather than falling back to an absolute path', () => {
+    // Bug caught: a fallback to the absolute path when the base is unusable
+    // would reinstate exactly the leak this function exists to prevent, on the
+    // one code path nobody looks at. Unknown must mean null, not "raw".
+    const repo = path.join(path.sep, 'Users', 'alice', 'Projects', 'myrepo');
+
+    // Default layout (`~/.so-worktrees`): escapes the repo, keeps no username.
+    const homeWt = path.join(path.sep, 'Users', 'alice', '.so-worktrees', 'myrepo', '957');
+    expect(relativeWorktreePath(repo, homeWt)).toBe(path.join('..', '..', '.so-worktrees', 'myrepo', '957'));
+    expect(relativeWorktreePath(repo, homeWt)).not.toContain('alice');
+
+    // Sibling of the repo root, and inside it — both host-agnostic.
+    expect(relativeWorktreePath(repo, `${repo}-wt/957`)).toBe(path.join('..', 'myrepo-wt', '957'));
+    expect(relativeWorktreePath(repo, path.join(repo, '.claude', 'worktrees', '957')))
+      .toBe(path.join('.claude', 'worktrees', '957'));
+
+    // Unusable inputs ⇒ null (the field's existing "unknown" value).
+    expect(relativeWorktreePath(repo, null)).toBeNull();
+    expect(relativeWorktreePath(repo, '')).toBeNull();
+    expect(relativeWorktreePath(repo, undefined)).toBeNull();
+    expect(relativeWorktreePath('', homeWt)).toBeNull();
+    expect(relativeWorktreePath(undefined, homeWt)).toBeNull();
   });
 });
 

@@ -133,18 +133,61 @@ export function extractCount(output, pattern) {
 }
 
 /**
- * Parse vitest-style output for pass/fail/total counts.
+ * Matches a runner summary line that reports TEST-CASE counts.
  *
- * Looks for patterns like "42 passed", "3 failed".
+ * Deliberately anchored on `Tests` + a word boundary so it matches vitest's
+ * `      Tests  12904 passed | 11 skipped (12915)` and jest's
+ * `Tests:       1 failed, 4 passed, 5 total`, but NOT vitest's preceding
+ * `  Test Files  550 passed (550)` line ("Test" is not followed by "s").
+ */
+const TEST_SUMMARY_LINE = /^\s*Tests\b/;
+
+/**
+ * Parse test-runner output for pass/fail/total TEST-CASE counts.
  *
- * @param {string} output
- * @returns {{ passed: number, failed: number, total: number }}
+ * ## Which line is parsed
+ *
+ * Real vitest prints TWO `<N> passed` summary lines, files first:
+ *
+ * ```
+ *  Test Files  550 passed (550)
+ *       Tests  12904 passed | 11 skipped (12915)
+ * ```
+ *
+ * A naive whole-output scan hits the FILE count (550) and publishes it as the
+ * test count — the number then rides `gate-full.mjs`'s `test.passed` into the
+ * `orchestrator.quality_gate.*` event stream looking authoritative. So: when a
+ * `Tests`-anchored summary line exists, ONLY that line is parsed (the LAST one,
+ * which is the final summary after any rerun). Terse or non-vitest output with
+ * no such line falls back to scanning the whole string, which preserves the
+ * bare `"42 passed"` / `"10 passed, 5 failed"` forms.
+ *
+ * ## What `total` means — passed + failed, NOT vitest's parenthesised number
+ *
+ * `total` is `passed + failed` and deliberately EXCLUDES skipped/todo tests.
+ * This is load-bearing, not an oversight: `scripts/run-quality-gate.mjs`
+ * reconstructs the third number from the published envelope as
+ * `failed = total - passed`. Adopting vitest's parenthesised total (12915,
+ * which counts the 11 skipped) would make that derivation report 11 phantom
+ * FAILURES. `total` therefore answers "how many test cases produced a verdict",
+ * and `total - passed === failed` holds by construction for every consumer.
+ *
+ * Skipped is not returned: neither call site (`gate-full.mjs`,
+ * `quality-gate.mjs`) consumes it, and its only use would be to rebuild the
+ * parenthesised total — precisely the number the downstream derivation must not
+ * see. Add it together with a consumer, never ahead of one.
+ *
+ * @param {string} output - Captured test-runner stdout/stderr (or a tail of it).
+ * @returns {{ passed: number, failed: number, total: number }} `total === passed + failed`.
  */
 export function extractTestCounts(output) {
   if (!output) return { passed: 0, failed: 0, total: 0 };
 
-  const passMatch = output.match(/(\d+)\s+passed/);
-  const failMatch = output.match(/(\d+)\s+failed/);
+  const summaryLines = output.split('\n').filter((line) => TEST_SUMMARY_LINE.test(line));
+  const scope = summaryLines.length > 0 ? summaryLines[summaryLines.length - 1] : output;
+
+  const passMatch = scope.match(/(\d+)\s+passed/);
+  const failMatch = scope.match(/(\d+)\s+failed/);
 
   const passed = passMatch ? parseInt(passMatch[1], 10) : 0;
   const failed = failMatch ? parseInt(failMatch[1], 10) : 0;

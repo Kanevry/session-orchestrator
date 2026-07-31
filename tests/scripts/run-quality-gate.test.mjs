@@ -240,7 +240,12 @@ describe('run-quality-gate.mjs — full-gate variant', () => {
     expect(r.status).toBe(0);
   });
 
-  it('produces a JSON object as output for full-gate', () => {
+  // Consolidated from 6 separate `it`s that each re-spawned the SAME all-skip
+  // full-gate run to assert one key of the identical envelope (TV-003). Every
+  // original assertion is preserved verbatim; only the 5 duplicate spawns are
+  // gone. This also pins that the envelope still reaches stdout unchanged after
+  // #954 switched the child's stdout from `inherit` to piped + re-emitted.
+  it('full-gate JSON envelope carries the full documented shape', () => {
     const config = JSON.stringify({
       'typecheck-command': 'skip',
       'test-command': 'skip',
@@ -248,86 +253,23 @@ describe('run-quality-gate.mjs — full-gate variant', () => {
     });
     const r = run(['--variant', 'full-gate', '--config', config]);
     expect(r.status).toBe(0);
+
     const parsed = JSON.parse(r.stdout);
     expect(parsed).toBeTypeOf('object');
     expect(parsed).not.toBeNull();
-  });
-
-  it('full-gate JSON contains the variant field set to "full-gate"', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
     expect(parsed.variant).toBe('full-gate');
-  });
+    expect(parsed.duration_seconds).toBeTypeOf('number');
+    expect(Array.isArray(parsed.debug_artifacts)).toBe(true);
 
-  it('full-gate JSON contains nested typecheck, test, and lint objects', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
     expect(parsed.typecheck).toBeTypeOf('object');
     expect(parsed.test).toBeTypeOf('object');
     expect(parsed.lint).toBeTypeOf('object');
-  });
 
-  it('full-gate JSON typecheck object has status and error_count keys', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
     expect(Object.keys(parsed.typecheck)).toContain('status');
     expect(Object.keys(parsed.typecheck)).toContain('error_count');
-  });
-
-  it('full-gate JSON test object has status, total, and passed keys', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
     expect(Object.keys(parsed.test)).toContain('status');
     expect(Object.keys(parsed.test)).toContain('total');
     expect(Object.keys(parsed.test)).toContain('passed');
-  });
-
-  it('full-gate JSON contains duration_seconds as a number', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
-    expect(parsed.duration_seconds).toBeTypeOf('number');
-  });
-
-  it('full-gate JSON contains debug_artifacts array', () => {
-    const config = JSON.stringify({
-      'typecheck-command': 'skip',
-      'test-command': 'skip',
-      'lint-command': 'skip',
-    });
-    const r = run(['--variant', 'full-gate', '--config', config]);
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout);
-    expect(Array.isArray(parsed.debug_artifacts)).toBe(true);
   });
 });
 
@@ -414,5 +356,47 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev).toBeDefined();
     expect(ev.variant).toBe('incremental');
     expect(ev.exit_code).toBe(0);
+  });
+
+  // #954 — the suite counts must ride the EVENT, not the STATE.md prose header.
+  //
+  // Bug this catches: `counts` silently never reaches the emitted record — the
+  // field is absent on every run, so `waves[].suite_passed`/`suite_failed` keep
+  // travelling as prose through two LLM hops and nothing goes red. The existing
+  // telemetry tests above assert only `variant` + `exit_code`, so deleting the
+  // counts payload entirely leaves them all green.
+  it('emits the suite counts on the record when the test gate actually ran (#954)', () => {
+    // Prints a vitest-shaped summary the gate's own extractTestCounts parses.
+    writeFileSync(join(tmp, 'suite.mjs'), "console.log('  Tests  12 passed | 2 failed (14)');\n", 'utf8');
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': `node ${join(tmp, 'suite.mjs')}`,
+      'lint-command': 'skip',
+    });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.counts).toEqual({ passed: 12, failed: 2, total: 14 });
+  });
+
+  // Bug this catches: an all-skip run emits `counts: {passed: 0, failed: 0}`,
+  // which is a FABRICATED zero — it makes "no suite ran" indistinguishable from
+  // "the suite ran and nothing failed", collapsing the only distinction the
+  // field exists to carry.
+  it('omits counts entirely when no test gate ran — absent, never a zero triple (#954)', () => {
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': 'skip',
+      'lint-command': 'skip',
+    });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.counts).toBeUndefined();
+    expect(Object.keys(ev)).not.toContain('counts');
   });
 });

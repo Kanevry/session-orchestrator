@@ -30,6 +30,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { load as loadYaml } from 'js-yaml';
 import {
   checkCommittedTree,
   checkWorkingTreeDrift,
@@ -40,6 +41,53 @@ import {
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'check-package-manager.mjs');
+
+// ---------------------------------------------------------------------------
+// CI-wiring derivation (#958 finding 1) — marker-delimited so a falsification
+// harness can execute THIS source verbatim against a mutated .gitlab-ci.yml
+// copy and observe the assertion go red (same verbatim-block technique as
+// tests/husky/pre-commit-nul-byte-guard.test.mjs).
+// ci-guard-derivation:begin
+/** `npm ci` in command position (never the `npm install` in the nested-deps step). */
+const NPM_CI_RE = /(^|[\s;&|(])npm ci(\s|$)/;
+/** The guard invocation in command position (never inside an echo or a comment). */
+const GUARD_COMMAND_RE = /(^|[\s;&|(])node scripts\/check-package-manager\.mjs(\s|$)/;
+
+/**
+ * Flatten a parsed `.gitlab-ci.yml` into its executable step lists, keeping the
+ * ones that BOTH install with `npm ci` and run the package-manager guard, and
+ * recording whether the guard comes after the install it verifies.
+ *
+ * js-yaml resolves `<<:` merge keys to the same array instance the anchor
+ * declares, so inheriting jobs are deduped by identity: a shared `before_script`
+ * is reported once, under the anchor, not once per consumer.
+ *
+ * @param {Record<string, unknown>} ciDoc parsed `.gitlab-ci.yml` document
+ * @returns {{ block: string, phase: string, guardAfterInstall: boolean }[]}
+ */
+function deriveInstallAndGuardLists(ciDoc) {
+  const seen = new Set();
+  const lists = [];
+  for (const [block, value] of Object.entries(ciDoc ?? {})) {
+    if (value === null || typeof value !== 'object') continue;
+    for (const phase of ['before_script', 'script', 'after_script']) {
+      const rawSteps = value[phase];
+      if (!Array.isArray(rawSteps) || seen.has(rawSteps)) continue;
+      seen.add(rawSteps);
+      const steps = rawSteps.flat(Infinity).map(String);
+      const installIdx = steps.findIndex((step) => NPM_CI_RE.test(step));
+      const guardIdx = steps.findIndex((step) => GUARD_COMMAND_RE.test(step));
+      if (installIdx === -1 || guardIdx === -1) continue;
+      lists.push({ block, phase, guardAfterInstall: guardIdx > installIdx });
+    }
+  }
+  return lists;
+}
+// ci-guard-derivation:end
+
+const installAndGuardLists = deriveInstallAndGuardLists(
+  loadYaml(readFileSync(join(REPO_ROOT, '.gitlab-ci.yml'), 'utf8')),
+);
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -224,20 +272,14 @@ describe('check-package-manager.mjs', () => {
 
     // -----------------------------------------------------------------------
     // Fake-regression check (testing.md "Negative-Assertion Fake-Regression
-    // Check"): this GREEN/RED pair proves the w3 guard actually bites. The
-    // GREEN test is the baseline (no stray lockfile -> no finding); the RED
-    // test PLANTS the exact drift the guard exists to catch (a stray
-    // untracked pnpm-lock.yaml sitting next to package-lock.json) and asserts
-    // the guard reports it. During authoring this RED test's expectation was
-    // temporarily flipped to `toEqual([])` to confirm it goes red before
-    // being restored to the finding-asserting form below (see acceptance
-    // evidence in the agent report for the transcript of both runs).
+    // Check"): the RED test below PLANTS the exact drift the guard exists to
+    // catch (a stray untracked pnpm-lock.yaml sitting next to
+    // package-lock.json) and asserts the guard reports it. Its GREEN half is
+    // the first test in this describe block ("returns no findings for a clean
+    // repo…") — same fixture, same call, `toEqual([])`; a second, byte-identical
+    // copy of it used to sit here purely to be adjacent to the RED case, which
+    // is duplication, not coverage (TV-002), so it was removed.
     // -----------------------------------------------------------------------
-
-    it('GREEN baseline: no w3 finding when no stray pnpm-lock.yaml is present', () => {
-      makeCleanNpmRepo(tmp);
-      expect(checkWorkingTreeDrift(tmp)).toEqual([]);
-    });
 
     it('RED path (guard bites): reports w3 when a stray untracked pnpm-lock.yaml is planted', () => {
       makeCleanNpmRepo(tmp);
@@ -491,17 +533,43 @@ describe('check-package-manager.mjs', () => {
       expect(rootPackageJson.scripts.pretest).toBeUndefined();
     });
 
-    it('.husky/pre-commit invokes check-package-manager.mjs', () => {
-      const preCommit = readFileSync(join(REPO_ROOT, '.husky', 'pre-commit'), 'utf8');
-      expect(preCommit).toContain('node scripts/check-package-manager.mjs');
+    it('.husky/pre-commit invokes check-package-manager.mjs in command position', () => {
+      // The hook mentions the guard three times: a header comment (stage list),
+      // the real invocation, and an `echo "Run \`node scripts/…\`"` remediation
+      // hint. A file-wide `toContain` — the previous form — is satisfied by
+      // EITHER non-executable mention, so it stayed green with the invocation
+      // itself deleted. Scope to lines whose COMMAND position is the guard.
+      const commandLines = readFileSync(join(REPO_ROOT, '.husky', 'pre-commit'), 'utf8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => !line.startsWith('#'));
+
+      expect(commandLines.filter((line) => GUARD_COMMAND_RE.test(line))).toHaveLength(1);
     });
 
-    it('.gitlab-ci.yml before_script invokes check-package-manager.mjs after npm ci', () => {
-      const ciConfig = readFileSync(join(REPO_ROOT, '.gitlab-ci.yml'), 'utf8');
-      const npmCiIndex = ciConfig.indexOf('- npm ci');
-      const guardIndex = ciConfig.indexOf('node scripts/check-package-manager.mjs');
-      expect(npmCiIndex).toBeGreaterThan(-1);
-      expect(guardIndex).toBeGreaterThan(npmCiIndex);
+    // -----------------------------------------------------------------------
+    // CI wiring, asserted against the PARSED job graph (#958 finding 1).
+    //
+    // The previous form compared byte offsets in the raw file:
+    //   ciConfig.indexOf('- npm ci') vs ciConfig.indexOf('node scripts/…')
+    // `- npm ci` occurs twice (the shared node-setup anchor and the
+    // vault-integration-watcher job) and so does the guard (the anchor and the
+    // standalone package-manager-guard job). Deleting the guard from the
+    // anchor's before_script therefore only slid `indexOf` forward to the
+    // standalone job's occurrence — still numerically after the first
+    // `- npm ci` — so the assertion stayed GREEN while the wiring it claimed to
+    // check was gone. A file-wide offset is not evidence about a block.
+    //
+    // The property that is actually load-bearing is per-block ORDER: inside one
+    // executable step list, the guard runs after the install it is verifying.
+    // js-yaml resolves anchors and `<<:` merge keys, so the inheriting jobs
+    // share the anchor's resolved array (deduped by identity below) and the
+    // assertion follows a rename of the anchor or its consumers.
+    // -----------------------------------------------------------------------
+
+    it('runs the guard after `npm ci` inside the same CI step list', () => {
+      expect(installAndGuardLists.length).toBeGreaterThan(0);
+      expect(installAndGuardLists.filter((entry) => !entry.guardAfterInstall)).toEqual([]);
     });
   });
 });

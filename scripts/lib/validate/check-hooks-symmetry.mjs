@@ -12,6 +12,20 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+// The pi projection is IMPORTED, not copied: pi-hook-bridge.mjs is the runtime
+// that actually rewrites `hook_event_name` for every Pi event, so it is the one
+// source of truth for which pi event becomes which Claude event (#953). A local
+// literal here was a second copy of the same 5 pairs — it could drift silently,
+// and the validator would then certify a projection the runtime does not use.
+// Deliberately NOT the same for `cursorEventMap` below: nothing at runtime
+// projects Cursor events (Cursor calls the handlers directly), so the
+// validator's copy is the only witness there. Even if a runtime source existed,
+// reading Check 3's expectation from the artefact it checks would make the
+// check self-certifying — the "undocumented pi-native event" test at
+// tests/scripts/check-hooks-symmetry.test.mjs would become unreachable. Keep
+// cursorEventMap validator-owned; do not "helpfully" collapse it too.
+import { PI_TO_CANONICAL_EVENT } from '../pi-hook-bridge.mjs';
+
 const PLUGIN_ROOT = process.argv[2];
 if (!PLUGIN_ROOT) {
   console.error('Usage: check-hooks-symmetry.mjs <plugin-root>');
@@ -30,13 +44,10 @@ const DOCUMENTED_ASYMMETRIES = {
   // Claude/Codex events with no Pi-native v1 mapping yet.
   piMissingFromMain: ['PostToolUseFailure', 'PostToolBatch', 'SubagentStart', 'SubagentStop', 'CwdChanged'],
   // Pi-native extension events that map onto Claude/Codex hook events.
-  piEventMap: {
-    session_start: 'SessionStart',
-    session_shutdown: 'SessionEnd',
-    tool_call: 'PreToolUse',
-    tool_result: 'PostToolUse',
-    agent_end: 'Stop',
-  },
+  // Bound to the runtime constant (see the import comment): the projection this
+  // validator checks hooks-pi.json against is the SAME object pi-hook-bridge.mjs
+  // applies to live payloads, so the two cannot drift apart.
+  piEventMap: PI_TO_CANONICAL_EVENT,
   // Cursor-IDE-native events projected onto the logical Claude events they
   // correspond to. WITHOUT this projection Check 6 compared a FOREIGN event
   // namespace against hooks.json: not one key matched, the per-event loop
@@ -74,6 +85,13 @@ const DOCUMENTED_ASYMMETRIES = {
         'pre-bash-destructive-guard.mjs',
         'pre-bash-staging-fence.mjs',
         'pre-bash-memory-propose-audit.mjs',
+        // pre-bash-sessions-ledger-guard (#958): same Bash-payload dependency
+        // as the guards above — it reads tool_name === 'Bash' and
+        // tool_input.command, neither of which any Codex bridge delivers
+        // (measured 2026-07-31: `grep -rn "tool_name" scripts/lib/codex/*.mjs`
+        // → 0 matches, exit 1). A manifest entry would be a silent no-op, not
+        // enforcement — #919-P2 class. Gap registered, not faked.
+        'pre-bash-sessions-ledger-guard.mjs',
         'pre-bash-templates-first.mjs',
         'pre-bash-issue-budget.mjs',
         'enforce-commands.mjs',
@@ -97,8 +115,14 @@ const DOCUMENTED_ASYMMETRIES = {
       // pre-bash-templates-first + pre-bash-issue-budget (#946): status-quo
       // gaps predating #942. Operator decision 2026-07-31 — NOT ported, gap
       // registered instead; #946 tracks the port-or-justify follow-up.
+      // pre-bash-sessions-ledger-guard (#958): NOT ported. Pi has a payload
+      // adapter (pi-hook-bridge.mjs), so unlike codex/cursor this one is
+      // portable — but wiring it is a separate decision with its own test
+      // surface, and the operator's 2026-07-31 rule is that a gap gets
+      // registered rather than faked. #958 tracks the port-or-justify.
       PreToolUse: [
         'skill-invocation-telemetry.mjs',
+        'pre-bash-sessions-ledger-guard.mjs', // #958
         'pre-bash-templates-first.mjs', // #946
         'pre-bash-issue-budget.mjs',    // #946
       ],
@@ -125,6 +149,7 @@ const DOCUMENTED_ASYMMETRIES = {
         'pre-bash-destructive-guard.mjs',    // #919
         'pre-bash-staging-fence.mjs',        // #919
         'pre-bash-memory-propose-audit.mjs', // #919
+        'pre-bash-sessions-ledger-guard.mjs',// #919 (#958 — needs tool_name === 'Bash')
         'pre-bash-templates-first.mjs',      // #919
         'pre-bash-issue-budget.mjs',         // #919
       ],

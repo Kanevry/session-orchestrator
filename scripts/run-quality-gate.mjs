@@ -49,6 +49,14 @@ const GATES_DIR = join(__dirname, 'lib', 'gates');
 
 const VALID_VARIANTS = ['baseline', 'incremental', 'full-gate', 'per-file'];
 
+/**
+ * Ceiling on the gate sub-script's captured stdout. A gate writes one JSON line
+ * (5-line command tails + ≤50 debug artifacts), so this is effectively
+ * unreachable — it exists only so a pathological gate cannot be killed
+ * mid-write by the default 1 MiB spawnSync cap.
+ */
+const GATE_STDOUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 const DEFAULT_TEST_CMD = 'npm test';
 const DEFAULT_TYPECHECK_CMD = 'npm run typecheck';
 const DEFAULT_LINT_CMD = 'npm run lint';
@@ -148,6 +156,57 @@ function extractCommand(policy, policyKey, configKey, configJson, defaultCmd) {
   return defaultCmd;
 }
 
+/**
+ * Lift the suite counts out of a gate sub-script's JSON stdout envelope (#954).
+ *
+ * Returns `null` — never a zero triple — whenever the run produced no real
+ * measurement, so an ABSENT `counts` field stays distinguishable from a
+ * measured `{failed: 0}`. That distinction is the entire point of the field.
+ * Five mechanical rejections, in order:
+ *
+ *   1. stdout is absent or not parseable JSON;
+ *   2. `test` is not the object form — only `gate-full.mjs` reports numbers;
+ *      `gate-{baseline,incremental,per-file}.mjs` emit a bare status STRING, so
+ *      a non-full-gate variant structurally cannot carry counts;
+ *   3. the test gate was skipped (`status` neither `pass` nor `fail`);
+ *   4. the test COMMAND was detected as a stub (`echo …` / no-op) — a stub's
+ *      output parses to 0/0, which would be a fabricated zero;
+ *   5. `total <= 0` — `extractTestCounts` returns 0/0/0 both for "no `<N> passed`
+ *      marker in the output" and for a genuinely empty run, and the two are
+ *      indistinguishable from here, so we decline to claim a measurement.
+ *
+ * `failed` is derived: `gate-full.mjs` publishes `total` (= passed + failed)
+ * and `passed`, so `failed = total - passed` recovers the third number without
+ * re-parsing the suite output.
+ *
+ * Never throws — a malformed envelope yields `null`.
+ *
+ * @param {string} stdout — the gate sub-script's captured stdout.
+ * @returns {{ passed: number, failed: number, total: number }|null}
+ */
+function suiteCountsFromGateStdout(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  const test = parsed.test;
+  if (test === null || typeof test !== 'object' || Array.isArray(test)) return null;
+  if (test.status !== 'pass' && test.status !== 'fail') return null;
+  if (parsed.stubbed && typeof parsed.stubbed === 'object' && parsed.stubbed.test) return null;
+
+  const { total, passed } = test;
+  if (!Number.isFinite(total) || !Number.isFinite(passed)) return null;
+  if (total <= 0 || passed < 0 || passed > total) return null;
+
+  return { passed, failed: total - passed, total };
+}
+
 // Load policy file (never throws)
 const repoRoot = process.cwd();
 const policy = loadQualityGatesPolicy(repoRoot);
@@ -193,12 +252,24 @@ const env = {
   SESSION_START_REF: sessionStartRef,
 };
 
+// stdout is PIPED (not inherited) so the suite counts the gate already computed
+// can be lifted straight off its JSON envelope into telemetry (#954) instead of
+// travelling as prose through the STATE.md header. The envelope is re-emitted
+// verbatim below, so the stdout contract is unchanged — a gate sub-script writes
+// exactly one JSON line at the very end (its own child commands are captured by
+// `runCheck`), so nothing streamed before and nothing streams now. stderr stays
+// inherited, keeping warnings live.
 const result = spawnSync('node', [gatePath], {
   env,
-  stdio: 'inherit',
+  stdio: ['inherit', 'pipe', 'inherit'],
+  encoding: 'utf8',
+  maxBuffer: GATE_STDOUT_MAX_BUFFER_BYTES,
 });
 
-if (result.error) {
+const gateStdout = typeof result.stdout === 'string' ? result.stdout : '';
+if (gateStdout) process.stdout.write(gateStdout);
+
+if (result.error && typeof result.status !== 'number') {
   die(`Failed to run gate script: ${result.error.message}`);
 }
 
@@ -207,12 +278,14 @@ if (result.error) {
 // events.mjs (#941); this CLI wrapper runs against the CWD `repoRoot`, so the
 // bare emitEvent destination (SO_PROJECT_DIR default) is correct here.
 // Best-effort: a telemetry failure must NEVER alter the gate's authoritative
-// exit code.
+// exit code — which is why the counts parse also lives inside this try.
 const exitCode = result.status ?? 1;
 try {
+  const counts = suiteCountsFromGateStdout(gateStdout);
   await emitEvent(`orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`, {
     variant,
     exit_code: exitCode,
+    ...(counts ? { counts } : {}),
     ...sessionAttribution(repoRoot),
   });
 } catch { /* best-effort telemetry — gate result is authoritative */ }

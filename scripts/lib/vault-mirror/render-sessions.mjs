@@ -19,6 +19,26 @@ import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
 /**
+ * Placeholders for an ABSENT optional field (session-reviewer M1).
+ *
+ * These are the tokens the v2/v3 generators already use — `'?'` inside a wave
+ * table cell (generateSessionNoteV2's wave rows), `'n/a'` in a prose bullet
+ * (both v2 and v3). The v1 generator predates both guards and interpolated the
+ * same optional fields raw, so any record lacking one wrote the literal string
+ * `undefined` into a vault note a human reads.
+ *
+ * ── ABSENT IS NOT ZERO ─────────────────────────────────────────────────────
+ *
+ * Every use site must apply these with `??`, NEVER `||`. A wave that genuinely
+ * changed 0 files, or dispatched 0 agents, has a MEASURED zero and must render
+ * `0`; only a field the producer never wrote is unknown. `||` collapses that
+ * distinction (`0 || '?'` → `'?'`, asserting "unknown" about a real
+ * measurement); `??` preserves it (`0 ?? '?'` → `0`).
+ */
+const MISSING_CELL = '?';
+const MISSING_VALUE = 'n/a';
+
+/**
  * Session-ledger status → vault-frontmatter status mapping (#909).
  *
  * ── WHY A MAPPING AND NOT A PASS-THROUGH ───────────────────────────────────
@@ -188,8 +208,18 @@ export function generateSessionNote(entry, options = {}) {
   const created = toDate(started_at);
   const updated = toDate(completed_at);
   const durationMin = Math.round((duration_seconds ?? 0) / 60);
-  const { planned_issues, completed, carryover, emergent, completion_rate } = effectiveness;
-  const ratePercent = Math.round(completion_rate * 100) + '%';
+  // #M1: every `effectiveness` sub-field is OPTIONAL (validator.mjs
+  // `_validateOptionalFields` shape-checks the object, never its members), so a
+  // raw interpolation writes the literal string `undefined` into a note a human
+  // reads. `??` (never `||`) is load-bearing: a measured `0` must survive as `0`,
+  // only a genuinely absent value becomes the placeholder. The alias reads are
+  // ordered v1-field-first so a record that rendered a value before renders the
+  // exact same value now — this change can only ever replace `undefined`/`NaN`.
+  const { planned_issues, carryover, completion_rate } = effectiveness;
+  const completed = effectiveness.completed ?? effectiveness.completed_issues ?? MISSING_VALUE;
+  const emergent = effectiveness.emergent ?? effectiveness.unplanned_finds ?? MISSING_VALUE;
+  const ratePercent =
+    typeof completion_rate === 'number' ? Math.round(completion_rate * 100) + '%' : MISSING_VALUE;
   const { complete, partial, failed, spiral } = agent_summary;
 
   const titleValue = `Session ${created} — ${session_type}`;
@@ -205,11 +235,17 @@ export function generateSessionNote(entry, options = {}) {
   const vaultStatus = vaultStatusForSession(entry);
   const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
 
-  // Build wave table rows
+  // Build wave table rows.
+  //
+  // #M1: only `wave` and `role` are schema-REQUIRED per wave (validator.mjs
+  // `_validateWaves`); `agent_count`, `files_changed` and `quality` are never
+  // validated, so all three are optional and were rendering as the literal
+  // string `undefined`. Guarded with the same `?? '?'` the v2 generator's wave
+  // rows already used — `??` so a measured `0` still renders `0`.
   const waveRows = waves
     .map(
       (w) =>
-        `| ${w.wave} | ${w.role} | ${w.agent_count} | ${w.files_changed} | ${w.quality} |`,
+        `| ${w.wave} | ${w.role} | ${w.agent_count ?? MISSING_CELL} | ${w.files_changed ?? MISSING_CELL} | ${w.quality ?? MISSING_CELL} |`,
     )
     .join('\n');
 
@@ -239,7 +275,7 @@ ${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 - **Type:** ${session_type}${platformBullet}
 - **Duration:** ${durationMin}m (${started_at} → ${completed_at})
 - **Waves:** ${total_waves} · **Agents:** ${total_agents} · **Files changed:** ${total_files_changed}
-- **Effectiveness:** planned=${planned_issues}, completed=${completed}, carryover=${carryover}, emergent=${emergent}, rate=${ratePercent}
+- **Effectiveness:** planned=${planned_issues ?? MISSING_VALUE}, completed=${completed}, carryover=${carryover ?? MISSING_VALUE}, emergent=${emergent}, rate=${ratePercent}
 
 ## Wave breakdown
 

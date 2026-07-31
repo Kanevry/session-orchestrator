@@ -56,6 +56,7 @@ import {
   computeReport,
   formatMessage,
   formatSnapshotMissingNotice,
+  sessionAgeMs,
   MAX_CONTEXT_CHARS,
   MAX_REPORTED_PATHS,
 } from '../../hooks/post-bash-write-verify.mjs';
@@ -325,6 +326,102 @@ describe('formatSnapshotMissingNotice', () => {
     expect(notice).toContain('the session started 180 min ago');
     // Fail-safe direction: neither clock readable ⇒ silence, never an alarm.
     expect(formatSnapshotMissingNotice({ sessionAge: null, scopeAge: null })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sessionAgeMs — the two-clock minimum (#957 finding 2)
+// ---------------------------------------------------------------------------
+
+describe('sessionAgeMs', () => {
+  const NOW = Date.parse('2026-07-31T18:00:00.000Z');
+  const MINUTES = 60_000;
+  const HOURS = 3_600_000;
+  let repo;
+
+  /** Write one of the two clock files; pass null to leave it absent. */
+  const writeClock = (name, body) => {
+    const file = join(repo, '.orchestrator', name);
+    writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
+  };
+  const isoAgo = (ms) => new Date(NOW - ms).toISOString();
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'so-session-age-')));
+    mkdirSync(join(repo, '.orchestrator'), { recursive: true });
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('takes the MINIMUM of both clocks, so a leftover current-session.json cannot fake an hours-old session (#957)', () => {
+    // Bug caught: the single-clock read returned `now - timestamp` for ANY
+    // finite parse, however old. On a harness where
+    // `.orchestrator/current-session.json` survives from a PREVIOUS session,
+    // a session seconds old reported an age of hours and fired the
+    // lost-snapshot notice on its very first Bash call.
+    //
+    // The fresh clock is `session.lock`, written by session-start Phase 1.2 —
+    // a skill step, so it runs on every harness, not only where a hook does.
+    writeClock('current-session.json', { timestamp: isoAgo(6 * HOURS) }); // leftover
+    writeClock('session.lock', { started_at: isoAgo(30_000) }); // this session
+
+    expect(sessionAgeMs(repo, NOW)).toBe(30_000);
+    // …and the notice the age feeds is therefore SILENT, which is the point.
+    expect(formatSnapshotMissingNotice({ sessionAge: sessionAgeMs(repo, NOW), scopeAge: 30_000 })).toBeNull();
+
+    // The guard must NOT go blind in the regime it was built for: once the
+    // session is GENUINELY long both clocks agree and the notice fires. This
+    // is what a hard staleness cap would have destroyed.
+    writeClock('current-session.json', { timestamp: isoAgo(14 * HOURS) });
+    writeClock('session.lock', { started_at: isoAgo(14 * HOURS) });
+    expect(sessionAgeMs(repo, NOW)).toBe(14 * HOURS);
+    const notice = formatSnapshotMissingNotice({ sessionAge: sessionAgeMs(repo, NOW), scopeAge: 30_000 });
+    expect(notice).toContain('the session started 840 min ago');
+  });
+
+  it('degenerates to whichever single clock is readable, and to null when neither is', () => {
+    // Bug caught: reading a SECOND file must not make the hook depend on it.
+    // Only current-session.json (the pre-#957 world, and every existing test).
+    writeClock('current-session.json', { timestamp: isoAgo(45 * MINUTES) });
+    expect(sessionAgeMs(repo, NOW)).toBe(45 * MINUTES);
+
+    // Only session.lock — a harness that never wrote current-session.json now
+    // has a session clock at all, where before it had none.
+    rmSync(join(repo, '.orchestrator', 'current-session.json'));
+    writeClock('session.lock', { started_at: isoAgo(20 * MINUTES) });
+    expect(sessionAgeMs(repo, NOW)).toBe(20 * MINUTES);
+
+    // Fail-safe direction is SILENCE: unreadable clocks contribute nothing
+    // rather than a guess. Garbage JSON, a missing field, a non-ISO string and
+    // a non-string value must each yield null, never NaN and never an alarm.
+    for (const [cs, lock] of [
+      ['not json at all', '{"started_at":'],
+      [{ nope: 1 }, { nope: 1 }],
+      [{ timestamp: 'yesterday' }, { started_at: 'yesterday' }],
+      [{ timestamp: 12345 }, { started_at: null }],
+    ]) {
+      writeClock('current-session.json', cs);
+      writeClock('session.lock', lock);
+      expect(sessionAgeMs(repo, NOW)).toBeNull();
+    }
+
+    rmSync(join(repo, '.orchestrator'), { recursive: true });
+    expect(sessionAgeMs(repo, NOW)).toBeNull();
+  });
+
+  it('drops a FUTURE timestamp instead of letting it win the minimum', () => {
+    // Bug caught: min() over raw `now - started_at` lets a single timestamp in
+    // the future produce a NEGATIVE age that wins every comparison and silences
+    // the notice forever. That would be a brand-new silence range bought with
+    // one forgery — precisely what choosing min() over a staleness cap avoided.
+    writeClock('current-session.json', { timestamp: isoAgo(-2 * HOURS) }); // 2 h in the FUTURE
+    writeClock('session.lock', { started_at: isoAgo(9 * HOURS) });
+
+    expect(sessionAgeMs(repo, NOW)).toBe(9 * HOURS);
+    expect(formatSnapshotMissingNotice({ sessionAge: sessionAgeMs(repo, NOW) })).toContain('540 min ago');
+
+    // A lone future clock is unknown, not "age zero".
+    rmSync(join(repo, '.orchestrator', 'session.lock'));
+    expect(sessionAgeMs(repo, NOW)).toBeNull();
   });
 });
 
