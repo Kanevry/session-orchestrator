@@ -287,10 +287,17 @@ export function snapshotPathFor(repoRoot) {
  *   dirty path; null = not attributable (deleted path / stat failure)
  * @returns {{ report: string[], nextSnapshot: { signature: string, paths: string[] }, rebaselined: boolean }}
  */
-export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null }) {
+export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null }) {
   const outOfScope = dirtyPaths
     .filter((p) => !isIgnoredPath(p))
-    .filter((p) => !isInScope(p, allowedPaths));
+    .filter((p) => !isInScope(p, allowedPaths))
+    // The wave-scope.json control file is out-of-scope by construction (it is
+    // never under allowedPaths) but its CHANGES are reported via the content-hash
+    // control-notice path, not here. Excluding it keeps the mtime re-baseline
+    // filter from reporting the scope file against ITSELF — its mtime always
+    // equals scopeMtimeMs, so the MED-3 `>=` boundary would otherwise flag it on
+    // every first run (#938 MED-3 follow-through).
+    .filter((p) => p !== scopeRelPath);
 
   const rebaselined = !snapshot || snapshot.signature !== signature;
   const seen = rebaselined || !Array.isArray(snapshot?.paths) ? new Set() : new Set(snapshot.paths);
@@ -301,9 +308,15 @@ export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, s
     report = outOfScope.filter((p) => !seen.has(p));
   } else if (typeof scopeMtimeMs === 'number' && typeof mtimeMs === 'function') {
     // #938 vectors 2+3: a re-baseline is only silent about PRE-WAVE dirt.
+    // MED-3 (W4 panel): `>=`, not `>`. A write whose mtime lands on the SAME
+    // coarse-FS tick as the scope file (or the same instant) is dirt from THIS
+    // wave, not pre-wave — a strict `>` silently dropped it (equal-mtime
+    // false-negative). The deeper evasion (an actor bumping the scope file's
+    // mtime ABOVE its own out-of-scope write to force a silent re-baseline)
+    // remains a warn-only detection-integrity gap — see follow-up.
     report = outOfScope.filter((p) => {
       const m = mtimeMs(p);
-      return typeof m === 'number' && m > scopeMtimeMs;
+      return typeof m === 'number' && m >= scopeMtimeMs;
     });
   } else {
     // No mtime signal (scope-file stat failed / caller supplied none): degrade
@@ -580,6 +593,7 @@ async function main() {
     snapshot,
     signature,
     scopeMtimeMs,
+    scopeRelPath: relScopePath,
     mtimeMs: (rel) => {
       try {
         return statSync(path.join(repoRoot, rel)).mtimeMs;
@@ -620,7 +634,25 @@ async function main() {
 // imported (the test suite imports named exports; a top-level main() then runs
 // on import and its .finally(process.exit(0)) trips vitest's process.exit guard,
 // surfacing as an unhandled rejection that can cause false-positive tests).
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+//
+// #938 MED-2 (W4 panel): compare the REAL path of BOTH sides. `process.argv[1]`
+// carries the path as passed (symlink-bearing under a symlinked plugin install),
+// while `import.meta.url` is realpath-resolved by Node's default loader — a bare
+// string compare then reads false and silently no-ops the whole scope-detector
+// under a symlinked `$CLAUDE_PLUGIN_ROOT`. realpath'ing both sides also survives
+// `--preserve-symlinks` (where import.meta.url stays symlinked instead).
+function invokedAsScript() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(entry) === realpathSync(self);
+  } catch {
+    // argv[1] unresolvable (deleted/renamed mid-run) — best-effort raw compare.
+    return entry === self;
+  }
+}
+const isMain = invokedAsScript();
 if (isMain) {
   // Advisory hook: never block, never surface an error to the tool call.
   main().catch(() => {}).finally(() => process.exit(0));

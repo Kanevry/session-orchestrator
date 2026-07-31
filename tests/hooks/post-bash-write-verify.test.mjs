@@ -30,7 +30,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -165,6 +165,22 @@ describe('computeReport', () => {
     expect(r.report).toEqual(['out-of-scope.mjs']);
     expect(r.rebaselined).toBe(true);
     expect(r.nextSnapshot.paths).toEqual(['scripts/lib/io.mjs', 'out-of-scope.mjs']);
+  });
+
+  it('re-baseline reports an out-of-scope write whose mtime EQUALS the scope file (#938 MED-3, W4 panel)', () => {
+    // Bug caught: a strict `>` dropped a write landing on the SAME coarse-FS
+    // tick as the wave-scope.json write — a same-instant out-of-scope write from
+    // THIS wave read as pre-wave dirt and stayed silent. `>=` attributes it.
+    const r = computeReport({
+      dirtyPaths: ['out-of-scope.mjs'],
+      allowedPaths: allowed,
+      snapshot: null,
+      signature: sig,
+      scopeMtimeMs: 1_000,
+      mtimeMs: () => 1_000, // exactly equal to the scope file
+    });
+    expect(r.report).toEqual(['out-of-scope.mjs']);
+    expect(r.rebaselined).toBe(true);
   });
 
   it('first-run re-baseline degrades to silence without an mtime signal (no false blame)', () => {
@@ -341,6 +357,36 @@ describe('post-bash-write-verify E2E', () => {
     const envelope = JSON.parse(res.stdout.trim());
     expect(envelope.hookSpecificOutput.hookEventName).toBe('PostToolUse');
     expect(envelope.hookSpecificOutput.additionalContext).toContain('out-of-scope.mjs');
+  });
+
+  it('still runs when invoked through a SYMLINKED path (#938 MED-2, W4 panel)', () => {
+    // Bug caught: `isMain = argv[1] === fileURLToPath(import.meta.url)` read
+    // false under a symlinked $CLAUDE_PLUGIN_ROOT (argv[1] is the symlink path,
+    // import.meta.url is realpath-resolved) → main() never ran → the whole
+    // scope-detector silently no-op'd. realpath'ing both sides fixes it.
+    writeScope(['hooks/**']);
+    // A symlink to the REAL hook file, invoked as the script entry point.
+    const linkDir = mkdtempSync(join(tmpdir(), 'pbwv-symlink-'));
+    const linkedHook = join(linkDir, 'post-bash-write-verify.mjs');
+    symlinkSync(HOOK, linkedHook);
+    try {
+      const baseline = () => spawnSync(process.execPath, [linkedHook], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x' } }),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmp, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+        timeout: 20_000,
+      });
+      expect(baseline().stderr).toBe(''); // clean baseline via the symlink → main() ran
+      writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+      const res = baseline();
+      expect(res.status).toBe(0);
+      // The decisive assertion: main() ran through the symlink and produced the
+      // warning. Before the fix this was empty (hook silently disabled).
+      expect(res.stderr).toContain('bash-write-verify');
+      expect(res.stderr).toContain('out-of-scope.mjs');
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true });
+    }
   });
 
   it('is SILENT when the Bash call wrote inside allowedPaths', () => {

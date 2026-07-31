@@ -11,6 +11,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`skills/contract-version-bump/`** — reusable, distributable skill for version-bumping machine-readable contracts (JSON Schema, API specs, config schemas): classifies the change against the contract's OWN versioning rule (not generic semver instinct), finds every version literal and vendored copy across this repo and `cross-repos:`, checks whether every known consumer evaluates each new/changed schema keyword, applies the bump consistently, writes a Keep-a-Changelog entry, and reports downstream drift. Codifies three traps from a real case (GitLab issue #17, `aiat-enablement` repo, 2026-07-25). Ships with `/contract-version-bump`.
 
+## [3.18.0] - 2026-07-31
+
+Panel-follow-ups & consolidation release. Headline: the review panel's own findings from the
+prior deep session, fixed and re-verified — three self-silencing vectors closed in the
+bash-write-verify scope detector, a credential that could no longer reach argv, and the
+instrument deduplication the panel asked for — alongside an instruction-corpus diet (always-on
+directive budget 471→~440) and a TV-003 consolidation tranche (net test count down, catch-power
+up via a mutation sweep). The panel found real bugs in this session's own coordinator-written
+code again — the sixth consecutive confirmation — and W5 fixed all four.
+
+### Added
+
+- **Instruction-delivery measurement + baseline ablation axis (#936)** — `evals/instruction-ablation/run.mjs` gains a `--rules-source repo|baseline` switch (host-local precedence, no hardcoded path) so one command ablates the fleet-wide `projects-baseline` corpus; the decision rule is pre-registered in `docs/instruction-delivery.md §6`, fail-safe toward KEEP because a wrong cut regresses fourteen repos.
+- **hooks-symmetry Check 6 (#942)** — `check-hooks-symmetry.mjs` now compares handler SETS per event, not just event keys, so a hook wired on only one platform is no longer structurally invisible; `post-bash-write-verify` ported to Pi, Codex documented as an exception.
+- **Mutation-testing sweep (#910)** — 8 modules, 46 mutants, 70% kill-rate; eight need-gated tests close the highest-value survivors (boundary comparisons + wiring/fail-safe), report at `docs/mutation-testing/`.
+- **CPU 5-minute load axis (#943)** — `resource-probe` emits `cpu_load_5m`/`cpu_load_5m_pct`; the wave resource gate judges CPU on `min(1m, 5m)` so it no longer halves a wave on the decaying 1-minute average of its own just-finished quality run.
+- **Two glob-scoped reconcile rules** — `a-green-quality-gate-is-not-CI-evidence` and `a-file-wide-toContain-judges-one-block` (both conditional, zero always-on ceiling cost); the bash-3.2 `case`-in-`$()` gotcha folded into `bash-harness-pitfalls.md`.
+- **CI advisory job `test-value-bans`** — non-blocking, runs the narrowed ban scanner; `.husky/pre-push` gate + schema-drift marker guard now have tests (#940).
+
+### Fixed
+
+- **#907 credential leak (CWE-214)** — remote-URL credentials are stripped at the single source (`resolveRawRemoteUrl`) before reaching any `-R`/`--repo`/`--hostname` argv position or verbose log. The W4 panel then found the first fix incomplete for a raw `@` inside the token (`user:gl@token@host`); the userinfo class now binds to the LAST `@` before the authority ends, closing the residual. A bare `git@host` SSH login is left untouched.
+- **#938 bash-write-verify self-silencing (3 vectors)** — the control file left the hook's own ignore list; the gate is read from the recorded snapshot, not the live file; a re-baseline reports out-of-scope dirt via mtime. W4-panel follow-through: the `isMain` guard now realpath's both sides (a symlinked plugin install no longer silently disables the hook), and the mtime re-baseline uses `>=` with the scope file excluded (equal-mtime false-negative closed).
+- **#914 fabricated completion timestamp** — the abandoned-session backfill no longer stamps the backfill-run wall-clock as `completed_at` (which produced ~64h of phantom runtime on real records); it uses the last events-attested timestamp with a `_completed_at_estimated` flag.
+- **#939 orphan telemetry records** — the `subagents.jsonl` orphan-stop class (harness-side phantom SubagentStops) is documented on BOTH the lifetime (51%) and running-window (~93%) numbers, with a `start_record_found` write-time discriminator.
+- **#911 check-test-value-bans over-reporting + ReDoS** — B1 narrowed from 352 findings to 9 (dynamic-derived counts only), the length regex hardened from >2min to 0ms on pathological input, and B4 extended with a scope-gated `systemMessage` key.
+- **#886 eight instruction contradictions (C-1…C-8)** resolved against the code; the C-3 divergence (code-implementer test-writing ban vs the wave-executor's need-gated briefing) reconciled to the need-gated model on both surfaces.
+
+### Changed
+
+- **Instruction-corpus diet** — always-on directive budget 471→~440/480: `loop-and-monitor.md` pointer-ised into ADR-0010 (71→37 directives, body halved) with all eight delta-sync footers preserved (#885); `lsp.md`/`owner-persona.md`/`quality-gates-autofix.md` trimmed to pointers (#884).
+- **TV-003 consolidation** — 51 prose-presence pin tests removed and one implementation-mirror deleted (#912-T1); `config.test.mjs` split into seven feature-domain files (151 tests preserved); tests:src 1.7135→1.69.
+- **Chores** — test badge floor `12,000+`, `.vault.yaml` techStack `bash`→`nodejs`, CHANGELOG archive split into `docs/changelog/`.
+
 ## [3.17.0] - 2026-07-21
 
 Telemetry & curation release. Headline: **opt-in anonymous usage telemetry** (#841) — a

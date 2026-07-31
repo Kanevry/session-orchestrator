@@ -376,6 +376,29 @@ describe('resolveRepoSpec / resolveRepoHost — embedded-credential stripping (#
     const line = 'push to git@gitlab.example.com:group/project.git';
     expect(redactUrlCredentials(line)).toBe(line);
   });
+
+  // #907 MED-1 (W4 panel): a raw `@` INSIDE the token/password left a partial
+  // credential behind when the userinfo class stopped at the first `@`. The
+  // greedy match must bind `@` to the LAST `@` before the authority ends.
+  it('strips the WHOLE userinfo when the token itself contains a raw @ (no partial-secret residual)', () => {
+    const out = stripUrlCredentials('https://gitlab-ci-token:gl@pat-SECRET@gitlab.example.com/g/p.git');
+    // The panel exploit: a first-@-only match left "pat-SECRET@" in the -R argv.
+    expect(out).toBe('https://gitlab.example.com/g/p.git');
+    expect(out).not.toContain('pat-SECRET');
+    expect(out).not.toContain('gitlab-ci-token');
+  });
+
+  it('strips a nested user:pass@user:pass@host userinfo entirely', () => {
+    expect(stripUrlCredentials('https://a:b@c:d@host/owner/repo.git')).toBe('https://host/owner/repo.git');
+  });
+
+  it('redacts a raw-@ token in a log line without leaving a partial secret', () => {
+    const redacted = redactUrlCredentials(
+      'glab -R https://gitlab-ci-token:gl@pat-SECRET@gitlab.example.com/g/p.git',
+    );
+    expect(redacted).not.toContain('pat-SECRET');
+    expect(redacted).toContain('https://***@gitlab.example.com/g/p.git');
+  });
 });
 
 describe('resolveRepoHost (#872)', () => {

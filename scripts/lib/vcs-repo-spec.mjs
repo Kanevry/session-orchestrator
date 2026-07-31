@@ -88,10 +88,15 @@ function isUnsafeForArgv(value) {
  * Matches ONLY the `scheme://` URL forms (`https://`, `http://`, `ssh://`,
  * `git+ssh://`, …). The scp-like SSH form `git@host:path` has no `://` and is
  * therefore never matched — a bare SSH login user is not a credential. The
- * `[^/@\s]+@` userinfo class stops at the first `/`, so an `@` that appears in
- * a PATH (e.g. `.../path@ref`) is never mistaken for userinfo.
+ * userinfo class `[^/\s]+` stops at the first `/`, so an `@` that appears in a
+ * PATH (e.g. `.../path@ref`) is never mistaken for userinfo. Because `@` is NOT
+ * excluded from the class, a greedy match binds `@` to the LAST `@` before the
+ * authority ends — the real userinfo/host separator per RFC 3986 (and how
+ * glab/gh parse it). This closes the residual-credential leak where a raw `@`
+ * inside the token/password (`user:gl@token@host`, or nested `a:b@c:d@host`)
+ * previously left a partial secret after a first-`@`-only match (#907 MED-1).
  */
-const URL_WITH_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/@\s]+)@/gi;
+const URL_WITH_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/\s]+)@/gi;
 
 /**
  * Decide whether a matched `scheme://userinfo@` is a CREDENTIAL (strip/redact)
