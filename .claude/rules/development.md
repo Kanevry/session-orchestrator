@@ -60,7 +60,7 @@ Enforced by ESLint flat config (`eslint.config.mjs`) + Prettier. Notable behavio
 ## Documentation
 - CLAUDE.md in every project root (50-100 lines, lean).
 - Detailed rules in `.claude/rules/` with path-scoping.
-- API docs via JSDoc/TSDoc on public functions.
+- API docs via JSDoc/TSDoc on public functions (inline, code-surface documentation — the implementer's job; standalone/narrative docs like README and CLAUDE.md are the docs-writer's, see `agents/code-implementer.md` § Rules).
 - No README.md bloat — keep it minimal, link to docs.
 
 ## Corpus Freeze Marker (FROZEN-MANIFEST)
@@ -86,13 +86,10 @@ category-split fix.)
 - Template available in `templates/shared/.mise.toml`. Both `.nvmrc` and `.mise.toml` can coexist.
 
 ## Package Lifecycle & Versioning
-- **Patch** (`1.0.x`): bug fixes, doc corrections, internal refactors with no public API change.
-- **Minor** (`1.x.0`): new exports, new optional parameters, new sub-path entrypoints. Fully backwards-compatible.
-- **Major** (`x.0.0`): removed exports, renamed functions, changed required peer dep ranges, altered runtime behaviour. Never merge without a migration guide.
-- **Pre-release**: use `1.2.0-beta.1` for cross-repo validation before major bumps. Tag as `beta`, never as `latest`.
-- **Deprecation**: add `@deprecated` JSDoc + `console.warn` on first call. Keep deprecated API for at least one minor cycle (min 4 weeks). Remove in next major.
-- **Breaking changes**: `BREAKING CHANGE:` in commit footer, `major` changeset type, CHANGELOG "Migration" subsection with before/after code diff, `MIGRATION-vN.md` in package dir.
-- **Changesets + publishing**: tool-driven via `pnpm changeset`. Access control: all packages publish `access: restricted` to GitLab Package Registry (project 52). Never publish to public npm. `package.json` versions managed exclusively by `pnpm changeset version`.
+
+Semver: **patch** = fixes / doc / internal refactor (no public-API change); **minor** = additive, backwards-compatible (new exports, optional params, sub-path entrypoints); **major** = removed/renamed exports or changed runtime behaviour — never merge without a migration guide, a `BREAKING CHANGE:` commit footer, and a `MIGRATION-vN.md`. Deprecate with `@deprecated` + a first-call `console.warn`, keeping the old API one minor cycle (≥4 weeks) before removal.
+
+**Publishing (this repo):** session-orchestrator is **npm-canonical** (see § Package Management) and ships to the **public** npm registry via `npm publish --access public` — runbook `skills/npm-publish/SKILL.md`. There is no changeset tooling here (`.changeset/` does not exist); bump `package.json` `version` directly. The `pnpm changeset` / `access: restricted` / GitLab-Package-Registry (project 52) flow is a consumer-monorepo baseline convention that does **not** apply to this repo — do not reintroduce it.
 
 ## See Also
 security.md · testing.md · mvp-scope.md · cli-design.md · parallel-sessions.md · verification-before-completion.md · receiving-review.md
