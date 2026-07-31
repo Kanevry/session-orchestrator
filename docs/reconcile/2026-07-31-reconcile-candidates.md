@@ -9,6 +9,20 @@
   this agent writes NO rule. Reason: avoid collisions with parallel `.claude/rules/`-editing
   wave-agents in this same wave.
 
+> **Correction (2026-07-31, W2-R1) — the store write above was a mistake.** The 16 candidate
+> records this report describes were hand-written into
+> `.orchestrator/runtime/reconcile-candidates.jsonl`. That store is a mutable work-queue owned
+> exclusively by `mergeCandidates` (`scripts/lib/reconcile/idempotency.mjs`); a report is not a
+> sanctioned writer. The records used a shape no writer in this repo produces (`candidate_id`
+> instead of `id`, `generated_at` instead of `created_at`, `status:"candidate"`, no
+> `schema_version`/`processed_at`), which the session-start reconcile nudge banner cannot read —
+> it derives "last run" from `created_at`, so a non-empty store reported *no reconcile run on
+> record*. A dry-run write-up belongs in `docs/reconcile/` only, which is where this file lives.
+> `readStore` now applies a shape guard (`learning_key` + `created_at` required) and
+> `mergeCandidates` reports rejected lines as `skipped`; the polluted store file itself is
+> purged separately by the coordinator (it is gitignored). The ANALYSIS below is unaffected and
+> stands as written — only the JSONL write was wrong.
+
 ## Engine run — verified output
 
 `runReconcile({ repoRoot, minRuleDays:7, minInsightChars:24, maxProposalsPerRun:1000,

@@ -85,6 +85,8 @@ describe('Group A — parseSessionId: dual-format', () => {
     expect(result.raw).toBe('feature/auth-2026-05-27-feature-3');
   });
 
+  // Also covers PRD §3 P2 row 3 (pre-P2 UUID vintage stays parseable) — the
+  // former Group C duplicate of this case was removed as redundant (TV-002b).
   it('parses a UUID-v4 id: returns format=uuid with uuid field preserved', () => {
     const result = parseSessionId('550e8400-e29b-41d4-a716-446655440000');
 
@@ -211,13 +213,6 @@ describe('Group C — resolveSemanticSessionId: backward-compat and mixed', () =
     vi.setSystemTime(new Date('2026-05-27T12:00:00Z'));
   });
 
-  it('PRD §3 P2 row 3: parseSessionId for a UUID-v4 (pre-P2 vintage) returns format=uuid', () => {
-    const result = parseSessionId('550e8400-e29b-41d4-a716-446655440000');
-
-    expect(result).not.toBeNull();
-    expect(result.format).toBe('uuid');
-  });
-
   it('activeSessions with only UUID entries do not count — returns n=1', async () => {
     const result = await resolveSemanticSessionId({
       branch: 'main',
@@ -289,21 +284,18 @@ describe('Group D — SEMANTIC_ID_RE and UUID_V4_RE regex validation', () => {
 //       VARIANT nibble (c not in {8,9,a,b}). Each was verified to satisfy the
 //       loose regex while parseSessionId still returns null.
 //
-//   (b) GENERAL negative-input cases — these fail ANY plausible regex (the loose
-//       one too), so they do NOT discriminate strict-vs-loose: the empty string
-//       is rejected by the `id.length === 0` guard before any regex runs, and
-//       'not a valid id!!' contains spaces + '!!' that no UUID/semantic pattern
-//       accepts. They guard the null-input contract, NOT the strict validator.
+//   (b) The former GENERAL negative-input cases (empty string, plaintext) were
+//       REMOVED (TV-002b): by this block's own analysis they fail ANY plausible
+//       regex, do not discriminate strict-vs-loose, and duplicate Group A's
+//       null-input contract tests verbatim.
 //
-// Surviving mutation (discriminating cases only): if UUID_V4_RE is loosened to
-// /^[a-f0-9-]{36}$/i, the '36 dashes', wrong-version, and wrong-variant cases
-// would wrongly return a non-null result → expect(result).toBeNull() FAILS.
-// The general negative-input cases would still pass under that mutation, so
-// they are not falsifiable against it (hence the (a)/(b) split above).
+// Surviving mutation: if UUID_V4_RE is loosened to /^[a-f0-9-]{36}$/i, the
+// '36 dashes', wrong-version, and wrong-variant cases would wrongly return a
+// non-null result → expect(result).toBeNull() FAILS.
 // ---------------------------------------------------------------------------
 
 describe('Group D2 — AP2: parseSessionId strict-UUID negative cases', () => {
-  // (a) DISCRIMINATING — loose /^[a-f0-9-]{36}$/i accepts, strict UUID_V4_RE rejects.
+  // DISCRIMINATING — loose /^[a-f0-9-]{36}$/i accepts, strict UUID_V4_RE rejects.
   it('returns null for 36 consecutive dashes (false-positive for loose /^[a-f0-9-]{36}$/i)', () => {
     // A loose regex /^[a-f0-9-]{36}$/i would accept this because '-' is in its
     // character class and total length is 36. UUID_V4_RE rejects it because the
@@ -331,19 +323,6 @@ describe('Group D2 — AP2: parseSessionId strict-UUID negative cases', () => {
     // guards / structural mismatch, so they do NOT exercise the variant nibble —
     // this case is the only one that pins the {8,9,a,b} variant requirement.
     const result = parseSessionId('12345678-1234-4234-c234-123456789012');
-
-    expect(result).toBeNull();
-  });
-
-  // (b) GENERAL negative-input — fail any regex (do NOT discriminate strict-vs-loose).
-  it('returns null for an empty string (rejected by the length guard, not the regex)', () => {
-    const result = parseSessionId('');
-
-    expect(result).toBeNull();
-  });
-
-  it('returns null for a plaintext string that matches neither format', () => {
-    const result = parseSessionId('not a valid id!!');
 
     expect(result).toBeNull();
   });
@@ -410,16 +389,9 @@ describe('Group E — history-aware n-increment (#585)', () => {
     expect(result).toBe('main-2026-05-27-deep-5');
   });
 
-  it('E3: only activeSessions has deep-1 → returns deep-2 (legacy path still works)', async () => {
-    const result = await resolveSemanticSessionId({
-      branch: 'main',
-      mode: 'deep',
-      activeSessions: [{ sessionId: 'main-2026-05-27-deep-1' }],
-      repoRoot,
-    });
-
-    expect(result).toBe('main-2026-05-27-deep-2');
-  });
+  // E3 removed (TV-002b): "only activeSessions has deep-1 → deep-2" was a
+  // verbatim duplicate of Group B "PRD §3 P2 row 2" — identical args, identical
+  // expectation. The legacy-only path is additionally pinned by E8.
 
   it('E4: only STATE.md has deep-1, activeSessions=[], no sessions.jsonl → returns deep-2', async () => {
     writeStateMd(repoRoot, 'session: main-2026-05-27-deep-1');
@@ -538,5 +510,119 @@ describe('Group E — history-aware n-increment (#585)', () => {
       // Hard invariant: returned n is strictly greater than every historical n.
       expect(parsed.n).toBe(Math.max(...historicalNs) + 1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group F — events.jsonl as the fourth candidate source (#952 Teil B)
+//
+// The nameable bug (TV-001): a session that is killed before its SessionEnd
+// hook fires never writes a sessions.jsonl record, so the `n` it consumed is
+// invisible to sources A/B/C and the NEXT session mints the SAME id. STATE.md
+// cannot cover the gap — it has exactly ONE `session:` slot, and an interleaved
+// session of a different mode overwrites it (the mode filter then discards it).
+//
+// This is not hypothetical. Live ledger evidence, .orchestrator/metrics/events.jsonl:
+//   06:45:11.980Z  main-2026-07-29-session-1  uuid 4c38fa82-…
+//   09:32:17.445Z  main-2026-07-29-session-2  uuid 5d0a9655-…
+//   17:29:48.286Z  main-2026-07-29-session-2  uuid 989a8485-…   ← same semantic id,
+//                                                                  7h57m later
+//
+// events.jsonl is written at CLAIM time by hooks/_lib/lock-bootstrap.mjs, so a
+// minted n survives a crash by construction — it is the only source that saw
+// the 09:32 mint at 17:29.
+//
+// FIXTURE PROVENANCE (testing.md § "Fixtures Mirror Production Data"): the
+// records below are the REAL 2026-07-29 lines, copied verbatim from the live
+// events.jsonl. Only `host` is redacted (the original carries a resolvable
+// network/institution hostname). Field set, ordering and timestamps are the
+// production shape, not a shape invented to satisfy the reader.
+// ---------------------------------------------------------------------------
+
+// Golden records — do not hand-edit the field set; re-harvest from events.jsonl
+// if the producer's schema changes.
+const EVT_SESSION_1 =
+  '{"timestamp":"2026-07-29T06:45:11.980Z","event":"orchestrator.session.lock.acquired","session_id":"4c38fa82-96c3-4621-ad5e-23f3f04a3f63","semantic_session_id":"main-2026-07-29-session-1","mode":"session","pid":79639,"host":"redacted.local","ttl_hours":4}';
+const EVT_SESSION_2 =
+  '{"timestamp":"2026-07-29T09:32:17.445Z","event":"orchestrator.session.lock.acquired","session_id":"5d0a9655-8b94-4808-b526-06df31a84a7e","semantic_session_id":"main-2026-07-29-session-2","mode":"session","pid":67767,"host":"redacted.local","ttl_hours":4}';
+// A non-lock event, also copied from the live log — proves the event filter bites.
+const EVT_AGENT_STOPPED =
+  '{"timestamp":"2026-07-29T10:12:19.303Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}';
+
+function writeEventsJsonl(root, lines) {
+  const dir = join(root, '.orchestrator', 'metrics');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'events.jsonl'), lines.join('\n') + '\n', 'utf8');
+}
+
+describe('Group F — events.jsonl mint-ledger source (#952)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // The real mint moment of the SECOND main-2026-07-29-session-2.
+    vi.setSystemTime(new Date('2026-07-29T17:29:48.286Z'));
+  });
+
+  it('F1: reconstructs the 2026-07-29 collision — jsonl knows only session-1, events knows session-2 → session-3', async () => {
+    // State of the ledger at 17:29:48, exactly as it was: session-1 closed
+    // normally, deep-1 closed normally, session-2 had NOT yet written its
+    // record (its SessionEnd fired at 17:29:50 — two seconds too late).
+    writeSessionsJsonl(repoRoot, [
+      '{"session_id":"main-2026-07-29-session-1","status":"closed"}',
+      '{"session_id":"main-2026-07-29-deep-1","status":"closed"}',
+    ]);
+    // The single STATE.md slot was overwritten by the interleaved deep session,
+    // and the mode filter discards it for mode='session'. Source C yields 0.
+    writeStateMd(repoRoot, 'session: main-2026-07-29-deep-1');
+    // Source D is the only one that remembers the 09:32 mint.
+    writeEventsJsonl(repoRoot, [EVT_SESSION_1, EVT_AGENT_STOPPED, EVT_SESSION_2]);
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'session',
+      activeSessions: [], // the 09:32 session is dead — its lockfile is gone
+      repoRoot,
+    });
+
+    expect(result).toBe('main-2026-07-29-session-3');
+  });
+
+  it('F2: same fixture with consultEvents=false re-mints the collision (session-2) — the ledger is load-bearing', async () => {
+    // Identical fixture to F1. The ONLY difference is the opt-out flag, so this
+    // pins that source D — not some incidental other change — is what lifts n.
+    writeSessionsJsonl(repoRoot, [
+      '{"session_id":"main-2026-07-29-session-1","status":"closed"}',
+      '{"session_id":"main-2026-07-29-deep-1","status":"closed"}',
+    ]);
+    writeStateMd(repoRoot, 'session: main-2026-07-29-deep-1');
+    writeEventsJsonl(repoRoot, [EVT_SESSION_1, EVT_AGENT_STOPPED, EVT_SESSION_2]);
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'session',
+      activeSessions: [],
+      repoRoot,
+      history: { consultEvents: false },
+    });
+
+    expect(result).toBe('main-2026-07-29-session-2');
+  });
+
+  it('F3: the read is a TAIL read — a >1 MiB events.jsonl still yields the last mint', async () => {
+    // The reader takes a bounded 1 MiB window. A head-anchored read (or an
+    // off-by-one on the offset) would silently miss today's mints on any log
+    // past the window and degrade straight back to the F2 collision.
+    // Pad well past 1 MiB with real-shaped non-lock events, then append the
+    // 09:32 mint as the LAST record.
+    const filler = new Array(12000).fill(EVT_AGENT_STOPPED);
+    writeEventsJsonl(repoRoot, [EVT_SESSION_1, ...filler, EVT_SESSION_2]);
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'session',
+      activeSessions: [],
+      repoRoot,
+    });
+
+    expect(result).toBe('main-2026-07-29-session-3');
   });
 });

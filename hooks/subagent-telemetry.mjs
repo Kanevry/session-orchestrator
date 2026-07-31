@@ -13,11 +13,15 @@
  *        agent_type?, subagent_type?, parent_session_id?, session_id?,
  *        duration_ms?, transcript_path? }.
  *   3. Discriminate on hook_event_name → event: 'start' | 'stop'.
- *   4. For stop events, parse the subagent transcript at `transcript_path` to
- *        recover token_input / token_output (#624). The harness does NOT send
+ *   4. For stop events, parse the subagent's OWN transcript to recover
+ *        token_input / token_output (#624, #949, #950). The harness does NOT send
  *        token_input / token_output on stdin — they must be extracted from the
  *        transcript's per-assistant-turn `message.usage` blocks, deduped by
- *        requestId (streaming snapshots repeat the same requestId ~4-5×).
+ *        requestId keeping the LAST block per id (streaming snapshots repeat the
+ *        same requestId ~4-5×, and only the last one is complete — see
+ *        extractTranscriptUsage()).
+ *        `transcript_path` on stdin points at the PARENT session transcript, so
+ *        the subagent's path is DERIVED from it — see resolveSubagentTranscriptPath().
  *   5. Build canonical record and call appendSubagent().
  *   6. Output: nothing on stdout. Diagnostic errors to stderr only.
  *
@@ -35,6 +39,35 @@
  * typed stops are orphaned, 0 of 1494 orphans carry a type. The hook therefore
  * records these firings faithfully but marks every stop with
  * `start_record_found` so readers can filter the phantom class mechanically.
+ *
+ * #949 settles what the phantom class IS: the orphans are not subagents whose
+ * SubagentStart was lost — no subagent ever existed. The harness writes
+ * `<transcriptDir>/<parent_session_id>/subagents/agent-<agent_id>.jsonl` for
+ * every real Task subagent; measured over session 19eecab8 on 2026-07-31,
+ * 25 of 25 typed stops have that file and 0 of 343 orphan stops do. The
+ * existence of that file is therefore a far sharper discriminator than
+ * `start_record_found` (343/343 coverage vs 32/2955 records carrying the flag),
+ * and it is recorded per stop as `subagent_transcript_found`.
+ *
+ * TOKEN-DATA PROVENANCE — historical records are unusable (#949). Until this
+ * fix, token_input/token_output were extracted from the stdin `transcript_path`,
+ * which is the PARENT session transcript: every stop record — typed ones
+ * included — carried the parent's running totals, not its own (measured
+ * 2026-07-31: agent a60348a01ca982b4c's own transcript sums 14/22 while its
+ * ledger record reads 40/27540, and up to 7 concurrent agents share bitwise
+ * identical values). Those values are NOT reconstructible from the ledger,
+ * which never held the subagent figure. Consumers MUST discard token_* on every
+ * stop record written before this fix landed and treat only records carrying
+ * `subagent_transcript_found: true` as token-bearing; summing across the
+ * history double-counts the parent once per subagent.
+ *
+ * A SECOND, independent defect rode along until #950: the requestId dedup kept
+ * the FIRST usage block per id, which on a streaming transcript is a partial
+ * snapshot (typically `output_tokens: 1`). Any record written before #950 —
+ * including one already reading its own subagent transcript — therefore
+ * understates token_output by roughly the ratio of first-chunk to final size
+ * (~145x on the measured agent, 5.3x summed fleet-wide). token_input is
+ * unaffected: it is constant across a request's snapshots.
  *
  * Exit codes: 0 always (informational, never blocking).
  */
@@ -117,23 +150,91 @@ function readStdinJson() {
  * `{ input_tokens, output_tokens, ... }`. Streaming snapshots repeat the SAME
  * `requestId` across consecutive assistant lines, so a naive Σ over every line
  * double-counts (observed ~4-5× on real transcripts). The correct recipe is to
- * group by `requestId`, keep ONE usage block per id (the first), then sum.
+ * group by `requestId`, keep ONE usage block per id — the LAST — then sum.
+ *
+ * Why the LAST and not the first (#950). The repeated blocks are not copies: they
+ * are CUMULATIVE snapshots of one in-flight response, and the early ones are
+ * partial (typically `output_tokens: 1`). Only the final block carries the
+ * response's true total, so keeping the first — the pre-#950 recipe — reported
+ * the size of the first streaming chunk as the whole turn. Measured on agent
+ * a60348a01ca982b4c's own transcript (2026-07-31): keep-first yields 14/22,
+ * keep-last 14/3185 — token_output understated ~145x.
+ *
+ * Corpus measurement (re-measured 2026-07-31; the first published numbers did
+ * not reproduce from the scope they named). Group every assistant `usage` block
+ * by (file, requestId) over this repo's own subagent transcripts and compare the
+ * first block of each group against the last:
+ *
+ *   d="$HOME/.claude/projects/$(pwd | tr '/.' '-')" node -e '
+ *     const fs=require("node:fs"),{execSync}=require("node:child_process");
+ *     const F=execSync(`find ${process.env.d} -path "*subagents*" -name "agent-*.jsonl"`,
+ *       {maxBuffer:1<<30}).toString().trim().split("\n");
+ *     const g=new Map();
+ *     for(const f of F)for(const l of fs.readFileSync(f,"utf8").split("\n")){
+ *       let o;try{o=JSON.parse(l)}catch{continue}
+ *       if(o?.type!=="assistant"||!o.message?.usage||!o.requestId)continue;
+ *       const k=`${f} ${o.requestId}`;(g.get(k)||g.set(k,[]).get(k)).push(o.message.usage);}
+ *     let a=0,b=0,m=0,dec=0,iv=0;
+ *     for(const u of g.values()){const o=u.map(x=>x.output_tokens|0);
+ *       a+=o[0];b+=o.at(-1);if(o.at(-1)===Math.max(...o))m++;
+ *       for(let i=1;i<o.length;i++)if(o[i]<o[i-1]){dec++;break}
+ *       if(new Set(u.map(x=>x.input_tokens|0)).size>1)iv++;}
+ *     console.log(JSON.stringify({files:F.length,groups:g.size,first:a,last:b,
+ *       ratio:+(b/a).toFixed(2),lastIsMax:m,decreasing:dec,inputVaries:iv}));'
+ *
+ * Output on 2026-07-31:
+ *
+ *   {"files":533,"groups":13255,"first":1180170,"last":11746733,
+ *    "ratio":9.95,"lastIsMax":13255,"decreasing":0,"inputVaries":0}
+ *
+ * So keep-first understated output ~10x corpus-wide, not the ~5.3x first
+ * claimed. These are absolute counts over a LIVE, growing corpus — re-running
+ * yields larger numbers (four calls over one session read 13,230 / 13,233 /
+ * 13,254 / 13,255 groups). The reproducible parts are the ratio (9.95-9.96
+ * across all four) and the `lastIsMax` fraction, not the totals.
+ *
+ * Why NOT a per-field `Math.max`, which would also survive a regressing
+ * snapshot: measured and rejected. In the run above the last block IS the max in
+ * 13,255 of 13,255 groups, no output sequence ever decreases, and no final block
+ * ever omits a field an earlier one carried — so max buys zero accuracy here.
+ *
+ * That result is CORPUS-SCOPED, and deliberately stated as such: pointing the
+ * same command at all of `$HOME/.claude/projects` (12,442 files / 267,735
+ * groups, same day) gives `lastIsMax: 267733` — two real counterexamples — plus
+ * 15 groups whose output dips mid-sequence before recovering and 2 whose
+ * `input_tokens` vary. "The last block is always the max" is an observation about
+ * this repo's transcripts, NOT an invariant of the format. Do not read it as a
+ * licence to treat `Math.max` as equivalent.
+ *
+ * What settles the choice is not the tie but block atomicity: a per-field max
+ * can take `input_tokens` from one snapshot and `output_tokens` from another and
+ * emit a pair that appears in no record, and it hard-codes "usage only ever
+ * grows" for the sibling fields (`cache_*`, `iterations`) a future reader may
+ * fold in. A usage block is an atomic statement of one response's state; the
+ * last one is the producer's final word, so it is kept whole. That argument
+ * holds on both corpora, which is why the counterexamples above do not reopen it.
+ *
+ * token_input is unaffected by this change and must stay so: it is constant
+ * across every snapshot of a request (`inputVaries: 0` above), which is why the
+ * pre-#950 defect was output-only.
  *
  * token_input is the raw `input_tokens` sum (NOT folded with cache_* fields) to
  * match the existing OTel `gen_ai.usage.input_tokens` semantic.
  *
  * Per-turn clamping (#624): a single poisoned usage value (negative, NaN, or a
- * non-integer such as 10.5) MUST NOT discard the otherwise-good turns. Each turn's
- * contribution is added ONLY when it is a non-negative integer; an invalid value
- * is skipped (its turn still counts toward `counted` so a transcript of mixed
- * good/bad turns yields the sum of the GOOD turns, never null). Without per-turn
- * clamping, a final `Number.isInteger(sum) && sum >= 0` aggregate check would
- * nuke the whole input sum to null on one bad value.
+ * non-integer such as 10.5) MUST NOT discard the otherwise-good turns. Each kept
+ * block's contribution is added ONLY when it is a non-negative integer; an
+ * invalid value is skipped (its block still counts as a kept turn, so a
+ * transcript of mixed good/bad turns yields the sum of the GOOD turns, never
+ * null). Without per-turn clamping, a final `Number.isInteger(sum) && sum >= 0`
+ * aggregate check would nuke the whole input sum to null on one bad value.
  *
  * Dedup assumption (#624): the streaming harness always supplies a `requestId` on
  * assistant turns, so dedup keys on it. A turn with NO requestId is counted
  * individually (no dedup) — this is the documented forward-compat fallback, not a
- * double-count, because the harness never omits requestId in practice.
+ * double-count, because the harness never omits requestId in practice. Unkeyed
+ * turns are therefore NOT subject to the last-wins collapse: each one is its own
+ * turn, not another snapshot of a shared one.
  *
  * Partial-usage assumption (#624): a turn carrying `input_tokens` but no
  * `output_tokens` (or vice-versa) contributes 0 to the absent side — NOT null —
@@ -161,10 +262,10 @@ function extractTranscriptUsage(transcriptPath) {
     const raw = fs.readFileSync(transcriptPath, 'utf8');
     const lines = raw.split('\n');
 
-    const seen = new Set();
-    let tokenInput = 0;
-    let tokenOutput = 0;
-    let counted = 0;
+    /** requestId -> the LAST usage block seen for it (#950). */
+    const byRequestId = new Map();
+    /** Usage blocks from turns with no requestId — each is its own turn. */
+    const unkeyed = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -179,13 +280,25 @@ function extractTranscriptUsage(transcriptPath) {
       const usage = obj.message?.usage;
       if (!usage || typeof usage !== 'object') continue;
 
-      // Dedup by requestId — keep the first usage block per id.
+      // Dedup by requestId — keep the LAST usage block per id (#950). The
+      // repeats are cumulative streaming snapshots, so overwriting is what
+      // promotes the partial first snapshot to the response's real total.
       const requestId = obj.requestId;
       if (typeof requestId === 'string' && requestId) {
-        if (seen.has(requestId)) continue;
-        seen.add(requestId);
+        byRequestId.set(requestId, usage);
+      } else {
+        unkeyed.push(usage);
       }
+    }
 
+    const kept = [...byRequestId.values(), ...unkeyed];
+
+    // No assistant turns with usage → leave fields null (forward-compat).
+    if (kept.length === 0) return nullResult;
+
+    let tokenInput = 0;
+    let tokenOutput = 0;
+    for (const usage of kept) {
       // Per-turn clamp (#624): add a turn's value ONLY when it is a non-negative
       // integer. A poisoned value (negative, NaN, float like 10.5) is skipped so
       // the good turns survive. An absent side contributes 0, not null.
@@ -193,11 +306,7 @@ function extractTranscriptUsage(transcriptPath) {
       const outTok = usage.output_tokens;
       if (Number.isInteger(inTok) && inTok >= 0) tokenInput += inTok;
       if (Number.isInteger(outTok) && outTok >= 0) tokenOutput += outTok;
-      counted += 1;
     }
-
-    // No assistant turns with usage → leave fields null (forward-compat).
-    if (counted === 0) return nullResult;
 
     // The aggregate is guaranteed a non-negative integer by per-turn clamping
     // above (Σ of non-negative integers), so emit it directly.
@@ -208,6 +317,44 @@ function extractTranscriptUsage(transcriptPath) {
   } catch {
     return nullResult;
   }
+}
+
+/**
+ * Derive the path of the subagent's OWN transcript from the parent transcript
+ * path the harness sends on stdin (#949).
+ *
+ * The `transcript_path` in a SubagentStop payload is the PARENT session
+ * transcript — `<transcriptDir>/<parent_session_id>.jsonl`. Alongside it the
+ * harness maintains one file per real Task subagent at
+ * `<transcriptDir>/<parent_session_id>/subagents/agent-<agent_id>.jsonl`
+ * (plus an `agent-<agent_id>.meta.json` carrying `agentType`). Verified against
+ * live transcripts on 2026-07-31.
+ *
+ * Returns null — never the parent path — when the derivation is not possible.
+ * Falling back to `transcript_path` IS the #949 defect: it makes every stop
+ * inherit the parent's running token totals, so the caller must record null
+ * instead (an honest absence).
+ *
+ * The agent_id is charset-restricted before it is interpolated into a path.
+ * Real ids are hex-ish tokens (e.g. `a60348a01ca982b4c`); anything else is
+ * rejected rather than sanitised, so no payload value can traverse out of the
+ * `subagents/` directory.
+ *
+ * @param {string|undefined|null} parentTranscriptPath — stdin `transcript_path`
+ * @param {string} agentId — the stopping agent's id
+ * @returns {string|null} absolute candidate path, or null when underivable
+ */
+function resolveSubagentTranscriptPath(parentTranscriptPath, agentId) {
+  if (typeof parentTranscriptPath !== 'string' || !parentTranscriptPath.trim()) return null;
+  if (typeof agentId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(agentId)) return null;
+  // 'unknown' is the no-usable-id fallback — it names no file.
+  if (agentId === 'unknown') return null;
+
+  const dir = path.dirname(parentTranscriptPath);
+  const base = path.basename(parentTranscriptPath).replace(/\.jsonl$/i, '');
+  if (!base || base === '.' || base === '..') return null;
+
+  return path.join(dir, base, 'subagents', `agent-${agentId}.jsonl`);
 }
 
 /**
@@ -384,9 +531,23 @@ async function main() {
     // not a real subagent.
     record.start_record_found = startedAtMs !== null;
 
-    // Tokens are NOT sent on stdin (#624) — recover them from the transcript's
-    // per-assistant-turn usage blocks, deduped by requestId. Any failure → null.
-    const { tokenInput, tokenOutput } = extractTranscriptUsage(input.transcript_path);
+    // subagent_transcript_found (#949): does this stop have a real subagent
+    // transcript of its own? Measured 25/25 on typed stops and 0/343 on
+    // phantoms, so it is the sharpest phantom discriminator available — and it
+    // is exactly the provenance flag a reader needs before trusting token_*.
+    const subagentTranscriptPath = resolveSubagentTranscriptPath(input.transcript_path, agentId);
+    const subagentTranscriptFound =
+      subagentTranscriptPath !== null && fs.existsSync(subagentTranscriptPath);
+    record.subagent_transcript_found = subagentTranscriptFound;
+
+    // Tokens are NOT sent on stdin (#624) — recover them from the SUBAGENT's own
+    // transcript, deduped by requestId. Any failure → null. There is deliberately
+    // NO fallback to input.transcript_path: that path is the parent session
+    // transcript, and reading it is the #949 defect (every stop inherited the
+    // parent's running totals). A phantom stop gets null — the honest value.
+    const { tokenInput, tokenOutput } = subagentTranscriptFound
+      ? extractTranscriptUsage(subagentTranscriptPath)
+      : { tokenInput: null, tokenOutput: null };
     if (tokenInput !== null) record.token_input = tokenInput;
     if (tokenOutput !== null) record.token_output = tokenOutput;
 

@@ -10,7 +10,10 @@
  * lines — an append would leave stale duplicates.
  *
  * Store: `.orchestrator/runtime/reconcile-candidates.jsonl` — a mutable
- * work-queue in JSON-Lines format (one ReconcileCandidate per line).
+ * work-queue in JSON-Lines format (one ReconcileCandidate per line). The store
+ * is OWNED by `mergeCandidates`: it is the only sanctioned writer. Nothing else
+ * — no report, no analysis run, no agent — may append to it; a read-side shape
+ * guard drops any record that is not a ReconcileCandidate.
  *
  * Two responsibilities differ from the repair store:
  *   1. The IDEMPOTENCY KEY is the LOGICAL `learning_key` (issue #695), not the
@@ -67,11 +70,39 @@ function resolveStorePath(repoRoot, storePath) {
 }
 
 /**
+ * Minimal shape guard for a persisted store line. A record is accepted only
+ * when it carries the two fields every consumer of this store depends on:
+ *   - `learning_key` — THE logical dedupe key (`mergeCandidates`, `isProcessed`).
+ *   - `created_at`   — the recency axis (`reconcile-nudge-banner.mjs` `_lastRunAt`).
+ *
+ * This is deliberately NOT a full schema check: the store is a mutable
+ * work-queue whose records may gain fields across schema versions, so
+ * over-strict validation would silently drop legitimate future records. It
+ * rejects only records that no writer in this repo produces — the concrete
+ * incident being a hand-written report artefact using `candidate_id` /
+ * `generated_at` / `status:"candidate"` (2026-07-31, see
+ * `docs/reconcile/2026-07-31-reconcile-candidates.md`).
+ * @param {unknown} rec
+ * @returns {boolean}
+ */
+function isCandidateShape(rec) {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return false;
+  const r = /** @type {Record<string, unknown>} */ (rec);
+  if (typeof r.learning_key !== 'string' || r.learning_key.length === 0) return false;
+  if (typeof r.created_at !== 'string') return false;
+  return true;
+}
+
+/**
  * Read + defensively parse the store's JSONL lines into ReconcileCandidate
- * records. Malformed lines (bad JSON, non-object) are skipped silently. A
- * missing file yields `[]`. Never throws.
+ * records. Malformed lines (bad JSON, non-object) and shape-foreign records
+ * (see {@link isCandidateShape}) are skipped — the latter are COUNTED, because
+ * the store is a mutable work-queue that `mergeCandidates` rewrites in full, so
+ * a skipped line is dropped from disk on the next merge and a silent drop would
+ * be unattributable data loss. A missing file yields `{ records: [], skipped: 0 }`.
+ * Never throws.
  * @param {string} absPath
- * @returns {ReconcileCandidate[]}
+ * @returns {{ records: ReconcileCandidate[], skipped: number }}
  */
 function readStore(absPath) {
   let raw;
@@ -79,11 +110,12 @@ function readStore(absPath) {
     raw = readFileSync(absPath, 'utf8');
   } catch {
     // ENOENT or any read error → empty store.
-    return [];
+    return { records: [], skipped: 0 };
   }
 
   /** @type {ReconcileCandidate[]} */
   const records = [];
+  let skipped = 0;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
@@ -91,13 +123,16 @@ function readStore(absPath) {
     try {
       parsed = JSON.parse(trimmed);
     } catch {
+      skipped += 1;
       continue; // skip malformed line
     }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (isCandidateShape(parsed)) {
       records.push(/** @type {ReconcileCandidate} */ (parsed));
+    } else {
+      skipped += 1;
     }
   }
-  return records;
+  return { records, skipped };
 }
 
 /**
@@ -154,8 +189,10 @@ export function makeCandidateId(learningKey, slug) {
 
 /**
  * Load every ReconcileCandidate currently persisted in the store. Reads JSONL,
- * skips malformed lines, returns `[]` for a missing file. Does NOT create the
- * runtime dir (mkdir -p happens only on write). Never throws.
+ * skips malformed lines AND shape-foreign records (missing `learning_key` /
+ * `created_at`), returns `[]` for a missing file. Does NOT create the runtime
+ * dir (mkdir -p happens only on write). Never throws. Callers that need the
+ * skip count use {@link mergeCandidates}, which reports it as `skipped`.
  * @param {Object} [params]
  * @param {string} [params.repoRoot] - repo root; relative `storePath` is resolved against it (defaults to `process.cwd()`).
  * @param {string} [params.storePath] - store path (relative ⇒ joined to repoRoot). Defaults to {@link DEFAULT_STORE_PATH}.
@@ -163,7 +200,7 @@ export function makeCandidateId(learningKey, slug) {
  */
 export function loadCandidates({ repoRoot, storePath } = {}) {
   const absPath = resolveStorePath(repoRoot, storePath);
-  return readStore(absPath);
+  return readStore(absPath).records;
 }
 
 /**
@@ -198,16 +235,21 @@ export function isProcessed(candidate, existing) {
  * The runtime dir is created with mkdir -p semantics. The store is rewritten in
  * full (read-all → merge → atomic tmp+rename), never appended. Output lines are
  * sorted by `learning_key` for deterministic output. Never throws; on write
- * failure returns `{ merged, written: false }`.
+ * failure returns `written: false`.
+ *
+ * `skipped` reports how many persisted lines the read-side shape guard rejected
+ * (malformed JSON, or a record missing `learning_key`/`created_at`). Because the
+ * store is rewritten in full, those lines are DROPPED from disk by this call —
+ * the count is what makes that loss attributable instead of silent.
  * @param {Object} [params]
  * @param {ReconcileCandidate[]} [params.candidates] - newly minted candidates to merge.
  * @param {string} [params.repoRoot]
  * @param {string} [params.storePath]
- * @returns {{ merged: ReconcileCandidate[], written: boolean }}
+ * @returns {{ merged: ReconcileCandidate[], written: boolean, skipped: number }}
  */
 export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
   const absPath = resolveStorePath(repoRoot, storePath);
-  const store = readStore(absPath);
+  const { records: store, skipped } = readStore(absPath);
 
   // Index existing records by learning_key for O(1) lookup. Last write wins for
   // any pre-existing duplicates in the file (defensive — store should be unique).
@@ -235,5 +277,5 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
   );
 
   const result = writeStore(absPath, merged);
-  return { merged, written: result.ok === true };
+  return { merged, written: result.ok === true, skipped };
 }

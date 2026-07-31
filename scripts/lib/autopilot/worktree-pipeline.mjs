@@ -33,6 +33,7 @@ import { runLoop } from './loop.mjs';
 import { maybeCreateDraftMR } from './mr-draft.mjs';
 import { validateWorkspacePath } from '../worktree/lifecycle.mjs';
 import { acquire, release } from '../session-lock.mjs';
+import { emitEvent } from '../events.mjs';
 import { main as gcMain } from '../../gc-stale-worktrees.mjs';
 import { SEMANTIC_ID_RE } from '../session-id.mjs';
 
@@ -233,6 +234,9 @@ export async function setupWorktree(context, opts = {}) {
  *  - If `result.killSwitch` is `'stall-timeout'`: leave the worktree intact
  *    for retry. Only release the lock.
  *  - Otherwise: call `opts.gcOnExit` to clean up, then release the lock.
+ *  - The lock-release outcome is evaluated and emitted as an
+ *    `orchestrator.session.lock.released` / `…release_failed` breadcrumb
+ *    (`caller: 'worktree-pipeline'`) into the PARENT repo's events stream (#952).
  *  - Errors during teardown are swallowed (logged to stderr). Never re-throws.
  *
  * @param {StoryContext} context
@@ -270,13 +274,59 @@ export async function teardownWorktree(context, result, opts = {}) {
 
   // Always attempt to release the per-worktree lock.
   if (result._lockSessionId) {
+    /** @type {{ ok: boolean, deleted?: boolean, reason?: string, verified?: boolean }|null} */
+    let releaseResult = null;
     try {
-      release({ sessionId: result._lockSessionId, repoRoot: result.worktreePath });
+      releaseResult = release({ sessionId: result._lockSessionId, repoRoot: result.worktreePath });
     } catch (lockErr) {
       console.error(
         `worktree-pipeline: lock release error for issue #${context.issueIid}: ${lockErr?.message ?? String(lockErr)}`,
       );
     }
+
+    // #952 (A) — observability breadcrumb for the SECOND release() call-site.
+    // Before this, the call above was fire-and-forget: its structured result was
+    // discarded entirely, so a per-worktree lock that failed to release — or
+    // that had already vanished — left NO trace anywhere. That is the blind
+    // spot behind the "#914 lock disappears in the start chain" class for
+    // worktree-isolated runs.
+    //
+    // Emitted at the CALL-SITE, never inside release(): session-lock.mjs
+    // deliberately carries no dependency on events.mjs, and release() is
+    // synchronous while emitEvent() is async. `caller` keeps this path
+    // distinguishable from hooks/on-session-end.mjs in the single stream.
+    //
+    // Destination is PINNED to the parent repo (`repoRoot` via the #941
+    // `opts.repoRoot` interface — same pattern as scripts/lib/lock-reaper.mjs)
+    // rather than the ambient SO_PROJECT_DIR: this pipeline deliberately runs
+    // across worktrees with an explicit repoRoot (#219 CWD-drift), and the
+    // worktree itself may already have been removed by the gc step above, so
+    // its own `.orchestrator/` is not a valid destination.
+    const benignAlreadyGone = releaseResult?.ok === true && releaseResult.reason === 'no-lock';
+    const releaseFailed = releaseResult === null
+      || (!benignAlreadyGone && (releaseResult.ok !== true || releaseResult.deleted !== true));
+    try {
+      if (releaseFailed) {
+        await emitEvent('orchestrator.session.lock.release_failed', {
+          session_id: result._lockSessionId,
+          reason: releaseResult === null
+            ? 'threw'
+            : (releaseResult.reason ?? (releaseResult.ok === true ? 'not-deleted' : 'fs-error')),
+          caller: 'worktree-pipeline',
+          worktree_path: result.worktreePath ?? null,
+          issue_iid: context.issueIid,
+        }, { repoRoot });
+      } else {
+        await emitEvent('orchestrator.session.lock.released', {
+          session_id: result._lockSessionId,
+          caller: 'worktree-pipeline',
+          outcome: benignAlreadyGone ? 'already-gone' : 'deleted',
+          verified: releaseResult.verified === true,
+          worktree_path: result.worktreePath ?? null,
+          issue_iid: context.issueIid,
+        }, { repoRoot });
+      }
+    } catch { /* observability is best-effort — teardown must never throw */ }
   }
 }
 

@@ -588,16 +588,42 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
   }
 
   /**
-   * Wipe the isolated session registry's active dir so a subsequent hook run
-   * resolves the SAME semantic id (the n-counter increments off active +
-   * historical sessions; a clean registry yields `-1` again). This deterministically
-   * simulates a clear/compact/resume of the SAME logical session — the new UUID
-   * changes but the semantic id is stable while current-session.json's
-   * high-water mark persists on disk.
+   * Wipe every n-counter memory the first hook run left behind, so a subsequent
+   * run resolves the SAME semantic id (a clean slate yields `-1` again). This
+   * deterministically simulates a clear/compact/resume of the SAME logical
+   * session — the new UUID changes but the semantic id is stable while
+   * current-session.json's high-water mark persists on disk.
+   *
+   * Two memories must be cleared, because `resolveSemanticSessionId()` merges
+   * several candidate sources:
+   *   1. the isolated session registry's active dir (source A — live sessions);
+   *   2. the `orchestrator.session.lock.acquired` records in the tmp project's
+   *      events.jsonl (source D, the #952 mint ledger, written at CLAIM time by
+   *      hooks/_lib/lock-bootstrap.mjs). Clearing (1) alone leaves the minted
+   *      `-1` visible in (2), and the next run mints `-2`.
+   *
+   * Deliberately surgical: only the mint-ledger records are stripped, not the
+   * whole events file — the `orchestrator.session.started` lines are not an
+   * n-counter memory, and a blanket wipe would blunt the fixture.
+   *
+   * @param {string} projectDir - The tmp project whose mint ledger to clear.
    */
-  async function clearActiveRegistry() {
+  async function clearSemanticIdMemory(projectDir) {
     const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
     await fs.rm(activeDir, { recursive: true, force: true });
+
+    // Strip the mint-ledger records. The file legitimately may not exist.
+    const eventsPath = path.join(projectDir, EVENTS_RELPATH);
+    let raw;
+    try {
+      raw = await fs.readFile(eventsPath, 'utf8');
+    } catch {
+      return;
+    }
+    const kept = raw
+      .split('\n')
+      .filter((l) => l.length > 0 && !l.includes('orchestrator.session.lock.acquired'));
+    await fs.writeFile(eventsPath, kept.length > 0 ? kept.join('\n') + '\n' : '', 'utf8');
   }
 
   it('preserves last_wave when the prior session file carries the SAME semantic_session_id', async () => {
@@ -610,10 +636,11 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     expect(typeof firstSemanticId).toBe('string');
     expect(firstSemanticId.length).toBeGreaterThan(0);
 
-    // Reclaim the registry slot so the next run resolves the SAME semantic id,
-    // then simulate mid-session state: the same logical session has progressed
-    // to wave 3 (current-session.json carries the SAME semantic id + marks).
-    await clearActiveRegistry();
+    // Reclaim the registry slot AND the mint ledger so the next run resolves the
+    // SAME semantic id, then simulate mid-session state: the same logical
+    // session has progressed to wave 3 (current-session.json carries the SAME
+    // semantic id + marks).
+    await clearSemanticIdMemory(dir);
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
       JSON.stringify(

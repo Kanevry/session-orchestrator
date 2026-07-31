@@ -42,6 +42,24 @@
  * typically gitignored and thus invisible to `git status`), and the new value
  * takes effect from the NEXT call on.
  *
+ * With no TRUSTWORTHY snapshot, G4/G5 evaluate as `strict` (#944/#945) — never
+ * from the live file. The old live fallback read as a first-call convenience but
+ * was a one-command silencer: the sidecar path is `sha1(repoRoot)` and therefore
+ * exactly computable, so `rm -f` on it re-creates the "no snapshot" precondition
+ * ON DEMAND, not only on the genuine first call. One Bash call could delete the
+ * sidecar, write `enforcement: "off"`, and write out of scope — and be judged
+ * under the value it had just installed.
+ *
+ * "Trustworthy" is a statement about the record's CONTENT, not the file's
+ * existence. Keyed on `snapshot === null`, the #944 repair closed one state of
+ * four at unchanged attacker cost — `rm -f <path>` simply becomes `echo '{}' >
+ * <path>`, and `{}` / `{"scopeState":{"hash":"…"}}` were both back to total
+ * silence. `trustedScopeState()` requires a `SNAPSHOT_SCHEMA` marker this build
+ * writes plus a well-formed `scopeState`, so a forgery has to state the very
+ * value it wants unstated. Both effects of that condition — evaluating the call
+ * strict AND emitting the lost-state notice — ride the same predicate; splitting
+ * them restores the path report while silently dropping the tamper trail.
+ *
  * ## Three properties that keep this from becoming noise
  *
  * 1. **Delta, not absolute.** A bare `git status` per Bash call reports the
@@ -59,6 +77,14 @@
  *    observed call for it is a false positive. Dirt NEWER than the scope file
  *    appeared during this wave — a re-baseline (which the observed actor can
  *    force by deleting the `$TMPDIR` sidecar) must not swallow it.
+ * 4. **A lost snapshot is named, not assumed benign (#945).** "Sidecar deleted"
+ *    and "genuine first call" are bit-identical at the read (`readSnapshot()`
+ *    returns null for both), so the difference must come from an out-of-band
+ *    clock. Two are consulted: the wave-scope.json mtime (#938) and — because
+ *    a `touch` on the scope file neutralises exactly that one — the session
+ *    start time from `.orchestrator/current-session.json`. A legitimate first
+ *    Bash call sits seconds-to-minutes after session start; a mid-session
+ *    `rm -f` sits hours after it, and no `touch` moves that marker.
  *
  * ## Ignore list (contract, not implementation detail)
  *
@@ -147,6 +173,58 @@ export const MAX_CONTEXT_CHARS = 1_500;
 
 /** Snapshot entries retained; bounds the sidecar for a pathological tree. */
 const MAX_SNAPSHOT_PATHS = 5_000;
+
+/**
+ * Sidecar schema version, written by `writeSnapshot` on EVERY write and required
+ * by `trustedScopeState` before any recorded value is believed.
+ *
+ * Its job is not versioning — it is making the alt-schema exception forgeable
+ * only by writing the thing it wants to hide. The exception exists so that a
+ * sidecar left by an OLDER build (no `scopeState` at all) does not make every
+ * in-flight session emit once on deploy. Keyed on the ABSENCE of a field, that
+ * exception is free to an attacker: `echo '{}' > <sidecar>` reproduces the
+ * old-build shape exactly. Keyed on the PRESENCE of a marker only the current
+ * build writes, a forgery must supply `schema` AND a plausible `scopeState`
+ * containing the enforcement value — i.e. it must state the value it is trying
+ * to keep unstated.
+ *
+ * Cost of the bump: one strict-evaluated call (and, if a clock finds the state
+ * old, one advisory line) per repo on the deploy that lands it. Bump this
+ * whenever the recorded shape changes; never read a version other than this one
+ * as trustworthy.
+ */
+const SNAPSHOT_SCHEMA = 2;
+
+/**
+ * A missing snapshot while the WAVE SCOPE is at least this old is suspicious
+ * (#938 fix 3): a genuine first Bash call happens minutes after the coordinator
+ * wrote wave-scope.json, whereas a long-running wave whose sidecar suddenly
+ * vanished points at `rm -f $TMPDIR/so-bash-write-verify/…`.
+ *
+ * Known blind spot, and the reason the session-age signal below exists: this
+ * clock is the mtime of a file the observed actor can write. `touch
+ * .claude/wave-scope.json` (content unchanged → no control notice either)
+ * resets the age to zero and neutralises the very heuristic meant to catch the
+ * deletion it accompanies (#945).
+ */
+const SNAPSHOT_MISSING_SUSPICION_MS = 10 * 60 * 1000;
+
+/**
+ * A missing snapshot this long after the SESSION started is suspicious (#945).
+ *
+ * The complement to the constant above, chosen because it is not the mtime of
+ * anything the scope-file write touches: `.orchestrator/current-session.json`
+ * carries the session start timestamp, so a `touch` on wave-scope.json moves it
+ * not at all. The threshold matches the scope-age one — both encode "a genuine
+ * first Bash call is minutes away from its trigger, not tens of minutes".
+ *
+ * Honest about what it is NOT: this marker is a plain file, writable by the
+ * same Bash call. It raises the cost of a silent deletion from one `rm` to a
+ * second, differently-shaped forgery; it is not tamper-proofing. And like the
+ * scope-age signal it produces exactly one false alarm after a `$TMPDIR` purge
+ * or a reboot mid-session — the same trade already accepted for #938 fix 3.
+ */
+const SESSION_AGE_SUSPICION_MS = 10 * 60 * 1000;
 
 /**
  * Repo-relative paths whose changes are never attributable to a scope
@@ -383,6 +461,50 @@ export function formatControlNotice(relScopePath, prev, cur) {
   return { text: text.length > MAX_CONTEXT_CHARS ? `${text.slice(0, MAX_CONTEXT_CHARS - 1)}…` : text, weakened };
 }
 
+/**
+ * Render the lost-snapshot notice (#938 fix 3, extended by #945), or null when
+ * neither clock finds the absence suspicious.
+ *
+ * Both inputs are ages in ms and both are OPTIONAL: an unknown clock
+ * contributes nothing rather than a guess. Two independent clocks are ORed
+ * because each has a different blind spot — the scope-file mtime is resettable
+ * by the observed actor (`touch`), and the session start time is unknown
+ * outside an orchestrated session. Either one alone is evadable; both together
+ * cost the actor two forgeries instead of one.
+ *
+ * Fail-safe direction is SILENCE. Neither clock readable ⇒ null. This hook is
+ * warn-only, and noise is precisely what gets a guard switched off — the #915
+ * bypass pressure it exists to fight.
+ *
+ * `reason` names WHICH untrusted state was observed. Both are the same finding —
+ * "this call had no trustworthy prior state" — and differ only in what the
+ * operator will find on disk when they look: nothing (`absent`), or a file whose
+ * contents this build did not write (`untrusted`). Keeping the substring "state
+ * snapshot" in both keeps one grep across the pair.
+ *
+ * @param {object} args
+ * @param {number|null} [args.sessionAge] ms since session start, or null
+ * @param {number|null} [args.scopeAge]   ms since the wave-scope.json mtime, or null
+ * @param {'absent'|'untrusted'} [args.reason] which untrusted state was observed
+ * @returns {string|null}
+ */
+export function formatSnapshotMissingNotice({ sessionAge = null, scopeAge = null, reason = 'absent' } = {}) {
+  const reasons = [];
+  if (typeof sessionAge === 'number' && Number.isFinite(sessionAge) && sessionAge > SESSION_AGE_SUSPICION_MS) {
+    reasons.push(`the session started ${Math.round(sessionAge / 60_000)} min ago`);
+  }
+  if (typeof scopeAge === 'number' && Number.isFinite(scopeAge) && scopeAge > SNAPSHOT_MISSING_SUSPICION_MS) {
+    reasons.push(`the wave scope is ${Math.round(scopeAge / 60_000)} min old`);
+  }
+  if (reasons.length === 0) return null;
+  const head = reason === 'untrusted'
+    ? 'a state snapshot exists but carries no scope state this build wrote'
+    : 'no state snapshot found';
+  return `bash-write-verify: ${head} although ${reasons.join(' and ')} — `
+    + 'a deleted or overwritten state file ($TMPDIR/so-bash-write-verify) cannot be ruled out; '
+    + 're-baselined with mtime attribution (#938/#945).';
+}
+
 // ---------------------------------------------------------------------------
 // I/O helpers
 // ---------------------------------------------------------------------------
@@ -416,6 +538,34 @@ function readDirtyPaths(repoRoot) {
   }
 }
 
+/**
+ * Milliseconds since the current session started, or null when unknown.
+ *
+ * Source is `.orchestrator/current-session.json` `timestamp`, written once per
+ * session by `hooks/on-session-start.mjs`. Two properties make it the right
+ * clock here: it is `.gitignore`d AND on this hook's own ignore list, so
+ * reading it can never turn into reporting it; and it is untouched by any write
+ * to wave-scope.json, which is exactly the evasion the scope-mtime clock lost
+ * to (#945).
+ *
+ * Never throws. Absent / unparseable / non-numeric ⇒ null ⇒ silence.
+ *
+ * @param {string} repoRoot
+ * @param {number} [now]
+ * @returns {number|null}
+ */
+export function sessionAgeMs(repoRoot, now = Date.now()) {
+  try {
+    const raw = readFileSync(path.join(repoRoot, '.orchestrator', 'current-session.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    const startedAt = Date.parse(parsed?.timestamp);
+    if (!Number.isFinite(startedAt)) return null;
+    return now - startedAt;
+  } catch {
+    return null;
+  }
+}
+
 /** @returns {object|null} */
 function readSnapshot(file) {
   try {
@@ -425,12 +575,54 @@ function readSnapshot(file) {
   }
 }
 
-/** Atomic tmp+rename write; failure is non-fatal (worst case: a re-baseline). */
+/**
+ * The recorded scope state, but ONLY when the whole record is one this build
+ * wrote and can act on. Anything else ⇒ null ⇒ the caller evaluates strict.
+ *
+ * This is the single trust decision of the hook, and it is deliberately about
+ * CONTENT, never about the sidecar's existence. Keying it on `snapshot === null`
+ * (the #944 shape) closed one state of four at unchanged attacker cost — `rm -f
+ * <path>` became `echo '{}' > <path>`, same computable path, same Bash round —
+ * and left `{}` and `{"scopeState":{"hash":"…"}}` completely silent. Each clause
+ * below therefore names a forgery it refuses:
+ *
+ *   schema !== SNAPSHOT_SCHEMA   `{}` / any older or hand-written shape
+ *   scopeState not an object     `{"schema":2}`
+ *   enforcement not a string     `{"schema":2,"scopeState":{"hash":"deadbeef"}}`
+ *   hash not a string            a half-written record the control-notice path
+ *                                would otherwise compare against
+ *
+ * Residual, named rather than implied: a forgery that supplies a COMPLETE record
+ * (marker, hash, `enforcement: "off"`) is still believed. That costs the actor
+ * the one thing the cheap forgeries bought silence to avoid — writing the
+ * disabling value where the next call reads it as a prior state and reports the
+ * transition. The gap this closes is the free one.
+ *
+ * @param {object|null} snapshot
+ * @returns {{ hash: string, enforcement: string, gateOn?: boolean }|null}
+ */
+function trustedScopeState(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  if (snapshot.schema !== SNAPSHOT_SCHEMA) return null;
+  const state = snapshot.scopeState;
+  if (!state || typeof state !== 'object') return null;
+  if (typeof state.enforcement !== 'string') return null;
+  if (typeof state.hash !== 'string') return null;
+  return state;
+}
+
+/**
+ * Atomic tmp+rename write; failure is non-fatal (worst case: a re-baseline).
+ *
+ * The schema marker is stamped HERE, not at the call sites: it is the property
+ * that makes a record trustworthy, so the one place that produces records is the
+ * one place that may claim it.
+ */
 function writeSnapshot(file, data) {
   try {
     mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(data), 'utf8');
+    writeFileSync(tmp, JSON.stringify({ ...data, schema: SNAPSHOT_SCHEMA }), 'utf8');
     renameSync(tmp, file);
   } catch {
     /* best-effort */
@@ -440,15 +632,6 @@ function writeSnapshot(file, data) {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-
-/**
- * A missing snapshot while the scope file is at least this old is flagged as
- * suspicious (#938 fix 3): a genuine first Bash call happens minutes after the
- * coordinator wrote wave-scope.json, whereas a long-running wave whose sidecar
- * suddenly vanished points at `rm -f $TMPDIR/so-bash-write-verify/…`.
- * Informational only — a TMPDIR purge or reboot produces the same signal once.
- */
-const SNAPSHOT_MISSING_SUSPICION_MS = 10 * 60 * 1000;
 
 /**
  * Emit stderr line(s) for the operator + one PostToolUse envelope for Claude.
@@ -490,9 +673,18 @@ async function main() {
 
   const snapFile = snapshotPathFor(repoRoot);
   const snapshot = readSnapshot(snapFile);
-  const prevScopeState = snapshot && typeof snapshot.scopeState === 'object' && snapshot.scopeState !== null
-    ? snapshot.scopeState
-    : null;
+  // The ONE trust decision (see `trustedScopeState`). Every downstream use of a
+  // "previous" value reads this binding, so no code path can accidentally act on
+  // a recorded value that failed the check.
+  const prevScopeState = trustedScopeState(snapshot);
+  // The rest of an untrusted record is untrusted too. `signature` + `paths` drive
+  // computeReport's report-once suppression, so a forged
+  // `{"signature":"<sig>","paths":["out-of-scope.mjs"]}` would buy silence on the
+  // path axis by the same one-line write — the report-once list is a claim about
+  // what was ALREADY reported, and this build reported nothing. Untrusted ⇒ the
+  // same empty base the absent-sidecar case starts from.
+  const prevRecord = prevScopeState === null ? null : snapshot;
+  const carriedRecord = prevRecord ?? { signature: null, paths: [] };
 
   // G3 — no wave scope → nothing defines "outside". #938: if a previous call
   // RECORDED a scope state, the control file's disappearance is itself a
@@ -501,7 +693,7 @@ async function main() {
   if (!scopePath) {
     if (prevScopeState && prevScopeState.hash !== 'absent') {
       writeSnapshot(snapFile, {
-        ...(snapshot ?? { signature: null, paths: [] }),
+        ...carriedRecord,
         scopeState: { hash: 'absent', enforcement: 'strict', gateOn: true },
       });
       emitMessages([
@@ -532,38 +724,93 @@ async function main() {
     gateOn: scope ? scope?.gates?.['bash-write-verify'] !== false : true,
   };
 
+  let scopeMtimeMs = null;
+  try {
+    scopeMtimeMs = statSync(scopePath).mtimeMs;
+  } catch {
+    /* stat failure → computeReport degrades to the silent re-baseline */
+  }
+
+  // The lost-snapshot signal is computed HERE — ahead of every early return
+  // below (#944/#945). It used to sit at the very end of the reporting path,
+  // which made it worthless against the attack it was built for: `enforcement:
+  // "off"` returns at G5, so a single Bash call that deleted the sidecar AND
+  // disabled the gate skipped the suspicion line as well as the path report.
+  // A guard whose "I may have been tampered with" notice is itself behind the
+  // gate the tampering opens is not a guard.
+  //
+  // Every return point reachable from here writes a snapshot, which is what
+  // keeps this to ONE line: the next call sees a snapshot and the condition is
+  // false. Without that, a genuinely purged $TMPDIR would warn on every Bash
+  // call for the rest of the session.
+  //
+  // The condition is `prevScopeState === null` — no TRUSTWORTHY prior state —
+  // not `snapshot === null`. The two effects of that condition (evaluating the
+  // call strict, and saying so) must ride the SAME predicate: keyed on file
+  // existence, this line stayed silent for `echo '{}' > <sidecar>` while the
+  // path report was restored, which drops the tamper trail and leaves a green
+  // `toContain('out-of-scope.mjs')` test to say otherwise.
+  const missingSnapshotNotice = prevScopeState === null
+    ? formatSnapshotMissingNotice({
+      sessionAge: sessionAgeMs(repoRoot),
+      scopeAge: typeof scopeMtimeMs === 'number' ? Date.now() - scopeMtimeMs : null,
+      reason: snapshot === null ? 'absent' : 'untrusted',
+    })
+    : null;
+
   // Unparseable control file: nothing to evaluate paths against, but the
   // CHANGE is still reported (#938 vector 1 variant — `echo garbage >
   // wave-scope.json` must not be a free total silencer).
   if (!scope) {
+    writeSnapshot(snapFile, { ...carriedRecord, scopeState: currentScopeState });
+    const messages = [];
     if (prevScopeState && prevScopeState.hash !== currentScopeState.hash) {
-      writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
-      const notice = formatControlNotice(relScopePath, prevScopeState, currentScopeState);
-      emitMessages([notice.text], true);
+      messages.push(formatControlNotice(relScopePath, prevScopeState, currentScopeState).text);
     }
+    // `echo garbage > wave-scope.json` + `rm -f <sidecar>` in one call left
+    // prevScopeState null and produced total silence before #945.
+    if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
+    if (messages.length > 0) emitMessages(messages, true);
     return;
   }
 
   // G4+G5 — evaluated on the PRE-CALL scope state from the snapshot (#938
-  // vector 1); the live values only take effect from the NEXT call on. Falls
-  // back to the live values when no snapshot exists (true first run) or the
-  // snapshot predates the scopeState schema. G4 is ON unless explicitly
-  // disabled — the contrast with `bash-write-guard` (=== true) stands: this
-  // detector observes the filesystem rather than parsing a command. G5:
-  // enforcement:off means nothing is enforced, including advisories.
-  const effEnforcement = prevScopeState && typeof prevScopeState.enforcement === 'string'
-    ? prevScopeState.enforcement
-    : currentScopeState.enforcement;
-  const effGateOn = prevScopeState ? prevScopeState.gateOn !== false : currentScopeState.gateOn;
+  // vector 1); the live values only take effect from the NEXT call on. G4 is ON
+  // unless explicitly disabled — the contrast with `bash-write-guard`
+  // (=== true) stands: this detector observes the filesystem rather than
+  // parsing a command. G5: enforcement:off means nothing is enforced, including
+  // advisories.
+  //
+  // #944/#945 — NO TRUSTWORTHY PRIOR STATE is evaluated as `strict`, never from
+  // the live file. There is no live-value fallback left on this path at all,
+  // which is the whole repair: the #944 shape kept one (`snapshot !== null` but
+  // no usable `scopeState` ⇒ read `currentScopeState`) as an anti-noise carve-out
+  // for sidecars from an older build, and that carve-out was keyed on the
+  // ABSENCE of a field — free to reproduce with `echo '{}' > <sidecar>`. The
+  // carve-out's purpose survives, moved onto `SNAPSHOT_SCHEMA`: an old build's
+  // record fails the marker check and is judged strict for ONE call, after which
+  // this build's write makes it trustworthy again.
+  //
+  // Cost, unchanged from #944 and now also paid once per deploy: a repo that
+  // legitimately runs `enforcement: "off"` may get ONE advisory line on its
+  // first Bash call, then silence from call 2 on (the snapshot now records
+  // `off`). One line is the cheaper half of the trade against a guard that a
+  // single `echo` can switch off in silence.
+  const effEnforcement = prevScopeState ? prevScopeState.enforcement : 'strict';
+  const effGateOn = prevScopeState ? prevScopeState.gateOn !== false : true;
   if (!effGateOn || effEnforcement === 'off') {
     // Refresh only the recorded scope state so a later re-enable is honored on
     // the next call; signature/paths stay untouched.
-    writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
+    writeSnapshot(snapFile, { ...carriedRecord, scopeState: currentScopeState });
+    // Unreachable while the strict branch above holds (a null prevScopeState
+    // never returns here). Kept as the structural guarantee rather than a
+    // comment: if a future edit reintroduces any live-value path, the tamper
+    // notice still escapes ahead of the gate instead of silently going with it.
+    if (missingSnapshotNotice) emitMessages([missingSnapshotNotice], false);
     return;
   }
 
   const controlNotice = prevScopeState
-    && typeof prevScopeState.hash === 'string'
     && prevScopeState.hash !== 'absent'
     && prevScopeState.hash !== currentScopeState.hash
     ? formatControlNotice(relScopePath, prevScopeState, currentScopeState)
@@ -573,24 +820,24 @@ async function main() {
 
   const dirtyPaths = readDirtyPaths(repoRoot);
   if (dirtyPaths === null) {
-    // git unavailable → no path signal; the control-file notice still stands.
-    writeSnapshot(snapFile, { ...(snapshot ?? { signature: null, paths: [] }), scopeState: currentScopeState });
-    if (controlNotice) emitMessages([controlNotice.text], controlNotice.weakened);
+    // git unavailable → no path signal; the control-file and lost-snapshot
+    // notices do not depend on git and still stand.
+    writeSnapshot(snapFile, { ...carriedRecord, scopeState: currentScopeState });
+    const messages = [];
+    if (controlNotice) messages.push(controlNotice.text);
+    if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
+    if (messages.length > 0) emitMessages(messages, Boolean(controlNotice?.weakened));
     return;
   }
 
   const signature = scopeSignature(allowedPaths);
-  let scopeMtimeMs = null;
-  try {
-    scopeMtimeMs = statSync(scopePath).mtimeMs;
-  } catch {
-    /* stat failure → computeReport degrades to the silent re-baseline */
-  }
 
   const { report, nextSnapshot } = computeReport({
     dirtyPaths,
     allowedPaths,
-    snapshot,
+    // `prevRecord`, not `snapshot`: an untrusted record's report-once list is a
+    // forgeable claim about what was already reported (see the binding above).
+    snapshot: prevRecord,
     signature,
     scopeMtimeMs,
     scopeRelPath: relScopePath,
@@ -611,16 +858,10 @@ async function main() {
     messages.push(controlNotice.text);
     warn = warn || controlNotice.weakened;
   }
-  if (!snapshot && typeof scopeMtimeMs === 'number'
-    && Date.now() - scopeMtimeMs > SNAPSHOT_MISSING_SUSPICION_MS) {
-    // #938 fix 3 — a missing sidecar under an OLD scope file is not a clean
-    // first run; say so instead of silently trusting the re-baseline.
-    messages.push(
-      'bash-write-verify: no state snapshot found although the wave scope is '
-      + `${Math.round((Date.now() - scopeMtimeMs) / 60_000)} min old — a deleted state file `
-      + '($TMPDIR/so-bash-write-verify) cannot be ruled out; re-baselined with mtime attribution (#938).',
-    );
-  }
+  // #938 fix 3 + #945 — a missing sidecar that neither clock can call a clean
+  // first run is named, not silently trusted. Computed before the G4/G5 gate
+  // above so the gate cannot swallow it.
+  if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
   if (report.length > 0) {
     messages.push(formatMessage(report, allowedPaths.length));
     warn = true;

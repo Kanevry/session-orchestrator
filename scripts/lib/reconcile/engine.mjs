@@ -71,6 +71,15 @@
  *        "genuinely ineligible" rejections from "eligible but cut by the volume
  *        brake" ones at a glance.
  * @property {boolean} written
+ * @property {number} [skipped] - how many persisted sidecar lines the store's
+ *        read-side shape guard rejected and this run therefore DROPPED from disk
+ *        (`mergeCandidates` rewrites the store in full, never appends — see
+ *        `idempotency.mjs`). PRESENT-vs-ABSENT is load-bearing and must not be
+ *        collapsed: `0` means "the store was inspected and nothing was dropped",
+ *        while ABSENCE means "the store was never inspected this run" — the case
+ *        under `dryRun` (merge skipped entirely), on the empty short-circuit, on
+ *        the top-level error path, and when the merge seam reports no count.
+ *        Defaulting the absent case to `0` would be a false all-clear.
  *
  * @typedef {Object} ReconcileResult
  * @property {ReconcileProposal[]} proposals
@@ -86,7 +95,11 @@ import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mj
 import { filterEligible } from './eligibility.mjs';
 import { toActivationMetadata } from './emitter.mjs';
 import { renderRule } from './renderer.mjs';
-import { makeCandidateId, mergeCandidates as realMergeCandidates } from './idempotency.mjs';
+import {
+  DEFAULT_STORE_PATH,
+  makeCandidateId,
+  mergeCandidates as realMergeCandidates,
+} from './idempotency.mjs';
 
 /** Default repo-relative location of the learnings corpus. */
 const DEFAULT_LEARNINGS_PATH = '.orchestrator/metrics/learnings.jsonl';
@@ -230,6 +243,34 @@ function buildCandidate({ id, learningKey, slug, status, reason, confidence, cre
     processed_at: null,
     superseded_by: null,
   };
+}
+
+/**
+ * Surface a shape-guard drop on stderr. The sidecar is a mutable work-queue that
+ * `mergeCandidates` rewrites in FULL, so a record the read-side shape guard
+ * rejects is not merely ignored — it is gone from disk after this run. The count
+ * alone makes that loss attributable; this WARN is what makes it VISIBLE, since
+ * the summary field only helps a caller that thinks to read it.
+ *
+ * Never throws: a failing diagnostic must not break the never-throws contract of
+ * {@link runReconcile} (a broken stderr pipe would otherwise zero the result).
+ *
+ * @param {number} skipped - drop count (> 0 by the time this is called).
+ * @returns {void}
+ */
+function warnDroppedStoreRecords(skipped) {
+  try {
+    console.warn(
+      `⚠️  reconcile: ${skipped} record(s) in ${DEFAULT_STORE_PATH} failed the ` +
+        `candidate shape guard and were DROPPED by this merge — the store is ` +
+        `rewritten in full, so they are no longer on disk. Expected shape: a ` +
+        `ReconcileCandidate with \`learning_key\` + \`created_at\` (see ` +
+        `scripts/lib/reconcile/idempotency.mjs). Only \`mergeCandidates\` may ` +
+        `write this store; hand-written or report records do not belong in it.`,
+    );
+  } catch {
+    // A diagnostic must never become the failure it reports on.
+  }
 }
 
 /**
@@ -461,29 +502,45 @@ export async function runReconcile(
     // The engine's ONLY disk write — and it is skipped entirely under dryRun.
     // It never writes `.claude/rules/` (FA3 / #696 owns that, post-approval).
     let written = false;
+    // `undefined` (NOT 0) until the merge actually inspects the store — absence
+    // means "not checked", 0 means "checked, nothing dropped". See the
+    // ReconcileSummary `skipped` typedef.
+    /** @type {number|undefined} */
+    let skipped;
     if (!dryRun) {
       try {
         const mergeResult = merge({ candidates, repoRoot });
         written = !!(mergeResult && mergeResult.written === true);
+        // Only a finite count from the seam counts as "inspected". A merge seam
+        // that reports nothing leaves `skipped` absent rather than fabricating 0.
+        if (mergeResult && Number.isFinite(mergeResult.skipped)) {
+          skipped = Number(mergeResult.skipped);
+        }
       } catch {
-        // Merge failure is non-fatal; proposals still returned, written stays false.
+        // Merge failure is non-fatal; proposals still returned, written stays
+        // false and `skipped` stays absent (the store was never inspected).
         written = false;
       }
     }
 
+    // Make an attributable drop VISIBLE, not merely recorded (WARN, never throw).
+    if (typeof skipped === 'number' && skipped > 0) warnDroppedStoreRecords(skipped);
+
     // --- Pipeline step 7 — summary -----------------------------------------
-    return {
-      proposals,
-      rejected,
-      summary: {
-        totalLearnings,
-        eligible: eligible.length,
-        proposed: proposals.length,
-        rejected: rejected.length,
-        capped: cappedEligible.length,
-        written,
-      },
+    /** @type {ReconcileSummary} */
+    const summary = {
+      totalLearnings,
+      eligible: eligible.length,
+      proposed: proposals.length,
+      rejected: rejected.length,
+      capped: cappedEligible.length,
+      written,
     };
+    // Additive + absence-preserving: the key exists ONLY when the store was
+    // actually inspected, so no consumer can read a false `skipped: 0`.
+    if (typeof skipped === 'number') summary.skipped = skipped;
+
+    return { proposals, rejected, summary };
   } catch (err) {
     // never-throws top-level guard.
     const msg = err && err.message ? err.message : String(err);

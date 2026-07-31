@@ -62,17 +62,17 @@ describe('DEFAULT_STORE_PATH', () => {
 });
 
 describe('makeCandidateId', () => {
-  it('is deterministic and rc-prefixed — same inputs yield the same id', () => {
+  // TV-003 consolidation: the former "deterministic and rc-prefixed" and
+  // "different id for a different slug" cases exercised the same one-line pure
+  // function over the same inputs; merged into one case covering both halves of
+  // its contract (stability + slug-sensitivity) with no assertion lost.
+  it('is deterministic, rc-prefixed, and slug-sensitive', () => {
     const a = makeCandidateId('fragile-pattern/zx-imports', 'slug-abc');
     const b = makeCandidateId('fragile-pattern/zx-imports', 'slug-abc');
+    const c = makeCandidateId('fragile-pattern/zx-imports', 'slug-xyz');
     expect(a).toBe(b);
     expect(a).toMatch(/^rc-[0-9a-f]{8}$/);
-  });
-
-  it('yields a different id for a different slug', () => {
-    const a = makeCandidateId('fragile-pattern/zx-imports', 'slug-abc');
-    const b = makeCandidateId('fragile-pattern/zx-imports', 'slug-xyz');
-    expect(a).not.toBe(b);
+    expect(a).not.toBe(c);
   });
 });
 
@@ -88,6 +88,53 @@ describe('loadCandidates', () => {
     const loaded = loadCandidates({ storePath });
     expect(loaded).toHaveLength(1);
     expect(loaded[0].learning_key).toBe('fragile-pattern/zx-imports');
+  });
+
+  // TV-001 — the bug this catches, which the rest of the suite lets through:
+  // on 2026-07-31 a wave-agent hand-wrote 16 report records into the real store
+  // (`.orchestrator/runtime/reconcile-candidates.jsonl`) in a shape NO writer in
+  // this repo produces — `candidate_id`/`generated_at`/`status:"candidate"`, no
+  // `created_at`, no `schema_version`, no `processed_at`. readStore accepted every
+  // non-array object verbatim, so those records entered the work-queue: they were
+  // returned by loadCandidates, counted by the reconcile nudge banner's
+  // `lastRunCandidateCount`, and yet invisible to `_lastRunAt` (which reads
+  // `created_at`) — a non-empty store reporting "no reconcile run on record".
+  // Every other test in this file feeds the store WRITER-FAITHFUL records plus
+  // one unparseable line; a well-formed record of the WRONG SHAPE was never
+  // exercised, so nothing here goes red when the guard is removed.
+  // Fixture is a golden record: field set + order copied from a real line of the
+  // 2026-07-31 store, long text values truncated (testing.md § Fixtures Mirror
+  // Production Data). NOTE it carries a valid `learning_key` — only the missing
+  // `created_at` rejects it, so a `learning_key`-only guard would NOT bite.
+  it('rejects a shape-foreign record (candidate_id/generated_at, no created_at)', () => {
+    const foreign = {
+      learning_key: 'anti-pattern/console-log-process-exit-drops-stdout',
+      slug: 'anti-pattern-console-log-process-exit-drops-stdout-91c32e4',
+      confidence: 0.95,
+      always_apply: 'false',
+      globs: ['scripts/lib/**'],
+      scope: 'glob-scoped',
+      expires_at: '2026-10-27',
+      description: 'Node stdout is ASYNC on a pipe (macOS)',
+      candidate_id: 'rc-f587113f',
+      rule_path: '.claude/rules/anti-pattern-console-log-process-exit-drops-stdout-91c32e4.md',
+      status: 'candidate',
+      generated_at: '2026-07-31T07:09:33.905Z',
+      generated_by: 'W3-reconcile-candidate-dry-run',
+    };
+    const valid = candidate({ learning_key: 'fragile-pattern/zx-imports' });
+    writeFileSync(storePath, `${JSON.stringify(foreign)}\n${JSON.stringify(valid)}\n`, 'utf8');
+
+    // Read side: the foreign record never reaches a consumer.
+    const loaded = loadCandidates({ storePath });
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].learning_key).toBe('fragile-pattern/zx-imports');
+
+    // Write side: the drop is reported, not silent, and the store is purged of it.
+    const result = mergeCandidates({ candidates: [], storePath });
+    expect(result.skipped).toBe(1);
+    expect(result.merged.map((r) => r.learning_key)).toEqual(['fragile-pattern/zx-imports']);
+    expect(loadCandidates({ storePath })).toHaveLength(1);
   });
 });
 

@@ -2,6 +2,10 @@
 // scripts/lib/validate/check-hooks-symmetry.mjs
 // Verify event-key + handler-file + per-event handler-set symmetry across
 // hooks/{hooks,hooks-codex,hooks-cursor,hooks-pi}.json (Check 6: #942)
+// Check 6 projects platform-native event namespaces onto the logical Claude
+// events first, then refuses to report parity for any counterpart event that
+// lands on no hooks.json event — whether that is one dropped projection or the
+// whole namespace (a vacuum-true PASS — see Check 6).
 // Exit 0 = all checks pass, 1 = any check fails
 // Stdout: '  PASS: ...' / '  FAIL: ...' lines + 'Results: N passed, M failed'
 
@@ -33,6 +37,23 @@ const DOCUMENTED_ASYMMETRIES = {
     tool_result: 'PostToolUse',
     agent_end: 'Stop',
   },
+  // Cursor-IDE-native events projected onto the logical Claude events they
+  // correspond to. WITHOUT this projection Check 6 compared a FOREIGN event
+  // namespace against hooks.json: not one key matched, the per-event loop
+  // `continue`d on every iteration, and hooks-cursor.json reported
+  // "handler sets match hooks.json (documented asymmetries: 0)" while missing
+  // 20 of 22 handlers — a vacuum-true PASS. Check 6's projection guard now
+  // fails closed PER declared event (#946), so dropping a single entry from
+  // this map is caught too, not only the loss of every projection: the first
+  // version tested `sharedEvents.length === 0`, under which removing just
+  // `afterFileEdit` left the run green and merely moved cursor's documented-
+  // asymmetry count from 12 to 8.
+  // afterFileEdit fires AFTER the edit (hooks-cursor.json `note`,
+  // docs/cursor-setup.md) → it projects onto PostToolUse, never PreToolUse.
+  cursorEventMap: {
+    beforeShellExecution: 'PreToolUse',
+    afterFileEdit: 'PostToolUse',
+  },
   // Check 6 (#942): handlers wired on a Claude event but intentionally absent
   // from the SAME logical event on a counterpart manifest. Checks 1-3 compare
   // event KEYS and Check 4 handler EXISTENCE — a handler wired on only one
@@ -59,6 +80,9 @@ const DOCUMENTED_ASYMMETRIES = {
       ],
       // post-bash-write-verify (#942): needs tool_name === 'Bash', which no
       // Codex bridge delivers — documented exception until an adapter exists.
+      // Measured 2026-07-31: `grep -rn "tool_name" scripts/lib/codex/*.mjs`
+      // → 0 matches (exit 1), so a manifest entry here would be a silent
+      // no-op, not enforcement. Same #919-P2 class as the PreToolUse block.
       PostToolUse: [
         'post-edit-validate.mjs',
         'post-tooluse-frontend-slop.mjs',
@@ -69,16 +93,51 @@ const DOCUMENTED_ASYMMETRIES = {
     },
     pi: {
       // skill-invocation-telemetry: Pi has no Skill tool (pi-hook-bridge
-      // TOOL_NAME_MAP) — the matcher can never fire. templates-first +
-      // issue-budget: status-quo gaps predating #942, kept documented here
-      // rather than silently invisible; port or justify via follow-up.
+      // TOOL_NAME_MAP) — the matcher can never fire.
+      // pre-bash-templates-first + pre-bash-issue-budget (#946): status-quo
+      // gaps predating #942. Operator decision 2026-07-31 — NOT ported, gap
+      // registered instead; #946 tracks the port-or-justify follow-up.
       PreToolUse: [
         'skill-invocation-telemetry.mjs',
-        'pre-bash-templates-first.mjs',
-        'pre-bash-issue-budget.mjs',
+        'pre-bash-templates-first.mjs', // #946
+        'pre-bash-issue-budget.mjs',    // #946
       ],
     },
-    cursor: {},
+    // Cursor is NOT wired (#919) and will not be: hooks-cursor.json is a
+    // mapping REFERENCE, not live enforcement. Every handler expects Claude
+    // Code payload shapes (tool_name === 'Bash', tool_input.command) and emits
+    // a Claude PreToolUse envelope; fed a Cursor payload enforce-commands.mjs
+    // short-circuits at gate G1 and writes 0 bytes to stdout AND stderr with
+    // exit 0, so the harness sees no decision and the command runs. Cursor
+    // needs an input/output adapter like scripts/lib/pi-hook-bridge.mjs; none
+    // exists. Operator decision 2026-07-31 — gap registered, not closed:
+    // #919 (Cursor no-op) tracks the adapter, #946 the allowlist-provenance
+    // rule that every entry here names its issue. These entries exist so the
+    // gap is MACHINE-readable (Check 6 counts them) rather than prose-only.
+    cursor: {
+      // #919: beforeShellExecution → PreToolUse. Only enforce-commands.mjs is
+      // mapped at all; the other eight PreToolUse handlers have no Cursor
+      // mapping whatsoever.
+      PreToolUse: [
+        'skill-invocation-telemetry.mjs',    // #919
+        'enforce-scope.mjs',                 // #919
+        'config-protection.mjs',             // #919
+        'pre-bash-destructive-guard.mjs',    // #919
+        'pre-bash-staging-fence.mjs',        // #919
+        'pre-bash-memory-propose-audit.mjs', // #919
+        'pre-bash-templates-first.mjs',      // #919
+        'pre-bash-issue-budget.mjs',         // #919
+      ],
+      // #919: afterFileEdit → PostToolUse. Cursor maps enforce-scope.mjs here
+      // (post-hoc warning only); none of Claude's four PostToolUse handlers
+      // has a Cursor mapping.
+      PostToolUse: [
+        'post-edit-validate.mjs',          // #919
+        'post-tooluse-frontend-slop.mjs',  // #919
+        'post-bash-write-verify.mjs',      // #919 (#942 class — needs tool_name === 'Bash')
+        'loop-guard.mjs',                  // #919
+      ],
+    },
   },
 };
 
@@ -320,20 +379,40 @@ console.log('');
 console.log('--- Check 6: per-event handler-set parity across manifests (#942) ---');
 const claudeHandlersByEvent = extractHandlersByEvent(claudeJson);
 
-// Pi declares Pi-native event names; project them onto the logical main events.
-function piHandlersByMainEvent(json) {
-  const byPiEvent = extractHandlersByEvent(json);
+// Pi and Cursor declare platform-native event names; project them onto the
+// logical main events before comparing, or the whole comparison is vacuous.
+// Native events with no mapping are carried through under their own name so
+// the projection guard below still sees them as declared.
+//
+// The merge is a UNION, not an assignment: two native events may project onto
+// the SAME logical event (a harness with `before_shell` AND `before_edit` both
+// mapping to PreToolUse, or — reachable today via the identity fallback — a
+// counterpart that declares the logical event alongside a native event that
+// projects onto it). Assignment let the second write silently discard the
+// first set, so its handlers resurfaced as a phantom "undocumented asymmetry"
+// or vanished from the comparison entirely.
+function handlersByMainEvent(json, eventMap) {
+  const byNativeEvent = extractHandlersByEvent(json);
   const byMain = {};
-  for (const [piEvent, mainEvent] of Object.entries(DOCUMENTED_ASYMMETRIES.piEventMap)) {
-    if (byPiEvent[piEvent]) byMain[mainEvent] = byPiEvent[piEvent];
+  for (const [nativeEvent, handlers] of Object.entries(byNativeEvent)) {
+    const target = eventMap[nativeEvent] || nativeEvent;
+    byMain[target] = new Set([...(byMain[target] ?? []), ...handlers]);
   }
   return byMain;
 }
 
 const HANDLER_PARITY_COUNTERPARTS = [
   { file: 'hooks-codex.json', key: 'codex', byEvent: codexJson ? extractHandlersByEvent(codexJson) : null },
-  { file: 'hooks-cursor.json', key: 'cursor', byEvent: cursorJson ? extractHandlersByEvent(cursorJson) : null },
-  { file: 'hooks-pi.json', key: 'pi', byEvent: piJson ? piHandlersByMainEvent(piJson) : null },
+  {
+    file: 'hooks-cursor.json',
+    key: 'cursor',
+    byEvent: cursorJson ? handlersByMainEvent(cursorJson, DOCUMENTED_ASYMMETRIES.cursorEventMap) : null,
+  },
+  {
+    file: 'hooks-pi.json',
+    key: 'pi',
+    byEvent: piJson ? handlersByMainEvent(piJson, DOCUMENTED_ASYMMETRIES.piEventMap) : null,
+  },
 ];
 
 for (const { file, key, byEvent } of HANDLER_PARITY_COUNTERPARTS) {
@@ -341,6 +420,27 @@ for (const { file, key, byEvent } of HANDLER_PARITY_COUNTERPARTS) {
     pass(`${file} absent (optional config) — handler parity skipped`);
     continue;
   }
+  // Projection guard: every event a counterpart declares must land on a
+  // logical event hooks.json also declares. An unprojected event makes the
+  // per-event loop below `continue` on the logical event it was supposed to
+  // cover, so those handlers are never compared and Check 6 still reports
+  // PASS — only the `documented asymmetries:` count moves. Losing ALL
+  // projections is how hooks-cursor.json passed with 20 of 22 handlers
+  // missing; losing ONE is the same blindness at smaller scale, so the guard
+  // fails closed per event, not only on the empty intersection (#946).
+  const declaredEvents = Object.keys(byEvent);
+  const sharedEvents = declaredEvents.filter((e) => Object.hasOwn(claudeHandlersByEvent, e));
+  const unprojectedEvents = declaredEvents.filter((e) => !Object.hasOwn(claudeHandlersByEvent, e));
+  if (declaredEvents.length > 0 && sharedEvents.length === 0) {
+    // Whole-namespace loss keeps its own message: nothing at all was compared.
+    fail(`${file} shares ZERO logical events with hooks.json after projection (declares: ${declaredEvents.join(', ')}) — handler parity would pass vacuously; add an event projection to DOCUMENTED_ASYMMETRIES`);
+    continue;
+  }
+  if (unprojectedEvents.length > 0) {
+    fail(`${file} declares events with no logical counterpart in hooks.json after projection: ${unprojectedEvents.join(', ')} — handlers on the logical events they stand for are never compared; add a projection to DOCUMENTED_ASYMMETRIES.${key}EventMap`);
+    continue;
+  }
+
   const allow = DOCUMENTED_ASYMMETRIES.handlerAsymmetries[key] || {};
   const undocumented = [];
   let documentedCount = 0;

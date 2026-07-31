@@ -280,38 +280,52 @@ describe('runReconcile — max-proposals-per-run volume brake (#900 D, default c
     expect(cappedRejections).toHaveLength(5);
   });
 
-  it('does not cap when maxProposalsPerRun is explicitly raised above the eligible count', async () => {
-    const learnings = Array.from({ length: 15 }, (_, i) =>
-      eligibleLearning({
-        subject: `vol-brake-raised-${i}`,
-        confidence: 0.5 + i * 0.01,
-        file_paths: [`scripts/lib/vol-brake-raised/${i}.mjs`],
-      }),
-    );
-    const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: 20 },
-      { learnings },
-    );
-    expect(result.summary.proposed).toBe(15);
-    expect(result.summary.capped).toBe(0);
-    expect(result.summary.rejected).toBe(0);
-  });
+  // Cap-RESOLUTION boundary table (issue #950). Consolidates the two former
+  // single-value cap tests (`maxProposalsPerRun: 20` above the eligible count,
+  // and `maxProposalsPerRun: 0` falling back to the default) into one table and
+  // adds the two rows neither of them reached: an explicit cap of exactly 1 and
+  // its neighbour 2.
+  //
+  // TV-001 — the bug this catches that the suite let through: mutating the
+  // guard at engine.mjs:294 from `maxProposalsPerRunParam >= 1` to `> 1`
+  // (mutation survivor `re1`, docs/mutation-testing/2026-07-31-report.md) makes
+  // an explicit cap of exactly 1 — the TIGHTEST brake an operator can set —
+  // silently resolve to the default of 10 instead. Both former rows survive
+  // that mutation unchanged (20 > 1 and 0 fails either comparison), so no test
+  // pinned the lower boundary. Same defect class as the panel-found
+  // "never-passed-through max-proposals" HIGH bug: a config value that looks
+  // forwarded but is replaced by a default at the point of use.
+  //
+  // The `cap: 2` row is the counter-probe: it makes the table unsatisfiable by
+  // an "always propose exactly 1" implementation. Expected values are hardcoded
+  // literals per row, never derived from the production cap formula.
+  it.each([
+    { cap: 1, eligibleCount: 3, proposed: 1, capped: 2 },
+    { cap: 2, eligibleCount: 3, proposed: 2, capped: 1 },
+    { cap: 20, eligibleCount: 3, proposed: 3, capped: 0 },
+    { cap: 0, eligibleCount: 12, proposed: 10, capped: 2 },
+  ])(
+    'maxProposalsPerRun=$cap over $eligibleCount eligible learnings proposes exactly $proposed and caps $capped',
+    async ({ cap, eligibleCount, proposed, capped }) => {
+      const learnings = Array.from({ length: eligibleCount }, (_, i) =>
+        eligibleLearning({
+          subject: `vol-brake-cap-${cap}-${i}`,
+          confidence: 0.5 + i * 0.01,
+          file_paths: [`scripts/lib/vol-brake-cap-${cap}/${i}.mjs`],
+        }),
+      );
 
-  it('a maxProposalsPerRun of 0 falls back to the default cap of 10 (fail-closed, never uncapped)', async () => {
-    const learnings = Array.from({ length: 12 }, (_, i) =>
-      eligibleLearning({
-        subject: `vol-brake-zero-${i}`,
-        confidence: 0.5 + i * 0.01,
-        file_paths: [`scripts/lib/vol-brake-zero/${i}.mjs`],
-      }),
-    );
-    const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: 0 },
-      { learnings },
-    );
-    expect(result.summary.proposed).toBe(10);
-    expect(result.summary.capped).toBe(2);
-  });
+      const result = await runReconcile(
+        { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: cap },
+        { learnings },
+      );
+
+      expect(result.summary.proposed).toBe(proposed);
+      expect(result.summary.capped).toBe(capped);
+      expect(result.summary.rejected).toBe(capped);
+      expect(result.proposals).toHaveLength(proposed);
+    },
+  );
 });
 
 describe('runReconcile — #900 brandmauer guard: an aliased type without scope never reaches the emitter', () => {
@@ -382,6 +396,71 @@ describe('runReconcile — #900 brandmauer guard: an aliased type without scope 
     // non-empty) — the emitter's own throw-based brandmauer is what fired.
     expect(result.rejected[0].reason).toMatch(/emit\/render error/);
     expect(result.rejected[0].reason).toMatch(/never-always-on|activation axis/);
+  });
+});
+
+describe('runReconcile — sidecar shape-guard drops reach the caller', () => {
+  // TV-001 — the bug this catches that the suite let through: `mergeCandidates`
+  // rewrites the candidate store in FULL, so a record its read-side shape guard
+  // rejects is DELETED from disk by the merge, not merely ignored on read. The
+  // guard counts the drop (`mergeCandidates(...).skipped`), but before this
+  // change engine.mjs consumed only `mergeResult.written` — the count died at
+  // the call site and the data loss was unattributable in practice.
+  //
+  // The second half is the distinction that makes the field honest: under
+  // `dryRun` the merge never runs, so the store is never inspected. Reporting
+  // `skipped: 0` there would be a FALSE ALL-CLEAR ("checked, nothing dropped")
+  // for a run that checked nothing — absence is the only correct answer.
+  //
+  // Deliberately uses the REAL `mergeCandidates` against a tmp repoRoot (no
+  // merge seam stub): a stubbed seam would only prove the engine forwards a
+  // number a test invented, never that the store's own guard is wired through.
+  it('reports summary.skipped=1 (plus a stderr WARN) for a record the store guard drops, and OMITS the key entirely under dryRun', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-skipped-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const runtimeDir = join(repoRoot, '.orchestrator', 'runtime');
+      mkdirSync(runtimeDir, { recursive: true });
+      // The exact form of the 2026-07-31 incident: a hand-written report
+      // artefact using candidate_id / generated_at / status:"candidate". No
+      // writer in this repo produces this shape, so readStore rejects it.
+      writeFileSync(
+        join(runtimeDir, 'reconcile-candidates.jsonl'),
+        JSON.stringify({
+          candidate_id: 'rc-deadbeef',
+          generated_at: '2026-07-31T00:00:00Z',
+          status: 'candidate',
+          slug: 'hand-written-report-artefact',
+        }) + '\n',
+        'utf8',
+      );
+
+      const args = { repoRoot, now: new Date('2026-06-25T00:00:00Z') };
+      const learnings = [eligibleLearning()];
+
+      // dryRun: merge skipped entirely ⇒ the store was never inspected.
+      const dry = await runReconcile({ ...args, dryRun: true }, { learnings });
+      expect(dry.summary.written).toBe(false);
+      expect('skipped' in dry.summary).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      // Real merge over the real store ⇒ the guard drops the foreign record and
+      // the count reaches the caller instead of dying at the call site.
+      const wet = await runReconcile(args, { learnings });
+      expect(wet.summary.written).toBe(true);
+      expect(wet.summary.skipped).toBe(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0][0])).toContain('reconcile-candidates.jsonl');
+
+      // A clean store on the next run reports 0 — "inspected, nothing dropped"
+      // — which is what makes the absent case above distinguishable at all.
+      const clean = await runReconcile(args, { learnings });
+      expect(clean.summary.skipped).toBe(0);
+      expect(warnSpy).toHaveBeenCalledTimes(1); // no second WARN
+    } finally {
+      warnSpy.mockRestore();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 

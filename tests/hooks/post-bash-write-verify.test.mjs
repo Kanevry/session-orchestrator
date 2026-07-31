@@ -26,13 +26,26 @@
  *                           rewrite the (ignored + gitignored) control file,
  *                           V2 delete the $TMPDIR state sidecar, V3 exploit
  *                           the blind first call after every scope change.
+ *  - #944                 → G4/G5 fell back to the LIVE scope file whenever no
+ *                           snapshot existed, and `rm -f <sidecar>` re-creates
+ *                           that state on demand (the path is sha1(repoRoot)) —
+ *                           so ONE Bash call could install its own kill-switch
+ *                           and be judged under it.
+ *  - #945                 → "snapshot lost" was only distinguishable from
+ *                           "first call" via the wave-scope.json mtime, the one
+ *                           clock a `touch` resets. Session age is not.
+ *
+ * The fail-safe direction of the #945 signal (unknown session age ⇒ SILENCE,
+ * never a false alarm) needs no test of its own: every E2E case below runs in a
+ * tmp repo WITHOUT `.orchestrator/current-session.json` and asserts silence, so
+ * a fail-loud regression turns this whole file red.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import {
   parsePorcelainZ,
@@ -42,6 +55,7 @@ import {
   snapshotPathFor,
   computeReport,
   formatMessage,
+  formatSnapshotMissingNotice,
   MAX_CONTEXT_CHARS,
   MAX_REPORTED_PATHS,
 } from '../../hooks/post-bash-write-verify.mjs';
@@ -113,11 +127,10 @@ describe('isInScope', () => {
     expect(isInScope('hooks/post-bash-write-verify.mjs', ['hooks/**'])).toBe(true);
   });
 
-  it('treats an empty allowedPaths as "nothing is in scope"', () => {
+  // TV-003 consolidation: the empty-allowedPaths case and the sibling-glob case
+  // were two `it` blocks asserting the same predicate direction.
+  it('rejects an empty allowedPaths and a sibling outside the declared globs', () => {
     expect(isInScope('any.mjs', [])).toBe(false);
-  });
-
-  it('rejects a sibling path outside the declared globs', () => {
     expect(isInScope('scripts/lib/io.mjs', ['hooks/**', 'docs/*.md'])).toBe(false);
   });
 });
@@ -127,16 +140,16 @@ describe('isInScope', () => {
 // ---------------------------------------------------------------------------
 
 describe('snapshotPathFor', () => {
-  it('places the snapshot OUTSIDE the repo so it cannot report itself', () => {
+  // TV-003 consolidation: two `it` blocks over one pure function, both about
+  // where the sidecar may live.
+  it('places the snapshot OUTSIDE the repo (self-report immunity) and keys it per repo', () => {
     // Deliberately not a `/Users/<name>/…` shape: the owner-leakage scanner's
     // CP1 rule flags canonicalized personal home paths in tracked files.
     const repo = '/srv/demo-repo';
     const snap = snapshotPathFor(repo);
     expect(snap.startsWith(tmpdir())).toBe(true);
     expect(snap.startsWith(repo)).toBe(false);
-  });
-
-  it('keys per repo so two working copies do not share a baseline', () => {
+    // Two working copies must not share a baseline.
     expect(snapshotPathFor('/a/repo')).not.toBe(snapshotPathFor('/b/repo'));
   });
 });
@@ -280,15 +293,38 @@ describe('formatMessage', () => {
     expect(Buffer.byteLength(msg, 'utf8')).toBeLessThan(65_536);
   });
 
-  it('names at most MAX_REPORTED_PATHS paths and discloses the remainder', () => {
+  // TV-003 consolidation: the standalone "states the warn-only contract" block
+  // asserted one substring of the same rendered message and is folded in here.
+  it('names at most MAX_REPORTED_PATHS paths, discloses the remainder, and states the warn-only contract', () => {
     const many = Array.from({ length: MAX_REPORTED_PATHS + 7 }, (_, i) => `f${i}.mjs`);
     const msg = formatMessage(many, 1);
     expect(msg).toContain(`+7 more`);
     expect(msg).toContain('f0.mjs');
+    // Truncation must not eat the contract line — a reader who expects a BLOCK
+    // from a PostToolUse hook draws the wrong conclusion from silence later.
+    expect(msg).toContain('Warn-only');
   });
+});
 
-  it('states the warn-only contract so the reader does not expect a block', () => {
-    expect(formatMessage(['x.mjs'], 1)).toContain('Warn-only');
+// ---------------------------------------------------------------------------
+// formatSnapshotMissingNotice — the #945 discriminator
+// ---------------------------------------------------------------------------
+
+describe('formatSnapshotMissingNotice', () => {
+  it('is silent for a young session and fires on session age alone when the scope mtime was reset (#945)', () => {
+    // Bug caught: the ONLY discriminator between "sidecar deleted mid-session"
+    // and "legitimate first Bash call" was the wave-scope.json mtime — exactly
+    // the value `touch .claude/wave-scope.json` resets (content unchanged, so
+    // no control notice either). A fresh scope age must therefore NOT be able
+    // to buy silence on its own.
+    // Legitimate first call: session seconds old, scope file seconds old.
+    expect(formatSnapshotMissingNotice({ sessionAge: 30_000, scopeAge: 30_000 })).toBeNull();
+    // The attack: scope file freshly touched, session 3 h old.
+    const notice = formatSnapshotMissingNotice({ sessionAge: 3 * 3_600_000, scopeAge: 30_000 });
+    expect(notice).toContain('no state snapshot');
+    expect(notice).toContain('the session started 180 min ago');
+    // Fail-safe direction: neither clock readable ⇒ silence, never an alarm.
+    expect(formatSnapshotMissingNotice({ sessionAge: null, scopeAge: null })).toBeNull();
   });
 });
 
@@ -502,6 +538,101 @@ describe('post-bash-write-verify E2E', () => {
     expect(res.stderr).toContain('out-of-scope.mjs');
     // Fix 3: the missing sidecar under a 20-min-old scope file is itself named.
     expect(res.stderr).toContain('no state snapshot');
+  });
+
+  // Bug caught, twice. #944 first: G4/G5 fell back to the LIVE wave-scope.json
+  // whenever no snapshot existed. The sidecar path is sha1(repoRoot).slice(0,16)
+  // under $TMPDIR — exactly computable — so `rm -f` on it re-creates the "no
+  // snapshot" precondition ON DEMAND, not only on the genuine first call. One
+  // Bash call could therefore delete the sidecar, write `enforcement: "off"`,
+  // and write out of scope, and the hook judged that call under the value the
+  // same call had just installed: no path report, and (because the G5 return
+  // sat BEFORE the suspicion line) no lost-sidecar notice either.
+  //
+  // The #944 fix then keyed the strict decision on `snapshot === null` — on file
+  // EXISTENCE — which closed exactly ONE of four states at unchanged attacker
+  // cost: `rm -f <path>` simply becomes `echo '{}' > <path>`. Measured against
+  // that fix, B and C were still totally silent (both assertions below failed);
+  // A and D were already reported. The decision now hangs on whether a
+  // TRUSTWORTHY prior scope state can be read — a current-build schema marker
+  // plus a string `enforcement` — which no forgery supplies without writing the
+  // very value it wants hidden.
+  //
+  // Both assertions are load-bearing and neither may be dropped: they are two
+  // effects of ONE condition. A fix that restores the path report but leaves the
+  // notice on the old condition passes a `toContain('out-of-scope.mjs')` test
+  // while still dropping the tamper trail.
+  it.each([
+    ['A: absent — `rm -f <sidecar>`', null],
+    ['B: empty object — `echo \'{}\' > <sidecar>`', '{}'],
+    ['C: scopeState present, enforcement missing', '{"scopeState":{"hash":"deadbeef"}}'],
+    ['D: unparseable — `echo garbage > <sidecar>`', 'garbage'],
+    // E is the same forgery aimed at the OTHER suppression axis: a record whose
+    // `paths` claims the write was already reported. The signature must match or
+    // computeReport re-baselines anyway, so it is computed the way the hook does.
+    ['E: forged report-once list (signature + paths)',
+      JSON.stringify({ signature: scopeSignature(['hooks/**']), paths: ['out-of-scope.mjs'] })],
+  ])('evaluates a call as strict when the sidecar holds no trustworthy scope state (%s) (#944/#945)', (_label, sidecar) => {
+    // The kill-switch the observed call installs for itself.
+    mkdirSync(join(tmp, '.claude'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ enforcement: 'off', allowedPaths: ['hooks/**'] }),
+    );
+    // Both clocks aged: makes the suspicion notice reachable at all, and makes
+    // computeReport's mtime attribution deterministic on coarse-granularity fs.
+    const past = new Date(Date.now() - 20 * 60_000);
+    utimesSync(join(tmp, '.claude', 'wave-scope.json'), past, past);
+    mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: 'sid', timestamp: new Date(Date.now() - 3 * 3_600_000).toISOString() }),
+    );
+    // The sidecar state this one Bash call buys itself — same path, same round.
+    const snap = snapshotPathFor(realpathSync(tmp));
+    if (sidecar === null) {
+      rmSync(snap, { force: true });
+    } else {
+      mkdirSync(dirname(snap), { recursive: true });
+      writeFileSync(snap, sidecar);
+    }
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    // 1) the out-of-scope write is still evaluated and reported …
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    expect(JSON.parse(res.stdout.trim()).hookSpecificOutput.additionalContext)
+      .toContain('out-of-scope.mjs');
+    // 2) … and the guard's own lost/forged state is named, not silently trusted.
+    expect(res.stderr).toContain('state snapshot');
+
+    // The anti-noise half still holds: with the state now recorded by THIS
+    // build, a genuinely configured `enforcement: off` is honored from the next
+    // call on — the second write proves the silence is not mere report-once.
+    writeFileSync(join(tmp, 'second-out-of-scope.mjs'), 'pwned\n');
+    expect(runHook().stderr).toBe('');
+  });
+
+  it('names a lost sidecar via SESSION age even when the scope-file mtime was reset (#945)', () => {
+    // Bug caught: `touch .claude/wave-scope.json` (content unchanged → no
+    // control notice) reset the only clock the lost-sidecar heuristic had, so
+    // the same Bash call that deleted the sidecar also neutralised the warning
+    // about the deletion. Session start time is not reachable by that touch.
+    writeScope(['hooks/**']); // scope file mtime = now → the #938 clock reads "clean first call"
+    mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: 'sid', timestamp: new Date(Date.now() - 3 * 3_600_000).toISOString() }),
+    );
+    rmSync(snapshotPathFor(realpathSync(tmp)), { force: true }); // the attack
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('no state snapshot');
+    expect(res.stderr).toContain('the session started');
+    // Report-once: the notice must not repeat for every remaining Bash call.
+    expect(runHook().stderr).toBe('');
   });
 
   it('a wave rollover reports dirt written AFTER the new scope file, never pre-wave dirt (#938 V3)', () => {
