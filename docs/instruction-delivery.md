@@ -325,6 +325,96 @@ decision, not inside a measurement task.
 
 ---
 
+## 6. The projects-baseline ablation axis (GitLab #936, T3)
+
+> This section aligns the instruction-ablation eval to the **fleet-wide** lever and
+> pre-registers the decision rule. It builds the alignment, not a run — the run
+> stays the operator's call because it burns real API budget.
+
+### 6.1 Why the baseline is the lever, not this repo
+
+§5 concludes: shrink the corpus, do not add a delivery path. §6 names *where* the
+corpus lives. The `.claude/rules/` files reaching an agent are **not authored here** —
+they are rolled out from `projects-baseline`. Measured 2026-07-30 (#936): **104,997
+bytes are byte-identical across 14 repos**, all seeded from that baseline. A cut in
+this repo's `.claude/rules/` is a single-repo fix that the next `/bootstrap
+--sync-rules` can overwrite; a cut in the baseline propagates to every repo rolled
+out from it.
+
+This is consistent with §5's mechanism claim, not a new one: on Claude Code the
+delivery path is native project-instruction loading (§1), so a baseline cut acts
+purely through **corpus size, fleet-wide** — never through glob-scoping (which §3.1
+measured at 4.0% on a real wave). The baseline axis is the same "editor, not delivery
+mechanism" lever from §5, applied at the source that feeds 14 editors instead of one.
+
+### 6.2 The one command (host-local, never hardcoded)
+
+`evals/instruction-ablation/run.mjs` now accepts `--rules-source repo|baseline`
+(default `repo`, byte-identical to before). With `baseline` it sources the rule
+corpus from the host-local `projects-baseline` instead of this repo. The path is
+resolved through the same precedence as `plan-baseline-path` in
+`scripts/lib/config.mjs` — **`SO_BASELINE_PATH` env → owner.yaml `baselines:` match →
+owner.yaml `paths.baseline-path`** — so no machine-specific path is committed.
+
+```bash
+# free — resolves the baseline, prints the corpus size + cost estimate, runs nothing
+node evals/instruction-ablation/run.mjs --rules-source baseline --list
+
+# the real run (operator's decision — ~USD 25 for these 14 cells)
+node evals/instruction-ablation/run.mjs --rules-source baseline \
+  --cases vbc-001-verify-before-claiming --variants v0-full,v2-no-rules --runs 7
+```
+
+`--list` reports which tier resolved the baseline, the corpus byte total (the
+baseline corpus is larger than this repo's, so v0-full cells run a bigger context and
+cost more than the repo axis), and refuses nothing. A real `--runs` against an
+unresolved baseline exits `2` with a message pointing at `SO_BASELINE_PATH` /
+`owner.yaml`, rather than silently falling back to the repo corpus. `CLAUDE.md` is
+held constant (sourced from this repo) across both axes, so the rule corpus is the
+only variable.
+
+### 6.3 The decision rule — pre-registered BEFORE any run
+
+The asymmetry that governs this axis: a wrong **cut** ships a behavioural regression to
+14 repos at once; a wrong **keep** costs bytes. So the axis is fail-safe toward KEEP —
+cutting requires a *positive* demonstration of no-effect, not merely the absence of a
+significant one (n=7 cannot prove equivalence, only fail to reject it).
+
+Run the candidate rule's case at `--runs 7`, `v0-full` (full baseline corpus) vs
+`v2-no-rules` (empty corpus). Read the two pass rates against this table, fixed here
+before the numbers exist so no result is rationalised after the fact:
+
+| Outcome (v0-full vs v2-no-rules, n=7) | Reading | Baseline action |
+|---|---|---|
+| **Flat-identical** — 7/7 vs 7/7, or 0/7 vs 0/7 | the whole corpus's presence changed nothing this case can see | **CUT candidate, fleet-wide** — but per-section, never whole-file (see below) |
+| **Clear separation** — v0 ≥ 5/7 **and** v2 ≤ 1/7 (Fisher p < 0.05) | the rule carries a real, fleet-wide behavioural effect | **KEEP in baseline** — it earns its 14-repo byte cost |
+| **In-between** — e.g. 2/7 vs 0/7 (Fisher p ≈ 0.2), or any split not meeting the two rows above | signal, not significance (the #936-T2 zone) | **KEEP + raise n**, do not cut — under 14-repo blast radius, inconclusive defaults to keep |
+
+Two guards carry over from the #936 Vorsession and bind here unchanged:
+
+- **A case tests one claim, not a whole file.** `sec-007` passing proves only SQL
+  parameterisation, not that `security.md` (SSRF, XXE, secrets, supply-chain) is
+  cuttable. Even a flat-identical result makes a rule a **per-section cut candidate**,
+  never a whole-file delete candidate.
+- **`--runs 1` is a smoke test, never a result.** The pilot's non-monotonic n=1
+  pattern (v1 FAIL while v2 PASS) inverted at n=3. Compare variants at n≥3, n=7 where a
+  result is close.
+
+### 6.4 The pre-registered expectation for `vbc-001`
+
+`verification-before-completion.md` is the one rule that showed an effect (README:
+2/3 vs 0/3 at the repo axis, Fisher p ≈ 0.2 — signal, not significance). It ships from
+the baseline like the rest. **Stated before the baseline run:** we expect
+`v0-full` ≥ 5/7 and `v2-no-rules` ≤ 1/7 — i.e. the effect is real and
+`verification-before-completion.md` should be **KEPT** in the baseline. If instead the
+two converge (both ≥ 6/7 or both ≤ 1/7), the repo-axis signal was an artifact and the
+rule becomes a per-section cut candidate fleet-wide. Anything in between raises n; it
+does not cut. Writing this down before the run is the point: it stops a
+14-repo-affecting decision from being reverse-engineered out of whichever number
+appears.
+
+---
+
 ## Reproducing this document
 
 ```bash

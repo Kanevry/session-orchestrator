@@ -273,6 +273,24 @@ package-manager-guard:
     - node scripts/check-package-manager.mjs
   rules: *gate-rules
 
+# test-value-bans — ADVISORY scan for the lint-enforceable test bans in
+# .claude/rules/testing.md § "Lint-Enforceable Test Bans" (B1 dynamic-set count
+# pins, B2 prose pins, B3/B4 hook-decision contract copies, B5 date time-bombs).
+# NON-BLOCKING by design: the scanner is warn-only and always exits 0 when the
+# scan completes, and `allow_failure: true` means even a future non-zero exit
+# (tool error) cannot gate the pipeline — findings surface in the job log only.
+# Node-stdlib-only (git ls-files + fs), so it skips the `.node-setup` anchor (no
+# npm ci) — same lightweight image-only pattern as package-manager-guard above.
+test-value-bans:
+  stage: validate
+  image: node:${NODE_VERSION}
+  interruptible: true
+  timeout: 5m
+  allow_failure: true
+  script:
+    - node scripts/lib/validate/check-test-value-bans.mjs "$CI_PROJECT_DIR"
+  rules: *gate-rules
+
 # ---------------------------------------------------------------------------
 # Stage: test
 # ---------------------------------------------------------------------------

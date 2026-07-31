@@ -20,7 +20,7 @@ import { probe } from './resource-probe.mjs';
  * "proceed" decision.
  *
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
- * @returns {Promise<{ramFreeGb: number, ramAvailableGb: number|null, cpuLoadPct: number, concurrentSessions: number} | {probeFailed: true}>}
+ * @returns {Promise<{ramFreeGb: number, ramAvailableGb: number|null, cpuLoadPct: number, cpuLoad5mPct: number|null, concurrentSessions: number} | {probeFailed: true}>}
  */
 async function extractMeasurements(opts) {
   const { probeOverride } = opts;
@@ -31,6 +31,8 @@ async function extractMeasurements(opts) {
       // Tests may supply ramAvailableGb to exercise the macOS path; absent → null.
       ramAvailableGb: probeOverride.ramAvailableGb ?? null,
       cpuLoadPct: probeOverride.cpuLoadPct,
+      // 5m-average CPU pct (#943); absent → null (legacy overrides → 1m-only judging).
+      cpuLoad5mPct: probeOverride.cpuLoad5mPct ?? null,
       concurrentSessions: probeOverride.concurrentSessions,
     };
   }
@@ -47,6 +49,9 @@ async function extractMeasurements(opts) {
     // os.freemem() is already accurate. (#667)
     ramAvailableGb: snapshot.ram_available_gb ?? null,
     cpuLoadPct: snapshot.cpu_load_pct,
+    // 5m load-average as pct-of-cores (#943). null on Windows/zero-load, where
+    // the gate falls back to judging the 1m-derived cpu_load_pct alone.
+    cpuLoad5mPct: snapshot.cpu_load_5m_pct ?? null,
     // concurrent sessions: number of claude processes found by the probe.
     concurrentSessions: snapshot.claude_processes_count ?? 0,
   };
@@ -57,7 +62,7 @@ async function extractMeasurements(opts) {
  * config, then apply the HR-004 heavy-repo preflight ceiling on top. Returns
  * the full gate result.
  *
- * @param {{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number}} measurements
+ * @param {{ramFreeGb: number, ramAvailableGb?: number|null, cpuLoadPct: number, cpuLoad5mPct?: number|null, concurrentSessions: number}} measurements
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
  * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
  */
@@ -130,13 +135,13 @@ function applyHeavyRepoCap(result, opts) {
  * Extracted so `applyDecisionRules` can layer the HR-004 heavy-repo cap on
  * top without duplicating this sequence.
  *
- * @param {{ramFreeGb: number, cpuLoadPct: number, concurrentSessions: number}} measurements
+ * @param {{ramFreeGb: number, ramAvailableGb?: number|null, cpuLoadPct: number, cpuLoad5mPct?: number|null, concurrentSessions: number}} measurements
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
  * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
  */
 function computeResourceDecision(measurements, opts) {
   const { config, plannedAgents } = opts;
-  const { ramFreeGb, ramAvailableGb, cpuLoadPct, concurrentSessions } = measurements;
+  const { ramFreeGb, ramAvailableGb, cpuLoadPct, cpuLoad5mPct, concurrentSessions } = measurements;
   const T = config['resource-thresholds'];
 
   // macOS fix (#667): os.freemem() reports only `Pages free`, which reads
@@ -185,24 +190,41 @@ function computeResourceDecision(measurements, opts) {
     };
   }
 
-  // Rule 6: CPU overloaded → reduce.
-  if (cpuLoadPct > T['cpu-load-max-pct']) {
+  // Rule 6: CPU overloaded → reduce. #943: this gate runs, by construction,
+  // right after the coordinator's own CPU-saturating quality-gate run — the 1m
+  // load average still carries that decaying tail (observed 2026-07-30:
+  // 96% → 91% → 78% → 75% within 36s), so a 1m-only reading systematically
+  // over-reports and halves waves without a real bottleneck. When the probe
+  // supplied a numeric 5m percentage, judge on min(1m, 5m): only-1m-high is a
+  // decaying transient (informational, no reduce), both-high is genuine
+  // sustained load. `cpuLoad5mPct` null (legacy overrides, Windows) → 1m-only.
+  const has5mCpu = typeof cpuLoad5mPct === 'number' && Number.isFinite(cpuLoad5mPct);
+  const effectiveCpuLoadPct = has5mCpu ? Math.min(cpuLoadPct, cpuLoad5mPct) : cpuLoadPct;
+  if (effectiveCpuLoadPct > T['cpu-load-max-pct']) {
+    const detail = has5mCpu ? ` (min of 1m ${cpuLoadPct}% / 5m ${cpuLoad5mPct}%)` : '';
     return {
       decision: 'reduce',
       agents: Math.max(1, Math.floor(plannedAgents / 2)),
       reasons: [
-        `CPU load ${cpuLoadPct}% > max ${T['cpu-load-max-pct']}% — reducing agent count`,
+        `CPU load ${effectiveCpuLoadPct}%${detail} > max ${T['cpu-load-max-pct']}% — reducing agent count`,
       ],
       measurements,
     };
   }
+  const cpuTransientNote =
+    has5mCpu && cpuLoadPct > T['cpu-load-max-pct']
+      ? `info: CPU 1m load ${cpuLoadPct}% > max ${T['cpu-load-max-pct']}% but 5m load ${cpuLoad5mPct}% is below — decaying transient (typically the coordinator's own just-finished gate run), not reducing (#943)`
+      : null;
 
   // Rule 7: concurrent sessions above warn → proceed with warning.
   if (concurrentSessions > T['concurrent-sessions-warn']) {
     return {
       decision: 'proceed',
       agents: plannedAgents,
-      reasons: [`warn: ${concurrentSessions} concurrent sessions`],
+      reasons: [
+        ...(cpuTransientNote ? [cpuTransientNote] : []),
+        `warn: ${concurrentSessions} concurrent sessions`,
+      ],
       measurements,
     };
   }
@@ -211,7 +233,10 @@ function computeResourceDecision(measurements, opts) {
   return {
     decision: 'proceed',
     agents: plannedAgents,
-    reasons: ['all thresholds within bounds'],
+    reasons: [
+      ...(cpuTransientNote ? [cpuTransientNote] : []),
+      'all thresholds within bounds',
+    ],
     measurements,
   };
 }
@@ -222,8 +247,8 @@ function computeResourceDecision(measurements, opts) {
  * @param {object} opts.config - Parsed Session Config (from parse-config.sh output)
  * @param {number} opts.plannedAgents - Number of agents the session-plan wants to dispatch
  * @param {string} opts.waveRole - e.g. "Impl-Core", "Quality"
- * @param {object} [opts.probeOverride] - {ramFreeGb, cpuLoadPct, concurrentSessions} for
- *   testing; when omitted, calls resource-probe
+ * @param {object} [opts.probeOverride] - {ramFreeGb, cpuLoadPct, cpuLoad5mPct?, concurrentSessions}
+ *   for testing; when omitted, calls resource-probe
  * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct", agents: number, reasons: string[], measurements: object}>}
  */
 export async function evaluateWaveResourceGate(opts) {

@@ -5,30 +5,11 @@ review-date: 2026-10-23
 
 # Owner Persona Layer (Always-on)
 
-## Why
+The Owner Persona Layer is a per-user (not per-project) tonality + efficiency dial that propagates across every repo on the same host: a single `owner.yaml` lets the operator configure language, tone, and verbosity once, picked up automatically at session-start without baking personal data into any version-controlled file.
 
-Every repo session runs with the same AI but a different project context. The Owner Persona Layer adds a per-user (not per-project) tonality and efficiency dial that propagates across all repos on the same host. A single `owner.yaml` on disk lets the operator configure language, tone, and verbosity once — and every session picks it up automatically at start, without baking any personal data into version-controlled files.
+**Path + schema (SSOT is code, not this file).** `~/.config/session-orchestrator/owner.yaml` — per-user, per-machine, never inside any repo, never committed. Schema, defaults, and the 4 soul.md slot resolvers live in `scripts/lib/owner-yaml.mjs` (`OWNER_YAML_PATH`, `loadOwnerConfig`, `writeOwnerConfig`, `getDefaults`) + `scripts/lib/soul-resolve.mjs` (slots resolved in-memory each session, never persisted). First-run interview / reset run via `/bootstrap` (`scripts/lib/owner-interview.mjs`) and `/bootstrap --owner-reset`.
 
-## Configuration
-
-**File:** `~/.config/session-orchestrator/owner.yaml` — per-user, per-machine, never inside any repo, never committed.
-
-**Schema + defaults:** `scripts/lib/owner-yaml.mjs` (`OWNER_YAML_PATH` constant, `loadOwnerConfig`, `writeOwnerConfig`, `getDefaults()`).
-
-**Template slot resolution** (4 slots injected into `skills/_shared/soul.md` at session-start): `scripts/lib/soul-resolve.mjs`. Slots are resolved in-memory each session from the current `owner.yaml` — never persisted.
-
-**First-run interview:** runs once per host via `/bootstrap` (implementation: `scripts/lib/owner-interview.mjs`) when `owner.yaml` does not exist. Covers name, language, tone style, output level, and preamble verbosity.
-
-**Reset / re-trigger:** `/bootstrap --owner-reset` — archives the existing file and re-runs the interview.
-
-## Privacy guarantee
-
-- `owner.yaml` lives at `~/.config/session-orchestrator/owner.yaml` — outside every repo, always.
-- This rule file contains **zero** owner data. Only the path convention and schema shape are documented here.
-- Bootstrap appends `~/.config/session-orchestrator/owner.yaml` to the global `~/.gitignore` during first-run as a safety net, preventing accidental staging across all repos on the machine.
-- Generated soul.md content is resolved in-memory per session and **never written to disk**.
-- Repos are safe to be public. `owner.yaml` cannot appear in any repo commit under any normal or misconfigured workflow.
-- `paths.confidential-names-file` (#728a) follows the SAME committed-mechanism / host-local-data contract: only the PATH lives in `owner.yaml` (env `SO_CONFIDENTIAL_NAMES_FILE` overrides), while the confidential customer/repo names live in the referenced never-committed JSON file. The owner-leakage scanner's CP11 rule matches tracked files against that list and **redacts** any matched name from its output — so even a CP11 hit surfaced in the public CI log never prints the confidential name itself.
+**Privacy guarantee.** This rule file carries **zero** owner data — only the path convention and schema shape. `owner.yaml` lives outside every repo and is appended to `~/.gitignore` at first-run, so it cannot surface in any repo commit under any normal or misconfigured workflow; generated soul.md content is never written to disk. `paths.confidential-names-file` (#728a; env `SO_CONFIDENTIAL_NAMES_FILE` overrides) follows the same committed-path / host-local-data contract — only the PATH lives in `owner.yaml`, the names in a never-committed JSON file, and the owner-leakage scanner's CP11 rule **redacts** any matched name, so a CP11 hit in a public CI log never prints the confidential name itself.
 
 ## See Also
 development.md · security.md · cli-design.md · mvp-scope.md · parallel-sessions.md

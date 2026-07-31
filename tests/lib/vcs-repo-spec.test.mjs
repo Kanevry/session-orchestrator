@@ -9,7 +9,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveRepoSpec, resolveRepoHost, defaultGlabRepo } from '../../scripts/lib/vcs-repo-spec.mjs';
+import {
+  resolveRepoSpec,
+  resolveRepoHost,
+  defaultGlabRepo,
+  stripUrlCredentials,
+  redactUrlCredentials,
+} from '../../scripts/lib/vcs-repo-spec.mjs';
 
 describe('resolveRepoSpec — gitlab (default vcs)', () => {
   it('prefers the gitlab remote URL over origin', () => {
@@ -248,6 +254,150 @@ describe('resolveRepoSpec / resolveRepoHost — argv-boundary guard (#872 follow
   it('resolveRepoHost returns undefined when the extracted host has an embedded space', () => {
     const fn = () => ({ ok: true, stdout: 'https://ho st/owner/repo.git\n', stderr: '' });
     expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
+  });
+});
+
+describe('resolveRepoSpec / resolveRepoHost — embedded-credential stripping (#907, CWE-214)', () => {
+  // A GitLab-CI checkout produces a remote of the form
+  // `https://gitlab-ci-token:<MASKED>@host/group/project.git`. That userinfo
+  // credential must never reach a `-R`/`--repo` argv position (ps /
+  // /proc/<pid>/cmdline visible) nor a verbose log line. resolveRepoSpec strips
+  // it AT THE SOURCE. Per testing.md § "Security Tests Must Not Encode the
+  // Vulnerability", the assertions pin the REDACTED (safe) output as correct —
+  // never the credential-bearing form as expected.
+
+  it('strips user:token@ userinfo from an HTTPS gitlab remote (source strip)', () => {
+    const fn = () => ({
+      ok: true,
+      stdout: 'https://gitlab-ci-token:glpat-SECRET123@gitlab.example.com/group/project.git\n',
+      stderr: '',
+    });
+    const spec = resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn });
+    expect(spec).toBe('https://gitlab.example.com/group/project.git');
+    expect(spec).not.toContain('glpat-SECRET123');
+    expect(spec).not.toContain('gitlab-ci-token');
+    expect(spec).not.toContain('@');
+  });
+
+  it('strips a bare token userinfo (https://token@host) from an HTTPS remote', () => {
+    const fn = () => ({
+      ok: true,
+      stdout: 'https://glpat-BARE456@gitlab.example.com/group/project.git\n',
+      stderr: '',
+    });
+    const spec = resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn });
+    expect(spec).toBe('https://gitlab.example.com/group/project.git');
+    expect(spec).not.toContain('glpat-BARE456');
+  });
+
+  it('strips user:pass@ from an ssh:// URL (password-bearing SSH)', () => {
+    const fn = () => ({
+      ok: true,
+      stdout: 'ssh://git:SECRETPW@gitlab.example.com/group/project.git\n',
+      stderr: '',
+    });
+    const spec = resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn });
+    expect(spec).toBe('ssh://gitlab.example.com/group/project.git');
+    expect(spec).not.toContain('SECRETPW');
+  });
+
+  it('leaves scp-like SSH user (git@host:path) UNCHANGED — a bare SSH login is not a credential', () => {
+    const fn = () => ({ ok: true, stdout: 'git@gitlab.example.com:group/project.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBe(
+      'git@gitlab.example.com:group/project.git',
+    );
+  });
+
+  it('leaves a bare ssh:// login (ssh://git@host/path, no password) UNCHANGED', () => {
+    const fn = () => ({ ok: true, stdout: 'ssh://git@gitlab.example.com/group/project.git\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBe(
+      'ssh://git@gitlab.example.com/group/project.git',
+    );
+  });
+
+  it('leaves a credential-free HTTPS URL BYTE-IDENTICAL (normal-case regression guard)', () => {
+    const url = 'https://gitlab.example.com/group/project.git';
+    const fn = () => ({ ok: true, stdout: `${url}\n`, stderr: '' });
+    const spec = resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn });
+    expect(spec).toBe(url);
+    expect(spec.length).toBe(url.length); // byte-for-byte, no truncation/rewrite
+  });
+
+  it('strips credentials from a github remote too, before HOST/OWNER/REPO normalization', () => {
+    const fn = () => ({
+      ok: true,
+      stdout: 'https://x-access-token:ghp_SECRET@github.example.com/owner/repo.git\n',
+      stderr: '',
+    });
+    const spec = resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn });
+    expect(spec).toBe('github.example.com/owner/repo');
+    expect(spec).not.toContain('ghp_SECRET');
+  });
+
+  it('resolveRepoHost strips credentials before extracting the host', () => {
+    const fn = () => ({
+      ok: true,
+      stdout: 'https://gitlab-ci-token:glpat-SECRET@gitlab.example.com/group/project.git\n',
+      stderr: '',
+    });
+    expect(resolveRepoHost({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBe('gitlab.example.com');
+  });
+
+  it('preserves an @ that appears in the PATH (not userinfo) of a credential-free URL', () => {
+    // The `[^/@]+@` userinfo class stops at the first `/`, so a path-embedded
+    // `@` (e.g. a ref) is never mistaken for a credential and is preserved.
+    const fn = () => ({ ok: true, stdout: 'https://gitlab.example.com/group/project.git@ref\n', stderr: '' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBe(
+      'https://gitlab.example.com/group/project.git@ref',
+    );
+  });
+
+  it('stripUrlCredentials strips the userinfo but preserves a path-embedded @', () => {
+    expect(stripUrlCredentials('https://user:tok@gitlab.example.com/group/project.git@ref')).toBe(
+      'https://gitlab.example.com/group/project.git@ref',
+    );
+  });
+
+  it('redactUrlCredentials replaces embedded userinfo with *** in a log line (defense-in-depth)', () => {
+    const line =
+      'glab issue view 305 -R https://gitlab-ci-token:glpat-SECRET@gitlab.example.com/group/project.git';
+    const redacted = redactUrlCredentials(line);
+    expect(redacted).not.toContain('glpat-SECRET');
+    expect(redacted).not.toContain('gitlab-ci-token');
+    expect(redacted).toContain('https://***@gitlab.example.com/group/project.git');
+  });
+
+  it('redactUrlCredentials leaves a credential-free log line byte-identical', () => {
+    const line = 'glab issue view 305 -R https://gitlab.example.com/group/project.git';
+    expect(redactUrlCredentials(line)).toBe(line);
+  });
+
+  it('redactUrlCredentials leaves a scp-like SSH remote in a log line unchanged', () => {
+    const line = 'push to git@gitlab.example.com:group/project.git';
+    expect(redactUrlCredentials(line)).toBe(line);
+  });
+
+  // #907 MED-1 (W4 panel): a raw `@` INSIDE the token/password left a partial
+  // credential behind when the userinfo class stopped at the first `@`. The
+  // greedy match must bind `@` to the LAST `@` before the authority ends.
+  it('strips the WHOLE userinfo when the token itself contains a raw @ (no partial-secret residual)', () => {
+    const out = stripUrlCredentials('https://gitlab-ci-token:gl@pat-SECRET@gitlab.example.com/g/p.git');
+    // The panel exploit: a first-@-only match left "pat-SECRET@" in the -R argv.
+    expect(out).toBe('https://gitlab.example.com/g/p.git');
+    expect(out).not.toContain('pat-SECRET');
+    expect(out).not.toContain('gitlab-ci-token');
+  });
+
+  it('strips a nested user:pass@user:pass@host userinfo entirely', () => {
+    expect(stripUrlCredentials('https://a:b@c:d@host/owner/repo.git')).toBe('https://host/owner/repo.git');
+  });
+
+  it('redacts a raw-@ token in a log line without leaving a partial secret', () => {
+    const redacted = redactUrlCredentials(
+      'glab -R https://gitlab-ci-token:gl@pat-SECRET@gitlab.example.com/g/p.git',
+    );
+    expect(redacted).not.toContain('pat-SECRET');
+    expect(redacted).toContain('https://***@gitlab.example.com/g/p.git');
   });
 });
 

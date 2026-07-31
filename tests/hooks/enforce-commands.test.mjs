@@ -18,7 +18,7 @@ import os from 'node:os';
 
 import { extractBashWriteTargets } from '../../scripts/lib/scope-gate.mjs';
 
-import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -232,13 +232,10 @@ describe('warn mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('rm -rf /'),
     });
-    expect(result.code).toBe(0);
-
-    const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    const obj = JSON.parse(lines[0]);
-    expect(Object.keys(obj)).toEqual(['systemMessage']);
-    expect(obj.systemMessage).toContain("Blocked command: 'rm -rf' found in command");
+    // Allow-with-notice envelope: exit 0, one stdout line, ONLY `systemMessage`.
+    // The warn/strict discriminator (absent permissionDecision) is asserted
+    // inside expectWarn — the single home for the warn contract.
+    expectWarn(result, "Blocked command: 'rm -rf' found in command");
   });
 
   it('writes a warning containing ⚠ to stderr in warn mode', async () => {

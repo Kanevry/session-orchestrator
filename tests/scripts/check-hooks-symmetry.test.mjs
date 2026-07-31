@@ -107,6 +107,9 @@ function validPiHooks() {
       session_start: handlerGroup('PI_PLUGIN_ROOT'),
       session_shutdown: handlerGroup('PI_PLUGIN_ROOT'),
       tool_call: [
+        // Mirrors the claudeHooks() fixture's PreToolUse handler so the
+        // Check-6 per-event handler-set parity (#942) holds for the fixture.
+        { matcher: '*', hooks: [commandHook('PI_PLUGIN_ROOT', 'handler.mjs')] },
         piToolEntry('bash', [
           'pre-bash-destructive-guard.mjs',
           'enforce-commands.mjs',
@@ -413,6 +416,80 @@ describe('check-hooks-symmetry.mjs', () => {
         expect(result.stdout).toContain(expectedGap);
       },
     );
+  });
+
+  describe('per-event handler-set parity (#942)', () => {
+    // Bug class: a handler wired on ONE platform's event only was structurally
+    // invisible to checks 1-4 (event keys + file existence both symmetric).
+    // post-bash-write-verify.mjs shipped Claude-only exactly this way.
+    it('fails when a handler is wired on a Claude event but missing from the same Codex event', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'one-platform-only.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({ claude, handlers: ['one-platform-only.mjs'] });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-codex.json missing UNDOCUMENTED handlers on shared events: PostToolUse → one-platform-only.mjs',
+      );
+    });
+
+    it('fails when the #942 handler is on Claude PostToolUse but missing from Pi tool_result', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'post-bash-write-verify.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({
+        claude,
+        pi: validPiHooks(),
+        handlers: ['post-bash-write-verify.mjs', ...REQUIRED_PI_HANDLER_FILES],
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-pi.json missing UNDOCUMENTED handlers on shared events: PostToolUse → post-bash-write-verify.mjs',
+      );
+    });
+
+    it('passes when the missing handler is a documented asymmetry (Codex allowlist)', () => {
+      // Guards the allowlist mechanism itself: deleting handlerAsymmetries
+      // would turn every documented platform gap into a gate-breaking FAIL.
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'post-bash-write-verify.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({ claude, handlers: ['post-bash-write-verify.mjs'] });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        'hooks-codex.json per-event handler sets match hooks.json (documented asymmetries: 1)',
+      );
+    });
   });
 
   describe('main parser and handler existence', () => {

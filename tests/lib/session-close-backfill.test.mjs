@@ -136,6 +136,71 @@ describe('backfillAbandonedSession — happy path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #914 R1 — completed_at is events-attested, never the backfill-run wall-clock.
+// A missing terminal event previously fabricated `nowMs` → ~64h phantom runtime
+// on real records. Fix: fall back to lastEventMs (flagged as an estimate), never
+// the run time; the record must round-trip through the schema (null is illegal).
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — completed_at attribution (#914 R1)', () => {
+  // No terminal event: only started + lock.acquired (last life-sign at 14:01).
+  const noTerminalEvents = () => [
+    { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    {
+      timestamp: '2026-05-27T14:01:00.000Z',
+      event: 'orchestrator.session.lock.acquired',
+      session_id: UUID,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      mode: 'feature',
+    },
+  ];
+
+  it('uses lastEventMs (14:01), NOT the backfill-run now (18:30), when no terminal event exists', async () => {
+    seedEvents(noTerminalEvents());
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    const rec = readSessions()[0];
+    // The exact anti-regression: nowMs was '2026-05-27T18:30:00.000Z' (fabricated
+    // ~4.5h runtime). The real last life-sign is 14:01 — a 1-minute session.
+    expect(rec.completed_at).toBe('2026-05-27T14:01:00.000Z');
+    expect(rec.completed_at).not.toBe(new Date(NOW_MS).toISOString());
+  });
+
+  it('flags the estimate: _completed_at_estimated + completed_at in _backfill_incomplete_fields', async () => {
+    seedEvents(noTerminalEvents());
+
+    await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+    const rec = readSessions()[0];
+    expect(rec._completed_at_estimated).toBe(true);
+    expect(rec._backfill_incomplete_fields).toContain('completed_at');
+    // Still a legal ISO string — the schema rejects a null completed_at.
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+
+  it('does NOT flag completed_at when a real terminal event is present', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+      { timestamp: '2026-05-27T17:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID, reason: 'clear' },
+    ]);
+
+    await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+    const rec = readSessions()[0];
+    expect(rec.completed_at).toBe('2026-05-27T17:00:00.000Z');
+    expect(rec._completed_at_estimated).toBeUndefined();
+    expect(rec._backfill_incomplete_fields).not.toContain('completed_at');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #773 — carryover sentinel: an abandoned stub never ran Phase 1.65, so its
 // carryover is genuinely UNKNOWN and must be emitted as null (not 0).
 // ---------------------------------------------------------------------------

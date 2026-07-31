@@ -22,11 +22,15 @@
  *  - E2E (fake-regression)→ the guard must WARN for an out-of-scope Bash write
  *                           and stay SILENT for an in-scope one, against a real
  *                           git repo and the real hook process.
+ *  - #938 (3 vectors)     → the observed actor could silence the guard: V1
+ *                           rewrite the (ignored + gitignored) control file,
+ *                           V2 delete the $TMPDIR state sidecar, V3 exploit
+ *                           the blind first call after every scope change.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,7 +78,6 @@ describe('isIgnoredPath', () => {
     ['.orchestrator/current-session.json', 'corrective-context sidecar'],
     ['.orchestrator/current-session.json.tmp-ptf-123-456', 'tmp+rename residue'],
     ['.claude/STATE.md', 'coordinator status file'],
-    ['.pi/wave-scope.json', 'harness scope manifest'],
     ['node_modules/foo/index.js', 'package-manager artefact'],
     ['package-lock.json', 'lockfile rewrite by npm'],
     ['coverage/index.html', 'coverage artefact'],
@@ -92,6 +95,10 @@ describe('isIgnoredPath', () => {
     '.orchestrator/policy/blocked-commands.json',
     '.orchestrator/steering/product.md',
     'out-of-scope.mjs',
+    // #938 vector 1: the guard's OWN control file was on this ignore list —
+    // an actor rewriting `enforcement`/`gates` changed the gate unreported.
+    '.claude/wave-scope.json',
+    '.pi/wave-scope.json',
   ])('does NOT ignore %s — over-broad patterns would blind the guard', (p) => {
     expect(isIgnoredPath(p)).toBe(false);
   });
@@ -142,7 +149,43 @@ describe('computeReport', () => {
   const allowed = ['hooks/**'];
   const sig = scopeSignature(allowed);
 
-  it('first run re-baselines SILENTLY — pre-existing dirt is not the observed call\'s fault', () => {
+  it('first-run re-baseline reports dirt NEWER than the scope file, not pre-wave dirt (#938 vectors 2+3)', () => {
+    // Bug caught (was pinned as intended silence pre-#938): deleting the
+    // $TMPDIR sidecar (vector 2) forced a FULLY silent re-baseline that
+    // swallowed the observed call's own out-of-scope write. Dirt older than
+    // the wave-scope.json write predates the wave and must still stay silent.
+    const r = computeReport({
+      dirtyPaths: ['scripts/lib/io.mjs', 'out-of-scope.mjs'],
+      allowedPaths: allowed,
+      snapshot: null,
+      signature: sig,
+      scopeMtimeMs: 1_000,
+      mtimeMs: (p) => (p === 'out-of-scope.mjs' ? 1_500 : 200),
+    });
+    expect(r.report).toEqual(['out-of-scope.mjs']);
+    expect(r.rebaselined).toBe(true);
+    expect(r.nextSnapshot.paths).toEqual(['scripts/lib/io.mjs', 'out-of-scope.mjs']);
+  });
+
+  it('re-baseline reports an out-of-scope write whose mtime EQUALS the scope file (#938 MED-3, W4 panel)', () => {
+    // Bug caught: a strict `>` dropped a write landing on the SAME coarse-FS
+    // tick as the wave-scope.json write — a same-instant out-of-scope write from
+    // THIS wave read as pre-wave dirt and stayed silent. `>=` attributes it.
+    const r = computeReport({
+      dirtyPaths: ['out-of-scope.mjs'],
+      allowedPaths: allowed,
+      snapshot: null,
+      signature: sig,
+      scopeMtimeMs: 1_000,
+      mtimeMs: () => 1_000, // exactly equal to the scope file
+    });
+    expect(r.report).toEqual(['out-of-scope.mjs']);
+    expect(r.rebaselined).toBe(true);
+  });
+
+  it('first-run re-baseline degrades to silence without an mtime signal (no false blame)', () => {
+    // Bug caught: a scope-file stat failure must fall back to the conservative
+    // silent re-baseline — NOT report pre-wave dirt it cannot attribute.
     const r = computeReport({
       dirtyPaths: ['scripts/lib/io.mjs', 'out-of-scope.mjs'],
       allowedPaths: allowed,
@@ -151,7 +194,6 @@ describe('computeReport', () => {
     });
     expect(r.report).toEqual([]);
     expect(r.rebaselined).toBe(true);
-    expect(r.nextSnapshot.paths).toEqual(['scripts/lib/io.mjs', 'out-of-scope.mjs']);
   });
 
   it('reports only the NEWLY appeared out-of-scope path, not the whole dirty tree', () => {
@@ -203,15 +245,21 @@ describe('computeReport', () => {
     expect(r.nextSnapshot.paths).toEqual([]);
   });
 
-  it('a new wave (changed allowedPaths) re-baselines silently instead of blaming the next call', () => {
+  it('a new wave re-baselines but still reports dirt written AFTER the new scope file (#938 vector 3)', () => {
+    // Bug caught (was pinned as intended silence pre-#938): the first Bash
+    // call after every wave rollover was blind — an out-of-scope write timed
+    // into that call was folded silently into the snapshot. Pre-wave dirt
+    // (mtime older than the new wave-scope.json) must still NOT be blamed.
     const prev = { signature: scopeSignature(['docs/**']), paths: [] };
     const r = computeReport({
-      dirtyPaths: ['out-of-scope.mjs'],
+      dirtyPaths: ['out-of-scope.mjs', 'pre-wave-dirt.mjs'],
       allowedPaths: allowed,
       snapshot: prev,
       signature: sig,
+      scopeMtimeMs: 1_000,
+      mtimeMs: (p) => (p === 'out-of-scope.mjs' ? 1_500 : 200),
     });
-    expect(r.report).toEqual([]);
+    expect(r.report).toEqual(['out-of-scope.mjs']);
     expect(r.rebaselined).toBe(true);
   });
 
@@ -311,6 +359,36 @@ describe('post-bash-write-verify E2E', () => {
     expect(envelope.hookSpecificOutput.additionalContext).toContain('out-of-scope.mjs');
   });
 
+  it('still runs when invoked through a SYMLINKED path (#938 MED-2, W4 panel)', () => {
+    // Bug caught: `isMain = argv[1] === fileURLToPath(import.meta.url)` read
+    // false under a symlinked $CLAUDE_PLUGIN_ROOT (argv[1] is the symlink path,
+    // import.meta.url is realpath-resolved) → main() never ran → the whole
+    // scope-detector silently no-op'd. realpath'ing both sides fixes it.
+    writeScope(['hooks/**']);
+    // A symlink to the REAL hook file, invoked as the script entry point.
+    const linkDir = mkdtempSync(join(tmpdir(), 'pbwv-symlink-'));
+    const linkedHook = join(linkDir, 'post-bash-write-verify.mjs');
+    symlinkSync(HOOK, linkedHook);
+    try {
+      const baseline = () => spawnSync(process.execPath, [linkedHook], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x' } }),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmp, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+        timeout: 20_000,
+      });
+      expect(baseline().stderr).toBe(''); // clean baseline via the symlink → main() ran
+      writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+      const res = baseline();
+      expect(res.status).toBe(0);
+      // The decisive assertion: main() ran through the symlink and produced the
+      // warning. Before the fix this was empty (hook silently disabled).
+      expect(res.stderr).toContain('bash-write-verify');
+      expect(res.stderr).toContain('out-of-scope.mjs');
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
   it('is SILENT when the Bash call wrote inside allowedPaths', () => {
     writeScope(['hooks/**']);
     expect(runHook().stderr).toBe('');
@@ -377,5 +455,79 @@ describe('post-bash-write-verify E2E', () => {
     const live = snapshotPathFor(realpathSync(tmp));
     expect(existsSync(live)).toBe(true);
     expect(JSON.parse(readFileSync(live, 'utf8'))).toHaveProperty('signature');
+  });
+
+  // -------------------------------------------------------------------------
+  // #938 — the three self-silencing vectors
+  // -------------------------------------------------------------------------
+
+  it('reports a control-file rewrite and still evaluates the SAME call under the pre-change scope (#938 V1)', () => {
+    // Bug caught: wave-scope.json sat on the hook's own ignore list AND is
+    // typically gitignored, while G4/G5 read the LIVE file — one Bash call
+    // could write `enforcement: "off"` plus an out-of-scope file and the hook
+    // reported neither the gate change nor the write.
+    writeScope(['hooks/**']);
+    runHook(); // baseline records the pre-change scope state
+    // The observed actor silences the guard and writes out of scope in one call:
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ enforcement: 'off', allowedPaths: ['hooks/**'] }),
+    );
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('wave-scope.json'); // the rewrite is reported …
+    expect(res.stderr).toContain('enforcement warn→off'); // … with the weakening named …
+    expect(res.stderr).toContain('out-of-scope.mjs'); // … and the write still evaluated
+    // The new state is honored from the NEXT call on (a legit disable still works):
+    expect(runHook().stderr).toBe('');
+  });
+
+  it('still reports an out-of-scope write after the $TMPDIR state file was deleted (#938 V2)', () => {
+    // Bug caught: `rm -f $TMPDIR/so-bash-write-verify/<key>.json` (outside the
+    // repo, invisible to git status, untouched by the destructive-guard)
+    // forced a silent re-baseline that swallowed the very write being observed.
+    writeScope(['hooks/**']);
+    runHook(); // baseline exists
+    rmSync(snapshotPathFor(realpathSync(tmp)), { force: true }); // the attack
+    // Deterministic mtime ordering on any fs granularity: scope file is old …
+    const past = new Date(Date.now() - 20 * 60_000);
+    utimesSync(join(tmp, '.claude', 'wave-scope.json'), past, past);
+    // … and the observed write is new.
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    // Fix 3: the missing sidecar under a 20-min-old scope file is itself named.
+    expect(res.stderr).toContain('no state snapshot');
+  });
+
+  it('a wave rollover reports dirt written AFTER the new scope file, never pre-wave dirt (#938 V3)', () => {
+    // Bug caught: the first Bash call after every scope change was blind, so an
+    // out-of-scope write timed into that call vanished into the re-baseline.
+    // The anti-noise half still holds: pre-wave dirt is not blamed, and the
+    // coordinator's legitimate rollover produces a visible, non-alarming notice.
+    writeScope(['hooks/**']);
+    runHook();
+    // Pre-wave dirt, clearly older than the upcoming rollover:
+    writeFileSync(join(tmp, 'pre-wave.mjs'), 'old dirt\n');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(tmp, 'pre-wave.mjs'), past, past);
+    // Coordinator rolls over to a new wave (changed allowedPaths → re-baseline);
+    // pin the scope mtime BETWEEN pre-wave dirt and the upcoming write so the
+    // ordering is deterministic on coarse-granularity filesystems too.
+    writeScope(['docs/**']);
+    const scopeAge = new Date(Date.now() - 5_000);
+    utimesSync(join(tmp, '.claude', 'wave-scope.json'), scopeAge, scopeAge);
+    // First Bash call of the new wave writes out of scope:
+    writeFileSync(join(tmp, 'evil-new-wave.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('evil-new-wave.mjs'); // V3 closed
+    expect(res.stderr).not.toContain('pre-wave.mjs'); // pre-wave dirt not blamed
+    expect(res.stderr).toContain('wave-scope.json'); // rollover notice visible
   });
 });

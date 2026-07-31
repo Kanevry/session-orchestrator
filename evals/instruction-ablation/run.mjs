@@ -15,8 +15,11 @@
 
 import { execFileSync, execSync } from 'node:child_process';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadHostPaths, resolveHostPath } from '../../scripts/lib/config/host-paths.mjs';
+import { resolveNamedBaseline } from '../../scripts/lib/named-baseline-resolver.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -42,6 +45,15 @@ const ONLY_CASES = val('--cases', '').split(',').filter(Boolean);
 const ONLY_VARIANTS = val('--variants', '').split(',').filter(Boolean);
 const DRY = has('--dry-run');
 const LIST = has('--list');
+// --rules-source repo|baseline (default repo). `baseline` sources the rule
+// corpus from the host-local projects-baseline instead of this repo — the
+// fleet-wide ablation axis (T3, #936): a cut here is a single-repo fix, a cut
+// in the baseline propagates to every repo rolled out from it.
+const RULES_SOURCE = val('--rules-source', 'repo');
+if (RULES_SOURCE !== 'repo' && RULES_SOURCE !== 'baseline') {
+  console.error(`--rules-source must be 'repo' or 'baseline' (got '${RULES_SOURCE}')`);
+  process.exit(1);
+}
 
 // ── load cases ──────────────────────────────────────────────────────
 function loadCases() {
@@ -55,6 +67,72 @@ function loadCases() {
 const cases = loadCases();
 const variants = VARIANTS.filter((v) => ONLY_VARIANTS.length === 0 || ONLY_VARIANTS.includes(v.id));
 
+// ── rule-corpus source resolution ───────────────────────────────────
+/** Expand a leading `~` to the user's home directory. */
+function expandTilde(p) {
+  if (typeof p !== 'string') return p;
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
+  return p;
+}
+
+/** Measure a rules dir: file count + byte total of its `*.md` files. */
+function measureRulesDir(dir) {
+  let fileCount = 0;
+  let bytes = 0;
+  if (dir && existsSync(dir)) {
+    for (const f of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      fileCount++;
+      bytes += readFileSync(join(dir, f)).length;
+    }
+  }
+  return { fileCount, bytes };
+}
+
+/**
+ * Resolve the projects-baseline rule corpus host-locally — NEVER a hardcoded
+ * path (the baseline location is machine-specific). Precedence mirrors
+ * `plan-baseline-path` in scripts/lib/config.mjs:
+ *   1. SO_BASELINE_PATH env
+ *   2. owner.yaml `baselines:` match against cwd
+ *   3. owner.yaml `paths.baseline-path`
+ * Returns a plain descriptor and never throws; `available` is false when no
+ * baseline is configured or its rules dir is absent.
+ */
+function resolveBaselineCorpus() {
+  const { ownerConfig, env } = loadHostPaths();
+  let baselineDir = null;
+  let source = null;
+  const named = resolveNamedBaseline({ cwd: process.cwd(), ownerConfig, env });
+  if (named.source === 'match' && typeof named.path === 'string' && named.path.trim() !== '') {
+    baselineDir = expandTilde(named.path);
+    source = `owner.yaml baselines: "${named.name}"`;
+  } else {
+    const hostPath = resolveHostPath('baseline-path', undefined, { env, ownerConfig });
+    if (typeof hostPath === 'string' && hostPath.trim() !== '') {
+      baselineDir = expandTilde(hostPath);
+      source =
+        typeof env.SO_BASELINE_PATH === 'string' && env.SO_BASELINE_PATH.trim() !== ''
+          ? 'SO_BASELINE_PATH env'
+          : 'owner.yaml paths.baseline-path';
+    }
+  }
+  if (!baselineDir) {
+    return { baselineDir: null, rulesDir: null, source: null, available: false, fileCount: 0, bytes: 0 };
+  }
+  // Prefer the auto-loaded .claude/rules; fall back to the vendoring library rules/.
+  const rulesDir =
+    [join(baselineDir, '.claude', 'rules'), join(baselineDir, 'rules')].find((d) => existsSync(d)) || null;
+  const { fileCount, bytes } = measureRulesDir(rulesDir);
+  return { baselineDir, rulesDir, source, available: Boolean(rulesDir), fileCount, bytes };
+}
+
+const baselineInfo = RULES_SOURCE === 'baseline' ? resolveBaselineCorpus() : null;
+const repoRulesDir = join(REPO, '.claude', 'rules');
+// The directory the variants copy `*.md` from. CLAUDE.md is always sourced from
+// this repo so the rule corpus is the ONLY variable across the repo/baseline axes.
+const RULES_SRC_DIR = RULES_SOURCE === 'baseline' ? baselineInfo?.rulesDir : repoRulesDir;
+
 if (LIST) {
   console.log(`cases (${cases.length}):`);
   for (const c of cases) {
@@ -64,6 +142,27 @@ if (LIST) {
     console.log(`      oracles: ${(c.oracles || []).length}`);
   }
   console.log(`\nvariants (${variants.length}): ${variants.map((v) => v.id).join(', ')}`);
+
+  // Rule-corpus source (repo vs host-local projects-baseline — the T3/#936 axis).
+  const repoCorpus = measureRulesDir(repoRulesDir);
+  console.log(`\nrules-source: ${RULES_SOURCE}`);
+  if (RULES_SOURCE === 'baseline') {
+    if (baselineInfo?.available) {
+      console.log(`  resolved via: ${baselineInfo.source}`);
+      console.log(`  baseline    : ${baselineInfo.baselineDir}`);
+      console.log(`  corpus      : ${baselineInfo.rulesDir}`);
+      console.log(`  size        : ${baselineInfo.fileCount} rule files, ${baselineInfo.bytes} B  (repo corpus: ${repoCorpus.fileCount} files, ${repoCorpus.bytes} B)`);
+      console.log(`  note        : a cut here propagates to every repo rolled out from this baseline; v0-full cells run a LARGER context than the repo axis, so v0 cells cost more.`);
+    } else {
+      console.log(`  UNAVAILABLE — no projects-baseline resolved. Set SO_BASELINE_PATH, or owner.yaml paths.baseline-path / baselines:.`);
+      console.log(`  (--list is free and does not run; a real --runs against baseline would error until this resolves.)`);
+    }
+  } else {
+    console.log(`  corpus      : ${repoRulesDir}`);
+    console.log(`  size        : ${repoCorpus.fileCount} rule files, ${repoCorpus.bytes} B`);
+    console.log(`  tip         : add --rules-source baseline to ablate the fleet-wide projects-baseline corpus (T3, #936).`);
+  }
+
   const cells = cases.length * variants.length * RUNS;
   // Per-cell cost measured in the 2026-07-30 pilot: USD 0.68-2.72, mean 1.73.
   console.log(`\ncells at --runs ${RUNS}: ${cells}  (~USD ${(cells * 0.68).toFixed(2)}-${(cells * 2.72).toFixed(2)}, mean ~${(cells * 1.73).toFixed(2)})`);
@@ -73,6 +172,17 @@ if (LIST) {
 if (cases.length === 0) {
   console.error('no cases found');
   process.exit(1);
+}
+
+// Baseline axis (#936 T3): a real build needs a resolved corpus. --list already
+// returned above; --dry-run still builds fixtures, so guard it here too.
+if (RULES_SOURCE === 'baseline' && !baselineInfo?.available) {
+  console.error(
+    'rules-source=baseline but no projects-baseline corpus resolved.\n' +
+      '  Set SO_BASELINE_PATH, or owner.yaml paths.baseline-path / baselines:.\n' +
+      '  Run with --list to see the resolution (free, no API calls).',
+  );
+  process.exit(2);
 }
 
 // ── workspace ───────────────────────────────────────────────────────
@@ -86,8 +196,8 @@ function buildWorkdir(variant, caseId, run) {
   if (!variant.dropClaudeMd && existsSync(join(REPO, 'CLAUDE.md'))) {
     cpSync(join(REPO, 'CLAUDE.md'), join(wd, 'CLAUDE.md'));
   }
-  const srcRules = join(REPO, '.claude', 'rules');
-  if (existsSync(srcRules) && !variant.drop.includes('*')) {
+  const srcRules = RULES_SRC_DIR;
+  if (srcRules && existsSync(srcRules) && !variant.drop.includes('*')) {
     for (const f of readdirSync(srcRules).filter((f) => f.endsWith('.md'))) {
       if (variant.drop.includes(f)) continue;
       cpSync(join(srcRules, f), join(wd, '.claude', 'rules', f));

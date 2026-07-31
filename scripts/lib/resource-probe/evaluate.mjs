@@ -94,7 +94,7 @@ export function evaluate(snapshot, thresholds, options = {}) {
   let verdict = 'green';
   let cap = null;
 
-  const { ram_free_gb, cpu_load_pct, claude_processes_count, memory_pressure_pct_free, ram_available_gb } = snapshot;
+  const { ram_free_gb, cpu_load_pct, cpu_load_5m_pct, claude_processes_count, memory_pressure_pct_free, ram_available_gb } = snapshot;
   const {
     'ram-free-min-gb': ramMin,
     'ram-free-critical-gb': ramCrit,
@@ -133,10 +133,24 @@ export function evaluate(snapshot, thresholds, options = {}) {
     reasons.push(`macOS memory_pressure healthy (${memory_pressure_pct_free}% free ≥ ${MACOS_HEALTHY_PRESSURE_PCT}%) — free-RAM signal suppressed (Pages-free underreports on Darwin).`);
   }
 
-  if (cpu_load_pct > cpuMax) {
+  // CPU axis (#943): the 1m load average systematically carries the decaying
+  // tail of the coordinator's own just-finished gate run (the caller sits right
+  // after the inter-wave Quality Gate by construction). When the probe supplied
+  // a numeric `cpu_load_5m_pct`, judge CPU on min(1m, 5m) — only-1m-high is a
+  // decaying transient (informational, no cap), both-high is genuine sustained
+  // load. Mirrors the memory_pressure healthy-suppression pattern above.
+  // `cpu_load_5m_pct` absent/null (legacy snapshots, Windows) → legacy 1m-only.
+  const has5mCpu = typeof cpu_load_5m_pct === 'number' && Number.isFinite(cpu_load_5m_pct);
+  const effectiveCpuPct = has5mCpu ? Math.min(cpu_load_pct, cpu_load_5m_pct) : cpu_load_pct;
+  if (effectiveCpuPct > cpuMax) {
     if (verdict === 'green') verdict = 'warn';
     cap = cap === null ? 2 : Math.min(cap, 2);
-    reasons.push(`CPU load ${cpu_load_pct}% above threshold ${cpuMax}% — capping agents-per-wave at 2.`);
+    const detail = has5mCpu ? ` (min of 1m ${cpu_load_pct}% / 5m ${cpu_load_5m_pct}%)` : '';
+    reasons.push(`CPU load ${effectiveCpuPct}%${detail} above threshold ${cpuMax}% — capping agents-per-wave at 2.`);
+  } else if (has5mCpu && cpu_load_pct > cpuMax) {
+    // Informational only: 1m spike with a calm 5m average = decaying transient
+    // (typically the coordinator's own just-finished gate run). No cap.
+    reasons.push(`CPU 1m load ${cpu_load_pct}% above threshold ${cpuMax}% but 5m load ${cpu_load_5m_pct}% is below — decaying transient (likely the coordinator's own gate run); no cap (#943).`);
   }
 
   if (claude_processes_count !== null && claude_processes_count !== undefined && claude_processes_count >= concWarn) {

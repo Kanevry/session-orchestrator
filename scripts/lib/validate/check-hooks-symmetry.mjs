@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // scripts/lib/validate/check-hooks-symmetry.mjs
-// Verify event-key + handler-file symmetry across hooks/{hooks,hooks-codex,hooks-cursor,hooks-pi}.json
+// Verify event-key + handler-file + per-event handler-set symmetry across
+// hooks/{hooks,hooks-codex,hooks-cursor,hooks-pi}.json (Check 6: #942)
 // Exit 0 = all checks pass, 1 = any check fails
 // Stdout: '  PASS: ...' / '  FAIL: ...' lines + 'Results: N passed, M failed'
 
@@ -31,6 +32,53 @@ const DOCUMENTED_ASYMMETRIES = {
     tool_call: 'PreToolUse',
     tool_result: 'PostToolUse',
     agent_end: 'Stop',
+  },
+  // Check 6 (#942): handlers wired on a Claude event but intentionally absent
+  // from the SAME logical event on a counterpart manifest. Checks 1-3 compare
+  // event KEYS and Check 4 handler EXISTENCE — a handler wired on only one
+  // platform was structurally invisible to all four (the #942 blind spot:
+  // post-bash-write-verify.mjs shipped Claude-only and nothing flagged it).
+  // A handler missing on a shared event and NOT listed here → FAIL.
+  handlerAsymmetries: {
+    codex: {
+      // Codex 0.144.4 has no payload adapter (docs/codex-setup.md § Hook
+      // Surface and Trust): Edit/Write handlers expect Claude payload shapes,
+      // Bash guards expect tool_name === 'Bash'. Wiring them would be a silent
+      // no-op, not enforcement (#919-P2 class) — "pretending the payloads are
+      // compatible would create false enforcement".
+      PreToolUse: [
+        'skill-invocation-telemetry.mjs',
+        'enforce-scope.mjs',
+        'config-protection.mjs',
+        'pre-bash-destructive-guard.mjs',
+        'pre-bash-staging-fence.mjs',
+        'pre-bash-memory-propose-audit.mjs',
+        'pre-bash-templates-first.mjs',
+        'pre-bash-issue-budget.mjs',
+        'enforce-commands.mjs',
+      ],
+      // post-bash-write-verify (#942): needs tool_name === 'Bash', which no
+      // Codex bridge delivers — documented exception until an adapter exists.
+      PostToolUse: [
+        'post-edit-validate.mjs',
+        'post-tooluse-frontend-slop.mjs',
+        'post-bash-write-verify.mjs',
+      ],
+      SubagentStart: ['subagent-telemetry.mjs'],
+      SubagentStop: ['subagent-telemetry.mjs', 'post-subagent-discovery-validator.mjs'],
+    },
+    pi: {
+      // skill-invocation-telemetry: Pi has no Skill tool (pi-hook-bridge
+      // TOOL_NAME_MAP) — the matcher can never fire. templates-first +
+      // issue-budget: status-quo gaps predating #942, kept documented here
+      // rather than silently invisible; port or justify via follow-up.
+      PreToolUse: [
+        'skill-invocation-telemetry.mjs',
+        'pre-bash-templates-first.mjs',
+        'pre-bash-issue-budget.mjs',
+      ],
+    },
+    cursor: {},
   },
 };
 
@@ -163,9 +211,10 @@ if (piJson) {
 // Handles two shapes:
 //   Claude/Codex: hooks[event] = Array<{ hooks: Array<{ command: "node \"$CLAUDE_PLUGIN_ROOT/hooks/foo.mjs\"" }> }>
 //   Cursor:       hooks[event] = { script: "hooks/foo.mjs" }
-function extractHandlers(json) {
-  const handlers = new Set();
-  for (const event of Object.values(json.hooks || {})) {
+function extractHandlersByEvent(json) {
+  const byEvent = {};
+  for (const [eventName, event] of Object.entries(json.hooks || {})) {
+    const handlers = new Set();
     const matchers = Array.isArray(event) ? event : [event];
     for (const m of matchers) {
       // Cursor shape: script field at matcher level
@@ -181,6 +230,15 @@ function extractHandlers(json) {
         if (match) handlers.add(match[1]);
       }
     }
+    byEvent[eventName] = handlers;
+  }
+  return byEvent;
+}
+
+function extractHandlers(json) {
+  const handlers = new Set();
+  for (const set of Object.values(extractHandlersByEvent(json))) {
+    for (const h of set) handlers.add(h);
   }
   return handlers;
 }
@@ -250,6 +308,57 @@ if (unreferenced.length === 0) {
 } else {
   // INFO not FAIL — orphans are tolerated for now (e.g., _lib/ modules)
   pass(`hooks/ has ${unreferenced.length} unreferenced .mjs files (allowed; they may be library helpers): ${unreferenced.join(', ')}`);
+}
+
+// Step 9 (#942): per-event handler-SET parity, Claude → counterpart.
+// Checks 1-3 compare event keys, Check 4 handler existence — neither sees a
+// handler wired on one platform only. For every logical event the counterpart
+// DECLARES (event-level absences stay governed by Checks 1-3), each Claude
+// handler must be present on the counterpart or listed in
+// DOCUMENTED_ASYMMETRIES.handlerAsymmetries. Undocumented gap → FAIL.
+console.log('');
+console.log('--- Check 6: per-event handler-set parity across manifests (#942) ---');
+const claudeHandlersByEvent = extractHandlersByEvent(claudeJson);
+
+// Pi declares Pi-native event names; project them onto the logical main events.
+function piHandlersByMainEvent(json) {
+  const byPiEvent = extractHandlersByEvent(json);
+  const byMain = {};
+  for (const [piEvent, mainEvent] of Object.entries(DOCUMENTED_ASYMMETRIES.piEventMap)) {
+    if (byPiEvent[piEvent]) byMain[mainEvent] = byPiEvent[piEvent];
+  }
+  return byMain;
+}
+
+const HANDLER_PARITY_COUNTERPARTS = [
+  { file: 'hooks-codex.json', key: 'codex', byEvent: codexJson ? extractHandlersByEvent(codexJson) : null },
+  { file: 'hooks-cursor.json', key: 'cursor', byEvent: cursorJson ? extractHandlersByEvent(cursorJson) : null },
+  { file: 'hooks-pi.json', key: 'pi', byEvent: piJson ? piHandlersByMainEvent(piJson) : null },
+];
+
+for (const { file, key, byEvent } of HANDLER_PARITY_COUNTERPARTS) {
+  if (!byEvent) {
+    pass(`${file} absent (optional config) — handler parity skipped`);
+    continue;
+  }
+  const allow = DOCUMENTED_ASYMMETRIES.handlerAsymmetries[key] || {};
+  const undocumented = [];
+  let documentedCount = 0;
+  for (const [event, claudeSet] of Object.entries(claudeHandlersByEvent)) {
+    const counterpartSet = byEvent[event];
+    if (!counterpartSet) continue; // event not declared on counterpart — Checks 1-3 govern
+    const allowed = new Set(allow[event] || []);
+    for (const handler of claudeSet) {
+      if (counterpartSet.has(handler)) continue;
+      if (allowed.has(handler)) { documentedCount++; continue; }
+      undocumented.push(`${event} → ${handler}`);
+    }
+  }
+  if (undocumented.length === 0) {
+    pass(`${file} per-event handler sets match hooks.json (documented asymmetries: ${documentedCount})`);
+  } else {
+    fail(`${file} missing UNDOCUMENTED handlers on shared events: ${undocumented.join(', ')}`);
+  }
 }
 
 // Final

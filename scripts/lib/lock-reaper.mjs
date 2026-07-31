@@ -70,7 +70,6 @@ import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH, DEFAULT_TTL_HOURS } 
 import { emitEvent } from './events.mjs';
 
 const REAPED_ARCHIVE_SUBDIR = '.orchestrator/tmp/reaped-locks';
-const EVENTS_RELPATH = '.orchestrator/metrics/events.jsonl';
 const REAPED_EVENT = 'orchestrator.session.lock.reaped';
 const CURRENT_SESSION_RELPATH = '.orchestrator/current-session.json';
 
@@ -550,7 +549,7 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
         reap_mode: reapMode,
         current_session: currentSession,
       },
-      { filePath: path.join(repoRoot, EVENTS_RELPATH) },
+      { repoRoot },
     );
   } catch {
     // Observability is best-effort — the archive-move already succeeded.

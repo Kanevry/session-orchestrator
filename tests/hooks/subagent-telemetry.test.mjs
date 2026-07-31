@@ -434,8 +434,10 @@ describe('subagent-telemetry hook', () => {
 
       const records = await readSubagents(join(tmp, JSONL_REL));
       expect(records).toHaveLength(1);
-      // null is the honest "unknown". Roughly half of real stop traffic lands
-      // here (no start record exists for that agent_id), so this is a main path.
+      // null is the honest "unknown". This is the DOMINANT path, not a corner
+      // case: lifetime 51.1% of stop records have no start record, and ~93% of
+      // CURRENT stop traffic is orphaned (#939 phantom-stop class, measured
+      // 2026-07-31 — see the hook header docblock).
       expect(records[0].duration_ms).toBeNull();
     });
 
@@ -501,6 +503,68 @@ describe('subagent-telemetry hook', () => {
       const records = await readSubagents(join(tmp, JSONL_REL));
       const stop = records.find((r) => r.event === 'stop');
       expect(stop.duration_ms).toBeGreaterThan(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #939 — orphan guard + event-name breadcrumb. The harness fires SubagentStop
+  // for a phantom class that never fires SubagentStart (~93% of current stop
+  // traffic); `start_record_found` makes that class mechanically filterable at
+  // read time, and the breadcrumb keeps payload anomalies decidable from the
+  // ledger. Bugs these catch: flag inverted/missing (readers cannot separate
+  // phantom from real stops), breadcrumb stamped on every record (schema noise)
+  // or never stamped (anomaly invisible again).
+  // -------------------------------------------------------------------------
+
+  describe('#939 orphan guard + breadcrumb', () => {
+    it('a stop joined to its own start carries start_record_found: true; the start record carries NO flag', async () => {
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'joined-agent' }));
+      await new Promise((r) => setTimeout(r, 60));
+      const result = runHook(JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'joined-agent' }));
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const start = records.find((r) => r.event === 'start');
+      const stop = records.find((r) => r.event === 'stop');
+      expect(stop.start_record_found).toBe(true);
+      // The flag is a STOP-record contract only — a start record has no join.
+      expect(start.start_record_found).toBeUndefined();
+    });
+
+    it('an orphan stop (no start record anywhere) carries start_record_found: false', async () => {
+      const result = runHook(
+        JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'phantom-agent' }),
+      );
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      expect(records[0].start_record_found).toBe(false);
+    });
+
+    it('a payload with NO hook_event_name is written as stop WITH a hook_event_name: null breadcrumb', async () => {
+      // Hypothesis (b) of #939: a payload missing hook_event_name silently
+      // defaults to 'stop'. The breadcrumb makes that case decidable from the
+      // ledger instead of requiring another inference pass over fingerprints.
+      const result = runHook(JSON.stringify({ agent_id: 'nameless-event-agent' }));
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      expect(records[0].event).toBe('stop');
+      expect(records[0].hook_event_name).toBeNull();
+    });
+
+    it('a well-formed SubagentStop payload carries NO hook_event_name breadcrumb', async () => {
+      const result = runHook(
+        JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'normal-stop-agent' }),
+      );
+      expect(result.status).toBe(0);
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      // PRESENCE of the field is the anomaly signal — it must be absent here.
+      expect(records[0].hook_event_name).toBeUndefined();
     });
   });
 });

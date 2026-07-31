@@ -33,7 +33,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -308,15 +308,10 @@ describe('warn mode', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'tests', 'x.ts')),
     });
-    expect(result.code).toBe(0);
-
-    const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    const obj = JSON.parse(lines[0]);
-    // Exclusivity guard — hookSpecificOutput/permissionDecision must be absent,
-    // or the harness would read this as a block.
-    expect(Object.keys(obj)).toEqual(['systemMessage']);
-    expect(obj.systemMessage).toContain('not in allowed paths');
+    // Allow-with-notice: exit 0, one stdout line, ONLY `systemMessage` (the
+    // exclusivity guard — absent hookSpecificOutput/permissionDecision — lives
+    // in expectWarn so the warn contract has a single home).
+    expectWarn(result, 'not in allowed paths');
   });
 
   it('writes a warning containing ⚠ to stderr in warn mode', async () => {

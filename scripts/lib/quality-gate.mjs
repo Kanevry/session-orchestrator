@@ -60,10 +60,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from '
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { emitEvent } from './events.mjs';
-import { SO_SHARED_DIR } from './platform.mjs';
+import { emitEvent, sessionAttribution } from './events.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
-import { readLock } from './session-lock.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
@@ -384,39 +382,6 @@ function coerceMaxRetries(n) {
 // ---------------------------------------------------------------------------
 
 /**
- * Session attribution for gate telemetry (#928a).
- *
- * Same contract as the twin in `scripts/run-quality-gate.mjs`: emit BOTH the
- * UUID `session_id` and `semantic_session_id`, mirroring
- * `orchestrator.session.lock.acquired`; OMIT both when no lock exists rather
- * than inventing a placeholder that would collide across unattributed runs.
- *
- * Deliberately duplicated instead of shared: the CLI wrapper and this auto-fix
- * library are architecturally disjoint (neither imports the other — see the
- * no-double-count note on the emission below), and introducing a coupling for
- * ~12 lines would undo that. The natural shared home is `events.mjs`.
- *
- * @param {string} repoRoot
- * @returns {{session_id?: string, semantic_session_id?: string}}
- */
-function sessionAttribution(repoRoot) {
-  try {
-    const lock = readLock({ repoRoot });
-    if (!lock) return {};
-    const out = {};
-    if (typeof lock.session_id === 'string' && lock.session_id.trim()) {
-      out.session_id = lock.session_id;
-    }
-    if (typeof lock.semantic_session_id === 'string' && lock.semantic_session_id.trim()) {
-      out.semantic_session_id = lock.semantic_session_id;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
  * Emit exactly one `orchestrator.quality_gate.{passed,failed}` event per
  * `runQualityGateWithRetry` CALL (#928b).
  *
@@ -434,13 +399,14 @@ function sessionAttribution(repoRoot) {
  * baseline/incremental/full-gate/per-file variants.
  *
  * The destination is pinned to the `repoRoot` this gate actually ran against,
- * via the `opts.filePath` override (#611). `emitEvent`'s default resolution goes
- * through the module-level `SO_PROJECT_DIR` constant, which ignores `repoRoot`
- * entirely — so a caller running the gate against another tree (every unit test
- * does, using a tmp `repoRoot`) would otherwise append synthetic records to the
- * REAL repo's telemetry. That is not a test-hygiene nicety: injected
- * `quality_gate.failed` records are exactly what `/eval`'s gate-health dimension
- * reads, so the instrument would be scored against its own test fixtures.
+ * via the `opts.repoRoot` parameter (#941; formerly a hand-built `opts.filePath`
+ * recipe, #611). `emitEvent`'s BARE default resolution goes through the
+ * module-level `SO_PROJECT_DIR` constant, which ignores `repoRoot` entirely — so
+ * a caller running the gate against another tree (every unit test does, using a
+ * tmp `repoRoot`) would otherwise append synthetic records to the REAL repo's
+ * telemetry. That is not a test-hygiene nicety: injected `quality_gate.failed`
+ * records are exactly what `/eval`'s gate-health dimension reads, so the
+ * instrument would be scored against its own test fixtures.
  *
  * Best-effort: never throws, never alters the gate verdict.
  */
@@ -455,7 +421,7 @@ async function emitGateEvent(repoRoot, ok, attempts, gate) {
         ...(gate ? { gate } : {}),
         ...sessionAttribution(repoRoot),
       },
-      { filePath: join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl') },
+      { repoRoot },
     );
   } catch { /* best-effort telemetry — gate result is authoritative */ }
 }

@@ -35,7 +35,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
-import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
+import { resolveRepoSpec, redactUrlCredentials } from './lib/vcs-repo-spec.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -71,7 +71,12 @@ function log(msg) {
 }
 
 function verbose(msg) {
-  if (VERBOSE) log(msg);
+  // Defense-in-depth (#907, CWE-214): the resolved REPO_SPEC is already
+  // credential-stripped at the source (resolveRepoSpec), but a `--repo <spec>`
+  // override bypasses that strip and flows verbatim into the `glab … -R <spec>`
+  // line logged here. Redact any embedded userinfo credential before it reaches
+  // the CI job's stderr.
+  if (VERBOSE) log(redactUrlCredentials(msg));
 }
 
 function emit(action) {

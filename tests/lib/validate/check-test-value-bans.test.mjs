@@ -6,8 +6,14 @@
  * Tests for scripts/lib/validate/check-test-value-bans.mjs.
  *
  * Named bugs these lock in (TV-001):
- *   1. B1 misses `toHaveLength(<n>)` / `.length).toBe(<n>)` → the ban is dead
+ *   1. B1 misses a DYNAMIC-derived `toHaveLength(<n>)` / `.length).toBe(<n>)`
+ *      (subject traced to readdirSync / Object.keys / a walk) → the ban is dead
  *      and count-drift pins keep landing (the 3× recurrence in testing.md).
+ *   1b. B1 REGROWS its v1 over-report — flags a fixed arity over a STATIC
+ *      fixture (a hand-built array, a parsed record) that never drifts → the
+ *      ~349-finding noise returns and the advisory gets muted (#911).
+ *   1c. The hardened length regex regresses to the `\s*\)?\s*\)?\s*` adjacency →
+ *      polynomial backtracking (ReDoS) on a pathological `.length` line (#911).
  *   2. The `// integrity-anchor:` carve-out stops working → legitimate fixed
  *      width assertions get flagged, the advisory becomes noise, devs mute it.
  *   3. The 0/1 exemption regresses → every emptiness assert is reported and
@@ -36,6 +42,14 @@
  *      assertions light up, the advisory becomes noise and gets muted.
  *      (Measured 2026-07-30: 150 naive hits across tests/, 3 with the gate —
  *      exactly the three real bombs.)
+ *  13. B4 stops seeing a hand-rolled `systemMessage` warn-envelope restatement
+ *      in a deny-capable-hook test → the emitWarn warn contract is copied
+ *      outside the helper and survives the next protocol change verbatim, the
+ *      way `permissionDecision` copies did (#941 3b — the warn envelope carries
+ *      NO `permissionDecision`, so keying only on it made warn blocks invisible).
+ *  14. B4's systemMessage arm loses its deny-capable-hook scope gate → the plain
+ *      `systemMessage` output of operator-steer / the session-start banner
+ *      false-positives, since that key is overloaded (warn carrier vs plain out).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -83,12 +97,13 @@ function scan(files, extraFlags = ['--json']) {
 }
 
 describe('check-test-value-bans — B1 exact count assertions', () => {
-  it('reports toHaveLength(<n>) and .length).toBe(<n>) with file + line', () => {
+  it('reports a dynamic-derived toHaveLength(<n>) and .length).toBe(<n>) with file + line', () => {
     const { res, json } = scan({
       'tests/a.test.mjs': [
+        'const skills = readdirSync(skillsDir);', // traced dynamic source
         'it("x", () => {',
         '  expect(skills).toHaveLength(42);',
-        '  expect(Object.keys(map).length).toBe(7);',
+        '  expect(Object.keys(map).length).toBe(7);', // inline dynamic source
         '});',
         '',
       ].join('\n'),
@@ -98,20 +113,69 @@ describe('check-test-value-bans — B1 exact count assertions', () => {
     expect(json.counts['B1-exact-count']).toBe(2);
     expect(json.findings[0]).toMatchObject({
       file: 'tests/a.test.mjs',
-      line: 2,
+      line: 3,
       ban: 'B1-exact-count',
       match: '.toHaveLength(42)',
     });
-    expect(json.findings[1]).toMatchObject({ line: 3, match: '.length).toBe(7)' });
+    expect(json.findings[1]).toMatchObject({ line: 4, match: '.length).toBe(7)' });
+  });
+
+  it('does NOT flag a fixed arity over a static fixture (the #911 v1 over-report)', () => {
+    const { json } = scan({
+      'tests/static.test.mjs': [
+        'it("static counts do not drift on catalog growth", () => {',
+        '  const records = [{ a: 1 }, { b: 2 }];', // hand-built array
+        '  expect(records).toHaveLength(2);',
+        '  expect([1, 2, 3].length).toBe(3);', // inline literal array
+        '  expect(parsed.rows).toHaveLength(4);', // property of a parsed record
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B1-exact-count']).toBe(0);
+    expect(json.findings).toEqual([]);
+  });
+
+  it('flags the same arity when the subject is derived from a dynamic source', () => {
+    const { json } = scan({
+      'tests/dynamic.test.mjs': [
+        'it("dynamic counts drift on catalog growth", () => {',
+        '  const files = readdirSync(dir);', // directory walk
+        '  expect(files).toHaveLength(2);', // traced to readdirSync
+        '  expect(Object.keys(registry)).toHaveLength(3);', // inline export map
+        '  expect(Object.values(map).length).toBe(4);', // inline registry
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B1-exact-count']).toBe(3);
+    expect(json.findings.map((f) => f.line)).toEqual([3, 4, 5]);
+  });
+
+  it('does not catastrophically backtrack on a pathological .length line (ReDoS guard)', () => {
+    // A `.length` followed by a long whitespace run and a FAILING `.toBe(` was
+    // the polynomial-backtracking trigger in v1's `\s*\)?\s*\)?\s*` adjacency
+    // (measured: the old regex hung >2min on this input; the hardened `[\s)]*`
+    // class matches it in ~0ms). A regression to the ambiguous form would blow
+    // the 20s spawn timeout below, turning this red.
+    const pathological = 'expect(x.length' + ' '.repeat(100_000) + 'y).toBe(2);\n';
+    const { res, json } = scan({ 'tests/redos.test.mjs': pathological });
+
+    expect(res.status).toBe(0);
+    expect(json.counts['B1-exact-count']).toBe(0); // the trailing `.toBe(` never matches
   });
 
   it('respects the integrity-anchor carve-out on the same line and the line above', () => {
+    // Subjects are dynamic (Object.keys) so they WOULD flag — the carve-out is
+    // what suppresses them, which is the behaviour under test.
     const { json } = scan({
       'tests/anchor.test.mjs': [
         'it("sha", () => {',
-        '  expect(sha).toHaveLength(40); // integrity-anchor: git SHA-1 is fixed-width',
+        '  expect(Object.keys(digests)).toHaveLength(40); // integrity-anchor: fixed-width',
         '  // integrity-anchor: protocol tuple is fixed at 3 fields',
-        '  expect(tuple).toHaveLength(3);',
+        '  expect(Object.keys(tuple)).toHaveLength(3);',
         '});',
         '',
       ].join('\n'),
@@ -124,9 +188,9 @@ describe('check-test-value-bans — B1 exact count assertions', () => {
   it('exempts the 0 and 1 literals (emptiness / uniqueness invariants)', () => {
     const { json } = scan({
       'tests/zero.test.mjs': [
-        'expect(violations).toHaveLength(0);',
-        'expect(matches).toHaveLength(1);',
-        'expect(entries).toHaveLength(2);',
+        'expect(Object.keys(violations)).toHaveLength(0);',
+        'expect(Object.keys(matches)).toHaveLength(1);',
+        'expect(Object.keys(entries)).toHaveLength(2);',
         '',
       ].join('\n'),
     });
@@ -139,7 +203,7 @@ describe('check-test-value-bans — B1 exact count assertions', () => {
     const { json } = scan({
       'tests/opted-out.test.mjs': [
         '// @test-value-bans-allowed — fixture literals below',
-        'expect(items).toHaveLength(42);',
+        'expect(Object.keys(items)).toHaveLength(42);', // dynamic, but opted out
         '',
       ].join('\n'),
     });
@@ -314,6 +378,63 @@ describe('check-test-value-bans — B4 decision contract copied outside its owne
     expect(owned.counts['B4-hook-decision-contract-copy']).toBe(0);
     expect(foreign.counts['B4-hook-decision-contract-copy']).toBe(1);
   });
+
+  // --- #941 3b: the warn envelope's systemMessage key -----------------------
+  // emitWarn's operator notice rides a TOP-LEVEL systemMessage and carries NO
+  // permissionDecision, so a hand-rolled warn-contract block was invisible to a
+  // B4 keyed only on permissionDecision. The key is overloaded (warn carrier vs
+  // plain hook output), so this arm is scope-gated on a deny-capable-hook test.
+
+  it('flags a hand-rolled systemMessage warn-envelope assertion in a deny-capable-hook test', () => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/warn.test.mjs': hookTest('guard.mjs', [
+        '  const parsed = JSON.parse(result.stdout);',
+        "  expect(parsed.systemMessage).toContain('Blocked');",
+      ]),
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/warn.test.mjs',
+      ban: 'B4-hook-decision-contract-copy',
+    });
+  });
+
+  it('flags the soft "systemMessage" substring literal in a deny-capable-hook test', () => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/soft-warn.test.mjs': hookTest('guard.mjs', [
+        '  expect(result.stdout).toContain(\'"systemMessage":"⛔ Blocked"\');',
+      ]),
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(1);
+  });
+
+  it('stays silent on a plain-hook systemMessage — overloaded key, not a warn contract', () => {
+    const { json } = scan({
+      'hooks/on-session-start.mjs': "process.stdout.write(JSON.stringify({ systemMessage: 'hi' }));\n",
+      'tests/banner.test.mjs': hookTest('on-session-start.mjs', [
+        '  const parsed = JSON.parse(result.stdout);',
+        "  expect(parsed.systemMessage).toContain('hi');",
+      ]),
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(0);
+  });
+
+  it('stays silent when the warn read goes through the expectWarn helper', () => {
+    const { json } = scan({
+      'hooks/guard.mjs': DENY_HOOK_SRC,
+      'tests/warn.test.mjs': hookTest('guard.mjs', [
+        '  const msg = expectWarn(result).systemMessage;',
+        "  expect(msg).toContain('Blocked');",
+      ]),
+    });
+
+    expect(json.counts['B4-hook-decision-contract-copy']).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -416,7 +537,7 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
 
 describe('check-test-value-bans — CLI contract', () => {
   it('--json emits the advisory/scanned/counts/findings shape consumers parse', () => {
-    const { json } = scan({ 'tests/shape.test.mjs': 'expect(a).toHaveLength(9);\n' });
+    const { json } = scan({ 'tests/shape.test.mjs': 'expect(Object.keys(a)).toHaveLength(9);\n' });
 
     expect(json).toMatchObject({
       advisory: true,
@@ -434,7 +555,7 @@ describe('check-test-value-bans — CLI contract', () => {
   });
 
   it('exits 0 in human mode even with findings, and prints them to stdout', () => {
-    const { res } = scan({ 'tests/human.test.mjs': 'expect(a).toHaveLength(9);\n' }, []);
+    const { res } = scan({ 'tests/human.test.mjs': 'expect(Object.keys(a)).toHaveLength(9);\n' }, []);
 
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('B1-exact-count');
@@ -443,18 +564,30 @@ describe('check-test-value-bans — CLI contract', () => {
 
   // bug_caught: a `process.exit(0)` tail truncated stdout on a PIPE once the
   // payload passed the ~64 KiB pipe buffer — `--json | jq` got cut-off JSON
-  // while `--json > file` was complete. Scanning the real corpus is the only
-  // way to exceed that buffer, so this test uses the repo root, not a fixture.
-  it('emits complete JSON through a pipe on the full corpus (no exit-truncation)', () => {
+  // while `--json > file` was complete. The #911 B1 narrowing dropped the real
+  // corpus far below that buffer, so this synthesises a >64 KiB payload from a
+  // fixture with enough dynamic-count findings and reads it through a pipe.
+  it('emits complete JSON through a pipe when the payload exceeds the buffer (no exit-truncation)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-tvb-pipe-'));
+    tmpDirs.push(root);
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    const rel = 'tests/big.test.mjs';
+    const body =
+      Array.from(
+        { length: 400 },
+        (_, i) => `expect(Object.keys(reg${i})).toHaveLength(${i + 2});`,
+      ).join('\n') + '\n';
+    writeFileSync(join(root, rel), body);
     const res = spawnSync(
       '/bin/sh',
-      ['-c', `"${process.execPath}" "${SCRIPT}" "${REPO_ROOT}" --json | cat`],
+      ['-c', `printf '%s' "${rel}" | "${process.execPath}" "${SCRIPT}" "${root}" --stdin --json | cat`],
       { encoding: 'utf8', timeout: 60_000 },
     );
 
     expect(res.status).toBe(0);
     expect(res.stdout.length).toBeGreaterThan(65_536); // past the pipe buffer
     expect(() => JSON.parse(res.stdout)).not.toThrow();
+    expect(JSON.parse(res.stdout).counts['B1-exact-count']).toBe(400);
   });
 
   it('exits 2 on an unknown flag (tool error, per cli-design.md)', () => {

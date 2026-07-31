@@ -5,7 +5,7 @@ review-date: 2026-10-23
 
 # Receiving Code Review (Always-on)
 
-How the coordinator (and any agent receiving review output) handles feedback. The default failure mode in our history is performative agreement — accepting before verifying, then half-implementing a wrong suggestion. This rule prevents that.
+How the coordinator (and any agent receiving review output) handles feedback. The default failure mode in our history is performative agreement — accepting before verifying, then half-implementing a wrong suggestion.
 
 Applies to feedback from: session-reviewer, security-reviewer, persona reviewers (architect-reviewer, qa-strategist, analyst), inter-wave Quality-Lite output, user-provided review comments, external code-review-agent output.
 
@@ -43,7 +43,7 @@ Replace these with: a restatement (UNDERSTAND), a verification reference (VERIFY
 | **Inter-wave Quality-Lite** | Mechanical — typecheck/lint failures are facts, fix them | Automated tool output is rarely wrong, often surprising |
 | **External code review (PR comments)** | Skeptical, push back if wrong | External reviewers lack project context |
 
-The default posture is **skeptical** unless explicitly overridden. The cost of falsely accepting a wrong suggestion is the same as the cost of implementing a bad feature: rework + confusion.
+The default posture is **skeptical** unless explicitly overridden — falsely accepting a wrong suggestion costs as much as implementing a bad feature.
 
 ## RCR-004: YAGNI Check (Especially for "Implement Properly")
 
@@ -54,7 +54,7 @@ When a reviewer suggests "implement proper error handling here" / "add validatio
 3. **If unused**: suggest REMOVAL (the dead code is the real problem) instead of "implementing properly"
 4. **If used but the case is impossible at the call site**: push back with the call-site analysis
 
-The most common form of this anti-pattern: a reviewer suggests defensive code for a case that the call site already guarantees impossible. Adding the defensive code increases surface area without adding safety.
+The most common form: a reviewer suggests defensive code for a case the call site already guarantees impossible — it adds surface area without safety.
 
 ## RCR-005: Implementation Order
 
@@ -65,7 +65,7 @@ Multi-item review responses follow this order:
 3. **Simple items** — straightforward fixes with no dependencies. Batch these where possible.
 4. **Complex items** — items that require their own design discussion. Surface to user via AUQ before implementing.
 
-After each implementation step, run the verification command for that item before moving on.
+Run the verification command after each step before moving on (RCR-001.6).
 
 ## RCR-006: Push-Back Posture
 
@@ -75,7 +75,7 @@ You are allowed — and expected — to push back on review feedback that is wro
 - Cite the convention: "Per `.claude/rules/<X>.md`, the project pattern is Y, not Z."
 - Cite the trade-off: "Adding this validation adds surface area without preventing a real failure mode."
 
-Push-back is a feature, not a bug. A reviewer who is never pushed back on never learns the project. An implementer who never pushes back implements every wrong suggestion.
+Push-back is a feature, not a bug: an implementer who never pushes back implements every wrong suggestion.
 
 ## RCR-007: Three-Class Finding Triage
 

@@ -1,3 +1,14 @@
+# .claudeignore — token-hygiene exclusions (v2-era; origin: discovery issue GL#46, 2026-04-07).
+#
+# STATUS UNVERIFIED (2026-07-31): it is NOT confirmed that current Claude Code actually
+# reads a `.claudeignore` file. No in-repo settings schema or upstream-doc excerpt documents
+# it, and docs/instruction-delivery.md § "unverified inferences" explicitly marks the
+# `.claudeignore`-style suppression mechanism as unbelegt. The consumers that reference this
+# file check only its EXISTENCE as a token-efficiency signal, never its contents:
+#   - skills/discovery/probes-session.md  (probe 6 "Token efficiency — .claudeignore coverage")
+#   - scripts/token-audit.sh              (flags projects missing .claudeignore)
+# The three paths below all still exist and remain legitimate exclusion targets. Whether to
+# keep or delete this file is an OPEN QUESTION for the operator — do not remove unclarified.
 .orchestrator/metrics/
 docs/examples/
 docs/templates/
