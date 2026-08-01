@@ -14,6 +14,13 @@
  *    a different hostname (can't signal a remote process).
  *  - Decision deferred: acquire() reports stale locks but does NOT auto-clear
  *    them. session-start handles the recovery AUQ flow (W3-C3).
+ *  - Owner-proof, not just id-match (#906-class fix): the semantic session id
+ *    is NOT globally unique (the id-counter can hand out the same
+ *    `<branch>-<date>-<mode>-<n>` to two different session processes on the
+ *    same day). `buildLockOwnerProof()` / `isLockOwnedByProof()` verify
+ *    ownership via a SECOND identity factor (pid + host + started_at)
+ *    instead of trusting a session_id/semantic_session_id match alone. See
+ *    their JSDoc for the fail-closed contract and factor-choice rationale.
  *
  * BARREL CONTRACT (#630 A1 barrel-preserving split):
  *   This module bundled THREE orthogonal lock protocols. Two of them — the
@@ -315,17 +322,80 @@ function createSessionLockExclusive(lockFile, lock) {
  * Returns the parsed lock object, or null if absent or unparseable.
  * Never throws.
  *
+ * BACK-COMPAT CONTRACT (load-bearing — grep-verified 2026-07-29):
+ *   A bare `grep -rn "readLock("` over scripts/ + hooks/ reports 14 hits, but
+ *   6 of those are comment/JSDoc mentions, not calls. Filtering them out —
+ *   `grep -rn "readLock(" --include='*.mjs' scripts/ hooks/ | grep -v
+ *   "scripts/lib/session-lock.mjs" | grep -vE ':\s*(\*|//)' | wc -l` → 8 real
+ *   production call sites across 6 files (lock-reaper, peer-discovery,
+ *   session-close-backfill, session-discovery, sessions-staleness-banner,
+ *   vault-status/board-writer). The tests/ figure has the same caveat: of the
+ *   45 raw hits, ~11 are comments and 3 are local same-named test doubles.
+ *   Counting raw grep hits as call sites OVERSTATES the surface — the number
+ *   is smaller than first briefed, but every one of those 8 relies on the
+ *   "absent/unreadable/corrupt all collapse to null" contract below, so the
+ *   conclusion is unchanged. This function's signature and null behaviour
+ *   MUST stay byte-for-byte identical — the discriminated read that
+ *   distinguishes those three cases is the NEW, additive `readLockDetailed()`
+ *   below; `readLock()` is now a thin projection of it back onto the legacy
+ *   contract (RCR-007: changing the 59-call-site contract itself would be a
+ *   public-API break, not a same-scope fix).
+ *
  * @param {{ repoRoot?: string }} [opts]
  * @returns {{ session_id: string, started_at: string, mode: string, pid: number, host: string, ttl_hours: number } | null}
  */
 export function readLock(opts = {}) {
+  const detailed = readLockDetailed(opts);
+  return detailed.status === 'ok' ? detailed.lock : null;
+}
+
+/**
+ * Read the lock file and DISCRIMINATE why it might not yield a usable lock —
+ * additive alongside `readLock()` (see its back-compat contract note above),
+ * which collapses every non-ok case to `null`. That collapse is exactly how
+ * a vanished/unreadable lock has read as "no lock" instead of "anomaly"
+ * throughout this session's investigation (#906-class incident).
+ *
+ * Four discriminated outcomes:
+ *   - `{ status: 'absent' }` — the file does not exist (ENOENT). This is the
+ *     ONLY case that should be treated as "no lock, proceed as if free".
+ *   - `{ status: 'unreadable', error }` — the file exists but could not be
+ *     read (e.g. EACCES, EISDIR). Distinct from `absent` on purpose: an
+ *     unreadable lock is an ANOMALY a caller may want to surface, not a
+ *     green light to acquire.
+ *   - `{ status: 'corrupt', raw }` — the file was read but its contents
+ *     failed `parseLock()` (invalid JSON, or valid JSON missing the required
+ *     shape). `raw` is included so a caller can log/diagnose without a
+ *     second read.
+ *   - `{ status: 'ok', lock }` — the file was read and parsed successfully.
+ *
+ * Never throws.
+ *
+ * @param {{ repoRoot?: string }} [opts]
+ * @returns {
+ *   { status: 'absent' } |
+ *   { status: 'unreadable', error: string } |
+ *   { status: 'corrupt', raw: string } |
+ *   { status: 'ok', lock: object }
+ * }
+ */
+export function readLockDetailed(opts = {}) {
   const lockFile = lockPathFor(opts.repoRoot);
+  let raw;
   try {
-    const raw = fs.readFileSync(lockFile, 'utf8');
-    return parseLock(raw);
-  } catch {
-    return null;
+    raw = fs.readFileSync(lockFile, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { status: 'absent' };
+    }
+    return { status: 'unreadable', error: err.message };
   }
+
+  const lock = parseLock(raw);
+  if (lock === null) {
+    return { status: 'corrupt', raw };
+  }
+  return { status: 'ok', lock };
 }
 
 /**
@@ -559,6 +629,102 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
 }
 
 /**
+ * Extract an ownership-proof object from a lock — the field-name translation
+ * layer `isLockOwnedByProof()` expects. Intended usage: a caller that just
+ * created/observed a lock IT WROTE (the `lock` returned by
+ * `acquire()`/`forceAcquire()`, or a `readLock()`/`readLockDetailed()` taken
+ * immediately after) calls this ONCE at genesis time and persists the
+ * RESULT — not the raw lock — as its durable "I own this" evidence. Later,
+ * a different process invocation (e.g. a subsequent hook subprocess in the
+ * same logical session) can present that persisted proof to
+ * `isLockOwnedByProof()` against whatever lock is on disk AT THAT TIME.
+ *
+ * Pure, no-throw. Returns `null` (never a partial object) when any of the
+ * three required fields is missing or the wrong type — a caller cannot
+ * construct a proof from a lock it cannot fully observe.
+ *
+ * @param {object|null} lock
+ * @returns {{ pid: number, host: string, startedAt: string } | null}
+ */
+export function buildLockOwnerProof(lock) {
+  if (!lock || typeof lock !== 'object') return null;
+  const { pid, host, started_at: startedAt } = lock;
+  if (typeof pid !== 'number') return null;
+  if (typeof host !== 'string' || host.length === 0) return null;
+  if (typeof startedAt !== 'string' || startedAt.length === 0) return null;
+  return { pid, host, startedAt };
+}
+
+/**
+ * Verify that a caller genuinely owns a lock, using a SECOND identity factor
+ * beyond the (non-unique) session_id / semantic_session_id.
+ *
+ * WHY THIS EXISTS (#906-class bug, this session's root-cause finding): the
+ * semantic session id (`<branch>-<date>-<mode>-<n>`) is NOT globally unique
+ * — the id-counter can hand out the SAME id to two different session
+ * processes on the same day (live-observed collisions this session:
+ * `main-2026-07-29-deep-1` and `main-2026-07-29-session-1`, each assigned
+ * twice). `hooks/on-session-end.mjs`'s `ownBySemanticStrict` path currently
+ * decides lock ownership from that colliding id alone and can delete a
+ * LIVE, foreign session's lock as a result. `release()`'s pre-existing
+ * `existing.session_id !== sessionId` check (below) is a TOCTOU re-read
+ * guard — it re-derives the exact same potentially-colliding key, so it
+ * catches "the lock changed between my two reads" but NOT "the lock I'm
+ * looking at was never mine to begin with". This function is the missing
+ * proof.
+ *
+ * FACTOR CHOICE — pid + host + started_at, never session_id:
+ *   - `host` is required first: liveness/identity cannot be asserted across
+ *     machines anyway (see `isPidAliveOnHost`), so a lock written on a
+ *     DIFFERENT host is rejected outright, no further comparison needed.
+ *   - `pid` alone is not unique on a long-lived host — the OS recycles PIDs
+ *     once the original process exits — so it cannot carry the proof by
+ *     itself.
+ *   - `started_at` is the actual discriminator: its ISO-8601-with-
+ *     milliseconds value is knowable ONLY to a caller that was PRESENT at
+ *     lock-creation time (it wrote the lock itself, or read it back
+ *     immediately after `acquire()`/`forceAcquire()` returned). A same-day
+ *     semantic-id collision from an unrelated process has, with
+ *     overwhelming probability, a DIFFERENT millisecond `started_at` — this
+ *     is exactly the discriminator the id-collision case lacks.
+ *   - Combined, `pid + host + started_at` is a proof of PRESENCE AT GENESIS,
+ *     not a re-assertion of the same collidable name.
+ *
+ * FAIL-CLOSED CONTRACT: any missing/malformed field on EITHER side (the
+ * live lock or the caller's proof) returns `false`. This function must
+ * never answer "true" when it cannot actually confirm ownership — silently
+ * defaulting to permissive on incomplete data is the exact fail-open shape
+ * this session exists to close (see the `console.log + process.exit()`
+ * stdout-truncation rule and the exit-code-to-JSON-migration rule in this
+ * repo's reconciled learnings for the same failure class in other guards).
+ *
+ * @param {object|null} lock  The CURRENT on-disk lock (e.g. from `readLock()`).
+ * @param {{ pid: number, host: string, startedAt: string }|null} proof
+ *   Typically the return value of `buildLockOwnerProof()` captured at
+ *   genesis time. NEVER re-derive this from `process.pid`/`os.hostname()`
+ *   at check-time — the checking process is very likely a DIFFERENT
+ *   subprocess (each hook invocation is its own process) than the one that
+ *   originally wrote the lock.
+ * @returns {boolean} true only when pid, host, AND started_at all match
+ *   exactly between `lock` and `proof`.
+ */
+export function isLockOwnedByProof(lock, proof) {
+  if (!lock || typeof lock !== 'object') return false;
+  if (!proof || typeof proof !== 'object') return false;
+
+  const { pid: lockPid, host: lockHost, started_at: lockStartedAt } = lock;
+  const { pid: proofPid, host: proofHost, startedAt: proofStartedAt } = proof;
+
+  if (typeof lockPid !== 'number' || typeof proofPid !== 'number') return false;
+  if (typeof lockHost !== 'string' || lockHost.length === 0) return false;
+  if (typeof proofHost !== 'string' || proofHost.length === 0) return false;
+  if (typeof lockStartedAt !== 'string' || lockStartedAt.length === 0) return false;
+  if (typeof proofStartedAt !== 'string' || proofStartedAt.length === 0) return false;
+
+  return lockPid === proofPid && lockHost === proofHost && lockStartedAt === proofStartedAt;
+}
+
+/**
  * Release the lock IFF it belongs to the given session_id.
  * Silent no-op when the lock belongs to a different session or does not exist.
  * Never throws.
@@ -580,10 +746,20 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
  * lock present is fine (ours is gone); only our own lock still being
  * observable after the bounded retry sets `verified: false`.
  *
- * @param {{ sessionId: string, repoRoot?: string }} args
+ * Optional proof-gated ownership (#906-class fix, additive): pass `proof`
+ * (see `buildLockOwnerProof()` / `isLockOwnedByProof()`) to require a SECOND
+ * identity factor beyond `session_id` before deleting — this is what makes
+ * a same-day semantic-id collision safe to release against. When `proof` is
+ * omitted (the default), behaviour is BYTE-IDENTICAL to before this change:
+ * only the `session_id` match gates the delete. This keeps the ONE other
+ * external caller (`scripts/lib/autopilot/worktree-pipeline.mjs`, which does
+ * not pass `proof`) working unchanged — it stays on the weaker,
+ * session_id-only path.
+ *
+ * @param {{ sessionId: string, repoRoot?: string, proof?: { pid: number, host: string, startedAt: string } }} args
  * @returns {{ ok: true, deleted: boolean, reason?: string, verified?: boolean }}
  */
-export function release({ sessionId, repoRoot } = {}) {
+export function release({ sessionId, repoRoot, proof } = {}) {
   const lockFile = lockPathFor(repoRoot);
   try {
     const existing = readLock({ repoRoot });
@@ -594,6 +770,15 @@ export function release({ sessionId, repoRoot } = {}) {
 
     if (existing.session_id !== sessionId) {
       return { ok: true, deleted: false, reason: 'session-mismatch' };
+    }
+
+    // Proof-gated release (additive, #906-class fix): when the caller supplies
+    // `proof`, the session_id match above is NOT sufficient by itself —
+    // session_id collisions are the documented root cause behind this check.
+    // Omitting `proof` leaves this branch dead code, preserving the exact
+    // pre-existing behaviour for callers that don't pass it.
+    if (proof !== undefined && !isLockOwnedByProof(existing, proof)) {
+      return { ok: true, deleted: false, reason: 'proof-mismatch' };
     }
 
     fs.unlinkSync(lockFile);

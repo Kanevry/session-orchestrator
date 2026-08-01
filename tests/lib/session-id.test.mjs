@@ -40,6 +40,7 @@ import {
   SEMANTIC_ID_RE,
   UUID_V4_RE,
 } from '@lib/session-id.mjs';
+import { repoPathHash } from '../../scripts/lib/session-registry.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared tmp-dir lifecycle
@@ -370,6 +371,16 @@ function writeStateMd(root, frontmatterBody) {
   writeFileSync(join(dir, 'STATE.md'), `---\n${frontmatterBody}\n---\n`, 'utf8');
 }
 
+// Writes a single host-wide session-registry heartbeat JSON file. registryDir
+// is the `sessions/` PARENT directory (matches SO_SESSION_REGISTRY_DIR's own
+// contract in session-registry.mjs — the env var points at `sessions/`, not
+// `sessions/active/`).
+function writeRegistryEntry(registryDir, filename, entry) {
+  const activeDir = join(registryDir, 'active');
+  mkdirSync(activeDir, { recursive: true });
+  writeFileSync(join(activeDir, filename), JSON.stringify(entry), 'utf8');
+}
+
 describe('Group E — history-aware n-increment (#585)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -538,5 +549,131 @@ describe('Group E — history-aware n-increment (#585)', () => {
       // Hard invariant: returned n is strictly greater than every historical n.
       expect(parsed.n).toBe(Math.max(...historicalNs) + 1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group F — registry-aware n-increment (#908 follow-up): readSessionIdsFromRegistry
+// ---------------------------------------------------------------------------
+//
+// Exercises the REAL (unexported) readSessionIdsFromRegistry() indirectly via
+// resolveSemanticSessionId()'s DEFAULT registryImpl — no readRegistryImpl DI
+// override in these tests, so the actual repo_path_hash filter runs. Isolation
+// from the LIVE host-wide registry (~/.config/session-orchestrator/sessions/
+// active/, where other repos' sessions register right now) is via the
+// SO_SESSION_REGISTRY_DIR env var — session-registry.mjs's own registryBaseDir()
+// documents this as the test-isolation seam. Never reads/writes the live
+// registry directory: every test here points the env var at a fresh mkdtemp
+// before exercising resolveSemanticSessionId, and restores the prior value
+// (or deletes the var) in afterEach.
+
+describe('Group F — registry-aware n-increment (#908 follow-up)', () => {
+  let registryDir;
+  let prevRegistryEnv;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-27T12:00:00Z'));
+    registryDir = mkdtempSync(join(tmpdir(), 'session-registry-test-'));
+    prevRegistryEnv = process.env.SO_SESSION_REGISTRY_DIR;
+    process.env.SO_SESSION_REGISTRY_DIR = registryDir;
+  });
+
+  afterEach(() => {
+    if (prevRegistryEnv === undefined) {
+      delete process.env.SO_SESSION_REGISTRY_DIR;
+    } else {
+      process.env.SO_SESSION_REGISTRY_DIR = prevRegistryEnv;
+    }
+    rmSync(registryDir, { recursive: true, force: true });
+  });
+
+  it('F1: repo_path_hash filter — a same-repo entry counts, a foreign-repo entry (different hash) does not', async () => {
+    const ownHash = repoPathHash(repoRoot);
+    const now = new Date().toISOString();
+    writeRegistryEntry(registryDir, 'own.json', {
+      session_id: 'uuid-own-session',
+      last_heartbeat: now,
+      started_at: now,
+      semantic_session_id: 'main-2026-05-27-deep-3',
+      repo_path_hash: ownHash,
+    });
+    writeRegistryEntry(registryDir, 'foreign.json', {
+      session_id: 'uuid-foreign-session',
+      last_heartbeat: now,
+      started_at: now,
+      semantic_session_id: 'main-2026-05-27-deep-99',
+      repo_path_hash: 'a-completely-different-repo-hash',
+    });
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+      history: { consultHistory: false, consultStateMd: false },
+    });
+
+    // Only the own-repo entry (n=3) may count -> n=4. If the filter let the
+    // foreign entry (n=99) through too, this would be 'main-2026-05-27-deep-100'.
+    expect(result).toBe('main-2026-05-27-deep-4');
+  });
+
+  it('F2: a v1 registry entry without semantic_session_id is excluded (never reaches parseSessionId as undefined)', async () => {
+    const ownHash = repoPathHash(repoRoot);
+    const now = new Date().toISOString();
+    writeRegistryEntry(registryDir, 'v1-entry.json', {
+      session_id: '550e8400-e29b-41d4-a716-446655440000',
+      last_heartbeat: now,
+      started_at: now,
+      repo_path_hash: ownHash,
+      // no semantic_session_id — pre-#583 schema v1 entry.
+    });
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+      history: { consultHistory: false, consultStateMd: false },
+    });
+
+    expect(result).toBe('main-2026-05-27-deep-1');
+  });
+
+  it('F3: consultRegistry=false skips the registry source entirely, even with a high-n matching entry present', async () => {
+    const ownHash = repoPathHash(repoRoot);
+    const now = new Date().toISOString();
+    writeRegistryEntry(registryDir, 'high-n.json', {
+      session_id: 'uuid-high-n',
+      last_heartbeat: now,
+      started_at: now,
+      semantic_session_id: 'main-2026-05-27-deep-50',
+      repo_path_hash: ownHash,
+    });
+
+    const result = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot,
+      history: { consultHistory: false, consultStateMd: false, consultRegistry: false },
+    });
+
+    expect(result).toBe('main-2026-05-27-deep-1');
+  });
+
+  it('F4: a repoPathHash failure (empty repoRoot) degrades fail-open to n=1, never throws', async () => {
+    // repoPathHash('') throws TypeError inside readSessionIdsFromRegistry before
+    // readRegistry() is ever called — this never touches the registry dir at all,
+    // isolated or otherwise. consultHistory/consultStateMd are off so the empty
+    // repoRoot never resolves a relative path against the real process.cwd().
+    await expect(resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot: '',
+      history: { consultHistory: false, consultStateMd: false },
+    })).resolves.toBe('main-2026-05-27-deep-1');
   });
 });
