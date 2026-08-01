@@ -41,6 +41,33 @@ function eventLine(timestamp) {
   return JSON.stringify({ event: 'orchestrator.agent.stopped', timestamp, agent: 'session-orchestrator:code-implementer' });
 }
 
+/**
+ * Build one sessions.jsonl line shaped like a REAL `session-close-backfill.mjs`
+ * `synthesizeRecord()` stub (golden-record shape: `status:'abandoned'`,
+ * `_backfill_source:'events-jsonl'`, `total_waves:0`, `total_agents:0`,
+ * `effectiveness.carryover:null` — see `testing.md` § Fixtures Mirror
+ * Production Data). `statusAbandoned`/`backfillSource` are independently
+ * toggleable so a test can plant EITHER stub marker alone (isBackfillStub()
+ * combines them with OR, not AND).
+ */
+function stubLine({ sessionId = 'main-stub', startedAt, completedAt, statusAbandoned = true, backfillSource = 'events-jsonl' }) {
+  const record = {
+    session_id: sessionId,
+    session_type: 'housekeeping',
+    started_at: startedAt,
+    completed_at: completedAt,
+    total_waves: 0,
+    waves: [],
+    agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+    total_agents: 0,
+    total_files_changed: 0,
+    effectiveness: { carryover: null },
+  };
+  if (statusAbandoned) record.status = 'abandoned';
+  if (backfillSource) record._backfill_source = backfillSource;
+  return JSON.stringify(record);
+}
+
 /** Write raw lines (each already a JSON string, or deliberately malformed) to <repo>/.orchestrator/metrics/sessions.jsonl. */
 function writeSessions(repo, lines) {
   const dir = path.join(repo, '.orchestrator', 'metrics');
@@ -287,6 +314,63 @@ describe('checkSessionsStaleness — additional coverage (F-G, W4 fix pass)', ()
     const result = checkSessionsStaleness({ repoRoot: tmpRepo, now });
     expect(result).not.toBe(null);
     expect(result.lastLedgerAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+});
+
+describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillStub / stub-fallback)', () => {
+  it('anchors on the GENUINE record, not a near-now backfill stub sitting after it in the file', () => {
+    // Genuine record 10h before the foreign event (over WARN_THRESHOLD_HOURS=8).
+    // A backfill stub sits AFTER it (EOF-nearer) with a completed_at only 15min
+    // before the foreign event — if the stub were used as the anchor instead
+    // of being skipped, deltaHours would collapse to ~0.25h (under threshold)
+    // and the banner would go silent, exactly the measured #906 defect
+    // (92.51h -> 0.61h via one stub write).
+    writeSessions(tmpRepo, [
+      sessionLine('2026-01-01T00:00:00.000Z'),
+      stubLine({ startedAt: '2026-01-01T08:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z' }),
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-01T10:00:00.000Z')]);
+    const now = Date.parse('2026-01-01T12:00:00.000Z');
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now });
+    expect(result).not.toBe(null);
+    expect(result.severity).toBe('warn');
+    expect(result.lastLedgerAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(result.deltaHours).toBe(10);
+    expect(result.stubFallback).toBeUndefined();
+  });
+
+  it.each([
+    ['status:abandoned alone (no _backfill_source)', { statusAbandoned: true, backfillSource: null }],
+    ['_backfill_source alone (status not abandoned)', { statusAbandoned: false, backfillSource: 'events-jsonl' }],
+  ])('recognises a stub carrying only "%s" and still anchors on the earlier genuine record', (_label, markerOpts) => {
+    writeSessions(tmpRepo, [
+      sessionLine('2026-01-01T00:00:00.000Z'),
+      stubLine({ startedAt: '2026-01-01T08:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z', ...markerOpts }),
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-01T10:00:00.000Z')]);
+    const now = Date.parse('2026-01-01T12:00:00.000Z');
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now });
+    expect(result).not.toBe(null);
+    expect(result.lastLedgerAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(result.severity).toBe('warn');
+    expect(result.deltaHours).toBe(10);
+  });
+
+  it('falls back to the newest stub\'s started_at (not completed_at) and flags stubFallback:true when EVERY record is a stub', () => {
+    writeSessions(tmpRepo, [
+      stubLine({ sessionId: 'main-stub-1', startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:05:00.000Z' }),
+      // Newest-by-position (EOF-nearer) stub — its started_at is the expected anchor.
+      stubLine({ sessionId: 'main-stub-2', startedAt: '2026-01-02T00:00:00.000Z', completedAt: '2026-01-02T00:05:00.000Z' }),
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-02T20:00:00.000Z')]); // 20h after the newest stub's started_at
+    const now = Date.parse('2026-01-02T22:00:00.000Z');
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now });
+    expect(result).not.toBe(null);
+    expect(result.stubFallback).toBe(true);
+    // Anchor is the newest stub's started_at (00:00), NOT its completed_at (00:05).
+    expect(result.lastLedgerAt).toBe('2026-01-02T00:00:00.000Z');
+    expect(result.severity).toBe('warn');
+    expect(result.deltaHours).toBe(20);
   });
 });
 

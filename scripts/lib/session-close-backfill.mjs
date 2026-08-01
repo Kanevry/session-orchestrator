@@ -31,6 +31,12 @@
  *     on-session-start registry-slot claim, #587).
  *   - dryRun: computes + validates the stub without touching disk (used by the
  *     migration CLI's `--dry-run` default).
+ *   - Honest `completed_at`: the schema requires a non-null ISO string, so an
+ *     abandoned session (by definition: never emitted STOPPED/ENDED) still
+ *     gets one — but it is reconstructed from the LAST KNOWN EVENT for that
+ *     session (`lastEventMs`, #731), never from the backfill run's own
+ *     wall-clock (`nowMs`), and is flagged in `_backfill_incomplete_fields`
+ *     whenever it was reconstructed rather than measured. See `synthesizeRecord()`.
  *
  * Plain Node ESM. Named exports. DI-friendly via `deps` (mirrors enumerate.mjs).
  */
@@ -221,8 +227,40 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
 function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
-  const terminalMs = Number.isFinite(gathered.lastTerminalMs) ? gathered.lastTerminalMs : nowMs;
-  // completed_at = last terminal event (or now), never earlier than started_at.
+
+  // completed_at MUST stay a non-null ISO string — session-schema/validator.mjs
+  // `_validateTimestamps()` throws `ValidationError('completed_at must be an
+  // ISO timestamp string')` on anything else (verified 2026-07-29 in-memory:
+  // `validateSession({ ...validRecord, completed_at: null })` throws that exact
+  // message). Loosening the schema to accept `null` would touch a record
+  // contract read by ~10 OTHER consumers outside this file's scope
+  // (sessions-staleness-banner, dialectic-deriver, vault-mirror/render-sessions,
+  // eval/session-resolve, dispatcher/rank, harness-audit/category4, …) — an
+  // RCR-007 escalation, not a patch. The in-scope fix: never let an UNMARKED
+  // guess pass as a measured fact.
+  //
+  // terminalFound is true only when a genuine STOPPED/ENDED event exists. It
+  // is false in exactly the case this module is FOR — a session is
+  // "abandoned" precisely because it never emitted one. Previously that case
+  // fell back to `nowMs`, i.e. the BACKFILL RUN's own wall-clock — silently
+  // inventing a completion time hours-to-days after the session actually went
+  // quiet (measured 2026-07-29 against the live sessions.jsonl: 91.0h and
+  // 74.7h phantom runtimes on two real records, one of which retroactively
+  // silenced the sessions-staleness-banner by dragging its ledger anchor
+  // forward). The fallback here is `lastEventMs` instead — the newest
+  // timestamp seen across ANY matched event for this session (#731), i.e.
+  // real observed activity from THIS session, not the unrelated instant the
+  // backfiller happened to run. `nowMs` remains only the last-resort default
+  // when literally no event on this candidate had a parseable timestamp.
+  const terminalFound = Number.isFinite(gathered.lastTerminalMs);
+  const terminalMs = terminalFound
+    ? gathered.lastTerminalMs
+    : Number.isFinite(gathered.lastEventMs)
+      ? gathered.lastEventMs
+      : nowMs;
+  // completed_at = last terminal event, else last known event, else now —
+  // never earlier than started_at. Whichever non-terminal fallback fired is
+  // flagged in `_backfill_incomplete_fields` below (never silently).
   const completedIso = new Date(Math.max(startedMs, terminalMs)).toISOString();
 
   let sessionType = 'housekeeping';
@@ -238,6 +276,11 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
   const incomplete = ['total_waves', 'waves', 'agent_summary', 'total_agents', 'total_files_changed'];
   if (!startedFound) incomplete.push('started_at');
   if (!branchFound) incomplete.push('branch');
+  // completed_at is a RECONSTRUCTED lower bound (not a measured close time)
+  // whenever no genuine terminal event was found — see the fallback-chain
+  // comment above `terminalMs`. A session that DID emit STOPPED/ENDED gets a
+  // genuine completed_at and must NOT be flagged here.
+  if (!terminalFound) incomplete.push('completed_at');
 
   const record = {
     session_id: recordId,

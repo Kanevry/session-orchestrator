@@ -132,6 +132,51 @@ describe('backfillAbandonedSession — happy path', () => {
     // The appended line must itself re-validate (round-trip contract).
     expect(() => validateSession(rec)).not.toThrow();
     expect(rec._backfill_incomplete_fields).toContain('total_agents');
+    // Counterpart to the no-terminal-event fallback below: a GENUINE
+    // STOPPED/ENDED event means completed_at is measured, not reconstructed —
+    // 'completed_at' must NOT be flagged incomplete here. A regression that
+    // marks it incomplete unconditionally would silently blanket-flag every
+    // record, including this one.
+    expect(rec._backfill_incomplete_fields).not.toContain('completed_at');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #731 — completed_at reconstruction from lastEventMs when NO terminal event
+// (STOPPED/ENDED) exists. Before this fix, terminalMs fell back straight to
+// nowMs — the BACKFILL RUN's own wall-clock — silently inventing a completion
+// time far in the future of when the session actually went quiet (measured
+// against the live ledger: 91.0h and 74.7h phantom runtimes on two real
+// records, one of which retroactively silenced sessions-staleness-banner by
+// dragging its ledger anchor forward).
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — completed_at reconstruction from lastEventMs (#731, no terminal event)', () => {
+  it('reconstructs completed_at from the last KNOWN event, not from `now`, and flags it incomplete when no terminal event exists', async () => {
+    const lastKnownEventIso = '2026-05-27T14:01:00.000Z';
+    // `now` is 91h AFTER the last known event — mirrors the measured
+    // production phantom-runtime incident (91.0h). If terminalMs fell back to
+    // nowMs instead of lastEventMs, completed_at would silently be 91h later
+    // than the session's actual last activity.
+    const farFutureNowMs = Date.parse(lastKnownEventIso) + 91 * 3600 * 1000;
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: lastKnownEventIso,
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+      // No 'stopped'/'ended' event — genuinely abandoned.
+    ]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: farFutureNowMs });
+
+    expect(res.action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.completed_at).toBe(lastKnownEventIso);
+    expect(rec._backfill_incomplete_fields).toContain('completed_at');
   });
 });
 
