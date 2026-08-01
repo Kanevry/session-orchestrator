@@ -58,13 +58,22 @@ describe('toActivationMetadata — happy path', () => {
 });
 
 describe('toActivationMetadata — expiry', () => {
+  // `now` is pinned here for the same reason the sibling describe-blocks below
+  // pin it: computeExpiresAt returns max(derived, now + minRuleDays). Without a
+  // pinned clock the FLOOR silently overtakes the derived value once the wall
+  // clock passes created_at + 45d - minRuleDays, and both assertions below then
+  // measure the floor instead of the thing their names describe. They coincided
+  // on exactly one calendar day (2026-07-29, floor == 2026-08-05) and drifted
+  // apart the next midnight — a green that proved nothing about `ruleExpiryDays`.
+  const PINNED_NOW = new Date('2026-07-05T00:00:00Z'); // floor = 2026-07-12, well below the derived date
+
   it('honours an explicit ruleExpiryDays (created_at + 45 days)', () => {
-    const meta = toActivationMetadata(fragileLearning(), { ruleExpiryDays: 45 });
+    const meta = toActivationMetadata(fragileLearning(), { ruleExpiryDays: 45, now: PINNED_NOW });
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
   it('derives the per-type explicit expiry (fragile-pattern → 45d) when no override', () => {
-    const meta = toActivationMetadata(fragileLearning(), {});
+    const meta = toActivationMetadata(fragileLearning(), { now: PINNED_NOW });
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
