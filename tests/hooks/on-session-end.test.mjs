@@ -297,9 +297,10 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
     expect(await lockExists(dir)).toBe(false);
   });
 
-  it('releases the lock when only the SEMANTIC id matches (UUID rotated across clear)', async () => {
+  it('does NOT release a LIVE lock matched only by the SEMANTIC id (UUID rotated across clear)', async () => {
     const dir = await mkProject();
-    // Lock recorded under an older UUID but the same semantic id.
+    // Lock recorded under an older UUID but the same semantic id — seedLock
+    // defaults last_heartbeat to now, so this lock is LIVE.
     await seedLock(dir, { sessionId: 'old-uuid', semanticSessionId: 'sem-shared' });
     await seedCurrentSession(dir, {
       sessionId: 'new-uuid',
@@ -313,7 +314,19 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
     });
 
     expect(result.code).toBe(0);
-    expect(await lockExists(dir)).toBe(false);
+    // The semantic session id is NOT unique — the same id was observed twice in
+    // one day across two different sessions. A self-rotation (this test) and a
+    // foreign collision (the next test) therefore produce an IDENTICAL signature
+    // at session-end: UUID mismatch + semantic match on a live lock. The two
+    // cannot be told apart without an ownership proof persisted at acquire time
+    // (escalated per RCR-007 — that would be a storage change), so the release
+    // path treats both conservatively and leaves the lock alone.
+    //
+    // Accepted cost, verified against hooks/_lib/lock-bootstrap.mjs shouldForce:
+    // the orphaned lock stops being heartbeated, goes stale after ttl_hours, and
+    // the next session force-acquires it via the stale-pid-* branch — which does
+    // NOT require a session_id match. Self-healing, bounded by the TTL.
+    expect(await lockExists(dir)).toBe(true);
   });
 
   it('does NOT release a FOREIGN lock (different session, live heartbeat)', async () => {
@@ -814,5 +827,104 @@ describe('on-session-end.mjs — contamination guard covers backfill too, with a
     // termination — neither attributed to B nor to anyone else.
     const records = await readSessions(dir);
     expect(records).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #906-class — an unreadable/corrupt session.lock must surface as
+// `orchestrator.session.lock.read_anomaly`, not silently collapse to "no
+// lock, all clear". Before readLockDetailed(), a vanished/unparseable lock
+// read identically to an absent one — a genuinely present-but-broken lock
+// went completely unnoticed (neither released nor flagged).
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — unreadable/corrupt lock surfaces as read_anomaly (#906-class)', { timeout: 15000 }, () => {
+  it('emits read_anomaly status:"corrupt" for an unparseable lock file, and never attempts release or reconciliation', async () => {
+    const dir = await mkProject();
+    const lockPath = path.join(dir, LOCK_REL);
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, 'not valid json {{{');
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'whoever' }),
+    });
+
+    expect(result.code).toBe(0);
+    const events = await readAllEvents(dir);
+    const anomaly = events.find((e) => e.event === 'orchestrator.session.lock.read_anomaly');
+    expect(anomaly).toBeDefined();
+    expect(anomaly.status).toBe('corrupt');
+    // Never released or reconciled — the garbage content is untouched.
+    expect(await fs.readFile(lockPath, 'utf8')).toBe('not valid json {{{');
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.release_failed')).toBe(false);
+  });
+
+  it('emits read_anomaly status:"unreadable" when the lock path is a directory (EISDIR — fails for every uid, no chmod/root pitfall)', async () => {
+    // A directory at the lock path throws EISDIR on read for ANY uid — this
+    // is a syscall-level restriction, not a permission bit, so it exercises
+    // the 'unreadable' branch WITHOUT the chmod-based EACCES pitfall that CI's
+    // root (uid 0) Hetzner runner bypasses (testing.md's root-as-uid-0 hazards
+    // note; tests/_helpers/perms.mjs). Never use a /proc path here — that can
+    // hang a sync syscall under root and stall the whole shard (#685).
+    const dir = await mkProject();
+    const lockPath = path.join(dir, LOCK_REL);
+    await fs.mkdir(lockPath, { recursive: true });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'whoever' }),
+    });
+
+    expect(result.code).toBe(0);
+    const events = await readAllEvents(dir);
+    const anomaly = events.find((e) => e.event === 'orchestrator.session.lock.read_anomaly');
+    expect(anomaly).toBeDefined();
+    expect(anomaly.status).toBe('unreadable');
+    expect(typeof anomaly.error).toBe('string');
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #906-class — the STRICT semantic comparison (lock.semantic_session_id
+// field) must gate on liveness exactly like the fallback comparison does. The
+// LIVE case (this test's negative twin) is covered above ("does NOT release a
+// LIVE lock matched only by the SEMANTIC id"); this proves the counterpart
+// holds too: a STRICT-only match on a genuinely STALE lock must still release
+// via the primary path. Without this counterpart, a regression that made
+// `semanticOnlyLive` ignore `isLockLive()` (e.g. hardcoding it to `true`)
+// would over-block release on every strict-only match, stale or not, and
+// nothing in the existing suite would catch it — the LIVE test would stay
+// green either way.
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — STRICT semantic-only match respects liveness, not just the fallback comparison (#906-class)', { timeout: 15000 }, () => {
+  it('releases via the primary path (not reconciliation) when the STRICT semantic match is on a STALE lock', async () => {
+    const dir = await mkProject();
+    // Lock recorded under an older UUID but the same semantic id, via the
+    // STRICT `semantic_session_id` field (not the session_id-holds-semantic
+    // fallback shape) — heartbeat is STALE (past the 4h default TTL).
+    await seedLock(dir, {
+      sessionId: 'old-uuid-strict-stale',
+      semanticSessionId: 'sem-shared-strict-stale',
+      lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
+    });
+    await seedCurrentSession(dir, {
+      sessionId: 'new-uuid-strict-stale',
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-shared-strict-stale',
+    });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid-strict-stale' }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await lockExists(dir)).toBe(false);
+    const events = await readAllEvents(dir);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
   });
 });

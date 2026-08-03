@@ -20,9 +20,11 @@
  * by the time this probe fires. Gating on "no live lock" would make the
  * banner structurally silent forever. Instead:
  *
- *   - `lastLedgerAt`      = `completed_at` of the last PARSEABLE
- *                           `sessions.jsonl` record (scanned from EOF
- *                           backward, skipping malformed lines).
+ *   - `lastLedgerAt`      = `completed_at` of the last PARSEABLE, GENUINE
+ *                           (non-backfill-stub) `sessions.jsonl` record
+ *                           (scanned from EOF backward, skipping malformed
+ *                           lines) — see "Backfill-stub self-erasure fix"
+ *                           below for the stub-skip logic and its fallback.
  *   - `cutoff`            = the CURRENT session's `session.lock`
  *                           `started_at` (via `readLock()`); when no lock is
  *                           readable, `cutoff = now` (all events count).
@@ -35,6 +37,45 @@
  *   - `deltaHours`        = (lastForeignEventAt − lastLedgerAt) / 1h, only
  *                           meaningful when > 0 (foreign activity happened
  *                           AFTER the last ledger entry).
+ *
+ * Backfill-stub self-erasure fix — the anchor axis: a backfill-produced
+ * `sessions.jsonl` record (`_backfill_source` / `status: 'abandoned'`, see
+ * `session-close-backfill.mjs` `synthesizeRecord()`) sets `completed_at =
+ * max(started_at, lastTerminalMs ?? nowMs)`. When the abandoned session
+ * never emitted a STOPPED/ENDED event — the COMMON case, since that is
+ * *why* it is "abandoned" — `completed_at` silently becomes the BACKFILL
+ * RUN's own wall-clock instant, not a measurement of when the session
+ * actually ended. Anchoring `lastLedgerEntry()` on that value means a
+ * backfill run can retroactively erase a multi-day staleness gap just by
+ * writing a stub today (observed: a 92.5h gap to the last GENUINE record
+ * collapsed to 0.6h the moment a backfill stub landed).
+ *
+ * Two axes were available to fix this: (a) skip stub records when scanning
+ * for the ledger anchor, keeping `completed_at` as the anchor field; or (b)
+ * blanket-switch the anchor field to `started_at` for every record. (b) was
+ * rejected — for a GENUINE multi-hour session, `started_at` sits hours
+ * before `completed_at`, so switching the anchor field universally would
+ * inflate `deltaHours` for perfectly healthy, promptly-closed sessions
+ * (a session's own mid-session events would newly count as "after" the
+ * anchor), reintroducing false positives on the opposite side. (a) is
+ * chosen: `lastLedgerEntry()` skips any record `isBackfillStub()` flags and
+ * keeps searching backward for a GENUINE `completed_at`. Stub recognition
+ * uses EITHER marker (OR, not AND) deliberately — both are set by the same
+ * producer today, but requiring both would silently stop matching the day a
+ * future backfill variant drops one of them while keeping the other; OR
+ * degrades gracefully (still catches it), AND does not.
+ *
+ * All-stub fallback (deliberately NOT null): when NO genuine record exists
+ * anywhere in the file — every record is a backfill stub — this is a
+ * STRONGER signal of the close-through gap than an ordinary stale ledger,
+ * not a weaker one: no session has EVER genuinely closed. The module's
+ * usual fail-quiet convention (null on missing/empty/ambiguous input) does
+ * not extend to "we have data but all of it is synthetic" — that state IS
+ * the failure this banner exists to catch, so `lastLedgerEntry()` instead
+ * anchors on the newest stub's `started_at` (grounded in the real
+ * `orchestrator.session.started` event in the common case — see
+ * `synthesizeRecord()` — unlike that same stub's fabricated `completed_at`)
+ * and flags the result `stubFallback: true` for callers that want to say so.
  *
  * Severity: warn above `2 × DEFAULT_TTL_HOURS` (8h, imported from
  * `session-lock.mjs` rather than duplicated), alert above 24h.
@@ -60,6 +101,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { readLock, DEFAULT_TTL_HOURS } from './session-lock.mjs';
+import { isRealSession } from './session-schema/filters.mjs';
 
 /** Repo-relative path to the session ledger (one record per closed session). */
 const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
@@ -93,15 +135,51 @@ function readJsonlLines(filePath) {
 }
 
 /**
- * Scan `sessions.jsonl` lines from EOF backward and return the `completed_at`
- * of the last PARSEABLE record that carries a valid ISO timestamp. Malformed
- * or non-conforming lines (bad JSON, missing/invalid `completed_at`) are
- * skipped, not treated as fatal.
+ * True when a `sessions.jsonl` record's `completed_at` was SYNTHESIZED by
+ * the backfill engine (`scripts/lib/session-close-backfill.mjs`
+ * `synthesizeRecord()`) rather than measured at real session-close time —
+ * see the module-header "Backfill-stub self-erasure fix" section above for
+ * the full reasoning behind the OR (not AND) combination of the two markers.
+ *
+ * Reuses `isRealSession()` from `./session-schema/filters.mjs` — its own doc
+ * names `status: 'abandoned'` "the canonical marker" for exactly this phantom
+ * class, so this is the SAME predicate every other real/phantom-aware
+ * consumer in this repo already relies on, not a hand-rolled duplicate of it.
+ * `_backfill_source` is layered on top as the second, independent signal.
+ * Caller guarantees `record` is already a non-null object (see
+ * `lastLedgerEntry()`'s guard above the call site).
+ *
+ * @param {object} record
+ * @returns {boolean}
+ */
+function isBackfillStub(record) {
+  if (!isRealSession(record)) return true;
+  return typeof record._backfill_source === 'string' && record._backfill_source.length > 0;
+}
+
+/**
+ * Scan `sessions.jsonl` lines from EOF backward and return the anchor
+ * instant to measure ledger staleness against. Malformed or non-conforming
+ * lines (bad JSON, non-object) are skipped, not treated as fatal.
+ *
+ * Two passes, in priority order:
+ *   1. GENUINE — the last (by position) record that is NOT `isBackfillStub()`
+ *      and carries a valid `completed_at`. This is the trustworthy case:
+ *      `completed_at` was written by the real session-end path.
+ *   2. STUB-FALLBACK — only reached when the loop above finds no genuine
+ *      record at all (every record is a stub, or the file has none). Anchors
+ *      on the newest-by-position stub's `started_at` instead of its
+ *      `completed_at` — see the module-header design note for why. Flags
+ *      `stubFallback: true` on the returned object; omitted (`undefined`) on
+ *      the genuine path so existing callers checking `ledger.ms`/`ledger.iso`
+ *      see no behavioural change.
  *
  * @param {string[]} lines
- * @returns {{iso: string, ms: number}|null}
+ * @returns {{iso: string, ms: number, stubFallback?: true}|null}
  */
 function lastLedgerEntry(lines) {
+  let newestStub = null; // newest-by-position stub with a parseable started_at
+
   for (let i = lines.length - 1; i >= 0; i--) {
     let record;
     try {
@@ -109,12 +187,28 @@ function lastLedgerEntry(lines) {
     } catch {
       continue;
     }
-    if (!record || typeof record !== 'object' || typeof record.completed_at !== 'string') continue;
+    if (!record || typeof record !== 'object') continue;
+
+    if (isBackfillStub(record)) {
+      // Never anchor on a stub's completed_at (it may be the backfill run's
+      // own wall-clock) — remember it only as a fallback candidate, and only
+      // the first (nearest-EOF, i.e. newest-by-position) one seen.
+      if (newestStub === null && typeof record.started_at === 'string') {
+        const startedMs = Date.parse(record.started_at);
+        if (Number.isFinite(startedMs)) newestStub = { iso: record.started_at, ms: startedMs };
+      }
+      continue;
+    }
+
+    if (typeof record.completed_at !== 'string') continue;
     const ms = Date.parse(record.completed_at);
     if (!Number.isFinite(ms)) continue;
     return { iso: record.completed_at, ms };
   }
-  return null;
+
+  // No genuine record anywhere — see module-header "All-stub fallback" note:
+  // this is a stronger alarm signal than null, not a null-worthy absence.
+  return newestStub ? { iso: newestStub.iso, ms: newestStub.ms, stubFallback: true } : null;
 }
 
 /**
@@ -182,9 +276,15 @@ function resolveCutoffMs(repoRoot, nowMs) {
  * Check sessions-ledger staleness and produce a session-start banner.
  *
  * Silent (`null`) when: `sessions.jsonl` is missing/empty/entirely
- * unparseable, `events.jsonl` is missing/empty, no foreign (pre-cutoff)
+ * unparseable-or-anchor-less (see `lastLedgerEntry()` — this now also
+ * covers "every record is a backfill stub with no parseable `started_at`
+ * anywhere"), `events.jsonl` is missing/empty, no foreign (pre-cutoff)
  * event exists, the foreign event is not after the last ledger entry, or the
  * resulting gap is under the warn threshold. Never throws.
+ *
+ * When the anchor comes from the all-stub fallback (`ledger.stubFallback`),
+ * `lastLedgerAt` is a STUB's `started_at`, not a genuine `completed_at` — the
+ * message says so explicitly rather than implying a real close was measured.
  *
  * @param {{repoRoot: string, now?: number}} opts
  *   - `repoRoot`: REQUIRED absolute path to the repo root.
@@ -196,6 +296,7 @@ function resolveCutoffMs(repoRoot, nowMs) {
  *   lastLedgerAt: string,
  *   lastForeignEventAt: string,
  *   deltaHours: number,
+ *   stubFallback?: true,
  * }}
  */
 export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
@@ -226,8 +327,15 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
 
     const severity = deltaHours > ALERT_THRESHOLD_HOURS ? 'alert' : 'warn';
 
+    // stubFallback (see lastLedgerEntry()): every sessions.jsonl record is a
+    // backfill stub — ledger.iso is a STUB's started_at, not a measured
+    // completed_at. Say so explicitly rather than implying a real close.
+    const ledgerDescription = ledger.stubFallback
+      ? `last sessions.jsonl entry is backfill-stub-only — newest stub started_at ${ledger.iso}`
+      : `last sessions.jsonl entry ${ledger.iso}`;
+
     const base =
-      `sessions-staleness: last sessions.jsonl entry ${ledger.iso} is ${deltaHours}h behind ` +
+      `sessions-staleness: ${ledgerDescription} is ${deltaHours}h behind ` +
       `pre-session events.jsonl activity ${foreign.iso} — possible close-through gap ` +
       `(sessions ended without a ledger record; run node scripts/backfill-abandoned-sessions.mjs --dry-run)`;
 
@@ -239,6 +347,7 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
       lastLedgerAt: ledger.iso,
       lastForeignEventAt: foreign.iso,
       deltaHours,
+      ...(ledger.stubFallback ? { stubFallback: true } : {}),
     };
   } catch {
     // Defensive catch-all — banner must never throw.

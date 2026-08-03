@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync, chmodSync } from 'node:fs';
 import fs from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -22,13 +22,17 @@ import {
   DEFAULT_TTL_HOURS,
   LOCK_PATH,
   readLock,
+  readLockDetailed,
   acquire,
   forceAcquire,
   release,
   checkStale,
   isLockLive,
   updateHeartbeat,
+  buildLockOwnerProof,
+  isLockOwnedByProof,
 } from '@lib/session-lock.mjs';
+import { isRoot } from '../_helpers/perms.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
 const DEAD_PID = 999999;
@@ -422,6 +426,202 @@ describe('acquire() — quiet unknown-mode option (#592 MED-2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// readLockDetailed() — four discriminated outcomes (#906-class fix)
+// ---------------------------------------------------------------------------
+//
+// Panel-named bug: a mixup between 'corrupt' and 'unreadable', or an ENOENT
+// check that stops matching, would collapse every error back onto 'absent' —
+// exactly the blind spot this session's incident traced back to. readLock()
+// must keep returning byte-identical null for ALL THREE non-ok statuses
+// (back-compat contract documented above readLockDetailed in the source).
+
+describe('readLockDetailed() — four discriminated outcomes (#906-class fix)', () => {
+  it('returns status=absent when no lock file exists', () => {
+    const result = readLockDetailed({ repoRoot });
+
+    expect(result).toEqual({ status: 'absent' });
+  });
+
+  it('returns status=ok with the parsed lock when the file is valid', () => {
+    acquire({ sessionId: 'sess-detailed-ok', mode: 'feature', repoRoot });
+
+    const result = readLockDetailed({ repoRoot });
+
+    expect(result.status).toBe('ok');
+    expect(result.lock.session_id).toBe('sess-detailed-ok');
+  });
+
+  it('returns status=corrupt with the raw content when the file contains invalid JSON', () => {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), 'not valid json {{{');
+
+    const result = readLockDetailed({ repoRoot });
+
+    expect(result.status).toBe('corrupt');
+    expect(result.raw).toBe('not valid json {{{');
+  });
+
+  it('returns status=corrupt when the JSON parses but is missing a required field', () => {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    // Valid JSON, but missing started_at/mode/pid/host/ttl_hours — parseLock's
+    // shape guard must reject it, not accept a partial lock.
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify({ session_id: 'sess-incomplete' }));
+
+    const result = readLockDetailed({ repoRoot });
+
+    expect(result.status).toBe('corrupt');
+  });
+
+  // Root-falle (Incident #685): chmod-based EACCES is bypassed by uid 0 — the
+  // Hetzner CI runner runs as root and would silently pass this write, turning
+  // the assertion below false-green. Skip there; enforced locally (non-root).
+  it.skipIf(isRoot)('returns status=unreadable when the lock file exists but cannot be read (EACCES)', () => {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    const lockFile = join(orchDir, 'session.lock');
+    writeFileSync(lockFile, JSON.stringify({
+      session_id: 'sess-unreadable',
+      started_at: new Date().toISOString(),
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    }));
+    chmodSync(lockFile, 0o000);
+
+    try {
+      const result = readLockDetailed({ repoRoot });
+
+      expect(result.status).toBe('unreadable');
+      expect(typeof result.error).toBe('string');
+    } finally {
+      chmodSync(lockFile, 0o644);
+    }
+  });
+});
+
+describe('readLock() collapses every non-ok status to null (back-compat contract)', () => {
+  it('readLock() returns null when the file is absent', () => {
+    expect(readLock({ repoRoot })).toBeNull();
+  });
+
+  it('readLock() returns null when the file contains invalid JSON (corrupt)', () => {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), 'not json');
+
+    expect(readLock({ repoRoot })).toBeNull();
+  });
+
+  it.skipIf(isRoot)('readLock() returns null when the file is unreadable (EACCES)', () => {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    const lockFile = join(orchDir, 'session.lock');
+    writeFileSync(lockFile, JSON.stringify({
+      session_id: 'sess-unreadable-2',
+      started_at: new Date().toISOString(),
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    }));
+    chmodSync(lockFile, 0o000);
+
+    try {
+      expect(readLock({ repoRoot })).toBeNull();
+    } finally {
+      chmodSync(lockFile, 0o644);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildLockOwnerProof() / isLockOwnedByProof() — SECOND identity factor
+// (#906-class fix, this session's root-cause primitive)
+// ---------------------------------------------------------------------------
+//
+// Panel-named bug: a snake_case/camelCase field-name swap between the two
+// functions (e.g. buildLockOwnerProof reading the wrong lock property) would
+// make the ownership comparison silently ALWAYS false — the collision defense
+// the primitive exists for would be permanently inert without any test ever
+// turning red. The mismatch tests below pin the OTHER failure direction: the
+// comparator must not answer true on a partial/wrong match either.
+
+describe('buildLockOwnerProof() (#906-class fix)', () => {
+  it('extracts pid, host, and startedAt (camelCase) from a valid lock', () => {
+    const lock = {
+      session_id: 'sess-proof-src',
+      started_at: '2026-07-29T10:00:00.000Z',
+      mode: 'deep',
+      pid: 4242,
+      host: 'proof-host',
+      ttl_hours: 4,
+    };
+
+    const proof = buildLockOwnerProof(lock);
+
+    expect(proof).toEqual({ pid: 4242, host: 'proof-host', startedAt: '2026-07-29T10:00:00.000Z' });
+  });
+
+  it('returns null for a null lock', () => {
+    expect(buildLockOwnerProof(null)).toBeNull();
+  });
+
+  it.each([
+    ['pid', { session_id: 's', started_at: '2026-07-29T10:00:00.000Z', host: 'h', mode: 'deep', ttl_hours: 4 }],
+    ['host', { session_id: 's', started_at: '2026-07-29T10:00:00.000Z', pid: 1, mode: 'deep', ttl_hours: 4 }],
+    ['started_at', { session_id: 's', pid: 1, host: 'h', mode: 'deep', ttl_hours: 4 }],
+  ])('returns null (fail-closed) when %s is missing from the lock', (_field, lock) => {
+    expect(buildLockOwnerProof(lock)).toBeNull();
+  });
+});
+
+describe('isLockOwnedByProof() (#906-class fix)', () => {
+  const baseLock = {
+    session_id: 'sess-x',
+    started_at: '2026-07-29T10:00:00.000Z',
+    mode: 'deep',
+    pid: 4242,
+    host: 'host-a',
+    ttl_hours: 4,
+  };
+
+  it('genesis roundtrip: a proof built from a lock is recognized as owning that same lock', () => {
+    const proof = buildLockOwnerProof(baseLock);
+
+    expect(isLockOwnedByProof(baseLock, proof)).toBe(true);
+  });
+
+  it('rejects a proof whose pid differs even when host and startedAt match (collision-safety)', () => {
+    const proof = { pid: 9999, host: 'host-a', startedAt: '2026-07-29T10:00:00.000Z' };
+
+    expect(isLockOwnedByProof(baseLock, proof)).toBe(false);
+  });
+
+  it('rejects a proof whose host differs even when pid and startedAt match (collision-safety)', () => {
+    const proof = { pid: 4242, host: 'host-b', startedAt: '2026-07-29T10:00:00.000Z' };
+
+    expect(isLockOwnedByProof(baseLock, proof)).toBe(false);
+  });
+
+  it('rejects a proof whose startedAt differs even when pid and host match — the same-day semantic-id-collision case', () => {
+    const proof = { pid: 4242, host: 'host-a', startedAt: '2026-07-29T11:00:00.000Z' };
+
+    expect(isLockOwnedByProof(baseLock, proof)).toBe(false);
+  });
+
+  it('returns false for a null lock', () => {
+    expect(isLockOwnedByProof(null, { pid: 1, host: 'h', startedAt: '2026-07-29T10:00:00.000Z' })).toBe(false);
+  });
+
+  it('returns false for a null proof', () => {
+    expect(isLockOwnedByProof(baseLock, null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // release
 // ---------------------------------------------------------------------------
 
@@ -599,6 +799,43 @@ describe('release', () => {
       expect(result.ok).toBe(true);
       expect(result.deleted).toBe(true);
       expect(result.verified).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // release({ proof }) — proof-gated ownership (#906-class fix)
+  // ---------------------------------------------------------------------------
+  //
+  // Panel-named bug: without this coverage the proof path is entirely
+  // unverified. A call WITH proof where session_id matches but the proof does
+  // NOT must report 'proof-mismatch' and leave the lock on disk — this is the
+  // exact same-day semantic-id-collision case the whole primitive exists for.
+  // omitting `proof` (the shape worktree-pipeline.mjs:274 uses, the only other
+  // caller) is already exercised unchanged by every pre-existing release()
+  // test above — none of them ever pass a `proof` key.
+
+  describe('release({ proof }) — proof-gated ownership (#906-class fix)', () => {
+    it('deletes the lock when session_id matches and the proof matches', () => {
+      const acquireResult = acquire({ sessionId: 'sess-proof-match', mode: 'feature', repoRoot });
+      const proof = buildLockOwnerProof(acquireResult.lock);
+
+      const result = release({ sessionId: 'sess-proof-match', repoRoot, proof });
+
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(true);
+      expect(readLock({ repoRoot })).toBeNull();
+    });
+
+    it('reports reason=proof-mismatch and leaves the lock intact when session_id matches but the proof does not (collision guard)', () => {
+      acquire({ sessionId: 'sess-proof-collision', mode: 'feature', repoRoot });
+      const foreignProof = { pid: 999999, host: 'a-completely-different-host', startedAt: '2020-01-01T00:00:00.000Z' };
+
+      const result = release({ sessionId: 'sess-proof-collision', repoRoot, proof: foreignProof });
+
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(false);
+      expect(result.reason).toBe('proof-mismatch');
+      expect(readLock({ repoRoot }).session_id).toBe('sess-proof-collision');
     });
   });
 });

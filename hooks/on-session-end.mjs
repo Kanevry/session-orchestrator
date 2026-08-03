@@ -31,7 +31,7 @@ if (!shouldRunHook('on-session-end')) process.exit(0);
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.mjs';
-import { readLock, release, isLockLive } from '../scripts/lib/session-lock.mjs';
+import { readLockDetailed, release, isLockLive } from '../scripts/lib/session-lock.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
@@ -192,8 +192,25 @@ async function main() {
   //     reapRepoLock(), which independently NEVER reaps a live lease (and only
   //     ever reaps on this same host with a dead recorded PID).
   try {
-    const lock = readLock({ repoRoot: projectRoot });
-    if (lock) {
+    // readLockDetailed (additive, see its JSDoc in session-lock.mjs) replaces
+    // readLock() here so an unreadable/corrupt lock file is DISTINGUISHABLE
+    // from a genuinely absent one, instead of both collapsing to the same
+    // `null`. Only 'absent' is treated as "nothing to release/reconcile" —
+    // 'unreadable'/'corrupt' is an anomaly worth a breadcrumb, since a lock we
+    // cannot even parse is neither released nor reconciled below, and used to
+    // silently look identical to "no lock, all clear".
+    const lockDetail = readLockDetailed({ repoRoot: projectRoot });
+
+    if (lockDetail.status === 'unreadable' || lockDetail.status === 'corrupt') {
+      try {
+        await emitEvent('orchestrator.session.lock.read_anomaly', {
+          session_id: sessionId,
+          status: lockDetail.status,
+          ...(lockDetail.status === 'unreadable' ? { error: lockDetail.error } : {}),
+        });
+      } catch { /* observability is best-effort */ }
+    } else if (lockDetail.status === 'ok') {
+      const lock = lockDetail.lock;
       const ownByUuid = sessionId !== null && lock.session_id === sessionId;
       const ownBySemanticStrict =
         semanticSessionId !== null && lock.semantic_session_id === semanticSessionId;
@@ -207,21 +224,50 @@ async function main() {
         semanticSessionId !== null && lock.session_id === semanticSessionId;
       const ownBySemantic = ownBySemanticStrict || ownBySemanticFallback;
 
-      // #863 defect (4) — a match reached ONLY via the fallback comparison
-      // above carries no stdin corroboration (unlike ownByUuid, and unlike
-      // ownBySemanticStrict which requires the lock's OWN dedicated
-      // semantic_session_id field to agree). Trust it to release a lock that
-      // is still LIVE only when it is ALSO corroborated by the strict/UUID
-      // path; a fallback-only match on a live lock is left untouched here —
-      // it is neither released nor reconciled (reconciliation is dead-lease
-      // -only, see attemptLockReconciliation below), erring toward the
-      // conservative "don't touch a lock we can't confidently confirm is
-      // ours" posture. The high-confidence paths (ownByUuid, the STRICT
-      // semantic match — e.g. the documented UUID-rotation-across-clear
-      // case) are completely unaffected and keep releasing a live lock
-      // exactly as before.
-      const fallbackOnlyLive = !ownByUuid && !ownBySemanticStrict && ownBySemanticFallback && isLockLive(lock);
-      const releaseEligible = (ownByUuid || ownBySemantic) && !fallbackOnlyLive;
+      // #906-class fix (this session): the semantic session id
+      // (`<branch>-<date>-<mode>-<n>`) is NOT globally unique — the
+      // id-counter can hand out the SAME id to two different session
+      // processes (live-observed twice today: `main-2026-07-29-deep-1` and
+      // `main-2026-07-29-session-1`, each assigned to two distinct sessions).
+      // Previously ONLY the low-confidence fallback comparison
+      // (ownBySemanticFallback-only) was gated by liveness; the STRICT
+      // comparison (ownBySemanticStrict) was treated as fully trustworthy
+      // even on a still-live lock. But `ownBySemanticStrict` is built from
+      // the SAME collidable name as the fallback — a same-day counter
+      // collision defeats it exactly as it defeats the fallback. A live lock
+      // matched ONLY via a collidable semantic id (strict OR fallback, never
+      // corroborated by the non-collidable UUID) is therefore NEVER trusted
+      // for release: `semanticOnlyLive` now covers BOTH comparisons, not just
+      // the fallback one.
+      //
+      // EXAMINED TRADE-OFF (do not re-litigate without re-reading this):
+      // this also gates the previously-privileged "UUID rotated across
+      // clear/compact" case (#612). Verified against
+      // hooks/_lib/lock-bootstrap.mjs's `shouldForce`: on a rotation,
+      // bootstrapLock's force-overwrite condition requires
+      // `existingLock.session_id === sessionId`, which is FALSE for a
+      // rotated UUID — so bootstrapLock bails WITHOUT touching the existing
+      // lock at all. The on-disk lock's `session_id`/`pid`/`started_at` stay
+      // frozen at their PRE-rotation values for the rest of that session's
+      // life; only `current-session.json` picks up the new UUID. That means
+      // a genuine same-session UUID rotation and a foreign same-day semantic
+      // collision produce the IDENTICAL shape at session-end time (UUID
+      // mismatch + semantic match on a live lock) — nothing observable here
+      // distinguishes them (see the RCR-007 escalation in the session report
+      // for why a persisted per-session proof, the only real discriminator,
+      // is out of scope for this fix). Between the two costs, this fix picks
+      // the bounded, self-healing one: an own live lock left un-released
+      // after a rotation merely sits until its heartbeat ages past
+      // `ttl_hours` (default 4h), at which point the SAME reaper the
+      // SessionStart hook already runs (`reapRepoLock`, itself invariant:
+      // never touches a live lease) clears it — a new session on this repo
+      // in the meantime sees an apparently-active session and gets the
+      // existing parallel-session AUQ offer, not a hard block. The
+      // alternative (trusting the collidable name on a live lock) silently
+      // destroys a genuinely different, still-active session's lease with
+      // no bound and no recovery path — strictly worse.
+      const semanticOnlyLive = !ownByUuid && ownBySemantic && isLockLive(lock);
+      const releaseEligible = (ownByUuid || ownBySemantic) && !semanticOnlyLive;
 
       if (releaseEligible) {
         const releaseResult = release({ sessionId: lock.session_id, repoRoot: projectRoot });
@@ -284,18 +330,20 @@ async function main() {
         }
       } else {
         // Root-cause reconciliation fallback: either NEITHER the UUID nor the
-        // semantic id matched the recorded lock, OR (#863) the ONLY match was
-        // the low-confidence fallback comparison above on a lock that is
-        // still live (fallbackOnlyLive). attemptLockReconciliation() is the
-        // extracted, DI-testable seam (Issue #748) — it internally no-ops
-        // when the lease is still live (isLockLive), which is exactly what
-        // makes it safe to route the fallbackOnlyLive case here too: it is
-        // otherwise best-effort, and reapRepoLock() never touches a live
+        // semantic id matched the recorded lock, OR the ONLY match was a
+        // collidable semantic comparison (strict or fallback) on a lock that
+        // is still live (semanticOnlyLive). attemptLockReconciliation() is
+        // the extracted, DI-testable seam (Issue #748) — it internally
+        // no-ops when the lease is still live (isLockLive), which is exactly
+        // what makes it safe to route the semanticOnlyLive case here too: it
+        // is otherwise best-effort, and reapRepoLock() never touches a live
         // lease, a cross-host lease, or a lease whose recorded PID is still
         // alive on this host.
         await attemptLockReconciliation({ repoRoot: projectRoot, sessionId, lock });
       }
     }
+    // 'absent' — no lock file at all; nothing to release or reconcile
+    // (mirrors the pre-existing `if (lock)` guard's false branch).
   } catch { /* best-effort — never block teardown */ }
 }
 
