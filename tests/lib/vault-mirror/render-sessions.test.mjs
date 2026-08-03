@@ -11,7 +11,12 @@ import {
   generateSessionNoteV2,
   generateSessionNoteV3,
   vaultStatusForSession,
+  RENDERABLE_SESSION_FIELDS_V1,
+  RENDERABLE_SESSION_FIELDS_V2,
+  RENDERABLE_SESSION_FIELDS_V3,
 } from '@lib/vault-mirror/render-sessions.mjs';
+import { REQUIRED_FIELDS } from '@lib/session-schema/constants.mjs';
+import { validateSession, ValidationError } from '@lib/session-schema/validator.mjs';
 
 // ── detectSessionSchema ───────────────────────────────────────────────────────
 
@@ -96,11 +101,6 @@ describe('generateSessionNote (v1)', () => {
 
   it('throws when waves is not an array (object value)', () => {
     expect(() => generateSessionNote(makeV1Entry({ waves: { not: 'array' } }))).toThrow("missing nested field 'waves'");
-  });
-
-  it('rounds duration_seconds=null to 0m', () => {
-    const out = generateSessionNote(makeV1Entry({ duration_seconds: null }));
-    expect(out).toContain('**Duration:** 0m');
   });
 
   it('rounds completion_rate 0.999 to 100%', () => {
@@ -307,17 +307,6 @@ describe('generateSessionNoteV3', () => {
   it('renders scalar waves and agents_dispatched in the summary line', () => {
     const out = generateSessionNoteV3(makeV3Entry());
     expect(out).toContain('**Waves:** 5 · **Agents:** 18 · **Commits:** 5');
-  });
-
-  it('renders duration from duration_minutes', () => {
-    const out = generateSessionNoteV3(makeV3Entry());
-    expect(out).toContain('**Duration:** 86m');
-  });
-
-  it('falls back to duration_seconds when duration_minutes is absent', () => {
-    const entry = makeV3Entry({ duration_minutes: undefined, duration_seconds: 120 });
-    const out = generateSessionNoteV3(entry);
-    expect(out).toContain('**Duration:** 2m');
   });
 
   it('renders completion rate and effectiveness aggregates', () => {
@@ -621,5 +610,175 @@ describe('M1 v1 generator — absent optional fields render a placeholder, not "
     );
     expect(md).not.toContain('?');
     expect(md).not.toContain('n/a');
+  });
+});
+
+// ── #968 v3 generator — absent optional fields must not claim a measured zero ──
+
+describe('#968 v3 generator — an ABSENT value renders a placeholder, never 0', () => {
+  /**
+   * Nameable bug (TV-001): v3 defaulted `emergent` to `0` (`?? 0`) and
+   * destructured `agent_summary` with `= 0` defaults over a `{}` fallback. A
+   * record whose producer never wrote those fields therefore rendered
+   * "emergent=0" and "Complete: 0 · Partial: 0 · Failed: 0 · Spiral: 0" — a
+   * verified-looking zero asserted about something never measured, in a note a
+   * human reads. v3 already used 'n/a' for its neighbours (`carryover` used
+   * `?? 'n/a'` one line above `emergent`'s `?? 0`), so this was an inconsistency
+   * INSIDE v3. No pre-existing test caught it because `makeV3Entry()` supplies
+   * every value.
+   */
+  it('renders emergent=n/a when neither unplanned_finds nor emergent was written', () => {
+    const md = generateSessionNoteV3(
+      makeV3Entry({ effectiveness: { completion_rate: 1, completed_issues: 2, carryover: 0 } }),
+    );
+    expect(md).toContain('carryover=0, emergent=n/a, rate=100%');
+  });
+
+  it('renders the agent summary as n/a when agent_summary is absent entirely', () => {
+    const md = generateSessionNoteV3(makeV3Entry({ agent_summary: undefined }));
+    expect(md).toContain('Complete: n/a · Partial: n/a · Failed: n/a · Spiral: n/a');
+  });
+
+  /**
+   * The other half of the same distinction, mirroring the v1 pair above: `??`
+   * (never `||`) means a MEASURED zero still renders `0`. Without this, the fix
+   * for the two tests above could be "always print n/a", which is a worse bug.
+   */
+  it('still renders a measured 0 as 0, not as the placeholder', () => {
+    const md = generateSessionNoteV3(
+      makeV3Entry({
+        effectiveness: { completion_rate: 0, completed_issues: 0, carryover: 0, unplanned_finds: 0 },
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      }),
+    );
+    expect(md).toContain('completed=0, carryover=0, emergent=0, rate=0%');
+    expect(md).toContain('Complete: 0 · Partial: 0 · Failed: 0 · Spiral: 0');
+    expect(md).not.toContain('n/a');
+  });
+});
+
+// ── #964 the five validator faces — mechanical superset invariant ─────────────
+
+describe('#964 generator required-field sets vs the write-path schema', () => {
+  /**
+   * Nameable bug (TV-001): a generator that renders write-path-valid records
+   * requires a DIFFERENT field set than `validateSession`, so a record the
+   * writer accepts silently gets no vault note. Before this test the repo held
+   * five independent notions of "a valid session record" — `REQUIRED_FIELDS`
+   * plus three function-local generator lists plus the integrity banner — with
+   * no mechanical relationship between any of them.
+   *
+   * The invariant is NOT "all four lists are equal". Renderable is strictly
+   * stronger than schema-valid (see render-sessions.mjs header), so the correct
+   * assertion is SUPERSET, in one direction only.
+   */
+  it('v1 requires a superset of REQUIRED_FIELDS — every writable record is renderable', () => {
+    const missing = REQUIRED_FIELDS.filter((f) => !RENDERABLE_SESSION_FIELDS_V1.includes(f));
+    expect(missing).toEqual([]);
+  });
+
+  it('v1 is stronger than the schema by exactly effectiveness', () => {
+    const extra = RENDERABLE_SESSION_FIELDS_V1.filter((f) => !REQUIRED_FIELDS.includes(f));
+    expect(extra).toEqual(['effectiveness']);
+  });
+
+  /**
+   * v2 and v3 require FEWER fields than `REQUIRED_FIELDS`. That is an EARNED
+   * carve-out, not an oversight — and it is earned by measurement, not by this
+   * comment: each routing predicate is mutually exclusive with `validateSession`,
+   * so no schema-valid record can ever reach those generators. If a future edit
+   * makes one of them reachable, the witness below goes red and the carve-out
+   * must be re-justified or the list widened to the superset.
+   *
+   * v3's exclusion is the sharpest: `_validateWaves` throws unless
+   * `Array.isArray(waves)`; `generateSessionNoteV3` throws unless
+   * `typeof waves === 'number'`. No value is both.
+   */
+  const WRITE_PATH_UNREACHABLE = [
+    // [label, list, a witness entry that ROUTES there, the routing field]
+    ['v2', RENDERABLE_SESSION_FIELDS_V2, { ...makeV1Entry(), total_agents: undefined, files_changed: 12 }],
+    ['v3', RENDERABLE_SESSION_FIELDS_V3, { ...makeV1Entry(), waves: 5 }],
+  ];
+
+  it.each(WRITE_PATH_UNREACHABLE)(
+    '%s: carve-out is earned — its routing predicate and validateSession are mutually exclusive',
+    (label, _list, witness) => {
+      expect(detectSessionSchema(witness)).toBe(label);
+      expect(() => validateSession(witness)).toThrow(ValidationError);
+    },
+  );
+
+  it.each(WRITE_PATH_UNREACHABLE)(
+    '%s: the carve-out is real — it omits fields REQUIRED_FIELDS mandates',
+    (_label, list) => {
+      const missing = REQUIRED_FIELDS.filter((f) => !list.includes(f));
+      expect(missing).toEqual([
+        'total_waves',
+        'agent_summary',
+        'total_agents',
+        'total_files_changed',
+      ]);
+    },
+  );
+
+  it('a schema-valid record routes to v1, the generator the superset rule binds', () => {
+    const valid = makeV1Entry();
+    expect(() => validateSession(valid)).not.toThrow();
+    expect(detectSessionSchema(normalizeSessionEntry(valid))).toBe('v1');
+  });
+});
+
+// ── ABSENT IS NOT ZERO — the duration/commits sites (#969 LOW-1) ─────────────
+
+describe('absent-is-not-zero: duration and commits', () => {
+  // Bug this catches that nothing else in the suite does: a record lacking
+  // `duration_seconds`/`duration_minutes` rendered `**Duration:** 0m` — a
+  // claimed MEASURED zero, contradicted by the `started_at → completed_at` span
+  // printed on the SAME line, and sitting beside four correct `n/a`s. Neither
+  // duration field is in any RENDERABLE_SESSION_FIELDS_* list, so absence is
+  // reachable in all three generators.
+  //
+  // It survived because every factory above supplies every value: the three
+  // `?? 0` defaults were only reachable from a record no existing test built.
+  // Deleting a key from the factory is therefore the whole point of these rows.
+  //
+  // The `0` rows are the other half of the guard, and the reason this is `??`
+  // and not `||`: swapping in `||` turns a genuinely measured zero into `n/a`,
+  // which is the same absent/measured confusion pointing the other way.
+  it.each([
+    ['v1', generateSessionNote, makeV1Entry, ['duration_seconds']],
+    ['v2', generateSessionNoteV2, makeV2Entry, ['duration_seconds']],
+    ['v3', generateSessionNoteV3, makeV3Entry, ['duration_minutes', 'duration_seconds']],
+  ])('%s renders n/a — not 0m — when every duration field is absent', (_v, generate, make, durationKeys) => {
+    const entry = make();
+    for (const key of durationKeys) delete entry[key];
+    const out = generate(entry);
+    expect(out).toContain('**Duration:** n/a (');
+    expect(out).not.toContain('**Duration:** 0m');
+  });
+
+  // Consolidated here from two standalone v3 duration tests (`renders duration
+  // from duration_minutes` / `falls back to duration_seconds when
+  // duration_minutes is absent`): every case is one input to the same
+  // `renderDuration`, so one table covers the value space the two singletons
+  // covered plus the measured-zero rows the `??` chain exists for.
+  it.each([
+    ['v1 measured zero', generateSessionNote, makeV1Entry, { duration_seconds: 0 }, '0m'],
+    ['v2 measured zero', generateSessionNoteV2, makeV2Entry, { duration_seconds: 0 }, '0m'],
+    ['v3 measured zero', generateSessionNoteV3, makeV3Entry, { duration_minutes: 0 }, '0m'],
+    ['v1 rounds duration_seconds', generateSessionNote, makeV1Entry, { duration_seconds: 7200 }, '120m'],
+    ['v3 prefers duration_minutes', generateSessionNoteV3, makeV3Entry, { duration_seconds: 99999 }, '86m'],
+    ['v3 falls back to duration_seconds', generateSessionNoteV3, makeV3Entry, { duration_minutes: undefined, duration_seconds: 120 }, '2m'],
+  ])('%s → renders the measured value, never n/a', (_v, generate, make, overrides, expected) => {
+    expect(generate(make(overrides))).toContain(`**Duration:** ${expected}`);
+  });
+
+  it('v3 renders commits as n/a when absent and 0 when recorded-but-empty', () => {
+    // Absent array = "not recorded"; empty array = "recorded, and there were
+    // none". The old `: 0` gave the second answer to the first question.
+    const absent = makeV3Entry();
+    delete absent.commits;
+    expect(generateSessionNoteV3(absent)).toContain('**Commits:** n/a');
+    expect(generateSessionNoteV3(makeV3Entry({ commits: [] }))).toContain('**Commits:** 0');
   });
 });

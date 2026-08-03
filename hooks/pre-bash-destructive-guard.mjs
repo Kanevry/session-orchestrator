@@ -35,6 +35,7 @@ import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
 import { commandMatchesBlocked, tokenizeCommand } from '../scripts/lib/hardening.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
+import { isSessionConfigHeading } from '../scripts/lib/config/section-extractor.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import fs, { existsSync } from 'node:fs';
@@ -206,6 +207,96 @@ async function isGitStashNonEmpty(projectDir) {
   }
 }
 
+/** Unquoted chain operators emitted by tokenizeCommand — they delimit segments. */
+const CHAIN_OP_RE = /^(;|&&|\|\||\||&)$/;
+
+/**
+ * WRITE-redirect OPERATOR tokens emitted by tokenizeCommand (#965 Risk C).
+ *
+ * `>` `>>` `>|`, each optionally carrying an fd prefix (`2>`, `2>>`). Every one
+ * of these CREATES-OR-TRUNCATES its target file before the verb ever runs, so
+ * the target is a destructive-write destination in its own right.
+ *
+ * NOT `&>` — the lexer deliberately splits that into the chain operator `&`
+ * followed by `>` (see tokenizeCommand's docblock), so it never arrives here as
+ * one token; the `&` ends the rm invocation's token run and the `> target` that
+ * follows sits in the NEXT segment. That is pre-existing lexer behaviour, not
+ * something this file may change unilaterally.
+ */
+const WRITE_REDIRECT_OP_RE = /^\d*>>?\|?$/;
+
+/**
+ * READ-redirect OPERATOR tokens: `<` `<<` `<<-` `<<<`, with optional fd prefix.
+ *
+ * These only ever READ — `<` opens an existing file, `<<`/`<<-` introduce a
+ * here-doc whose body is data, `<<<` passes its word as stdin. None of them can
+ * truncate or create anything, so their target needs no allowlist check.
+ */
+const READ_REDIRECT_OP_RE = /^\d*<<?<?-?$/;
+
+/**
+ * Classify `tokens[i]` as a redirect and locate its target.
+ *
+ * A redirect's target is a FILENAME, never an argument of the verb: in
+ * `rm -rf /tmp/scratch > /tmp/out.log` the shell hands `rm` exactly one operand.
+ * Both rm walkers below originally read `>` and `/tmp/out.log` as ordinary
+ * tokens, which made the redirect target an rm TARGET — and since it is not on
+ * the rule's `path-allowlist`, four legitimate temp cleanups were denied
+ * (measured false positives; `> file`, `2> file`, `>> file` and the `<` forms).
+ *
+ * Dropping operator+target UNCONDITIONALLY then over-corrected: `>` truncates
+ * its target to zero bytes and NO rule in blocked-commands.json covers a bare
+ * `>`, so `rm -rf /tmp/ok > CLAUDE.md` — denied before the skip existed — became
+ * an allow. (CLAUDE.md is the example throughout this docblock because it is the
+ * most costly single file to lose; on Codex CLI the same command empties AGENTS.md,
+ * and on any repo it is whatever tracked file the redirect names.)
+ * Hence the `kind` discriminator: the caller still skips both tokens
+ * (the bash reading of the operand list is correct either way), but a `write`
+ * target is handed back so the allow path can hold it to the same allowlist the
+ * rm operands face. Read redirects yield `kind: 'read'` and no target.
+ *
+ * The target is consumed only when it is not itself a chain operator, so a
+ * dangling redirect (`rm -rf /tmp/x > ; ls`) cannot swallow the segment break,
+ * and the fd-duplication form (`2>&1`, which lexes as `2>` `&` `1`) yields NO
+ * write target — it names a file descriptor, not a file.
+ *
+ * @param {Array<{text: string, quoted: boolean}>} tokens
+ * @param {number} i
+ * @returns {{next: number, kind: 'write'|'read', target: string|null}|null}
+ *   null when tokens[i] is not a redirect operator.
+ */
+function classifyRedirect(tokens, i) {
+  const tok = tokens[i];
+  if (tok.quoted) return null;
+  const isWrite = WRITE_REDIRECT_OP_RE.test(tok.text);
+  if (!isWrite && !READ_REDIRECT_OP_RE.test(tok.text)) return null;
+
+  const kind = isWrite ? 'write' : 'read';
+  const next = tokens[i + 1];
+  // A here-doc BODY arrives as a single quoted token — data, not an operand.
+  const hasTarget = Boolean(next) && !(!next.quoted && CHAIN_OP_RE.test(next.text));
+  if (!hasTarget) return { next: i + 1, kind, target: null };
+  return { next: i + 2, kind, target: isWrite ? next.text : null };
+}
+
+/**
+ * `/dev/null` is the one write-redirect destination that destroys nothing: it is
+ * a character device, so `>` on it neither truncates nor creates a file. It is
+ * also the single most common rm-plumbing target (`rm -rf /tmp/x 2> /dev/null`),
+ * and it was one of the measured false positives the redirect skip fixed.
+ *
+ * Deliberately NOT folded into isRmPathAllowed: `rm -rf /dev/null` must stay
+ * blocked — deleting the device node is destructive, writing to it is not.
+ *
+ * @param {string} targetPath
+ * @returns {boolean}
+ */
+function isNullSink(targetPath) {
+  return Boolean(targetPath)
+    && path.isAbsolute(targetPath)
+    && path.normalize(targetPath) === path.join(path.sep, 'dev', 'null');
+}
+
 /**
  * Parse ALL non-flag path arguments from every `rm` invocation in a command.
  *
@@ -214,20 +305,31 @@ async function isGitStashNonEmpty(projectDir) {
  * chained commands (`rm -rf /tmp/x; rm -rf src/`). Quote-aware via
  * tokenizeCommand so a path with spaces inside quotes is one target.
  *
- * Returns an array of target path strings (possibly empty). The caller treats
- * the rm-rf rule as "allowed" only when EVERY returned target is allowlisted.
+ * Redirect operators and their targets are skipped (see {@link classifyRedirect}) —
+ * `rm -rf /tmp/scratch > /tmp/out.log` has ONE target, not two.
+ *
+ * Returns BOTH halves of that split:
+ *   - `targets` — the rm operands (what gets deleted).
+ *   - `writeTargets` — the files each WRITE redirect in the same invocation
+ *     truncates-or-creates. Read redirects contribute nothing. The caller holds
+ *     these to the same allowlist, because `> CLAUDE.md` empties CLAUDE.md just
+ *     as surely as `rm` would and no policy rule covers a bare `>`.
+ *
+ * The caller treats the rm-rf rule as "allowed" only when EVERY operand and
+ * EVERY write-redirect target passes its respective check.
  *
  * @param {string} command
- * @returns {string[]}
+ * @returns {{targets: string[], writeTargets: string[]}}
  */
 function parseRmTargets(command) {
   const tokens = tokenizeCommand(command);
   const targets = [];
+  const writeTargets = [];
   let i = 0;
 
   while (i < tokens.length) {
     const verb = tokens[i].text.replace(/^.*\//, ''); // basename
-    const isOperator = !tokens[i].quoted && /^(;|&&|\|\||\||&)$/.test(tokens[i].text);
+    const isOperator = !tokens[i].quoted && CHAIN_OP_RE.test(tokens[i].text);
     if (isOperator) { i++; continue; }
     if (verb !== 'rm') { i++; continue; }
 
@@ -237,7 +339,15 @@ function parseRmTargets(command) {
     while (i < tokens.length) {
       const tok = tokens[i];
       // Stop at unquoted chain operators — they delimit the next command.
-      if (!tok.quoted && /^(;|&&|\|\||\||&)$/.test(tok.text)) break;
+      if (!tok.quoted && CHAIN_OP_RE.test(tok.text)) break;
+      // A redirect operator + its target belong to the shell, not to `rm` — but a
+      // WRITE redirect's target is still a file this command clobbers.
+      const redirect = classifyRedirect(tokens, i);
+      if (redirect) {
+        if (redirect.kind === 'write' && redirect.target) writeTargets.push(redirect.target);
+        i = redirect.next;
+        continue;
+      }
       if (!seenDashDash && tok.text === '--') { seenDashDash = true; i++; continue; }
       // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
       if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') {
@@ -249,7 +359,7 @@ function parseRmTargets(command) {
     }
   }
 
-  return targets;
+  return { targets, writeTargets };
 }
 
 /**
@@ -259,6 +369,20 @@ function parseRmTargets(command) {
  * variants the literal "rm -rf" pattern misses (#641 gap closure) while staying
  * consistent with the quoted-payload guard: an `rm` that appears only inside a
  * quoted token is NOT treated as an invocation here.
+ *
+ * Redirect operators and their targets are skipped for the same reason as in
+ * parseRmTargets: a redirect target is a filename the shell consumes, so
+ * `rm -r /tmp/x > -f` must not read `-f` as rm's force flag.
+ *
+ * Unlike parseRmTargets this walker deliberately DISCARDS the write-redirect
+ * target instead of reporting it. Its question is only "does this command
+ * contain a recursive+force rm at all", i.e. whether the rm-rf rule MATCHES —
+ * it never decides allow-vs-deny. A write target cannot answer that question:
+ * `> CLAUDE.md` is not an rm flag under any reading. The verdict that the write
+ * target does belong to is made once, on the rule's allow path, from
+ * parseRmTargets' `writeTargets` — collecting it twice would either
+ * double-count or (worse) give this function a second, silently divergent
+ * opinion about the same fact.
  *
  * @param {string} command
  * @returns {boolean}
@@ -278,7 +402,9 @@ function commandHasRecursiveForceRm(command) {
     let seenDashDash = false;
     while (i < tokens.length) {
       const t = tokens[i];
-      if (!t.quoted && /^(;|&&|\|\||\||&)$/.test(t.text)) break;
+      if (!t.quoted && CHAIN_OP_RE.test(t.text)) break;
+      const redirect = classifyRedirect(tokens, i);
+      if (redirect) { i = redirect.next; continue; }
       if (!seenDashDash && t.text === '--') { seenDashDash = true; i++; continue; }
       if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
         if (t.text === '--recursive') recursive = true;
@@ -544,7 +670,10 @@ async function main() {
     const lines = mdContent.split(/\r?\n/);
     let inConfig = false;
     for (const line of lines) {
-      if (line === '## Session Config') { inConfig = true; continue; }
+      // SSOT predicate (#968) — never re-derive this comparison. A local copy
+      // that drifts LOOSER than the extractor silently disagrees with the
+      // runtime about where the config block starts.
+      if (isSessionConfigHeading(line)) { inConfig = true; continue; }
       if (inConfig && /^## /.test(line)) break;
       if (inConfig) {
         const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
@@ -626,14 +755,25 @@ async function main() {
       // Special: rm-rf-destructive — path exception
       if (id === 'rm-rf-destructive') {
         const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
-        const targets = parseRmTargets(command);
+        const { targets, writeTargets } = parseRmTargets(command);
         // Allow ONLY when there is at least one target AND every target is
         // allowlisted. An unparseable command (no targets) or any non-allowlisted
         // target → block (conservative). This makes mixed chains like
         // `rm -rf /tmp/x; rm -rf src/` block on the src/ target.
+        //
+        // Every WRITE-redirect target of the same invocation must clear the SAME
+        // allowlist. `>` truncates its target to zero bytes before rm runs, and
+        // no rule in the policy covers a bare `>`, so without this the allow path
+        // waved through `rm -rf /tmp/ok > CLAUDE.md` — an emptied CLAUDE.md, on
+        // the strength of an allowlisted rm operand. `/dev/null` is the one
+        // exception (see isNullSink); read redirects are not checked at all
+        // because `<`, `<<`, `<<-`, `<<<` cannot truncate or create anything.
         const allAllowed =
           targets.length > 0 &&
-          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist));
+          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist)) &&
+          writeTargets.every(
+            (t) => isNullSink(t) || isRmPathAllowed(t, projectDir, ruleAllowlist)
+          );
         if (allAllowed) {
           // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;

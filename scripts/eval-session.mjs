@@ -10,6 +10,36 @@
  *   - Data → stdout, diagnostics → stderr.
  *   - Exit codes: 0 success/match · 1 user-error/drift · 2 system error.
  *
+ * ## Append failures are NOT exit 0 (GitLab #969)
+ *
+ * `appendEvalRecord` is a never-throw sink: it returns
+ * `{ ok:false, reason:'validation'|'fs-error' }` instead of raising. This CLI
+ * used to log that WARN and still `process.exit(0)` — the caller saw success
+ * while the journal had no record, one surface reporting a fact the other did
+ * not carry. A failed append now exits non-zero, split by reason:
+ *
+ *   - `fs-error`  → EXIT_SYSTEM (2). The filesystem refused the append
+ *     (permissions, ENOTDIR, full disk) — "system error" per cli-design.md.
+ *   - `validation` → EXIT_USER (1). Reachable from the invocation: `--handle ""`
+ *     survives the `?? null` default as an empty string and trips the
+ *     "handle must be a non-empty string or null" rule in eval/schema.mjs.
+ *     Malformed metrics input reaches the same path, and cli-design.md maps
+ *     "bad args, invalid file" to 1. This matches the rest of this file, where
+ *     every input-derived failure is EXIT_USER and only engine crashes are
+ *     EXIT_SYSTEM. (An engine-internal invariant breach also lands here — a
+ *     mild under-classification, accepted so the reachable case stays honest.)
+ *
+ * Both branches emit the `--json` / human payload to stdout BEFORE exiting, and
+ * do so via `writeStdoutLineSync` rather than a queued write: `process.stdout`
+ * is asynchronous on a pipe on macOS, so `process.exit()` discards whatever is
+ * still in libuv's queue past the 65 536-byte kernel buffer. Losing the record
+ * alongside the error is the exact fail-open shape #906 fixed in the hook layer.
+ * Real records measure ≤ 5 210 bytes today, but `evidence` strings are
+ * engine-generated free text, so the bound is empirical, not structural.
+ *
+ * Session-end Phase 3.7d remains advisory and MUST NOT gate on this exit code —
+ * it catches a non-zero exit and logs a WARN (skills/session-end/SKILL.md).
+ *
  * Usage:
  *   eval-session.mjs [--session <id>] [--json] [--no-write]
  *                    [--metrics-dir <path>] [--rubric <path>]
@@ -29,6 +59,7 @@ import { fileURLToPath } from 'node:url';
 
 import { evaluateSession, diffDimensions, DEFAULT_RUBRIC_PATH, RUBRIC_VERSION } from './lib/eval/engine.mjs';
 import { appendEvalRecord, readEvalRecords } from './lib/eval/sink.mjs';
+import { writeStdoutLineSync } from './lib/io.mjs';
 import { VALID_MODEL_SOURCES } from './lib/eval/schema.mjs';
 import { SessionResolutionError } from './lib/eval/session-resolve.mjs';
 
@@ -69,8 +100,9 @@ OPTIONS
 
 EXIT CODES
   0  success / verify match
-  1  user error (session not found, unknown run-id) / verify drift
-  2  system error
+  1  user error (session not found, unknown run-id, record failed validation)
+     / verify drift
+  2  system error (could not append the record to the eval journal)
 `;
 
 function fail(exitCode, message) {
@@ -144,18 +176,27 @@ function runEvaluate(values) {
   const { record, summary } = result;
 
   let writeResult = null;
+  let appendFailureReason = null;
   if (!values['no-write']) {
     writeResult = appendEvalRecord(record, { path: path.join(metricsDir, 'eval.jsonl') });
     if (!writeResult.ok) {
-      // never-throw sink already emitted a stderr WARN; surface it as a soft note.
+      // The never-throw sink already emitted its own stderr WARN; add the
+      // CLI-level line, then carry the reason to the exit code below.
       process.stderr.write(`[eval-session] append failed (${writeResult.reason}): ${writeResult.error}\n`);
+      appendFailureReason = writeResult.reason;
     }
   }
 
+  // stdout FIRST, synchronously — the caller must not lose the payload along
+  // with the error (see the append-failure note in the module docblock).
   if (values.json) {
-    process.stdout.write(`${JSON.stringify(record)}\n`);
+    writeStdoutLineSync(JSON.stringify(record));
   } else {
-    process.stdout.write(`${renderHuman(record, summary, writeResult)}\n`);
+    writeStdoutLineSync(renderHuman(record, summary, writeResult));
+  }
+
+  if (appendFailureReason !== null) {
+    process.exit(appendFailureReason === 'validation' ? EXIT_USER : EXIT_SYSTEM);
   }
   process.exit(EXIT_OK);
 }
@@ -195,15 +236,15 @@ function runVerify(runId, values) {
 
   if (diffs.length === 0) {
     if (values.json) {
-      process.stdout.write(`${JSON.stringify({ run_id: runId, match: true, dimensions: fresh.dimensions.length })}\n`);
+      writeStdoutLineSync(JSON.stringify({ run_id: runId, match: true, dimensions: fresh.dimensions.length }));
     } else {
-      process.stdout.write(`MATCH: ${runId} re-evaluates identically across ${fresh.dimensions.length} dimension(s).\n`);
+      writeStdoutLineSync(`MATCH: ${runId} re-evaluates identically across ${fresh.dimensions.length} dimension(s).`);
     }
     process.exit(EXIT_OK);
   }
 
   if (values.json) {
-    process.stdout.write(`${JSON.stringify({ run_id: runId, match: false, diffs })}\n`);
+    writeStdoutLineSync(JSON.stringify({ run_id: runId, match: false, diffs }));
   } else {
     const out = [`DRIFT: ${runId} re-evaluation differs from the stored record:`];
     for (const d of diffs) {
@@ -213,7 +254,7 @@ function runVerify(runId, values) {
         out.push(`  ${d.id}.${d.field}: stored=${JSON.stringify(d.stored)} fresh=${JSON.stringify(d.fresh)}`);
       }
     }
-    process.stdout.write(`${out.join('\n')}\n`);
+    writeStdoutLineSync(out.join('\n'));
   }
   process.exit(EXIT_USER);
 }

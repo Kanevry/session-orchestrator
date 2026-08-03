@@ -431,7 +431,28 @@ coverage:
 # cannot finish in 17s, so that tick was the soft-skip, not a check. The job now
 # exits 3, which `allow_failure.exit_codes` renders as an amber WARNING: not a
 # pass, and still not a hard block while the token is genuinely unconfigured.
-# Set SCHEMA_DRIFT_OPTIONAL=false once the token exists to make it fail closed.
+#
+# EXIT-CODE TAXONOMY — one code per FACT. Every outcome below also prints its
+# own `[schema-drift] RESULT: <STATE>` line, so the log answers "what happened"
+# without the reader having to know the allow_failure convention:
+#
+#   0  IN-SYNC        the check ran and the vendored schema matches canonical
+#   1  DRIFT          the check ran and found divergence  <- the only drift code
+#   3  SKIPPED        no token, and SCHEMA_DRIFT_OPTIONAL=true declares that OK
+#   4  MISCONFIGURED  no token, but the gate is required — the check never ran
+#   5  UNAVAILABLE    token present, baseline clone failed (scope/expiry/network)
+#
+# 3, 4 and 5 all mean NOT VERIFIED and none of them is a drift verdict. Keeping
+# them off code 1 is the point: before this split, "you forgot the token" and
+# "the schema has diverged" were the same red, so the first person to see it
+# would go looking for a schema diff that does not exist. Only 3 is in
+# `allow_failure.exit_codes`; 4 and 5 are hard failures by construction.
+#
+# TO ACTIVATE THE HARD GATE: create SCHEMA_DRIFT_TOKEN (steps in
+# docs/ci-setup.md), then flip SCHEMA_DRIFT_OPTIONAL to "false" in BOTH places
+# below — this job and `pipeline-gate`. The mirroring is asserted by
+# tests/ci/schema-drift-check.test.mjs, so a half-flip fails the suite locally
+# rather than silently leaving one of the two enforcement points advisory.
 # ---------------------------------------------------------------------------
 
 schema-drift-check:
@@ -441,7 +462,9 @@ schema-drift-check:
   timeout: 10m
   # exit 3 == "no token AND the absence is explicitly declared acceptable".
   # EVERY other non-zero exit stays a hard pipeline failure — notably exit 1
-  # from real drift, and exit 1 from a missing token without the opt-out.
+  # from real drift, exit 4 from a missing token without the opt-out, and
+  # exit 5 from a token that cannot reach the baseline repo. Widening this list
+  # would re-open the hole #933 closed, one code at a time.
   allow_failure:
     exit_codes:
       - 3
@@ -459,23 +482,30 @@ schema-drift-check:
     # nothing reported the same green as a job that had checked everything.
     - >
       if [ -z "${SCHEMA_DRIFT_TOKEN}" ]; then
-        echo "NOT VERIFIED: SCHEMA_DRIFT_TOKEN is not set — no schema drift check was performed.";
-        echo "See docs/ci-setup.md to configure a deploy token for infrastructure/projects-baseline.";
+        echo "[schema-drift] NOT VERIFIED: SCHEMA_DRIFT_TOKEN is not set — no schema drift check was performed.";
+        echo "[schema-drift] See docs/ci-setup.md to configure a deploy token for infrastructure/projects-baseline.";
         if [ "${SCHEMA_DRIFT_OPTIONAL}" = "true" ]; then
-          echo "SCHEMA_DRIFT_OPTIONAL=true -> exiting 3 (allowed failure). This job is a WARNING, never a pass.";
+          echo "[schema-drift] RESULT: SKIPPED (exit 3, allow_failure -> amber WARNING). SCHEMA_DRIFT_OPTIONAL=true declares the missing token acceptable. This is NOT a pass and NOT a drift verdict — nothing was compared.";
           exit 3;
         fi;
-        echo "SCHEMA_DRIFT_OPTIONAL is not 'true' -> failing closed.";
-        exit 1;
-      fi
+        echo "[schema-drift] RESULT: MISCONFIGURED (exit 4, hard failure). SCHEMA_DRIFT_OPTIONAL is not 'true', so the token is required. This is NOT drift — the check never ran; provision SCHEMA_DRIFT_TOKEN per docs/ci-setup.md.";
+        exit 4;
+      fi;
+      echo "[schema-drift] token present — comparing the vendored schema against canonical. From here, exit 1 means real drift."
     # Clone the canonical schema source using a deploy token or PAT.
     # SCHEMA_DRIFT_TOKEN must be a masked CI variable with read_repository
     # scope on infrastructure/projects-baseline (project ID 52).
     # See docs/ci-setup.md for token creation steps.
+    # A clone failure is a CREDENTIAL/NETWORK fact, not a schema fact. Left bare,
+    # it exits with git's own code and reads as "the schema-drift gate failed",
+    # sending the first responder to look for a diff that does not exist. exit 5
+    # is outside allow_failure, so this still hard-fails — it just says why.
     - >
       git clone --depth 1
       "https://oauth2:${SCHEMA_DRIFT_TOKEN}@${CI_SERVER_HOST}/infrastructure/projects-baseline.git"
       /tmp/projects-baseline
+      || { echo "[schema-drift] RESULT: UNAVAILABLE (exit 5, hard failure). Could not clone infrastructure/projects-baseline — check SCHEMA_DRIFT_TOKEN scope (read_repository), expiry, and masking. This is NOT drift.";
+      exit 5; }
     # Run the drift-check — exits 0 if in sync, 1 if the local vendored copy
     # has diverged from the canonical schema. Diff is emitted to stderr.
     - >
@@ -485,7 +515,10 @@ schema-drift-check:
     # Marker — reachable ONLY from the path where the check actually ran and
     # passed. The exit-3 soft path returns long before this line, so the marker's
     # presence is the one honest answer to "did this pipeline verify the schema?"
-    - 'mkdir -p .ci-markers && echo "schema-drift verified $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-markers/schema-drift.ok'
+    - >
+      mkdir -p .ci-markers
+      && echo "schema-drift verified $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-markers/schema-drift.ok
+      && echo "[schema-drift] RESULT: IN-SYNC (exit 0) — the vendored schema matches canonical, and this pipeline can prove it."
   artifacts:
     when: on_success
     paths:
@@ -571,7 +604,7 @@ pipeline-gate:
       if [ -f .ci-markers/schema-drift.ok ]; then
         echo "[gate] schema-drift: VERIFIED";
       elif [ "$SCHEMA_DRIFT_OPTIONAL" = "true" ]; then
-        echo "[gate] schema-drift: NOT VERIFIED — SCHEMA_DRIFT_TOKEN unset and SCHEMA_DRIFT_OPTIONAL=true (see docs/ci-setup.md)";
+        echo "[gate] schema-drift: NOT VERIFIED (AMBER) — SCHEMA_DRIFT_TOKEN unset and SCHEMA_DRIFT_OPTIONAL=true. This pipeline is green BY DECLARATION, not because the schema was checked; the schema-drift-check job exited 3. See docs/ci-setup.md to provision the token and flip the flag.";
       else
         echo "[gate] schema-drift: NOT VERIFIED and not declared optional";
         failed=1;

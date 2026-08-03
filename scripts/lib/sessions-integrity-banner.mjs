@@ -28,24 +28,33 @@
  *
  *   - `validateSession()` (`scripts/lib/session-schema/validator.mjs`) — the
  *     canonical write-path schema, enforced by `scripts/emit-session.mjs`.
- *     It treats `effectiveness` as OPTIONAL/nullable, so a record vault-mirror
- *     refuses to render can pass it cleanly.
+ *     It treats `effectiveness` as OPTIONAL/nullable — since #964 declared
+ *     explicitly in `OPTIONAL_FIELDS` (`session-schema/constants.mjs`) rather
+ *     than inferable only from an `if` — so a record vault-mirror refuses to
+ *     render can pass it cleanly.
  *   - vault-mirror's render path — its own, differently-shaped requirement
- *     set (`generateSessionNote*` in
- *     `scripts/lib/vault-mirror/render-sessions.mjs`, routed by
+ *     set (`RENDERABLE_SESSION_FIELDS_V1` / `_V2` / `_V3`, exported from
+ *     `scripts/lib/vault-mirror/render-sessions.mjs` and consumed by the
+ *     matching `generateSessionNote*` generator, routed by
  *     `detectSessionSchema`), which REQUIRES `effectiveness` to be present.
  *     A record can therefore be schema-valid and still get no vault note.
+ *     Since #964 those lists are module-scope and pinned to the write-path
+ *     schema by a mechanical superset test (v1 ⊇ `REQUIRED_FIELDS`, with
+ *     measured carve-outs for the write-unreachable v2/v3) — so "renderable"
+ *     is now a stated strengthening of "schema-valid" rather than an
+ *     undeclared second opinion. That relationship is exactly why BOTH
+ *     populations still have to be reported: a superset can still exclude.
  *
  * Reporting one population would hide the other, so the banner names both and
  * attributes each to its own consequence.
  *
- * Live ledger at HEAD 1f7b449 + the #958 fix (2026-07-31, 203 parseable
- * records, 145 of them `status: 'abandoned'`): `validateSession` fails 0,
- * vault-mirror render fails 10 — and all 10 of those are abandoned, i.e.
- * discarded by the #909 filter BEFORE the render path (see
- * `mirrorSkipReason` below), so the banner is correctly silent here. The
- * counts move as the ledger grows; treat them as a dated measurement, never
- * as an invariant.
+ * Live ledger at HEAD 730ee9d (measured 2026-08-03; 205 parseable records,
+ * 146 of them `status: 'abandoned'`, all 205 routing to the v1 generator):
+ * `validateSession` fails 0, vault-mirror render fails 10 — and all 10 of
+ * those are abandoned, i.e. discarded by the #909 filter BEFORE the render
+ * path (see `mirrorSkipReason` below), so the banner is correctly silent
+ * here. The counts move as the ledger grows; treat them as a dated
+ * measurement, never as an invariant — re-run the probe before quoting them.
  *
  * The vault-mirror population is measured by CALLING THE REAL RENDER PATH in
  * a try/catch — never by re-deriving its required-field list here. A third
@@ -70,7 +79,10 @@
  *  - `scripts/lib/session-schema/validator.mjs` — `validateSession`.
  *  - `scripts/lib/session-schema/filters.mjs` — `isRealSession` (#909).
  *  - `scripts/lib/vault-mirror/process.mjs` — the routing this probe mirrors.
- *  - `scripts/lib/vault-mirror/render-sessions.mjs` — the real render path.
+ *  - `scripts/lib/vault-mirror/render-sessions.mjs` — the real render path,
+ *    and the `RENDERABLE_SESSION_FIELDS_V{1,2,3}` lists it gates on (#964).
+ *  - `scripts/lib/session-schema/constants.mjs` — `REQUIRED_FIELDS` /
+ *    `OPTIONAL_FIELDS`, the write-path half of the superset relationship.
  *  - `scripts/emit-session.mjs` — the validating writer this banner points at.
  *  - `hooks/pre-bash-sessions-ledger-guard.mjs` — the write-guard half of #958.
  *  - `skills/session-start/SKILL.md` Phase 4 — banner render site.
@@ -127,9 +139,9 @@ function readJsonlLines(filePath) {
  * returns `skipped-abandoned` for `!isRealSession(entry)` BEFORE the generator
  * is ever called, so an abandoned record can never reach the render path and
  * can never become `skipped-invalid`. Omitting it made this probe measure a
- * population production never reaches: on this repo's ledger (2026-07-31, HEAD
- * 1f7b449, 203 records) **all 10** reported "dropped" records were
- * `status: 'abandoned'` — a 100 %-false 🚨 on every session start, with a
+ * population production never reaches: on this repo's ledger (measured
+ * 2026-08-03, HEAD 730ee9d, 205 records) **all 10** reported "dropped" records
+ * were `status: 'abandoned'` — a 100 %-false 🚨 on every session start, with a
  * prescribed remedy (re-emit) that produces no vault note for such a record.
  * The predicate is IMPORTED from `session-schema/filters.mjs` rather than
  * re-derived: that rule already has exactly two homes (the filter module and
@@ -137,7 +149,10 @@ function readJsonlLines(filePath) {
  * would make a third — the divergence class this banner exists to report.
  *
  * The generator is invoked with one argument where production passes
- * `generator(entry, { repoNs })` (`process.mjs:517`). All three generators
+ * `generator(entry, { repoNs })` (`process.mjs:516` — the SESSION render whose
+ * throw becomes `skipped-invalid`; the 3-argument `generator(entry, slug,
+ * generatorOpts)` calls elsewhere in that file belong to the separate
+ * LEARNINGS path and are not this probe's population). All three generators
  * declare `options = {}` and use `repoNs` only for a frontmatter field, never
  * to decide whether to throw — so the omission cannot change the render/skip
  * verdict this probe reads. Resolving a real `repoNs` here would cost a git

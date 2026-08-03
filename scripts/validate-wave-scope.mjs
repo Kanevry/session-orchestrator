@@ -15,6 +15,17 @@
  *                           fileScope file (a JSON array of strings) and assert
  *                           it is a subset of wave-scope.allowedPaths (#796).
  *                           Fails (exit 1) with "missing: [...]" on violation.
+ *   --expand-test-siblings  With --assert-subset: ALSO require allowedPaths to
+ *                           grant the test sibling of every concrete production
+ *                           file in the agent fileScope (#970). Default OFF.
+ *                           Only ever ADDS a requirement — never relaxes the
+ *                           subset assertion above.
+ *                           GATED ON THE MANIFEST'S OWN `role`: the assertion
+ *                           fires only for the roles where expansion fires
+ *                           (scope-gate.mjs TEST_SIBLING_EXPANSION_ROLES), so
+ *                           the caller may pass the flag unconditionally on
+ *                           every pre-dispatch check. A skip is announced on
+ *                           stderr as a WARN.
  *
  * Exit codes:
  *   0 — valid (validated JSON echoed to stdout)
@@ -25,7 +36,12 @@
 import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { warn } from './lib/common.mjs';
-import { assertFileScopeSubset } from './lib/scope-gate.mjs';
+import {
+  assertFileScopeSubset,
+  assertTestSiblingCoverage,
+  testSiblingExpansionApplies,
+  TEST_SIBLING_EXPANSION_ROLES,
+} from './lib/scope-gate.mjs';
 
 /**
  * Write an error to stderr and exit with the given code.
@@ -41,19 +57,23 @@ function die(msg, code = 1) {
 /**
  * Parse CLI flags out of argv, leaving positional args behind.
  *
- * Recognised: `--assert-subset <path>` (#796). Everything else is treated as a
- * positional argument (the wave-scope.json file path), preserving legacy
- * behaviour where argv[2] is the input file.
+ * Recognised: `--assert-subset <path>` (#796) and `--expand-test-siblings`
+ * (#970). Everything else is treated as a positional argument (the
+ * wave-scope.json file path), preserving legacy behaviour where argv[2] is the
+ * input file.
  *
  * @param {string[]} argv - full process.argv
- * @returns {{ assertSubset: string|null, positionals: string[] }}
+ * @returns {{ assertSubset: string|null, expandTestSiblings: boolean, positionals: string[] }}
  */
 function parseArgs(argv) {
   const positionals = [];
   let assertSubset = null;
+  let expandTestSiblings = false;
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--assert-subset') {
+    if (a === '--expand-test-siblings') {
+      expandTestSiblings = true;
+    } else if (a === '--assert-subset') {
       assertSubset = argv[i + 1];
       if (assertSubset === undefined) {
         die('--assert-subset requires a file-path argument', 1);
@@ -63,7 +83,7 @@ function parseArgs(argv) {
       positionals.push(a);
     }
   }
-  return { assertSubset, positionals };
+  return { assertSubset, expandTestSiblings, positionals };
 }
 
 /**
@@ -342,8 +362,9 @@ function validateGates(obj, errors) {
  *
  * @param {Record<string, unknown>} obj - the already schema-validated wave-scope object
  * @param {string} fileScopePath - path to the agent fileScope JSON file
+ * @param {boolean} [expandTestSiblings] - also assert #970 test-sibling coverage
  */
-function assertSubsetOrDie(obj, fileScopePath) {
+function assertSubsetOrDie(obj, fileScopePath, expandTestSiblings = false) {
   if (!existsSync(fileScopePath) || !statSync(fileScopePath).isFile()) {
     die(`Cannot read --assert-subset file: ${fileScopePath}`, 2);
   }
@@ -366,14 +387,40 @@ function assertSubsetOrDie(obj, fileScopePath) {
   if (!ok) {
     die(`agent fileScope not ⊆ allowedPaths — missing: [${missing.join(', ')}]`, 1);
   }
+  // #970 — opt-in, and deliberately AFTER the plain subset assertion so the
+  // pre-existing failure mode keeps its exact message. This only ever adds a
+  // requirement: the union must also grant each production file's test sibling,
+  // or the agent is mechanically unable to update the test it just broke.
+  //
+  // The manifest's OWN `role` (already schema-validated as a non-empty string
+  // above) gates it, through the same predicate the expander uses. That is what
+  // lets the pre-dispatch command carry the flag unconditionally: on a Quality
+  // phase-1 manifest — production files with tests deliberately excluded — an
+  // ungated assertion would block every dispatch of that phase.
+  if (expandTestSiblings) {
+    if (!testSiblingExpansionApplies({ role: obj.role })) {
+      warn(
+        `--expand-test-siblings: skipped for role "${obj.role}" — test-sibling expansion applies only to [${TEST_SIBLING_EXPANSION_ROLES.join(', ')}] (scripts/lib/scope-gate.mjs)`,
+      );
+      return;
+    }
+    const sib = assertTestSiblingCoverage(fileScope, obj.allowedPaths, { role: obj.role });
+    if (!sib.ok) {
+      die(
+        `allowedPaths does not grant the test sibling of every production file in the agent fileScope (#970) — missing: [${sib.missing.join(', ')}]. Re-run the Scope Manifest step: allowedPaths must be expandTestSiblings(union, { role }) — see skills/wave-executor/wave-loop.md § Scope Manifest #3`,
+        1,
+      );
+    }
+  }
 }
 
 /**
  * Main validation entry point. Reads input, validates, exits with appropriate code.
  * @param {string} input - raw JSON string
  * @param {string|null} [assertSubsetPath] - optional agent fileScope file for the #796 subset assertion
+ * @param {boolean} [expandTestSiblings] - opt-in #970 test-sibling coverage assertion
  */
-function validate(input, assertSubsetPath = null) {
+function validate(input, assertSubsetPath = null, expandTestSiblings = false) {
   const obj = parseJson(input);
   const errors = [];
   const warnings = [];
@@ -396,12 +443,12 @@ function validate(input, assertSubsetPath = null) {
 
   // #796 — optional dispatch-time subset assertion (runs only after schema validation passes)
   if (assertSubsetPath) {
-    assertSubsetOrDie(obj, assertSubsetPath);
+    assertSubsetOrDie(obj, assertSubsetPath, expandTestSiblings);
   }
 
   // Echo validated JSON to stdout (trailing newline normalised)
   process.stdout.write(input.endsWith('\n') ? input : input + '\n');
 }
 
-const { assertSubset, positionals } = parseArgs(process.argv);
-validate(readInput(positionals[0]), assertSubset);
+const { assertSubset, expandTestSiblings, positionals } = parseArgs(process.argv);
+validate(readInput(positionals[0]), assertSubset, expandTestSiblings);

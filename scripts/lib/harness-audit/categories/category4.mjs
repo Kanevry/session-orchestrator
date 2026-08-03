@@ -12,6 +12,7 @@ import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
 import { isRealSession } from '../../session-schema/filters.mjs';
+import { findSessionConfigBlock } from '../../config/section-extractor.mjs';
 
 // Default session-lock TTL in hours — mirrors DEFAULT_TTL_HOURS in
 // scripts/lib/session-lock.mjs. Inlined to keep this category stdlib-only
@@ -159,9 +160,14 @@ export function runCategory4(root) {
     const relPath = 'skills/vault-sync/validator.mjs';
     // Parse CLAUDE.md Session Config for vault-integration.enabled
     const claudeMd = safeRead(join(root, 'CLAUDE.md')) || safeRead(join(root, 'AGENTS.md')) || '';
-    // Extract ## Session Config block
-    const scMatch = /^## Session Config\s*\n([\s\S]*?)(?=^## |\s*$)/m.exec(claudeMd);
-    const scBlock = scMatch ? scMatch[1] : '';
+    // Extract ## Session Config block via the SSOT (#968). The previous local
+    // regex `/^## Session Config\s*\n([\s\S]*?)(?=^## |\s*$)/m` was not merely
+    // a looser heading test — its `\s*$` lookahead (with /m, `$` matches at
+    // every line end) truncated the body to the block's FIRST line. On this
+    // repo's own CLAUDE.md it captured 17 chars ("persistence: true") of 2877,
+    // so `vault-integration.enabled: true` was invisible and this check
+    // reported "not enabled — skip" at full 2/2 credit.
+    const scBlock = findSessionConfigBlock(claudeMd)?.body ?? '';
     const vaultEnabledMatch = /vault-integration\.enabled:\s*true/i.exec(scBlock) ||
       /vault-integration:\s*\n\s+enabled:\s*true/im.exec(scBlock);
     const vaultEnabled = Boolean(vaultEnabledMatch);

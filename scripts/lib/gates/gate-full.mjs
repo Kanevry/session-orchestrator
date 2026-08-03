@@ -40,11 +40,14 @@ const tcErrorCount =
     : 0;
 
 // --- Test ---
+// NOTE: `testFailed`, NOT `failed` — a local `failed` is already bound near the
+// bottom of this file and drives `process.exit(failed ? 2 : 0)`. Shadowing it
+// would corrupt the gate's exit code.
 const testResult = runCheck(testCmd);
-const { passed: testPassed, total: testTotal } =
+const { passed: testPassed, failed: testFailed, total: testTotal } =
   testResult.status !== 'skip'
     ? extractTestCounts(testResult.output)
-    : { passed: 0, total: 0 };
+    : { passed: 0, failed: 0, total: 0 };
 
 // --- Lint ---
 const lintResult = runCheck(lintCmd);
@@ -70,7 +73,16 @@ const output = {
   variant: 'full-gate',
   duration_seconds: durationSeconds,
   typecheck: { status: tcResult.status, error_count: tcErrorCount },
-  test: { status: testResult.status, total: testTotal, passed: testPassed },
+  // `failed` is published explicitly (#967 item 1) rather than left to be
+  // re-derived as `total - passed` downstream: the derivation and the parse can
+  // disagree, and only an explicit third number lets a consumer check
+  // `passed + failed === total` as a real producer/consumer drift guard.
+  test: {
+    status: testResult.status,
+    total: testTotal,
+    passed: testPassed,
+    failed: testFailed,
+  },
   lint: { status: lintResult.status, warnings: lintWarnings },
   debug_artifacts: debugArtifacts,
   stubbed,

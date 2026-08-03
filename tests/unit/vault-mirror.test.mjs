@@ -1654,9 +1654,10 @@ describe('regression #718 — vault-mirror per-record resilience', () => {
   it('a legacy record missing session_id is skipped-invalid via the VALIDATION path (no crash, no mapper-crash reason)', () => {
     const vaultDir = tmp();
     // No `session_id` field at all (legacy `session`-keyed shape) — this hits
-    // REQUIRED_SESSION_FIELDS validation and throws a `vault-mirror: ...`
-    // error BEFORE toDate() is ever reached, so it must NOT carry
-    // reason: 'mapper-crash'.
+    // the v1 renderable-field gate (`RENDERABLE_SESSION_FIELDS_V1`, renamed +
+    // exported in #964) and throws a `vault-mirror: ...` error BEFORE toDate()
+    // is ever reached, so it must NOT carry reason: 'mapper-crash'. That
+    // ORDERING is the contract under test, not the constant's name.
     const legacyRecord = {
       session: 'legacy-id',
       session_type: 'feature',

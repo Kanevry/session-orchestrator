@@ -18,26 +18,24 @@ import {
   mkdirSync,
   rmSync,
   existsSync,
-  readFileSync,
   writeFileSync,
   appendFileSync,
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { readSubagents } from '@lib/subagents-schema.mjs';
 
 const HOOK = new URL('../../hooks/subagent-telemetry.mjs', import.meta.url).pathname;
 const JSONL_REL = join('.orchestrator', 'metrics', 'subagents.jsonl');
 
-// Fixture transcript with assistant turns across 2 unique requestIds — req_AAA
-// repeated 3× and req_BBB repeated 2× to prove the requestId-dedup recipe (#624).
-// Deduped totals: token_input = 100 + 200 = 300, token_output = 40 + 60 = 100.
-const TRANSCRIPT_FIXTURE = fileURLToPath(
-  new URL('../fixtures/metrics/subagent-transcript-dedup.jsonl', import.meta.url),
-);
-const DEDUP_TRANSCRIPT = readFileSync(TRANSCRIPT_FIXTURE, 'utf8');
+// Removed with #963: `tests/fixtures/metrics/subagent-transcript-dedup.jsonl`.
+// Despite its name it stopped pinning any dedup behaviour when the #950
+// consolidation retired its token assertions — its repeats were byte-identical,
+// so it scored the same under keep-first and keep-last. Its one surviving user
+// asserted the `subagent_transcript_found` flag and never looked at its contents,
+// which any transcript satisfies; that case now uses STREAMING_GOLDEN. The file
+// contained no `"id"` field at all, so it could not have pinned #963 either.
 
 // The PARENT session transcript the harness actually names in `transcript_path`.
 // Its usage block mirrors the live shape (cache_* siblings kept) but carries
@@ -58,10 +56,10 @@ const PARENT_SESSION_ID = '19eecab8-5c28-4b0b-95da-20c4e433a3ae';
 //   req_...cJjjJ → output_tokens 4, 4,       then  498
 // input_tokens is 2 in every single block of both groups.
 //
-// This is what the older hand-built subagent-transcript-dedup.jsonl cannot do:
-// its repeats are byte-identical, so it scores the same under keep-first and
-// keep-last and is blind to the #950 defect. This one separates them —
-// keep-first yields 4/5, keep-last 4/1628.
+// This is what the older hand-built dedup fixture could not do (see the removal
+// note above): its repeats were byte-identical, so it scored the same under
+// keep-first and keep-last and was blind to the #950 defect. This one separates
+// them — keep-first yields 4/5, keep-last 4/1628.
 const STREAMING_GOLDEN =
   [
     '{"type":"assistant","requestId":"req_011CdYTpiEMekUdAoWPUqV2K","message":{"role":"assistant","usage":{"input_tokens":2,"cache_creation_input_tokens":19257,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":19257,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}}',
@@ -72,6 +70,35 @@ const STREAMING_GOLDEN =
     '{"type":"assistant","requestId":"req_011CdYTtUWiMehh6LvmcJjjJ","message":{"role":"assistant","usage":{"input_tokens":2,"cache_creation_input_tokens":3560,"cache_read_input_tokens":37544,"cache_creation":{"ephemeral_5m_input_tokens":3560,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"not_available"}}}',
     '{"type":"assistant","requestId":"req_011CdYTtUWiMehh6LvmcJjjJ","message":{"role":"assistant","usage":{"input_tokens":2,"cache_creation_input_tokens":3560,"cache_read_input_tokens":37544,"cache_creation":{"ephemeral_5m_input_tokens":3560,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"not_available"}}}',
     '{"type":"assistant","requestId":"req_011CdYTtUWiMehh6LvmcJjjJ","message":{"role":"assistant","usage":{"input_tokens":2,"cache_creation_input_tokens":3560,"cache_read_input_tokens":37544,"output_tokens":498,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":3560},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":498,"cache_read_input_tokens":37544,"cache_creation_input_tokens":3560,"cache_creation":{"ephemeral_5m_input_tokens":3560,"ephemeral_1h_input_tokens":0},"type":"message"}],"speed":"standard"}}}',
+  ].join('\n') + '\n';
+
+// Golden shape for #963 — assistant turns with NO requestId but WITH message.id.
+// This is the real-world majority class the pre-#963 fallback double-counted:
+// 430,962 of 1,005,530 usage blocks corpus-wide (42.9%, measured 2026-08-03),
+// all from non-Anthropic models routed through the same harness. No test
+// anywhere covered it before.
+//
+// Two message.id groups, each shaped like a real streaming sequence rather than
+// like repeated copies — which is what makes it discriminate:
+//   msg_UNK_A → in 15000/out 0 (partial), 15000/300 (partial), 12/900 (final)
+//   msg_UNK_B → in  8000/out 0 (partial),                       7/250 (final)
+// `stop_reason` is null on every partial and set on every final, and the final
+// block's `input_tokens` is LOWER than the partials' because the partial reports
+// an undifferentiated total and the final splits `cache_read_input_tokens` out
+// (cache re-accounting inside ONE turn — measured corpus-wide, not invented).
+//
+// Scores under the four candidate recipes:
+//   last-wins (production)  in    19 / out 1150   ← asserted
+//   sum-every-block (#963)  in 38019 / out 1450
+//   per-field max           in 23000 / out 1150
+//   keep-first              in 23000 / out    0
+const MESSAGE_ID_GOLDEN =
+  [
+    '{"type":"assistant","message":{"id":"msg_UNK_A","role":"assistant","model":"gpt-5.6-sol","stop_reason":null,"usage":{"input_tokens":15000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"service_tier":"standard"}}}',
+    '{"type":"assistant","message":{"id":"msg_UNK_A","role":"assistant","model":"gpt-5.6-sol","stop_reason":null,"usage":{"input_tokens":15000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":300,"service_tier":"standard"}}}',
+    '{"type":"assistant","message":{"id":"msg_UNK_A","role":"assistant","model":"gpt-5.6-sol","stop_reason":"end_turn","usage":{"input_tokens":12,"cache_creation_input_tokens":2000,"cache_read_input_tokens":14988,"output_tokens":900,"service_tier":"standard"}}}',
+    '{"type":"assistant","message":{"id":"msg_UNK_B","role":"assistant","model":"gpt-5.6-sol","stop_reason":null,"usage":{"input_tokens":8000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"service_tier":"standard"}}}',
+    '{"type":"assistant","message":{"id":"msg_UNK_B","role":"assistant","model":"gpt-5.6-sol","stop_reason":"end_turn","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":7993,"output_tokens":250,"service_tier":"standard"}}}',
   ].join('\n') + '\n';
 
 let tmp;
@@ -297,7 +324,7 @@ describe('subagent-telemetry hook', () => {
     // on start records would make "false" ambiguous between "phantom stop" and
     // "not a stop at all"; omitting it from stops would put the whole unusable
     // pre-#949 history back in play for a summing consumer.
-    const transcriptPath = seedTranscripts({ agentId: 'flag-agent', subagent: DEDUP_TRANSCRIPT });
+    const transcriptPath = seedTranscripts({ agentId: 'flag-agent', subagent: STREAMING_GOLDEN });
     runHook(
       JSON.stringify({
         hook_event_name: 'SubagentStart',
@@ -396,9 +423,51 @@ describe('subagent-telemetry hook', () => {
     expect(records[0]['gen_ai.usage.output_tokens']).toBe(125);
   });
 
-  it('stop with assistant turns that have NO requestId: ALL are counted (no dedup)', async () => {
-    // No requestId on any assistant turn — documents that dedup keys on requestId
-    // and the harness always supplies it, so the fallback counts every turn.
+  it('no requestId but WITH message.id: snapshots collapse to the LAST block per message.id', async () => {
+    // #963 — the real-world majority class, and until now covered by no test at
+    // all: 42.9% of usage blocks corpus-wide carry `message.id` and no
+    // requestId, and the old fallback summed every one of them (8.93x input
+    // inflation corpus-wide; 2.55x over this repo's own 32 affected transcripts).
+    //
+    // The literals below discriminate the fix from all three plausible wrong
+    // recipes — see MESSAGE_ID_GOLDEN for the per-recipe score table. In
+    // particular `input_tokens` DROPS on the finalized block (cache_read splits
+    // out), so a per-field `Math.max` reads 23000 and only last-wins reads 19.
+    const transcriptPath = seedTranscripts({
+      agentId: 'mid-agent',
+      subagent: MESSAGE_ID_GOLDEN,
+    });
+
+    const payload = JSON.stringify({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'mid-agent',
+      transcript_path: transcriptPath,
+    });
+
+    const result = runHook(payload);
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records).toHaveLength(1);
+    // Hardcoded literals — the FINAL block of each message.id group: 12 + 7 and
+    // 900 + 250. Summing every snapshot (the pre-#963 behaviour) reads
+    // 38019/1450; keeping the first reads 23000/0.
+    expect(records[0].token_input).toBe(19);
+    expect(records[0].token_output).toBe(1150);
+    expect(records[0]['gen_ai.usage.input_tokens']).toBe(19);
+    expect(records[0]['gen_ai.usage.output_tokens']).toBe(1150);
+  });
+
+  it('stop with assistant turns that have NEITHER requestId NOR message.id: ALL are counted', async () => {
+    // Neither key — the identity is unknown, so each block stays its own turn.
+    // This is ALSO the landmine pin for #963: a naive `map.set(obj.message?.id,
+    // usage)` maps all three of these blocks onto the single key `undefined`,
+    // collapsing unrelated turns into one and reading 200/60 instead of 350/110.
+    // Absent is not zero, and it is not "the same turn as the next keyless
+    // block" either. (Zero blocks in the measured corpus lack `message.id`, so
+    // this branch is forward-compat — deliberately NOT restated as a fact about
+    // what the harness always sends; that assumption is exactly what #963
+    // refuted.)
     // Three turns: 100 + 50 + 200 = 350 input, 40 + 10 + 60 = 110 output.
     const transcriptPath = seedTranscripts({
       agentId: 'token-agent-no-reqid',
@@ -530,6 +599,11 @@ describe('subagent-telemetry hook', () => {
       // CURRENT stop traffic is orphaned (#939 phantom-stop class, measured
       // 2026-07-31 — see the hook header docblock).
       expect(records[0].duration_ms).toBeNull();
+      // Folded in from the consolidated #939 orphan case (TV-004): that case ran
+      // the identical scenario — one SubagentStop, no start record anywhere —
+      // and differed only in asserting this flag instead of the duration. Both
+      // read the SAME `startedAtMs === null` resolution, so they were one test.
+      expect(records[0].start_record_found).toBe(false);
     });
 
     it('a harness-supplied positive duration_ms stays authoritative over the join', async () => {
@@ -622,16 +696,11 @@ describe('subagent-telemetry hook', () => {
       expect(start.start_record_found).toBeUndefined();
     });
 
-    it('an orphan stop (no start record anywhere) carries start_record_found: false', async () => {
-      const result = runHook(
-        JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'phantom-agent' }),
-      );
-      expect(result.status).toBe(0);
-
-      const records = await readSubagents(join(tmp, JSONL_REL));
-      expect(records).toHaveLength(1);
-      expect(records[0].start_record_found).toBe(false);
-    });
+    // Consolidated away (TV-004): 'an orphan stop (no start record anywhere)
+    // carries start_record_found: false' sat here. It ran the same single
+    // SubagentStop-with-no-start scenario as the #917 'yields null, not 0' case
+    // above and asserted the sibling field of the same `startedAtMs === null`
+    // resolution; its assertion moved there rather than being dropped.
 
     it('a payload with NO hook_event_name is written as stop WITH a hook_event_name: null breadcrumb', async () => {
       // Hypothesis (b) of #939: a payload missing hook_event_name silently

@@ -44,6 +44,7 @@
 
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULT_INTERVAL_S = 2;
 const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
@@ -139,6 +140,27 @@ function tailRead(absPath, prevOffset) {
 }
 
 /**
+ * Event types this monitor is meant to classify. Anything else is ignored even
+ * when it carries a wave number.
+ *
+ * The allowlist is a wave-LIFECYCLE prefix plus the agent-dispatch counters —
+ * i.e. exactly the records that can carry the three measurements
+ * `evaluateSignals` compares (`files_changed`, `test.passed`,
+ * `agents_dispatched`). It is deliberately fail-CLOSED: a new event type that
+ * gains a `wave_number` field must be added here consciously.
+ */
+const WAVE_EVENT_PREFIX = 'orchestrator.wave.';
+const WAVE_EVENT_NAMES = new Set(['agent.dispatched', 'orchestrator.agent.dispatched']);
+
+/**
+ * @param {string} evType
+ * @returns {boolean}
+ */
+function isWaveScopedEvent(evType) {
+  return evType.startsWith(WAVE_EVENT_PREFIX) || WAVE_EVENT_NAMES.has(evType);
+}
+
+/**
  * Classify a raw events.jsonl record and update the in-memory wave summary
  * map. Returns the wave number affected, or null if the record is not a
  * wave-event we care about.
@@ -148,11 +170,30 @@ function tailRead(absPath, prevOffset) {
  *   - { event_type, wave, wave_number, files_changed, test.passed,
  *       agent.dispatched, agents_dispatched }
  *
+ * ## Event-type gate (#966 step 1)
+ *
+ * A wave number alone is NOT sufficient to classify — the type gate runs first.
+ * `orchestrator.quality_gate.*` is by far the highest-volume record in
+ * `events.jsonl` and was ignored here only ACCIDENTALLY, because it happened to
+ * carry no wave number. The moment `run-quality-gate.mjs` started emitting
+ * `wave_number`, every gate run would have instantiated or refreshed a
+ * `WaveSummary`, advanced `latestWave`, and burnt the once-per-wave
+ * `alreadyEmitted` keys — suppressing the genuine signal when the real wave
+ * record arrived later. Several other high-volume types (`session.stopped`,
+ * `memory.propose_invoked`) already carry a wave and sat in the same trap.
+ *
+ * Note the measurement keys are read FLAT (`rec['test.passed']`) and are
+ * deliberately NOT reconciled with the gate event's nested `counts.passed` —
+ * folding one into the other would silently change what this monitor measures.
+ *
  * @param {Record<string, unknown>} rec
  * @param {Map<number, WaveSummary>} state
  * @returns {number | null}
  */
 function classify(rec, state) {
+  const evType = String(rec.event_type ?? rec.event ?? '');
+  if (!isWaveScopedEvent(evType)) return null;
+
   const waveNumber = pickInt(rec.wave_number ?? rec.wave ?? rec.waveId);
   if (waveNumber === null) return null;
   let summary = state.get(waveNumber);
@@ -170,8 +211,7 @@ function classify(rec, state) {
   const testPassed = pickInt(rec['test.passed'] ?? rec.test_passed ?? rec.testsPassed);
   if (testPassed !== null) summary.testPassed = testPassed;
   // Count one agent.dispatched event toward this wave's dispatch count.
-  const evType = String(rec.event_type ?? rec.event ?? '');
-  if (evType === 'agent.dispatched') {
+  if (WAVE_EVENT_NAMES.has(evType)) {
     summary.agentDispatchCount = (summary.agentDispatchCount ?? 0) + 1;
   } else {
     const dispatched = pickInt(rec.agents_dispatched ?? rec.agentsDispatched);
@@ -386,4 +426,10 @@ function main() {
   });
 }
 
-main();
+// Run the tail loop only when executed as a script. Importing the module (for
+// unit tests over `classify`) must not parse vitest's argv and exit 1.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
+
+export { classify, isWaveScopedEvent };

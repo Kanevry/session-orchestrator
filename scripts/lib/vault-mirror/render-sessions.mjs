@@ -39,6 +39,123 @@ const MISSING_CELL = '?';
 const MISSING_VALUE = 'n/a';
 
 /**
+ * Render the `**Duration:**` bullet value for all three generators (#969 LOW-1).
+ *
+ * All three sites used to read `Math.round((duration_seconds ?? 0) / 60)`, three
+ * lines that violated the banner directly above them: neither `duration_minutes`
+ * nor `duration_seconds` is in ANY of the `RENDERABLE_SESSION_FIELDS_*` lists,
+ * so absence is reachable, and a record lacking both rendered `Duration: 0m` —
+ * a claimed MEASURED zero, contradicted on the same line by its own
+ * `started_at → completed_at` span, and sitting beside correctly-rendered `n/a`s.
+ * "0m" reads as a verified fact; that is the more damaging direction.
+ *
+ * The whole chain is `??`, never `||`, so a genuinely measured zero survives:
+ * `duration_minutes: 0` renders `0m`, and so does `duration_seconds: 0`
+ * (`Math.round(0 / 60)` is `0`, and `0 ?? x` is `0`). Only a field the producer
+ * never wrote becomes `MISSING_VALUE`. The suffix is applied HERE rather than at
+ * the call sites, because `${MISSING_VALUE}m` would render `n/am`.
+ *
+ * @param {unknown} durationSeconds — v1/v2/v3 `duration_seconds`.
+ * @param {unknown} [durationMinutes] — v3 `duration_minutes`; WINS when both are
+ *   present, preserving v3's original precedence.
+ * @returns {string} e.g. `'42m'`, `'0m'`, or `'n/a'`.
+ */
+function renderDuration(durationSeconds, durationMinutes) {
+  const fromSeconds =
+    durationSeconds === undefined || durationSeconds === null
+      ? undefined
+      : Math.round(durationSeconds / 60);
+  const minutes = durationMinutes ?? fromSeconds;
+  return minutes === undefined || minutes === null ? MISSING_VALUE : `${minutes}m`;
+}
+
+/**
+ * ── RENDERABLE ⊋ SCHEMA-VALID (#964) ───────────────────────────────────────
+ *
+ * Each generator gates on its own required-field list. Before #964 all three
+ * lists were function-local `const`s with no stated relationship to
+ * `REQUIRED_FIELDS` (scripts/lib/session-schema/constants.mjs) — the write-path
+ * schema — which made five independent notions of "a valid session record" in
+ * one codebase, drifting silently. They are lifted here, exported, and pinned
+ * against `REQUIRED_FIELDS` by a mechanical superset test in
+ * tests/lib/vault-mirror/render-sessions.test.mjs.
+ *
+ * The relationship is deliberately asymmetric, not a duplicate:
+ *
+ *   `REQUIRED_FIELDS`  — "this record is well-formed". The writer
+ *     (scripts/emit-session.mjs) REFUSES a record that fails it.
+ *   these lists        — "this record renders into a note a human can read".
+ *     vault-mirror SKIPS a record that fails them; the record stays valid.
+ *
+ * Collapsing the two would destroy that distinction. Hence `effectiveness`:
+ * optional to the writer (a record lacking it is fine), required by the v1
+ * renderer (a note reading `planned=n/a, completed=n/a, carryover=n/a,
+ * rate=n/a` is worse than no note — indistinguishable from a real session whose
+ * metrics happened to be absent).
+ *
+ * The predicate here is VALUE presence (`null`/`undefined` both fail); the
+ * validator's is KEY presence. See `_validateRequiredFields` for why.
+ */
+
+/**
+ * v1 — the only generator reachable from a write-path-valid record (measured:
+ * 205/205 live ledger records at HEAD 730ee9d route v1). Its list is
+ * `REQUIRED_FIELDS` plus `effectiveness`, i.e. a strict superset.
+ */
+export const RENDERABLE_SESSION_FIELDS_V1 = Object.freeze([
+  'session_id',
+  'session_type',
+  'started_at',
+  'completed_at',
+  'total_waves',
+  'total_agents',
+  'total_files_changed',
+  'agent_summary',
+  'waves',
+  'effectiveness',
+]);
+
+/**
+ * v2 — legacy S69+ producer shape. Requires FEWER fields than `REQUIRED_FIELDS`
+ * (no `total_waves`/`total_agents`/`total_files_changed`/`agent_summary`)
+ * because it DERIVES every one of them from the wave array, and carries the
+ * file count as top-level `files_changed` — the alias `SESSION_KEY_ALIASES`
+ * maps to `total_files_changed` on read.
+ *
+ * That shortfall is an EARNED carve-out from the superset rule, not an
+ * oversight: `detectSessionSchema` routes to v2 only when
+ * `total_agents === undefined`, and `validateSession` rejects exactly that
+ * (missing key, or present-but-not-a-number). No record can satisfy both. The
+ * test asserts the disjointness rather than trusting this comment.
+ */
+export const RENDERABLE_SESSION_FIELDS_V2 = Object.freeze([
+  'session_id',
+  'session_type',
+  'started_at',
+  'completed_at',
+  'waves',
+  'files_changed',
+  'effectiveness',
+]);
+
+/**
+ * v3 — coordinator-direct shape with SCALAR `waves`. Same earned carve-out as
+ * v2, from a sharper contradiction: `_validateWaves` throws unless
+ * `Array.isArray(entry.waves)`, `generateSessionNoteV3` throws unless
+ * `typeof entry.waves === 'number'`. A value cannot be both, so no record can
+ * satisfy both contracts — v3 is unreachable from the sanctioned writer by
+ * construction, and measurement agrees (0/205).
+ */
+export const RENDERABLE_SESSION_FIELDS_V3 = Object.freeze([
+  'session_id',
+  'session_type',
+  'started_at',
+  'completed_at',
+  'waves',
+  'effectiveness',
+]);
+
+/**
  * Session-ledger status → vault-frontmatter status mapping (#909).
  *
  * ── WHY A MAPPING AND NOT A PASS-THROUGH ───────────────────────────────────
@@ -127,11 +244,21 @@ function fmLine(key, value) {
  *   v2 (S69+):    files_changed (top-level), waves[{agents, agents_done, agents_partial, agents_failed, dispatch, duration_s}]
  *   v3 (2026-05+): coordinator-direct records — `waves` is a SCALAR count and
  *                  `agents_dispatched` is a scalar; no per-wave array breakdown.
- *                  This is the shape session-end actually emits (#491), which
- *                  previously fell through to v1 validation and was rejected as
- *                  `skipped-invalid` (no vault session-note was ever written).
+ *                  Added for #491, when such records fell through to v1
+ *                  validation and were rejected as `skipped-invalid`.
  * v1 and v2 both carry `waves` as an ARRAY, so a numeric `waves` is the
  * unambiguous v3 discriminator.
+ *
+ * #964 — CORRECTION. This comment previously claimed v3 was "the shape
+ * session-end actually emits". It is not, and cannot be: `validateSession`
+ * requires `Array.isArray(waves)`, so a scalar-`waves` record is refused by
+ * `scripts/emit-session.mjs` before it can be written. Census over the live
+ * ledger at HEAD 730ee9d — 205 parseable records, post-`normalizeSessionEntry`:
+ * **v1 205, v2 0, v3 0**. Both v2 and v3 are read-path tolerances for foreign /
+ * legacy producer shapes, not targets of the sanctioned writer. v3's live
+ * reachability is therefore zero; see the follow-up note in the #964 report
+ * before treating it as dead code — deletion is a separate decision, and the
+ * `normalizeSessionEntry` alias path can still synthesize a scalar `waves`.
  */
 export function detectSessionSchema(entry) {
   if (!entry) return 'v1';
@@ -173,8 +300,7 @@ export function normalizeSessionEntry(entry) {
 }
 
 export function generateSessionNote(entry, options = {}) {
-  const REQUIRED_SESSION_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'total_waves', 'total_agents', 'total_files_changed', 'agent_summary', 'waves', 'effectiveness'];
-  for (const field of REQUIRED_SESSION_FIELDS) {
+  for (const field of RENDERABLE_SESSION_FIELDS_V1) {
     if (entry[field] === null || entry[field] === undefined) {
       throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
     }
@@ -207,7 +333,7 @@ export function generateSessionNote(entry, options = {}) {
 
   const created = toDate(started_at);
   const updated = toDate(completed_at);
-  const durationMin = Math.round((duration_seconds ?? 0) / 60);
+  const durationLabel = renderDuration(duration_seconds);
   // #M1: every `effectiveness` sub-field is OPTIONAL (validator.mjs
   // `_validateOptionalFields` shape-checks the object, never its members), so a
   // raw interpolation writes the literal string `undefined` into a note a human
@@ -273,7 +399,7 @@ ${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 # Session ${session_id}
 
 - **Type:** ${session_type}${platformBullet}
-- **Duration:** ${durationMin}m (${started_at} → ${completed_at})
+- **Duration:** ${durationLabel} (${started_at} → ${completed_at})
 - **Waves:** ${total_waves} · **Agents:** ${total_agents} · **Files changed:** ${total_files_changed}
 - **Effectiveness:** planned=${planned_issues ?? MISSING_VALUE}, completed=${completed}, carryover=${carryover ?? MISSING_VALUE}, emergent=${emergent}, rate=${ratePercent}
 
@@ -290,8 +416,7 @@ ${waveRows}
 }
 
 export function generateSessionNoteV2(entry, options = {}) {
-  const REQUIRED_SESSION_V2_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'waves', 'files_changed', 'effectiveness'];
-  for (const field of REQUIRED_SESSION_V2_FIELDS) {
+  for (const field of RENDERABLE_SESSION_FIELDS_V2) {
     if (entry[field] === null || entry[field] === undefined) {
       throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
     }
@@ -307,7 +432,7 @@ export function generateSessionNoteV2(entry, options = {}) {
 
   const created = toDate(started_at);
   const updated = toDate(completed_at);
-  const durationMin = Math.round((duration_seconds ?? 0) / 60);
+  const durationLabel = renderDuration(duration_seconds);
 
   // Derive v1-equivalent aggregates from v2 wave structure
   const totalWaves = waves.length;
@@ -359,7 +484,7 @@ ${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 # Session ${session_id}
 
 - **Type:** ${session_type}${branchLine}
-- **Duration:** ${durationMin}m (${started_at} → ${completed_at})
+- **Duration:** ${durationLabel} (${started_at} → ${completed_at})
 - **Waves:** ${totalWaves} · **Agents:** ${totalAgents} · **Files changed:** ${files_changed}
 - **Effectiveness:** planned=${planned_issues ?? 'n/a'}, carryover=${carryover}, rate=${ratePercent}
 - **Issues closed:** ${closedList}
@@ -387,8 +512,7 @@ ${notesBlock}`;
  * and reject this shape, so it gets its own renderer.
  */
 export function generateSessionNoteV3(entry, options = {}) {
-  const REQUIRED_SESSION_V3_FIELDS = ['session_id', 'session_type', 'started_at', 'completed_at', 'waves', 'effectiveness'];
-  for (const field of REQUIRED_SESSION_V3_FIELDS) {
+  for (const field of RENDERABLE_SESSION_FIELDS_V3) {
     if (entry[field] === null || entry[field] === undefined) {
       throw new Error(`vault-mirror: session entry missing required field '${field}' (session_id=${entry.session_id ?? '<no session_id>'})`);
     }
@@ -409,24 +533,42 @@ export function generateSessionNoteV3(entry, options = {}) {
 
   const created = toDate(started_at);
   const updated = toDate(completed_at);
-  const durationMin = duration_minutes ?? Math.round((duration_seconds ?? 0) / 60);
+  const durationLabel = renderDuration(duration_seconds, duration_minutes);
 
+  // #968 — ABSENT IS NOT ZERO. Two sites here defaulted an absent value to `0`,
+  // claiming a measured zero the producer never wrote: `emergent` (`?? 0`) and
+  // the `agent_summary` destructuring defaults (`= 0`, over an `as` that itself
+  // falls back to `{}`). That was inconsistent with v3's OWN treatment of the
+  // neighbouring fields — `carryover` used `?? 'n/a'` one line above `emergent`'s
+  // `?? 0` — and it is the more damaging direction: "0 agents failed" reads as a
+  // verified fact, "n/a" reads as unknown. `??` (never `||`) is load-bearing at
+  // every site: a MEASURED 0 must still render `0`.
   const completionRate = effectiveness.completion_rate;
-  const ratePercent = typeof completionRate === 'number' ? Math.round(completionRate * 100) + '%' : 'n/a';
-  const completed = effectiveness.completed_issues ?? effectiveness.completed ?? 'n/a';
-  const carryover = effectiveness.carryover ?? 'n/a';
-  const emergent = effectiveness.unplanned_finds ?? effectiveness.emergent ?? 0;
+  const ratePercent =
+    typeof completionRate === 'number' ? Math.round(completionRate * 100) + '%' : MISSING_VALUE;
+  const completed = effectiveness.completed_issues ?? effectiveness.completed ?? MISSING_VALUE;
+  const carryover = effectiveness.carryover ?? MISSING_VALUE;
+  const emergent = effectiveness.unplanned_finds ?? effectiveness.emergent ?? MISSING_VALUE;
 
-  const agentsValue = typeof agents_dispatched === 'number' ? agents_dispatched : 'n/a';
+  const agentsValue = typeof agents_dispatched === 'number' ? agents_dispatched : MISSING_VALUE;
   const as = agent_summary && typeof agent_summary === 'object' ? agent_summary : {};
-  const { complete = 0, partial = 0, failed = 0, spiral = 0 } = as;
+  const complete = as.complete ?? MISSING_VALUE;
+  const partial = as.partial ?? MISSING_VALUE;
+  const failed = as.failed ?? MISSING_VALUE;
+  const spiral = as.spiral ?? MISSING_VALUE;
 
   const fmtIssues = (list) =>
     Array.isArray(list) && list.length ? list.map((i) => `#${i}`).join(', ') : '—';
   const closedList = fmtIssues(issues_closed);
   const createdList = fmtIssues(issues_created);
   const followList = fmtIssues(follow_ups_filed);
-  const commitCount = Array.isArray(commits) ? commits.length : 0;
+  // #969 LOW-1: an ABSENT `commits` is "not recorded", an EMPTY one is
+  // "recorded, and there were none". `commits` is not in
+  // RENDERABLE_SESSION_FIELDS_V3, so absence is reachable — and the old `: 0`
+  // published the second answer to the first question. A present-but-empty
+  // array keeps rendering `0`: that IS a measured zero, exactly the value the
+  // ABSENT-IS-NOT-ZERO banner says must survive.
+  const commitCount = Array.isArray(commits) ? commits.length : MISSING_VALUE;
   const testsDelta =
     typeof tests_total_pre === 'number' && typeof tests_total_post === 'number'
       ? `${tests_total_pre} → ${tests_total_post}`
@@ -467,9 +609,9 @@ ${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
 # Session ${session_id}
 
 - **Type:** ${session_type}${branchLine}${platformBullet}
-- **Duration:** ${durationMin}m (${started_at} → ${completed_at})
+- **Duration:** ${durationLabel} (${started_at} → ${completed_at})
 - **Waves:** ${waves} · **Agents:** ${agentsValue} · **Commits:** ${commitCount}
-- **Effectiveness:** planned=${planned_issues ?? 'n/a'}, completed=${completed}, carryover=${carryover}, emergent=${emergent}, rate=${ratePercent}
+- **Effectiveness:** planned=${planned_issues ?? MISSING_VALUE}, completed=${completed}, carryover=${carryover}, emergent=${emergent}, rate=${ratePercent}
 - **Tests:** ${testsDelta}
 - **Issues closed:** ${closedList}
 - **Issues created:** ${createdList}

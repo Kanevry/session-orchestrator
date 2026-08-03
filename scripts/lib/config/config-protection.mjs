@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { isSessionConfigHeading } from './section-extractor.mjs';
 
 /**
  * config-protection.mjs — Parser for the top-level `config-protection:` YAML
@@ -109,7 +110,7 @@ export function _isConfigWeakeningAllowed(content) {
   const lines = content.split(/\r?\n/);
   let inConfig = false;
   for (const line of lines) {
-    if (line === '## Session Config') { inConfig = true; continue; }
+    if (isSessionConfigHeading(line)) { inConfig = true; continue; }
     if (inConfig && /^## /.test(line)) break;
     if (inConfig) {
       const m = line.match(/^\s*(?:-\s+\*\*)?allow-config-weakening(?::\*\*)?\s*:\s*(\S+)/);

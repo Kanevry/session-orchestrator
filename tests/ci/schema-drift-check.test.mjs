@@ -33,42 +33,113 @@ const guardSteps = (job?.script ?? []).filter((step) =>
   step.includes('-z "${SCHEMA_DRIFT_TOKEN}"'),
 );
 
+/** Tmp dirs created by any test below; drained after each test. */
+const tmpDirs = [];
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    try {
+      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+});
+
+/**
+ * Execute real script steps from the job under `sh`, exactly as the runner
+ * would: GitLab aborts the step list at the first non-zero step, which is what
+ * `&&` reproduces here. Nothing is re-typed — the strings come from the parsed
+ * YAML, so a test can only pass against the job as committed.
+ *
+ * @param {string[]} steps script strings, in order
+ * @param {Record<string,string>} env environment for the run (PATH is added)
+ * @param {string} [pathPrefix] directory prepended to PATH (for command shims)
+ */
+function runSteps(steps, env, pathPrefix) {
+  const PATH = pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH;
+  // trim(): a YAML folded scalar ends in a newline, and a newline immediately
+  // before `&&` is a shell syntax error (exit 2) rather than a step boundary.
+  return spawnSync('sh', ['-c', steps.map((s) => s.trim()).join(' && ')], {
+    encoding: 'utf8',
+    timeout: 20_000,
+    env: { PATH, ...env },
+  });
+}
+
 describe('schema-drift-check CI job (#279)', () => {
-  it('uses SCHEMA_DRIFT_TOKEN instead of CI_JOB_TOKEN for the clone URL', () => {
-    // The fix for #279: clone must use oauth2:${SCHEMA_DRIFT_TOKEN}.
+  it('clones with SCHEMA_DRIFT_TOKEN and never with the CI job token', () => {
+    // Consolidated from two tests asserting one fact (TV-004): the clone must
+    // carry the cross-project credential. CI_JOB_TOKEN returns 403 on
+    // cross-project access without an allowlist, so the positive and negative
+    // halves are the same contract seen from two sides — #279.
     expect(cloneSteps).toHaveLength(1);
     expect(cloneSteps[0]).toContain('oauth2:${SCHEMA_DRIFT_TOKEN}');
-  });
-
-  it('does not use CI_JOB_TOKEN in the clone URL', () => {
-    // CI_JOB_TOKEN returns 403 on cross-project access without an allowlist.
-    // Asserted against the clone step itself — the previous revision searched
-    // the whole file for a clone line and then wrapped the assertion in an
-    // `if (cloneLine !== undefined)`, so a job that had lost its clone step
-    // entirely would have asserted nothing at all.
     expect(cloneSteps[0]).not.toContain('gitlab-ci-token');
     expect(cloneSteps[0]).not.toContain('CI_JOB_TOKEN');
   });
 
-  it('does not treat a missing SCHEMA_DRIFT_TOKEN as a passing check', () => {
-    // Polarity is deliberate and is the inverse of what this test asserted
-    // before (#933 Loch 1). The old form demanded the soft-skip path `exit 0`
-    // and so encoded the defect as the contract: closing the hole broke the
-    // test, which invites the next reader to restore the hole instead of the
-    // check. A job that verified nothing must never report the same green as a
-    // job that verified everything.
+  it('EXECUTES the missing-token guard: exit 3 when declared optional, exit 4 when required', () => {
+    // Upgraded from a regex over the guard's source text to a real run of it.
+    // bug_caught (the reason the regex was not enough): the flag flip that
+    // activates the hard gate is the ONE transition this job has never taken,
+    // and a quoting/nesting defect on the fail-closed branch — an unbalanced
+    // `fi`, `[ "$X" = true ]` vs `= "true"`, a `$` lost to YAML folding — is
+    // invisible to a source-text assertion and shows up only as a red pipeline
+    // for a reason unrelated to schema drift. Running it proves the branch is
+    // reachable and lands on its declared code.
+    //
+    // Polarity is deliberate (#933 Loch 1): this asserted `exit 0` once, which
+    // encoded the soft-skip defect AS the contract.
     expect(guardSteps).toHaveLength(1);
-    const guard = guardSteps[0];
+    expect(guardSteps[0]).toContain('SCHEMA_DRIFT_TOKEN is not set');
 
-    // The operator-facing reason must survive; a silent non-zero exit is not
-    // actionable in a pipeline log.
-    expect(guard).toContain('SCHEMA_DRIFT_TOKEN is not set');
+    // Committed state: no token, absence declared acceptable -> amber.
+    const amber = runSteps(guardSteps, { SCHEMA_DRIFT_OPTIONAL: 'true' });
+    expect(amber.status).toBe(3);
+    expect(amber.stdout).toContain('RESULT: SKIPPED');
 
-    // Every exit code reachable from the missing-token branch, in order:
-    // 3 when the absence is explicitly declared acceptable, 1 otherwise.
-    // A restored `exit 0` soft-skip shows up here as a '0' and fails.
-    const exitCodes = [...guard.matchAll(/\bexit\s+(\d+)/g)].map((m) => m[1]);
-    expect(exitCodes).toEqual(['3', '1']);
+    // The flipped state the operator will ship -> hard failure, and NOT on the
+    // drift code. Exit 4 is what keeps "you forgot the token" distinguishable
+    // from "the schema diverged"; both were exit 1 before.
+    const closed = runSteps(guardSteps, { SCHEMA_DRIFT_OPTIONAL: 'false' });
+    expect(closed.status).toBe(4);
+    expect(closed.stdout).toContain('RESULT: MISCONFIGURED');
+    expect(closed.stdout).toContain('NOT drift');
+  });
+
+  it('EXECUTES the token-present path: guard falls through, a failed clone exits 5 — never the drift code', () => {
+    // Two bugs in one run, both of them "the flip breaks CI for a reason that
+    // has nothing to do with schema drift":
+    //   (a) an inverted `-z`/`-n` in the guard — with the token finally set,
+    //       the job would short-circuit on the no-token branch forever and the
+    //       check would never run. Status would be 3/4 here instead of 5.
+    //   (b) a clone failure (wrong scope, expired token, unreachable host)
+    //       surfacing as a bare git exit — indistinguishable from drift to the
+    //       first responder, who then hunts a diff that does not exist.
+    // `git` is shimmed to fail, so this needs no network and no private repo.
+    const shimDir = mkdtempSync(join(tmpdir(), 'so-git-shim-'));
+    tmpDirs.push(shimDir);
+    writeFileSync(join(shimDir, 'git'), '#!/bin/sh\necho "fatal: authentication failed" >&2\nexit 128\n', {
+      mode: 0o755,
+    });
+
+    const res = runSteps(
+      [guardSteps[0], cloneSteps[0]],
+      {
+        SCHEMA_DRIFT_OPTIONAL: 'true',
+        // Deliberately UNDER 20 chars after the `glpat-` prefix: the F8 fixture-shape
+        // guard (scripts/lib/validate/check-test-fixture-shapes.mjs) flags
+        // /glpat-[A-Za-z0-9_-]{20,}/, i.e. anything long enough to look like a real
+        // PAT. The clone is shimmed to fail regardless, so the value is never used.
+        SCHEMA_DRIFT_TOKEN: 'glpat-PLACEHOLDER',
+        CI_SERVER_HOST: 'gitlab.invalid',
+      },
+      shimDir,
+    );
+
+    expect(res.status).toBe(5);
+    expect(res.stdout).toContain('RESULT: UNAVAILABLE');
+    expect(res.stdout).not.toContain('RESULT: SKIPPED');
   });
 
   it('limits allow_failure to exit code 3 and nothing else', () => {
@@ -148,17 +219,6 @@ describe('schema-drift-check verified marker (#940)', () => {
 
 const gateJob = doc['pipeline-gate'];
 const gateScript = gateJob?.script ?? [];
-
-const tmpDirs = [];
-afterEach(() => {
-  while (tmpDirs.length > 0) {
-    try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-});
 
 /**
  * Execute the gate's real script block in a tmp dir.

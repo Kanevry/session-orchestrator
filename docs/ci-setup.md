@@ -21,8 +21,11 @@ token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
 | `SCHEMA_DRIFT_TOKEN` | Variable | Yes | Optional | deploy token or PAT (see below) |
 
 If `SCHEMA_DRIFT_TOKEN` is **not set**, the job prints a `NOT VERIFIED` notice
-and exits **3**, which `allow_failure.exit_codes` renders as an amber *warning*
-— never as a pass. Set the variable to activate the real drift check.
+and exits **3** — which `allow_failure.exit_codes` renders as an amber *warning*,
+never as a pass — provided `SCHEMA_DRIFT_OPTIONAL` is still `"true"`. Once that
+flag is flipped, the same missing token exits **4** and hard-fails. Set the
+variable to activate the real drift check; the full exit taxonomy is the table
+in the next section.
 
 Until 2026-07-30 this path exited **0**, so a job that had checked nothing
 reported exactly the same green tick as a job that had checked everything. It
@@ -42,17 +45,44 @@ variables:
 It is the review-visible declaration that "no token" is *currently* an accepted
 state. The behaviour matrix:
 
-| `SCHEMA_DRIFT_TOKEN` | `SCHEMA_DRIFT_OPTIONAL` | Exit | Pipeline effect |
-|---|---|---|---|
-| unset | `"true"` | 3 | amber warning; `pipeline-gate` prints `schema-drift: NOT VERIFIED` |
-| unset | anything else | 1 | hard failure |
-| set | either | 0/1 | the real check decides (1 = drift detected) |
+| `SCHEMA_DRIFT_TOKEN` | `SCHEMA_DRIFT_OPTIONAL` | Exit | State | Pipeline effect |
+|---|---|---|---|---|
+| unset | `"true"` | 3 | `SKIPPED` | amber warning; `pipeline-gate` prints `schema-drift: NOT VERIFIED` |
+| unset | anything else | 4 | `MISCONFIGURED` | hard failure — the token is required and the check never ran |
+| set, clone fails | either | 5 | `UNAVAILABLE` | hard failure — token scope/expiry/masking or network, **not** drift |
+| set, clone works | either | 0 | `IN-SYNC` | pass; writes the `.ci-markers/schema-drift.ok` marker |
+| set, clone works | either | 1 | `DRIFT` | hard failure — **the only code that means drift** |
+
+**One code per fact.** Exit 1 is reserved for a real schema divergence; 3, 4 and
+5 all mean NOT VERIFIED and none of them is a drift verdict. That split is the
+point of the taxonomy: before it, "you forgot the token" and "the schema has
+diverged" were the same red, so the first person to see the failure went hunting
+a schema diff that does not exist. Only 3 is listed in
+`allow_failure.exit_codes`; 4 and 5 are hard failures by construction. Every
+outcome also prints its own `[schema-drift] RESULT: <STATE>` line, so the job log
+answers "what happened" without the reader having to know this table.
 
 **After completing the token setup below, change `SCHEMA_DRIFT_OPTIONAL` to
-`"false"` in `.gitlab-ci.yml`.** That is what converts a missing token from a
-tolerated warning into a hard red, and it is the whole point of the flag: the
-opt-out is a line in a reviewed file, not the accidental side effect of an
-unset CI variable.
+`"false"` in `.gitlab-ci.yml`** — in **both** places: the `schema-drift-check`
+job and `pipeline-gate`. One flag, two enforcement points;
+`tests/ci/schema-drift-check.test.mjs` asserts the mirroring, so a half-flip
+fails the suite locally rather than silently leaving one point advisory. The
+flip is what converts a missing token from a tolerated warning into a hard red,
+and it is the whole point of the flag: the opt-out is a line in a reviewed file,
+not the accidental side effect of an unset CI variable.
+
+> **Before you flip it, run ONE pipeline with the token present while
+> `SCHEMA_DRIFT_OPTIONAL` is still `"true"`, and check the job's DURATION.**
+> A `schema-drift-check` that "succeeds" in under ~20 seconds did not clone the
+> baseline repo — that is the signature of the exit-3 soft-skip path, i.e. the
+> token is still not reaching the job (misspelled key, protected-variable on an
+> unprotected branch, or masking rejection). Flipping the flag on that state
+> converts a silent skip into a red pipeline whose message points at the wrong
+> problem. Confirm a real run first: the log must show
+> `RESULT: IN-SYNC (exit 0)` and the job must produce the
+> `.ci-markers/schema-drift.ok` artifact. This job has a recorded history of
+> exactly this failure — pipeline 6815 reported SUCCESS in 17 s having checked
+> nothing (issue #933).
 
 ### Option A — Deploy Token (recommended, least-privilege)
 
@@ -91,11 +121,21 @@ After setting the variable:
 1. Push to a feature branch or open an MR against `main`.
 2. Observe the `schema-drift-check` job in the pipeline — it should now clone
    `infrastructure/projects-baseline` and run the sync check instead of
-   printing the skip warning.
-3. A passing job (exit 0) means the vendored schema matches the canonical
-   source. A failing job (exit 1) means drift was detected — run
-   `node scripts/sync-vault-schema.mjs --update` locally and commit the
-   refreshed copy.
+   printing the skip warning. Read the job's `[schema-drift] RESULT:` line; it
+   names the state directly, and the duration corroborates it (a real run
+   clones a repo, so it cannot finish in seconds).
+3. Read the exit code against the table above before diagnosing anything:
+   - **0 (`IN-SYNC`)** — the vendored schema matches the canonical source.
+   - **1 (`DRIFT`)** — and only 1 — means drift was detected. Run
+     `node scripts/sync-vault-schema.mjs --update` locally and commit the
+     refreshed copy.
+   - **3 (`SKIPPED`)** — the token still is not reaching the job. Nothing was
+     compared; do not read the amber tick as a pass.
+   - **4 (`MISCONFIGURED`)** — `SCHEMA_DRIFT_OPTIONAL` is no longer `"true"` and
+     the token is missing. Provision the variable; there is no schema diff to
+     look for.
+   - **5 (`UNAVAILABLE`)** — the clone failed. Check the token's
+     `read_repository` scope, its expiry, and its masking. Also not drift.
 
 ### Why not configure the CI Job Token allowlist in projects-baseline?
 

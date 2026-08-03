@@ -86,7 +86,16 @@ strip_fences "$CLAUDE" > "$CLAUDE_NOFENCE"
 # ---------------------------------------------------------------------------
 # Check 3: live `## Session Config` present in CLAUDE.md
 # ---------------------------------------------------------------------------
-if ! grep -qE '^## Session Config[[:space:]]*$' "$CLAUDE"; then
+# The pattern is EXACT, mirroring isSessionConfigHeading() in
+# scripts/lib/config/section-extractor.mjs (the SSOT) — CR tolerated for CRLF
+# checkouts, nothing else. Shell cannot import the JS predicate, so the
+# alignment is by hand and this comment names the authority. It was
+# `[[:space:]]*$` until #968, which accepted `## Session Config␠` — a heading
+# the runtime parser rejects. That made this check, whose entire purpose is to
+# report whether the runtime can find the block, answer "present" for the one
+# state it exists to catch.
+CR=$(printf '\r')
+if ! grep -qE "^## Session Config${CR}?\$" "$CLAUDE"; then
   emit "$CLAUDE:1" "live-config-missing" "## Session Config heading not found (skills/_shared/config-reading.md depends on it)"
 fi
 
@@ -94,6 +103,13 @@ fi
 # Check 1: H2 parity (CLAUDE.md → README.md)
 # Canonical runtime-only headings live in CLAUDE.md exclusively and are exempt.
 # ---------------------------------------------------------------------------
+# NOT tightened to the SSOT (#968), deliberately. This is a README↔CLAUDE H2
+# PARITY-exemption list, not a comparator against "can the runtime read the
+# Session Config block" — four of its five entries have no SSOT at all, and a
+# heading it wrongly exempts costs a missing parity warning, never a silent
+# config fallback. Check 3 above is the site that answers the runtime question,
+# and that one is exact. Tightening only the `Session Config` alternative would
+# make section-extractor.mjs the authority for a fact it does not govern.
 EXEMPT_HEADINGS_RE='^## (Structure|Destructive-Command Guard|Agent Authoring Rules|Current State|Session Config)[[:space:]]*$'
 
 # Extract README H2 set (one per line, normalized — heading text without the leading `## `)

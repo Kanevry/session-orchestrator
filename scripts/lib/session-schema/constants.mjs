@@ -82,9 +82,17 @@ export const REQUIRED_FIELDS = Object.freeze([
 export const AGENT_SUMMARY_FIELDS = Object.freeze(['complete', 'partial', 'failed', 'spiral']);
 
 /**
- * Optional additive fields introduced for the remote-agent substrate (ADR-364 thin-slice).
- * These are NOT in REQUIRED_FIELDS — older entries lacking them validate cleanly.
- * Validator: see `_validateOptionalFields` in validator.mjs.
+ * Optional fields — declared here so a field's status is STATED, never inferred
+ * from the presence of an `if` in the validator. Seeded by the remote-agent
+ * substrate (ADR-364 thin-slice) and grown additively since (#644, #724, #773,
+ * #964). These are NOT in REQUIRED_FIELDS — older entries lacking them validate
+ * cleanly. Validator: see `_validateOptionalFields` in validator.mjs.
+ *
+ * NOT YET EXHAUSTIVE. `_validateOptionalFields` additionally shape-checks
+ * `discovery_stats`, `review_stats`, `platform`, `branch`, `base_branch`,
+ * `notes`, `duration_seconds`, `issues_closed` and `issues_created` without
+ * listing them here. Treat membership as "declared optional", never absence as
+ * "not a known field" — see the #964 follow-up note in the session report.
  */
 export const OPTIONAL_FIELDS = Object.freeze([
   'agent_identity',
@@ -112,4 +120,15 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'open_questions_asked',
   'open_questions_answered',
   'open_questions_deferred',
+  // #964 — `effectiveness` was shape-checked by `_validateOptionalFields` while
+  // appearing in NEITHER list, so its status could only be inferred from an
+  // `if`. It is OPTIONAL on the write path and stays that way: making it
+  // required would retroactively invalidate the 10 existing records that lack
+  // it, plus every `abandoned` stub the SessionEnd backfill (#724 C1) will ever
+  // write. It is REQUIRED by the vault-mirror v1 renderer
+  // (`RENDERABLE_SESSION_FIELDS_V1`, scripts/lib/vault-mirror/render-sessions.mjs)
+  // — that is a strictly stronger, deliberately separate contract: "renderable
+  // into a note a human reads" ⊃ "schema-valid". A record missing it is a clean
+  // vault-mirror skip, NOT a malformed record.
+  'effectiveness',
 ]);

@@ -14,12 +14,14 @@
  *        duration_ms?, transcript_path? }.
  *   3. Discriminate on hook_event_name → event: 'start' | 'stop'.
  *   4. For stop events, parse the subagent's OWN transcript to recover
- *        token_input / token_output (#624, #949, #950). The harness does NOT send
- *        token_input / token_output on stdin — they must be extracted from the
+ *        token_input / token_output (#624, #949, #950, #963). The harness does NOT
+ *        send token_input / token_output on stdin — they must be extracted from the
  *        transcript's per-assistant-turn `message.usage` blocks, deduped by
  *        requestId keeping the LAST block per id (streaming snapshots repeat the
  *        same requestId a median of 2× — p90 4, max 22, measured 2026-07-31 —
- *        and only the last one is complete; see extractTranscriptUsage() for the
+ *        and only the last one is complete), falling back to `message.id` with
+ *        the same last-wins recipe when a block carries no requestId (#963 —
+ *        42.9% of usage blocks corpus-wide; see extractTranscriptUsage() for the
  *        measurement and the per-field inflation it causes).
  *        `transcript_path` on stdin points at the PARENT session transcript, so
  *        the subagent's path is DERIVED from it — see resolveSubagentTranscriptPath().
@@ -265,18 +267,21 @@ function readStdinJson() {
  * null). Without per-turn clamping, a final `Number.isInteger(sum) && sum >= 0`
  * aggregate check would nuke the whole input sum to null on one bad value.
  *
- * Dedup assumption (#624) — REFUTED AS STATED, measured 2026-07-31. Dedup keys on
- * `requestId`; a turn without one is counted individually (no dedup). That was
+ * Dedup fallback (#624 assumption refuted 2026-07-31, re-keyed 2026-08-03 / #963).
+ * Dedup keys on `requestId`. A turn without one used to be counted individually,
  * documented as an inert forward-compat fallback rather than a double-count,
- * "because the harness never omits requestId in practice". Over this repo's own
- * subagent transcripts that premise is false: 4,684 of 37,771 assistant usage
- * blocks (12.4%), across 32 of 552 files, carry usage with NO requestId — every
- * one of them from a non-Anthropic model routed through the same harness
- * (`gpt-5.6-sol` 4,680, `<synthetic>` 4). They are streaming snapshots, not
- * distinct turns: those 4,684 blocks collapse to 876 distinct `message.id`
- * values, so summing them individually — what the loop below does — inflates
- * their contribution 2.55× on input and 1.84× on output versus a `message.id`
- * dedup.
+ * "because the harness never omits requestId in practice". That premise is false
+ * and the fallback was a live double-count; it now keys on `message.id` with the
+ * same last-wins recipe, and only a block carrying NEITHER key is counted
+ * individually.
+ *
+ * Measured over this repo's own subagent transcripts (2026-08-03, command below):
+ * 4,684 of 35,923 assistant usage blocks (13.0%), across 32 of 524 files, carry
+ * usage with NO requestId — every one from a non-Anthropic model routed through
+ * the same harness (`gpt-5.6-sol` 4,680, `<synthetic>` 4). They are streaming
+ * snapshots, not distinct turns: those 4,684 blocks collapse to 876 distinct
+ * `message.id` values, so summing them individually inflated their contribution
+ * 2.55× on input and 1.84× on output.
  *
  *   d="$HOME/.claude/projects/$(pwd | tr '/.' '-')" node -e '
  *     const fs=require("node:fs"),{execSync}=require("node:child_process");
@@ -300,17 +305,76 @@ function readStdinJson() {
  *       inflation_input:+(asIs.in/byMid.in).toFixed(2),
  *       inflation_output:+(asIs.out/byMid.out).toFixed(2),models:[...models]}));'
  *
- *   {"blocks":37771,"unkeyed":4684,"files":32,"ofFiles":552,"messageIds":876,
+ *   {"blocks":35923,"unkeyed":4684,"files":32,"ofFiles":524,"messageIds":876,
  *    "asIs":{"in":15320791,"out":1241596},"byMessageId":{"in":6011144,"out":674105},
  *    "inflation_input":2.55,"inflation_output":1.84,
  *    "models":[["gpt-5.6-sol",4680],["<synthetic>",4]]}
  *
- * The unkeyed branch is therefore a LIVE double-count on those 32 transcripts,
- * not the inert fallback it was documented as. It is left as-is deliberately:
- * re-keying the fallback on `message.id` is a behaviour change beyond the scope
- * of the documentation pass that measured it (GitLab #958 follow-up). Records
- * from Anthropic-model transcripts are unaffected — every one of them carried a
- * requestId in this corpus.
+ * Same live-corpus caveat as every block above, and it already bit once: the
+ * numbers first published here read `blocks: 37771 / ofFiles: 552` on 2026-07-31
+ * and 35,923 / 524 on 2026-08-03 — transcripts age out of `~/.claude/projects`,
+ * so the totals SHRINK as well as grow and a figure left unrestated goes stale
+ * while still reading as current. The unkeyed set was byte-identical across both
+ * runs (4,684 blocks / 876 message ids / 32 files), so the defect and its
+ * inflation ratios are the durable part; `blocks` and `ofFiles` are not.
+ *
+ * THIS REPO UNDERSTATES THE DEFECT BY ~3.5×. Corpus-wide — every project dir
+ * under `~/.claude/projects`, 11,251 subagent transcripts, measured 2026-08-03 —
+ * 430,962 of 1,005,530 usage blocks (42.9%) are unkeyed, collapsing to 86,805
+ * `message.id` groups: input inflation 8.93×, output 1.70×. Model split of the
+ * unkeyed set: gpt-5.6-luna 370,404, gpt-5.6-sol 112,939, gpt-5.6-terra 13,992,
+ * `<synthetic>` 648. (Two independent runs an hour apart read 11,225 and 11,251
+ * files but the same 430,962 unkeyed blocks — again, ratios durable, totals not.)
+ *
+ * Why key on PRESENCE, never on `message.model`: `<synthetic>` appears on BOTH
+ * sides of the split (648 unkeyed, 293 keyed), so no model name partitions the
+ * two branches. Zero `claude-*` blocks are unkeyed, but that is an observation
+ * about today's routing, not a rule to branch on.
+ *
+ * Why last-wins on `message.id` is LOSSLESS, measured rather than assumed
+ * (2026-08-03, 86,805 groups / 430,962 blocks corpus-wide):
+ *   - 18,387 groups contain ≥2 blocks with a non-null `stop_reason`, and in
+ *     every single one of them all finalized usage objects are byte-identical
+ *     (`JSON.stringify` set size 1 in all 18,387). Σ tokens lost to last-wins:
+ *     0 input, 0 output. A `message.id` group is one turn, not two.
+ *   - The 8.2% of groups whose `input_tokens` look non-monotonic are cache
+ *     re-accounting INSIDE one turn, not two turns: a partial snapshot reports an
+ *     undifferentiated total, then the finalized block splits
+ *     `cache_read_input_tokens` out, so `input_tokens` legitimately drops.
+ *     (Verified on five example lines 0.6 s apart on one `parentUuid` chain.)
+ *   - 7,556 groups never finalize (interrupted turns); last-wins keeps the last
+ *     partial, which is the honest available value.
+ *   - Cross-check on the KEYED half: re-keying requestId-bearing blocks on
+ *     `message.id` instead changes totals by +0.013% input / +0.001% output, with
+ *     `midMapsToMultipleRequestIds: 0`. The two keys are interchangeable, which
+ *     is why the fallback is a key swap and not a second recipe.
+ *
+ * The `unkeyable` branch (NEITHER key) is retained and is NOT a merge bucket.
+ * Zero blocks in the entire corpus lack `message.id` (`noMidUnkeyed: 0`,
+ * `noMidKeyed: 0`, `midTypes: [["string", 4684]]`), so it is untested against
+ * real data — stated here as an untested forward-compat path rather than as
+ * another confident claim about the harness. The guard that keeps it honest is
+ * the `typeof messageId === 'string'` check in the loop below: without it every
+ * keyless block collapses onto the single key `undefined`, which is a silent
+ * UNDER-count of unrelated turns. The measurement one-liner above has exactly
+ * that shape (`m.set(o.message.id, …)`) — harmless there because zero blocks are
+ * keyless, fatal if copied into production.
+ *
+ * Observed effect, end-to-end through this hook over the 32 affected real
+ * transcripts (each copied into a sandbox at the harness-shaped subagent path,
+ * hook spawned, ledger record read back):
+ *
+ *   before #963:  {"affectedFiles":32,"hookTotalInput":15320791,"hookTotalOutput":1241596}
+ *   after  #963:  {"affectedFiles":32,"hookTotalInput":6011144,"hookTotalOutput":674105}
+ *
+ * FORWARD-ONLY — already-written history stays inflated. Nothing recomputes it:
+ * 2,126 records in `.orchestrator/metrics/subagents.jsonl` and 12 session totals
+ * in `sessions.jsonl` were written by the pre-#963 recipe, and roughly 39 of
+ * 3,015 stop records in this repo (~1.3%) came from an affected transcript. No
+ * rewrite is attempted — the ledger is append-only and the transcripts that
+ * produced the oldest records have since aged out, so a rewrite would be a
+ * reconstruction, not a correction. Consumers comparing across the 2026-08-03
+ * boundary must treat it as a series break.
  *
  * Partial-usage assumption (#624): a turn carrying `input_tokens` but no
  * `output_tokens` (or vice-versa) contributes 0 to the absent side — NOT null —
@@ -341,12 +405,21 @@ function extractTranscriptUsage(transcriptPath) {
     /** requestId -> the LAST usage block seen for it (#950). */
     const byRequestId = new Map();
     /**
-     * Usage blocks from turns with no requestId. Each is counted as its own turn
-     * — which measurably double-counts on non-Anthropic-model transcripts, where
-     * the snapshots carry `message.id` but no requestId (see the Dedup-assumption
-     * block above for the 2026-07-31 measurement and the #958 follow-up).
+     * message.id -> the LAST usage block seen for it, for blocks carrying NO
+     * requestId (#963). Same last-wins recipe, a different key: on
+     * non-Anthropic-model transcripts the streaming snapshots carry `message.id`
+     * and no requestId, so this is the identity that collapses them. See the
+     * Dedup-fallback block above for the measurement and the losslessness proof.
      */
-    const unkeyed = [];
+    const byMessageId = new Map();
+    /**
+     * Usage blocks carrying NEITHER key. Their identity is unknown, so each is
+     * counted as its own turn — absent is not zero and not "same turn as the
+     * next keyless block". Zero blocks in the measured corpus land here; it is a
+     * forward-compat path, and this time that is stated as an untested branch
+     * rather than as an established fact about the harness.
+     */
+    const unkeyable = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -367,12 +440,24 @@ function extractTranscriptUsage(transcriptPath) {
       const requestId = obj.requestId;
       if (typeof requestId === 'string' && requestId) {
         byRequestId.set(requestId, usage);
+        continue;
+      }
+
+      // No requestId — dedup on `message.id` instead, same last-wins recipe
+      // (#963). The guard mirrors the requestId branch above ON PURPOSE: a bare
+      // `byMessageId.set(obj.message?.id, usage)` maps EVERY keyless block to the
+      // single key `undefined`, silently merging unrelated turns into one and
+      // under-reporting instead of over-reporting. Only a non-empty string is a
+      // usable identity; anything else falls through to the individual count.
+      const messageId = obj.message?.id;
+      if (typeof messageId === 'string' && messageId) {
+        byMessageId.set(messageId, usage);
       } else {
-        unkeyed.push(usage);
+        unkeyable.push(usage);
       }
     }
 
-    const kept = [...byRequestId.values(), ...unkeyed];
+    const kept = [...byRequestId.values(), ...byMessageId.values(), ...unkeyable];
 
     // No assistant turns with usage → leave fields null (forward-compat).
     if (kept.length === 0) return nullResult;

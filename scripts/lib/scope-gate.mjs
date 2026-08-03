@@ -14,6 +14,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { tokenizeCommand } from './command-blocker.mjs';
+
 /**
  * Find the wave-scope.json file for the given project root.
  *
@@ -224,6 +226,285 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
 }
 
 /**
+ * Default production→test sibling rules (#970). `source` is matched with
+ * {@link pathMatchesPattern}; `sibling` is a TEMPLATE expanded with `{basename}`
+ * (filename without its extension) and `{dir}` (dirname, no trailing slash).
+ *
+ * This repo's layout only. Consumer repos override via `opts.rules` — observed
+ * shapes there are `{ source: '**\/*.ts', sibling: '{dir}/{basename}.test.*' }`,
+ * `{ source: '**\/*.ts', sibling: '{dir}/__tests__/**' }` and
+ * `{ source: 'supabase/migrations/**', sibling: 'supabase/tests/**' }`.
+ *
+ * @type {ReadonlyArray<{source: string, sibling: string}>}
+ */
+export const DEFAULT_TEST_SIBLING_RULES = Object.freeze([
+  Object.freeze({ source: '**/*.mjs', sibling: 'tests/**/{basename}*.test.mjs' }),
+]);
+
+/**
+ * Patterns that identify an entry as ALREADY test-side. Used for the
+ * no-inverse-expansion rule and, transitively, for idempotency.
+ * @type {ReadonlyArray<string>}
+ */
+export const DEFAULT_TEST_PATH_PATTERNS = Object.freeze([
+  'tests/**',
+  'test/**',
+  '**/__tests__/**',
+  '**/*.test.*',
+  '**/*.spec.*',
+]);
+
+/**
+ * The wave roles for which test-sibling expansion (#970) fires. THE list — the
+ * prose in `skills/wave-executor/wave-loop.md` § Scope Manifest and
+ * `.cursor/rules/030-wave-execution.mdc` describes this constant; it does not
+ * restate it. Canonical casing; comparison is case-insensitive (see
+ * {@link testSiblingExpansionApplies}).
+ *
+ * Impl-Core / Impl-Polish are exactly where the incident occurred (an agent
+ * changes a production file and must update its test). Every other role is a
+ * documented non-expansion case: Discovery is deny-all `[]`, Quality phase 1
+ * (Simplification) MUST NOT gain test-write access, Quality phase 2 is already
+ * test-only (expansion is inert), Finalization writes no source.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const TEST_SIBLING_EXPANSION_ROLES = Object.freeze(['Impl-Core', 'Impl-Polish']);
+
+/** Lower-cased lookup set for {@link testSiblingExpansionApplies}. @type {ReadonlySet<string>} */
+const EXPANSION_ROLE_KEYS = new Set(TEST_SIBLING_EXPANSION_ROLES.map((r) => r.toLowerCase()));
+
+/**
+ * Does test-sibling expansion (#970) apply for these options? The SINGLE
+ * predicate behind both {@link expandTestSiblings} (which grants the siblings)
+ * and {@link assertTestSiblingCoverage} (which requires them). They must agree:
+ * a check that demands coverage the expander never produced blocks a dispatch
+ * for a requirement nobody was told to satisfy.
+ *
+ * Precedence — `enabled` (explicit, BOTH directions) > `role` > fail-closed:
+ *   1. `enabled === false` → NO. The unconditional opt-out; nothing overrides it.
+ *   2. `enabled === true`  → YES. Explicit opt-in, for callers whose role
+ *      vocabulary is not this repo's (consumer repos) and for focused tests.
+ *   3. `role` present → YES iff it is in {@link TEST_SIBLING_EXPANSION_ROLES}
+ *      (trimmed, case-insensitive — plans and `wave-scope.json` are written by
+ *      LLM prose, and `impl-core` vs `Impl-Core` must not silently change
+ *      behaviour).
+ *   4. Otherwise (role ABSENT, non-string, or UNRECOGNISED) → NO.
+ *
+ * ## Why absent-role fails CLOSED (the load-bearing choice)
+ * The two failure directions are not symmetric. Expansion wrongly OMITTED
+ * blocks an agent's write: it fails loudly, at the tool boundary, and the agent
+ * reports `blocked` — recoverable in one re-union. Expansion wrongly APPLIED
+ * silently hands write access to the test suite; in a Quality phase-1
+ * Simplification wave that is the "delete a dead export, then edit the test to
+ * match" failure mode, which defeats the very gate the wave exists to run.
+ * Silent-permissive is strictly worse than loud-restrictive, and this module's
+ * convention is already "cannot assert → treat as failure"
+ * (see {@link assertFileScopeSubset}). So a caller must NAME a role (or opt in
+ * explicitly); forgetting is not a grant.
+ *
+ * @param {{enabled?: boolean, role?: string}} [opts]
+ * @returns {boolean}
+ */
+export function testSiblingExpansionApplies(opts = {}) {
+  if (opts === null || typeof opts !== 'object') return false;
+  if (opts.enabled === false) return false;
+  if (opts.enabled === true) return true;
+  if (typeof opts.role !== 'string') return false;
+  return EXPANSION_ROLE_KEYS.has(opts.role.trim().toLowerCase());
+}
+
+/**
+ * Expand a wave scope list with the TEST SIBLING of every concrete production
+ * file it grants (#970).
+ *
+ * ## The bug this closes
+ * An `allowedPaths` / agent `fileScope` entry that lists a production file
+ * WITHOUT its test sibling mechanically prevents the agent from updating that
+ * test. Observed three times in one consumer-repo session: a SQL regression test
+ * that could not be written, a cross-tenant security test left unwritable while
+ * its subject file stayed red, and a suite left red because the importing test
+ * lay outside every agent's scope. The scope guard enforced exactly the
+ * inconsistency the quality gate exists to catch.
+ *
+ * ## Why a GLOB and not a computed path
+ * The emitted sibling is `tests/**\/{basename}*.test.mjs`, never a concrete
+ * path. Measured over all 430 tracked production `.mjs` in this repo:
+ * a naive 1:1 mirror (`scripts/lib/X.mjs → tests/lib/X.test.mjs`) is right
+ * 301/430 = 70.0% (`hooks/_lib` 0/5, `scripts/ci/` 0/1); a same-basename test
+ * ANYWHERE under `tests/` is right 368/430 = 85.6%. The glob takes the 85.6%
+ * form, and its failure mode is HARMLESS — it grants write access to files that
+ * may not exist. A computed concrete path is wrong 30% of the time AND still
+ * denies the real test, which is the original bug wearing a new face.
+ *
+ * ## Required behaviours (each is a nameable regression)
+ *  1. `[]` → `[]` STRUCTURALLY. Discovery waves use an empty scope as a
+ *     deliberate deny-all contract (#256 NO-OP); expansion must never be able to
+ *     resurrect a write there.
+ *  2. IDEMPOTENT — `expand(expand(x))` deep-equals `expand(x)`. The #796
+ *     re-union path rewrites the manifest mid-wave and the scope MUST NEVER
+ *     shrink, so expansion has to compose with a re-run. Guaranteed by (4): every
+ *     synthesized entry is itself a test path and is therefore inert on re-entry.
+ *  3. ABSOLUTE entries pass through untouched — a Gate-5b out-of-repo grant
+ *     (`/Users/…/vault/**`) must not sprout a synthetic `tests/**` sibling
+ *     outside the repo.
+ *  4. NO INVERSE EXPANSION — a test path never causes a production path to be
+ *     added. Quality phase 2's scope is already test-only; expansion is inert there.
+ *  5. ROLE-GATED, fail-closed — the wave's `role` decides, via the shared
+ *     predicate {@link testSiblingExpansionApplies}, and `opts.enabled` overrides
+ *     it in both directions. Quality phase 1 (Simplification) must NOT expand, or
+ *     simplification agents gain write access to the suite (the "delete a dead
+ *     export, then edit the test to match" failure mode). An absent or
+ *     unrecognised role does not expand — see the predicate for why.
+ *
+ * Glob source entries (`src/**`, `src/`) are NOT expanded: they have no single
+ * basename, and the incident shape is a concrete production FILE.
+ *
+ * APPEND-ONLY: the returned array starts with the input entries in their original
+ * order (deduplicated), then the synthesized siblings in first-seen order.
+ *
+ * Pure: no I/O, no filesystem probing, never throws. A non-array input returns `[]`.
+ *
+ * @param {string[]} paths — a wave `allowedPaths` union OR one agent's `fileScope`
+ * @param {{enabled?: boolean, role?: string,
+ *          rules?: ReadonlyArray<{source: string, sibling: string}>,
+ *          testPathPatterns?: ReadonlyArray<string>}} [opts]
+ * @returns {string[]} the input entries followed by synthesized test-sibling globs
+ */
+export function expandTestSiblings(paths, opts = {}) {
+  if (!Array.isArray(paths) || paths.length === 0) return []; // behaviour 1
+  const entries = paths.filter((e) => typeof e === 'string' && e.length > 0);
+  const seen = new Set(entries);
+  const out = [...new Set(entries)];
+  if (!testSiblingExpansionApplies(opts)) return out; // behaviour 5
+
+  for (const sibling of testSiblingsFor(entries, opts)) {
+    if (seen.has(sibling)) continue;
+    seen.add(sibling);
+    out.push(sibling);
+  }
+  return out;
+}
+
+/**
+ * The synthesized test-sibling globs for a scope list, in first-seen order —
+ * WITHOUT the original entries. Shared by {@link expandTestSiblings} and the
+ * `--assert-subset` coverage check so both agree on what a sibling is.
+ *
+ * @param {string[]} entries — already-filtered non-empty string entries
+ * @param {{rules?: ReadonlyArray<{source: string, sibling: string}>,
+ *          testPathPatterns?: ReadonlyArray<string>}} [opts]
+ * @returns {string[]}
+ */
+export function testSiblingsFor(entries, opts = {}) {
+  const rules = Array.isArray(opts.rules) ? opts.rules : DEFAULT_TEST_SIBLING_RULES;
+  const testPatterns = Array.isArray(opts.testPathPatterns)
+    ? opts.testPathPatterns
+    : DEFAULT_TEST_PATH_PATTERNS;
+  const out = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    if (path.isAbsolute(entry)) continue; // behaviour 3
+    if (isGlobScopeEntry(entry)) continue; // no single basename to mirror
+    if (isTestPathEntry(entry, testPatterns)) continue; // behaviours 2 + 4
+    for (const rule of rules) {
+      if (!rule || typeof rule.source !== 'string' || typeof rule.sibling !== 'string') continue;
+      if (!pathMatchesPattern(entry, rule.source)) continue;
+      const sibling = renderSiblingTemplate(rule.sibling, entry);
+      if (!sibling || seen.has(sibling)) continue;
+      seen.add(sibling);
+      out.push(sibling);
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this entry already test-side? Behaviours 2 + 4 both reduce to this check.
+ * @param {string} entry
+ * @param {ReadonlyArray<string>} testPatterns
+ * @returns {boolean}
+ */
+function isTestPathEntry(entry, testPatterns) {
+  return testPatterns.some((p) => pathMatchesPattern(entry, p));
+}
+
+/**
+ * Expand `{basename}` / `{dir}` in a sibling template against a production path.
+ * `{basename}` is the filename with its final extension removed.
+ * @param {string} template
+ * @param {string} entry
+ * @returns {string}
+ */
+function renderSiblingTemplate(template, entry) {
+  const base = entry.slice(entry.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  const basename = dot > 0 ? base.slice(0, dot) : base;
+  const slash = entry.lastIndexOf('/');
+  const dir = slash === -1 ? '.' : entry.slice(0, slash);
+  return template.replaceAll('{basename}', basename).replaceAll('{dir}', dir);
+}
+
+/**
+ * Assert that the wave's `allowedPaths` union grants the TEST SIBLING of every
+ * concrete production file in an agent's declared `fileScope` (#970).
+ *
+ * Companion to {@link assertFileScopeSubset}, wired into
+ * `validate-wave-scope.mjs --assert-subset --expand-test-siblings`. That flag is
+ * the one mechanical, fail-closed enforcement point in the dispatch pipeline (it
+ * exits 1); a warn there would be decorative, since warnings in that script do
+ * not affect the exit code.
+ *
+ * DIRECTION MATTERS: this expands the AGENT'S fileScope and requires the union to
+ * cover the result. Expanding `allowedPaths` instead would WEAKEN
+ * `--assert-subset` — its value is that it is a conservative over-approximation,
+ * and growing the union makes more things trivially "covered". This only ever
+ * ADDS a requirement; a manifest that passed the plain subset check can now fail,
+ * never the reverse.
+ *
+ * A synthesized glob `G` counts as covered when ANY of:
+ *   1. `G` is present verbatim in allowedPaths;
+ *   2. some allowedPaths entry MATCHES `G` — the union already grants a concrete
+ *      file that IS a test sibling (`tests/lib/x.test.mjs` ⊨ `tests/**\/x*.test.mjs`);
+ *   3. `G`'s literal prefix is covered by an allowedPaths pattern — the same
+ *      glob rule {@link assertFileScopeSubset} uses (a broad `tests/**` grant).
+ *
+ * ROLE-GATED BY THE SAME PREDICATE as the expander
+ * ({@link testSiblingExpansionApplies}). This is not symmetry for its own sake:
+ * a Quality phase-1 union is production files with tests deliberately excluded,
+ * so an ungated assertion would demand coverage that phase must never grant and
+ * would hard-block its dispatch. When the gate is off the assertion adds NO
+ * requirement (`{ ok: true }`) rather than failing closed — "expansion did not
+ * fire here" and "the union is deficient" are different facts, and only the
+ * second is a dispatch blocker. Non-array inputs still fail closed
+ * (`{ ok: false }`), matching the module convention.
+ *
+ * @param {string[]} fileScope — one agent's declared file scope
+ * @param {string[]} allowedPaths — the wave's allowedPaths union
+ * @param {object} [opts] — same shape as {@link expandTestSiblings} (incl. `role`)
+ * @returns {{ok: boolean, missing: string[]}} missing = uncovered sibling globs
+ */
+export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
+  if (!Array.isArray(fileScope) || !Array.isArray(allowedPaths)) {
+    return { ok: false, missing: [] };
+  }
+  if (!testSiblingExpansionApplies(opts)) return { ok: true, missing: [] };
+  const missing = [];
+  for (const sibling of testSiblingsFor(fileScope, opts)) {
+    const prefix = literalScopePrefix(sibling);
+    const covered = allowedPaths.some(
+      (p) =>
+        typeof p === 'string' &&
+        p.length > 0 &&
+        (p === sibling || pathMatchesPattern(p, sibling) || pathMatchesPattern(prefix, p)),
+    );
+    if (!covered) missing.push(sibling);
+  }
+  return { ok: missing.length === 0, missing };
+}
+
+/**
  * Extract likely file-write TARGETS from a Bash command string (#800).
  *
  * Motivation: `hooks/enforce-scope.mjs` Gate 1 only gates the Edit/Write/MultiEdit
@@ -262,6 +543,36 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
  * relatively, absolute where the command used an absolute path) and de-duplicated
  * in first-seen order. The caller relativises + matches against allowedPaths.
  *
+ * ## Lexing is DELEGATED to the shared tokenizer (#970)
+ *
+ * This function used to carry its OWN Bash lexer (`tokenizeShellForWrites`) —
+ * the third in this repo that had to know about quoting. It knew nothing about
+ * comments, here-doc BODIES or ANSI-C `$'…'` quotes, so it carried the exact
+ * quote-desync defect #965 fixed in `tokenizeCommand`: one apostrophe in an
+ * ordinary shell comment (`# don't`) wedged it in single-quote state and every
+ * later `>` became quoted text. Measured before the fix — `# don't\necho x >
+ * src/secret.ts` returned `[]`, i.e. an out-of-scope write was INVISIBLE to the
+ * wave-scope write guard. Two here-doc and ANSI-C variants did the same.
+ *
+ * It now delegates to `tokenizeCommand` from `./command-blocker.mjs`, which
+ * already emits the `>`/`>>`/`<<`/`;`/`|`/`&` operator tokens this pass needs
+ * and is the single place comment / here-doc / quote semantics live. Layering
+ * holds: `command-blocker.mjs` imports NOTHING (measured), so the edge
+ * scope-gate → command-blocker adds no cycle, and both stay pure/no-I/O-at-
+ * import for the hook hot path. The barrel `hardening.mjs` is not involved (a
+ * module importing the barrel WOULD cycle).
+ *
+ * Two deltas the shared token stream does not carry, handled locally below:
+ *   - `(`/`)`: `tokenizeCommand` keeps them inside word text (they are not
+ *     control operators for its purpose). {@link peelSubshellParens} splits them
+ *     back out as separators so `(echo x > y)` still yields `y` and
+ *     `> >(cat)` still yields nothing.
+ *   - here-doc BODY tokens arrive as ordinary quoted words. They are DATA, and a
+ *     body is multi-line, so the whitespace skip rule in
+ *     {@link shouldSkipWriteTarget} drops them. (The delimiter word itself now
+ *     emits no token at all — an improvement: `tee out.txt <<EOF` used to report
+ *     the literal `EOF` as a second write target.)
+ *
  * Hook-safe: pure, deterministic, no I/O. Never throws — a non-string / empty
  * input returns `[]`.
  *
@@ -271,12 +582,12 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
 export function extractBashWriteTargets(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
 
-  const tokens = tokenizeShellForWrites(command);
+  const tokens = classifyShellTokens(tokenizeCommand(command));
 
   const out = [];
   const seen = new Set();
-  const add = (value, hadSpace) => {
-    if (shouldSkipWriteTarget(value, hadSpace)) return;
+  const add = (value) => {
+    if (shouldSkipWriteTarget(value)) return;
     const v = value.replace(/^\.\//, '');
     if (!v || seen.has(v)) return;
     seen.add(v);
@@ -288,6 +599,11 @@ export function extractBashWriteTargets(command) {
   // token is a redirect target.
   let mode = null; // null | 'tee' | 'sed' | 'dd'
   let pendingRedirect = false;
+  // A here-doc was opened: `tokenizeCommand` will emit its BODY as an ordinary
+  // quoted word token, and a single-word body (`hello`) would otherwise be read
+  // as a `tee`/`sed`/`dd` file argument. Explicit `>` redirect targets stay
+  // accepted — those carry their own operator and cannot be body text.
+  let heredocOpen = false;
   let expectCommand = true; // next word is the command head of this segment
   let sedArgs = []; // { value } collected for a `sed` head
   let sedInPlace = false;
@@ -296,7 +612,7 @@ export function extractBashWriteTargets(command) {
     if (mode === 'sed' && sedInPlace) {
       for (let i = sedArgs.length - 1; i >= 0; i--) {
         if (!isShellFlag(sedArgs[i].value)) {
-          add(sedArgs[i].value, sedArgs[i].hadSpace);
+          add(sedArgs[i].value);
           break;
         }
       }
@@ -310,8 +626,14 @@ export function extractBashWriteTargets(command) {
       pendingRedirect = true;
       continue;
     }
+    if (tk.type === 'heredoc') {
+      // here-doc: the delimiter emits no token; the BODY arrives later as data
+      pendingRedirect = false;
+      heredocOpen = true;
+      continue;
+    }
     if (tk.type === 'in') {
-      // input redirect / heredoc delimiter — not a write target
+      // input redirect / here-string — not a write target
       pendingRedirect = false;
       continue;
     }
@@ -319,12 +641,13 @@ export function extractBashWriteTargets(command) {
       flushSed();
       mode = null;
       pendingRedirect = false;
+      heredocOpen = false;
       expectCommand = true;
       continue;
     }
     // word token
     if (pendingRedirect) {
-      add(tk.value, tk.hadSpace);
+      add(tk.value);
       pendingRedirect = false;
       continue;
     }
@@ -338,13 +661,14 @@ export function extractBashWriteTargets(command) {
       continue;
     }
     // subsequent argument words, interpreted per active command-head mode
+    if (heredocOpen) continue; // DATA, not a file argument
     if (mode === 'tee') {
-      if (!isShellFlag(tk.value)) add(tk.value, tk.hadSpace);
+      if (!isShellFlag(tk.value)) add(tk.value);
     } else if (mode === 'sed') {
       if (/^-i/.test(tk.value)) sedInPlace = true;
       sedArgs.push(tk);
     } else if (mode === 'dd') {
-      if (tk.value.startsWith('of=')) add(tk.value.slice(3), tk.hadSpace);
+      if (tk.value.startsWith('of=')) add(tk.value.slice(3));
     }
   }
   flushSed();
@@ -365,13 +689,15 @@ function isShellFlag(v) {
 /**
  * Skip-rule gate for a candidate write target — see the documented skip list on
  * {@link extractBashWriteTargets}. Returns true when the candidate must be dropped.
- * @param {string} value — unquoted target text
- * @param {boolean} hadSpace — true if the source token was quoted AND contained a space
+ * @param {string} value — unquoted target text (quotes already stripped by the lexer)
  * @returns {boolean}
  */
-function shouldSkipWriteTarget(value, hadSpace) {
+function shouldSkipWriteTarget(value) {
   if (typeof value !== 'string' || value.length === 0) return true;
-  if (hadSpace || value.includes(' ')) return true; // quoted-with-space (best-effort)
+  // Any embedded whitespace: a quoted-with-space path (best-effort — far more
+  // likely a quoting artefact than a real wave-scoped file) and, since #970, a
+  // multi-line here-doc BODY token that reached an argument slot as DATA.
+  if (/\s/.test(value)) return true;
   if (value.startsWith('$') || value.startsWith('~')) return true; // variable / expansion
   if (value.includes('$')) return true; // any embedded expansion (covers ${TMPDIR})
   if (value.includes('(') || value.includes(')')) return true; // process-sub remnants
@@ -380,99 +706,74 @@ function shouldSkipWriteTarget(value, hadSpace) {
   return false;
 }
 
+/** Unquoted `tokenizeCommand` operator texts that break the current command. */
+const SHELL_SEPARATOR_OPS = new Set([';', '|', '||', '&', '&&']);
+/** Write redirects: `>`, `>>`, `>|`, and fd-prefixed forms (`2>`, `2>>`). */
+const WRITE_REDIRECT_OP_RE = /^\d*(?:>>|>\|?)$/;
+/** Here-doc operators `<<` / `<<-` — a DATA body token follows at the next newline. */
+const HEREDOC_OP_RE = /^\d*<<-?$/;
+/** Other input redirects `<` / `<<<` (here-string) — never a write target, no body. */
+const INPUT_REDIRECT_OP_RE = /^\d*(?:<<<|<)$/;
+
 /**
- * Minimal quote-aware tokenizer for write-target extraction. Walks the command
- * left-to-right tracking single/double quote state; recognises redirect / input /
- * separator operators ONLY outside quotes, and emits everything else as `word`
- * tokens with the quotes stripped. Not a general shell tokenizer — it captures
- * exactly what {@link extractBashWriteTargets} needs.
+ * Split leading `(` / trailing `)` off an UNQUOTED word token into standalone
+ * separator tokens.
+ *
+ * `tokenizeCommand` does not treat parentheses as control operators (it does not
+ * need to), so `(echo x > y)` arrives as words `(echo` … `y)`. Without this the
+ * subshell's redirect target would read as the literal `y)` and be dropped by the
+ * paren skip rule in {@link shouldSkipWriteTarget} — a silent DETECTION LOSS
+ * versus the pre-#970 lexer. Peeling restores it, and process substitution
+ * `> >(cat)` still yields nothing because the peeled `cat` lands in command-head
+ * position rather than redirect-target position.
+ *
+ * Quoted tokens are never peeled: `echo '(' x` must keep its literal paren.
+ *
+ * @param {{text: string, quoted: boolean}} tok
+ * @returns {Array<{type: string, value?: string}>}
+ */
+function peelSubshellParens(tok) {
+  if (tok.quoted) return [{ type: 'word', value: tok.text }];
+  let text = tok.text;
+  const out = [];
+  while (text.startsWith('(')) { out.push({ type: 'sep' }); text = text.slice(1); }
+  const trailing = [];
+  while (text.endsWith(')')) { trailing.push({ type: 'sep' }); text = text.slice(0, -1); }
+  if (text.length > 0 || (out.length === 0 && trailing.length === 0)) {
+    out.push({ type: 'word', value: text });
+  }
+  return out.concat(trailing);
+}
+
+/**
+ * Re-shape the shared `tokenizeCommand` output into the redirect/in/sep/word
+ * stream {@link extractBashWriteTargets} interprets. Operator classification is
+ * applied ONLY to unquoted tokens, so `echo '>' x` keeps its `>` as literal text.
+ *
+ * `&>` is not a distinct token here: `tokenizeCommand` deliberately lexes it as
+ * `&` followed by `>` (#965 Risk C). That still works — the redirect branch of the
+ * interpretation loop is checked before the command-head branch, so `cmd &> log`
+ * yields `log`. `2>&1` likewise yields nothing: the `&` separator resets the
+ * pending redirect before `1` is read.
  *
  * Token shapes: { type: 'redirect' } | { type: 'in' } | { type: 'sep' }
- *             | { type: 'word', value: string, hadSpace: boolean }
+ *             | { type: 'word', value: string }
  *
- * @param {string} command
- * @returns {Array<{type:string, value?:string, hadSpace?:boolean}>}
+ * @param {Array<{text: string, quoted: boolean}>} tokens
+ * @returns {Array<{type: string, value?: string}>}
  */
-function tokenizeShellForWrites(command) {
-  const tokens = [];
-  const n = command.length;
-  let i = 0;
-  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
-
-  while (i < n) {
-    const c = command[i];
-    const next = command[i + 1];
-
-    if (isWs(c)) { i++; continue; }
-
-    // `&>` / `&>>` — redirect stdout+stderr to a file (write target follows)
-    if (c === '&' && next === '>') {
-      i += 2;
-      if (command[i] === '>') i++;
-      tokens.push({ type: 'redirect' });
-      continue;
+function classifyShellTokens(tokens) {
+  const out = [];
+  for (const tok of tokens) {
+    if (!tok.quoted) {
+      if (SHELL_SEPARATOR_OPS.has(tok.text)) { out.push({ type: 'sep' }); continue; }
+      if (WRITE_REDIRECT_OP_RE.test(tok.text)) { out.push({ type: 'redirect' }); continue; }
+      if (HEREDOC_OP_RE.test(tok.text)) { out.push({ type: 'heredoc' }); continue; }
+      if (INPUT_REDIRECT_OP_RE.test(tok.text)) { out.push({ type: 'in' }); continue; }
     }
-    // `&&` / `&` — command separators
-    if (c === '&') {
-      i += next === '&' ? 2 : 1;
-      tokens.push({ type: 'sep' });
-      continue;
-    }
-    // `>&` — fd duplication (NOT a file target); consume the dup + trailing fd/`-`
-    if (c === '>' && next === '&') {
-      i += 2;
-      while (i < n && (/[0-9]/.test(command[i]) || command[i] === '-')) i++;
-      continue; // no token — dup carries no write target
-    }
-    // `>(` — process substitution: leave the `>` inert; `(` is emitted as a sep
-    if (c === '>' && next === '(') { i++; continue; }
-    // `>>` / `>` — write redirects
-    if (c === '>') {
-      i += next === '>' ? 2 : 1;
-      tokens.push({ type: 'redirect' });
-      continue;
-    }
-    // `<<` / `<` — input redirects / heredoc delimiters (never a write target)
-    if (c === '<') {
-      i += next === '<' ? 2 : 1;
-      tokens.push({ type: 'in' });
-      continue;
-    }
-    // `||` / `|` / `;` / `(` / `)` — separators (break the current command)
-    if (c === '|') { i += next === '|' ? 2 : 1; tokens.push({ type: 'sep' }); continue; }
-    if (c === ';') { i++; tokens.push({ type: 'sep' }); continue; }
-    if (c === '(' || c === ')') { i++; tokens.push({ type: 'sep' }); continue; }
-
-    // Otherwise: read a WORD, honouring single/double quotes (quotes stripped).
-    let value = '';
-    let quoted = false;
-    let hadSpace = false;
-    while (i < n) {
-      const ch = command[i];
-      if (ch === "'") {
-        quoted = true;
-        i++;
-        while (i < n && command[i] !== "'") { if (command[i] === ' ') hadSpace = true; value += command[i]; i++; }
-        i++; // closing quote (or EOF)
-        continue;
-      }
-      if (ch === '"') {
-        quoted = true;
-        i++;
-        while (i < n && command[i] !== '"') { if (command[i] === ' ') hadSpace = true; value += command[i]; i++; }
-        i++; // closing quote (or EOF)
-        continue;
-      }
-      if (isWs(ch)) break;
-      // unquoted operator chars end the word
-      if (ch === '>' || ch === '<' || ch === '|' || ch === ';' || ch === '&' || ch === '(' || ch === ')') break;
-      value += ch;
-      i++;
-    }
-    tokens.push({ type: 'word', value, hadSpace, quoted });
+    out.push(...peelSubshellParens(tok));
   }
-
-  return tokens;
+  return out;
 }
 
 /**

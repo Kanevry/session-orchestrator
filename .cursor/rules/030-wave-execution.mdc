@@ -73,7 +73,23 @@ Role-specific scope rules:
 - **Quality Phase 1 (Simplification)**: production files changed this session only (no test files)
 - **Quality Phase 2 (Tests)**: test file patterns only (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
 
-Validate with: `bash "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.sh"` — fix JSON if it exits 1.
+**Test-sibling expansion (#970):** a scope entry naming a production file but not its test sibling makes the task's own regression test unwritable — the guard then enforces exactly the inconsistency the quality gate exists to catch. Before writing `allowedPaths`, expand the union through the shared helper — do not hand-derive the paths:
+
+```js
+import { expandTestSiblings } from '$CURSOR_RULES_DIR/../scripts/lib/scope-gate.mjs';
+// Pass this wave's role verbatim — the helper GATES on it.
+const allowedPaths = expandTestSiblings(unionScopes, { role });
+```
+
+It emits a **glob** from the production basename (`foo.mjs` → `tests/**/foo*.test.mjs`), skips absolute entries, and is a strict no-op on Discovery's `[]`. **Which roles it fires for is decided inside the helper** — `TEST_SIBLING_EXPANSION_ROLES` in `scripts/lib/scope-gate.mjs` (currently Impl-Core / Impl-Polish; Quality Phase 1 is off, Phase 2 inert). Pass the role; do not pre-filter by role here. An absent or unrecognised role does **not** expand (fail-closed). Expand before the overlap check and before the file is written, in one pass. Full rule, the measured hit-rate and its ~15% residual, and the per-repo configurability: `skills/wave-executor/wave-loop.md` § Scope Manifest #3.
+
+Validate with: `node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" < .cursor/wave-scope.json` — fix JSON if it exits 1. Before each task batch, also assert the task's file scope against the manifest, carrying the mechanical half of the rule above (gated on the manifest's `role`, so it self-skips where expansion does not fire):
+
+```bash
+node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" \
+  --assert-subset "$TASK_FILESCOPE_JSON" --expand-test-siblings \
+  < .cursor/wave-scope.json
+```
 
 ### Step 2: Execute Tasks Sequentially
 

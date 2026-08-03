@@ -39,6 +39,8 @@ import { spawnSync } from 'node:child_process';
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
+import { admitSuiteCounts } from './lib/gates/gate-helpers.mjs';
+import { findScopeFile } from './lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -159,10 +161,14 @@ function extractCommand(policy, policyKey, configKey, configJson, defaultCmd) {
 /**
  * Lift the suite counts out of a gate sub-script's JSON stdout envelope (#954).
  *
- * Returns `null` — never a zero triple — whenever the run produced no real
- * measurement, so an ABSENT `counts` field stays distinguishable from a
- * measured `{failed: 0}`. That distinction is the entire point of the field.
- * Five mechanical rejections, in order:
+ * This function is the ENVELOPE ADAPTER only. The numeric admission policy —
+ * which triples count as a measurement and which are refused — lives once in
+ * {@link admitSuiteCounts} (`scripts/lib/gates/gate-helpers.mjs`, #967 item 2),
+ * shared with `suiteCountsFromOutput` in `scripts/lib/quality-gate.mjs`. Before
+ * that split, the same `counts` field was written under two different policies
+ * and a consumer had to know both to read one number.
+ *
+ * The four rejections that stay here are envelope-shaped, not numeric:
  *
  *   1. stdout is absent or not parseable JSON;
  *   2. `test` is not the object form — only `gate-full.mjs` reports numbers;
@@ -170,14 +176,13 @@ function extractCommand(policy, policyKey, configKey, configJson, defaultCmd) {
  *      a non-full-gate variant structurally cannot carry counts;
  *   3. the test gate was skipped (`status` neither `pass` nor `fail`);
  *   4. the test COMMAND was detected as a stub (`echo …` / no-op) — a stub's
- *      output parses to 0/0, which would be a fabricated zero;
- *   5. `total <= 0` — `extractTestCounts` returns 0/0/0 both for "no `<N> passed`
- *      marker in the output" and for a genuinely empty run, and the two are
- *      indistinguishable from here, so we decline to claim a measurement.
+ *      output parses to 0/0, which would be a fabricated zero.
  *
- * `failed` is derived: `gate-full.mjs` publishes `total` (= passed + failed)
- * and `passed`, so `failed = total - passed` recovers the third number without
- * re-parsing the suite output.
+ * `failed` is NO LONGER derived here. Since #967 item 1 `gate-full.mjs`
+ * publishes it explicitly, so the whole `test` object is handed through and
+ * `admitSuiteCounts`'s `passed + failed === total` check becomes a real guard
+ * against producer/consumer envelope drift instead of an identity that a local
+ * `total - passed` derivation could never fail.
  *
  * Never throws — a malformed envelope yields `null`.
  *
@@ -200,11 +205,40 @@ function suiteCountsFromGateStdout(stdout) {
   if (test.status !== 'pass' && test.status !== 'fail') return null;
   if (parsed.stubbed && typeof parsed.stubbed === 'object' && parsed.stubbed.test) return null;
 
-  const { total, passed } = test;
-  if (!Number.isFinite(total) || !Number.isFinite(passed)) return null;
-  if (total <= 0 || passed < 0 || passed > total) return null;
+  return admitSuiteCounts(test);
+}
 
-  return { passed, failed: total - passed, total };
+/**
+ * Resolve the active wave number from the wave-scope sidecar (#966 step 1).
+ *
+ * Mirrors `resolveWave()` in `hooks/pre-bash-memory-propose-audit.mjs` — the
+ * same `.{pi,cursor,codex,claude}/wave-scope.json` precedence via
+ * {@link findScopeFile} — with ONE deliberate difference: the hook returns `0`
+ * for "no wave-scope file", this returns `null`.
+ *
+ * Absent is not zero. A human running `npm run quality-gate` from a `git push`
+ * has no wave at all, and that is the common case; publishing `wave_number: 0`
+ * would invent a wave 0 that every consumer then has to special-case. The
+ * caller spreads the result so the KEY is omitted, exactly as `counts` is.
+ *
+ * A non-positive or non-numeric `wave` field is treated the same way — waves
+ * are 1-indexed, so `0` on disk carries no more information than an absent file.
+ *
+ * Never throws.
+ *
+ * @param {string} projectDir — directory whose wave-scope sidecar to read.
+ * @returns {number|null} positive wave number, or `null` when there is no wave.
+ */
+function resolveWaveNumber(projectDir) {
+  try {
+    const waveFile = findScopeFile(projectDir);
+    if (!waveFile || !existsSync(waveFile)) return null;
+    const wave = JSON.parse(readFileSync(waveFile, 'utf8'))?.wave;
+    if (typeof wave !== 'number' || !Number.isFinite(wave) || wave <= 0) return null;
+    return Math.trunc(wave);
+  } catch {
+    return null;
+  }
 }
 
 // Load policy file (never throws)
@@ -282,10 +316,17 @@ if (result.error && typeof result.status !== 'number') {
 const exitCode = result.status ?? 1;
 try {
   const counts = suiteCountsFromGateStdout(gateStdout);
+  // Wave-scope sidecar is read from the SAME project dir the event lands in
+  // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
+  // up the host repo's live wave. Mirrors the hook's projectDir resolution.
+  const waveNumber = resolveWaveNumber(
+    process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
+  );
   await emitEvent(`orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`, {
     variant,
     exit_code: exitCode,
     ...(counts ? { counts } : {}),
+    ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
     ...sessionAttribution(repoRoot),
   });
 } catch { /* best-effort telemetry — gate result is authoritative */ }

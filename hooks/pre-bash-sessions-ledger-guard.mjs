@@ -74,8 +74,35 @@
  * target) and multi-run words — it returns the RESOLVED redirect targets, so
  * all four MED-2 forms reduce to the same basename. The same pass emits a
  * sanitized command (comments and here-doc bodies removed, `$'…'` folded to a
- * plain literal) for the `tee`/`dd`/`cp`/`mv` matcher, which lexes with
- * `tokenizeCommand` and would otherwise desync on exactly the MED-1 inputs.
+ * plain literal, redirect operators AND their targets elided) for the
+ * `tee`/`dd`/`cp`/`mv` matcher.
+ *
+ * ## Why this scanner is NOT redundant with `tokenizeCommand` (#965 follow-up)
+ *
+ * #965 taught the shared lexer comments, here-doc bodies and `$'…'`, which
+ * removes the ORIGINAL reason this pass existed. It is kept anyway, because two
+ * things it produces are structurally absent from `tokenizeCommand` — measured,
+ * not assumed:
+ *
+ *   1. **The `balanced` flag.** `tokenizeCommand('echo "x')` returns tokens
+ *      shaped `{text, quoted}` — there is no third field, and its unterminated-
+ *      quote path deliberately fails OPEN (flush + mark quoted) so a wedged
+ *      lexer cannot block every Bash call. That is right for a lexer serving
+ *      nine rules; it is wrong here, where `findLedgerWrite` must fail CLOSED.
+ *      The signal is destroyed inside the lexer, so no consumer can recover it.
+ *   2. **Redirect-target elision.** `tokenizeCommand` emits the redirect TARGET
+ *      as an ordinary token by design (its docblock: dropping it "would have
+ *      silently changed rm-allowlist verdicts"). Feeding the raw command to the
+ *      `cp`/`mv` branch therefore picks the wrong destination:
+ *      `cp foo …/sessions.jsonl > /dev/null` resolves dest=`/dev/null` and
+ *      ALLOWS, where the sanitized form resolves dest=`…/sessions.jsonl` and
+ *      denies. Deleting the sanitizer re-opens a proven ledger write path.
+ *
+ * Unifying `splitSegments`/`resolveVerb` with the lib's near-twins is a
+ * separate change with its own verdict-flip surface (this module's
+ * VERB_PREFIXES also carries `sudo`/`nohup`/`time`/`nice`, the lib's does not,
+ * so `sudo rm -rf` resolves differently between them) — deliberately NOT done
+ * here.
  *
  * Fail-CLOSED on an unbalanced quote: if the scan ends mid-quote the command is
  * one bash itself would reject with a syntax error, so denying it when it
@@ -437,9 +464,12 @@ function resolveVerb(segment) {
  * `tee '.orchestrator/metrics/sessions.jsonl'` target is still seen, while a
  * `tee` appearing only inside a quoted payload is not in verb position.
  *
- * Takes the SANITIZED command from {@link scanCommand}, not the raw one:
- * `tokenizeCommand` has no notion of comments, here-doc bodies or `$'…'`, so
- * on the raw string the MED-1 apostrophe desynced this path too.
+ * Takes the SANITIZED command from {@link scanCommand}, not the raw one. Since
+ * #965 the reason is no longer comments/here-docs/`$'…'` — the shared lexer
+ * handles those now — but REDIRECT ELISION: `tokenizeCommand` emits a redirect
+ * target as an ordinary token, so on the raw string
+ * `cp foo …/sessions.jsonl > /dev/null` resolves its destination to
+ * `/dev/null` and allows. Measured; see the module docblock.
  *
  * @param {string} command - sanitized command
  * @returns {string|null} the offending target, or null
