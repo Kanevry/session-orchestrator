@@ -44,6 +44,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { classifyMode } from './exclusivity-matrix.mjs';
 import { isPidAliveOnHost } from './file-lock.mjs';
+import { writeJsonAtomicSync } from './io.mjs';
 
 // isPidAliveOnHost moved into file-lock.mjs in #630 (the file-lock primitive
 // owns it so the dependency edge points file-lock → io, never the reverse).
@@ -82,6 +83,14 @@ export {
 
 export const DEFAULT_TTL_HOURS = 4;
 export const LOCK_PATH = '.orchestrator/session.lock';
+
+/**
+ * Where the durable lock-ownership proof lives, relative to the repo root
+ * (#987 Part 1). `.orchestrator/runtime/` is machine-local, gitignored state —
+ * the proof must survive across hook subprocesses of the SAME logical session
+ * but never travel via VCS.
+ */
+export const OWNER_PROOF_RELPATH = '.orchestrator/runtime/lock-owner-proof.json';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -722,6 +731,110 @@ export function isLockOwnedByProof(lock, proof) {
   if (typeof proofStartedAt !== 'string' || proofStartedAt.length === 0) return false;
 
   return lockPid === proofPid && lockHost === proofHost && lockStartedAt === proofStartedAt;
+}
+
+/**
+ * Persist the ownership proof of a just-written lock to
+ * `.orchestrator/runtime/lock-owner-proof.json` (#987 Part 1 — proof
+ * persistence at lock genesis; Part 2, the on-session-end consumption side,
+ * is a separate change).
+ *
+ * Intended caller: `bootstrapLock()` (hooks/_lib/lock-bootstrap.mjs)
+ * immediately after its enriched-lock write — the `lock` argument there is
+ * byte-identical to the on-disk lock, so the proof it yields will verify via
+ * `isLockOwnedByProof()` against any later re-read of that same lock.
+ *
+ * Envelope shape (schema_version 1):
+ *   {
+ *     schema_version: 1,
+ *     proof: { pid, host, startedAt },   // the ONLY field ever compared
+ *     lock_session_id,                   // forensic-only
+ *     semantic_session_id,               // forensic-only
+ *     repo_root,                         // forensic-only
+ *     written_at,                        // forensic-only
+ *   }
+ *
+ * INVARIANT: only `proof` may ever participate in an ownership comparison.
+ * `lock_session_id` / `semantic_session_id` rotate per session and the
+ * semantic form COLLIDES across same-day sessions — trusting them is exactly
+ * the #906-class bug this proof exists to close. Consumers go through
+ * `loadOwnerProof()`, which strips the envelope and returns the triple alone.
+ *
+ * No-throw. When the lock cannot yield a full proof (missing/mistyped
+ * pid/host/started_at), this is a deliberate no-op: nothing is written and
+ * `{ ok: false, reason: 'unproovable-lock' }` is returned — a partial proof
+ * on disk would be a fail-open artifact.
+ *
+ * @param {{ repoRoot?: string, lock: object|null }} args
+ * @returns {{ ok: true, path: string }
+ *          |{ ok: false, reason: 'unproovable-lock' }
+ *          |{ ok: false, reason: 'fs-error', error: string }}
+ */
+export function writeOwnerProof({ repoRoot, lock } = {}) {
+  try {
+    const proof = buildLockOwnerProof(lock);
+    if (proof === null) {
+      return { ok: false, reason: 'unproovable-lock' };
+    }
+
+    const root = repoRoot ?? process.cwd();
+    const proofFile = path.join(root, OWNER_PROOF_RELPATH);
+    const envelope = {
+      schema_version: 1,
+      proof,
+      lock_session_id: typeof lock.session_id === 'string' ? lock.session_id : null,
+      semantic_session_id:
+        typeof lock.semantic_session_id === 'string' ? lock.semantic_session_id : null,
+      repo_root: root,
+      written_at: nowIso(),
+    };
+
+    const w = writeJsonAtomicSync(proofFile, envelope, { tmpPrefix: '.lock-owner-proof.tmp' });
+    if (!w.ok) return w;
+    return { ok: true, path: proofFile };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Load the persisted ownership proof written by `writeOwnerProof()` and
+ * return the inner `{ pid, host, startedAt }` triple — nothing else from the
+ * envelope ever escapes (the forensic fields must not leak into comparisons,
+ * see the INVARIANT on `writeOwnerProof()`).
+ *
+ * FAIL-CLOSED, never throws: a missing file, unreadable file, malformed
+ * JSON, an envelope without a `proof` object, or a proof with any
+ * missing/mistyped field all return `null`. A `null` proof presented to
+ * `isLockOwnedByProof()` yields `false` — the consumer degrades to
+ * "cannot prove ownership", never to "assume ownership".
+ *
+ * Note the proof carries no self-expiry: a stale proof from a PREVIOUS
+ * session is harmless by construction, because the triple it holds (its
+ * millisecond `started_at` above all) will not match any newer lock —
+ * `isLockOwnedByProof()` rejects it. See the stale-proof test in
+ * tests/lib/session-lock.test.mjs.
+ *
+ * @param {{ repoRoot?: string }} args
+ * @returns {{ pid: number, host: string, startedAt: string } | null}
+ */
+export function loadOwnerProof({ repoRoot } = {}) {
+  try {
+    const proofFile = path.join(repoRoot ?? process.cwd(), OWNER_PROOF_RELPATH);
+    const raw = fs.readFileSync(proofFile, 'utf8');
+    const envelope = JSON.parse(raw);
+    if (!envelope || typeof envelope !== 'object') return null;
+
+    const p = envelope.proof;
+    if (!p || typeof p !== 'object') return null;
+    if (typeof p.pid !== 'number') return null;
+    if (typeof p.host !== 'string' || p.host.length === 0) return null;
+    if (typeof p.startedAt !== 'string' || p.startedAt.length === 0) return null;
+
+    return { pid: p.pid, host: p.host, startedAt: p.startedAt };
+  } catch {
+    return null;
+  }
 }
 
 /**

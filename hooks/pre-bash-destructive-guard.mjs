@@ -14,13 +14,21 @@
  *   G2 command present + string
  *   G3 bypass: allow-destructive-ops: true in Session Config → exit 0
  *   G4 policy load: .orchestrator/policy/blocked-commands.json
- *      Missing → exit 0 (warn). Malformed → exit 0 (warn).
+ *      #972 floor/overlay merge (scripts/lib/blocked-commands-policy.mjs):
+ *      pluginRoot policy = floor, cwd/projectDir policy = overlay (add or
+ *      escalate only). Overlay failures fail-to-floor; only "no usable policy
+ *      anywhere" keeps the historical fail-open (exit 0 + warn).
  *   G5 rule evaluation per rule in policy.rules
  *      severity:"block" → deny envelope on stdout via emitDeny, exit 0 (#906)
  *      severity:"warn"  → emit warning, exit 0 (allow)
  *      Special cases:
  *        git-stash-any: only warn when stash is non-empty
  *        rm-rf-destructive: path exception for .orchestrator/tmp and node_modules
+ *        rule.type === 'redirect-truncate' (#983): decided by redirect TARGET
+ *          via redirectRuleMatches (target-denylist globs), NEVER by the
+ *          generic pattern path — its `pattern: ">"` would FP-match nearly
+ *          every redirect. Unresolved targets (variable/substitution) warn
+ *          on stderr (fail-visible) and never block.
  *   G6 no match → exit 0
  *
  * Telemetry (Epic #803 process-safety dimension): best-effort
@@ -33,11 +41,23 @@
 
 import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
-import { commandMatchesBlocked, tokenizeCommand } from '../scripts/lib/hardening.mjs';
+// Single direct import from the source module (W4 B6): the hardening.mjs
+// barrel re-exports tokenizeCommand/commandMatchesBlocked from this very
+// module (same instance either way) but deliberately does NOT re-export the
+// #982/#983 primitives — one import path keeps the hook's dependency edge
+// unambiguous. The barrel itself is unchanged.
+import {
+  tokenizeCommand,
+  commandMatchesBlocked,
+  extractRedirectTargets,
+  redirectRuleMatches,
+  resolveSegmentVerb,
+  splitChainSegments,
+} from '../scripts/lib/command-blocker.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
-import { readJson } from '../scripts/lib/common.mjs';
+import { loadEffectivePolicy } from '../scripts/lib/blocked-commands-policy.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
-import fs, { existsSync } from 'node:fs';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -46,38 +66,12 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
 
-// Module-level policy cache (issue #250). Safe because each hook invocation runs as
-// an isolated Node subprocess — state is fresh per process, never shared across calls.
-// Cache is invalidated on:
-//   (a) resolved policy path changes (different projectDir/CWD)
-//   (b) file mtime advances (user edited the policy)
-// Any stat/read error → skip cache + fall back to uncached read (fail-safe).
-let _cachedPolicy = null;
-let _cachedPolicyPath = null;
-let _cachedPolicyMtimeMs = null;
-
-async function loadPolicyCached(policyPath) {
-  try {
-    const stat = await fs.promises.stat(policyPath);
-    const mtimeMs = stat.mtimeMs;
-    if (
-      _cachedPolicy !== null &&
-      _cachedPolicyPath === policyPath &&
-      _cachedPolicyMtimeMs === mtimeMs
-    ) {
-      return _cachedPolicy;
-    }
-    const fresh = await readJson(policyPath);
-    _cachedPolicy = fresh;
-    _cachedPolicyPath = policyPath;
-    _cachedPolicyMtimeMs = mtimeMs;
-    return fresh;
-  } catch {
-    // On any error (stat failure, read failure), re-throw to let caller's existing
-    // try/catch handle the "malformed policy" branch. Do NOT poison the cache.
-    return readJson(policyPath);
-  }
-}
+// Module-level per-path policy cache (issue #250, extended for the #972
+// floor/overlay merge: one Map entry per policy path instead of a single-path
+// triple, so floor and overlay invalidate independently on mtime advance).
+// Safe because each hook invocation runs as an isolated Node subprocess —
+// state is fresh per process, never shared across calls.
+const _policyCache = new Map();
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -161,33 +155,6 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
 }
 
 /**
- * Resolve the policy file path, searching in priority order:
- *   1. <CWD>/.orchestrator/policy/blocked-commands.json
- *   2. <CLAUDE_PROJECT_DIR>/.orchestrator/policy/blocked-commands.json
- *   3. <CLAUDE_PLUGIN_ROOT>/.orchestrator/policy/blocked-commands.json
- * Returns the first existing path, or null if none found.
- */
-function resolvePolicyPath(projectDir) {
-  const candidates = [
-    path.join(process.cwd(), '.orchestrator', 'policy', 'blocked-commands.json'),
-  ];
-
-  if (projectDir && projectDir !== process.cwd()) {
-    candidates.push(path.join(projectDir, '.orchestrator', 'policy', 'blocked-commands.json'));
-  }
-
-  const pluginRoot = resolvePluginRoot();
-  if (pluginRoot) {
-    candidates.push(path.join(pluginRoot, '.orchestrator', 'policy', 'blocked-commands.json'));
-  }
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
-/**
  * Check whether git stash is non-empty by running `git stash list`.
  * Returns true if non-empty (should warn), false if empty (silent allow).
  * On any error returns true (conservative).
@@ -207,6 +174,25 @@ async function isGitStashNonEmpty(projectDir) {
 }
 
 /**
+ * Given a redirect token at `segment[i]`, return the index of the LAST token
+ * belonging to that redirect (the operand word, when one exists). Redirect
+ * operators and their operands name IO targets, not command arguments —
+ * `rm -rf /tmp/ok > out.log` must not collect `>` or `out.log` as rm targets
+ * (#983 FP fix). `dup` (`2>&1`) carries no operand word.
+ *
+ * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} segment
+ * @param {number} i — index of the redirect token
+ * @returns {number}
+ */
+function redirectSpanEnd(segment, i) {
+  const tok = segment[i];
+  if (tok.redirect.mode !== 'dup' && i + 1 < segment.length && !segment[i + 1].redirect) {
+    return i + 1;
+  }
+  return i;
+}
+
+/**
  * Parse ALL non-flag path arguments from every `rm` invocation in a command.
  *
  * Hardened over the previous single-target parser (#641): handles `-r -f`,
@@ -214,38 +200,35 @@ async function isGitStashNonEmpty(projectDir) {
  * chained commands (`rm -rf /tmp/x; rm -rf src/`). Quote-aware via
  * tokenizeCommand so a path with spaces inside quotes is one target.
  *
+ * Wrapper-aware (#982 T2): the segment verb resolves through the transparent
+ * wrappers in WRAPPER_UNWRAP via resolveSegmentVerb — `sudo rm -rf /tmp/ok`,
+ * `timeout 5 rm -rf /x`, `nohup rm -rf …` parse their REAL targets instead of
+ * falling back to the empty-target conservative block. Redirect tokens and
+ * their operands are skipped (#983): they are IO targets, not rm targets.
+ *
  * Returns an array of target path strings (possibly empty). The caller treats
- * the rm-rf rule as "allowed" only when EVERY returned target is allowlisted.
+ * the rm-rf rule as "allowed" only when EVERY returned target is allowlisted —
+ * a segment whose pattern matched but whose verb does NOT resolve to `rm`
+ * (e.g. an interpreter payload) contributes no targets and stays fail-closed.
  *
  * @param {string} command
  * @returns {string[]}
  */
 function parseRmTargets(command) {
-  const tokens = tokenizeCommand(command);
   const targets = [];
-  let i = 0;
 
-  while (i < tokens.length) {
-    const verb = tokens[i].text.replace(/^.*\//, ''); // basename
-    const isOperator = !tokens[i].quoted && /^(;|&&|\|\||\||&)$/.test(tokens[i].text);
-    if (isOperator) { i++; continue; }
-    if (verb !== 'rm') { i++; continue; }
+  for (const segment of splitChainSegments(tokenizeCommand(command))) {
+    const { verb, index } = resolveSegmentVerb(segment);
+    if (verb !== 'rm') continue;
 
-    // Consume this `rm` invocation's args until the next chain operator.
-    i++; // skip `rm`
     let seenDashDash = false;
-    while (i < tokens.length) {
-      const tok = tokens[i];
-      // Stop at unquoted chain operators — they delimit the next command.
-      if (!tok.quoted && /^(;|&&|\|\||\||&)$/.test(tok.text)) break;
-      if (!seenDashDash && tok.text === '--') { seenDashDash = true; i++; continue; }
+    for (let i = index + 1; i < segment.length; i++) {
+      const tok = segment[i];
+      if (tok.redirect) { i = redirectSpanEnd(segment, i); continue; }
+      if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
       // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
-      if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') {
-        i++;
-        continue;
-      }
+      if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
       targets.push(tok.text);
-      i++;
     }
   }
 
@@ -255,31 +238,30 @@ function parseRmTargets(command) {
 /**
  * Detect whether the command contains an UNQUOTED `rm` invocation carrying BOTH
  * recursive (`-r`/`-R`/`--recursive`) AND force (`-f`/`--force`) semantics,
- * including combined/short forms (`-rf`, `-fr`, `-r -f`). This catches flag-form
- * variants the literal "rm -rf" pattern misses (#641 gap closure) while staying
- * consistent with the quoted-payload guard: an `rm` that appears only inside a
- * quoted token is NOT treated as an invocation here.
+ * including combined/short forms (`-rf`, `-fr`, `-r -f`) and the long-flag pair
+ * (`--recursive --force`). This catches flag-form variants the literal "rm -rf"
+ * pattern misses (#641 gap closure) while staying consistent with the
+ * quoted-payload guard: an `rm` that appears only inside a quoted token is NOT
+ * treated as an invocation here.
+ *
+ * Wrapper-aware (#982 T2) + redirect-skip (#983) — same segment mechanics as
+ * parseRmTargets above.
  *
  * @param {string} command
  * @returns {boolean}
  */
 function commandHasRecursiveForceRm(command) {
-  const tokens = tokenizeCommand(command);
-  let i = 0;
-  while (i < tokens.length) {
-    const tok = tokens[i];
-    const verb = tok.text.replace(/^.*\//, ''); // basename
-    if (tok.quoted || verb !== 'rm') { i++; continue; }
+  for (const segment of splitChainSegments(tokenizeCommand(command))) {
+    const { verb, index } = resolveSegmentVerb(segment);
+    if (verb !== 'rm' || segment[index].quoted) continue;
 
-    // Scan this rm invocation's flags until the next unquoted chain operator.
-    i++; // skip `rm`
     let recursive = false;
     let force = false;
     let seenDashDash = false;
-    while (i < tokens.length) {
-      const t = tokens[i];
-      if (!t.quoted && /^(;|&&|\|\||\||&)$/.test(t.text)) break;
-      if (!seenDashDash && t.text === '--') { seenDashDash = true; i++; continue; }
+    for (let i = index + 1; i < segment.length; i++) {
+      const t = segment[i];
+      if (t.redirect) { i = redirectSpanEnd(segment, i); continue; }
+      if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
       if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
         if (t.text === '--recursive') recursive = true;
         else if (t.text === '--force') force = true;
@@ -288,14 +270,39 @@ function commandHasRecursiveForceRm(command) {
           if (/[rR]/.test(t.text)) recursive = true;
           if (/f/.test(t.text)) force = true;
         }
-        i++;
-        continue;
       }
-      i++; // non-flag arg (a target) — skip
+      // non-flag arg (a target) — skip
     }
     if (recursive && force) return true;
   }
   return false;
+}
+
+/** Probe operator per redirect mode — see findMatchedRedirectEntry. */
+const REDIRECT_PROBE_OPS = { truncate: '>', append: '>>', read: '<' };
+
+/**
+ * Identify WHICH resolved redirect entry a matched redirect-truncate rule hit,
+ * so the deny reason can name the target (#983). redirectRuleMatches returns
+ * only a boolean and its glob matcher is internal to command-blocker.mjs —
+ * rather than duplicate the glob logic here (it would be the third copy), each
+ * candidate target is re-probed through redirectRuleMatches with a minimal
+ * single-redirect command. Resolved targets are guaranteed free of `$` and
+ * backticks (those are reported `unresolved`), so the quoted probe round-trips
+ * the target text exactly.
+ *
+ * @param {object} rule — the redirect-truncate policy rule
+ * @param {Array<{ target: string|null, mode: string, unresolved?: boolean }>} entries
+ * @returns {{ target: string, mode: string }|null}
+ */
+function findMatchedRedirectEntry(rule, entries) {
+  for (const entry of entries) {
+    if (entry.unresolved) continue;
+    const op = REDIRECT_PROBE_OPS[entry.mode] ?? '>';
+    const probe = `${op} "${entry.target.replace(/[\\"]/g, '\\$&')}"`;
+    if (redirectRuleMatches(rule, probe)) return entry;
+  }
+  return null;
 }
 
 /**
@@ -558,36 +565,57 @@ async function main() {
     // No config file or parse error — proceed to policy check
   }
 
-  // G4 — policy load
-  const policyPath = resolvePolicyPath(projectDir);
-  if (!policyPath) {
-    process.stderr.write(
-      '⚠ pre-bash-destructive-guard: policy file not found ' +
-      '(.orchestrator/policy/blocked-commands.json) — skipping guard\n'
-    );
-    return emitAllow();
+  // G4 — policy load (#972: floor/overlay merge, not first-hit-wins).
+  // The plugin-root policy is the FLOOR; a cwd/projectDir policy is an OVERLAY
+  // that can only add rules or escalate severity — an empty or malformed
+  // consumer policy fails TO THE FLOOR instead of silently disarming the guard.
+  // Only when NO usable policy exists at all does the guard keep its documented
+  // fail-open (rules === null → emitAllow with a stderr warning).
+  const { rules, warnings } = await loadEffectivePolicy({
+    cwd: process.cwd(),
+    projectDir,
+    pluginRoot: resolvePluginRoot(),
+    cache: _policyCache,
+  });
+  for (const warning of warnings) {
+    process.stderr.write(`⚠ pre-bash-destructive-guard: ${warning}\n`);
   }
-
-  let policy;
-  try {
-    policy = await loadPolicyCached(policyPath);
-  } catch {
-    process.stderr.write(
-      '⚠ pre-bash-destructive-guard: policy file is malformed (invalid JSON) — skipping guard\n'
-    );
-    return emitAllow();
-  }
-
-  if (!policy || !Array.isArray(policy.rules)) {
-    process.stderr.write(
-      '⚠ pre-bash-destructive-guard: policy file missing .rules array — skipping guard\n'
-    );
-    return emitAllow();
-  }
+  if (!Array.isArray(rules)) return emitAllow();
 
   // G5 — rule evaluation
-  for (const rule of policy.rules) {
+  for (const rule of rules) {
     const { id, pattern, severity, rationale = '' } = rule;
+
+    // #983 — redirect-truncate rules are decided by redirect TARGET via
+    // redirectRuleMatches, NEVER by the generic pattern path below: their
+    // `pattern: ">"` substring-matches virtually every redirect (measured
+    // interim FP: `bash -c 'echo a > b'` denied), so this branch must fully
+    // shadow the pattern match for this rule class.
+    if (rule.type === 'redirect-truncate') {
+      const modes = new Set(
+        Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']
+      );
+      const entries = extractRedirectTargets(command).filter((e) => modes.has(e.mode));
+      if (entries.some((e) => e.unresolved)) {
+        // Variable/substitution operands are never match candidates (#641 FP
+        // class) — surface them instead of guessing; never block on a guess.
+        process.stderr.write(
+          '⚠ pre-bash-destructive-guard: unresolved redirect target (variable/substitution) — not matched (fail-visible)\n'
+        );
+      }
+      if (!redirectRuleMatches(rule, command)) continue;
+      if (severity !== 'block') {
+        process.stderr.write(
+          `⚠ pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}\n`
+        );
+        continue;
+      }
+      // Reason stays short (stdout-budget): operator + target, never the command.
+      const hit = findMatchedRedirectEntry(rule, entries);
+      const label = hit ? `${REDIRECT_PROBE_OPS[hit.mode] ?? '>'} ${hit.target}` : pattern;
+      await blockCommand(label, id, rationale, command, sessionId);
+      continue; // unreachable (blockCommand never returns) — kept for clarity
+    }
 
     // The rm-rf-destructive rule also fires for recursive+force rm flag variants
     // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.

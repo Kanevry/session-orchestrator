@@ -106,6 +106,16 @@
       "allow-override-flag": null,
       "sources": ["wave-executor-baseline", "#155"],
       "rationale": "Lowercase alias for DROP TABLE; same irreversible DDL destruction. Blocked to ensure case-insensitive SQL issued via shell (e.g., psql -c) is caught by commandMatchesBlocked()."
+    },
+    {
+      "id": "redirect-truncate-protected",
+      "type": "redirect-truncate",
+      "pattern": ">",
+      "severity": "block",
+      "target-denylist": ["CLAUDE.md", "AGENTS.md", ".claude/rules/**", ".orchestrator/policy/**", ".orchestrator/metrics/*.jsonl", ".git/**", "SECURITY.md"],
+      "modes": ["truncate"],
+      "rationale": "Truncating redirect (>, &>, N>) onto protected artefacts silently destroys them — #983. Append (>>) stays allowed.",
+      "sources": ["#983"]
     }
   ]
 }

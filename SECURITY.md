@@ -93,8 +93,10 @@ match `format`). When `blockedCommands` is empty or absent, a hardcoded fallback
 list applies (`rm -rf`, `git push --force` / `-f`, `git reset --hard`,
 `drop table`, `git checkout -- .`).
 
-Both hooks **fail closed**: any unhandled internal error emits a deny, never a
-silent allow.
+Both wave guards **fail closed**: any unhandled internal error emits a deny,
+never a silent allow. (The session-level destructive-command guard makes the
+opposite, documented choice — see
+[Policy floor (blocked-commands)](#policy-floor-blocked-commands).)
 
 ### Enforcement levels
 
@@ -113,6 +115,47 @@ The emitter is `scripts/lib/io.mjs#emitDeny`; see its JSDoc for the full payload
 
 **Default is `strict`** (fail-closed) when the `enforcement` field is missing.
 
+### Policy floor (blocked-commands)
+
+Since #972 the destructive-command guard (`pre-bash-destructive-guard.mjs`) no
+longer reads a single policy file first-hit-wins — it merges two policy roles
+via `scripts/lib/blocked-commands-policy.mjs` (`loadEffectivePolicy`):
+
+| Role | Source | Semantics |
+|---|---|---|
+| **Floor** | `$CLAUDE_PLUGIN_ROOT/.orchestrator/policy/blocked-commands.json` | The plugin's own blocklist — immutable baseline. |
+| **Overlay** | First existing of `<cwd>`, `$CLAUDE_PROJECT_DIR` (`.orchestrator/policy/blocked-commands.json`) | The consumer repo's policy — strictly additive. |
+
+Roles are resolved purely by path — there is no marker field in the file.
+Precedence: `cwd` → `CLAUDE_PROJECT_DIR` for the overlay; the plugin root
+always supplies the floor. When both roles resolve to the same file (e.g.
+inside the plugin repo itself), that one file *is* the policy.
+
+**Merge contract** — union by rule `id`, floor rules first, escalate-only:
+
+- An overlay-only `id` is appended (additive).
+- On an `id` collision with a floor rule of severity `block`, the **whole floor
+  rule wins** — no field merge (an overlay-supplied `pattern` or
+  `path-allowlist` would be a bypass); the overlay definition is dropped with a
+  stderr warning.
+- A floor rule of severity `warn` escalates monotonically:
+  `max(floor, overlay)` with `warn < block`; unknown overlay severity → floor
+  kept + warning.
+
+**Failure semantics** — the authoritative contract for this hook. Unlike the
+wave guards above, it is deliberately *not* fail-closed on internal error:
+
+| Condition | Effective policy |
+|---|---|
+| Overlay malformed / missing `.rules` / empty `rules: []` | **Fail-to-floor**: floor alone + stderr warning (an empty overlay cannot disarm the floor) |
+| Floor unresolvable (no plugin root, or file missing) | Overlay alone + warning |
+| Both missing | Fail-open (guard skipped) + warning — unchanged pre-#972 behavior |
+| Internal error in the hook | `exit 0` fail-open — a documented decision; the merge module's functions are total (never throw) precisely so policy input can never reach this path |
+
+**Trust note:** whoever controls `CLAUDE_PLUGIN_ROOT` controls the floor. That
+is harness trust — the same party already controls the hook code itself — not a
+new attack surface.
+
 ### Dynamic per-wave scoping
 
 Scope constraints change between waves:
@@ -126,7 +169,7 @@ Scope constraints change between waves:
 
 | Hook | Protects against |
 |---|---|
-| `pre-bash-destructive-guard.mjs` | Destructive shell commands in the **main** session, per `.orchestrator/policy/blocked-commands.json` (13 rules, `block` or `warn` severity, each citing its source rule). Bypass requires `allow-destructive-ops: true` in Session Config. |
+| `pre-bash-destructive-guard.mjs` | Destructive shell commands in the **main** session, per the effective `blocked-commands.json` policy — at least the 14 floor rules from the plugin's policy, plus any additive overlay rules from the repo's policy (`block` or `warn` severity, each citing its source rule; see [Policy floor (blocked-commands)](#policy-floor-blocked-commands)). Bypass requires `allow-destructive-ops: true` in Session Config. |
 | `config-protection.mjs` | Edits that *loosen* a quality gate — lowered thresholds, added `eslint-disable`/`@ts-ignore`, rules flipped to `off`, widened `.gitleaks.toml` allowlists, relaxed tsconfig strictness. Warn-by-default, fail-open on internal error. |
 | `pre-bash-staging-fence.mjs` + `wave-scope-commit-guard.mjs` | Concurrent `git add` races between parallel wave-agents, and lint-staged sweeps that re-stage files outside wave scope. Rejects the commit rather than the edit. |
 

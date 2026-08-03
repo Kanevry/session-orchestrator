@@ -72,6 +72,22 @@ function makeAcquireStub(opts = {}) {
   });
 }
 
+/** Acquire stub that reports a foreign session already owns the lock. */
+function makeForeignActiveAcquire(foreignSessionId) {
+  return vi.fn(() => ({
+    ok: false,
+    reason: 'active',
+    existingLock: {
+      session_id: foreignSessionId,
+      started_at: '2026-05-27T11:00:00.000Z',
+      mode: 'deep',
+      pid: 88888,
+      host: 'test-host',
+      ttl_hours: 4,
+    },
+  }));
+}
+
 const noopEmit = vi.fn(async () => {});
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,22 +333,6 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
-  /** Acquire stub that reports a foreign session already owns the lock. */
-  function makeForeignActiveAcquire(foreignSessionId) {
-    return vi.fn(() => ({
-      ok: false,
-      reason: 'active',
-      existingLock: {
-        session_id: foreignSessionId,
-        started_at: '2026-05-27T11:00:00.000Z',
-        mode: 'deep',
-        pid: 88888,
-        host: 'test-host',
-        ttl_hours: 4,
-      },
-    }));
-  }
-
   it('returns null on the foreign-active bail path (return contract unchanged)', async () => {
     const result = await bootstrapLock({
       repoRoot: sandbox,
@@ -699,5 +699,194 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     const session = readCurrentSession();
     expect(session).not.toBeNull();
     expect(session.conflict_with_session_id).toBe(foreignSessionId);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Owner-proof persistence at lock genesis (#987 Part 1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — owner-proof persistence at genesis (#987 Part 1)', () => {
+  const proofPath = () =>
+    join(sandbox, '.orchestrator', 'runtime', 'lock-owner-proof.json');
+
+  function readProofEnvelope() {
+    if (!existsSync(proofPath())) return null;
+    return JSON.parse(readFileSync(proofPath(), 'utf8'));
+  }
+
+  it('writes .orchestrator/runtime/lock-owner-proof.json whose proof matches the written lock', async () => {
+    // Bug this catches (and the fake-regression anchor): bootstrapLock
+    // acquiring the lock WITHOUT persisting the genesis proof — the exact
+    // pre-#987 gap. Removing the writeOwnerProof call in Step 2b turns this red.
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-08-03-deep-1',
+      semanticSessionId: 'main-2026-08-03-deep-1',
+      mode: 'deep',
+      _acquireImpl: makeAcquireStub(),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    const envelope = readProofEnvelope();
+    expect(envelope).not.toBeNull();
+    expect(envelope.schema_version).toBe(1);
+    expect(envelope.lock_session_id).toBe('main-2026-08-03-deep-1');
+    // The triple must mirror the on-disk lock EXACTLY (makeAcquireStub's
+    // deterministic values) — proof of presence at genesis, byte-for-byte.
+    const onDisk = readLock();
+    expect(envelope.proof).toEqual({
+      pid: onDisk.pid,
+      host: onDisk.host,
+      startedAt: onDisk.started_at,
+    });
+    expect(envelope.proof).toEqual({
+      pid: 99999,
+      host: 'test-host',
+      startedAt: '2026-05-27T12:00:00.000Z',
+    });
+  });
+
+  it('also persists the proof on the forceAcquire branch (stale-pid-dead takeover)', async () => {
+    // Bug this catches: proof-write wired only into the plain-acquire path —
+    // a takeover session would then hold a lock with no proof and its /close
+    // would degrade to the weaker session_id-only release forever.
+    const staleAcquire = vi.fn(() => ({
+      ok: false,
+      reason: 'stale-pid-dead',
+      existingLock: {
+        session_id: 'old-session',
+        started_at: '2026-05-26T00:00:00.000Z',
+        mode: 'deep',
+        pid: 1,
+        host: 'test-host',
+        ttl_hours: 4,
+      },
+    }));
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-08-03-deep-2',
+      semanticSessionId: 'main-2026-08-03-deep-2',
+      mode: 'deep',
+      _acquireImpl: staleAcquire,
+      _forceAcquireImpl: makeAcquireStub(),
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(result).not.toBeNull();
+    const envelope = readProofEnvelope();
+    expect(envelope).not.toBeNull();
+    expect(envelope.lock_session_id).toBe('main-2026-08-03-deep-2');
+    expect(envelope.proof.startedAt).toBe('2026-05-27T12:00:00.000Z');
+  });
+
+  it('proof-write failure is best-effort: bootstrapLock still returns the enriched lock', async () => {
+    // Bug this catches: a failing proof write breaking session-start — the
+    // proof is an upgrade, never a new failure mode. Root-safe fault
+    // injection: `.orchestrator/runtime` pre-created as a FILE makes the
+    // mkdirSync inside writeJsonAtomicSync fail with ENOTDIR/EEXIST for
+    // every uid (chmod-EACCES would be bypassed under root, see
+    // .claude/rules/testing.md § Root-as-uid-0 test hazards).
+    mkdirSync(join(sandbox, '.orchestrator'), { recursive: true });
+    writeFileSync(join(sandbox, '.orchestrator', 'runtime'), 'blocker — not a directory\n');
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-08-03-deep-3',
+      semanticSessionId: 'main-2026-08-03-deep-3',
+      mode: 'deep',
+      _acquireImpl: makeAcquireStub(),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    // Normal result despite the blocked proof write.
+    expect(result).not.toBeNull();
+    expect(result.session_id).toBe('main-2026-08-03-deep-3');
+    expect(result.last_heartbeat).toBe('2026-05-27T12:00:00.000Z');
+    // And the blocker file is untouched — no proof landed anywhere.
+    expect(readFileSync(join(sandbox, '.orchestrator', 'runtime'), 'utf8'))
+      .toBe('blocker — not a directory\n');
+  });
+
+  it('writes NO proof when bootstrap bails on a foreign live lock', async () => {
+    // Bug this catches: the proof write placed BEFORE the acquire-ok check —
+    // persisting an "I own this" claim for a lock that belongs to a live
+    // foreign session, the exact ownership lie #987 exists to prevent.
+    const dir = join(sandbox, '.orchestrator');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'session.lock'), JSON.stringify({
+      session_id: 'foreign-987',
+      started_at: '2020-01-01T00:00:00.000Z',
+      last_heartbeat: new Date().toISOString(), // fresh heartbeat → live
+      mode: 'deep',
+      pid: 999999,
+      host: hostname(),
+      ttl_hours: 4,
+    }, null, 2) + '\n');
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-own-987',
+      semanticSessionId: 'my-own-987',
+      mode: 'deep',
+    });
+
+    expect(result).toBeNull();
+    expect(existsSync(proofPath())).toBe(false);
+  });
+
+  it('writes NO proof on the DI-observable foreign-active bail branch (review finding 1)', async () => {
+    // Bug this catches, distinct from the real-path test above: that test
+    // depends on acquire()'s live-foreign CLASSIFICATION; this one pins the
+    // bootstrapLock-level 'active'+foreign bail branch itself (the one that
+    // also records the conflict signal) via the deterministic DI stub. A
+    // refactor that reordered Step 2b ahead of the acquire-ok check would
+    // turn BOTH red; one that only mis-routed the 'active'-reason branch
+    // would turn only THIS one red.
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-own-987-di',
+      semanticSessionId: 'my-own-987-di',
+      mode: 'deep',
+      _acquireImpl: makeForeignActiveAcquire('foreign-987-di'),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(result).toBeNull();
+    expect(existsSync(proofPath())).toBe(false);
+  });
+
+  it('emits a one-line stderr WARN when the owner-proof write fails (review finding 2)', async () => {
+    // Bug this catches: Step 2b swallowing writeOwnerProof()'s failure result
+    // SILENTLY — the operator got zero signal that /close will degrade to the
+    // proof-less release path for the whole session. Same root-safe ENOTDIR
+    // blocker as the best-effort test above (chmod-EACCES is bypassed under
+    // root, see .claude/rules/testing.md § Root-as-uid-0 test hazards).
+    mkdirSync(join(sandbox, '.orchestrator'), { recursive: true });
+    writeFileSync(join(sandbox, '.orchestrator', 'runtime'), 'blocker — not a directory\n');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-08-03-deep-4',
+      semanticSessionId: 'main-2026-08-03-deep-4',
+      mode: 'deep',
+      _acquireImpl: makeAcquireStub(),
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+    });
+
+    // Still best-effort: the enriched lock is returned despite the WARN.
+    expect(result).not.toBeNull();
+    const warn = stderrSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('owner-proof write failed'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('⚠ lock-bootstrap: owner-proof write failed (fs-error) — /close degrades to proof-less release behaviour');
   });
 });

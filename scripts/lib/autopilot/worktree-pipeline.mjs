@@ -32,7 +32,7 @@ import fs, { realpathSync } from 'node:fs';
 import { runLoop } from './loop.mjs';
 import { maybeCreateDraftMR } from './mr-draft.mjs';
 import { validateWorkspacePath } from '../worktree/lifecycle.mjs';
-import { acquire, release } from '../session-lock.mjs';
+import { acquire, release, buildLockOwnerProof } from '../session-lock.mjs';
 import { emitEvent } from '../events.mjs';
 import { main as gcMain } from '../../gc-stale-worktrees.mjs';
 import { SEMANTIC_ID_RE } from '../session-id.mjs';
@@ -313,7 +313,17 @@ export async function teardownWorktree(context, result, opts = {}) {
     /** @type {{ ok: boolean, deleted?: boolean, reason?: string, verified?: boolean }|null} */
     let releaseResult = null;
     try {
-      releaseResult = release({ sessionId: result._lockSessionId, repoRoot: result.worktreePath });
+      // #987 defense-in-depth: pass the in-memory genesis proof (captured by
+      // runStoryPipeline right after acquire — same process, no file I/O)
+      // so the delete is double-gated at the fs layer. Spread-guarded:
+      // release()'s proof gate triggers on `proof !== undefined`, so a
+      // null/absent proof MUST be omitted entirely or EVERY release would
+      // be refused with 'proof-mismatch'.
+      releaseResult = release({
+        sessionId: result._lockSessionId,
+        repoRoot: result.worktreePath,
+        ...(result._lockOwnerProof ? { proof: result._lockOwnerProof } : {}),
+      });
     } catch (lockErr) {
       console.error(
         `worktree-pipeline: lock release error for issue #${context.issueIid}: ${lockErr?.message ?? String(lockErr)}`,
@@ -505,6 +515,12 @@ export async function runStoryPipeline(context, opts = {}) {
     abortedByCohort: loopState.kill_switch === 'peer-abort',
     // Internal: used by teardownWorktree to release the lock.
     _lockSessionId: lockSessionId,
+    // Internal (#987): in-memory genesis proof for the proof-gated release in
+    // teardownWorktree. Same process as the acquire above, so no file I/O is
+    // needed — buildLockOwnerProof() returns null on a partial/absent lock
+    // (e.g. a DI test stub without a full lock body), and teardown's
+    // spread-guard then falls back to the session_id-only release.
+    _lockOwnerProof: buildLockOwnerProof(lockResult.lock),
   };
 
   await teardownWorktree(context, result, { gcOnExit });
@@ -514,11 +530,12 @@ export async function runStoryPipeline(context, opts = {}) {
     throw loopError;
   }
 
-  // Strip internal field before returning to caller.
-  const { _lockSessionId: _removed, ...publicResult } = result;
+  // Strip internal fields before returning to caller.
+  const { _lockSessionId: _removed, _lockOwnerProof: _removedProof, ...publicResult } = result;
 
-  // Suppress unused-variable lint warning — _removed is intentionally discarded.
+  // Suppress unused-variable lint warning — both are intentionally discarded.
   void _removed;
+  void _removedProof;
 
   return publicResult;
 }

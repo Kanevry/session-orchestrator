@@ -187,6 +187,27 @@ export async function bootstrapLock({
     }
   }
 
+  // Step 2b (#987 Part 1): persist the durable ownership proof at lock
+  // genesis. `enriched` is byte-identical to the on-disk lock at this point
+  // (the v2 overlay never touches pid/host/started_at), so the proof written
+  // here will verify via isLockOwnedByProof() against any later re-read.
+  // This single call covers BOTH the plain-acquire and the forceAcquire
+  // branch — both flow through the enriched write above. Best-effort like
+  // the surrounding breadcrumb writes: writeOwnerProof() is no-throw by
+  // contract and a failure never bails the bootstrap — but it is no longer
+  // SILENT (#987 Part 2 review finding): a failed proof write means this
+  // session's /close will degrade to the weaker proof-less release path, so
+  // a one-line stderr WARN gives the operator the only signal there is.
+  try {
+    const { writeOwnerProof } = await import('../../scripts/lib/session-lock.mjs');
+    const proofResult = writeOwnerProof({ repoRoot, lock: enriched });
+    if (proofResult && !proofResult.ok) {
+      process.stderr.write(
+        `⚠ lock-bootstrap: owner-proof write failed (${proofResult.reason ?? 'unknown'}) — /close degrades to proof-less release behaviour\n`,
+      );
+    }
+  } catch { /* best-effort — a missing proof never breaks session-start */ }
+
   // Step 3: best-effort observability breadcrumb. Failures are swallowed
   // so a missing events module never breaks the hook.
   try {

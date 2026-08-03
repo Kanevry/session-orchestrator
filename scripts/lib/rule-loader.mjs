@@ -88,6 +88,12 @@ function getPicomatch() {
  * Minimal glob-to-RegExp fallback used only when picomatch is absent.
  * Handles `**`, `*`, and literal character matching.
  *
+ * Drift contract (W4 B2): a semantically FROZEN twin of this function lives in
+ * scripts/lib/command-blocker.mjs (`redirectGlobToRegExp`) — duplicated there
+ * because that module is hook-hot-path pure and must not import this one.
+ * Syntax extensions made here do NOT automatically apply there; mirror them
+ * deliberately or document the divergence.
+ *
  * @param {string} pattern
  * @returns {RegExp}
  */

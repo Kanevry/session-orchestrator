@@ -34,7 +34,7 @@ import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-destructive-guard.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
 
-/** Minimal policy fixture used by most tests (13 rules mirroring the spec). */
+/** Minimal policy fixture used by most tests (14 rules mirroring the spec). */
 const FIXTURE_POLICY = {
   version: 1,
   rules: [
@@ -116,6 +116,26 @@ const FIXTURE_POLICY = {
       pattern: 'git push --force-with-lease',
       severity: 'warn',
       rationale: 'Force-with-lease is safer but still requires coordinator approval.',
+    },
+    {
+      // Mirrors the live rule 14 (#983). `pattern: ">"` is deliberately kept
+      // policy-shape-faithful: the hook must NEVER route this rule class
+      // through the generic pattern matcher (it would FP on every redirect).
+      id: 'redirect-truncate-protected',
+      type: 'redirect-truncate',
+      pattern: '>',
+      severity: 'block',
+      'target-denylist': [
+        'CLAUDE.md',
+        'AGENTS.md',
+        '.claude/rules/**',
+        '.orchestrator/policy/**',
+        '.orchestrator/metrics/*.jsonl',
+        '.git/**',
+        'SECURITY.md',
+      ],
+      modes: ['truncate'],
+      rationale: 'Truncating redirect (>, &>, N>) onto protected artefacts silently destroys them — #983. Append (>>) stays allowed.',
     },
   ],
 };
@@ -445,30 +465,20 @@ describe('rm -rf path exception', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('#641 rm -rf /tmp allowlist (exit 0)', { timeout: 15000 }, () => {
-  it('allows "rm -rf /tmp/wondraiwork-632" (FP1 — agent tmp clone)', async () => {
+  // Consolidated from 5 near-duplicate allow tests (2 describe blocks) that
+  // differed only in the target path — one was a byte-identical repeat of
+  // "rm -rf /tmp/wondraiwork-632" (FP1) in both blocks. it.each keeps every
+  // distinct target as its own falsifier while removing the true duplicate.
+  it.each([
+    ['/tmp/wondraiwork-632 (FP1 — agent tmp clone)', () => '/tmp/wondraiwork-632'],
+    ['/private/tmp/foo (macOS canonical /tmp)', () => '/private/tmp/foo'],
+    ['a resolved os.tmpdir() target ($TMPDIR allowlist entry)', () => path.join(os.tmpdir(), 'agent-scratch-641')],
+    ['/tmp/x (genuinely under /tmp — no traversal)', () => '/tmp/x'],
+  ])('allows "rm -rf %s"', async (_label, buildTarget) => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
-    });
-    expectAllow(result);
-  });
-
-  it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /private/tmp/foo'),
-    });
-    expectAllow(result);
-  });
-
-  it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
-    const dir = await mkProjectTracked();
-    const target = path.join(os.tmpdir(), 'agent-scratch-641');
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload(`rm -rf ${target}`),
+      stdin: bashPayload(`rm -rf ${buildTarget()}`),
     });
     expectAllow(result);
   });
@@ -554,60 +564,18 @@ describe('#641 bypass vectors still blocked (exit 2)', { timeout: 30000 }, () =>
 // ---------------------------------------------------------------------------
 
 describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 15000 }, () => {
-  it('blocks "rm -rf /tmp/../etc" (traversal escapes allowlist to /etc)', async () => {
+  it.each([
+    ['rm -rf /tmp/../etc (traversal escapes allowlist to /etc)', 'rm -rf /tmp/../etc'],
+    ['rm -rf /tmp/x/../../etc (deeper traversal escapes to /etc)', 'rm -rf /tmp/x/../../etc'],
+    ['rm -rf /private/tmp/../etc (macOS canonical /tmp traversal escape)', 'rm -rf /private/tmp/../etc'],
+    ['rm -rf /tmp/ /etc (one allowlisted + one non-allowlisted target)', 'rm -rf /tmp/ /etc'],
+  ])('blocks "%s"', async (_label, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/../etc'),
+      stdin: bashPayload(command),
     });
     expectDeny(result);
-  });
-
-  it('blocks "rm -rf /tmp/x/../../etc" (deeper traversal escapes to /etc)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/x/../../etc'),
-    });
-    expectDeny(result);
-  });
-
-  it('blocks "rm -rf /private/tmp/../etc" (macOS canonical /tmp traversal escape)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /private/tmp/../etc'),
-    });
-    expectDeny(result);
-  });
-
-  it('blocks "rm -rf /tmp/ /etc" (one allowlisted + one non-allowlisted target)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/ /etc'),
-    });
-    expectDeny(result);
-  });
-});
-
-describe('#641 rm -rf /tmp allowlist legit controls (exit 0)', { timeout: 15000 }, () => {
-  it('allows "rm -rf /tmp/x" (genuinely under /tmp — no traversal)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/x'),
-    });
-    expectAllow(result);
-  });
-
-  it('allows "rm -rf /tmp/wondraiwork-632" (original #641 FP case)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -rf /tmp/wondraiwork-632'),
-    });
-    expectAllow(result);
   });
 });
 
@@ -616,20 +584,14 @@ describe('#641 rm -rf /tmp allowlist legit controls (exit 0)', { timeout: 15000 
 // ---------------------------------------------------------------------------
 
 describe('#641 rm flag-form gap closures (exit 2)', { timeout: 15000 }, () => {
-  it('blocks "rm -r -f /data" (split flags)', async () => {
+  it.each([
+    ['rm -r -f /data (split flags)', 'rm -r -f /data'],
+    ['rm -fr /data (reordered combined flags)', 'rm -fr /data'],
+  ])('blocks "%s"', async (_label, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload('rm -r -f /data'),
-    });
-    expectDeny(result);
-  });
-
-  it('blocks "rm -fr /data" (reordered combined flags)', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('rm -fr /data'),
+      stdin: bashPayload(command),
     });
     expectDeny(result);
   });
@@ -837,6 +799,114 @@ describe('#935 symlink laundering must STILL block (exit 2)', { timeout: 15000 }
     } finally {
       await fs.unlink(link);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #983 — redirect-truncate-protected (rule 14): the TARGET decides, never the
+// `pattern: ">"` substring. Bug each deny catches: silent truncation of a
+// protected artefact (`> CLAUDE.md` destroys it with no diff, no recovery).
+// Bug each allow catches: the interim FP where the generic pattern matcher
+// saw `pattern: ">"` and denied every command containing a redirect.
+// ---------------------------------------------------------------------------
+
+describe('#983 redirect-truncate-protected — deny/allow by target', { timeout: 15000 }, () => {
+  // Denies that must name the TARGET (not just the rule) in the reason —
+  // it.each keeps each target's own falsifier while removing the boilerplate.
+  it.each([
+    ['echo x &> CLAUDE.md — silent truncation of a protected artefact', 'echo x &> CLAUDE.md', 'CLAUDE.md'],
+    [
+      ': > .orchestrator/policy/blocked-commands.json — `.orchestrator/policy/**` glob',
+      ': > .orchestrator/policy/blocked-commands.json',
+      '.orchestrator/policy/blocked-commands.json',
+    ],
+    // W4 F1a — non-normalized spelling of a protected artefact: `.//CLAUDE.md`
+    // was silently ALLOWED before path.posix.normalize in redirectRuleMatches.
+    [
+      'echo x > .//CLAUDE.md — non-normalized spelling of a protected artefact (W4 F1a)',
+      'echo x > .//CLAUDE.md',
+      'CLAUDE.md',
+    ],
+  ])('denies `%s`', async (_label, command, targetSubstring) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    const envelope = expectDeny(result, 'redirect-truncate-protected');
+    expect(envelope.hookSpecificOutput.permissionDecisionReason).toContain(targetSubstring);
+  });
+
+  // Plain allows — non-denylisted target, append mode, and the #983 interim
+  // pattern-matcher FP (commandMatchesBlocked(cmd, '>') is true here without
+  // the rule.type === 'redirect-truncate' branch).
+  it.each([
+    ['echo x > out.log — truncate onto a non-denylisted target', 'echo x > out.log'],
+    ['echo x >> CLAUDE.md — append mode stays allowed by design (modes: [truncate])', 'echo x >> CLAUDE.md'],
+    ["bash -c 'echo a > b' — the interim pattern-matcher FP", "bash -c 'echo a > b'"],
+  ])('allows `%s`', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(result);
+  });
+
+  it('warns (fail-visible) but allows on an unresolved redirect target: `echo x > "$OUT"`', async () => {
+    // Variable indirection is never a match candidate (#641 FP class) — the
+    // guard must surface it on stderr instead of blocking on a guess.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('echo x > "$OUT"') });
+    expectAllow(result);
+    expect(result.stderr).toContain('unresolved redirect target');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #983 — rm-target collection must skip redirect tokens. Bug: `rm -rf /tmp/ok
+// > out.log` collected `>` and `out.log` as rm targets, failed the allowlist,
+// and FP-denied a legitimate temp cleanup.
+// ---------------------------------------------------------------------------
+
+describe('#983 rm-target collection skips redirect tokens', { timeout: 15000 }, () => {
+  it.each([
+    ['rm -rf /tmp/ok > out.log — the redirect operand is not an rm target', 'rm -rf /tmp/ok > out.log'],
+    ['rm -rf /tmp/ok 2>/dev/null — an fd redirect is not an rm target', 'rm -rf /tmp/ok 2>/dev/null'],
+  ])('allows `%s`', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(result);
+  });
+
+  it('denies `rm -rf /var/data > log` — control: the REAL target is still judged', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('rm -rf /var/data > log') });
+    expectDeny(result, 'rm-rf-destructive');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #982 T2 — wrapper-aware rm parsing via resolveSegmentVerb/WRAPPER_UNWRAP.
+// Bug the allow catches: a segment-verb parser WITHOUT wrapper unwrapping sees
+// verb `sudo`/`timeout`, collects zero targets, and conservative-blocks the
+// allowlisted `sudo rm -rf /tmp/ok`. The denies pin that unwrapping never
+// LOOSENS the guard for non-allowlisted targets or quoted payloads.
+// ---------------------------------------------------------------------------
+
+describe('#982 wrapper-aware rm target parsing', { timeout: 15000 }, () => {
+  it('allows `sudo rm -rf /tmp/ok` — wrapper unwraps, allowlist still applies', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('sudo rm -rf /tmp/ok') });
+    expectAllow(result);
+  });
+
+  it.each([
+    ['sudo rm -rf /var/data', 'sudo rm -rf /var/data'],
+    ['timeout 5 rm -rf /var/x — positional-skipping wrapper', 'timeout 5 rm -rf /var/x'],
+    [
+      "sudo -u root bash -c 'rm -rf /' — quoted payload behind a wrapper (W2 matcher)",
+      "sudo -u root bash -c 'rm -rf /'",
+    ],
+    ['rm --recursive --force /var/data — long-flag pair (D1 Gap 5)', 'rm --recursive --force /var/data'],
+  ])('denies `%s`', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectDeny(result, 'rm-rf-destructive');
   });
 });
 

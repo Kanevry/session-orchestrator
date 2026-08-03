@@ -31,6 +31,9 @@ import {
   updateHeartbeat,
   buildLockOwnerProof,
   isLockOwnedByProof,
+  OWNER_PROOF_RELPATH,
+  writeOwnerProof,
+  loadOwnerProof,
 } from '@lib/session-lock.mjs';
 import { isRoot } from '../_helpers/perms.mjs';
 
@@ -618,6 +621,120 @@ describe('isLockOwnedByProof() (#906-class fix)', () => {
 
   it('returns false for a null proof', () => {
     expect(isLockOwnedByProof(baseLock, null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeOwnerProof / loadOwnerProof — durable genesis proof (#987 Part 1)
+// ---------------------------------------------------------------------------
+
+describe('writeOwnerProof() / loadOwnerProof() — durable genesis proof (#987 Part 1)', () => {
+  it('writeOwnerProof persists a schema_version-1 envelope whose inner proof verifies the lock', () => {
+    // Bug this catches: a proof written at genesis that does NOT verify the
+    // very lock it was derived from would make the entire persistence layer
+    // fail-closed into uselessness (every release would see proof-mismatch).
+    const { lock } = acquire({ sessionId: 'sess-proof-write', mode: 'feature', repoRoot });
+
+    const result = writeOwnerProof({ repoRoot, lock });
+
+    expect(result.ok).toBe(true);
+    const proofFile = join(repoRoot, OWNER_PROOF_RELPATH);
+    expect(existsSync(proofFile)).toBe(true);
+
+    const envelope = JSON.parse(readFileSync(proofFile, 'utf8'));
+    expect(envelope.schema_version).toBe(1);
+    expect(envelope.lock_session_id).toBe('sess-proof-write');
+    expect(isLockOwnedByProof(lock, envelope.proof)).toBe(true);
+  });
+
+  it('writeOwnerProof on an unproovable lock (pid missing) is a no-op: no file, reason unproovable-lock', () => {
+    // Bug this catches: writing a PARTIAL proof for a lock missing one of the
+    // three factors would create a fail-open artifact on disk.
+    const lock = {
+      session_id: 'sess-no-pid',
+      started_at: '2026-08-03T10:00:00.000Z',
+      host: 'some-host',
+      mode: 'deep',
+      ttl_hours: 4,
+    };
+
+    const result = writeOwnerProof({ repoRoot, lock });
+
+    expect(result).toEqual({ ok: false, reason: 'unproovable-lock' });
+    expect(existsSync(join(repoRoot, OWNER_PROOF_RELPATH))).toBe(false);
+  });
+
+  it('loadOwnerProof returns null when no proof file exists', () => {
+    expect(loadOwnerProof({ repoRoot })).toBeNull();
+  });
+
+  it('loadOwnerProof returns null (never throws) on malformed JSON', () => {
+    // Bug this catches: a corrupted proof file crashing the (best-effort)
+    // consumer instead of degrading to "cannot prove ownership".
+    const proofFile = join(repoRoot, OWNER_PROOF_RELPATH);
+    mkdirSync(join(repoRoot, '.orchestrator', 'runtime'), { recursive: true });
+    writeFileSync(proofFile, '{ not json !!!');
+
+    expect(loadOwnerProof({ repoRoot })).toBeNull();
+  });
+
+  it('loadOwnerProof returns null for an envelope without a proof object', () => {
+    const proofFile = join(repoRoot, OWNER_PROOF_RELPATH);
+    mkdirSync(join(repoRoot, '.orchestrator', 'runtime'), { recursive: true });
+    writeFileSync(proofFile, JSON.stringify({ schema_version: 1, lock_session_id: 'x' }) + '\n');
+
+    expect(loadOwnerProof({ repoRoot })).toBeNull();
+  });
+
+  it('loadOwnerProof returns ONLY the inner triple — no envelope forensic fields leak out', () => {
+    // Bug this catches: envelope fields (lock_session_id etc.) leaking into
+    // the returned object and from there into an ownership comparison — the
+    // exact collidable-id trust the proof exists to eliminate.
+    const { lock } = acquire({ sessionId: 'sess-triple-only', mode: 'feature', repoRoot });
+    writeOwnerProof({ repoRoot, lock });
+
+    const loaded = loadOwnerProof({ repoRoot });
+
+    expect(loaded).toEqual({
+      pid: lock.pid,
+      host: lock.host,
+      startedAt: lock.started_at,
+    });
+  });
+
+  it('roundtrip: write → load → isLockOwnedByProof(lock, loaded) is true', () => {
+    const { lock } = acquire({ sessionId: 'sess-roundtrip', mode: 'deep', repoRoot });
+    const w = writeOwnerProof({ repoRoot, lock });
+    expect(w.ok).toBe(true);
+
+    const loaded = loadOwnerProof({ repoRoot });
+
+    expect(isLockOwnedByProof(lock, loaded)).toBe(true);
+  });
+
+  it('stale-proof self-validation: a leftover proof from a PREVIOUS session never proves ownership of a new lock', () => {
+    // The named bug: `.orchestrator/runtime/` persists across sessions, so a
+    // proof file left behind by session A must NOT verify against session B's
+    // lock — otherwise the leftover artifact "proves" foreign ownership and
+    // re-opens the #906-class foreign-lock deletion this issue closes.
+    const prevLock = {
+      session_id: 'main-2026-08-02-deep-1',
+      started_at: '2026-08-02T09:00:00.000Z',
+      mode: 'deep',
+      pid: process.pid,
+      host: hostname(),
+      ttl_hours: 4,
+    };
+    writeOwnerProof({ repoRoot, lock: prevLock });
+
+    // A NEW session acquires the lock (same pid + host in this process, but a
+    // fresh millisecond started_at — the discriminator).
+    const { lock: newLock } = acquire({ sessionId: 'main-2026-08-03-deep-1', mode: 'deep', repoRoot });
+    expect(newLock.started_at).not.toBe(prevLock.started_at);
+
+    const staleProof = loadOwnerProof({ repoRoot });
+
+    expect(isLockOwnedByProof(newLock, staleProof)).toBe(false);
   });
 });
 

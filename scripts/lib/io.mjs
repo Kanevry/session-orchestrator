@@ -52,7 +52,7 @@ const DENY_HEADLINE_MAX = 200;
  *
  * | call site                                    | measured chars |
  * |----------------------------------------------|----------------|
- * | pre-bash-destructive-guard (worst of 13 rules) | 435          |
+ * | pre-bash-destructive-guard (worst of 14 rules) | 435          |
  * | pre-bash-templates-first (fixed part)         | 348 + command |
  * | pre-bash-issue-budget (formatBlockReason)     | 652           |
  * | config-protection (all 6 reasons at once)     | 432           |

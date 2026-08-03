@@ -26,7 +26,7 @@ These are the non-obvious, mistake-causing facts that must load every session. E
 - **CI status is the source of truth at session-start.** Local-only test runs are insufficient evidence of CI green.
   Phase 4 of session-start invokes `scripts/lib/ci-status-banner.mjs` via `checkCiStatus({ repoRoot })` to render a 🚨 banner when CI is red on HEAD.
   Never claim CI green from `npm test` alone — the 8-pipeline silent regression (2026-05-09 → 2026-05-10, fixed in deep-2) is the cautionary tale. <!-- consistency:exempt:runtime-only -->
-- **Destructive-Command Guard is active in main + subagent waves.** `hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands per `.orchestrator/policy/blocked-commands.json` (13 rules).
+- **Destructive-Command Guard is active in main + subagent waves.** `hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands per `.orchestrator/policy/blocked-commands.json` (14 rules).
   Rule source of truth: [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003). Per-session bypass via Session Config: `allow-destructive-ops: true` (intentional maintenance only).
 - **Session Config below is runtime-critical.** `scripts/parse-config.mjs` parses the `## Session Config` block; `claude-md-drift-check` Check 6 enforces top-level-key parity against `docs/session-config-template.md`. Edit it like code, not prose — a dropped key changes runtime behaviour.
 - **Live state is not in this file.** Stack: Node 24+, vitest, ESLint 10 (`npm ci` after clone). Test counts, backlog, version, component inventory drift fast — the SSOT is README badges + `.orchestrator/metrics/sessions.jsonl`. Per-session detail lives in the Meta-Vault decisions log (linked above), not here.

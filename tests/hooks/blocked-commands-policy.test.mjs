@@ -111,9 +111,13 @@ describe('production policy file structure', () => {
     expect(policy.version).toBe(1);
   });
 
-  it('rules array has exactly 13 entries', () => {
+  it('rules array count stays inside the floor/ceiling corridor (testing.md § Dynamic Artifact Counts)', () => {
     expect(Array.isArray(policy.rules)).toBe(true);
-    expect(policy.rules).toHaveLength(13);
+    // Floor 13 catches accidental rule deletion; ceiling 40 catches runaway
+    // growth. Exact-count pinning drifted on every legitimate rule addition
+    // (13→14 via #983 redirect-truncate-protected).
+    expect(policy.rules.length).toBeGreaterThanOrEqual(13);
+    expect(policy.rules.length).toBeLessThanOrEqual(40);
   });
 
   it('every rule has required fields: id, pattern, severity, rationale', () => {
@@ -138,7 +142,7 @@ describe('production policy file structure', () => {
   it('all rule ids are unique', () => {
     const ids = policy.rules.map((r) => r.id);
     const uniqueIds = new Set(ids);
-    expect(uniqueIds.size).toBe(13);
+    expect(uniqueIds.size).toBe(policy.rules.length);
   });
 
   it('rule id "git-checkout-discard" pattern has no trailing whitespace (regression: trailing-space bypass)', () => {
@@ -161,6 +165,32 @@ describe('production policy file structure', () => {
       .filter((r) => r['path-allowlist'] !== undefined)
       .map((r) => r.id);
     expect(withAllowlist).toEqual(['rm-rf-destructive']);
+  });
+
+  it('rule "redirect-truncate-protected" has type/severity/denylist/modes contract (#983)', () => {
+    const rule = policy.rules.find((r) => r.id === 'redirect-truncate-protected');
+    expect(rule).toBeDefined();
+    expect(rule.type).toBe('redirect-truncate');
+    expect(rule.severity).toBe('block');
+    expect(Array.isArray(rule['target-denylist'])).toBe(true);
+    expect(rule['target-denylist'].length).toBeGreaterThan(0);
+    expect(rule.modes).toEqual(['truncate']);
+  });
+
+  it('target-denylist appears ONLY on redirect-truncate rules — a DIFFERENT field than path-allowlist (#983)', () => {
+    // Denylist polarity is exclusive to the redirect rule class: a
+    // target-denylist leaking onto a pattern rule would silently change its
+    // matching semantics (the guard rule-loop dispatches on rule.type).
+    for (const rule of policy.rules) {
+      if (rule['target-denylist'] !== undefined) {
+        expect(rule.type).toBe('redirect-truncate');
+        expect(rule['path-allowlist']).toBeUndefined();
+      }
+    }
+    const withDenylist = policy.rules
+      .filter((r) => r['target-denylist'] !== undefined)
+      .map((r) => r.id);
+    expect(withDenylist).toEqual(['redirect-truncate-protected']);
   });
 });
 
@@ -293,50 +323,23 @@ describe('allow-destructive-ops: true in CLAUDE.md overrides block', { timeout: 
 // shell command line (the guard hook is active on the test runner itself).
 // ---------------------------------------------------------------------------
 
-describe('#641 — /tmp allowlist allows agent-owned scratch (exit 0, empty stdout)', { timeout: 20000 }, () => {
+// The exhaustive /tmp-allowlist + quoted-payload FP matrix (FP1, private/tmp,
+// os.tmpdir, memory-propose, force-push-string, echo-literal) is already
+// covered case-by-case against a FIXTURE policy in
+// pre-bash-destructive-guard.test.mjs — that fixture mirrors this real policy
+// file 1:1 (see its own "14 rules mirroring the spec" docstring), and the
+// structural test above ("rule 'rm-rf-destructive' carries a path-allowlist
+// with /tmp + $TMPDIR (#641)") already pins that the REAL file carries the
+// same allowlist shape. Re-running all 6 FP scenarios against the real policy
+// here added no falsifier the fixture-based matrix + structural pin don't
+// already cover. One representative case is kept as an end-to-end smoke: it
+// would catch a genuine wiring defect (e.g. the real policy file failing to
+// load, or the hook not actually reading the /tmp allowlist from disk) that
+// the structural JSON-shape test alone cannot.
+describe('#641 — /tmp allowlist + quoted-payload FP smoke against the REAL policy (exit 0, empty stdout)', { timeout: 20000 }, () => {
   it('allows "rm -rf /tmp/wondraiwork-632" (FP1 — agent tmp clone)', async () => {
     const dir = await mkTempProject();
     const result = await runGuard({ projectDir: dir, command: 'rm -rf /tmp/wondraiwork-632' });
-    expectAllow(result);
-  });
-
-  it('allows "rm -rf /private/tmp/foo" (macOS canonical /tmp)', async () => {
-    const dir = await mkTempProject();
-    const result = await runGuard({ projectDir: dir, command: 'rm -rf /private/tmp/foo' });
-    expectAllow(result);
-  });
-
-  it('allows a resolved os.tmpdir() target ($TMPDIR allowlist entry)', async () => {
-    const dir = await mkTempProject();
-    const target = path.join(os.tmpdir(), 'agent-scratch-641');
-    const result = await runGuard({ projectDir: dir, command: `rm -rf ${target}` });
-    expectAllow(result);
-  });
-});
-
-describe('#641 — quoted-payload guard removes false positives (exit 0, empty stdout)', { timeout: 20000 }, () => {
-  it('allows memory-propose with blocked substrings inside quoted args (FP2)', async () => {
-    const dir = await mkTempProject();
-    // The FP2 command: blocked patterns live ONLY inside quoted --insight / --evidence.
-    const insight = 'workaround used ' + 'rm ' + '-rf /tmp/x';
-    const evidence = 'see ' + 'git ' + 'reset --hard note';
-    const command = `node scripts/memory-propose.mjs --insight "${insight}" --evidence "${evidence}"`;
-    const result = await runGuard({ projectDir: dir, command });
-    expectAllow(result);
-  });
-
-  it('allows node script with a force-push warning string in a quoted arg', async () => {
-    const dir = await mkTempProject();
-    const msg = 'do not run ' + 'git ' + 'push --force';
-    const command = `node x.mjs --msg "${msg}"`;
-    const result = await runGuard({ projectDir: dir, command });
-    expectAllow(result);
-  });
-
-  it('allows echo of a quoted destructive literal', async () => {
-    const dir = await mkTempProject();
-    const command = 'echo "' + 'rm ' + '-rf /"';
-    const result = await runGuard({ projectDir: dir, command });
     expectAllow(result);
   });
 });
@@ -388,6 +391,185 @@ describe('#641 — bypass vectors still blocked against real policy (deny envelo
     const dir = await mkTempProject();
     const command = `${RMRF} /tmp/x; ${RMRF} src/`;
     const result = await runGuard({ projectDir: dir, command });
+    expectDeny(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section 7 — #972 floor/overlay merge: a consumer overlay cannot disarm the
+// plugin's floor policy.
+//
+// Every harness above collapses floor == overlay (cwd is the repo root, so the
+// same file serves both roles). runGuardSplit is the FIRST harness with two
+// DISTINCT roots: CLAUDE_PLUGIN_ROOT → floorDir (the production policy),
+// cwd + CLAUDE_PROJECT_DIR → overlayDir (a consumer repo with its own policy).
+// Pre-#972 first-hit-wins, the overlay file in cwd was the ONLY policy loaded —
+// `{"version":1,"rules":[]}` silently switched the guard off.
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn the guard with SPLIT floor/overlay roots (#972).
+ * NB: deny and allow BOTH exit 0 since #906 — assert via expectDeny/expectAllow.
+ */
+async function runGuardSplit({ floorDir, overlayDir, command }) {
+  return new Promise((resolve) => {
+    const env = {
+      ...process.env,
+      CLAUDE_PLUGIN_ROOT: floorDir,
+      CLAUDE_PROJECT_DIR: overlayDir,
+    };
+
+    const child = spawn(process.execPath, [HOOK], {
+      cwd: overlayDir,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+
+    const payload = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command },
+    });
+    child.stdin.end(payload);
+  });
+}
+
+/** Temp consumer project carrying its own overlay policy (object or raw string). */
+async function mkOverlayProject(policyContent) {
+  const dir = await mkTempProject();
+  const policyDir = path.join(dir, '.orchestrator', 'policy');
+  await fs.mkdir(policyDir, { recursive: true });
+  await fs.writeFile(
+    path.join(policyDir, 'blocked-commands.json'),
+    typeof policyContent === 'string'
+      ? policyContent
+      : JSON.stringify(policyContent, null, 2)
+  );
+  return dir;
+}
+
+describe('#972 — floor/overlay merge (production floor + consumer overlay)', { timeout: 30000 }, () => {
+  // Fragments so no blocked literal appears on the test-runner shell line.
+  const RESET = 'git ' + 'reset --hard';
+  const RMRF = 'rm ' + '-rf';
+
+  it('T1: empty overlay rules [] cannot disarm the floor — git reset --hard still DENIED', async () => {
+    const overlayDir = await mkOverlayProject({ version: 1, rules: [] });
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RESET} HEAD~1`,
+    });
+    expectDeny(result);
+    expect(result.stderr).toContain('overlay policy ignored');
+  });
+
+  it('T2: overlay severity downgrade block→warn on git-reset-hard → DENIED + shadow warning on stderr', async () => {
+    const overlayDir = await mkOverlayProject({
+      version: 1,
+      rules: [{
+        id: 'git-reset-hard',
+        pattern: 'git ' + 'reset --hard',
+        severity: 'warn',
+        rationale: 'downgrade attempt',
+      }],
+    });
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RESET} HEAD~1`,
+    });
+    expectDeny(result);
+    expect(result.stderr).toContain('shadowed');
+  });
+
+  it('T2b: overlay severity "ignore" on git-reset-hard → still DENIED', async () => {
+    const overlayDir = await mkOverlayProject({
+      version: 1,
+      rules: [{
+        id: 'git-reset-hard',
+        pattern: 'git ' + 'reset --hard',
+        severity: 'ignore',
+        rationale: 'disarm attempt via unknown severity',
+      }],
+    });
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RESET} HEAD~1`,
+    });
+    expectDeny(result);
+  });
+
+  it('T7: overlay is invalid JSON → DENIED via floor (fail-to-floor; pre-#972 this failed OPEN)', async () => {
+    const overlayDir = await mkOverlayProject('{ this is not json');
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RESET} HEAD~1`,
+    });
+    expectDeny(result);
+    expect(result.stderr).toContain('malformed');
+  });
+
+  it('T4: overlay path-allowlist ["/"] on rm-rf-destructive cannot widen the floor allowlist', async () => {
+    const overlayDir = await mkOverlayProject({
+      version: 1,
+      rules: [{
+        id: 'rm-rf-destructive',
+        pattern: 'rm ' + '-rf',
+        severity: 'block',
+        rationale: 'allowlist-widening attempt',
+        'path-allowlist': ['/'],
+      }],
+    });
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RMRF} /var/data`,
+    });
+    expectDeny(result);
+  });
+
+  it('T5: overlay-only block rule is enforced additively — and a floor rule stays active beside it', async () => {
+    const overlayDir = await mkOverlayProject({
+      version: 1,
+      rules: [{
+        id: 'consumer-drop-db',
+        pattern: 'dropdb --force',
+        severity: 'block',
+        rationale: 'consumer-specific rule',
+      }],
+    });
+
+    const overlayDeny = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: 'dropdb --force production',
+    });
+    expectDeny(overlayDeny);
+
+    // Floor spot-check: a production rule with NO overlay involvement still bites.
+    const floorDeny = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: 'git clean -fd',
+    });
+    expectDeny(floorDeny);
+  });
+
+  it('fresh consumer repo without any overlay policy → floor enforced silently', async () => {
+    const overlayDir = await mkTempProject();
+    const result = await runGuardSplit({
+      floorDir: REPO_ROOT,
+      overlayDir,
+      command: `${RESET} HEAD~1`,
+    });
     expectDeny(result);
   });
 });

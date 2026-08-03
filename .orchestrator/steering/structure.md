@@ -12,7 +12,7 @@
 | `commands/` | 24 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 15 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
 | `hooks/` | Hook event matchers + handlers (15 matcher entries / 20 plugin-wired handler files [21 on-disk; the 21st is Husky-wired — see Inventory below], 10 distinct events) |
-| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (13 rules) |
+| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (14 rules) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
 | `.claude/rules/` | Always-on rule files loaded by Claude Code |

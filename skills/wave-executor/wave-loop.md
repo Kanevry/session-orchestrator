@@ -1095,13 +1095,17 @@ Before each wave dispatch:
 1. **Write `<state-dir>/wave-scope.json`** with the wave's scope:
    > (Platform-specific: `.claude/wave-scope.json` on Claude Code, `.codex/wave-scope.json` on Codex CLI, `.cursor/wave-scope.json` on Cursor IDE)
 
-   **Deriving `blockedCommands` (policy-file-first, #155):** Before writing `wave-scope.json`, extract the blocked patterns from the consolidated policy file:
+   **Deriving `blockedCommands` (effective floor∪overlay policy, #155/#972):** Before writing `wave-scope.json`, derive the blocked patterns from the EFFECTIVE policy via the shared merge module — the plugin's floor policy united with the repo's overlay policy. (A bare `jq` over the repo-local policy file alone under-counts the merged result since #972.)
    ```bash
-   BLOCKED=$(jq -c '[.rules[] | select(.severity == "block") | .pattern]' .orchestrator/policy/blocked-commands.json)
+   BLOCKED=$(node --input-type=module -e "
+   import { loadEffectivePolicy } from '$PLUGIN_ROOT/scripts/lib/blocked-commands-policy.mjs';
+   const { rules } = await loadEffectivePolicy({ cwd: process.cwd(), projectDir: process.env.CLAUDE_PROJECT_DIR ?? null, pluginRoot: '$PLUGIN_ROOT' });
+   console.log(JSON.stringify((rules ?? []).filter(r => r.severity === 'block').map(r => r.pattern)));
+   ")
    ```
-   Use `$BLOCKED` as the `blockedCommands` value in `wave-scope.json`.
+   Use `$BLOCKED` as the `blockedCommands` value in `wave-scope.json`. Since #972 this is the effective floor∪overlay policy — identical to what the destructive-guard hook enforces.
 
-   **Fallback:** If `.orchestrator/policy/blocked-commands.json` is missing (pre-#155 repo), use the legacy hardcoded array and log a warning in the wave progress update:
+   **Fallback:** If the command fails or prints `[]` (neither the plugin's floor policy nor a repo policy resolvable — pre-#155 setup), use the legacy hardcoded array and log a warning in the wave progress update:
    ```bash
    BLOCKED='["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]'
    # Warning: policy file .orchestrator/policy/blocked-commands.json not found — using legacy hardcoded blocklist
@@ -1113,7 +1117,7 @@ Before each wave dispatch:
      "role": "<role>",
      "enforcement": "<from Session Config, default: warn>",
      "allowedPaths": ["<from agent specs in session plan>"],
-     "blockedCommands": "<derived dynamically from .orchestrator/policy/blocked-commands.json (severity: block rules); falls back to legacy 5-element array if policy file absent>",
+     "blockedCommands": "<derived dynamically from the effective floor∪overlay policy via loadEffectivePolicy (severity: block rules, #972); falls back to legacy 5-element array if no policy resolves>",
      "gates": "<copy of enforcement-gates from Session Config, or omit if unset>"
    }
    ```

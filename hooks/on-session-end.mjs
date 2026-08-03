@@ -31,7 +31,14 @@ if (!shouldRunHook('on-session-end')) process.exit(0);
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.mjs';
-import { readLockDetailed, release, isLockLive } from '../scripts/lib/session-lock.mjs';
+import {
+  readLockDetailed,
+  release,
+  isLockLive,
+  loadOwnerProof,
+  isLockOwnedByProof,
+  OWNER_PROOF_RELPATH,
+} from '../scripts/lib/session-lock.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
@@ -224,53 +231,61 @@ async function main() {
         semanticSessionId !== null && lock.session_id === semanticSessionId;
       const ownBySemantic = ownBySemanticStrict || ownBySemanticFallback;
 
-      // #906-class fix (this session): the semantic session id
+      // #987 Part 2 — persisted ownership proof (pid + host + started_at,
+      // written at lock genesis by bootstrapLock Step 2b, see
+      // writeOwnerProof() in session-lock.mjs). loadOwnerProof() is
+      // fail-closed: a missing/corrupt proof file yields null, and a null
+      // proof presented to isLockOwnedByProof() yields false — the hook then
+      // degrades to exactly the pre-#987 (proof-less) behaviour below.
+      const proof = loadOwnerProof({ repoRoot: projectRoot });
+      const ownByProof = isLockOwnedByProof(lock, proof);
+
+      // #906-class fix: the semantic session id
       // (`<branch>-<date>-<mode>-<n>`) is NOT globally unique — the
       // id-counter can hand out the SAME id to two different session
-      // processes (live-observed twice today: `main-2026-07-29-deep-1` and
-      // `main-2026-07-29-session-1`, each assigned to two distinct sessions).
-      // Previously ONLY the low-confidence fallback comparison
-      // (ownBySemanticFallback-only) was gated by liveness; the STRICT
-      // comparison (ownBySemanticStrict) was treated as fully trustworthy
-      // even on a still-live lock. But `ownBySemanticStrict` is built from
-      // the SAME collidable name as the fallback — a same-day counter
-      // collision defeats it exactly as it defeats the fallback. A live lock
-      // matched ONLY via a collidable semantic id (strict OR fallback, never
-      // corroborated by the non-collidable UUID) is therefore NEVER trusted
-      // for release: `semanticOnlyLive` now covers BOTH comparisons, not just
-      // the fallback one.
+      // processes (live-observed twice on 2026-07-29: `main-2026-07-29-deep-1`
+      // and `main-2026-07-29-session-1`, each assigned to two distinct
+      // sessions). A live lock matched ONLY via a collidable semantic id
+      // (strict OR fallback, never corroborated by a non-collidable factor)
+      // is therefore NEVER trusted for release.
       //
-      // EXAMINED TRADE-OFF (do not re-litigate without re-reading this):
-      // this also gates the previously-privileged "UUID rotated across
-      // clear/compact" case (#612). Verified against
-      // hooks/_lib/lock-bootstrap.mjs's `shouldForce`: on a rotation,
-      // bootstrapLock's force-overwrite condition requires
-      // `existingLock.session_id === sessionId`, which is FALSE for a
-      // rotated UUID — so bootstrapLock bails WITHOUT touching the existing
-      // lock at all. The on-disk lock's `session_id`/`pid`/`started_at` stay
-      // frozen at their PRE-rotation values for the rest of that session's
-      // life; only `current-session.json` picks up the new UUID. That means
-      // a genuine same-session UUID rotation and a foreign same-day semantic
-      // collision produce the IDENTICAL shape at session-end time (UUID
-      // mismatch + semantic match on a live lock) — nothing observable here
-      // distinguishes them (see the RCR-007 escalation in the session report
-      // for why a persisted per-session proof, the only real discriminator,
-      // is out of scope for this fix). Between the two costs, this fix picks
-      // the bounded, self-healing one: an own live lock left un-released
-      // after a rotation merely sits until its heartbeat ages past
-      // `ttl_hours` (default 4h), at which point the SAME reaper the
-      // SessionStart hook already runs (`reapRepoLock`, itself invariant:
-      // never touches a live lease) clears it — a new session on this repo
-      // in the meantime sees an apparently-active session and gets the
-      // existing parallel-session AUQ offer, not a hard block. The
-      // alternative (trusting the collidable name on a live lock) silently
-      // destroys a genuinely different, still-active session's lease with
-      // no bound and no recovery path — strictly worse.
-      const semanticOnlyLive = !ownByUuid && ownBySemantic && isLockLive(lock);
+      // #987 Part 2 — the discrimination the #906-class fix escalated as
+      // "structurally unobservable" is now OBSERVABLE via the persisted
+      // owner proof: a genuine same-session UUID rotation (clear/compact)
+      // and a foreign same-day semantic collision used to produce the
+      // IDENTICAL shape here (UUID mismatch + semantic match on a live
+      // lock), so the previous fix conservatively left BOTH un-released
+      // (bounded by the ttl_hours reaper). The proof written at lock genesis
+      // (pid + host + started_at — presence-at-genesis, never the collidable
+      // session_id/semantic id, see the FACTOR CHOICE docblock on
+      // isLockOwnedByProof()) is exactly the discriminator that RCR-007
+      // escalation named: on a self-rotation the on-disk lock is FROZEN at
+      // its pre-rotation values (bootstrapLock's shouldForce is false for a
+      // rotated UUID, so it bails without touching the lock), which are the
+      // SAME values the proof captured at genesis → ownByProof is true → the
+      // lock is released correctly. A foreign same-day collision wrote its
+      // lock in a DIFFERENT process at a DIFFERENT millisecond → ownByProof
+      // is false → semanticOnlyLive stays true → no release, the foreign
+      // lease survives (the never-release-a-foreign-lock invariant is
+      // untouched). No proof on disk (pre-#987 sessions, failed proof
+      // write) → ownByProof false → the conservative pre-#987 behaviour.
+      const semanticOnlyLive = !ownByUuid && !ownByProof && ownBySemantic && isLockLive(lock);
       const releaseEligible = (ownByUuid || ownBySemantic) && !semanticOnlyLive;
 
       if (releaseEligible) {
-        const releaseResult = release({ sessionId: lock.session_id, repoRoot: projectRoot });
+        // Defense-in-depth (#987): when a persisted proof exists, hand it to
+        // release() so the delete is double-gated (session_id match AND
+        // proof match) at the fs layer too. TRAP — release()'s proof gate
+        // triggers on `proof !== undefined`, so a null proof MUST be
+        // spread-guarded out: passing `proof: null` would fail
+        // isLockOwnedByProof() unconditionally and refuse EVERY release.
+        // A 'proof-mismatch' result flows into the existing release_failed
+        // breadcrumb below (releaseResult.reason surfaces verbatim).
+        const releaseResult = release({
+          sessionId: lock.session_id,
+          repoRoot: projectRoot,
+          ...(proof ? { proof } : {}),
+        });
         // release() has a no-throw contract (always returns a structured
         // result). A matched ownership that still fails to delete — an
         // fs-error, or an unexpected non-delete outcome other than the benign
@@ -327,6 +342,15 @@ async function main() {
               verified: releaseResult.verified === true,
             });
           } catch { /* observability is best-effort */ }
+
+          // #987 hygiene — the successful own release consumed the genesis
+          // proof; remove it best-effort. A leftover would be harmless (its
+          // millisecond started_at cannot match any FUTURE lock, so it
+          // self-invalidates), this just avoids the stale artifact. ENOENT
+          // (no proof was ever written) lands in the same swallow.
+          try {
+            await fs.unlink(path.join(projectRoot, OWNER_PROOF_RELPATH));
+          } catch { /* best-effort — a leftover proof is self-invalidating */ }
         }
       } else {
         // Root-cause reconciliation fallback: either NEITHER the UUID nor the
