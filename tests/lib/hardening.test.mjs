@@ -426,6 +426,65 @@ describe('commandMatchesBlocked', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // #965 — comment / here-doc / ANSI-C lexer bypass
+  //
+  // Measured before the fix by spawning hooks/pre-bash-destructive-guard.mjs
+  // against the real .orchestrator/policy/blocked-commands.json: 8 of the 9
+  // block-severity rules ALLOWED their own pattern behind a single leading
+  // `# don't`. One unbalanced apostrophe left the lexer in the 'single' state,
+  // so the whole command collapsed into one quoted token with verb `#`.
+  // -------------------------------------------------------------------------
+  describe('comment / here-doc / ANSI-C bypass (#965)', () => {
+    it.each([
+      // One row per block-severity rule that the discovery agent measured as
+      // bypassed. Each MUST match; before the fix each returned false.
+      ["# don't\nrm -rf src/", 'rm -rf'],
+      ["# don't\ngit reset --hard", 'git reset --hard'],
+      ["# don't\ngit push --force", 'git push --force'],
+      ["# don't\ngit push -f", 'git push -f'],
+      ["# don't\ngit clean -f", 'git clean -f'],
+      ["# don't\ngit clean -fd", 'git clean -fd'],
+      ["# don't\ngit checkout -- .", 'git checkout --'],
+      ['# it\'s fine\npsql -c "DROP TABLE users"', 'DROP TABLE'],
+      // The apostrophe arriving from a here-doc BODY rather than a comment.
+      ["cat <<'EOF' > /tmp/n\nit's fine\nEOF\nrm -rf src/", 'rm -rf'],
+      // The apostrophe arriving from an ANSI-C literal's escaped quote.
+      ["echo $'a\\'b'; rm -rf /", 'rm -rf'],
+    ])('still matches through an apostrophe: (%j, %s)', (command, pattern) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(true);
+    });
+
+    // Risk B — a DELIBERATE permissive verdict change. A comment is not a
+    // command and a here-doc body is data, so a pattern occurring ONLY there
+    // must no longer match. These were `true` before the fix.
+    it.each([
+      ['pattern only in a trailing comment', 'ls -la # rm -rf src/', 'rm -rf'],
+      ['pattern only in a comment after an operator', 'ls; # rm -rf /', 'rm -rf'],
+      ['SQL only in a comment', 'ls # DROP TABLE users', 'DROP TABLE'],
+      [
+        'pattern only in a here-doc body written to a file',
+        "cat <<'EOF' > /tmp/n\nrm -rf src/\nEOF",
+        'rm -rf',
+      ],
+    ])('Risk B — %s no longer matches', (_name, command, pattern) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(false);
+    });
+
+    // The carve-out on Risk B: a here-doc fed to an INTERPRETER is executed
+    // data. Reuses the existing #641 quoted-payload rule (the body is emitted
+    // as a quoted token) rather than introducing a second rule.
+    it.each([
+      ['bash <<EOF\nrm -rf /\nEOF', 'rm -rf', true],
+      ["sh <<'EOF'\nrm -rf /\nEOF", 'rm -rf', true],
+      ['psql <<EOF\nDROP TABLE users;\nEOF', 'DROP TABLE', true],
+      // …and the non-interpreter counterpart stays inert.
+      ['cat <<EOF\nrm -rf /\nEOF', 'rm -rf', false],
+    ])('here-doc payload for an interpreter: (%j, %s) === %s', (command, pattern, expected) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(expected);
+    });
+  });
+
   describe('additional edge cases', () => {
     it('returns false for empty pattern', () => {
       expect(commandMatchesBlocked('rm -rf /', '')).toBe(false);
@@ -492,12 +551,12 @@ describe('suggestForCommandBlock', () => {
     expect(result.toLowerCase()).toContain('discard');
   });
 
+  // The default branch is pinned here; a separate "returns a non-empty string
+  // for any pattern" case was removed — `.length > 0` is satisfied by any
+  // implementation that returns a character, so it named no bug (TV-002a) and
+  // the assertion below already covers the same branch specifically.
   it('includes the pattern itself in the message for unknown patterns', () => {
     const result = suggestForCommandBlock('some-unknown-cmd --flag');
     expect(result).toContain('some-unknown-cmd --flag');
-  });
-
-  it('returns a non-empty string for any pattern', () => {
-    expect(suggestForCommandBlock('anything').length).toBeGreaterThan(0);
   });
 });

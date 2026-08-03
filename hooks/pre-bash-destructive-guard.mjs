@@ -56,6 +56,7 @@ import {
 } from '../scripts/lib/command-blocker.mjs';
 import { readConfigFile } from '../scripts/lib/config.mjs';
 import { loadEffectivePolicy } from '../scripts/lib/blocked-commands-policy.mjs';
+import { isSessionConfigHeading } from '../scripts/lib/config/section-extractor.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -186,7 +187,11 @@ async function isGitStashNonEmpty(projectDir) {
  */
 function redirectSpanEnd(segment, i) {
   const tok = segment[i];
-  if (tok.redirect.mode !== 'dup' && i + 1 < segment.length && !segment[i + 1].redirect) {
+  // `dup` (2>&1) carries its target inline; `heredoc` consumes its delimiter in
+  // the lexer (the body arrives as a separate QUOTED token) — neither owns an
+  // operand word, and claiming one would swallow the next real token.
+  const hasOperandWord = tok.redirect.mode !== 'dup' && tok.redirect.mode !== 'heredoc';
+  if (hasOperandWord && i + 1 < segment.length && !segment[i + 1].redirect) {
     return i + 1;
   }
   return i;
@@ -206,16 +211,32 @@ function redirectSpanEnd(segment, i) {
  * falling back to the empty-target conservative block. Redirect tokens and
  * their operands are skipped (#983): they are IO targets, not rm targets.
  *
- * Returns an array of target path strings (possibly empty). The caller treats
- * the rm-rf rule as "allowed" only when EVERY returned target is allowlisted —
- * a segment whose pattern matched but whose verb does NOT resolve to `rm`
- * (e.g. an interpreter payload) contributes no targets and stays fail-closed.
+ * Returns BOTH halves of the operand/redirect split (merge of the two
+ * 2026-08-03 guard sessions — the two protection layers are complementary):
+ *   - `targets` — the rm operands (what gets deleted). Judged against the
+ *     rule's `path-allowlist` by the caller.
+ *   - `writeTargets` — the files each WRITE redirect (`truncate` or `append`
+ *     mode) in the same invocation clobbers-or-creates. Read redirects,
+ *     here-docs/here-strings and fd duplications (`2>&1`) contribute nothing.
+ *     The caller holds these to the SAME allowlist (with `/dev/null` carved
+ *     out via isNullSink), because `rm -rf /tmp/ok > src/important.ts` empties
+ *     a project file on the strength of an allowlisted rm operand. This is the
+ *     rm-context layer; protected artefacts (`> CLAUDE.md` — `> AGENTS.md` on
+ *     Codex CLI, the same truncation class) are ADDITIONALLY
+ *     denied command-independently by the `redirect-truncate-protected`
+ *     policy rule (rule 14).
+ *
+ * The caller treats the rm-rf rule as "allowed" only when EVERY operand and
+ * EVERY write-redirect target passes its respective check — a segment whose
+ * pattern matched but whose verb does NOT resolve to `rm` (e.g. an interpreter
+ * payload) contributes no targets and stays fail-closed.
  *
  * @param {string} command
- * @returns {string[]}
+ * @returns {{targets: string[], writeTargets: string[]}}
  */
 function parseRmTargets(command) {
   const targets = [];
+  const writeTargets = [];
 
   for (const segment of splitChainSegments(tokenizeCommand(command))) {
     const { verb, index } = resolveSegmentVerb(segment);
@@ -224,7 +245,18 @@ function parseRmTargets(command) {
     let seenDashDash = false;
     for (let i = index + 1; i < segment.length; i++) {
       const tok = segment[i];
-      if (tok.redirect) { i = redirectSpanEnd(segment, i); continue; }
+      if (tok.redirect) {
+        const end = redirectSpanEnd(segment, i);
+        const mode = tok.redirect.mode;
+        if ((mode === 'truncate' || mode === 'append') && end > i) {
+          const operand = segment[end];
+          if (operand && !(!operand.quoted && /^(;|&&|\|\||\||&)$/.test(operand.text))) {
+            writeTargets.push(operand.text);
+          }
+        }
+        i = end;
+        continue;
+      }
       if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
       // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
       if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
@@ -232,7 +264,24 @@ function parseRmTargets(command) {
     }
   }
 
-  return targets;
+  return { targets, writeTargets };
+}
+
+/**
+ * `/dev/null` is the one write-redirect destination that destroys nothing: it is
+ * a character device, so `>` on it neither truncates nor creates a file. It is
+ * also the single most common rm-plumbing target (`rm -rf /tmp/x 2> /dev/null`).
+ *
+ * Deliberately NOT folded into isRmPathAllowed: `rm -rf /dev/null` must stay
+ * blocked — deleting the device node is destructive, writing to it is not.
+ *
+ * @param {string} targetPath
+ * @returns {boolean}
+ */
+function isNullSink(targetPath) {
+  return Boolean(targetPath)
+    && path.isAbsolute(targetPath)
+    && path.normalize(targetPath) === path.join(path.sep, 'dev', 'null');
 }
 
 /**
@@ -246,6 +295,17 @@ function parseRmTargets(command) {
  *
  * Wrapper-aware (#982 T2) + redirect-skip (#983) — same segment mechanics as
  * parseRmTargets above.
+ *
+ * Redirect operators and their targets are skipped for the same reason as in
+ * parseRmTargets: a redirect target is a filename the shell consumes, so
+ * `rm -r /tmp/x > -f` must not read `-f` as rm's force flag.
+ *
+ * This walker deliberately DISCARDS redirect spans entirely. Its question is
+ * only "does this command contain a recursive+force rm at all", i.e. whether
+ * the rm-rf rule MATCHES — it never decides allow-vs-deny. Write-redirect
+ * targets are judged once, by the `redirect-truncate-protected` policy rule
+ * (rule 14), never here — a second collector would give the guard a silently
+ * divergent opinion about the same fact.
  *
  * @param {string} command
  * @returns {boolean}
@@ -551,7 +611,10 @@ async function main() {
     const lines = mdContent.split(/\r?\n/);
     let inConfig = false;
     for (const line of lines) {
-      if (line === '## Session Config') { inConfig = true; continue; }
+      // SSOT predicate (#968) — never re-derive this comparison. A local copy
+      // that drifts LOOSER than the extractor silently disagrees with the
+      // runtime about where the config block starts.
+      if (isSessionConfigHeading(line)) { inConfig = true; continue; }
       if (inConfig && /^## /.test(line)) break;
       if (inConfig) {
         const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
@@ -654,14 +717,25 @@ async function main() {
       // Special: rm-rf-destructive — path exception
       if (id === 'rm-rf-destructive') {
         const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
-        const targets = parseRmTargets(command);
+        const { targets, writeTargets } = parseRmTargets(command);
         // Allow ONLY when there is at least one target AND every target is
         // allowlisted. An unparseable command (no targets) or any non-allowlisted
         // target → block (conservative). This makes mixed chains like
         // `rm -rf /tmp/x; rm -rf src/` block on the src/ target.
+        //
+        // Every WRITE-redirect target of the same invocation must clear the SAME
+        // allowlist (with /dev/null carved out): `>` truncates its target before
+        // rm ever runs, so without this the allow path waved through
+        // `rm -rf /tmp/ok > src/important.ts` on the strength of an allowlisted
+        // rm operand. Protected artefacts (`> CLAUDE.md`) are ADDITIONALLY
+        // covered command-independently by rule 14 (redirect-truncate-protected)
+        // — two complementary layers from the two 2026-08-03 guard sessions.
         const allAllowed =
           targets.length > 0 &&
-          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist));
+          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist)) &&
+          writeTargets.every(
+            (t) => isNullSink(t) || isRmPathAllowed(t, projectDir, ruleAllowlist)
+          );
         if (allAllowed) {
           // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;

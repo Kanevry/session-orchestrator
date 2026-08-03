@@ -580,6 +580,115 @@ describe('#641 rm -rf /tmp allowlist traversal escape (exit 2)', { timeout: 1500
 });
 
 // ---------------------------------------------------------------------------
+// #965 Risk C — a redirect TARGET is not an `rm` operand
+//
+// The bug: `tokenizeCommand` emits redirect operators as standalone tokens but
+// leaves the target as an ordinary one (deliberately — dropping it inside the
+// lexer would have changed rm-allowlist verdicts from a module that cannot see
+// the allowlist). Both rm walkers here read that target as an rm TARGET, so
+// `rm -rf /tmp/scratch > /tmp/out.log` was judged as TWO targets. Since the
+// second is not on the rule's `path-allowlist`, `targets.every(allowed)` failed
+// and four legitimate temp cleanups were DENIED — measured against the real
+// policy file, not hypothesised.
+//
+// Both directions are pinned below, because this is a PERMISSIVE-direction fix:
+// the allow half proves the false positives are gone, and the deny half proves
+// the skip did not launder a non-allowlisted target past the allowlist. Without
+// the deny half, deleting `parseRmTargets`' allowlist check entirely would keep
+// the allow half green.
+//
+// ## The over-correction the second deny table pins
+//
+// The first cut of that skip was TARGET-BLIND: it dropped operator AND target
+// unconditionally. Bash agrees `rm` has one operand there, so the rm verdict was
+// right — but `>` TRUNCATES its target to zero bytes before rm ever runs, and no
+// rule in blocked-commands.json covers a bare `>`. So `rm -rf /tmp/ok > CLAUDE.md`
+// — an emptied CLAUDE.md, DENIED before the skip existed — became an ALLOW. Same
+// for `> /etc/passwd`, `> src/important.ts` and the `>|` clobber form.
+//
+// The fix distinguishes WRITE redirects (`>`, `>>`, `>|`, with any fd prefix)
+// from READ redirects (`<`, `<<`, `<<-`, `<<<`, which cannot truncate or create)
+// and holds every write target to the SAME allowlist the rm operands face, with
+// `/dev/null` carved out as the one non-destructible sink. The rows are grouped
+// by that discriminator on purpose: a regression that re-blinds the check flips
+// the write rows, and one that treats `<` like `>` flips the read rows.
+// ---------------------------------------------------------------------------
+
+describe('#965 rm redirect targets are not operands', { timeout: 30000 }, () => {
+  // ALLOW: the only operand is /tmp/scratch; the rest is shell plumbing whose
+  // target is either allowlisted, a null sink, or read-only (cannot truncate).
+  it.each([
+    ['stdout redirect', 'rm -rf /tmp/scratch > /tmp/out.log'],
+    ['bare (control — no redirect)', 'rm -rf /tmp/scratch'],
+    ['fd-prefixed stderr redirect to the null sink', 'rm -rf /tmp/scratch 2> /dev/null'],
+    ['fd-prefixed stderr redirect to an allowlisted file', 'rm -rf /tmp/scratch 2> /tmp/err.log'],
+    ['&> (lexes as chain-op & + >)', 'rm -rf /tmp/scratch &> /tmp/out.log'],
+    ['append redirect', 'rm -rf /tmp/scratch >> /tmp/out.log'],
+    ['clobber redirect to an allowlisted target', 'rm -rf /tmp/scratch >| /tmp/out.log'],
+    // READ redirects never truncate — their target needs no allowlist check,
+    // which is why these two keep a deliberately NON-allowlisted filename.
+    ['stdin redirect', 'rm -rf /tmp/scratch < /etc/passwd'],
+    ['here-string', 'rm -rf /tmp/scratch <<< /etc/passwd'],
+    ['stdin redirect from an allowlisted file', 'rm -rf /tmp/scratch < /tmp/in.txt'],
+    // `2>&1` lexes as `2>` `&` `1`: an fd DUPLICATION, no file target at all. A
+    // fix that denied every write redirect lacking a resolvable file target
+    // would break this extremely common shape.
+    ['fd duplication after an allowlisted redirect', 'rm -rf /tmp/x > /tmp/log 2>&1'],
+  ])('allows %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(result);
+  });
+
+  // DENY, group 1: the OPERAND is non-allowlisted. Each row pairs it with a
+  // redirect whose target IS allowlisted — so a regression that counted the
+  // redirect target again, or that skipped operand checking wholesale, flips these.
+  it.each([
+    ['non-allowlisted operand + allowlisted redirect target',
+      'rm -rf /etc/passwd > /tmp/out.log'],
+    ['non-allowlisted operand + allowlisted append target',
+      'rm -rf src/ >> /tmp/out.log'],
+    ['redirect must not swallow the chain operator',
+      'rm -rf /tmp/scratch > /tmp/out.log; rm -rf /etc'],
+    ['traversal escape survives a redirect',
+      'rm -rf /tmp/../etc > /tmp/out.log'],
+    ['redirect with NO operand is unparseable → conservative deny',
+      'rm -rf > /tmp/out.log'],
+    ['redirect operator cannot hide a trailing non-allowlisted operand',
+      'rm -rf > x /etc'],
+    ['redirect with an allowlisted target cannot hide a trailing operand',
+      'rm -rf > /tmp/x /etc'],
+    ['dangling redirect cannot swallow the chain into a second rm',
+      'rm -rf /tmp/x > ; rm -rf src/'],
+    ['fd-prefixed redirect cannot hide a trailing non-allowlisted operand',
+      'rm -rf 2>/dev/null /etc'],
+    ['fd-prefixed redirect after a non-allowlisted operand',
+      'rm -rf /etc 2>/dev/null'],
+  ])('blocks %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectDeny(result);
+  });
+
+  // DENY, group 2 — the target-blind-skip regression. The OPERAND is allowlisted
+  // in every row; the WRITE-redirect target is not. Each command destroys the
+  // named file's contents behind an exit-0 allow when the write target goes
+  // unchecked, which is exactly what the first cut of the skip did.
+  it.each([
+    ['truncating /etc/passwd via stdout redirect', 'rm -rf /tmp/ok > /etc/passwd'],
+    ['truncating project source via stdout redirect', 'rm -rf /tmp/ok > src/important.ts'],
+    ['truncating CLAUDE.md via stdout redirect', 'rm -rf /tmp/ok > CLAUDE.md'],
+    ['truncating a quoted project-file target', 'rm -rf /tmp/ok > "CLAUDE.md"'],
+    ['clobbering /etc via >|', 'rm -rf /tmp/scratch >| /etc/out.log'],
+    ['appending into /etc via fd-prefixed >>', 'rm -rf /tmp/ok 2>> /etc/log'],
+  ])('blocks %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectDeny(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #641 — gap closures: rm flag-form variants must block
 // ---------------------------------------------------------------------------
 
@@ -865,7 +974,10 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
 
 describe('#983 rm-target collection skips redirect tokens', { timeout: 15000 }, () => {
   it.each([
-    ['rm -rf /tmp/ok > out.log — the redirect operand is not an rm target', 'rm -rf /tmp/ok > out.log'],
+    // The redirect target must itself be allowlisted (merged write-target layer):
+    // the skip is proven by `>` no longer failing the allowlist as a phantom
+    // rm target, not by waving unchecked write destinations through.
+    ['rm -rf /tmp/ok > /tmp/out.log — the redirect operand is not an rm target', 'rm -rf /tmp/ok > /tmp/out.log'],
     ['rm -rf /tmp/ok 2>/dev/null — an fd redirect is not an rm target', 'rm -rf /tmp/ok 2>/dev/null'],
   ])('allows `%s`', async (_label, command) => {
     const dir = await mkProjectTracked();

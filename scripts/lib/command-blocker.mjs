@@ -189,14 +189,84 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
   return out;
 }
 
+/** Unquoted characters that terminate a here-doc delimiter word. */
+const WORD_END_CHARS = new Set([';', '|', '&', '<', '>', '(', ')', '\n']);
+
+/**
+ * Read ONE shell word starting at `i`, resolving quotes and backslash escapes to
+ * the logical value bash would pass. Used only for a here-doc DELIMITER
+ * (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`), which is syntax rather than an
+ * argument and therefore never becomes a token of its own.
+ *
+ * @param {string} command
+ * @param {number} i
+ * @returns {{ value: string, end: number }}
+ */
+function readDelimiterWord(command, i) {
+  let value = '';
+  let state = 'normal';
+  while (i < command.length) {
+    const ch = command[i];
+    if (state === 'single') {
+      if (ch === "'") { state = 'normal'; i++; continue; }
+      value += ch; i++; continue;
+    }
+    if (state === 'double') {
+      if (ch === '"') { state = 'normal'; i++; continue; }
+      if (ch === '\\' && i + 1 < command.length) { value += command[i + 1]; i += 2; continue; }
+      value += ch; i++; continue;
+    }
+    if (/\s/.test(ch) || WORD_END_CHARS.has(ch)) break;
+    if (ch === '\\' && i + 1 < command.length) { value += command[i + 1]; i += 2; continue; }
+    if (ch === "'") { state = 'single'; i++; continue; }
+    if (ch === '"') { state = 'double'; i++; continue; }
+    value += ch; i++;
+  }
+  return { value, end: i };
+}
+
+/**
+ * Read a here-doc BODY starting at `from` (the first character after the newline
+ * that opened it) up to — and excluding — its terminator line.
+ *
+ * `terminated` is false when the delimiter line never arrived. That is NOT a
+ * body — it is a malformed command (or, more often, a `<<` that was never a
+ * here-doc operator at all), and the caller MUST NOT emit the swallowed text as
+ * an inert quoted token. See the `terminated === false` branch in
+ * {@link tokenizeCommand}.
+ *
+ * @param {string} command
+ * @param {number} from
+ * @param {string} delim
+ * @param {boolean} stripTabs — `<<-` form: leading tabs are ignored on every line
+ * @returns {{ body: string, end: number, terminated: boolean }} end = index just past the terminator line
+ */
+function readHeredocBody(command, from, delim, stripTabs) {
+  const lines = [];
+  let i = from;
+  while (i < command.length) {
+    let lineEnd = command.indexOf('\n', i);
+    if (lineEnd === -1) lineEnd = command.length;
+    const raw = command.slice(i, lineEnd);
+    const line = stripTabs ? raw.replace(/^\t+/, '') : raw;
+    i = lineEnd + 1;
+    if (line === delim) {
+      return { body: lines.join('\n'), end: Math.min(i, command.length), terminated: true };
+    }
+    lines.push(line);
+  }
+  // Terminator never arrived. The caller decides what to do; it is NOT a body.
+  return { body: lines.join('\n'), end: command.length, terminated: false };
+}
+
 /**
  * Hand-rolled quote-aware command lexer.
  *
- * Splits a command string into tokens on UNQUOTED whitespace, tracking single- and
- * double-quote state and backslash escapes. Each token records whether ANY of its
- * characters originated inside quotes (`quoted: true`). Quote characters and the
- * escaping backslash are consumed (not part of the token text), so the returned
- * token text is the logical argument value a shell would pass.
+ * Splits a command string into tokens on UNQUOTED whitespace, tracking quote
+ * state and backslash escapes. Each token records whether ANY of its characters
+ * originated inside quotes (`quoted: true`). Quote characters and the escaping
+ * backslash are consumed (not part of the token text), so the returned token text
+ * is the logical argument value a shell would pass.
  *
  * This is deliberately NOT node:util.parseArgs — parseArgs operates on an already-
  * tokenized argv array and does not lex raw shell strings with quote semantics.
@@ -205,6 +275,9 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
  * Notes / scope (sufficient for the guard, not a full POSIX shell parser):
  *   - Single quotes: literal, no escapes inside (POSIX).
  *   - Double quotes: backslash escapes the next char.
+ *   - ANSI-C quotes `$'…'`: like single quotes but `\` escapes the next char, so
+ *     `$'a\'b'` is ONE token `a'b` (#965). Whitespace-only bodies (`$'\t'`) never
+ *     reach here — normalizeShellWhitespaceExpansions folded them to a space first.
  *   - Outside quotes: backslash escapes the next char (incl. whitespace → same token).
  *   - A token that mixes quoted + unquoted runs (e.g. foo"bar") is `quoted: true`
  *     because part of it came from a quoted run — conservative for the guard.
@@ -218,6 +291,52 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
  *     one glued token). The `redirect` field appears ONLY on redirect tokens —
  *     ordinary tokens keep the exact `{ text, quoted }` shape.
  *
+ * ## Comments, here-docs and redirects (#965)
+ *
+ * Before #965 the lexer knew none of these, and one apostrophe in ordinary
+ * English prose (`# don't`) left it stuck in "single" for the rest of the input:
+ * everything downstream collapsed into a single `quoted: true` token whose verb
+ * resolved to `#`, so NO rule matched. That was a measured, complete bypass of
+ * 8 of the 9 `block`-severity rules — `# don't\nrm -rf src/` was ALLOWED.
+ *
+ *   - `#` that STARTS a word outside quotes begins a comment running to
+ *     end-of-line. The comment text produces no tokens: a comment is not a
+ *     command, so `ls -la # rm -rf src/` no longer matches (deliberate, tested).
+ *   - `<<EOF` / `<<'EOF'` / `<<-EOF` bodies are DATA, not command text. The body
+ *     becomes ONE token with `quoted: true`, which routes it into the existing
+ *     quoted-payload guard (#641) rather than a second rule: inert for
+ *     `cat <<EOF`, still matched for `bash <<EOF` because `bash` is in
+ *     SHELL_EXEC_INTERPRETERS. The delimiter word itself is syntax and emits no
+ *     token; the `<<` operator does.
+ *
+ *     TWO gates keep that inert-body path from swallowing real command text —
+ *     both are load-bearing, and each catches inputs the other misses (#970):
+ *
+ *     1. **Operator position.** `<<` is only a here-doc when it is a REDIRECT.
+ *        Inside arithmetic it is the left-shift operator, so `arithDepth`
+ *        tracks `$((`/`((` … `))` and the branch is skipped while depth > 0.
+ *        A delimiter word immediately followed by `)` is likewise rejected.
+ *        Without this, `echo $((1<<2))` opened a phantom here-doc whose
+ *        delimiter was the fragment `2`, and everything after the next newline
+ *        became one inert `quoted: true` token under the verb `echo`.
+ *     2. **Terminator required.** When the delimiter line never arrives, the
+ *        swallowed text is NOT data — it is either a malformed command or, far
+ *        more often, proof that gate 1 mis-read the `<<` (`let x=1<<2`, an
+ *        indented `EOF` without `<<-`). The body is then NOT emitted as an
+ *        inert token: lexing resumes at the body's first character so the text
+ *        is read as the commands it is. That is the conservative direction —
+ *        the unterminated-QUOTE path may fail open (a wedged lexer that blocks
+ *        every Bash call is worse than a missed enforcement), but a body that
+ *        swallowed real commands may not.
+ *   - Redirect operators (`>`, `>>`, `>|`, `N>`, `<`, `<<<`) become standalone
+ *     tokens so a consumer can tell a redirect target apart from an argument.
+ *     NOTE for consumers: the redirect TARGET is still emitted as an ordinary
+ *     token — dropping it here would have silently changed rm-allowlist verdicts
+ *     from a module that cannot see the allowlist. `&>` deliberately lexes as the
+ *     existing `&` operator followed by `>`, preserving today's segment split (and
+ *     with it `rm -rf /tmp/x &> log` staying ALLOWED); the `;`/`|`/`&` branch runs
+ *     first and is never shadowed.
+ *
  * @param {string} command
  * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string } }>}
  */
@@ -229,7 +348,9 @@ export function tokenizeCommand(command) {
   let text = '';
   let started = false;     // a token is in progress
   let sawQuote = false;    // any char of the current token came from inside quotes
-  let state = 'normal';    // 'normal' | 'single' | 'double'
+  let state = 'normal';    // 'normal' | 'single' | 'double' | 'ansi'
+  let arithDepth = 0;      // open `$((` / `((` levels — inside them `<<` is a shift
+  const pendingHeredocs = [];
 
   const flush = () => {
     if (started) {
@@ -238,6 +359,19 @@ export function tokenizeCommand(command) {
       started = false;
       sawQuote = false;
     }
+  };
+
+  // A leading all-digit word is the fd of a redirect (`2> log`), not an argument.
+  // Returns the digits to prefix onto the operator token; flushes otherwise.
+  const takeFdPrefix = () => {
+    if (started && !sawQuote && /^\d+$/.test(text)) {
+      const digits = text;
+      text = '';
+      started = false;
+      return digits;
+    }
+    flush();
+    return '';
   };
 
   for (let i = 0; i < command.length; i++) {
@@ -249,12 +383,13 @@ export function tokenizeCommand(command) {
       continue;
     }
 
-    if (state === 'double') {
-      if (ch === '"') { state = 'normal'; continue; }
+    if (state === 'double' || state === 'ansi') {
+      if (ch === (state === 'double' ? '"' : "'")) { state = 'normal'; continue; }
       if (ch === '\\' && i + 1 < command.length) {
         const next = command[i + 1];
-        // In double quotes, backslash only escapes a small set; keep it simple:
-        // consume the backslash and take the next char literally.
+        // In double / ANSI-C quotes, backslash escapes the next char; keep it
+        // simple and take that char literally (this is what makes `$'a\'b'`
+        // one token instead of an unbalanced quote — #965).
         text += next; started = true; sawQuote = true; i++;
         continue;
       }
@@ -263,13 +398,64 @@ export function tokenizeCommand(command) {
     }
 
     // state === 'normal'
+
+    // A `#` in WORD position comments out the rest of the line. Leave the newline
+    // itself for the heredoc/whitespace handling below.
+    if (ch === '#' && !started) {
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++;
+      continue;
+    }
+
+    // A newline with here-docs pending: their bodies start here and are DATA —
+    // but ONLY while each one actually finds its terminator (gate 2, #970). The
+    // first unterminated body abandons here-doc mode: `j` still points at that
+    // body's first character, so lexing resumes there and the text is read as
+    // the commands it is instead of collapsing into one inert quoted token.
+    if (ch === '\n' && pendingHeredocs.length > 0) {
+      flush();
+      let j = i + 1;
+      while (pendingHeredocs.length > 0) {
+        const { delim, stripTabs } = pendingHeredocs.shift();
+        const { body, end, terminated } = readHeredocBody(command, j, delim, stripTabs);
+        if (!terminated) { pendingHeredocs.length = 0; break; }
+        if (body.length > 0) tokens.push({ text: body, quoted: true });
+        j = end;
+      }
+      i = j - 1;
+      continue;
+    }
+
     if (ch === "'") { state = 'single'; started = true; continue; }
     if (ch === '"') { state = 'double'; started = true; continue; }
+    if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; started = true; i++; continue; }
+
+    // Arithmetic context (gate 1, #970). `$((`/`((` open a level, `))` closes
+    // one. The characters are still appended verbatim — the ONLY effect is that
+    // the here-doc branch below stands down while depth > 0, because there `<<`
+    // is the left-shift operator, not a redirect.
+    if (ch === '$' && command[i + 1] === '(' && command[i + 2] === '(') {
+      arithDepth++; text += '$(('; started = true; i += 2;
+      continue;
+    }
+    if (ch === '(' && command[i + 1] === '(' && !started) {
+      arithDepth++; text += '(('; started = true; i++;
+      continue;
+    }
+    if (arithDepth > 0 && ch === ')' && command[i + 1] === ')') {
+      arithDepth--; text += '))'; started = true; i++;
+      continue;
+    }
+
     if (ch === '\\' && i + 1 < command.length) {
       text += command[i + 1]; started = true; i++;
       continue;
     }
     if (/\s/.test(ch)) { flush(); continue; }
+
+    // Inside `$(( … ))` / `(( … ))` every `<` / `>` is a shift or comparison
+    // operator, never a redirect (gate 1, #970) — append verbatim so the
+    // redirect branches below never tear an arithmetic expression apart.
+    if (arithDepth > 0 && (ch === '<' || ch === '>')) { text += ch; started = true; continue; }
 
     // Redirect operators (#983) — longest-match-first, and BEFORE the
     // chain-operator branch below so `&>` / `&>>` win over the `&` operator.
@@ -285,16 +471,41 @@ export function tokenizeCommand(command) {
       continue;
     }
     if (ch === '<') {
-      flush();
       if (command[i + 1] === '<' && command[i + 2] === '<') {
+        flush();
         tokens.push({ text: '<<<', quoted: false, redirect: { fd: null, mode: 'herestring' } });
         i += 2;
-      } else if (command[i + 1] === '<') {
-        tokens.push({ text: '<<', quoted: false, redirect: { fd: null, mode: 'heredoc' } });
-        i += 1;
-      } else {
-        tokens.push({ text: '<', quoted: false, redirect: { fd: null, mode: 'read' } });
+        continue;
       }
+      if (command[i + 1] === '<') {
+        // Here-doc `<<WORD` / `<<-WORD` — merged #965/#970 machinery: the
+        // delimiter is SYNTAX (consumed, never a token of its own); the body
+        // is consumed at the next newline as ONE quoted token, but ONLY while
+        // every pending here-doc finds its terminator (gate 2 — see the `\n`
+        // branch above). A delimiter butted against `)` is rejected
+        // (belt-and-braces for an arithmetic form the depth counter did not
+        // see): the operator token is still emitted, no body is queued.
+        let j = i + 2;
+        let stripTabs = false;
+        if (command[j] === '-') { stripTabs = true; j++; }
+        let k = j;
+        while (command[k] === ' ' || command[k] === '\t') k++;
+        const { value, end } = readDelimiterWord(command, k);
+        const fdDigits = takeFdPrefix();
+        const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
+        const opText = `${fdDigits}<<${stripTabs ? '-' : ''}`;
+        tokens.push({ text: opText, quoted: false, redirect: { fd: fdNum, mode: 'heredoc' } });
+        if (value && command[end] !== ')') {
+          pendingHeredocs.push({ delim: value, stripTabs });
+          i = end - 1;
+        } else {
+          i = j - 1;
+        }
+        continue;
+      }
+      const fdDigits = takeFdPrefix();
+      const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
+      tokens.push({ text: `${fdDigits}<`, quoted: false, redirect: { fd: fdNum, mode: 'read' } });
       continue;
     }
     if (ch === '>') {
@@ -333,6 +544,8 @@ export function tokenizeCommand(command) {
     // Unquoted shell control operators become standalone tokens so chain-splitting
     // and per-segment verb detection work even without surrounding whitespace
     // (e.g. `/tmp/x;rm -rf src/`). Recognised: ; && || | & — longest match first.
+    // The redirect branches above win for `&>` / `&>>` (one token since the
+    // #983 redirect token class), so this branch only ever sees a bare chain `&`.
     if (ch === ';' || ch === '|' || ch === '&') {
       flush();
       let op = ch;
@@ -345,8 +558,9 @@ export function tokenizeCommand(command) {
   }
 
   // Unterminated quote → flush whatever accumulated (mark quoted so the guard treats
-  // the dangling text conservatively).
-  if (state === 'single' || state === 'double') sawQuote = true;
+  // the dangling text conservatively). Deliberately fail-OPEN in the lexer: a wedged
+  // guard that blocks every Bash call is strictly worse than a missed enforcement.
+  if (state !== 'normal') sawQuote = true;
   flush();
 
   return tokens;
@@ -411,7 +625,14 @@ const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * ends option parsing. Deliberately NOT listed:
  *   - `su`   — interpreter (SHELL_EXEC_INTERPRETERS), its `-c` payload executes;
  *   - `xargs` — interpreter; unwrapping it would LOOSEN the guard;
- *   - `time` / `flock` / `setsid` / `ionice` — scope cut (#982, operator-approved).
+ *   - `flock` / `setsid` / `ionice` — scope cut (#982, operator-approved).
+ *
+ * `time` IS listed (merge of the #970 here-doc line of work): the here-doc
+ * design's safety argument is that a body fed to an interpreter still matches
+ * because `bash` is in SHELL_EXEC_INTERPRETERS — that only holds when `bash`
+ * is the RESOLVED verb, so `sudo bash <<EOF` / `time bash <<EOF` must unwrap.
+ * This table is ALSO the alignment target for the ledger-guard's
+ * `VERB_PREFIXES` copy (see #991) — do not fork a second wrapper list.
  *
  * Exported so downstream guards (ledger) can converge on the same table.
  */
@@ -436,6 +657,7 @@ export const WRAPPER_UNWRAP = new Map([
   }],
   ['command', {}],
   ['nohup', {}],
+  ['time', {}],
   ['timeout', {
     argFlags: new Set(['-k', '--kill-after', '-s', '--signal']),
     positionals: 1,
@@ -454,6 +676,10 @@ export const WRAPPER_UNWRAP = new Map([
  * wrappers per WRAPPER_UNWRAP (`sudo env FOO=1 nice -n 10 bash …` → `bash`),
  * collecting any wrapper-level command-string payloads (`env -S '…'`) on the
  * way (#982).
+ *
+ * Skipping a prefix can only move verb resolution TOWARDS the real command, and
+ * a skipped token is either a wrapper name, an option or a duration — never an
+ * interpreter — so this cannot turn a match into a miss.
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {{ verb: string|null, index: number, payloads: string[] }}
@@ -581,7 +807,11 @@ function unquotedSegmentMatch(segment, re) {
     const tok = segment[i];
     if (tok.redirect) {
       parts.push(' ');
-      if (tok.redirect.mode !== 'dup' && i + 1 < segment.length && !segment[i + 1].redirect) {
+      // `dup` (2>&1) has its target inline; `heredoc` consumes its delimiter in
+      // the lexer and its body arrives as a separate QUOTED token — neither has
+      // an operand word to skip, and skipping would eat the next real command.
+      const hasOperandWord = tok.redirect.mode !== 'dup' && tok.redirect.mode !== 'heredoc';
+      if (hasOperandWord && i + 1 < segment.length && !segment[i + 1].redirect) {
         parts.push(' ');
         i++; // operand word belongs to the redirect — skip it too
       }

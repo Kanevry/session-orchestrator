@@ -45,50 +45,32 @@ describe('loadQualityGatesPolicy', () => {
     expect(policy.commands.test.command).toBe('npm test');
   });
 
-  it('returns null on malformed JSON', () => {
-    writePolicy('{ not json');
-    expect(loadQualityGatesPolicy(sandbox)).toBeNull();
-  });
-
-  it('returns null on unsupported version', () => {
-    writePolicy(
-      JSON.stringify({
-        version: 2,
-        commands: { test: { command: 'x', required: true } },
-      })
-    );
-    expect(loadQualityGatesPolicy(sandbox)).toBeNull();
-  });
-
-  it('returns null when commands is missing', () => {
-    writePolicy(JSON.stringify({ version: 1 }));
-    expect(loadQualityGatesPolicy(sandbox)).toBeNull();
-  });
-
-  it('returns null when a required command key is missing', () => {
-    writePolicy(
-      JSON.stringify({
-        version: 1,
-        commands: {
-          test: { command: 'npm test', required: true },
-          typecheck: { command: 'tsc', required: true },
-        },
-      })
-    );
-    expect(loadQualityGatesPolicy(sandbox)).toBeNull();
-  });
-
-  it('returns null when a command string is empty', () => {
-    writePolicy(
-      JSON.stringify({
-        version: 1,
-        commands: {
-          test: { command: '', required: true },
-          typecheck: { command: 'tsc', required: true },
-          lint: { command: 'eslint', required: true },
-        },
-      })
-    );
+  // One rejection contract, five malformed inputs — the bodies were byte-identical
+  // apart from the fixture, so they are a table rather than five copies (TV-004).
+  it.each([
+    ['malformed JSON', '{ not json'],
+    ['unsupported version', JSON.stringify({
+      version: 2,
+      commands: { test: { command: 'x', required: true } },
+    })],
+    ['commands is missing', JSON.stringify({ version: 1 })],
+    ['a required command key is missing', JSON.stringify({
+      version: 1,
+      commands: {
+        test: { command: 'npm test', required: true },
+        typecheck: { command: 'tsc', required: true },
+      },
+    })],
+    ['a command string is empty', JSON.stringify({
+      version: 1,
+      commands: {
+        test: { command: '', required: true },
+        typecheck: { command: 'tsc', required: true },
+        lint: { command: 'eslint', required: true },
+      },
+    })],
+  ])('returns null when %s', (_name, contents) => {
+    writePolicy(contents);
     expect(loadQualityGatesPolicy(sandbox)).toBeNull();
   });
 

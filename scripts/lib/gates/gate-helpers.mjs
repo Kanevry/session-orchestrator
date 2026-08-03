@@ -197,6 +197,89 @@ export function extractTestCounts(output) {
 }
 
 /**
+ * Admit a suite-count triple, or refuse to claim a measurement.
+ *
+ * ## Why this exists (#967 item 2)
+ *
+ * Two functions used to write the `counts` field of the SAME
+ * `orchestrator.quality_gate.*` event under DIFFERENT admission policies:
+ * `suiteCountsFromGateStdout` (`scripts/run-quality-gate.mjs`) rejected
+ * inconsistent triples, while `suiteCountsFromOutput` (`scripts/lib/quality-gate.mjs`)
+ * admitted `passed > total` and a negative `passed`. A consumer therefore had to
+ * know two policies to read one field. This is the single shared policy; both
+ * callers keep only their own input adapter.
+ *
+ * ## Absent-not-null
+ *
+ * Returns `null` — NEVER a zero triple — for any unmeasured or inconsistent
+ * input. `{passed: 0, failed: 0, total: 0}` would be indistinguishable from a
+ * real all-skipped run and would publish a phantom measurement. Callers spread
+ * the result so the field is OMITTED rather than zero-filled:
+ *
+ * ```js
+ * const counts = admitSuiteCounts(raw);
+ * await emitEvent(name, { ...(counts ? { counts } : {}) });
+ * ```
+ *
+ * ## ONE channel for "the gate did not run" — a NULL `raw` (#969 MED-2)
+ *
+ * This function used to take a second `opts.measured` channel: `false` was an
+ * unconditional refusal, meant to carry the caller's positional evidence that no
+ * test gate ran. It was dead. Both adapters ALREADY convert that evidence to a
+ * null `raw` before the policy sees it (`suiteCountsFromOutput` returns
+ * `admitSuiteCounts(null)` for a null/empty output; the CLI's
+ * `suiteCountsFromGateStdout` returns `null` from its own envelope checks and
+ * never passed the opt at all), so no production path could ever reach here with
+ * a non-null triple AND `measured: false` — only test rows exercised the flag.
+ *
+ * Keeping both was the real cost: "the gate did not run" was expressible two
+ * ways and checked in two places, so a future caller could pass a real triple
+ * with `measured: false`, or a STALE triple with `measured: true`, and the two
+ * channels would disagree with the unverifiable boolean silently winning. A
+ * null `raw` is the channel that survives because the policy must reject
+ * non-objects anyway — it is structural, not an extra parameter, and it is
+ * expressible by every caller including the one that never opted in.
+ *
+ * ## What stays with the CALLER (deliberately not absorbed)
+ *
+ * This function sees a candidate triple and nothing else. It performs no I/O and
+ * reads no files. The following are per-caller INPUT ADAPTERS and must not
+ * migrate here: JSON-envelope parsing; the `test`-object-vs-status-string
+ * variant discrimination (non-full-gate variants emit a bare status string);
+ * `test.status ∈ {pass, fail}`; the `parsed.stubbed?.test` short-circuit; the
+ * raw-text tail parse ({@link extractTestCounts}); and the positional evidence
+ * that the test gate ran at all — which each caller expresses by handing over
+ * `null` rather than a triple.
+ *
+ * `failed` is accepted when the caller parsed one and DERIVED as `total - passed`
+ * when it did not, so both the parsed-`failed` path and the derived-`failed` path
+ * land on one consistency check (`passed + failed === total`).
+ *
+ * @param {{passed?: unknown, failed?: unknown, total?: unknown}|null|undefined} raw
+ *   `null`/`undefined` is the caller's evidence that there is no measurement to
+ *   admit (gate skipped, stub command, fail-fast before the test step, or no
+ *   parseable count in the output).
+ * @returns {{passed: number, failed: number, total: number}|null}
+ */
+export function admitSuiteCounts(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+  const { passed, total } = raw;
+  if (!Number.isFinite(passed) || !Number.isFinite(total)) return null;
+
+  const failed = Number.isFinite(raw.failed) ? raw.failed : total - passed;
+
+  if (total <= 0) return null;
+  if (passed < 0 || failed < 0) return null;
+  // Redundant given the sum check below while `failed >= 0`, but kept explicit:
+  // it is the check the looser of the two former policies was missing.
+  if (passed > total) return null;
+  if (passed + failed !== total) return null;
+
+  return { passed, failed, total };
+}
+
+/**
  * Scan changed files (since `ref`) for debug artifacts: `console.log`, `debugger`, `TODO`, `FIXME`.
  *
  * @param {string} ref - Git ref. Returns [] if empty or no changed files.

@@ -34,57 +34,25 @@ function run(extraEnv = {}) {
 // ---------------------------------------------------------------------------
 
 describe('gate-full — all skip', () => {
-  it('exits 0 when all three checks are skipped', () => {
+  // Consolidated from 9 single-assertion `it`s that each re-spawned the gate to
+  // read ONE field of the SAME envelope (TV-002 duplication). One spawn, one
+  // envelope, whole-object assertions — which are also tighter than the
+  // per-field `toBe`s they replace.
+  it('emits the documented all-skip envelope and exits 0', () => {
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
     expect(r.status).toBe(0);
-  });
 
-  it('emits a valid JSON object to stdout', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    expect(() => JSON.parse(r.stdout)).not.toThrow();
-  });
-
-  it('JSON contains variant="full-gate"', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
     expect(json.variant).toBe('full-gate');
-  });
-
-  it('JSON typecheck.status is "skip"', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.typecheck.status).toBe('skip');
-  });
-
-  it('JSON test.status is "skip"', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.test.status).toBe('skip');
-  });
-
-  it('JSON lint.status is "skip"', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.lint.status).toBe('skip');
-  });
-
-  it('JSON contains duration_seconds as a non-negative number', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
+    expect(json.typecheck).toEqual({ status: 'skip', error_count: 0 });
+    // `failed` is published explicitly since #967 item 1 — a skipped test gate
+    // must still carry the key (as 0), or the consumer's
+    // `passed + failed === total` drift check silently degrades to a derivation.
+    expect(json.test).toEqual({ status: 'skip', total: 0, passed: 0, failed: 0 });
+    expect(json.lint).toEqual({ status: 'skip', warnings: 0 });
+    expect(json.debug_artifacts).toEqual([]);
     expect(typeof json.duration_seconds).toBe('number');
     expect(json.duration_seconds).toBeGreaterThanOrEqual(0);
-  });
-
-  it('JSON contains debug_artifacts as an empty array when no ref given', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(Array.isArray(json.debug_artifacts)).toBe(true);
-  });
-
-  it('JSON lint.warnings is 0 when lint is skipped', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.lint.warnings).toBe(0);
   });
 });
 
@@ -93,15 +61,12 @@ describe('gate-full — all skip', () => {
 // ---------------------------------------------------------------------------
 
 describe('gate-full — typecheck failure', () => {
-  it('exits 2 when typecheck fails', () => {
+  // Consolidated from 4 `it`s (3 of which re-spawned the identical command).
+  it('exits 2, reports status "fail", and counts 0 errors without TS error lines', () => {
     const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip', LINT_CMD: 'skip' });
     expect(r.status).toBe(2);
-  });
-
-  it('typecheck.status is "fail" when command exits non-zero', () => {
-    const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip', LINT_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck.status).toBe('fail');
+    expect(json.typecheck).toEqual({ status: 'fail', error_count: 0 });
   });
 
   it('typecheck.error_count is >= 1 when output contains TS error lines', () => {
@@ -110,12 +75,6 @@ describe('gate-full — typecheck failure', () => {
     const json = JSON.parse(r.stdout);
     expect(json.typecheck.error_count).toBeGreaterThanOrEqual(1);
   });
-
-  it('typecheck.error_count is 0 when output has no TS error lines', () => {
-    const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.typecheck.error_count).toBe(0);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -123,15 +82,11 @@ describe('gate-full — typecheck failure', () => {
 // ---------------------------------------------------------------------------
 
 describe('gate-full — test failure', () => {
-  it('exits 2 when TEST_CMD fails', () => {
+  // Consolidated from 2 `it`s that re-spawned the identical command.
+  it('exits 2 and reports test.status "fail" when TEST_CMD fails', () => {
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "process.exit(1)"', LINT_CMD: 'skip' });
     expect(r.status).toBe(2);
-  });
-
-  it('test.status is "fail" when command exits non-zero', () => {
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "process.exit(1)"', LINT_CMD: 'skip' });
-    const json = JSON.parse(r.stdout);
-    expect(json.test.status).toBe('fail');
+    expect(JSON.parse(r.stdout).test.status).toBe('fail');
   });
 });
 
@@ -140,21 +95,14 @@ describe('gate-full — test failure', () => {
 // ---------------------------------------------------------------------------
 
 describe('gate-full — all pass', () => {
-  it('exits 0 when all three commands succeed', () => {
+  // Consolidated from 2 `it`s that re-spawned the identical env.
+  it('exits 0 with all three statuses "pass" when commands succeed', () => {
     const r = run({
       TYPECHECK_CMD: 'echo TC_OK',
       TEST_CMD: 'echo TEST_OK',
       LINT_CMD: 'echo LINT_OK',
     });
     expect(r.status).toBe(0);
-  });
-
-  it('all statuses are "pass" when commands succeed', () => {
-    const r = run({
-      TYPECHECK_CMD: 'echo TC_OK',
-      TEST_CMD: 'echo TEST_OK',
-      LINT_CMD: 'echo LINT_OK',
-    });
     const json = JSON.parse(r.stdout);
     expect(json.typecheck.status).toBe('pass');
     expect(json.test.status).toBe('pass');
@@ -184,32 +132,16 @@ describe('gate-full — stubbed field in emitted JSON', () => {
     expect(json.stubbed).toEqual({});
   });
 
-  it('JSON stubbed.test is { kind: "echo" } when TEST_CMD is an echo stub', () => {
-    const r = run({
-      TYPECHECK_CMD: 'node -e "process.exit(0)"',
-      TEST_CMD: 'echo "no tests yet"',
-      LINT_CMD: 'node -e "process.exit(0)"',
-    });
-    const json = JSON.parse(r.stdout);
-    expect(json.stubbed.test).toEqual({ kind: 'echo' });
-  });
-
-  it('overall exit code is 0 (pass) when TEST_CMD is an echo stub', () => {
+  // Consolidated from 3 `it`s that re-spawned the identical echo-stub env.
+  it('flags an echo TEST_CMD as a stub while still passing the gate', () => {
     const r = run({
       TYPECHECK_CMD: 'node -e "process.exit(0)"',
       TEST_CMD: 'echo "no tests yet"',
       LINT_CMD: 'node -e "process.exit(0)"',
     });
     expect(r.status).toBe(0);
-  });
-
-  it('JSON test.status is "pass" when TEST_CMD is an echo stub', () => {
-    const r = run({
-      TYPECHECK_CMD: 'node -e "process.exit(0)"',
-      TEST_CMD: 'echo "no tests yet"',
-      LINT_CMD: 'node -e "process.exit(0)"',
-    });
     const json = JSON.parse(r.stdout);
+    expect(json.stubbed.test).toEqual({ kind: 'echo' });
     expect(json.test.status).toBe('pass');
   });
 });

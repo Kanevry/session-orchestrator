@@ -6,6 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  admitSuiteCounts,
   csvToJsonArray,
   extractCount,
   extractTestCounts,
@@ -21,36 +22,17 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('csvToJsonArray', () => {
-  it('splits a simple csv into an array of strings', () => {
-    expect(csvToJsonArray('a,b,c')).toEqual(['a', 'b', 'c']);
-  });
-
-  it('trims whitespace around each entry', () => {
-    expect(csvToJsonArray(' a , b , c ')).toEqual(['a', 'b', 'c']);
-  });
-
-  it('returns an empty array for an empty string', () => {
-    expect(csvToJsonArray('')).toEqual([]);
-  });
-
-  it('returns an empty array when the input is only whitespace', () => {
-    expect(csvToJsonArray('   ')).toEqual([]);
-  });
-
-  it('returns an empty array when input is null', () => {
-    expect(csvToJsonArray(null)).toEqual([]);
-  });
-
-  it('returns an empty array when input is undefined', () => {
-    expect(csvToJsonArray(undefined)).toEqual([]);
-  });
-
-  it('filters out empty segments caused by trailing commas', () => {
-    expect(csvToJsonArray('a,b,')).toEqual(['a', 'b']);
-  });
-
-  it('returns a single-element array for a single item with no commas', () => {
-    expect(csvToJsonArray('only')).toEqual(['only']);
+  it.each([
+    ['a simple csv into an array of strings', 'a,b,c', ['a', 'b', 'c']],
+    ['a csv with surrounding whitespace, trimming each entry', ' a , b , c ', ['a', 'b', 'c']],
+    ['a single item with no commas', 'only', ['only']],
+    ['a trailing comma, dropping the empty segment', 'a,b,', ['a', 'b']],
+    ['an empty string', '', []],
+    ['a whitespace-only string', '   ', []],
+    ['null', null, []],
+    ['undefined', undefined, []],
+  ])('parses %s', (_name, input, expected) => {
+    expect(csvToJsonArray(input)).toEqual(expected);
   });
 });
 
@@ -59,29 +41,17 @@ describe('csvToJsonArray', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractCount', () => {
-  it('counts regex matches in output (single match)', () => {
-    expect(extractCount('a\nerror TS123\nb', /error TS\d+/)).toBe(1);
-  });
-
-  it('counts multiple matches using a string pattern (adds g flag internally)', () => {
-    // When given a string, extractCount creates /pattern/gi — enabling global matching.
-    expect(extractCount('error TS100\nerror TS200\nerror TS300', 'error TS\\d+')).toBe(3);
-  });
-
-  it('returns 0 when there are no matches', () => {
-    expect(extractCount('everything is fine', /error TS\d+/)).toBe(0);
-  });
-
-  it('returns 0 for empty output', () => {
-    expect(extractCount('', /error TS\d+/)).toBe(0);
-  });
-
-  it('returns 0 when output is null', () => {
-    expect(extractCount(null, /error TS\d+/)).toBe(0);
-  });
-
-  it('accepts a string pattern and still counts matches', () => {
-    expect(extractCount('warn: something\nwarn: other', 'warn')).toBe(2);
+  // A STRING pattern becomes /pattern/gi internally, so it matches globally;
+  // a RegExp pattern is used verbatim (no `g` → at most one match).
+  it.each([
+    ['a single regex match', 'a\nerror TS123\nb', /error TS\d+/, 1],
+    ['multiple matches via a string pattern (g flag added internally)', 'error TS100\nerror TS200\nerror TS300', 'error TS\\d+', 3],
+    ['a string pattern with two matches', 'warn: something\nwarn: other', 'warn', 2],
+    ['no matches', 'everything is fine', /error TS\d+/, 0],
+    ['empty output', '', /error TS\d+/, 0],
+    ['null output', null, /error TS\d+/, 0],
+  ])('counts %s', (_name, output, pattern, expected) => {
+    expect(extractCount(output, pattern)).toBe(expected);
   });
 });
 
@@ -141,6 +111,72 @@ describe('extractTestCounts', () => {
     ],
   ])('parses the TEST-case counts, not the file counts, from a real vitest %s', (_name, input, expected) => {
     expect(extractTestCounts(input)).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// admitSuiteCounts
+// ---------------------------------------------------------------------------
+
+describe('admitSuiteCounts', () => {
+  // Bugs this catches that nothing else in the suite does (#967 item 2):
+  //
+  //  1. ZERO TRIPLE FOR AN UNMEASURED GATE. Returning {0,0,0} instead of null
+  //     publishes a phantom "0 tests, all green" measurement into the
+  //     `orchestrator.quality_gate.*` counts field, indistinguishable from a
+  //     real all-skipped run. Absent-not-null is the whole contract, and the
+  //     null/undefined + `total <= 0` rows below are its only guards. A caller
+  //     with no measurement (fail-fast before the test gate, stubbed command,
+  //     no parseable marker) says so by handing over `null` — the ONE channel
+  //     since #969 MED-2, when the second `opts.measured` channel was cut as
+  //     provably unreachable with a non-null triple.
+  //  2. THE LOOSER POLICY WINNING. The former `suiteCountsFromOutput` had only
+  //     two rejections and would admit `passed > total` / a negative `passed`.
+  //     Unifying on the wrong side of that split is a silent regression, so the
+  //     inconsistent-triple rows are the regression proof for the unification.
+  //  3. A PARSED `failed` THAT DISAGREES WITH `total`. Accepting a parsed
+  //     `failed` (rather than always deriving) reopens `passed + failed !== total`
+  //     — a self-inconsistent triple no consumer can interpret.
+  it.each([
+    // --- accept -------------------------------------------------------------
+    ['a consistent triple with a parsed failed', { passed: 5, failed: 1, total: 6 }, { passed: 5, failed: 1, total: 6 }],
+    ['an all-pass triple', { passed: 48, failed: 0, total: 48 }, { passed: 48, failed: 0, total: 48 }],
+    ['a triple with failed absent, deriving total - passed', { passed: 5, total: 6 }, { passed: 5, failed: 1, total: 6 }],
+    ['a triple with a non-finite failed, deriving total - passed', { passed: 5, failed: 'x', total: 6 }, { passed: 5, failed: 1, total: 6 }],
+    ['an all-fail triple', { passed: 0, failed: 3, total: 3 }, { passed: 0, failed: 3, total: 3 }],
+
+    // --- refuse: not a candidate triple (bug 1 — the unmeasured channel) ----
+    ['null', null, null],
+    ['undefined', undefined, null],
+    ['an array', [], null],
+    ['a string', '5 passed', null],
+    ['a number', 6, null],
+
+    // --- refuse: non-finite members -----------------------------------------
+    ['a missing passed', { total: 6 }, null],
+    ['a missing total', { passed: 5 }, null],
+    ['a NaN total', { passed: 5, total: NaN }, null],
+    ['a numeric-string passed', { passed: '5', total: 6 }, null],
+
+    // --- refuse: zero / negative totals (bug 1) -----------------------------
+    ['a zero triple', { passed: 0, failed: 0, total: 0 }, null],
+    ['a negative total', { passed: 0, failed: 0, total: -1 }, null],
+
+    // --- refuse: inconsistent triples (bugs 2 + 3) --------------------------
+    ['a negative passed', { passed: -1, failed: 7, total: 6 }, null],
+    ['a negative parsed failed', { passed: 8, failed: -2, total: 6 }, null],
+    ['a passed greater than total', { passed: 12904, failed: 0, total: 550 }, null],
+    ['a parsed failed that disagrees with total', { passed: 5, failed: 2, total: 6 }, null],
+  ])('%s → admits or refuses per the shared policy', (_name, raw, expected) => {
+    expect(admitSuiteCounts(raw)).toEqual(expected);
+  });
+
+  it('never returns a zero triple — an unmeasured gate is absent, not zero', () => {
+    // Pinned separately from the table because `toEqual(null)` above would also
+    // pass for `undefined`; this asserts the exact absent-not-null return value
+    // the `...(counts ? { counts } : {})` spread at both call sites relies on.
+    expect(admitSuiteCounts({ passed: 0, failed: 0, total: 0 })).toBeNull();
+    expect(admitSuiteCounts(null)).toBeNull();
   });
 });
 

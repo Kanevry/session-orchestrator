@@ -105,6 +105,22 @@ function _validateSchemaVersion(entry) {
   }
 }
 
+/**
+ * Required-field gate for the WRITE path.
+ *
+ * #964 — the predicate is KEY PRESENCE (`field in entry`), deliberately NOT
+ * value presence. An explicit `{ total_waves: null }` passes here and is then
+ * rejected by the typed sub-validator below with a message that names the type
+ * violation, which is the more useful diagnostic. The vault-mirror renderers
+ * use the OTHER predicate (`entry[field] === null || undefined`) because a null
+ * value is unrenderable even though it is well-formed. The two predicates agree
+ * on every live record but are not the same test — do not "unify" them without
+ * deciding which failure each side is supposed to report.
+ *
+ * The renderers' field LISTS are likewise a separate, strictly stronger
+ * contract; the superset relationship between them is enforced mechanically in
+ * tests/lib/vault-mirror/render-sessions.test.mjs, not by prose here.
+ */
 function _validateRequiredFields(entry) {
   for (const field of REQUIRED_FIELDS) {
     if (!(field in entry)) {

@@ -61,7 +61,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
-import { extractTestCounts } from './gates/gate-helpers.mjs';
+import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
@@ -365,29 +365,41 @@ export function detectSharedLibTouch(opts) {
 }
 
 /**
- * Parse suite counts out of a test gate's captured output (#954).
+ * INPUT ADAPTER for this module's `counts` field (#954, #967 item 2).
  *
- * Returns `null` — never a zero triple — whenever the output does not carry a
- * real measurement. That distinction is the whole point of the field: a
- * `counts.failed` of `0` means "measured, zero failures", while an ABSENT
- * `counts` means "not measured". Fabricating `{passed: 0, failed: 0}` for a
- * gate that never ran (or whose output could not be parsed) would collapse the
- * two into an indistinguishable record.
+ * Holds NO admission policy of its own. Every verdict — including both
+ * rejections this function used to make itself — is delegated to
+ * {@link admitSuiteCounts}, the single policy shared with the CLI producer
+ * `suiteCountsFromGateStdout` (`scripts/run-quality-gate.mjs`). Before that
+ * convergence the two producers wrote the SAME event field under DIFFERENT
+ * rules (this one admitted `passed > total` and a negative `passed`), so a
+ * consumer had to know two policies to read one field.
  *
- * `extractTestCounts` (the shared parser already used by `gate-full.mjs`) has
- * no "did it match?" channel — it returns `0/0/0` both for "no `<N> passed`
- * marker in the output" and for a genuinely empty run. `total <= 0` is
- * therefore the honest rejection: we decline to claim a measurement we cannot
- * distinguish from a parse miss. Any real suite run yields `total > 0`.
+ * What stays here is the part the shared policy cannot see: the raw-text tail
+ * parse. `extractTestCounts` has no "did it match?" channel — it returns
+ * `0/0/0` both for "no `<N> passed` marker in the output" and for a genuinely
+ * empty run — so a text-less input is handed to the policy as `null` rather
+ * than as a zero triple, and the policy refuses it. The result is `null`, never
+ * a zero triple: `counts.failed === 0` means "measured, zero failures"; an
+ * ABSENT `counts` means "not measured".
  *
- * @param {string} output — captured stdout+stderr tail from the test gate.
+ * That null hand-over is ALSO how this adapter reports "the gate loop never
+ * reached the test step" (#969 MED-2). A `null` output fails the string check on
+ * the first line, so the positional evidence and the unparseable-text case land
+ * on the SAME channel the policy already has to check. The policy previously
+ * took a second `measured` boolean for the positional case; it was unreachable
+ * with a non-null triple precisely because this line runs first, and two ways to
+ * say "not measured" is one more than the field can be read with.
+ *
+ * @param {string|null} output — captured stdout+stderr tail from the test gate,
+ *   or `null` when the gate loop never reached the test step.
  * @returns {{ passed: number, failed: number, total: number }|null}
  */
 function suiteCountsFromOutput(output) {
-  if (typeof output !== 'string' || output.length === 0) return null;
-  const { passed, failed, total } = extractTestCounts(output);
-  if (!Number.isFinite(total) || total <= 0) return null;
-  return { passed, failed, total };
+  if (typeof output !== 'string' || output.length === 0) {
+    return admitSuiteCounts(null);
+  }
+  return admitSuiteCounts(extractTestCounts(output));
 }
 
 /**
@@ -462,7 +474,10 @@ function coerceMaxRetries(n) {
  * Note also that THIS emitter only runs under `verification-auto-fix.enabled:
  * true` (default `false`, and `false` in this repo's Session Config). The gate
  * that actually fires between waves is the `scripts/run-quality-gate.mjs`
- * wrapper, which emits its own `counts` via `suiteCountsFromGateStdout`.
+ * wrapper, which emits its own `counts` via `suiteCountsFromGateStdout` — under
+ * the SAME admission policy since #967 item 2 (`admitSuiteCounts`), so a
+ * consumer reads one field with one set of rules regardless of which producer
+ * wrote it.
  *
  * Extraction margin: {@link suiteCountsFromOutput} sees only the
  * `OUTPUT_TAIL_LINES` (50) tail `runCheck` retains. Measured on `npm test`
@@ -539,9 +554,10 @@ export async function runQualityGateWithRetry(opts) {
   let attempt = 0;
   let lastFailure = null;
   /**
-   * Suite counts observed in the CURRENT attempt only (#954). Reset at the top
-   * of every attempt so a failure that fail-fasts on lint never re-reports a
-   * stale count from an earlier attempt's test run.
+   * Suite counts observed in the CURRENT attempt only (#954). Re-assigned
+   * unconditionally after every attempt's gate loop, so a failure that
+   * fail-fasts on lint can never re-report a stale count from an earlier
+   * attempt's test run.
    * @type {{passed: number, failed: number, total: number}|null}
    */
   let testCounts = null;
@@ -552,16 +568,29 @@ export async function runQualityGateWithRetry(opts) {
   while (attempt < totalAttempts) {
     attempt += 1;
     let gateFailure = null;
-    testCounts = null;
+    /**
+     * The test gate's captured output for THIS attempt — `null` until the
+     * `test` branch below assigns it, which happens only if the gate loop
+     * actually reaches the test step. A fail-fast on lint or typecheck leaves
+     * it `null`.
+     *
+     * That null-ness is the positional evidence {@link admitSuiteCounts}
+     * cannot observe for itself: the shared policy sees a candidate triple and
+     * nothing else, never the control flow that produced it. It reaches the
+     * policy AS the null triple {@link suiteCountsFromOutput} hands over, so an
+     * unmeasured gate can never publish a zero triple attributed to a run that
+     * never happened.
+     * @type {string|null}
+     */
+    let testOutput = null;
 
     for (const gate of GATE_ORDER) {
       const cmd = commands[gate];
       const result = runGate(cmd, repoRoot);
       if (gate === 'test') {
         // The numbers are in hand right here — capture them at the seam rather
-        // than letting them travel as prose (#954). Non-fatal by construction:
-        // a parse miss yields null, which the emitter omits.
-        testCounts = suiteCountsFromOutput(result.output);
+        // than letting them travel as prose (#954).
+        testOutput = result.output;
       }
       if (result.exitCode === 0) {
         process.stderr.write(`🔁 quality-gate attempt ${attempt}/${totalAttempts} (gate=${gate}): pass\n`);
@@ -579,6 +608,10 @@ export async function runQualityGateWithRetry(opts) {
       };
       break;
     }
+
+    // Non-fatal by construction: an unmeasured, unparseable or inconsistent
+    // run yields null, which the emitter omits rather than zero-fills.
+    testCounts = suiteCountsFromOutput(testOutput);
 
     if (gateFailure === null) {
       // All gates passed this attempt.

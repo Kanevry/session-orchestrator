@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { findSessionConfigBlock } from './config/section-extractor.mjs';
 
 const FRAMEWORK_DEPS = [
   'next',
@@ -110,12 +111,12 @@ export function hasVaultConfig(configFilePath) {
     return false;
   }
   // Scan only within the Session Config section (bounded by the next ## heading).
-  const startMatch = text.match(/^## Session Config[ \t]*(?:\r?\n|$)/m);
-  if (!startMatch || startMatch.index === undefined) return false;
-  const afterBlock = text.slice(startMatch.index + startMatch[0].length);
-  const nextHeadingMatch = afterBlock.match(/^## /m);
-  const blockContent = nextHeadingMatch
-    ? afterBlock.slice(0, nextHeadingMatch.index)
-    : afterBlock;
-  return /^\s*vault\s*:/m.test(blockContent);
+  // Heading + span both come from the SSOT (#968): the previous local regex
+  // `/^## Session Config[ \t]*(?:\r?\n|$)/m` accepted a heading with trailing
+  // spaces/tab that `_extractConfigSection` rejects, so a `vault:` key under
+  // `## Session Config␠` was reported as configured while the runtime read
+  // nothing at all from that block.
+  const block = findSessionConfigBlock(text);
+  if (!block) return false;
+  return /^\s*vault\s*:/m.test(block.body);
 }

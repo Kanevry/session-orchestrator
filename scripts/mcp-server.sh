@@ -128,9 +128,23 @@ tool_session_config() {
     return
   fi
 
-  # Extract everything from "## Session Config" to the next heading or EOF
-  local config
-  config=$(sed -n '/^## Session Config$/,/^## /{/^## Session Config$/d;/^## /d;p;}' "$instr_file" 2>/dev/null) || true
+  # Extract everything from "## Session Config" to the next heading or EOF.
+  #
+  # The address matches isSessionConfigHeading() in
+  # scripts/lib/config/section-extractor.mjs (the SSOT) exactly: the literal
+  # heading, plus an optional CR so a CRLF checkout is read the same way. Shell
+  # cannot import the JS predicate, so the alignment is by hand and this
+  # comment names the authority. Before #968 this was the only STRICTER site in
+  # the repo — a bare `$` anchors before the CR in a BRE, so on a CRLF checkout
+  # (this plugin ships to Windows-side Codex/Cursor users) the tool reported
+  # "no Session Config section" for a file the runtime parses fine.
+  #
+  # `\r` is not portable inside a BRE (GNU sed only), so the CR is injected as
+  # a literal byte via printf.
+  local cr config sc_re
+  cr=$(printf '\r')
+  sc_re="^## Session Config${cr}\{0,1\}\$"
+  config=$(sed -n "/$sc_re/,/^## /{/$sc_re/d;/^## /d;p;}" "$instr_file" 2>/dev/null) || true
 
   if [[ -z "$config" ]]; then
     respond "$id" "$(text_content "No '## Session Config' section found in $instr_file")"

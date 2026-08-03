@@ -5,6 +5,10 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  findSessionConfigBlock,
+  SESSION_CONFIG_HEADING,
+} from '../config/section-extractor.mjs';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -75,18 +79,14 @@ export function validateEcosystemPolicy(policy) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns whether the Session Config section in `text` already contains an
+ * Returns whether the Session Config section already contains an
  * ecosystem-health key.
- * @param {string} text
- * @param {RegExpMatchArray|null} startMatch
+ * @param {ReturnType<typeof findSessionConfigBlock>} block
  * @returns {boolean}
  */
-function _ecosystemBlockPresent(text, startMatch) {
-  if (!startMatch || startMatch.index === undefined) return false;
-  const afterBlock = text.slice(startMatch.index + startMatch[0].length);
-  const nextHeadingMatch = afterBlock.match(/^## /m);
-  const blockContent = nextHeadingMatch ? afterBlock.slice(0, nextHeadingMatch.index) : afterBlock;
-  return /^\s*ecosystem-health\s*:/m.test(blockContent);
+function _ecosystemBlockPresent(block) {
+  if (!block) return false;
+  return /^\s*ecosystem-health\s*:/m.test(block.body);
 }
 
 /**
@@ -104,23 +104,21 @@ function _replaceEcosystemBlock(text, snippetLines) {
  * Inserts a new ecosystem-health snippet into `text` within the Session Config
  * section, or appends a new section when none exists.
  * @param {string} text
- * @param {RegExpMatchArray|null} startMatch
+ * @param {ReturnType<typeof findSessionConfigBlock>} block
  * @param {string[]} snippetLines
  * @returns {string}
  */
-function _insertEcosystemBlock(text, startMatch, snippetLines) {
+function _insertEcosystemBlock(text, block, snippetLines) {
   const snippet = '\n' + snippetLines.join('\n');
-  if (!startMatch || startMatch.index === undefined) {
-    return text + '\n## Session Config\n' + snippet + '\n';
+  if (!block) {
+    // The one site in this repo that WRITES the heading. It takes the literal
+    // from the SSOT so a producer/comparator drift cannot open the same
+    // silent-fallback hole the predicate exists to close (#968).
+    return text + '\n' + SESSION_CONFIG_HEADING + '\n' + snippet + '\n';
   }
-  const afterStartIdx = startMatch.index + startMatch[0].length;
-  const afterBlock = text.slice(afterStartIdx);
-  const nextHeadingMatch = afterBlock.match(/^## /m);
-  if (nextHeadingMatch && nextHeadingMatch.index !== undefined) {
-    const insertAt = afterStartIdx + nextHeadingMatch.index;
-    return text.slice(0, insertAt) + snippet + '\n' + text.slice(insertAt);
-  }
-  return text + snippet + '\n';
+  // `bodyEnd` is the offset of the next `## ` heading, or EOF — i.e. exactly
+  // the end of the Session Config section, which is where the snippet goes.
+  return text.slice(0, block.bodyEnd) + snippet + '\n' + text.slice(block.bodyEnd);
 }
 
 /**
@@ -211,10 +209,14 @@ export function writeSessionConfigBlock(configFilePath, config, dryRun, overwrit
     return 'error';
   }
 
-  const startMatch = text.match(/^## Session Config[ \t]*(?:\r?\n|$)/m);
+  // Heading + body span from the SSOT (#968) — the previous local regex
+  // `/^## Session Config[ \t]*(?:\r?\n|$)/m` accepted a trailing-whitespace
+  // heading the runtime parser rejects, so the wizard would write a well-formed
+  // ecosystem-health block into a section `parseSessionConfig` never reads.
+  const block = findSessionConfigBlock(text);
   const snippetLines = _buildEcosystemSnippetLines(config);
 
-  if (_ecosystemBlockPresent(text, startMatch)) {
+  if (_ecosystemBlockPresent(block)) {
     if (!overwrite) return 'skipped';
     // Replace the existing ecosystem-health block with the new snippet.
     // The block spans from "ecosystem-health:" to the next top-level key or heading.
@@ -230,7 +232,7 @@ export function writeSessionConfigBlock(configFilePath, config, dryRun, overwrit
   }
 
   // Insert path: append ecosystem-health block to Session Config section
-  const newText = _insertEcosystemBlock(text, startMatch, snippetLines);
+  const newText = _insertEcosystemBlock(text, block, snippetLines);
   if (!dryRun) {
     try { writeFileSync(configFilePath, newText, 'utf8'); } catch { return 'error'; }
   }

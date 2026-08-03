@@ -399,4 +399,35 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev.counts).toBeUndefined();
     expect(Object.keys(ev)).not.toContain('counts');
   });
+
+  // #966 step 1 — the gate record must carry the wave it ran in, and must NOT
+  // invent one when it ran outside a wave.
+  //
+  // Bugs this catches: (a) `wave_number` never reaches the record, so gate
+  // telemetry stays un-joinable to the wave that produced it and every
+  // per-wave gate query silently returns nothing; (b) the far worse inverse —
+  // `wave_number: 0` published for a human `npm run quality-gate` from a
+  // `git push`, inventing a wave 0 that consumers must special-case. No
+  // existing test asserts either direction.
+  it.each([
+    ['reports the sidecar wave when running inside a wave', { wave: 3 }, 3],
+    ['omits wave_number entirely when no wave-scope sidecar exists', null, undefined],
+  ])('%s', (_label, scope, expected) => {
+    if (scope) {
+      mkdirSync(join(tmp, '.claude'), { recursive: true });
+      writeFileSync(join(tmp, '.claude', 'wave-scope.json'), JSON.stringify(scope), 'utf8');
+    }
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': 'skip',
+      'lint-command': 'skip',
+    });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.wave_number).toBe(expected);
+    if (expected === undefined) expect(Object.keys(ev)).not.toContain('wave_number');
+  });
 });

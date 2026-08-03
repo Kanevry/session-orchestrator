@@ -408,3 +408,88 @@ describe('validate-wave-scope.mjs — --assert-subset (#796)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// --expand-test-siblings (#970)
+//
+// BUG CAUGHT: an allowedPaths union that grants a production file WITHOUT its
+// test sibling mechanically prevents the agent from updating that test — the
+// scope guard enforcing exactly the inconsistency the quality gate exists to
+// catch. --assert-subset is the ONE fail-closed enforcement point in the
+// dispatch pipeline (it exits 1); warnings in this script are printed but do
+// NOT affect the exit code, so a warn here would be decorative.
+// ---------------------------------------------------------------------------
+
+describe('validate-wave-scope.mjs — --expand-test-siblings (#970)', () => {
+  function runSiblings(waveScope, fileScope, extraArgs = []) {
+    const dir = mkdtempSync(join(tmpdir(), 'vws-siblings-'));
+    const fsPath = join(dir, 'agent-filescope.json');
+    writeFileSync(fsPath, JSON.stringify(fileScope));
+    try {
+      return spawnSync('node', [SCRIPT, '--assert-subset', fsPath, ...extraArgs], {
+        input: JSON.stringify(waveScope),
+        encoding: 'utf8',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // The union grants the production file only — the #970 incident shape.
+  const PROD_ONLY = { ...VALID, allowedPaths: ['scripts/lib/x.mjs'] };
+
+  it('exits 1 when allowedPaths grants a production file but not its test sibling', () => {
+    const r = runSiblings(PROD_ONLY, ['scripts/lib/x.mjs'], ['--expand-test-siblings']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/does not grant the test sibling/);
+    expect(r.stderr).toMatch(/missing: \[tests\/\*\*\/x\*\.test\.mjs\]/);
+  });
+
+  it('exits 0 for the SAME manifest without the flag — proving the flag is what bites', () => {
+    // Fake-regression control: identical wave-scope + fileScope, flag omitted.
+    // Green here + red above is the only evidence that the new assertion, and
+    // not some unrelated schema change, produced the exit 1.
+    const r = runSiblings(PROD_ONLY, ['scripts/lib/x.mjs']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('exits 0 once the union grants the test sibling', () => {
+    const granted = { ...VALID, allowedPaths: ['scripts/lib/x.mjs', 'tests/**'] };
+    const r = runSiblings(granted, ['scripts/lib/x.mjs'], ['--expand-test-siblings']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  // The flag is gated on the MANIFEST's own role, so wave-loop.md can carry it
+  // unconditionally on every pre-dispatch check. Without the gate, a Quality
+  // phase-1 manifest — production files with tests deliberately excluded — would
+  // hard-fail at dispatch for a requirement that phase must never satisfy.
+  it.each([
+    ['Quality', 'Quality'],
+    ['Discovery', 'Discovery'],
+    ['an unrecognised role', 'Impl-Something'],
+  ])('exits 0 and WARNs instead of blocking for role: %s', (_n, role) => {
+    const r = runSiblings({ ...PROD_ONLY, role }, ['scripts/lib/x.mjs'], ['--expand-test-siblings']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/--expand-test-siblings: skipped for role/);
+    expect(r.stderr).not.toMatch(/does not grant the test sibling/);
+  });
+
+  it('fires for a role in TEST_SIBLING_EXPANSION_ROLES regardless of casing', () => {
+    const r = runSiblings({ ...PROD_ONLY, role: 'IMPL-POLISH' }, ['scripts/lib/x.mjs'], [
+      '--expand-test-siblings',
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/does not grant the test sibling/);
+  });
+
+  it('does NOT weaken --assert-subset: the plain subset failure keeps its exact message', () => {
+    // The #796 assertion runs FIRST and unchanged. An entry outside the union
+    // must still fail with the original wording, not the #970 one.
+    const r = runSiblings(VALID, ['docs/x.md'], ['--expand-test-siblings']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/agent fileScope not ⊆ allowedPaths/);
+    expect(r.stderr).not.toMatch(/does not grant the test sibling/);
+  });
+});
