@@ -4,7 +4,22 @@
  *
  * Raw-file-property lint for a CLAUDE.md / AGENTS.md instruction file: line
  * count, per-line character length, and (optionally) a provenance-header
- * check on line 1. Deliberately narrow scope — this module measures
+ * check on line 1. The line-count budget excludes ONE named exempt region —
+ * the runtime-critical `## Session Config` block, which is machine-parsed
+ * configuration rather than trimmable prose (#959); see
+ * `findSessionConfigRegion()`. Its opening-heading predicate is IMPORTED from
+ * the runtime parser (`config/section-extractor.mjs`) so this lint can never
+ * be more permissive than the parser it measures for.
+ *
+ * NOT extended to `## Skill Evolution` / `## Dispatcher Autonomy` despite
+ * those blocks being equally machine-parsed (19 of the 61 non-exempt lines).
+ * Measured reason, not taste: `config/{skill-evolution,dispatcher-autonomy}.mjs`
+ * anchor on the YAML KEY (`matchBlockHeader(line, 'skill-evolution')`), never
+ * on the `##` heading — the heading is prose decoration the parser ignores, so
+ * there is no runtime region boundary for a lint predicate to agree WITH.
+ * Exempting by heading there would assert a region the runtime does not
+ * delimit that way: a fresh instance of the very defect this import fixes.
+ * Deliberately narrow scope — this module measures
  * properties of the instruction file itself and is NOT a replacement for
  * `instruction-budget-guard.mjs` (which measures always-on directive COUNT
  * across `.claude/rules/*.md`). The two are complementary probes, not
@@ -50,6 +65,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, resolve } from 'node:path';
 import { resolveInstructionFile } from './common.mjs';
+import { isSessionConfigHeading } from './config/section-extractor.mjs';
 
 /** Thrown by `lintClaudeMd()` on any infra-level failure (missing/unreadable file). */
 export class ClaudeMdLintInfraError extends Error {
@@ -59,8 +75,31 @@ export class ClaudeMdLintInfraError extends Error {
   }
 }
 
-/** Default line-count ceiling — mirrors the "lean root" convention (pointers, not prose). */
-export const DEFAULT_MAX_LINES = 150;
+/**
+ * Default line-count ceiling — mirrors the "lean root" convention (pointers,
+ * not prose). Applied to the file's NON-EXEMPT lines (see
+ * `findSessionConfigRegion()` below), never to the raw count.
+ *
+ * **Derived from measurement, not aspiration (#959).** The predecessor value
+ * 150 was applied to the RAW line count and was therefore structurally
+ * unreachable for this repo: the `## Session Config` block alone is
+ * runtime-critical (parsed by `scripts/parse-config.mjs`;
+ * `claude-md-drift-check` Check 6 enforces top-level-key parity against
+ * `docs/session-config-template.md`) and cannot be trimmed as prose. An
+ * unreachable ceiling manufactures standing deletion pressure with no
+ * nameable target per file — the same failure that killed the tests:src
+ * ceiling of 1.20 (`.claude/rules/test-value.md` § TV-003).
+ *
+ * Measured 2026-07-31 at HEAD 1f7b449: this repo's CLAUDE.md is 209 lines in
+ * this lint's units (`wc -l` reports 208 — see the off-by-one note on
+ * `lintClaudeMd`), of which the Session Config block spans 148 (heading at
+ * line 42, next `## ` heading at line 190), leaving **61 non-exempt lines**.
+ * 61 × 1.31 ≈ 80 — the same re-derivation headroom TV-003 used when it moved
+ * 1.20 → 1.60 (+33%). Every shipped invocation path is `--mode warn` or the
+ * never-gating session-start banner, so a tight ceiling costs at most one
+ * warn line.
+ */
+export const DEFAULT_MAX_LINES = 80;
 /** Default per-line character ceiling. */
 export const DEFAULT_MAX_LINE_CHARS = 400;
 
@@ -69,12 +108,93 @@ export const DEFAULT_MAX_LINE_CHARS = 400;
 const PROVENANCE_HEADER_RE = /^<!--\s*source:/;
 
 /**
+ * Opening heading of the ONE named exempt region: the runtime-critical
+ * `## Session Config` block (#959).
+ *
+ * **The predicate is IMPORTED, never re-derived here.** This module measures a
+ * block that `parseSessionConfig` parses; if the two disagree about where the
+ * block begins, the measurement describes a file the runtime never sees. The
+ * first version of this lint owned a local regex that tolerated a trailing
+ * HTML comment — justified by this repo's own `## Current State <!-- … -->`
+ * convention — which made it the LOOSEST of five copies of this fact and the
+ * only one that mattered. An author decorating the heading as that cited
+ * convention encourages got: `_extractConfigSection` → `[]` (every runtime
+ * config key silently at its default) while this lint reported
+ * `148 exempt: "## Session Config"`, affirming the block at the exact moment
+ * the runtime had lost it.
+ *
+ * Invariant, now structural rather than reviewed: **this lint can never accept
+ * a heading the runtime parser rejects, because it asks the runtime parser.**
+ * The import is safe at bootstrap-scaffold time — `section-extractor.mjs`
+ * imports nothing (verified; keep it so).
+ *
+ * The remaining copies of this fact live in `config-protection.mjs:112`,
+ * `product-repo-detect.mjs:113`, `ecosystem-wizard/config-writer.mjs:214`, and
+ * `harness-audit/categories/category4.mjs:163`. They are outside this fix's
+ * file scope; each is an exact-literal match, so none is looser than the
+ * parser — the dangerous asymmetry was here alone.
+ */
+
+/** Region terminator: the next top-level `## ` heading of ANY title (must still
+ * match a decorated one like `## Skill Evolution <!-- … -->`). The bare-prefix
+ * form deliberately does NOT match `### `, whose third char is `#`, not a space. */
+const H2_PREFIX_RE = /^## /;
+
+/**
+ * Locates the `## Session Config` exempt region. **Fail-closed by
+ * construction** — every uncertain case exempts NOTHING, so the budget can
+ * only ever over-count, never under-count:
+ *
+ * - **0 occurrences** → exempt nothing. A consumer repo's CLAUDE.md, or an
+ *   AGENTS.md with no config block, is measured in full.
+ * - **≥2 occurrences** → exempt nothing AND report it to the caller as a
+ *   violation. Exempting both would let an author hide arbitrary prose under a
+ *   duplicated heading; exempting only the first is silently wrong.
+ * - **exactly 1** → exempt from the heading line through the line before the
+ *   next `## ` heading, or through EOF when none follows (a real in-repo
+ *   fixture, `tests/fixtures/harness-audit/clean-repo/CLAUDE.md`, ends that way).
+ *
+ * @param {string[]} lines - the file split on '\n'.
+ * @returns {{ exemptLines: number, headingLines: number[] }} `headingLines` is
+ *   1-based and carries EVERY occurrence found (length ≥ 2 signals a duplicate).
+ */
+function findSessionConfigRegion(lines) {
+  const headingIdx = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isSessionConfigHeading(lines[i])) headingIdx.push(i);
+  }
+  const headingLines = headingIdx.map((i) => i + 1);
+
+  if (headingIdx.length !== 1) return { exemptLines: 0, headingLines };
+
+  const start = headingIdx[0];
+  let end = lines.length; // EOF-terminated block
+  for (let i = start + 1; i < lines.length; i++) {
+    if (H2_PREFIX_RE.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return { exemptLines: end - start, headingLines };
+}
+
+/**
  * Lints a CLAUDE.md / AGENTS.md file's raw properties. Pure computation —
  * never catches its own read failures; throws `ClaudeMdLintInfraError`.
  *
+ * Because every file ends with a trailing newline, `lineCount` is `wc -l` + 1.
+ * That off-by-one is DELIBERATE and load-bearing: the ceiling in
+ * `DEFAULT_MAX_LINES` was derived in these same units. Do not "fix" it.
+ *
+ * The `max-lines` ceiling is compared against `effectiveLineCount`
+ * (= `lineCount` − `exemptLines`), not against the raw count — see
+ * `findSessionConfigRegion()` for the one named exempt region and its
+ * fail-closed 0-or-≥2 rule (#959). `lineCount` stays RAW so the split is
+ * reportable rather than hidden.
+ *
  * @param {object} opts
  * @param {string} opts.filePath - absolute or cwd-relative path to the file.
- * @param {number} [opts.maxLines] - line-count ceiling (default 150).
+ * @param {number} [opts.maxLines] - NON-EXEMPT line-count ceiling (default 80).
  * @param {number} [opts.maxLineChars] - per-line char ceiling (default 400).
  * @param {boolean} [opts.requireProvenance] - when true, a missing/absent
  *   provenance header on line 1 is a violation (default false).
@@ -82,9 +202,11 @@ const PROVENANCE_HEADER_RE = /^<!--\s*source:/;
  *   status: 'ok' | 'invalid',
  *   file: string,
  *   lineCount: number,
+ *   exemptLines: number,
+ *   effectiveLineCount: number,
  *   maxLineCharsSeen: number,
  *   hasProvenance: boolean,
- *   violations: Array<{ rule: 'max-lines' | 'max-line-chars' | 'provenance-header', message: string, line?: number }>,
+ *   violations: Array<{ rule: 'max-lines' | 'max-line-chars' | 'provenance-header' | 'duplicate-session-config', message: string, line?: number }>,
  * }}
  * @throws {ClaudeMdLintInfraError} when filePath is missing, not a file, or unreadable.
  */
@@ -128,10 +250,28 @@ export function lintClaudeMd(opts = {}) {
     }
   }
 
-  if (lineCount > maxLines) {
+  const { exemptLines, headingLines } = findSessionConfigRegion(lines);
+  const effectiveLineCount = lineCount - exemptLines;
+
+  if (headingLines.length > 1) {
+    violations.push({
+      rule: 'duplicate-session-config',
+      message:
+        `Found ${headingLines.length} '## Session Config' headings (lines ${headingLines.join(', ')}) — ` +
+        'exactly one is expected; NOTHING is exempted while duplicates exist, so the ' +
+        'max-lines budget is measured against the raw line count',
+      line: headingLines[1],
+    });
+  }
+
+  if (effectiveLineCount > maxLines) {
+    const exemptDesc =
+      exemptLines > 0 ? `${exemptLines} exempt: "## Session Config"` : `${exemptLines} exempt`;
     violations.push({
       rule: 'max-lines',
-      message: `File has ${lineCount} lines, exceeds max-lines ${maxLines} — consider trimming to pointers (lean-root convention)`,
+      message:
+        `File has ${lineCount} lines (${effectiveLineCount} non-exempt, ${exemptDesc}), ` +
+        `exceeds max-lines ${maxLines} — consider trimming to pointers (lean-root convention)`,
     });
   }
 
@@ -149,6 +289,8 @@ export function lintClaudeMd(opts = {}) {
     status: violations.length === 0 ? 'ok' : 'invalid',
     file: filePath,
     lineCount,
+    exemptLines,
+    effectiveLineCount,
     maxLineCharsSeen,
     hasProvenance,
     violations,
@@ -271,8 +413,10 @@ function parseArgs(argv) {
       out.json = true;
     } else if (a === '--help' || a === '-h') {
       process.stdout.write(
-        'Usage: claude-md-budget-lint.mjs [--file CLAUDE.md|AGENTS.md] [--repo-root PATH] [--max-lines 150] ' +
+        'Usage: claude-md-budget-lint.mjs [--file CLAUDE.md|AGENTS.md] [--repo-root PATH] [--max-lines 80] ' +
           '[--max-line-chars 400] [--require-provenance] [--mode hard|warn] [--json]\n' +
+          '--max-lines applies to NON-EXEMPT lines: a single `## Session Config` block is exempt ' +
+          '(0 or 2+ such headings exempt nothing).\n' +
           'Exit codes: 0 = ok (no violations, or --mode warn with violations); ' +
           '1 = violations in --mode hard, OR a CLI argument error (missing flag value, unknown flag, ' +
           'invalid --mode, non-numeric --max-lines/--max-line-chars); ' +
@@ -299,6 +443,7 @@ function resolveLintTarget(args) {
 function formatHuman(result, mode) {
   const lines = [
     `Instruction budget lint: ${result.status} (file: ${result.file}, lines: ${result.lineCount}, ` +
+      `nonExempt: ${result.effectiveLineCount}, exempt: ${result.exemptLines}, ` +
       `maxLineCharsSeen: ${result.maxLineCharsSeen}, provenance: ${result.hasProvenance}, mode: ${mode})`,
   ];
   for (const v of result.violations) {

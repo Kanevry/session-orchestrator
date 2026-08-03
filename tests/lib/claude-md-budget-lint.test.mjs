@@ -90,7 +90,8 @@ describe('checkClaudeMdBudgetLint — never throws (banner-wrapper contract)', (
   it('returns null instead of throwing when repoRoot does not exist on disk', () => {
     const missing = join(tmpdir(), 'definitely-does-not-exist-budget-lint-banner-repo-xyz');
 
-    expect(() => checkClaudeMdBudgetLint({ repoRoot: missing })).not.toThrow();
+    // A throw would fail this assertion too, so the preceding `.not.toThrow()`
+    // was subsumed and was deleted in #959 (TV-002 consolidation).
     expect(checkClaudeMdBudgetLint({ repoRoot: missing })).toBeNull();
   });
 });

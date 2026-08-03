@@ -1,7 +1,7 @@
 /**
  * tests/_helpers/hook-decision.mjs
  *
- * The single assertion contract for a PreToolUse hook's allow/deny decision.
+ * The single assertion contract for a PreToolUse hook's allow/deny/warn decision.
  *
  * ## Why this exists
  *
@@ -106,4 +106,42 @@ export function expectDeny(result, expectedReason) {
 export function expectAllow(result) {
   expect(exitCodeOf(result)).toBe(0);
   expect(result.stdout.trim()).toBe('');
+}
+
+/**
+ * Assert a PreToolUse hook emitted a WARN notice (allow-WITH-notice), and return
+ * the parsed envelope.
+ *
+ * `emitWarn` (#916) is a THIRD decision class beside allow and deny: the warn
+ * path's decision is still "allow", but — unlike a silent allow — it carries an
+ * operator-visible notice on the top-level `systemMessage` field, because stderr
+ * is not surfaced under exit 0. The contract is:
+ *
+ *   - exit 0 (a warn is an allow — never 2)
+ *   - stdout carries exactly ONE non-blank line
+ *   - top-level keys are EXACTLY `['systemMessage']` — the exclusivity guard.
+ *     A regression that routed warn through `emitDeny` would add
+ *     `hookSpecificOutput`/`permissionDecision`, and the harness would read the
+ *     notice as a BLOCK. Asserting the full key-set (not just presence) is what
+ *     makes that regression fail here instead of passing silently.
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string}} result
+ * @param {string} [text] - substring the `systemMessage` must contain.
+ * @returns {{systemMessage: string}}
+ */
+export function expectWarn(result, text) {
+  expect(exitCodeOf(result)).toBe(0);
+
+  const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+  expect(lines).toHaveLength(1);
+
+  const obj = JSON.parse(lines[0]);
+  expect(Object.keys(obj)).toEqual(['systemMessage']);
+  expect(typeof obj.systemMessage).toBe('string');
+
+  if (text !== undefined) {
+    expect(obj.systemMessage).toContain(text);
+  }
+
+  return obj;
 }

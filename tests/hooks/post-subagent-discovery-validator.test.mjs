@@ -719,6 +719,68 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(ctx).toContain('1 verified claim(s) carry no measurement timestamp (advisory).');
   });
 
+  // -------------------------------------------------------------------------
+  // #918 — the PSA-006 canonical numerator/denominator slash form.
+  //
+  // Bug caught: PSA-006 literally demands "Quote the numerator AND
+  // denominator", and `N/M <noun>` is the notation that demand produces — yet
+  // the #908 cardinal trigger's lookahead (?![\d.%:/-]) excluded the slash, so
+  // the rule's own canon form ("Coverage across 12/14 files is complete.") was
+  // structurally invisible to the detector. Same for `callers` — PSA-006's own
+  // canonical noun (the rule's worked examples all count callers) — which was
+  // missing from CARDINAL_NOUN entirely. Both were previously pinned as
+  // KNOWN-BOUNDARY silences below; #918 flips them to caught claims.
+  //
+  // FP re-measured on the CORRECT text sort per the #918 Auflage (the prior
+  // 1.07/stop figure was measured on coordinator narration): 490 real
+  // SubagentStop subagent transcripts, 2026-07-31 — 0.7041 → 0.7102 per stop
+  // (+3 firings; 1 true positive "0/49 Learnings mit Allow-List-Typ").
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['numerator/denominator slash form', 'Coverage across 12/14 files is complete.'],
+    ['slash form + canonical noun callers', 'Verified 4/4 callers migrated to the wrapper.'],
+    ['bare cardinal + canonical noun callers', 'The legacy helper still has 14 callers.'],
+  ])('#918 canon form "%s" without a measurement block → violation', (_label, claim) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([claim]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe(claim);
+  });
+
+  // -------------------------------------------------------------------------
+  // #918 — FP guard for the re-opened slash class.
+  //
+  // Bug caught: admitting the slash into a claim trigger is exactly what the
+  // #908 lookahead existed to prevent — a naive `\d+/\d+` fires on gate
+  // summaries ("12615/0/11"), US dates, path segments and scores. The
+  // noun-immediately-after-denominator discriminator is what keeps those
+  // quiet; this table (plus the existing "slash-separated summary" row above)
+  // goes red if a later edit relaxes it. Fake-regression verified 2026-07-31:
+  // discriminator removed → date + score rows red; lookahead additionally
+  // removed → the 12615/0/11 row red; both restored → green.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['US-style date slash', 'The incident review happened on 12/14 during the rollout.'],
+    ['path-glued slash pair', 'Artifacts live under runs/12/14 in the archive.'],
+    ['score slash pair', 'The panel rated the migration 3/5 overall.'],
+  ])('#918 slash false-positive class "%s": does NOT flag', (_label, benign) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([benign]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+    expect(result.stdout.trim()).toBe('');
+  });
+
   it('#908 remains non-blocking: a violating cardinal claim still exits 0 without decision:block', () => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['The repo has 14 commits since the session-start ref.']);
@@ -769,30 +831,25 @@ describe('post-subagent-discovery-validator hook', () => {
   // re-measurement that is the whole reason the pattern is this narrow.
   // Unguarded, the cardinal variant fired 93 times over 32 real agent-stop
   // windows (2.9 per stop — the zone where a warn-only validator gets switched
-  // off, which is strictly worse than no validator). The four forms below are
+  // off, which is strictly worse than no validator). The forms below are
   // silent TODAY BY CHOICE; pinning them makes the next widening a DECISION:
   // whoever widens must re-measure the FP rate and move the case out of this
   // table, instead of learning about the regression later as validator fatigue.
   //
-  // This is explicitly NOT a claim that every silence here is desirable. The
-  // first row is the notation PSA-006 itself demands ("Quote the numerator AND
-  // denominator") and the trigger cannot see it. It is recorded as a known gap
-  // with a named cost — strictly better than an unrecorded one.
+  // That procedure has now run once: #918 re-measured on 490 real SubagentStop
+  // transcripts (2026-07-31) and moved two former rows out of this table into
+  // the #918 canon-form block above — the `N/M <noun>` slash notation (with a
+  // noun-after-denominator discriminator instead of a relaxed lookahead) and
+  // the `callers` noun. The remaining silences below still carry their named
+  // costs and stay pinned.
   // -------------------------------------------------------------------------
 
   it.each([
-    // The trigger rejects `12` through its lookahead (?![\d.%:/-]) — the digit is
-    // glued to `/` — and `14` through its lookbehind (?<![\w#$:/.-]). Those two
-    // guards are exactly what keeps `12615/0/11` gate summaries quiet (see the
-    // false-positive table above), so admitting the slash form re-opens that
-    // class. Silent despite `files` being a CARDINAL_NOUN.
-    ['PSA-006 numerator/denominator slash form', 'Coverage across 12/14 files is complete.'],
-
-    // `tests` and `hooks` are outside the closed six-noun CARDINAL_NOUN set
-    // (commits|learnings|issues|branches|lines|files). They were measured as
-    // pure FP cost and left to the six quantifier-triggered patterns, which
-    // carry a lexical anchor. Note `callers` — PSA-006's own canonical noun —
-    // is in the same excluded position.
+    // `tests` and `hooks` are outside the closed CARDINAL_NOUN set
+    // (commits|learnings|issues|branches|lines|files|callers). They were
+    // measured as pure FP cost and left to the six quantifier-triggered
+    // patterns, which carry a lexical anchor. (`callers` moved INTO the set
+    // with #918 — re-measured at +0 firings from the bare form.)
     ['noun outside the closed CARDINAL_NOUN set', 'I reviewed 27 tests and 9 hooks in this pass.'],
 
     // Order-sensitive by construction: the pattern is <number> … <noun>, so a

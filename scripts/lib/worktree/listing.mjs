@@ -2,7 +2,8 @@
  * worktree/listing.mjs — list and filter worktrees.
  *
  * Exports:
- *   listWorktrees()                            — list all git worktrees
+ *   listWorktrees()                            — list all git worktrees (bare array; swallows git failure)
+ *   listWorktreesChecked()                     — same listing WITH a "git actually ran" signal (#919.3)
  *   applyWorktreeExcludes(wtPath, patterns)    — remove top-level dirs from worktree
  *
  * No imports from lifecycle.mjs — this module is intentionally a leaf of the
@@ -18,23 +19,39 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 
 /**
- * List all git worktrees in the current repository.
+ * List all git worktrees WITH an explicit "git actually ran" signal (#919.3).
+ *
+ * The bare `listWorktrees()` below swallows a failing `git worktree list` into
+ * an empty array — indistinguishable from "git ran, repo has no extra
+ * worktrees". That collapse is the last fail-open gap in the
+ * `checkLiveForeignSession` full path (peer-discovery.mjs, #906/#908 residual):
+ * a total surface failure read as "nobody home". This variant keeps the listing
+ * contract but makes the failure DISTINGUISHABLE, so callers that need the
+ * distinction can make the fail-safe call themselves.
  *
  * @param {object} [opts]
  * @param {Function} [opts.$]  Optional zx-compatible executor. Defaults to real zx.$.
  *   Tests pass a mock here to avoid vi.mock('zx') under fork pool.
- * @returns {Promise<Array<{path: string, branch: string, head: string}>>}
- *   Array of worktree descriptors; empty array if none or on parse error.
+ * @returns {Promise<{ok: boolean, worktrees: Array<{path: string, branch: string, head: string}>, error?: string}>}
+ *   `ok: true`  — `git worktree list` ran; `worktrees` is the (possibly empty)
+ *                 parsed listing. An empty list here is a MEASUREMENT.
+ *   `ok: false` — the git invocation itself failed (spawn error, non-zero
+ *                 exit, not a repo, …); `worktrees` is `[]` and `error` carries
+ *                 the failure message. An empty list here is NOT a measurement.
  */
-export async function listWorktrees(opts = {}) {
+export async function listWorktreesChecked(opts = {}) {
   const dollar = opts.$ ?? defaultDollar;
   const git = dollar({ cwd: process.cwd() });
   let output;
   try {
     const result = await git`git worktree list --porcelain`;
     output = result.stdout;
-  } catch {
-    return [];
+  } catch (err) {
+    return {
+      ok: false,
+      worktrees: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 
   const worktrees = [];
@@ -67,6 +84,26 @@ export async function listWorktrees(opts = {}) {
     worktrees.push(current);
   }
 
+  return { ok: true, worktrees };
+}
+
+/**
+ * List all git worktrees in the current repository.
+ *
+ * Thin backward-compatible wrapper over `listWorktreesChecked()`: existing
+ * callers get the bare array they always got, INCLUDING the historical
+ * swallow-to-`[]` on git failure. Callers that must distinguish "git ran,
+ * empty" from "git failed" use `listWorktreesChecked()` instead (#919.3).
+ *
+ * @param {object} [opts]
+ * @param {Function} [opts.$]  Optional zx-compatible executor. Defaults to real zx.$.
+ *   Tests pass a mock here to avoid vi.mock('zx') under fork pool.
+ * @returns {Promise<Array<{path: string, branch: string, head: string}>>}
+ *   Array of worktree descriptors; empty array if none OR on git failure
+ *   (the two are indistinguishable here — by design, see wrapper note).
+ */
+export async function listWorktrees(opts = {}) {
+  const { worktrees } = await listWorktreesChecked(opts);
   return worktrees;
 }
 

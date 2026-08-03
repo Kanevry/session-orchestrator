@@ -84,44 +84,56 @@ function writeCandidates(repo, count, createdAt = '2025-06-01T00:00:00.000Z') {
   fs.writeFileSync(path.join(dir, 'reconcile-candidates.jsonl'), lines.join('\n') + '\n', 'utf8');
 }
 
+/**
+ * Write N SHAPE-FOREIGN records into the candidate store — the real 2026-07-31
+ * contamination shape (`candidate_id`/`generated_at`, no `created_at`), which the
+ * store's read-side guard quarantines. Field set copied from a live line of that
+ * store (testing.md § Fixtures Mirror Production Data).
+ */
+function writeForeignCandidates(repo, count) {
+  const dir = path.join(repo, '.orchestrator', 'runtime');
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = Array.from({ length: count }, (_, i) => JSON.stringify({
+    learning_key: `anti-pattern/foreign-${i}`,
+    slug: `anti-pattern-foreign-${i}-91c32e4`,
+    confidence: 0.95,
+    candidate_id: `rc-f587113${i}`,
+    rule_path: `.claude/rules/anti-pattern-foreign-${i}-91c32e4.md`,
+    status: 'candidate',
+    generated_at: '2026-07-31T07:09:33.905Z',
+    generated_by: 'W3-reconcile-candidate-dry-run',
+  }));
+  fs.appendFileSync(path.join(dir, 'reconcile-candidates.jsonl'), lines.join('\n') + '\n', 'utf8');
+}
+
 describe('checkReconcileNudge — bad input', () => {
-  it('returns null when called with no arguments', async () => {
-    expect(await checkReconcileNudge()).toBe(null);
-  });
-
-  it('returns null when repoRoot is missing', async () => {
-    expect(await checkReconcileNudge({})).toBe(null);
-  });
-
-  it('returns null when repoRoot is a non-string', async () => {
-    expect(await checkReconcileNudge({ repoRoot: 42 })).toBe(null);
+  // TV-003 consolidation: three cases with an identical body differing only in
+  // the argument value → one table. No assertion lost.
+  it.each([
+    ['no arguments', undefined],
+    ['repoRoot missing', {}],
+    ['repoRoot a non-string', { repoRoot: 42 }],
+  ])('returns null when called with %s', async (_label, args) => {
+    expect(await checkReconcileNudge(args)).toBe(null);
   });
 });
 
 describe('checkReconcileNudge — silent no-op (empty corpus)', () => {
-  it('returns null when learnings.jsonl does not exist', async () => {
-    expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
-  });
-
-  it('returns null when learnings.jsonl exists but is empty', async () => {
-    writeRawLearnings(tmpRepo, '');
-    expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
-  });
-
-  it('returns null when learnings.jsonl contains only malformed lines', async () => {
-    writeRawLearnings(tmpRepo, 'not valid json at all\n{broken\n');
+  // TV-003 consolidation: three cases with an identical body differing only in
+  // the corpus file's content → one table (`null` = "write no file at all").
+  it.each([
+    ['does not exist', null],
+    ['exists but is empty', ''],
+    ['contains only malformed lines', 'not valid json at all\n{broken\n'],
+  ])('returns null when learnings.jsonl %s', async (_label, content) => {
+    if (content !== null) writeRawLearnings(tmpRepo, content);
     expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
   });
 });
-
-describe('checkReconcileNudge — under threshold', () => {
-  it('returns null when active learnings, delta, and eligible count are all below threshold', async () => {
-    // 5 active learnings, no candidates store (delta condition inert without a
-    // determinable prior run), 0 eligible (no file_paths).
-    writeLearnings(tmpRepo, 5, { type: 'convention', confidence: 0.8 });
-    expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
-  });
-});
+// TV-003: the former "under threshold" case (5 convention learnings, no
+// file_paths, no store → null) was strictly weaker than the
+// NUDGE_MIN_LEARNINGS-1 boundary case below, which asserts the same null on the
+// same corpus shape one learning closer to the threshold. Removed, not merged.
 
 describe('checkReconcileNudge — nudge (a): active learnings, no run on record', () => {
   it('returns a warn banner with correct counts when >= NUDGE_MIN_LEARNINGS active learnings and no reconcile run', async () => {
@@ -132,11 +144,8 @@ describe('checkReconcileNudge — nudge (a): active learnings, no run on record'
     expect(result.message).toContain('25 active learnings');
     expect(result.message).toContain('0 rule-eligible');
     expect(result.message).toContain('last reconcile run: never');
-  });
-
-  it('message contains /reconcile', async () => {
-    writeLearnings(tmpRepo, 25, { type: 'convention', confidence: 0.8 });
-    const result = await checkReconcileNudge({ repoRoot: tmpRepo });
+    // TV-003: folded in from the former standalone "message contains /reconcile"
+    // case, whose setup and subject were identical to this one.
     expect(result.message).toContain('/reconcile');
   });
 
@@ -231,6 +240,55 @@ describe('checkReconcileNudge — nudge (b): delta since last determinable run',
       confidence: 0.8,
     });
     expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
+  });
+});
+
+describe('checkReconcileNudge — contaminated candidate store (GitLab #955 finding 2)', () => {
+  // TV-001 — the bug: the store reader used to discard its skip count, so a
+  // store whose every line fails the shape guard was indistinguishable from a
+  // MISSING one — both yield `[]` → `lastRunAt === null` → "last reconcile run:
+  // never". The banner then reports that no run ever happened when one did and
+  // its record was quarantined. No existing case here ever wrote a shape-foreign
+  // line: `writeCandidates` only produces writer-faithful records, so every
+  // "never" assertion in this file stays green with the guard's count thrown
+  // away. This case pins the DISCRIMINATION — contaminated and empty must not
+  // read the same — which is what makes it falsifiable.
+  it('says "undeterminable" for a contaminated store and "never" for an empty one', async () => {
+    writeLearnings(tmpRepo, 25, { type: 'convention', confidence: 0.8 });
+    writeForeignCandidates(tmpRepo, 40);
+
+    const contaminated = await checkReconcileNudge({ repoRoot: tmpRepo });
+    expect(contaminated.message).toContain(
+      'last reconcile run: undeterminable (40 unreadable record(s) in the candidate store)',
+    );
+    expect(contaminated.message).not.toContain('last reconcile run: never');
+    const contaminatedComputed = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(contaminatedComputed.skippedCandidates).toBe(40);
+    expect(contaminatedComputed.reasons).toEqual([
+      '25 active learnings; last reconcile run undeterminable — 40 unreadable record(s) in the candidate store',
+    ]);
+
+    // Same corpus, NO candidate store at all → the honest label is "never".
+    fs.rmSync(path.join(tmpRepo, '.orchestrator', 'runtime'), { recursive: true, force: true });
+    const empty = await checkReconcileNudge({ repoRoot: tmpRepo });
+    expect(empty.message).toContain('last reconcile run: never');
+    expect(empty.message).not.toContain('unreadable record');
+    expect((await computeReconcileNudge({ repoRoot: tmpRepo })).skippedCandidates).toBe(0);
+
+    // The two must differ — a matching pair would mean the fix is not wired.
+    expect(contaminated.message).not.toBe(empty.message);
+  });
+
+  it('flags a PARTIALLY contaminated store — dates the run from survivors, but marks it possibly stale', async () => {
+    writeLearnings(tmpRepo, 25, { type: 'convention', confidence: 0.8 });
+    writeCandidates(tmpRepo, 2, '2025-06-01T00:00:00.000Z'); // survivors carry the date
+    writeForeignCandidates(tmpRepo, 3);
+
+    const result = await checkReconcileNudge({ repoRoot: tmpRepo });
+    expect(result.message).toContain(
+      'last reconcile run: 2025-06-01 (+3 unreadable record(s) — date may be stale)',
+    );
+    expect((await computeReconcileNudge({ repoRoot: tmpRepo })).skippedCandidates).toBe(3);
   });
 });
 

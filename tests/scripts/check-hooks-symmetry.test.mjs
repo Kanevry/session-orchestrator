@@ -107,6 +107,9 @@ function validPiHooks() {
       session_start: handlerGroup('PI_PLUGIN_ROOT'),
       session_shutdown: handlerGroup('PI_PLUGIN_ROOT'),
       tool_call: [
+        // Mirrors the claudeHooks() fixture's PreToolUse handler so the
+        // Check-6 per-event handler-set parity (#942) holds for the fixture.
+        { matcher: '*', hooks: [commandHook('PI_PLUGIN_ROOT', 'handler.mjs')] },
         piToolEntry('bash', [
           'pre-bash-destructive-guard.mjs',
           'enforce-commands.mjs',
@@ -164,17 +167,12 @@ describe('check-hooks-symmetry.mjs', () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Results: \d+ passed, 0 failed/);
     });
-
-    it('reports the required Codex six-event subset', () => {
-      const result = runValidator(PLUGIN_ROOT);
-
-      expect(result.stdout).toContain(
-        'required Codex event subset is present (SessionStart, PreToolUse, PostToolUse, SubagentStart, SubagentStop, Stop)',
-      );
-    });
   });
 
   describe('Codex event subset', () => {
+    // Consolidated: absorbed the Check-4 positive pin from 'passes when every
+    // referenced handler exists on disk', which ran a byte-identical fixture
+    // (makeFixture(); writeBaseFiles();) and asserted a strict subset of this.
     it('allows Claude to expose supported events outside the Codex subset', () => {
       makeFixture();
       writeBaseFiles();
@@ -182,6 +180,7 @@ describe('check-hooks-symmetry.mjs', () => {
       const result = runValidator(fixtureRoot);
 
       expect(result.status).toBe(0);
+      expect(result.stdout).toContain('handler files exist on disk');
     });
 
     it.each([
@@ -255,7 +254,10 @@ describe('check-hooks-symmetry.mjs', () => {
   });
 
   describe('Cursor asymmetries and parsing', () => {
-    it('passes when Cursor is missing only documented main events', () => {
+    // Consolidated: one fixture, both documented-asymmetry directions
+    // (missing main events + Cursor-native extras) — previously two tests
+    // asserting two PASS lines of the same run.
+    it('passes when Cursor has only documented missing and Cursor-native events', () => {
       makeFixture();
       writeBaseFiles({
         cursor: cursorHooks({
@@ -268,6 +270,7 @@ describe('check-hooks-symmetry.mjs', () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('hooks-cursor.json missing events are all documented');
+      expect(result.stdout).toContain('cursor-only events are all documented (2 events');
     });
 
     it('fails when Cursor is missing an undocumented main event', () => {
@@ -279,21 +282,6 @@ describe('check-hooks-symmetry.mjs', () => {
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('missing UNDOCUMENTED events: BrandNewEvent');
-    });
-
-    it('passes when Cursor contains only documented Cursor-native events', () => {
-      makeFixture();
-      writeBaseFiles({
-        cursor: cursorHooks({
-          afterFileEdit: 'handler.mjs',
-          beforeShellExecution: 'handler.mjs',
-        }),
-      });
-
-      const result = runValidator(fixtureRoot);
-
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain('cursor-only events are all documented (2 events');
     });
 
     it('fails when Cursor contains an undocumented native event', () => {
@@ -415,6 +403,241 @@ describe('check-hooks-symmetry.mjs', () => {
     );
   });
 
+  describe('per-event handler-set parity (#942)', () => {
+    // Bug class: a handler wired on ONE platform's event only was structurally
+    // invisible to checks 1-4 (event keys + file existence both symmetric).
+    // post-bash-write-verify.mjs shipped Claude-only exactly this way.
+    it('fails when a handler is wired on a Claude event but missing from the same Codex event', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'one-platform-only.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({ claude, handlers: ['one-platform-only.mjs'] });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-codex.json missing UNDOCUMENTED handlers on shared events: PostToolUse → one-platform-only.mjs',
+      );
+    });
+
+    it('fails when the #942 handler is on Claude PostToolUse but missing from Pi tool_result', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'post-bash-write-verify.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({
+        claude,
+        pi: validPiHooks(),
+        handlers: ['post-bash-write-verify.mjs', ...REQUIRED_PI_HANDLER_FILES],
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-pi.json missing UNDOCUMENTED handlers on shared events: PostToolUse → post-bash-write-verify.mjs',
+      );
+    });
+
+    // Bug class: a counterpart declaring a FOREIGN event namespace matched no
+    // Claude event key, so the per-event loop `continue`d every iteration and
+    // reported PASS having compared nothing. hooks-cursor.json passed this way
+    // with 20 of 22 handlers missing. Projecting the Cursor namespace onto the
+    // logical Claude events is what makes the comparison real.
+    it('fails when a Cursor-native event omits a handler wired on the Claude event it maps to', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PreToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'enforce-commands.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({
+        claude,
+        // beforeShellExecution projects onto PreToolUse but drops the handler
+        // it is supposed to map there.
+        cursor: cursorHooks({
+          afterFileEdit: 'handler.mjs',
+          beforeShellExecution: 'handler.mjs',
+        }),
+        handlers: ['enforce-commands.mjs'],
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-cursor.json missing UNDOCUMENTED handlers on shared events: PreToolUse → enforce-commands.mjs',
+      );
+    });
+
+    // Vacuum guard: the same PASS-without-comparing state, reached from the
+    // other side — the counterpart's events project onto nothing hooks.json
+    // declares. Without this the loop is silent and the file reports parity.
+    it('fails when a counterpart shares zero logical events with hooks.json', () => {
+      makeFixture();
+      const claude = claudeHooks();
+      delete claude.hooks.PreToolUse;
+      delete claude.hooks.PostToolUse;
+      writeBaseFiles({
+        claude,
+        cursor: cursorHooks({
+          afterFileEdit: 'handler.mjs',
+          beforeShellExecution: 'handler.mjs',
+        }),
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'hooks-cursor.json shares ZERO logical events with hooks.json after projection (declares: PostToolUse, PreToolUse)',
+      );
+    });
+
+    // Bug class (#946): the vacuum guard only fired when EVERY projection was
+    // lost (`sharedEvents.length === 0`). Drop ONE entry from cursorEventMap and
+    // the affected native event projects onto nothing, the per-event loop
+    // `continue`s on the logical event it was supposed to cover, and Check 6
+    // still reports PASS — the only moving signal is the `documented
+    // asymmetries:` count. Measured 2026-07-31 on a copy of the tree with just
+    // `afterFileEdit: 'PostToolUse'` removed: cursor went from "documented
+    // asymmetries: 12" to "8" and the run stayed "Results: 12 passed, 0 failed".
+    // `afterFileWrite` below stands in for that dropped projection — a
+    // Cursor-native event with no cursorEventMap entry. (Check 2 flags it as an
+    // undocumented extra as collateral; the assertions pin Check 6, the surface
+    // that was blind.)
+    it('fails when a Cursor-native event projects onto nothing while hooks.json carries an uncompared handler', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'one-platform-only.mjs'),
+          ],
+        }],
+      });
+      // Keep Codex in parity so the only Check-6 finding is the Cursor one.
+      const codex = codexHooks();
+      codex.hooks.PostToolUse = [{
+        matcher: '*',
+        hooks: [
+          commandHook('PLUGIN_ROOT', 'handler.mjs'),
+          commandHook('PLUGIN_ROOT', 'one-platform-only.mjs'),
+        ],
+      }];
+      writeBaseFiles({
+        claude,
+        codex,
+        cursor: cursorHooks({
+          beforeShellExecution: 'handler.mjs', // projects onto PreToolUse — shared
+          afterFileWrite: 'handler.mjs',       // no cursorEventMap entry — projects onto nothing
+        }),
+        handlers: ['one-platform-only.mjs'],
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain(
+        'FAIL: hooks-cursor.json declares events with no logical counterpart in hooks.json after projection: afterFileWrite',
+      );
+      // The vacuous PASS is the defect itself: HEAD printed this line while
+      // PostToolUse → one-platform-only.mjs was never compared.
+      expect(result.stdout).not.toContain(
+        'PASS: hooks-cursor.json per-event handler sets match hooks.json',
+      );
+    });
+
+    // Bug class (#946): handlersByMainEvent ASSIGNED per native event
+    // (`byMain[target] = handlers`), so two counterpart events projecting onto
+    // the same logical event silently dropped the first handler set. Both live
+    // maps are injective, but the identity fallback already reaches the case: a
+    // counterpart may declare the logical event AND a native event that projects
+    // onto it. Union semantics must keep both handler sets.
+    it('unions handler sets when two counterpart events project onto the same logical event', () => {
+      makeFixture();
+      const claude = claudeHooks({
+        PreToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'enforce-commands.mjs'),
+          ],
+        }],
+      });
+      const codex = codexHooks();
+      codex.hooks.PreToolUse = [{
+        matcher: '*',
+        hooks: [
+          commandHook('PLUGIN_ROOT', 'handler.mjs'),
+          commandHook('PLUGIN_ROOT', 'enforce-commands.mjs'),
+        ],
+      }];
+      writeBaseFiles({
+        claude,
+        codex,
+        // PreToolUse (identity projection) carries enforce-commands.mjs;
+        // beforeShellExecution projects onto the SAME PreToolUse with
+        // handler.mjs. Union → both present. Assignment → the identity set is
+        // overwritten and enforce-commands.mjs is reported missing.
+        cursor: cursorHooks({
+          PreToolUse: 'enforce-commands.mjs',
+          beforeShellExecution: 'handler.mjs',
+        }),
+        handlers: ['enforce-commands.mjs'],
+      });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        'PASS: hooks-cursor.json per-event handler sets match hooks.json (documented asymmetries: 0)',
+      );
+    });
+
+    it('passes when the missing handler is a documented asymmetry (Codex allowlist)', () => {
+      // Guards the allowlist mechanism itself: deleting handlerAsymmetries
+      // would turn every documented platform gap into a gate-breaking FAIL.
+      makeFixture();
+      const claude = claudeHooks({
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [
+            commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'post-bash-write-verify.mjs'),
+          ],
+        }],
+      });
+      writeBaseFiles({ claude, handlers: ['post-bash-write-verify.mjs'] });
+
+      const result = runValidator(fixtureRoot);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        'hooks-codex.json per-event handler sets match hooks.json (documented asymmetries: 1)',
+      );
+    });
+  });
+
   describe('main parser and handler existence', () => {
     it('fails when hooks.json contains malformed JSON', () => {
       makeFixture();
@@ -462,16 +685,6 @@ describe('check-hooks-symmetry.mjs', () => {
       expect(result.stdout).toContain('handler files referenced but missing: missing-pi.mjs');
     });
 
-    it('passes when every referenced handler exists on disk', () => {
-      makeFixture();
-      writeBaseFiles();
-
-      const result = runValidator(fixtureRoot);
-
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain('handler files exist on disk');
-    });
-
     it('reports an unreferenced hook file without failing', () => {
       makeFixture();
       writeBaseFiles();
@@ -482,15 +695,6 @@ describe('check-hooks-symmetry.mjs', () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('unreferenced .mjs files');
       expect(result.stdout).toContain('orphan.mjs');
-    });
-
-    it('always emits a Results summary for a complete fixture', () => {
-      makeFixture();
-      writeBaseFiles();
-
-      const result = runValidator(fixtureRoot);
-
-      expect(result.stdout).toMatch(/Results: \d+ passed, \d+ failed/);
     });
   });
 });

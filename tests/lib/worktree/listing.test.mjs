@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listWorktrees, applyWorktreeExcludes } from '@lib/worktree/listing.mjs';
+import { listWorktrees, listWorktreesChecked, applyWorktreeExcludes } from '@lib/worktree/listing.mjs';
 
 // ---------------------------------------------------------------------------
 // Mock-executor factory — no vi.mock('zx') needed
@@ -139,6 +139,51 @@ describe('listWorktrees', () => {
     const result = await listWorktrees({ $: $mock });
 
     expect(result[0].branch).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listWorktreesChecked (#919.3)
+//
+// Nameable bug these tests catch: the bare listWorktrees swallows a failing
+// `git worktree list` into `[]` — indistinguishable from "git ran, no extra
+// worktrees". checkLiveForeignSession's full path (peer-discovery.mjs) needs
+// the distinction to fail SAFE on total surface failure; a regression back to
+// the swallow (ok missing / ok:true on failure) reopens the #906/#908
+// residual fail-open gap.
+// ---------------------------------------------------------------------------
+
+describe('listWorktreesChecked (#919.3 error signal)', () => {
+  it('git failure → { ok: false, worktrees: [], error } — NOT a bare empty listing', async () => {
+    const $mock = makeMockDollar({ shouldThrow: true });
+    const result = await listWorktreesChecked({ $: $mock });
+
+    expect(result.ok).toBe(false);
+    expect(result.worktrees).toEqual([]);
+    expect(result.error).toBe('git failure');
+  });
+
+  it('git ran with empty output → { ok: true, worktrees: [] } — an empty listing IS a measurement', async () => {
+    const $mock = makeMockDollar({ stdout: '' });
+    const result = await listWorktreesChecked({ $: $mock });
+
+    expect(result.ok).toBe(true);
+    expect(result.worktrees).toEqual([]);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('git ran with records → { ok: true } and the same parse as listWorktrees', async () => {
+    const porcelain = [
+      'worktree /repo',
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+    ].join('\n');
+
+    const result = await listWorktreesChecked({ $: makeMockDollar({ stdout: porcelain }) });
+
+    expect(result.ok).toBe(true);
+    expect(result.worktrees).toEqual([{ path: '/repo', head: 'abc123', branch: 'main' }]);
   });
 });
 

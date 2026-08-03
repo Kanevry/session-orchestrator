@@ -136,6 +136,12 @@ enforcement-gates:
   path-guard: true
   command-guard: true
   post-edit-validate: true
+  bash-write-verify: true              # PostToolUse/Bash working-tree diff, warn-only (#915)
+  # bash-write-guard: true             # ⚠ INVERTED DEFAULT — this is the ONE gate that is
+                                       #   OFF when the key is absent. Every other key above
+                                       #   means "enabled unless set to false"; this one runs
+                                       #   only on a literal `true`. Leaving it out does NOT
+                                       #   leave Bash writes guarded (#800/#915).
 allow-destructive-ops: false           # disables destructive-command guard when true
 reasoning-output: false                # opt-in STATE:/PLAN: agent transparency markers
 grounding-check: true                  # session-end Phase 1.1a planned-vs-touched diff
@@ -145,7 +151,9 @@ max-turns: auto                        # housekeeping=8, feature=15, deep=25
 auto-commit-per-wave: false            # opt-in: commit after each wave's Quality-Lite PASS (default false; V3.6 plumbing)
 ```
 
-Read by: `skills/session-start/SKILL.md`, `skills/session-end/SKILL.md`, `hooks/pre-edit-scope.mjs`, `hooks/pre-bash-destructive-guard.mjs`, `hooks/pre-bash-enforce-commands.mjs`, `hooks/post-edit-validate.mjs`.
+Read by: `skills/session-start/SKILL.md`, `skills/session-end/SKILL.md`, `hooks/pre-edit-scope.mjs`, `hooks/pre-bash-destructive-guard.mjs`, `hooks/pre-bash-enforce-commands.mjs`, `hooks/post-edit-validate.mjs`, `hooks/post-bash-write-verify.mjs`.
+
+> **The `bash-write-guard` gate is the single inverted default in this block.** `hooks/enforce-commands.mjs` runs it only when `gates['bash-write-guard'] === true` is set literally; a missing key means the gate is OFF, unlike `path-guard`/`command-guard`/`post-edit-validate`/`bash-write-verify`, where a missing key means ON. Assuming otherwise is exactly the gap #915 was filed for — `hooks/enforce-scope.mjs` gates only `Edit`/`Write`/`MultiEdit`, so with `bash-write-guard` off nothing pre-checks the path of a `echo x > out-of-scope.mjs`. Full rationale (including the measured false-positive rate that justifies keeping it opt-in) in `docs/session-config-reference.md` § enforcement-gates.
 
 ## Resource Awareness (env-aware)
 
@@ -701,6 +709,8 @@ enforcement-gates:
   path-guard: true
   command-guard: true
   post-edit-validate: true
+  bash-write-verify: true              # PostToolUse/Bash working-tree diff, warn-only (#915)
+  # bash-write-guard: true             # ⚠ INVERTED DEFAULT: absent = OFF (opposite of the keys above)
 allow-destructive-ops: false
 reasoning-output: false
 grounding-check: true
@@ -915,6 +925,11 @@ loop-guard:
 instruction-budget:
   enabled: true            # always-on directive-budget banner; off-by-config silences it
   ceiling: 480             # structural-directive ceiling (baseline ~457; ratchet guards growth)
+  byte-ceiling: 114000     # byte ceiling for the SAME corpus (baseline ~108589, +5% headroom —
+                           # deliberately the same relative slack the directive ceiling carries,
+                           # so neither axis is accidentally the stricter one). Either axis alone
+                           # puts the banner over budget: a 9 KB prose rule with three bullets is
+                           # invisible to the directive count but costs real payload (#931a).
   mode: warn               # warn (surface banner) | off (silent no-op)
 
 # Config-protection guard (ecc-analysis / #622)

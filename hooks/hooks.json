@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '🎯 Session Orchestrator v3.17.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
+            "command": "echo '🎯 Session Orchestrator v3.18.0 — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'",
             "async": false
           },
           {
@@ -76,6 +76,11 @@
           },
           {
             "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-sessions-ledger-guard.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-templates-first.mjs\"",
             "timeout": 5
           },
@@ -109,6 +114,16 @@
           {
             "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tooluse-frontend-slop.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-write-verify.mjs\"",
             "timeout": 5
           }
         ]

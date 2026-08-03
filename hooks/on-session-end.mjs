@@ -284,6 +284,47 @@ async function main() {
               reason: releaseResult.ok
                 ? (releaseResult.reason ?? 'not-deleted')
                 : (releaseResult.reason ?? 'fs-error'),
+              caller: 'on-session-end',
+            });
+          } catch { /* observability is best-effort */ }
+        } else {
+          // #952 (A) — SUCCESS breadcrumb. Until now ONLY the failure path
+          // emitted: a release that actually worked left zero trace, so
+          // "the hook-lock vanished somewhere in the start chain" (#914
+          // residual 3) was forensically undecidable — an absent lock could
+          // equally mean "we released it cleanly at SessionEnd" or "something
+          // else deleted it". Both REACHED outcomes now emit, distinguished by
+          // `outcome`:
+          //   'deleted'      — we unlinked it ourselves (the normal close).
+          //   'already-gone' — ownership matched, but the lock had ALREADY
+          //                    vanished between readLock() and release()
+          //                    (release() reason 'no-lock'). This is the
+          //                    forensically INTERESTING one: a third party
+          //                    removed our lock while we still held it, which
+          //                    IS the #914 disappearance class. Staying silent
+          //                    on it would leave exactly that signal unobservable.
+          //
+          // `end_reason` (not `reason`) deliberately: the sibling
+          // `…lock.release_failed` event above uses `reason` for the FAILURE
+          // reason, so reusing the key for the SessionEnd reason
+          // (clear|logout|prompt_input_exit|other) inside the same
+          // `orchestrator.session.lock.*` namespace would make any consumer
+          // roll-up over `.reason` mix "clear" with "fs-error".
+          //
+          // Emitted at the CALL-SITE, never inside release(): session-lock.mjs
+          // deliberately carries no dependency on events.mjs, and release() is
+          // synchronous while emitEvent() is async. `caller` keeps the two
+          // release call-sites (this hook and the autopilot worktree pipeline)
+          // distinguishable in the single stream.
+          try {
+            await emitEvent('orchestrator.session.lock.released', {
+              session_id: sessionId,
+              lock_session_id: lock.session_id,
+              semantic_session_id: semanticSessionId,
+              end_reason: reason,
+              caller: 'on-session-end',
+              outcome: benignAlreadyGone ? 'already-gone' : 'deleted',
+              verified: releaseResult.verified === true,
             });
           } catch { /* observability is best-effort */ }
         }

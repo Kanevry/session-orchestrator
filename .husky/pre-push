@@ -1,0 +1,75 @@
+#!/usr/bin/env sh
+# Husky v9+ — pre-push hook (#932)
+#
+# Wires scripts/run-quality-gate.mjs, which was fully implemented and tested
+# (tests/scripts/run-quality-gate.test.mjs) but connected to nothing:
+#   grep -rn "run-quality-gate" .gitlab-ci.yml .husky/ package.json  ->  0 hits.
+#
+# Why the FULL gate and not the incremental one:
+#   run-quality-gate exposes four variants, but only `full-gate` can block.
+#   scripts/lib/gates/gate-incremental.mjs ends in an unconditional
+#   `process.exit(0)` — it is a REPORTING variant by design, so a pre-push built
+#   on it would print failures and push anyway. That is the exact fail-open
+#   shape this hook exists to remove, so it must not be the mechanism that
+#   enforces it. `gate-full.mjs` ends in `process.exit(failed ? 2 : 0)`: a real
+#   exit-code contract, pinned by tests, and immune to any change in the JSON
+#   payload's shape.
+#
+# The cost is real — the gate runs typecheck + the whole vitest suite + lint.
+# Two things keep that from turning into a reflex `--no-verify`:
+#   - a delete-only push changes no code and is skipped outright;
+#   - SKIP_QUALITY_GATE=1 is a named, greppable, loudly-announced bypass.
+#     Prefer it over `git push --no-verify`, which disables EVERY hook silently,
+#     including any future one, and leaves no trace of what was skipped.
+#
+# Skipped silently when the gate script is absent (vendored-hook consumers,
+# test fixtures) — mirrors the gitleaks not-installed skip in .husky/pre-commit.
+
+if [ ! -f scripts/run-quality-gate.mjs ]; then
+  exit 0
+fi
+
+if [ -n "$SKIP_QUALITY_GATE" ]; then
+  echo "⚠ pre-push: quality gate BYPASSED via SKIP_QUALITY_GATE — nothing was verified." >&2
+  exit 0
+fi
+
+# git feeds one line per pushed ref on stdin:
+#   <local_ref> <local_sha> <remote_ref> <remote_sha>
+# An all-zero local sha means the ref is being DELETED. A push that only deletes
+# refs ships no code, so gating it is pure latency with no signal.
+zero='0000000000000000000000000000000000000000'
+has_content=0
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  has_content=1
+done
+
+if [ "$has_content" -eq 0 ]; then
+  echo "pre-push: delete-only push — quality gate skipped." >&2
+  exit 0
+fi
+
+echo "pre-push: running the full quality gate (typecheck + tests + lint)." >&2
+echo "          Output is buffered by the gate, so expect ~2 min of silence." >&2
+echo "          Bypass with SKIP_QUALITY_GATE=1 (never silently with --no-verify)." >&2
+
+start=$(date +%s)
+# `npm run --silent` keeps package.json as the single definition of the gate
+# command and drops npm's own ERR! banner; the child's exit code is forwarded.
+npm run --silent quality-gate
+status=$?
+elapsed=$(( $(date +%s) - start ))
+
+if [ "$status" -ne 0 ]; then
+  # exit 2 = a gate failed; exit 1 = the gate itself could not run. Both block:
+  # a gate that cannot run has not verified anything, which is the failure class
+  # this hook exists for.
+  echo "✗ pre-push: quality gate FAILED (exit $status) after ${elapsed}s. Push blocked." >&2
+  echo "  Re-run locally: npm run quality-gate" >&2
+  echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
+  exit 1
+fi
+
+echo "✓ pre-push: quality gate passed in ${elapsed}s." >&2

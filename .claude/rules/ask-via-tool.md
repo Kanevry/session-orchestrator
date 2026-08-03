@@ -50,13 +50,14 @@ Option 1 is always the recommendation, labelled `(Recommended)`. Each option car
 
 ## AUQ-004: Exceptions (Narrow)
 
-These are the **only** acceptable uses of inline prose questions:
+These are the acceptable uses of inline prose questions — narrow and exhaustive:
 
 1. **Subagents.** `AskUserQuestion` is not available inside dispatched `Agent()` calls. Subagents must bubble the decision back to the coordinator, which then asks the user. Never paper over this by putting a prose question in a subagent.
-2. **Clarifying a single free-text field** where options don't make sense ("What should the issue title say?"). Even then, prefer offering 2–4 candidate titles via `AskUserQuestion` before falling back to prose.
-3. **Error-recovery narration** where the next step is fully determined and you're informing, not asking ("Restored coordinator cwd; continuing Wave 3."). Statements, not questions.
+2. **Harness without the tool (Codex CLI / Cursor IDE).** `AskUserQuestion` is a Claude Code tool; on Codex CLI or Cursor IDE it does not exist. There, render the same options as a **numbered Markdown list** with "(Recommended)" on option 1 and ask the user to reply with the choice number (per `skills/session-start/presentation-format.md`) — this is the sanctioned fallback the skill bodies already use, NOT a licence to skip the tool on a harness that has it.
+3. **Clarifying a single free-text field** where options don't make sense ("What should the issue title say?"). Even then, prefer offering 2–4 candidate titles via `AskUserQuestion` before falling back to prose.
+4. **Error-recovery narration** where the next step is fully determined and you're informing, not asking ("Restored coordinator cwd; continuing Wave 3."). Statements, not questions.
 
-If you think you have a fourth exception, you don't. Use the tool.
+If you think you have a further exception beyond these four, you don't. On any harness that HAS the tool, use the tool.
 
 ## AUQ-005: Why This Is Strict
 

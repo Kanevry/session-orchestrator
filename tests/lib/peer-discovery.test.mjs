@@ -1129,6 +1129,51 @@ describe('Group I — checkLiveForeignSession (#908)', () => {
     expect(verdict.reason).toBe('no-peers');
     expect(verdict.probe).toBe('full');
   });
+
+  // -------------------------------------------------------------------------
+  // I12 — #919.3 residual-gap closure. The I11 canary needs a live own lock to
+  // assert against; with NO lock, "total surface failure" and "quiet repo"
+  // used to be the same empty list → `no-peers` / live:false after measuring
+  // NOTHING (the documented residual gap, W5/F3). Now the full path confirms
+  // via the listWorktrees error signal that `git worktree list` actually RAN
+  // before it is allowed to say "nobody home".
+  // -------------------------------------------------------------------------
+
+  it('I12: own repo, NO own lock — git worktree list FAILS → degraded (fail-safe), not "no peers"', async () => {
+    // No lock written: the canary cannot assert. The git surface is broken via
+    // the same DI seam findPeers forwards — exactly the state the bare
+    // listWorktrees swallows into [].
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      now: NOW,
+      listWorktreesImpl: async () => {
+        throw new Error('git exploded (#919.3)');
+      },
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(verdict.live).toBe(true);
+    expect(verdict.reason).toBe('probe-degraded');
+    expect(verdict.probe).toBe('full-degraded');
+    expect(verdict.peerCount).toBe(0);
+  });
+
+  it('I12b: control — own repo, NO own lock, git RAN and found nothing → still live:false (a measurement, not an unknown)', async () => {
+    // Same lockless fixture; this time the git surface WORKS and is genuinely
+    // empty. The verdict must stay `no-peers` — otherwise the confirmation
+    // would be a "fail-safe that always says true" (the I8/I11b failure mode).
+    const verdict = await checkLiveForeignSession(repoRoot, {
+      cwd: repoRoot,
+      now: NOW,
+      listWorktreesImpl: async () => [],
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(verdict.live).toBe(false);
+    expect(verdict.reason).toBe('no-peers');
+    expect(verdict.probe).toBe('full');
+    expect(verdict.peerCount).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

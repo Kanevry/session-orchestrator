@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runQualityGateWithRetry } from '@lib/quality-gate.mjs';
+import { validateEventRecord } from '@lib/events-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-test filesystem isolation
@@ -86,7 +87,10 @@ const FAIL_LINT_COMMANDS = { lint: FAIL, typecheck: PASS, test: PASS };
 // ---------------------------------------------------------------------------
 
 describe('runQualityGateWithRetry — happy path', () => {
-  it('returns { ok: true } when first attempt passes', async () => {
+  // Consolidated from 3 `it`s that ran the IDENTICAL all-pass gate and each
+  // asserted one field of the same result object (TV-003). All three original
+  // assertions are preserved; only the 2 duplicate gate runs are gone.
+  it('passes on the first attempt: ok, attempts=1, no fixer dispatched', async () => {
     const dispatchFixer = vi.fn();
 
     const result = await runQualityGateWithRetry({
@@ -97,32 +101,90 @@ describe('runQualityGateWithRetry — happy path', () => {
     });
 
     expect(result.ok).toBe(true);
-  });
-
-  it('returns { attempts: 1 } when first attempt passes (no retries needed)', async () => {
-    const dispatchFixer = vi.fn();
-
-    const result = await runQualityGateWithRetry({
-      maxRetries: 2,
-      dispatchFixer,
-      repoRoot,
-      commands: PASS_COMMANDS,
-    });
-
     expect(result.attempts).toBe(1);
+    expect(dispatchFixer).not.toHaveBeenCalled();
   });
+});
 
-  it('does not call dispatchFixer when gate passes on first attempt', async () => {
-    const dispatchFixer = vi.fn();
+// ---------------------------------------------------------------------------
+// 1b. Suite counts on the emitted telemetry record (#954)
+// ---------------------------------------------------------------------------
 
+describe('runQualityGateWithRetry — suite counts on the emitted event (#954)', () => {
+  /** Read parsed events.jsonl records from the isolated tmp repoRoot. */
+  function readEvents() {
+    const p = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(p)) return [];
+    return readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  /**
+   * A portable gate command that prints a vitest-shaped summary, then exits
+   * `code`. `node -e` per the file-header portability note; the `|` is inside
+   * the double-quoted argument, so neither sh nor cmd.exe treats it as a pipe.
+   */
+  const suiteCmd = (code) =>
+    `node -e "console.log('  Tests  12 passed | 2 failed (14)'); process.exit(${code})"`;
+
+  // Bug this catches: `counts` never reaches the record. The pre-#954 payload
+  // was {variant, exit_code, attempts, gate} — the numbers the gate had in hand
+  // were dropped on the floor and re-derived by an LLM from the STATE.md prose
+  // header. Every other assertion in this file stays green if that regresses.
+  it('carries counts when the test gate ran and failed', async () => {
     await runQualityGateWithRetry({
-      maxRetries: 2,
-      dispatchFixer,
+      maxRetries: 0,
       repoRoot,
-      commands: PASS_COMMANDS,
+      commands: { lint: PASS, typecheck: PASS, test: suiteCmd(1) },
     });
 
-    expect(dispatchFixer).not.toHaveBeenCalled();
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toBeDefined();
+    expect(ev.gate).toBe('test');
+    expect(ev.counts).toEqual({ passed: 12, failed: 2, total: 14 });
+  });
+
+  it('carries counts when the test gate ran and passed', async () => {
+    await runQualityGateWithRetry({
+      maxRetries: 0,
+      repoRoot,
+      commands: { lint: PASS, typecheck: PASS, test: suiteCmd(0) },
+    });
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+    expect(ev.counts).toEqual({ passed: 12, failed: 2, total: 14 });
+  });
+
+  // Bug this catches: fail-fast on lint means the test gate NEVER RAN, yet the
+  // record claims a measurement — either a fabricated {passed: 0, failed: 0}
+  // (unmeasured masquerading as measured-zero) or a stale count carried over
+  // from an earlier attempt's test run.
+  it('omits counts when lint fail-fasts before the test gate ever runs', async () => {
+    await runQualityGateWithRetry({
+      maxRetries: 0,
+      repoRoot,
+      commands: { lint: FAIL, typecheck: PASS, test: suiteCmd(0) },
+    });
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toBeDefined();
+    expect(ev.gate).toBe('lint');
+    expect(ev.counts).toBeUndefined();
+    expect(Object.keys(ev)).not.toContain('counts');
+  });
+
+  // The record must remain schema-valid with the new field — validateEventRecord
+  // is additive-tolerant today, and this pins that it stays so.
+  it('emits a record that validateEventRecord still accepts', async () => {
+    await runQualityGateWithRetry({
+      maxRetries: 0,
+      repoRoot,
+      commands: { lint: PASS, typecheck: PASS, test: suiteCmd(0) },
+    });
+
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev.counts).toBeTypeOf('object');
+    expect(validateEventRecord(ev)).toEqual({ valid: true, errors: [] });
   });
 });
 

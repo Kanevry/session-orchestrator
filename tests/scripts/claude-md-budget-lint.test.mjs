@@ -12,12 +12,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import {
-  lintClaudeMd,
-  ClaudeMdLintInfraError,
-  DEFAULT_MAX_LINES,
-  DEFAULT_MAX_LINE_CHARS,
-} from '@lib/claude-md-budget-lint.mjs';
+import { lintClaudeMd, ClaudeMdLintInfraError } from '@lib/claude-md-budget-lint.mjs';
+import { _extractConfigSection } from '@lib/config/section-extractor.mjs';
+import { parseSessionConfig } from '@lib/config.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('../../scripts/lib/claude-md-budget-lint.mjs', import.meta.url));
 
@@ -66,16 +63,41 @@ function runCLI(args = [], cwd = undefined) {
 }
 
 // ---------------------------------------------------------------------------
-// Defaults sanity (hardcoded literals — these are the documented constants)
+// Defaults — asserted through BEHAVIOUR, not by re-stating the constants.
+// (Replaces two `expect(CONST).toBe(<same literal>)` tautologies deleted in
+// #959: they restated the module's own literals and so could not fail while
+// the module compiled. The ceilings below are hardcoded on purpose — a silent
+// change to either default flips these.)
 // ---------------------------------------------------------------------------
 
-describe('exported defaults', () => {
-  it('DEFAULT_MAX_LINES is 150', () => {
-    expect(DEFAULT_MAX_LINES).toBe(150);
+describe('applied defaults', () => {
+  it('applies the 80-line default ceiling to non-exempt lines when maxLines is omitted', () => {
+    const dir = tmp();
+    const at80 = join(dir, 'at-80.md');
+    const at81 = join(dir, 'at-81.md');
+    // 79 newline-terminated lines -> split('\n') yields 80 entries (trailing '').
+    writeFileSync(at80, 'x\n'.repeat(79), 'utf8');
+    writeFileSync(at81, 'x\n'.repeat(80), 'utf8');
+
+    expect(lintClaudeMd({ filePath: at80 }).lineCount).toBe(80);
+    expect(lintClaudeMd({ filePath: at80 }).violations).toHaveLength(0);
+
+    const over = lintClaudeMd({ filePath: at81 });
+    expect(over.lineCount).toBe(81);
+    expect(over.violations.map((v) => v.rule)).toEqual(['max-lines']);
   });
 
-  it('DEFAULT_MAX_LINE_CHARS is 400', () => {
-    expect(DEFAULT_MAX_LINE_CHARS).toBe(400);
+  it('applies the 400-char default per-line ceiling when maxLineChars is omitted', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    writeFileSync(filePath, `${'a'.repeat(400)}\n${'b'.repeat(401)}\n`, 'utf8');
+
+    const result = lintClaudeMd({ filePath });
+
+    // Only the 401-char line trips: the 400-char line sits exactly at the ceiling.
+    expect(result.violations.map((v) => ({ rule: v.rule, line: v.line }))).toEqual([
+      { rule: 'max-line-chars', line: 2 },
+    ]);
   });
 });
 
@@ -124,6 +146,169 @@ describe('lintClaudeMd — max-lines violation', () => {
     const result = lintClaudeMd({ filePath, maxLines: 10 });
 
     expect(result.violations.filter((x) => x.rule === 'max-lines')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session Config exempt region (#959). The ceiling is measured against
+// NON-EXEMPT lines, so each case below names a distinct way the exemption
+// could silently mis-fire: not applying, applying to a near-miss heading,
+// swallowing the rest of the file, or being gamed by a duplicate heading.
+// ---------------------------------------------------------------------------
+
+describe('lintClaudeMd — Session Config exemption', () => {
+  it('excludes the Session Config block from the ceiling while keeping lineCount raw', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    // 10 raw lines; the Session Config block spans lines 4..7 (4 lines),
+    // terminated by the `## Tail` heading on line 8 -> 6 non-exempt.
+    writeFileSync(
+      filePath,
+      '# Title\n\n## Intro\n## Session Config\nwaves: 5\nvcs: gitlab\n\n## Tail\nprose\n',
+      'utf8'
+    );
+
+    const result = lintClaudeMd({ filePath, maxLines: 6 });
+
+    expect(result.lineCount).toBe(10);
+    expect(result.exemptLines).toBe(4);
+    expect(result.effectiveLineCount).toBe(6);
+    expect(result.status).toBe('ok');
+
+    // One line tighter and the SAME file trips — proving the ceiling is live,
+    // not merely unreachable because everything was exempted.
+    expect(lintClaudeMd({ filePath, maxLines: 5 }).violations.map((v) => v.rule)).toEqual([
+      'max-lines',
+    ]);
+  });
+
+  it('names raw, non-exempt, exempt and ceiling figures in the max-lines message', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    writeFileSync(filePath, '# Title\n## Session Config\nwaves: 5\n\n## Tail\nprose\n', 'utf8');
+
+    const v = lintClaudeMd({ filePath, maxLines: 3 }).violations.find(
+      (x) => x.rule === 'max-lines'
+    );
+
+    expect(v.message).toContain('7 lines'); // raw
+    expect(v.message).toContain('4 non-exempt');
+    expect(v.message).toContain('3 exempt');
+    expect(v.message).toContain('max-lines 3'); // ceiling
+  });
+
+  it('exempts a Session Config block that runs to EOF (no following ## heading)', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    // Mirrors tests/fixtures/harness-audit/clean-repo/CLAUDE.md, whose block ends at EOF.
+    writeFileSync(filePath, '# Title\n\n## Session Config\nwaves: 5\nvcs: gitlab\n', 'utf8');
+
+    const result = lintClaudeMd({ filePath, maxLines: 3 });
+
+    expect(result.lineCount).toBe(6);
+    expect(result.exemptLines).toBe(4); // heading + 2 keys + trailing ''
+    expect(result.effectiveLineCount).toBe(2);
+    expect(result.violations).toHaveLength(0);
+  });
+
+  it('exempts nothing when the file has no Session Config heading', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    writeFileSync(filePath, '# Title\n\n## Intro\nprose\n', 'utf8');
+
+    const result = lintClaudeMd({ filePath, maxLines: 4 });
+
+    expect(result.exemptLines).toBe(0);
+    expect(result.effectiveLineCount).toBe(result.lineCount);
+    expect(result.violations.map((v) => v.rule)).toEqual(['max-lines']);
+  });
+
+  it('does not exempt near-miss headings that merely start with "Session Config"', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    // Real in-repo heading shapes: CONTRIBUTING.md, SECURITY.md, docs/recipes/*.
+    writeFileSync(
+      filePath,
+      '## Session Config Convention\n## Session Config Command Trust\n## Session Config (CLAUDE.md)\n### Session Config\n',
+      'utf8'
+    );
+
+    const result = lintClaudeMd({ filePath, maxLines: 4 });
+
+    expect(result.exemptLines).toBe(0);
+    expect(result.violations.map((v) => v.rule)).toEqual(['max-lines']);
+  });
+
+  // The bug this replaces a test for: the lint used to own a LOCAL heading
+  // regex that tolerated a trailing HTML comment and extra spaces, while the
+  // runtime parser (`_extractConfigSection`) requires the exact literal. A
+  // CLAUDE.md decorated as this repo's own `## Current State <!-- … -->`
+  // convention encourages therefore lost EVERY runtime config key to its
+  // default, while the lint simultaneously reported `148 exempt:
+  // "## Session Config"` — affirming the block at the moment it went blind.
+  //
+  // The predecessor test asserted `exemptLines === 3` for exactly that
+  // decorated heading, i.e. it PINNED the defect as expected behaviour
+  // (`.claude/rules/testing.md` § "Security Tests Must Not Encode the
+  // Vulnerability"). It is replaced — not supplemented — by this one.
+  it('never exempts a heading the runtime config parser rejects', () => {
+    // Each heading is fed to BOTH the lint and the real runtime parser. A row
+    // where the lint exempts but the parser sees no block is the silent
+    // config-default fallback; the assertion is agreement, not a fixed verdict.
+    const headings = [
+      '## Session Config', // canonical — both accept
+      '##  Session Config', // two spaces
+      '## Session Config <!-- consistency:exempt:runtime-critical -->', // decorated
+      '## Session Config Convention', // prose near-miss
+    ];
+
+    const disagreements = [];
+    for (const heading of headings) {
+      const content = `# T\n${heading}\nvcs: gitlab\n\n## Tail\n`;
+      const filePath = join(tmp(), 'CLAUDE.md');
+      writeFileSync(filePath, content, 'utf8');
+
+      const lintSeesBlock = lintClaudeMd({ filePath, maxLines: 999 }).exemptLines > 0;
+      const runtimeSeesBlock = _extractConfigSection(content).length > 0;
+      if (lintSeesBlock !== runtimeSeesBlock) {
+        disagreements.push({ heading, lintSeesBlock, runtimeSeesBlock });
+      }
+    }
+
+    expect(disagreements).toEqual([]);
+
+    // Pin the direction too, so a predicate that rejects EVERYTHING would still
+    // fail: the canonical heading must be exempted by both.
+    const canonical = `# T\n## Session Config\nvcs: gitlab\n\n## Tail\n`;
+    const canonicalPath = join(tmp(), 'CLAUDE.md');
+    writeFileSync(canonicalPath, canonical, 'utf8');
+    expect(lintClaudeMd({ filePath: canonicalPath, maxLines: 999 }).exemptLines).toBe(3);
+    expect(_extractConfigSection(canonical).length).toBeGreaterThan(0);
+
+    // …and that the runtime genuinely loses its keys on the decorated form —
+    // the concrete harm, asserted through the real parseSessionConfig entry
+    // point rather than inferred from the extractor.
+    expect(parseSessionConfig(canonical).vcs).toBe('gitlab');
+    expect(
+      parseSessionConfig(`# T\n## Session Config <!-- x -->\nvcs: gitlab\n\n## Tail\n`).vcs
+    ).toBeNull();
+  });
+
+  it('exempts NOTHING and reports duplicate-session-config for two headings (fail-closed)', () => {
+    const dir = tmp();
+    const filePath = join(dir, 'CLAUDE.md');
+    writeFileSync(filePath, '# T\n\n## Session Config\nkey: a\n\n## Session Config\nkey: b\n', 'utf8');
+
+    const result = lintClaudeMd({ filePath, maxLines: 3 });
+
+    expect(result.exemptLines).toBe(0);
+    expect(result.effectiveLineCount).toBe(8);
+    const dup = result.violations.find((v) => v.rule === 'duplicate-session-config');
+    expect(dup).toBeDefined();
+    expect(dup.line).toBe(6);
+    expect(dup.message).toContain('lines 3, 6');
+    // The budget is measured raw while duplicates exist -> the ceiling also trips.
+    expect(result.violations.some((v) => v.rule === 'max-lines')).toBe(true);
   });
 });
 
@@ -263,12 +448,15 @@ describe('CLI — exit codes', () => {
     expect(status).toBe(0);
   });
 
-  it('exits 2 when the file does not exist', () => {
+  it('exits 2 with an infra-error envelope when the file does not exist', () => {
     const missing = join(tmpdir(), 'definitely-does-not-exist-budget-lint-cli.md');
 
-    const { status } = runCLI(['--file', missing]);
+    const { stderr, status } = runCLI(['--file', missing]);
 
     expect(status).toBe(2);
+    // Folded in from a duplicate case in the arg-hygiene block (deleted #959):
+    // exit 2 stays reserved for genuine infra errors, never CLI-arg errors.
+    expect(JSON.parse(stderr).status).toBe('infra-error');
   });
 
   it('--json produces parseable output with the expected top-level shape', () => {
@@ -376,21 +564,11 @@ describe('CLI — argument-hygiene error paths (#892)', () => {
     expect(parsed).toEqual({ status: 'user-error', reason: 'unknown arg: --does-not-exist' });
   });
 
-  it('still exits 2 for a genuine infra error (missing target file) — unaffected by the arg-hygiene fix', () => {
-    const missing = join(tmpdir(), 'definitely-does-not-exist-budget-lint-arg-hygiene.md');
-
-    const { stderr, status } = runCLI(['--file', missing]);
-
-    expect(status).toBe(2);
-    const parsed = JSON.parse(stderr);
-    expect(parsed.status).toBe('infra-error');
-  });
-
-  it('--help documents the exit-code contract', () => {
-    const { stdout, status } = runCLI(['--help']);
-
-    expect(status).toBe(0);
-    expect(stdout).toContain('Exit codes:');
-    expect(stdout).toContain('CLI argument error');
-  });
+  // Deleted in #959 (TV-002/TV-003 consolidation, paying for the exemption tests):
+  //  - "still exits 2 for a genuine infra error" — identical args and status
+  //    assertion to the exit-2 case above; its one extra field check was folded
+  //    in there.
+  //  - "--help documents the exit-code contract" — pinned usage-string prose
+  //    (`toContain('Exit codes:')`); the exit-code contract itself is covered
+  //    behaviourally by the 9 exit-code cases in this file.
 });

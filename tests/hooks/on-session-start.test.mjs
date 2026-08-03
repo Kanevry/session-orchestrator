@@ -588,16 +588,42 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
   }
 
   /**
-   * Wipe the isolated session registry's active dir so a subsequent hook run
-   * resolves the SAME semantic id (the n-counter increments off active +
-   * historical sessions; a clean registry yields `-1` again). This deterministically
-   * simulates a clear/compact/resume of the SAME logical session — the new UUID
-   * changes but the semantic id is stable while current-session.json's
-   * high-water mark persists on disk.
+   * Wipe every n-counter memory the first hook run left behind, so a subsequent
+   * run resolves the SAME semantic id (a clean slate yields `-1` again). This
+   * deterministically simulates a clear/compact/resume of the SAME logical
+   * session — the new UUID changes but the semantic id is stable while
+   * current-session.json's high-water mark persists on disk.
+   *
+   * Two memories must be cleared, because `resolveSemanticSessionId()` merges
+   * several candidate sources:
+   *   1. the isolated session registry's active dir (source A — live sessions);
+   *   2. the `orchestrator.session.lock.acquired` records in the tmp project's
+   *      events.jsonl (source D, the #952 mint ledger, written at CLAIM time by
+   *      hooks/_lib/lock-bootstrap.mjs). Clearing (1) alone leaves the minted
+   *      `-1` visible in (2), and the next run mints `-2`.
+   *
+   * Deliberately surgical: only the mint-ledger records are stripped, not the
+   * whole events file — the `orchestrator.session.started` lines are not an
+   * n-counter memory, and a blanket wipe would blunt the fixture.
+   *
+   * @param {string} projectDir - The tmp project whose mint ledger to clear.
    */
-  async function clearActiveRegistry() {
+  async function clearSemanticIdMemory(projectDir) {
     const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
     await fs.rm(activeDir, { recursive: true, force: true });
+
+    // Strip the mint-ledger records. The file legitimately may not exist.
+    const eventsPath = path.join(projectDir, EVENTS_RELPATH);
+    let raw;
+    try {
+      raw = await fs.readFile(eventsPath, 'utf8');
+    } catch {
+      return;
+    }
+    const kept = raw
+      .split('\n')
+      .filter((l) => l.length > 0 && !l.includes('orchestrator.session.lock.acquired'));
+    await fs.writeFile(eventsPath, kept.length > 0 ? kept.join('\n') + '\n' : '', 'utf8');
   }
 
   it('preserves last_wave when the prior session file carries the SAME semantic_session_id', async () => {
@@ -610,10 +636,11 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     expect(typeof firstSemanticId).toBe('string');
     expect(firstSemanticId.length).toBeGreaterThan(0);
 
-    // Reclaim the registry slot so the next run resolves the SAME semantic id,
-    // then simulate mid-session state: the same logical session has progressed
-    // to wave 3 (current-session.json carries the SAME semantic id + marks).
-    await clearActiveRegistry();
+    // Reclaim the registry slot AND the mint ledger so the next run resolves the
+    // SAME semantic id, then simulate mid-session state: the same logical
+    // session has progressed to wave 3 (current-session.json carries the SAME
+    // semantic id + marks).
+    await clearSemanticIdMemory(dir);
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
       JSON.stringify(
@@ -959,5 +986,92 @@ describe('own-repo lock reaper splice (#724)', { timeout: 15000 }, () => {
       const lock = JSON.parse(lockRaw);
       expect(lock.session_id).not.toBe('ghost-orphan');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Close-through backfill at SessionStart (#926)
+//
+// The SessionEnd hook already backfills, but SessionEnd only fires on a REGULAR
+// close: a session killed by Ctrl-C, a timeout or a crash leaves NO ledger entry
+// and the backfill then waits for the next clean close. These tests pin that the
+// NEXT session's start reconstructs it — and that doing so can never (a) block
+// the start, or (b) record a session that is still running.
+// ---------------------------------------------------------------------------
+
+describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, () => {
+  const SESSIONS_RELPATH = path.join('.orchestrator', 'metrics', 'sessions.jsonl');
+
+  /** Seed one long-dead, never-closed session in events.jsonl. */
+  async function seedAbandonedSession(dir) {
+    await fs.mkdir(path.join(dir, '.orchestrator', 'metrics'), { recursive: true });
+    const lines = [
+      { timestamp: '2026-01-01T09:00:00.000Z', event: 'orchestrator.session.started', session_id: 'eeeeeeee-1111-4111-8111-111111111111', branch: 'main', project: 'demo' },
+      { timestamp: '2026-01-01T09:01:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: 'eeeeeeee-1111-4111-8111-111111111111', semantic_session_id: 'main-2026-01-01-session-9', mode: 'deep' },
+    ];
+    await fs.writeFile(path.join(dir, EVENTS_RELPATH), lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+  }
+
+  async function readSessionsJsonl(dir) {
+    try {
+      const raw = await fs.readFile(path.join(dir, SESSIONS_RELPATH), 'utf8');
+      return raw.split('\n').filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  }
+
+  it('reconstructs a previous never-closed session into sessions.jsonl', async () => {
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    expect(result.code).toBe(0);
+
+    const records = await readSessionsJsonl(dir);
+    const recovered = records.find((r) => r.session_id === 'main-2026-01-01-session-9');
+    expect(recovered).toBeDefined();
+    expect(recovered.status).toBe('abandoned');
+  });
+
+  it('never records the session that is starting right now', async () => {
+    // Structural self-exclusion: the backfill runs BEFORE this session emits
+    // its own orchestrator.session.started, so it is not a candidate at all.
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    const result = await runHook({ projectDir: dir, useCwd: true, stdin: JSON.stringify({ session_id: 'ffffffff-2222-4222-8222-222222222222' }) });
+    expect(result.code).toBe(0);
+
+    const records = await readSessionsJsonl(dir);
+    // Only the genuinely-dead predecessor may be recorded.
+    expect(records.map((r) => r.session_id)).toEqual(['main-2026-01-01-session-9']);
+  });
+
+  it('re-running the hook writes no duplicate stub (idempotent across starts)', async () => {
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+
+    expect((await runHook({ projectDir: dir, useCwd: true })).code).toBe(0);
+    const afterFirst = await readSessionsJsonl(dir);
+    expect(afterFirst).toHaveLength(1);
+
+    expect((await runHook({ projectDir: dir, useCwd: true })).code).toBe(0);
+    const afterSecond = await readSessionsJsonl(dir);
+    expect(afterSecond).toHaveLength(1);
+  });
+
+  it('still exits 0 and still emits its own event when the ledger is unwritable', async () => {
+    // sessions.jsonl seeded as a DIRECTORY → every append fails. The backfill
+    // must swallow it; session start must complete regardless.
+    const dir = await mkProjectTracked();
+    await seedAbandonedSession(dir);
+    await fs.mkdir(path.join(dir, SESSIONS_RELPATH), { recursive: true });
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expect(result.code).toBe(0);
+    const events = await readEvents(dir);
+    expect(events.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -5,7 +5,7 @@
 
 ## Purpose & Overview
 
-Files under `.claude/rules/*.md` are engineering rules injected into agent prompts. The loader — `loadApplicableRules()` in [`scripts/lib/rule-loader.mjs`](../scripts/lib/rule-loader.mjs) — reads every `*.md` file in the rules directory, parses its optional YAML frontmatter, and returns the subset applicable to a given wave. The wave-executor calls it at each wave boundary with the wave's `allowedPaths` (from `wave-scope.json`) as `scopePaths`, so a wave that touches only frontend files does not pay the token cost of backend or Swift rules.
+Files under `.claude/rules/*.md` are engineering rules injected into agent prompts. The loader — `loadApplicableRules()` in [`scripts/lib/rule-loader.mjs`](../scripts/lib/rule-loader.mjs) — reads every `*.md` file in the rules directory, parses its optional YAML frontmatter, and returns the subset applicable to a given wave. The wave-executor calls it at each wave boundary with the wave's `allowedPaths` (from `wave-scope.json`) as `scopePaths` — see `skills/wave-executor/wave-loop.md` § "Pre-Dispatch: Glob-Scoped Rule Injection". **The saving that scoping buys is smaller than it looks, and on Claude Code it can be negative:** measured 2026-07-30 on a real wave, the glob axis saved 4.0% of a 169,961-byte corpus, and because Claude Code already delivers every `.claude/rules/*.md` through native project-instruction loading, prepending the block on top costs +72% rather than saving anything. Scoping pays where the harness does NOT auto-load the directory (Codex CLI, Pi, Cursor). Full measurement: [`docs/instruction-delivery.md`](instruction-delivery.md).
 
 Two rule categories existed before FA1:
 

@@ -23,9 +23,13 @@
  * `.orchestrator/runtime/reconcile-candidates.jsonl` (owned by
  * `scripts/lib/reconcile/idempotency.mjs`). Every learning present at a given
  * run (eligible OR rejected) gets a candidate row, so:
- *   - the MAX `created_at` across `loadCandidates({repoRoot})` is the most
- *     recent reconcile run's timestamp (or `null` when the store is empty —
- *     i.e. no run on record, matching the fleet finding above).
+ *   - the MAX `created_at` across `loadCandidates({repoRoot}).records` is the
+ *     most recent reconcile run's timestamp (or `null` when the store is
+ *     empty — i.e. no run on record, matching the fleet finding above).
+ *     `.skipped` is read alongside it because `records.length === 0` alone is
+ *     AMBIGUOUS: a missing store and a store whose every line failed the
+ *     candidate shape guard both yield `[]`. Reporting "never" for the latter
+ *     denies a run whose record was merely quarantined (GitLab #955 finding 2).
  *   - the candidate COUNT is a reasonable proxy for "how many learnings had
  *     been seen as of the last run" (dedup is by `learning_key`, so it is a
  *     high-water mark across all runs to date), used for the "new learnings
@@ -116,7 +120,11 @@ function _lastRunAt(candidates) {
  *   delta: number,
  *   nudge: boolean,
  *   reasons: string[],
+ *   skippedCandidates?: number,
  * }>}
+ *   `skippedCandidates` is ABSENT when the candidate store was never inspected
+ *   (early empty-corpus return, or an unreadable store); `0` means inspected and
+ *   clean, `> 0` means that many persisted lines failed the candidate shape guard.
  */
 export async function computeReconcileNudge(opts = {}) {
   const empty = {
@@ -167,20 +175,39 @@ export async function computeReconcileNudge(opts = {}) {
 
   /** @type {Array<Record<string, unknown>>} */
   let candidates;
+  /** @type {number|undefined} */
+  let skippedCandidates;
   try {
-    candidates = loadCandidates({ repoRoot });
+    const diag = loadCandidates({ repoRoot });
+    candidates = Array.isArray(diag?.records) ? diag.records : [];
+    // Absence-preserving, mirroring `engine.mjs` `summary.skipped`: only a
+    // finite count means "the store was inspected". Absent ⇒ never checked,
+    // 0 ⇒ checked and clean.
+    if (Number.isFinite(diag?.skipped)) skippedCandidates = Number(diag.skipped);
   } catch {
     candidates = [];
+    // Store never inspected → leave `skippedCandidates` absent rather than
+    // fabricating a clean 0.
   }
 
   const lastRunAt = _lastRunAt(candidates);
   const lastRunCandidateCount = Array.isArray(candidates) ? candidates.length : 0;
   const delta = entries.length - lastRunCandidateCount;
+  const quarantined = typeof skippedCandidates === 'number' ? skippedCandidates : 0;
 
   const reasons = [];
-  // (a) — plenty of active learnings, but no reconcile run has ever recorded them.
+  // (a) — plenty of active learnings and no DATEABLE run on record. When the
+  // store holds quarantined lines the honest claim is "undeterminable", not
+  // "never": the evidence exists, it is merely unreadable. /reconcile is still
+  // the right action either way — mergeCandidates rewrites the store in full and
+  // purges the bad lines — so the nudge fires in both cases, only the wording
+  // differs.
   if (active.length >= NUDGE_MIN_LEARNINGS && lastRunAt === null) {
-    reasons.push(`${active.length} active learnings with no reconcile run on record`);
+    reasons.push(
+      quarantined > 0
+        ? `${active.length} active learnings; last reconcile run undeterminable — ${quarantined} unreadable record(s) in the candidate store`
+        : `${active.length} active learnings with no reconcile run on record`,
+    );
   }
   // (b) — a determinable prior run exists, and the corpus has grown meaningfully since.
   if (lastRunAt !== null && delta > NUDGE_MIN_DELTA) {
@@ -191,7 +218,7 @@ export async function computeReconcileNudge(opts = {}) {
     reasons.push(`${eligibleCount} rule-eligible learnings`);
   }
 
-  return {
+  const computed = {
     totalLearnings: entries.length,
     activeLearnings: active.length,
     eligibleCount,
@@ -201,6 +228,12 @@ export async function computeReconcileNudge(opts = {}) {
     nudge: reasons.length > 0,
     reasons,
   };
+  // Additive + absence-preserving: the key exists ONLY when the candidate store
+  // was actually inspected, so no consumer can read a false `skippedCandidates: 0`.
+  if (typeof skippedCandidates === 'number') {
+    /** @type {any} */ (computed).skippedCandidates = skippedCandidates;
+  }
+  return computed;
 }
 
 /**
@@ -261,10 +294,33 @@ export async function checkReconcileNudge(opts = {}) {
       }
     }
 
-    const lastRunLabel =
+    // Three-state last-run label. `never` is a claim about history and must only
+    // be made when the store was inspected and held nothing: a store whose lines
+    // were quarantined by the shape guard is EVIDENCE OF A RUN that can no longer
+    // be dated, so it reads `undeterminable` — saying "never" there would assert
+    // an absence the file on disk contradicts (GitLab #955 finding 2).
+    const quarantined =
+      Number.isFinite(computed.skippedCandidates) && computed.skippedCandidates > 0
+        ? Number(computed.skippedCandidates)
+        : 0;
+    const dated =
       typeof computed.lastRunAt === 'string' && computed.lastRunAt.length >= 10
         ? computed.lastRunAt.slice(0, 10)
-        : 'never';
+        : null;
+    let lastRunLabel;
+    if (dated !== null) {
+      // Partially contaminated: the date is real but derived only from the
+      // surviving records, so flag that it may under-report.
+      lastRunLabel =
+        quarantined > 0
+          ? `${dated} (+${quarantined} unreadable record(s) — date may be stale)`
+          : dated;
+    } else {
+      lastRunLabel =
+        quarantined > 0
+          ? `undeterminable (${quarantined} unreadable record(s) in the candidate store)`
+          : 'never';
+    }
 
     const lines = [
       `⚠ reconcile-nudge: ${computed.activeLearnings} active learnings, ${computed.eligibleCount} rule-eligible, ` +

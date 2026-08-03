@@ -88,6 +88,28 @@ parse as a comment.
   — **not** `git checkout -- <file>`, which the destructive-command guard
   blocks (see `.claude/rules/parallel-sessions.md` § PSA-003).
 
+## 5. `case` patterns inside `$( )` need a leading paren on bash 3.2
+
+macOS `/bin/sh` is bash 3.2, and inside command substitution it parses the
+closing paren of a `case` pattern as the end of the `$( )` unless the pattern
+carries a **leading** paren. `bash -n` (bash 5) validates the broken form
+silently — only `sh -n` catches it. For any `.husky/` hook or `sh`-executed
+script that puts a `case` inside a substitution, `sh -n` is a mandatory second
+syntax proof alongside `bash -n`.
+
+```sh
+# BAD — bash 3.2 reads the `)` of `foo)` as closing the $( )
+x=$(case "$v" in foo) echo a;; esac)
+
+# GOOD — leading paren keeps the pattern unambiguous under bash 3.2
+x=$(case "$v" in (foo) echo a;; esac)
+```
+
+Evidence (learning `bash-3-2-breaks-case-patterns…`, conf 0.70, 2026-07-27):
+an allowlist `case` block in `.husky/pre-commit` — `sh -n` reported a syntax
+error near `;;` on line 68 while `bash -n` exited 0; the `(pattern)` form made
+both linters green.
+
 ## Anti-Patterns
 
 - Piping a possibly-empty `grep -c` result straight into an `[[ -eq ]]` test without `|| true`.
@@ -95,6 +117,7 @@ parse as a comment.
 - Trusting a live stdout capture as the sole verdict source for a test harness's PASS/FAIL summary.
 - Reaching for `perl -pi`/`sed -i` on multi-line or special-character replacements in `.sh`/`.bash` files instead of an exact-string `Edit`.
 - Trusting `bash -n` alone as proof a script edit didn't corrupt content — it only checks syntax, not semantic correctness.
+- Validating a `.husky/`/`sh` script with `bash -n` only when it contains a `case` inside `$( )` — bash 5 passes the bash-3.2-broken form; add `sh -n` (§5).
 
 ## See Also
 testing.md · cli-design.md · verification-before-completion.md · parallel-sessions.md · `skills/test-runner/SKILL.md`

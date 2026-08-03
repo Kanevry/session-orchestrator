@@ -292,6 +292,142 @@ describe('backfill-abandoned-sessions CLI — dead-by-age relaxation past a LIVE
 });
 
 // ---------------------------------------------------------------------------
+// (f) SessionStart entry point (#926) — backfill decoupled from /close
+//
+// Bugs these pin (TV-001), none of which the pre-#926 suite could catch:
+//   - a RUNNING session (ours or a foreign one) recorded as 'abandoned'
+//   - duplicate stubs when the backfill runs on EVERY session start
+//   - the latency cap spending its budget on ancient already-recorded
+//     candidates and never reaching the recent abandoned ones
+//   - a backfill failure propagating into (and thus blocking) session start
+// ---------------------------------------------------------------------------
+
+/** Seed a LIVE lock OWNED BY one of the candidates in events.jsonl. */
+function seedLiveLockFor({ sessionId, semanticSessionId }) {
+  mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(
+    join(tmp, '.orchestrator', 'session.lock'),
+    JSON.stringify(
+      { session_id: sessionId, started_at: now, last_heartbeat: now, mode: 'deep', pid: 999999, host: 'h', ttl_hours: 4, semantic_session_id: semanticSessionId },
+      null,
+      2
+    ) + '\n'
+  );
+}
+
+describe('backfillOnSessionStart (#926) — liveness protection', () => {
+  it('never records a candidate that HOLDS a live lock, even when it is stale enough for the dead-by-age relaxation', async () => {
+    // The candidate's events are from 2026-01-01 (far past the 4h lock TTL), so
+    // relaxDeadByAge WOULD bypass a foreign live lock. It must not bypass the
+    // candidate's OWN live lock — that session is running right now.
+    seedEvents(TWO_OLD_ABANDONED_EVENTS);
+    seedLiveLockFor({ sessionId: UUID_OLD_2, semanticSessionId: SEM_OLD_2 });
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp });
+
+    expect(summary.skipped['skipped-own-live-lock']).toBe(1);
+    // The genuinely-dead sibling is still recovered — this is a liveness gate,
+    // not a blanket off-switch.
+    expect(summary.backfilled).toBe(1);
+    expect(readSessions().map((r) => r.session_id)).toEqual([SEM_OLD_1]);
+  });
+
+  it('never records a RECENT foreign session whose lock is live (no relaxation applies)', async () => {
+    // Recent events (now-ish) + a live foreign lock → the dead-by-age
+    // relaxation must NOT fire, so every candidate is blocked.
+    const nowIso = new Date().toISOString();
+    seedEvents([
+      { timestamp: nowIso, event: 'orchestrator.session.started', session_id: UUID_1, branch: 'main' },
+      { timestamp: nowIso, event: 'orchestrator.session.lock.acquired', session_id: UUID_1, semantic_session_id: SEM_1, mode: 'deep' },
+    ]);
+    seedLiveForeignLock();
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp });
+
+    expect(summary.backfilled).toBe(0);
+    expect(summary.skipped['skipped-foreign-live-lock']).toBe(1);
+    expect(existsSync(metricsFile('sessions.jsonl'))).toBe(false);
+  });
+});
+
+describe('backfillOnSessionStart (#926) — idempotency across repeated starts', () => {
+  it('writes the stubs once; a second and third start write nothing new', async () => {
+    seedEvents(TWO_ABANDONED_EVENTS);
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    const first = await backfillOnSessionStart({ repoRoot: tmp });
+    expect(first.backfilled).toBe(2);
+    expect(readSessions()).toHaveLength(2);
+
+    const second = await backfillOnSessionStart({ repoRoot: tmp });
+    expect(second.backfilled).toBe(0);
+    expect(readSessions()).toHaveLength(2);
+
+    const third = await backfillOnSessionStart({ repoRoot: tmp });
+    expect(third.backfilled).toBe(0);
+    expect(readSessions()).toHaveLength(2);
+  });
+});
+
+describe('backfillOnSessionStart (#926) — latency cap spends its budget on the NEWEST candidates', () => {
+  it('reaches a recent abandoned candidate even when many older recorded ones precede it', async () => {
+    // REGRESSION GUARD for a defect measured against a copy of the live store:
+    // bare-UUID candidates (no lock.acquired bridge) cannot be pre-filtered, so
+    // each spends a core call only to be told "already recorded". Walking the
+    // plan in first-seen order burned the entire budget on them and backfilled
+    // NOTHING. Walking newest-first fixes it.
+    const events = [];
+    // Six OLD candidates that are deliberately UN-pre-filterable: bare UUIDs
+    // with NO lock.acquired bridge, so their record id is only derivable from
+    // events and each one costs a full core call.
+    for (let i = 0; i < 6; i += 1) {
+      const uuid = `dddddddd-0000-4000-8000-00000000000${i}`;
+      events.push({ timestamp: `2026-02-0${i + 1}T09:00:00.000Z`, event: 'orchestrator.session.started', session_id: uuid, branch: 'main' });
+    }
+    // The NEWEST candidate is the one that matters — it has a semantic id.
+    events.push({ timestamp: '2026-03-01T09:00:00.000Z', event: 'orchestrator.session.started', session_id: UUID_1, branch: 'main' });
+    events.push({ timestamp: '2026-03-01T09:01:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: UUID_1, semantic_session_id: SEM_1, mode: 'deep' });
+    seedEvents(events);
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp, limit: 1 });
+
+    // With a budget of exactly ONE core call, only newest-first ordering can
+    // reach SEM_1. First-seen order spends it on the oldest bare-UUID candidate
+    // and never gets here (verified by fake-regression: flipping newestFirst to
+    // false turns this assertion RED).
+    expect(summary.backfilled).toBe(1);
+    expect(readSessions().map((r) => r.session_id)).toEqual([SEM_1]);
+  });
+});
+
+describe('backfillOnSessionStart (#926) — never throws', () => {
+  it('returns a result instead of throwing when the events store is unreadable', async () => {
+    mkdirSync(metricsFile('events.jsonl'), { recursive: true }); // EISDIR on read
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    await expect(backfillOnSessionStart({ repoRoot: tmp })).resolves.toBeDefined();
+  });
+
+  it('returns null (writes nothing) when SO_DISABLE_STARTUP_BACKFILL=1', async () => {
+    seedEvents(TWO_ABANDONED_EVENTS);
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    process.env.SO_DISABLE_STARTUP_BACKFILL = '1';
+    try {
+      const summary = await backfillOnSessionStart({ repoRoot: tmp });
+      expect(summary).toBeNull();
+      expect(existsSync(metricsFile('sessions.jsonl'))).toBe(false);
+    } finally {
+      delete process.env.SO_DISABLE_STARTUP_BACKFILL;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (d) exit codes — bad-arg (1) and unreadable/absent store (graceful 0)
 // ---------------------------------------------------------------------------
 

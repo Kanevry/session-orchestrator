@@ -1481,3 +1481,100 @@ describe('processLearning #701.1 dual-probe date-advance fall-through', () => {
     expect(writtenPath).not.toBe('/vault/40-learnings/explicit-contracts.md');
   });
 });
+
+// ── #909: abandoned sessions are never mirrored ───────────────────────────────
+//
+// A `status: 'abandoned'` record is a phantom stub backfilled from events.jsonl
+// for a session that never ran /close — 0 waves, 0 agents, synthesized fields.
+// It is legitimate ledger DATA but not legitimate knowledge-store SIGNAL.
+
+describe('processSession #909: status:abandoned is filtered before rendering', () => {
+  let existsSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function getProcessSession() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    const mod = await import('@lib/vault-mirror/process.mjs');
+    return mod.processSession;
+  }
+
+  const SESSION = {
+    session_id: 'main-2026-07-30-session-1',
+    session_type: 'feature',
+    started_at: '2026-07-30T08:00:00Z',
+    completed_at: '2026-07-30T10:00:00Z',
+    duration_seconds: 7200,
+    waves: 2,
+    agents_dispatched: 4,
+    agent_summary: { complete: 4, partial: 0, failed: 0, spiral: 0 },
+    effectiveness: { planned_issues: 2, completed_issues: 2, carryover: 0, completion_rate: 1.0 },
+  };
+
+  it('writes NO note at all for an abandoned session', async () => {
+    const processSession = await getProcessSession();
+    const { lines } = await captureStdout(() =>
+      processSession({ ...SESSION, status: 'abandoned' }, 1, {
+        vaultDir: '/vault', dryRun: false, kind: 'session',
+      })
+    );
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      action: 'skipped-abandoned',
+      path: null,
+      kind: 'session',
+      id: 'main-2026-07-30-session-1',
+      reason: 'status:abandoned',
+    });
+  });
+
+  it('does not consult the filesystem before skipping an abandoned session', async () => {
+    // The skip must precede the render + the existence probes, not merely
+    // suppress the write — otherwise an abandoned stub still costs a git
+    // subprocess and a full render on every mirror run.
+    const processSession = await getProcessSession();
+    await captureStdout(() =>
+      processSession({ ...SESSION, status: 'abandoned' }, 1, {
+        vaultDir: '/vault', dryRun: false, kind: 'session',
+      })
+    );
+    expect(existsSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('still mirrors a completed session (the filter does not over-fire)', async () => {
+    const processSession = await getProcessSession();
+    const { lines } = await captureStdout(() =>
+      processSession({ ...SESSION, status: 'completed' }, 1, {
+        vaultDir: '/vault', dryRun: false, kind: 'session',
+      })
+    );
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(writeFileSyncSpy.mock.calls[0][1]).toContain('status: verified');
+  });
+
+  it('still mirrors a status-less record (fail-open: the pre-#724 majority)', async () => {
+    const processSession = await getProcessSession();
+    const { lines } = await captureStdout(() =>
+      processSession(SESSION, 1, { vaultDir: '/vault', dryRun: false, kind: 'session' })
+    );
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(writeFileSyncSpy.mock.calls[0][1]).toContain('status: verified');
+  });
+});

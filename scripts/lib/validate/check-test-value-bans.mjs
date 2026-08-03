@@ -7,12 +7,22 @@
  * completed, so this can be wired into a pre-commit hook as a pure advisory.
  *
  * Bans:
- *   B1 (exact-count)  Exact count assertions on dynamic sets:
+ *   B1 (exact-count)  Exact count assertions on DYNAMIC sets:
  *                       `.toHaveLength(<literal>)`
  *                       `.length).toBe|toEqual|toStrictEqual(<literal>)`
- *                     These drift on every legitimate catalog growth
- *                     (`testing.md` § "Dynamic Artifact Counts"). Use the
- *                     floor/ceiling pattern instead.
+ *                     Only a count DERIVED FROM a dynamic set — a directory
+ *                     walk (`readdirSync`/`glob`/`git ls-files`), a registry or
+ *                     export map (`Object.keys`/`values`/`entries`) — is
+ *                     flagged. Such a count drifts on every legitimate catalog
+ *                     growth (`testing.md` § "Dynamic Artifact Counts"); use the
+ *                     floor/ceiling pattern instead. A FIXED arity on a static
+ *                     fixture (a hand-built array, a parsed test record, a hash
+ *                     width) does not drift and is NOT flagged — the subject is
+ *                     traced inline, then back to its nearest assignment, and
+ *                     must reach a dynamic source before the count is a finding.
+ *                     This is the narrowing `testing.md` already prescribes
+ *                     ("count derived from a directory walk / registry / export
+ *                     map"), which v1's blanket literal-match over-reported.
  *
  *                     Exempt literals: 0 and 1. `toHaveLength(0)` is an
  *                     EMPTINESS invariant ("no violations") and
@@ -44,17 +54,50 @@
  *                     naming `stdout` in the same block.
  *
  *   B4 (decision-copy) A hand-rolled, POSITIVE assertion of the hook decision
- *                     contract (`permissionDecision`) in a test file that is not
- *                     one of the contract's declared owners. This is the
- *                     mechanical brake on the six local helper copies and the 21
- *                     soft `toContain('"permissionDecision":"deny"')` substring
+ *                     contract in a test file that is not one of the contract's
+ *                     declared owners. This is the mechanical brake on the six
+ *                     local helper copies and the 21 soft
+ *                     `toContain('"permissionDecision":"deny"')` substring
  *                     asserts that survived the #906 protocol change verbatim.
+ *
+ *                     Two contract keys (#941 3b): `permissionDecision`
+ *                     (allow/deny) is unambiguous and flagged in ANY non-owner
+ *                     file; `systemMessage` (the emitWarn warn-envelope carrier)
+ *                     is OVERLOADED with plain hook output, so it is flagged only
+ *                     when the file-under-test is a deny-capable hook — otherwise
+ *                     operator-steer / session-start banner asserts would
+ *                     false-positive. Without the systemMessage key a warn-block
+ *                     copy is invisible (the warn envelope carries no
+ *                     `permissionDecision`): the "census keyed on the payload
+ *                     misses the channel" trap, inside the rule that names it.
  *
  *                     NOT flagged (each an inverse of the banned shape): comment
  *                     lines; a line that goes THROUGH the helper
  *                     (`expectDeny(…).hookSpecificOutput.permissionDecisionReason`);
  *                     and absence guards (`.toBeUndefined()`, `.not.`), which
  *                     assert the key is missing rather than re-stating it.
+ *
+ *   B5 (clock-bomb)   A hardcoded absolute-date literal asserted against a
+ *                     subject that HAS an injectable clock seam, in a block that
+ *                     does not use it. The expected value is then a function of
+ *                     the wall clock, so the test goes red on a calendar date
+ *                     nobody chose (learning `test-fixture-time-bomb`, conf 0.9:
+ *                     CI turned red on 2026-07-30 with no code change).
+ *
+ *                     The seam is PROVEN from the file itself: an id is in scope
+ *                     only when some OTHER block in the same file passes an
+ *                     explicit clock argument (`now:` / `nowMs:` / `clock:`) to
+ *                     it. A function whose public API exposes a clock parameter
+ *                     reads the clock on its main path — that is why the seam
+ *                     exists. Absent that proof the check says nothing, so a
+ *                     pure input→output date function is out of scope by
+ *                     construction rather than by exception list.
+ *
+ *                     NOT flagged: blocks that control the clock (`now:` arg,
+ *                     `vi.useFakeTimers` / `vi.setSystemTime`); date literals in
+ *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
+ *                     expected values are read), which leaves the passthrough
+ *                     class (input date === output date) untouched.
  *
  * Per-file opt-out: `// @test-value-bans-allowed` in the first 5 lines skips
  * the file entirely (same convention as check-test-fixture-shapes.mjs's
@@ -105,6 +148,7 @@ if (flags.has('--help')) {
   console.log('  B2  suspected prose pins (.md readFileSync + >=3 toContain/toMatch)');
   console.log('  B3  bare exit-0 assertion on a deny-capable hook (allow and deny both exit 0)');
   console.log('  B4  hook decision contract restated outside tests/_helpers/hook-decision.mjs');
+  console.log('  B5  hardcoded date asserted against a clock-seamed subject without using the seam');
   console.log('');
   console.log('  <repo-root>  repository root (default: cwd)');
   console.log('  --stdin      scan newline-separated paths from stdin (staged-only mode)');
@@ -150,9 +194,25 @@ const B1_PATTERNS = [
   },
   {
     name: 'length-toBe',
-    regex: /\.length\s*\)?\s*\)?\s*\.(?:toBe|toEqual|toStrictEqual)\(\s*(\d+)\s*\)/g,
+    // `[\s)]*` — a SINGLE character class — replaces the former
+    // `\s*\)?\s*\)?\s*`. That old shape put three `\s*` groups adjacent around
+    // two optional `)`; a whitespace run before a FAILING `.toBe(` could then be
+    // partitioned O(n²) ways across those groups, polynomial backtracking (the
+    // ReDoS risk this hardening removes). One class matches the same `.length ) )`
+    // gap unambiguously in linear time, with no ambiguous quantifier adjacency.
+    regex: /\.length[\s)]*\.(?:toBe|toEqual|toStrictEqual)\(\s*(\d+)\s*\)/g,
   },
 ];
+
+/**
+ * A value derived from a directory walk, registry, or export map — the "dynamic
+ * set" B1 targets (`testing.md` § Lint-Enforceable Test Bans: "count derived
+ * from a directory walk / registry / export map"). A count over such a set
+ * drifts on catalog growth; a fixed arity over a STATIC fixture does not. B1
+ * flags a count only when its subject reaches one of these sources.
+ */
+const DYNAMIC_SOURCE =
+  /\b(?:readdirSync|readdir|globSync|glob|Reflect\.ownKeys|Object\.(?:keys|values|entries|getOwnPropertyNames))\s*\(|\bls-files\b/;
 
 const B1_HINT =
   'use floor/ceiling (toBeGreaterThanOrEqual / toBeLessThanOrEqual) — testing.md § Dynamic Artifact Counts; ' +
@@ -166,8 +226,14 @@ const B3_HINT =
   'tests/_helpers/hook-decision.mjs, or assert on stdout in the same block';
 const B4_HINT =
   'the hook decision contract lives in tests/_helpers/hook-decision.mjs — import expectDeny/' +
-  'expectAllow instead of restating the envelope here; hand-rolled copies survive the next ' +
-  'protocol change verbatim (the #906 class: 6 helper copies + 21 soft substring asserts)';
+  'expectAllow/expectWarn instead of restating the envelope (permissionDecision or the warn ' +
+  'systemMessage) here; hand-rolled copies survive the next protocol change verbatim (the ' +
+  '#906 class: 6 helper copies + 21 soft substring asserts)';
+const B5_HINT =
+  'this subject takes an injectable clock elsewhere in the same file — pass it here too ' +
+  '(`{ now: new Date("…") }`) or freeze the clock with vi.setSystemTime(); a hardcoded date ' +
+  'compared against a now-dependent value is a time bomb that goes red on a calendar date ' +
+  'nobody chose (learning test-fixture-time-bomb — CI red 2026-07-30, no code change)';
 
 // --- B3: deny-capable-hook exit-code discrimination -------------------------
 
@@ -186,13 +252,36 @@ const HOOK_PATH_REF = /hooks[/\\]([\w-]+\.(?:mjs|sh))\b|['"]hooks['"]\s*,\s*['"]
 const BARE_EXIT_OK =
   /expect\(\s*[A-Za-z_$][\w$.[\]'"]*\.(?:code|status|exitCode)\s*\)\s*\.(?:toBe|toEqual|toStrictEqual)\(\s*0\s*\)/;
 
-/** Anything that still tells allow from deny under the exit-0 protocol. */
-const DECISION_DISCRIMINATOR = /\bexpect(?:Allow|Deny|NoDeny)\s*\(/;
+/** Anything that still tells allow from deny (or warn) under the exit-0 protocol.
+ *  `Warn` is the #941-3b `expectWarn` route the sibling adds to hook-decision.mjs
+ *  for the systemMessage warn-envelope — a block going through it is the outcome
+ *  these bans exist to produce, so it is never itself flagged. */
+const DECISION_DISCRIMINATOR = /\bexpect(?:Allow|Deny|NoDeny|Warn)\s*\(/;
 const STDOUT_ASSERT = /expect\([^)]*\bstdout\b|\bstdout\b[^\n]*\)\s*\.(?:toBe|toEqual|toContain|toMatch)/;
 
 // --- B4: hook-decision contract ownership -----------------------------------
 
-const DECISION_KEY = 'permissionDecision';
+/**
+ * The permission-decision contract key — unambiguous. Any restatement outside a
+ * declared owner is a copy regardless of the file's subject.
+ */
+const PERMISSION_DECISION_KEY = 'permissionDecision';
+
+/**
+ * The warn path's contract key (#941 point 3b). Since W1's `emitWarn`, the
+ * operator notice rides a TOP-LEVEL `systemMessage` and carries NO
+ * `permissionDecision`, so a hand-rolled warn-contract block was structurally
+ * invisible to a B4 keyed only on `permissionDecision` — the repo's own
+ * "census-keyed-on-the-payload misses the channel" failure class, reproduced
+ * inside the very rule that names it.
+ *
+ * `systemMessage` is OVERLOADED, though: it is also the plain output of
+ * non-decision hooks (operator-steer, the session-start banner). Only
+ * `emitWarn`'s systemMessage is the contract `expectWarn` owns, and it appears
+ * ONLY in deny-capable-hook tests. So this key's arm of B4 is scope-gated on
+ * that (the same gate B3 uses), where `permissionDecision` needs none.
+ */
+const SYSTEM_MESSAGE_KEY = 'systemMessage';
 
 /**
  * The only files allowed to name the decision contract directly. Each owns a
@@ -212,8 +301,28 @@ const DECISION_CONTRACT_OWNERS = new Set([
 /** Matchers that RE-STATE the contract (as opposed to asserting its absence). */
 const POSITIVE_MATCHER = /\.(?:toBe|toEqual|toStrictEqual|toContain|toMatch|toMatchObject)\(/;
 const ABSENCE_ASSERT = /\.toBeUndefined\(|\.toBeNull\(|\.not\./;
-/** A quoted JSON-key literal — the soft-substring-assert shape from #906. */
-const DECISION_KEY_LITERAL = new RegExp(`["'\\\\]+${DECISION_KEY}["'\\\\]+\\s*:`);
+/** A quoted JSON-key literal for one contract key — the soft-substring-assert
+ *  shape from #906 (`toContain('"<key>":"…"')`). */
+const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
+
+// --- B5: date-literal time bombs --------------------------------------------
+
+/**
+ * An absolute date pinned as the EXPECTED value of an equality assertion.
+ * Input-position date literals (`created_at: '2026-06-21T…'`) do not match —
+ * that is what keeps the passthrough class (input date === output date) out.
+ */
+const DATE_EXPECTATION =
+  /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
+
+/** An explicit clock handed to a callee — the seam this ban asks tests to use. */
+const CLOCK_ARG = /\b(?:now|nowMs|nowIso|clock|currentDate)\s*:/;
+
+/** Freezing the global clock — equally valid control, but not a seam PROOF. */
+const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
+
+/** `import { a, b as c } from './rel.mjs'` — SUT candidates live behind these. */
+const RELATIVE_IMPORT = /import\s+([^;]+?)\s+from\s+['"](\.[^'"]+)['"]/g;
 
 // ---------------------------------------------------------------------------
 // File enumeration
@@ -269,6 +378,56 @@ function hasCarveOut(lines, idx) {
 function isCommentLine(line) {
   const t = line.trimStart();
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
+}
+
+/**
+ * The subject expression a B1 assertion pins the length/size of — the text
+ * inside the enclosing `expect( … )`, with one trailing `)` stripped. Works for
+ * both `expect(<subj>).toHaveLength(n)` (matchIndex at `.toHaveLength`) and
+ * `expect(<subj>.length).toBe(n)` (matchIndex at `.length`).
+ * @param {string} line
+ * @param {number} matchIndex column where the B1 pattern begins
+ */
+function b1Subject(line, matchIndex) {
+  const before = line.slice(0, matchIndex);
+  const ei = before.lastIndexOf('expect(');
+  const inner = ei !== -1 ? before.slice(ei + 'expect('.length) : before;
+  return inner.replace(/\)\s*$/, '').trim();
+}
+
+/** The leading identifier of an expression (`Object` in `Object.keys(x)`). */
+function leadingIdent(expr) {
+  const m = /^[(\s]*([A-Za-z_$][\w$]*)/.exec(expr);
+  return m ? m[1] : null;
+}
+
+/**
+ * True when a B1 count is derived from a dynamic set rather than a static
+ * fixture. Checked first inline on the subject expression, then by tracing a
+ * bare subject identifier back to its NEAREST assignment above the assertion —
+ * a walk/registry call on that assignment's right-hand side makes the count
+ * dynamic. A subject that never reaches a {@link DYNAMIC_SOURCE} (a hand-built
+ * array, a parsed record, a fixed-width hash) is a legitimate static arity and
+ * is not flagged. Precision over recall by construction: an undetectable
+ * dynamic source simply yields no finding, the correct direction for a mutable
+ * advisory.
+ * @param {string[]} lines
+ * @param {number} idx zero-based index of the asserting line
+ * @param {string} subject the length subject expression
+ */
+function b1IsDynamic(lines, idx, subject) {
+  if (DYNAMIC_SOURCE.test(subject)) return true;
+  const id = leadingIdent(subject);
+  if (!id) return false;
+  const assignRe = new RegExp(
+    `(?:const|let|var)\\s+(?:\\{[^}]*\\b${id}\\b[^}]*\\}|${id})\\s*=(?!=)` +
+      `|(?:^|[^.\\w$])${id}\\s*=(?!=)`,
+  );
+  for (let j = idx - 1; j >= 0; j--) {
+    if (isCommentLine(lines[j])) continue;
+    if (assignRe.test(lines[j])) return DYNAMIC_SOURCE.test(lines[j]);
+  }
+  return false;
 }
 
 /**
@@ -349,6 +508,100 @@ function testBlocks(lines) {
 }
 
 /**
+ * Identifiers this test file imports from the repo's OWN modules (relative
+ * specifiers). These are the subject-under-test candidates for B5; framework
+ * (`vitest`) and stdlib (`node:*`) imports are structurally excluded because
+ * their specifiers are not relative.
+ * @param {string} content
+ * @returns {string[]}
+ */
+function importedLocalIdentifiers(content) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const m of content.matchAll(RELATIVE_IMPORT)) {
+    const clause = m[1];
+    // `{ a, b as c }` → c ; `x` / `* as ns` → x / ns
+    for (const part of clause.replace(/[{}]/g, ',').split(',')) {
+      const t = part.trim();
+      if (!t) continue;
+      const alias = /\bas\s+([A-Za-z_$][\w$]*)\s*$/.exec(t);
+      const name = alias ? alias[1] : /^([A-Za-z_$][\w$]*)$/.exec(t)?.[1];
+      if (name && name !== 'type') ids.add(name);
+    }
+  }
+  return [...ids];
+}
+
+/** True when `id` is invoked anywhere in these lines. */
+function callsIdentifier(lines, id) {
+  const re = new RegExp(`\\b${id}\\s*\\(`);
+  return lines.some((l) => !isCommentLine(l) && re.test(l));
+}
+
+/**
+ * B5 findings for one file.
+ *
+ * Two passes over the file's `it`/`test` blocks:
+ *   1. PROVE the seam — an imported id called from a block that also hands over
+ *      an explicit clock argument is clock-seamed. A public API only grows a
+ *      `now` parameter because the function reads the clock on its main path.
+ *   2. FLAG — in blocks with NO clock control at all, any equality assertion
+ *      pinning an absolute date against such a subject is a time bomb.
+ *
+ * Recall is deliberately traded for precision: a clock-dependent function that
+ * never exposes a seam is invisible here, and that is the correct failure
+ * direction for an advisory a developer can mute.
+ *
+ * @param {string} relPath
+ * @param {string} content
+ * @param {string[]} lines
+ * @returns {Array<{file: string, line: number, ban: string, match: string, hint: string}>}
+ */
+function scanClockBombs(relPath, content, lines) {
+  const findings = [];
+  const sutIds = importedLocalIdentifiers(content);
+  if (sutIds.length === 0) return findings;
+
+  const blocks = testBlocks(lines).map(({ start, end }) => {
+    const body = lines.slice(start, end);
+    const live = body.filter((l) => !isCommentLine(l));
+    return {
+      start,
+      body,
+      hasClockArg: live.some((l) => CLOCK_ARG.test(l)),
+      hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
+    };
+  });
+
+  /** @type {Set<string>} */
+  const seamed = new Set();
+  for (const b of blocks) {
+    if (!b.hasClockArg) continue;
+    for (const id of sutIds) if (callsIdentifier(b.body, id)) seamed.add(id);
+  }
+  if (seamed.size === 0) return findings;
+
+  for (const b of blocks) {
+    if (b.hasClockArg || b.hasFakeTimer) continue;
+    const subject = [...seamed].find((id) => callsIdentifier(b.body, id));
+    if (!subject) continue;
+    b.body.forEach((line, k) => {
+      if (isCommentLine(line)) return;
+      const m = DATE_EXPECTATION.exec(line);
+      if (!m) return;
+      findings.push({
+        file: relPath,
+        line: b.start + k + 1,
+        ban: 'B5-date-time-bomb',
+        match: `${m[0].trim()} — ${subject}() called without its clock seam`,
+        hint: B5_HINT,
+      });
+    });
+  }
+  return findings;
+}
+
+/**
  * Scan one file's content, returning its findings.
  * @param {string} relPath
  * @param {string} content
@@ -363,7 +616,11 @@ function scanContent(relPath, content, denyHooks = new Set()) {
     return findings;
   }
 
-  // --- B1: exact count assertions ---------------------------------------
+  // --- B1: exact count assertions on DYNAMIC sets -----------------------
+  // A fixed arity over a static fixture does not drift and is legitimate; only
+  // a count whose subject reaches a directory walk / registry / export map is
+  // flagged (testing.md § Lint-Enforceable Test Bans). This narrowing is what
+  // separates the ~349-finding v1 noise from the handful of real drift pins.
   lines.forEach((line, idx) => {
     for (const { regex } of B1_PATTERNS) {
       const re = new RegExp(regex.source, 'g');
@@ -371,6 +628,7 @@ function scanContent(relPath, content, denyHooks = new Set()) {
       while ((m = re.exec(line)) !== null) {
         if (EXEMPT_COUNT_LITERALS.has(Number(m[1]))) continue;
         if (hasCarveOut(lines, idx)) continue;
+        if (!b1IsDynamic(lines, idx, b1Subject(line, m.index))) continue;
         findings.push({
           file: relPath,
           line: idx + 1,
@@ -402,7 +660,9 @@ function scanContent(relPath, content, denyHooks = new Set()) {
   // deny-capable. A file that also drives a non-deny hook, a husky hook or a
   // plain CLI is out — there, exit 0 is an unambiguous claim.
   const subjects = declaredHookSubjects(lines);
-  if (subjects.length > 0 && subjects.every((h) => denyHooks.has(h))) {
+  const isDenyCapableHookTest =
+    subjects.length > 0 && subjects.every((h) => denyHooks.has(h));
+  if (isDenyCapableHookTest) {
     for (const { start, end } of testBlocks(lines)) {
       const block = lines.slice(start, end);
       const discriminated = block.some(
@@ -424,24 +684,41 @@ function scanContent(relPath, content, denyHooks = new Set()) {
 
   // --- B4: hook-decision contract copied outside its owners ---------------
   if (!DECISION_CONTRACT_OWNERS.has(relPath)) {
-    lines.forEach((line, idx) => {
-      if (!line.includes(DECISION_KEY) || isCommentLine(line)) return;
-      // Goes THROUGH the helper — the outcome this ban exists to produce.
-      if (DECISION_DISCRIMINATOR.test(line)) return;
-      // Absence guards assert the key is GONE; they cannot re-state a contract.
-      if (ABSENCE_ASSERT.test(line)) return;
-      const restatesKey = DECISION_KEY_LITERAL.test(line);
-      const assertsKey = POSITIVE_MATCHER.test(line) && /expect\(/.test(line);
-      if (!restatesKey && !assertsKey) return;
-      findings.push({
-        file: relPath,
-        line: idx + 1,
-        ban: 'B4-hook-decision-contract-copy',
-        match: line.trim().slice(0, 120),
-        hint: B4_HINT,
+    /** Lines already flagged — a two-key line reports once, not twice. */
+    const b4Flagged = new Set();
+    const scanContractKey = (key) => {
+      const literalRe = keyLiteralRe(key);
+      lines.forEach((line, idx) => {
+        if (b4Flagged.has(idx)) return;
+        if (!line.includes(key) || isCommentLine(line)) return;
+        // Goes THROUGH the helper — the outcome this ban exists to produce.
+        if (DECISION_DISCRIMINATOR.test(line)) return;
+        // Absence guards assert the key is GONE; they cannot re-state a contract.
+        if (ABSENCE_ASSERT.test(line)) return;
+        const restatesKey = literalRe.test(line);
+        const assertsKey = POSITIVE_MATCHER.test(line) && /expect\(/.test(line);
+        if (!restatesKey && !assertsKey) return;
+        b4Flagged.add(idx);
+        findings.push({
+          file: relPath,
+          line: idx + 1,
+          ban: 'B4-hook-decision-contract-copy',
+          match: line.trim().slice(0, 120),
+          hint: B4_HINT,
+        });
       });
-    });
+    };
+    // permissionDecision: unambiguous — a copy in ANY non-owner file.
+    scanContractKey(PERMISSION_DECISION_KEY);
+    // systemMessage (#941 3b): the warn-decision carrier, but overloaded with
+    // plain hook output — a contract copy ONLY when the file-under-test is a
+    // deny-capable hook, where emitWarn's systemMessage lives. Without this
+    // gate, operator-steer / session-start banner asserts would false-positive.
+    if (isDenyCapableHookTest) scanContractKey(SYSTEM_MESSAGE_KEY);
   }
+
+  // --- B5: date literal pinned against a clock-seamed subject -------------
+  findings.push(...scanClockBombs(relPath, content, lines));
 
   return findings;
 }
@@ -478,6 +755,7 @@ const counts = {
   'B4-hook-decision-contract-copy': findings.filter(
     (f) => f.ban === 'B4-hook-decision-contract-copy',
   ).length,
+  'B5-date-time-bomb': findings.filter((f) => f.ban === 'B5-date-time-bomb').length,
 };
 
 if (jsonMode) {
@@ -493,6 +771,7 @@ if (jsonMode) {
   if (counts['B2-prose-pin-suspected'] > 0) console.log(`  B2 hint: ${B2_HINT}`);
   if (counts['B3-bare-hook-exit-code'] > 0) console.log(`  B3 hint: ${B3_HINT}`);
   if (counts['B4-hook-decision-contract-copy'] > 0) console.log(`  B4 hint: ${B4_HINT}`);
+  if (counts['B5-date-time-bomb'] > 0) console.log(`  B5 hint: ${B5_HINT}`);
   console.log('  (advisory — this check never blocks; see .claude/rules/testing.md § Lint-Enforceable Test Bans)');
 }
 

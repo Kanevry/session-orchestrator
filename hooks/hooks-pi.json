@@ -89,6 +89,16 @@
         ]
       },
       {
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PI_PLUGIN_ROOT/hooks/run-node.sh\" \"$PI_PLUGIN_ROOT/hooks/post-bash-write-verify.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "*",
         "hooks": [
           {

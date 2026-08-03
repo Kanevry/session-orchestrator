@@ -10,6 +10,7 @@ import {
   generateSessionNote,
   generateSessionNoteV2,
   generateSessionNoteV3,
+  vaultStatusForSession,
 } from '@lib/vault-mirror/render-sessions.mjs';
 
 // ── detectSessionSchema ───────────────────────────────────────────────────────
@@ -72,40 +73,17 @@ function makeV1Entry(overrides = {}) {
 }
 
 describe('generateSessionNote (v1)', () => {
-  it('throws when required field "session_id" is missing', () => {
-    expect(() => generateSessionNote(makeV1Entry({ session_id: undefined }))).toThrow("missing required field 'session_id'");
-  });
-
-  it('throws when required field "session_type" is null', () => {
-    expect(() => generateSessionNote(makeV1Entry({ session_type: null }))).toThrow("missing required field 'session_type'");
-  });
-
-  it('throws when required field "started_at" is undefined', () => {
-    expect(() => generateSessionNote(makeV1Entry({ started_at: undefined }))).toThrow("missing required field 'started_at'");
-  });
-
-  it('throws when required field "completed_at" is null', () => {
-    expect(() => generateSessionNote(makeV1Entry({ completed_at: null }))).toThrow("missing required field 'completed_at'");
-  });
-
-  it('throws when required field "total_waves" is undefined', () => {
-    expect(() => generateSessionNote(makeV1Entry({ total_waves: undefined }))).toThrow("missing required field 'total_waves'");
-  });
-
-  it('throws when required field "total_agents" is null', () => {
-    expect(() => generateSessionNote(makeV1Entry({ total_agents: null }))).toThrow("missing required field 'total_agents'");
-  });
-
-  it('throws when required field "total_files_changed" is undefined', () => {
-    expect(() => generateSessionNote(makeV1Entry({ total_files_changed: undefined }))).toThrow("missing required field 'total_files_changed'");
-  });
-
-  it('throws when required field "agent_summary" is undefined', () => {
-    expect(() => generateSessionNote(makeV1Entry({ agent_summary: undefined }))).toThrow("missing required field 'agent_summary'");
-  });
-
-  it('throws when required field "waves" is null', () => {
-    expect(() => generateSessionNote(makeV1Entry({ waves: null }))).toThrow("missing required field 'waves'");
+  // TV-003 consolidation: 9 near-identical required-field cases parametrized.
+  // Both nullish forms stay covered — the guard tests `null || undefined`, so
+  // each field is exercised with the form the original per-field test used.
+  it.each([
+    ['session_id', undefined], ['session_type', null], ['started_at', undefined],
+    ['completed_at', null], ['total_waves', undefined], ['total_agents', null],
+    ['total_files_changed', undefined], ['agent_summary', undefined], ['waves', null],
+  ])('throws when required field "%s" is missing', (field, nullish) => {
+    expect(() => generateSessionNote(makeV1Entry({ [field]: nullish }))).toThrow(
+      `missing required field '${field}'`,
+    );
   });
 
   it('throws when effectiveness is not an object (string value)', () => {
@@ -504,5 +482,144 @@ describe('normalizeSessionEntry (#635 producer-alias normalization)', () => {
     const e = normalizeSessionEntry(raw);
     expect(detectSessionSchema(e)).toBe('v3');
     expect(() => generateSessionNoteV3(e, { repoNs: 'org-repo' })).not.toThrow();
+  });
+});
+
+// ── #909: vault `status` reflects the real ledger status ──────────────────────
+//
+// All three generators previously hard-coded `status: verified` and never read
+// `entry.status`, so every mirrored session claimed "verified" no matter how it
+// ended. These tests pin the mapping AND the invariant that makes it mandatory:
+// the ledger enum (completed|abandoned) and the vault enum are DISJOINT, so a
+// raw pass-through would emit an off-schema value and hard-fail vault-sync.
+
+describe('#909 vaultStatusForSession — ledger status → vault status mapping', () => {
+  // Source of truth: vaultNoteStatusSchema, skills/vault-sync/validator.mjs.
+  // A value outside this set hard-fails vault-sync (session-end Phase 1 gate).
+  const VAULT_STATUS_ENUM = ['draft', 'active', 'verified', 'archived', 'production', 'mvp', 'idea'];
+
+  it('maps completed → verified', () => {
+    expect(vaultStatusForSession({ status: 'completed' })).toBe('verified');
+  });
+
+  it('maps abandoned → draft (the phantom-stub case that must never claim verified)', () => {
+    expect(vaultStatusForSession({ status: 'abandoned' })).toBe('draft');
+  });
+
+  it('maps an absent status → verified, keeping pre-#724 notes byte-identical', () => {
+    expect(vaultStatusForSession({ session_id: 'x' })).toBe('verified');
+    expect(vaultStatusForSession({ status: null })).toBe('verified');
+    expect(vaultStatusForSession({ status: '' })).toBe('verified');
+  });
+
+  it('maps an unrecognised ledger status → draft, never the raw off-schema value', () => {
+    // The ledger enum is additive-optional and has grown once already (#724).
+    // Passing a future value through verbatim would write `status: interrupted`
+    // into frontmatter and hard-fail vault-sync.
+    expect(vaultStatusForSession({ status: 'interrupted' })).toBe('draft');
+  });
+
+  it('never returns an inherited Object.prototype member for a hostile status string', () => {
+    // A bare `MAP[raw]` lookup returns a FUNCTION for 'constructor'/'toString',
+    // which would interpolate `function Object() { [native code] }` into YAML.
+    expect(vaultStatusForSession({ status: 'constructor' })).toBe('draft');
+    expect(vaultStatusForSession({ status: 'toString' })).toBe('draft');
+    expect(vaultStatusForSession({ status: '__proto__' })).toBe('draft');
+  });
+
+  it('returns a schema-legal value for every input, including non-objects', () => {
+    for (const input of [null, undefined, 'abandoned', 42, [], { status: 'completed' }, { status: {} }]) {
+      expect(VAULT_STATUS_ENUM).toContain(vaultStatusForSession(input));
+    }
+  });
+});
+
+describe('#909 generators emit the mapped status in BOTH frontmatter and tag', () => {
+  const statusLine = (md) => (md.match(/^status: (.*)$/m) || [])[1];
+  const tagsLine = (md) => (md.match(/^tags: (.*)$/m) || [])[1];
+
+  const RENDERERS = [
+    ['v1', generateSessionNote, makeV1Entry],
+    ['v2', generateSessionNoteV2, makeV2Entry],
+    ['v3', generateSessionNoteV3, makeV3Entry],
+  ];
+
+  for (const [label, render, makeEntry] of RENDERERS) {
+    it(`${label}: an abandoned session renders status draft, not verified`, () => {
+      const md = render(makeEntry({ status: 'abandoned' }));
+      expect(statusLine(md)).toBe('draft');
+      expect(tagsLine(md)).toContain('status/draft');
+      expect(tagsLine(md)).not.toContain('status/verified');
+    });
+
+    it(`${label}: an unrecognised status renders draft, not the raw value`, () => {
+      const md = render(makeEntry({ status: 'interrupted' }));
+      expect(statusLine(md)).toBe('draft');
+      expect(md).not.toContain('status: interrupted');
+    });
+
+    it(`${label}: a completed session still renders verified`, () => {
+      const md = render(makeEntry({ status: 'completed' }));
+      expect(statusLine(md)).toBe('verified');
+      expect(tagsLine(md)).toContain('status/verified');
+    });
+
+    it(`${label}: a status-less record still renders verified (no re-write churn)`, () => {
+      const md = render(makeEntry());
+      expect(statusLine(md)).toBe('verified');
+      expect(tagsLine(md)).toContain('status/verified');
+    });
+  }
+});
+
+// ── M1: absent optional fields must never render as the literal "undefined" ───
+
+describe('M1 v1 generator — absent optional fields render a placeholder, not "undefined"', () => {
+  /**
+   * The bug: only `wave` and `role` are schema-required per wave, and every
+   * `effectiveness` sub-field is optional, but the v1 generator interpolated
+   * all of them raw — so a real ledger record wrote `| 1 | Impl-Core A | 6 |
+   * undefined | undefined |` into a vault note a human reads. The v2 generator
+   * already guarded the same cells with `?? '?'`; only the v1 path lacked it.
+   */
+  it('renders no literal "undefined"/"NaN" when waves and effectiveness omit optional fields', () => {
+    const md = generateSessionNote(
+      makeV1Entry({
+        // Shape of the real repaired ledger records: agent_count present,
+        // files_changed + quality absent; effectiveness carries only the
+        // `completed_issues` alias and no completion_rate/emergent.
+        waves: [{ wave: 1, role: 'Impl-Core A', agent_count: 6 }],
+        effectiveness: { planned_issues: 16, completed_issues: 16, carryover: 0 },
+      }),
+    );
+
+    expect(md).not.toMatch(/undefined|NaN/);
+    expect(md).toContain('| 1 | Impl-Core A | 6 | ? | ? |');
+    // planned/carryover survive; the alias supplies `completed`; the two
+    // genuinely-absent values degrade to the same token v2/v3 already use.
+    expect(md).toContain(
+      '- **Effectiveness:** planned=16, completed=16, carryover=0, emergent=n/a, rate=n/a',
+    );
+  });
+
+  /**
+   * The absent-vs-measured-zero distinction. `??` is load-bearing here: with
+   * `||` every one of these real zeros would render as `?`/`n/a`, i.e. the
+   * generator would claim "unknown" about a value that WAS measured.
+   */
+  it('renders a measured 0 as 0, never as the missing-value placeholder', () => {
+    const md = generateSessionNote(
+      makeV1Entry({
+        waves: [{ wave: 1, role: 'Finalization', agent_count: 0, files_changed: 0, quality: 0 }],
+        effectiveness: { planned_issues: 0, completed: 0, carryover: 0, emergent: 0, completion_rate: 0 },
+      }),
+    );
+
+    expect(md).toContain('| 1 | Finalization | 0 | 0 | 0 |');
+    expect(md).toContain(
+      '- **Effectiveness:** planned=0, completed=0, carryover=0, emergent=0, rate=0%',
+    );
+    expect(md).not.toContain('?');
+    expect(md).not.toContain('n/a');
   });
 });

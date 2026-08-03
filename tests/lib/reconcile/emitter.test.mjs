@@ -16,6 +16,24 @@ import { describe, it, expect } from 'vitest';
 
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
 
+/**
+ * File-wide frozen clock for every expiry assertion.
+ *
+ * `computeExpiresAt` FLOORS the emitted expiry at `now + minRuleDays` (default
+ * 7d, the born-dead floor of #741.1a). Without an injected `now`, that floor
+ * tracks the wall clock, so any literal expiry assertion becomes a date time
+ * bomb: it silently flips from "measures the derived expiry" to "measures the
+ * floor" once the wall clock walks past `derived - 7d`. That is exactly what
+ * happened to the two 45d assertions below on 2026-07-30 (floor 2026-08-06
+ * overtook the derived 2026-08-05).
+ *
+ * 2026-07-05 puts the floor at 2026-07-12, which sits 24 days below the
+ * earliest asserted expiry (2026-08-05) and 39 below the latest (2026-08-20).
+ * Every assertion therefore keeps measuring the DERIVED expiry, never the
+ * floor — and, being clock-independent, keeps doing so forever.
+ */
+const FROZEN_NOW = new Date('2026-07-05T00:00:00Z');
+
 /** A fully-eligible fragile-pattern learning fixture. */
 function fragileLearning(overrides = {}) {
   return {
@@ -57,27 +75,29 @@ describe('toActivationMetadata — happy path', () => {
   });
 });
 
+// Every test in this group asserts a DERIVED expiry, so each one injects
+// FROZEN_NOW to hold the born-dead floor (now + 7d = 2026-07-12) well below
+// the asserted value. Dropping the injection does not merely make the test
+// clock-dependent — it silently degrades the assertion into a floor
+// measurement, which is how the two 45d cases went red on 2026-07-30.
 describe('toActivationMetadata — expiry', () => {
-  // `now` is pinned here for the same reason the sibling describe-blocks below
-  // pin it: computeExpiresAt returns max(derived, now + minRuleDays). Without a
-  // pinned clock the FLOOR silently overtakes the derived value once the wall
-  // clock passes created_at + 45d - minRuleDays, and both assertions below then
-  // measure the floor instead of the thing their names describe. They coincided
-  // on exactly one calendar day (2026-07-29, floor == 2026-08-05) and drifted
-  // apart the next midnight — a green that proved nothing about `ruleExpiryDays`.
-  const PINNED_NOW = new Date('2026-07-05T00:00:00Z'); // floor = 2026-07-12, well below the derived date
-
   it('honours an explicit ruleExpiryDays (created_at + 45 days)', () => {
-    const meta = toActivationMetadata(fragileLearning(), { ruleExpiryDays: 45, now: PINNED_NOW });
+    // 2026-06-21 + 45d = 2026-08-05, 24 days above the floor.
+    const meta = toActivationMetadata(fragileLearning(), {
+      ruleExpiryDays: 45,
+      now: FROZEN_NOW,
+    });
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
   it('derives the per-type explicit expiry (fragile-pattern → 45d) when no override', () => {
-    const meta = toActivationMetadata(fragileLearning(), { now: PINNED_NOW });
+    // Same 2026-08-05, but via LEARNING_TTL_DAYS['fragile-pattern'] = 45.
+    const meta = toActivationMetadata(fragileLearning(), { now: FROZEN_NOW });
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
   it('falls through to the registry default (60d) for a type absent from LEARNING_TTL_DAYS', () => {
+    // 2026-06-21 + 60d = 2026-08-20, 39 days above the floor.
     const meta = toActivationMetadata(
       {
         type: 'totally-unknown-type',
@@ -87,7 +107,7 @@ describe('toActivationMetadata — expiry', () => {
         file_paths: ['scripts/lib/autopilot/worktree-pipeline.mjs'],
         created_at: '2026-06-21T00:00:00Z',
       },
-      {},
+      { now: FROZEN_NOW },
     );
     expect(meta.expiresAt).toBe('2026-08-20');
   });
@@ -100,7 +120,7 @@ describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
     // check: without the Math.max floor this would assert '2026-02-15', not
     // '2026-07-12' — remove the floor and this test goes red.
     const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
-    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
     expect(meta.expiresAt).toBe('2026-07-12');
   });
 
@@ -115,7 +135,7 @@ describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
     // '2026-07-08' (the un-floored natural expiry), not '2026-07-12' — remove
     // the floor and this test goes red.
     const learning = fragileLearning({ created_at: '2026-05-24T00:00:00Z' });
-    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
     expect(meta.expiresAt).toBe('2026-07-12');
   });
 
@@ -123,7 +143,7 @@ describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
     // created_at 2026-06-21 + 45d = 2026-08-05, comfortably beyond now + 7d
     // (2026-07-12) for an injected `now` of 2026-07-05.
     const learning = fragileLearning({ created_at: '2026-06-21T00:00:00Z' });
-    const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
     expect(meta.expiresAt).toBe('2026-08-05');
   });
 
@@ -133,7 +153,7 @@ describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
     const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
     const meta = toActivationMetadata(learning, {
       ruleExpiryDays: 5,
-      now: new Date('2026-07-05T00:00:00Z'),
+      now: FROZEN_NOW,
     });
     expect(meta.expiresAt).toBe('2026-07-12');
   });
@@ -141,7 +161,7 @@ describe('toActivationMetadata — born-dead expiry floor (#741.1a)', () => {
   it('honours a custom minRuleDays floor when supplied', () => {
     const learning = fragileLearning({ created_at: '2026-01-01T00:00:00Z' });
     const meta = toActivationMetadata(learning, {
-      now: new Date('2026-07-05T00:00:00Z'),
+      now: FROZEN_NOW,
       minRuleDays: 14,
     });
     expect(meta.expiresAt).toBe('2026-07-19');

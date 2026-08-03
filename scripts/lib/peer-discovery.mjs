@@ -66,6 +66,7 @@ import { parseArgs } from 'node:util';
 import { discoverActiveSessions } from './session-discovery.mjs';
 import { readLock, isLockLive, LOCK_PATH } from './session-lock.mjs';
 import { checkPeerStateMd } from './state-md-peer-guard.mjs';
+import { listWorktreesChecked } from './worktree/listing.mjs';
 
 /** Closed enum of provenance sources. */
 const SOURCE_DISCOVERED = 'discovered'; // lock + registry unified (irreversibly merged upstream)
@@ -388,6 +389,49 @@ function _verdict(live, reason, probe, extra = {}) {
 }
 
 /**
+ * Timeout for the #919.3 git-surface confirmation probe. Mirrors
+ * session-discovery's DEFAULT_DISCOVERY_TIMEOUT_MS: a hung git must degrade
+ * the verdict (fail-safe), never hang it.
+ */
+const WORKTREE_CONFIRM_TIMEOUT_MS = 2000;
+
+/**
+ * #919.3 — confirm that `git worktree list` can actually RUN in this process's
+ * working copy. Called ONLY on the full path's residual branch (discovered
+ * surface produced nothing AND no live own lock exists to canary against —
+ * see the RESIDUAL GAP note on `checkLiveForeignSession`).
+ *
+ * Honours the same DI seam findPeers forwards (`opts.listWorktreesImpl`): a
+ * seam that RESOLVES (any value) proves the surface functional; a seam that
+ * throws/rejects reproduces the git failure. Without a seam,
+ * `listWorktreesChecked()` supplies the real signal (`ok: false` = git did not
+ * run — the exact state the bare `listWorktrees()` swallows into `[]`).
+ *
+ * Raced against a 2s timeout: a hung git resolves to `false` (not confirmed ⇒
+ * fail safe). Never throws; never rejects.
+ *
+ * @param {object} opts  The `checkLiveForeignSession` opts (for the DI seam).
+ * @returns {Promise<boolean>}  true ⇔ `git worktree list` demonstrably ran.
+ */
+async function _confirmWorktreeListRan(opts) {
+  let timer;
+  try {
+    const probe = typeof opts.listWorktreesImpl === 'function'
+      ? Promise.resolve().then(() => opts.listWorktreesImpl()).then(() => true, () => false)
+      : listWorktreesChecked().then((r) => r?.ok === true, () => false);
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), WORKTREE_CONFIRM_TIMEOUT_MS);
+      if (typeof timer?.unref === 'function') timer.unref();
+    });
+    return (await Promise.race([probe, timeout])) === true;
+  } catch {
+    return false; // unmeasurable ⇒ not confirmed ⇒ the caller fails safe
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * checkLiveForeignSession — mechanically decide whether a LIVE FOREIGN session
  * is running in `repoRoot` (Issue #908, Baustein 3).
  *
@@ -502,13 +546,22 @@ function _verdict(live, reason, probe, extra = {}) {
  * self-exclusion is done by the post-filter (which covers both id-spaces
  * anyway), and excluding our own entry upstream would erase the canary.
  *
- * RESIDUAL GAP (documented, narrowed): the canary needs a live own lock to
- * assert against. When `repoRoot` is my own working copy and NO live lock
- * exists there, a total surface failure is still indistinguishable from a quiet
- * repo and yields `live: false`. That combination means no session is running
- * in my own working copy — the case where a missed peer costs least — and
- * closing it would require a liveness contract from `listWorktrees`, which is
- * outside this module.
+ * RESIDUAL GAP — CLOSED (#919.3): the canary needs a live own lock to assert
+ * against. When `repoRoot` is my own working copy and NO live lock exists
+ * there, a total surface failure used to be indistinguishable from a quiet
+ * repo and yielded `live: false`. The liveness contract that closing it
+ * required now exists: `listWorktreesChecked()` (worktree/listing.mjs) reports
+ * whether `git worktree list` actually RAN (`ok: false` = the git invocation
+ * failed — previously swallowed into `[]`). So when the discovered surface
+ * produced NOTHING and no live own lock can vouch for it, the full path runs
+ * that check directly (raced against a 2s timeout, mirroring
+ * session-discovery's own race): git demonstrably ran → `no-peers` stands as a
+ * genuine measurement; git failed or hung → `live: true`,
+ * `reason: 'probe-degraded'`, `probe: 'full-degraded'` — the same fail-safe
+ * direction as every other unmeasurable state. Tests reach this confirmation
+ * through the SAME `opts.listWorktreesImpl` seam findPeers forwards: a seam
+ * that resolves proves the surface functional, a throwing/rejecting seam
+ * reproduces the git failure.
  *
  * NEVER THROWS — like every other function in this module. All paths return a
  * verdict; the outermost catch maps the impossible case to `'probe-error'`.
@@ -634,6 +687,20 @@ export async function checkLiveForeignSession(repoRoot, opts = {}) {
       // repo is quiet → fail safe.
       if (discoveredAll.length === 0 && lock !== null && isLockLive(lock, nowMs)) {
         return _verdict(true, 'probe-degraded', PROBE_FULL_DEGRADED);
+      }
+      // #919.3 — the canary above needs a live own lock to assert against.
+      // Without one, "total surface failure" and "quiet repo" still arrive as
+      // the same empty list (the documented residual gap). Close it with a
+      // direct liveness check of the git surface itself: did `git worktree
+      // list` actually RUN? Only reached when the discovered surface produced
+      // NOTHING — any discovered entry is already proof the surface
+      // functioned, so the extra git spawn is paid solely on the branch that
+      // needs it.
+      if (discoveredAll.length === 0) {
+        const gitRan = await _confirmWorktreeListRan(opts);
+        if (!gitRan) {
+          return _verdict(true, 'probe-degraded', PROBE_FULL_DEGRADED);
+        }
       }
       return _verdict(false, 'no-peers', PROBE_FULL);
     }

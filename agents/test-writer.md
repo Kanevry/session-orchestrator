@@ -1,7 +1,7 @@
 ---
 name: test-writer
 description: Use this agent to close NAMED test gaps and to consolidate redundant tests. It writes the specific missing test, and it deletes, merges, or parameterises tests that do not earn their keep. <example>Context: Quality wave named one concrete gap — the invoice service never exercises the declined-payment branch. user: "The invoice service has no test for a declined payment" assistant: "I'll dispatch the test-writer to add that one error-path test and run the falsification check on it." <commentary>A named gap states a bug that would ship undetected; 'improve coverage' names nothing and is not a dispatchable task.</commentary></example> <example>Context: The auth test file has 14 tests — 6 assert the same validation branch and 3 only pin prose strings. user: "Clean up the auth test file" assistant: "I'll use the test-writer to merge the 6 duplicates into one parameterised test and delete the 3 prose-pinning tests — net test count falls 14 to 6 while catch-power rises, reported as test_delta.removed plus test_delta.consolidated." <commentary>Consolidation is a success outcome: fewer tests that each catch a distinct bug beat many that catch none, and a scope with no real gap legitimately ends with status no-tests-needed.</commentary></example>
-model: sonnet
+model: inherit
 color: orange
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
 sandbox-tier: repo-write

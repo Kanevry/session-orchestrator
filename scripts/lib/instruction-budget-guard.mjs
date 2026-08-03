@@ -53,6 +53,27 @@
  * - scripts/lib/qg-command-drift-banner.mjs (banner-shape convention)
  * - scripts/lib/ci-status-banner.mjs (never-throws convention)
  * - issue #877 (FA2 — byte dimension + surface split)
+ * - SISTER GUARD / KNOWN DIVERGENCE (#906.3): the projects-baseline repo
+ *   (resolved via `plan-baseline-path` / owner.yaml `baseline-path`) ships
+ *   `scripts/check-instruction-budget.sh` under rule CCU-009c. It measures the
+ *   SAME `.claude/rules/*.md` corpus and its total is NOT comparable to ours —
+ *   it diverges on BOTH axes, in OPPOSITE directions:
+ *     (a) MEMBERSHIP — it classifies a file as path-scoped only on a `paths:`
+ *         frontmatter key, so this repo's `globs:`-scoped rules stay inside ITS
+ *         always-on set: 26 files where `loadApplicableRules` yields 12 here.
+ *     (b) HEURISTIC — it counts only rule-ID anchors and imperative-keyword
+ *         BULLET lines outside code fences, where `countDirectives` below
+ *         counts every bullet, ordered-list item and `##`-or-deeper heading.
+ *   The narrower heuristic outweighs the wider file set, so its total runs
+ *   LOWER than ours: measured 2026-07-30 against this repo's corpus, 263 (its
+ *   heuristic) vs 471 (ours) ≈ 1.79x; its own header reports a ~2-3x spread on
+ *   the baseline repo's corpus, so the factor is corpus-dependent, not a
+ *   constant. Never diff or reconcile the two totals — each is only meaningful
+ *   against its OWN ceiling, and on that same corpus the two already disagree
+ *   on the verdict (263 > its max of 200 → over budget; 471 <= our 480 → ok).
+ *   Their ceilings are not the same kind of number either: its 200 is an
+ *   unvalidated placeholder it explicitly retracts in its own header, ours is a
+ *   self-relative growth ratchet calibrated just above our own baseline.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -63,6 +84,33 @@ import { loadApplicableRules } from './rule-loader.mjs';
 export const DEFAULT_CEILING = 480;
 
 /**
+ * Default BYTE ceiling (#931a) — the second axis of the same growth ratchet.
+ *
+ * Derived from measurement, not from a feeling. Measured 2026-07-30 against
+ * this repo's own always-on corpus:
+ *
+ *   node -e "import('./scripts/lib/instruction-budget-guard.mjs').then(m =>
+ *     console.log(m.computeInstructionBudget({repoRoot: process.cwd()}).totalBytes))"
+ *   → 108589    (12 always-on rules, untiered surface)
+ *
+ * 108589 x 1.05 = 114018 → rounded DOWN to 114000. The +5% headroom is not
+ * arbitrary either: it is the SAME relative headroom the directive ceiling
+ * already carries (480 over its ~457 baseline = +5.03%), so the two axes are
+ * calibrated identically rather than one being tighter than the other by
+ * accident. In absolute terms +5% ≈ 5.4 KB ≈ one medium always-on rule file
+ * (verification-before-completion.md is 6.1 KB) — i.e. the ratchet fires when
+ * a genuinely NEW always-on surface is added, not when an existing rule is
+ * edited. A default that reddens the current state would be switched off
+ * within one session and measure nothing thereafter.
+ *
+ * Note the byte axis is materially LOOSER than the directive axis in practice:
+ * the live repo sits at 471/480 directives (98.1% of ceiling) but 108589/114000
+ * bytes (95.3%). That asymmetry is inherited from the pre-existing directive
+ * ratchet, not introduced here.
+ */
+export const DEFAULT_BYTE_CEILING = 114000;
+
+/**
  * Read the `instruction-budget:` nested block from the `## Session Config`
  * section of CLAUDE.md (or AGENTS.md) at `repoRoot`. Synchronous + never throws.
  *
@@ -71,20 +119,33 @@ export const DEFAULT_CEILING = 480;
  *   instruction-budget:
  *     enabled: true
  *     ceiling: 480
+ *     byte-ceiling: 114000
  *     mode: warn
  *
  * Behaviour:
  *   - Config-load failure (no instruction file / unreadable) → returns the
- *     graceful fallback `{ enabled: true, ceiling: DEFAULT_CEILING, mode: 'warn' }`
- *     so the probe still computes (mirrors the other session-start probes).
+ *     graceful fallback `{ enabled: true, ceiling: DEFAULT_CEILING,
+ *     'byte-ceiling': DEFAULT_BYTE_CEILING, mode: 'warn' }` so the probe still
+ *     computes (mirrors the other session-start probes).
  *   - Absent block → same fallback (the feature is on-by-default, growth-ratchet).
  *   - Malformed individual values silently fall back to the per-key default.
  *
+ * The `byte-ceiling` key keeps its KEBAB form in the returned object, matching
+ * how every other config loader in `scripts/lib/config/` mirrors a multi-word
+ * YAML key (`'due-days'`, `'timeout-ms'`, `'confidence-floor'`). The camelCase
+ * `byteCeiling` spelling appears only on the `opts`/result surfaces of
+ * `computeInstructionBudget`, which are plain JS objects, not config mirrors.
+ *
  * @param {string} repoRoot
- * @returns {{ enabled: boolean, ceiling: number, mode: 'warn' | 'off' }}
+ * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, mode: 'warn' | 'off' }}
  */
 export function loadInstructionBudgetConfig(repoRoot) {
-  const fallback = { enabled: true, ceiling: DEFAULT_CEILING, mode: 'warn' };
+  const fallback = {
+    enabled: true,
+    ceiling: DEFAULT_CEILING,
+    'byte-ceiling': DEFAULT_BYTE_CEILING,
+    mode: 'warn',
+  };
 
   let content = null;
   for (const name of ['CLAUDE.md', 'AGENTS.md']) {
@@ -111,13 +172,26 @@ export function loadInstructionBudgetConfig(repoRoot) {
  * Parse the `instruction-budget:` block out of raw markdown content.
  * Independent helper (testable without disk IO).
  *
+ * A `defaults` object that predates the `byte-ceiling` key (#931a) is tolerated:
+ * the missing entry falls back to `DEFAULT_BYTE_CEILING` rather than yielding
+ * `undefined`, so an older caller can never disable the byte axis by omission.
+ *
  * @param {string} content - full file contents
- * @param {{ enabled: boolean, ceiling: number, mode: 'warn' | 'off' }} [defaults]
- * @returns {{ enabled: boolean, ceiling: number, mode: 'warn' | 'off' }}
+ * @param {{ enabled: boolean, ceiling: number, 'byte-ceiling'?: number, mode: 'warn' | 'off' }} [defaults]
+ * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, mode: 'warn' | 'off' }}
  */
 export function _parseInstructionBudget(content, defaults) {
-  const base = defaults ?? { enabled: true, ceiling: DEFAULT_CEILING, mode: 'warn' };
-  if (typeof content !== 'string' || content === '') return { ...base };
+  const base = defaults ?? {
+    enabled: true,
+    ceiling: DEFAULT_CEILING,
+    'byte-ceiling': DEFAULT_BYTE_CEILING,
+    mode: 'warn',
+  };
+  const baseByteCeiling =
+    typeof base['byte-ceiling'] === 'number' ? base['byte-ceiling'] : DEFAULT_BYTE_CEILING;
+  if (typeof content !== 'string' || content === '') {
+    return { ...base, 'byte-ceiling': baseByteCeiling };
+  }
 
   const lines = content.split(/\r?\n/);
   let inBlock = false;
@@ -148,10 +222,11 @@ export function _parseInstructionBudget(content, defaults) {
     blockLines.push(line);
   }
 
-  if (blockLines.length === 0) return { ...base };
+  if (blockLines.length === 0) return { ...base, 'byte-ceiling': baseByteCeiling };
 
   let enabled = base.enabled;
   let ceiling = base.ceiling;
+  let byteCeiling = baseByteCeiling;
   let mode = base.mode;
 
   for (const rawLine of blockLines) {
@@ -178,6 +253,15 @@ export function _parseInstructionBudget(content, defaults) {
         }
         break;
       }
+      case 'byte-ceiling': {
+        // Same shape as `ceiling` above — integer, strictly positive, malformed
+        // or non-positive values silently keep the default (#931a).
+        if (/^-?\d+$/.test(v)) {
+          const n = Number.parseInt(v, 10);
+          if (Number.isFinite(n) && n > 0) byteCeiling = n;
+        }
+        break;
+      }
       case 'mode':
         // Only `off` silences; any other value (incl. `warn`) surfaces the banner.
         mode = v.toLowerCase() === 'off' ? 'off' : 'warn';
@@ -185,7 +269,7 @@ export function _parseInstructionBudget(content, defaults) {
     }
   }
 
-  return { enabled, ceiling, mode };
+  return { enabled, ceiling, 'byte-ceiling': byteCeiling, mode };
 }
 
 /**
@@ -305,6 +389,10 @@ function sumBytes(entries) {
  * @param {string} [opts.repoRoot]  project root (defaults to process.cwd()).
  * @param {string} [opts.rulesDir]  rules directory (defaults to <repoRoot>/.claude/rules).
  * @param {number} [opts.ceiling]   directive ceiling (defaults to DEFAULT_CEILING).
+ * @param {number} [opts.byteCeiling] byte ceiling (defaults to DEFAULT_BYTE_CEILING).
+ *   #931a: the byte dimension shipped in #877 as DATA ONLY — nothing read it,
+ *   so a rule file could grow without limit as long as it added few bullet
+ *   lines. It is now a verdict axis alongside the directive count.
  * @param {'wave'|'coordinator'|null} [opts.context]  (#877; corrected #893)
  *   narrows the PRIMARY totals (`totalDirectives`/`totalBytes`/`perFile`) to
  *   what a given surface actually receives, via rule-loader's own tier gate
@@ -333,13 +421,36 @@ function sumBytes(entries) {
  *   totalBytes: number,
  *   perFile: Array<{ file: string, count: number, bytes: number }>,
  *   ceiling: number,
+ *   byteCeiling: number,
+ *   overDirectiveBudget: boolean,
+ *   overByteBudget: boolean,
  *   overBudget: boolean,
  *   severity: 'ok' | 'warn',
  *   bySurface: { coordinator: number, wave: number, always: number },
  * }}
  *   perFile is sorted DESC by count. On missing/unreadable dir →
- *   { totalDirectives: 0, totalBytes: 0, perFile: [], ceiling, overBudget: false,
+ *   { totalDirectives: 0, totalBytes: 0, perFile: [], ceiling, byteCeiling,
+ *     overDirectiveBudget: false, overByteBudget: false, overBudget: false,
  *     severity: 'ok', bySurface: { coordinator: 0, wave: 0, always: 0 } }.
+ *
+ *   #931a verdict rule — `overBudget` is the OR of the two axes
+ *   (`overDirectiveBudget || overByteBudget`), NOT a per-axis severity split:
+ *     - Both axes measure the SAME quantity (the cost of the always-on
+ *       instruction corpus) on different scales, and either one breaching is
+ *       equally actionable. A 9 KB prose-only rule with three bullets is
+ *       invisible to the directive axis while consuming real payload — that
+ *       gap is precisely what #877 measured and what this OR closes.
+ *     - A per-axis severity would need a third value in the banner-shape
+ *       vocabulary (`{severity:'warn', message}` is a fixed convention shared
+ *       with checkQgCommandDrift / checkCiStatus), i.e. a protocol change for
+ *       every Phase-4 banner consumer — disproportionate to the gain.
+ *     - Alarm fatigue is governed by the CEILING CHOICE, not by the severity
+ *       label: a ceiling calibrated above the current state (see
+ *       DEFAULT_BYTE_CEILING) fires rarely, whereas a too-tight ceiling
+ *       produces a line at every session start no matter how it is labelled.
+ *   The two sub-flags are exported so a consumer can discriminate WHICH axis
+ *   broke without re-deriving the comparison (the banner below does exactly
+ *   this to choose its Top-files sort key).
  *
  *   bySurface definition (#877; corrected #893 — NOT the additive
  *   `coordinator + wave === totalBytes` identity, which double-counts the
@@ -374,6 +485,8 @@ export function computeInstructionBudget(opts = {}) {
   const repoRoot = opts.repoRoot ?? process.cwd();
   const rulesDir = opts.rulesDir ?? join(repoRoot, '.claude/rules');
   const ceiling = typeof opts.ceiling === 'number' ? opts.ceiling : DEFAULT_CEILING;
+  const byteCeiling =
+    typeof opts.byteCeiling === 'number' ? opts.byteCeiling : DEFAULT_BYTE_CEILING;
   // #893 fix: 'coordinator' used to fall through to the `null` (untiered)
   // branch below — silently measuring the WRONG rule set for a coordinator
   // context (it never excluded `tier: wave-only`). Now explicitly recognised
@@ -387,6 +500,9 @@ export function computeInstructionBudget(opts = {}) {
     totalBytes: 0,
     perFile: [],
     ceiling,
+    byteCeiling,
+    overDirectiveBudget: false,
+    overByteBudget: false,
     overBudget: false,
     severity: 'ok',
     bySurface: { coordinator: 0, wave: 0, always: 0 },
@@ -453,13 +569,22 @@ export function computeInstructionBudget(opts = {}) {
   // Sort DESC by count; tie-break by filename for deterministic output.
   perFile.sort((a, b) => b.count - a.count || a.file.localeCompare(b.file));
 
-  const overBudget = totalDirectives > ceiling;
+  // #931a: both axes are evaluated; `overBudget` is their OR (rationale in the
+  // returns-doc above). Strict `>` on both, so a total sitting exactly ON its
+  // ceiling is still "ok" — the byte axis inherits the directive axis's
+  // long-standing boundary semantics rather than inventing a second rule.
+  const overDirectiveBudget = totalDirectives > ceiling;
+  const overByteBudget = totalBytes > byteCeiling;
+  const overBudget = overDirectiveBudget || overByteBudget;
 
   return {
     totalDirectives,
     totalBytes,
     perFile,
     ceiling,
+    byteCeiling,
+    overDirectiveBudget,
+    overByteBudget,
     overBudget,
     severity: overBudget ? 'warn' : 'ok',
     bySurface,
@@ -469,27 +594,39 @@ export function computeInstructionBudget(opts = {}) {
 /**
  * Banner wrapper — session-start Phase 4 convention.
  *
- * Reads `instruction-budget.{enabled,ceiling,mode}` from Session Config
- * (CLAUDE.md / AGENTS.md at `opts.repoRoot`, default process.cwd()):
+ * Reads `instruction-budget.{enabled,ceiling,byte-ceiling,mode}` from Session
+ * Config (CLAUDE.md / AGENTS.md at `opts.repoRoot`, default process.cwd()):
  *   - `enabled: false` OR `mode: off` → returns null (silent no-op).
- *   - The config `ceiling` is used unless `opts.ceiling` is explicitly supplied
- *     (an explicit opt wins, keeping callers that pin a ceiling deterministic).
+ *   - The config `ceiling` / `byte-ceiling` are used unless `opts.ceiling` /
+ *     `opts.byteCeiling` are explicitly supplied (an explicit opt wins, keeping
+ *     callers that pin a ceiling deterministic).
  *   - Config-load failure → graceful fallback `{enabled:true, ceiling:480,
- *     mode:warn}` so the probe still computes (mirrors the other probes).
+ *     'byte-ceiling':114000, mode:warn}` so the probe still computes (mirrors
+ *     the other probes).
  * Never throws.
+ *
+ * The message names WHICH axis breached (#931a) — a banner that only said
+ * "over budget" would leave the operator guessing whether to prune bullets or
+ * prose. It stays at three lines because it renders at every session start.
  *
  * @param {object} [opts]  forwarded to computeInstructionBudget.
  * @param {string} [opts.repoRoot] project root for the config read.
- * @param {number} [opts.ceiling]  explicit ceiling override (wins over config).
+ * @param {number} [opts.ceiling]  explicit directive-ceiling override (wins over config).
+ * @param {number} [opts.byteCeiling] explicit byte-ceiling override (wins over config).
  * @returns {{ severity: 'warn', message: string } | null}
- *   null when disabled / off / at-or-under ceiling OR on any read failure.
+ *   null when disabled / off / both axes at-or-under ceiling OR on any read failure.
  */
 export function checkInstructionBudget(opts = {}) {
   let cfg;
   try {
     cfg = loadInstructionBudgetConfig(opts.repoRoot);
   } catch {
-    cfg = { enabled: true, ceiling: DEFAULT_CEILING, mode: 'warn' };
+    cfg = {
+      enabled: true,
+      ceiling: DEFAULT_CEILING,
+      'byte-ceiling': DEFAULT_BYTE_CEILING,
+      mode: 'warn',
+    };
   }
 
   // Opt-out gates — return null without computing.
@@ -497,23 +634,47 @@ export function checkInstructionBudget(opts = {}) {
 
   // An explicit ceiling opt wins over the config ceiling; otherwise use config.
   const ceiling = typeof opts.ceiling === 'number' ? opts.ceiling : cfg.ceiling;
+  const byteCeiling =
+    typeof opts.byteCeiling === 'number'
+      ? opts.byteCeiling
+      : typeof cfg['byte-ceiling'] === 'number'
+        ? cfg['byte-ceiling']
+        : DEFAULT_BYTE_CEILING;
 
   let budget;
   try {
-    budget = computeInstructionBudget({ ...opts, ceiling });
+    budget = computeInstructionBudget({ ...opts, ceiling, byteCeiling });
   } catch {
     return null; // never throw out of the banner wrapper
   }
 
   if (!budget || !budget.overBudget) return null;
 
-  const top = budget.perFile
+  // Name only the breached axes — listing a healthy axis would pad the line
+  // without telling the operator anything they must act on.
+  const axes = [];
+  if (budget.overDirectiveBudget) {
+    axes.push(`directives ${budget.totalDirectives} > ${budget.ceiling}`);
+  }
+  if (budget.overByteBudget) {
+    axes.push(`bytes ${budget.totalBytes} > ${budget.byteCeiling}`);
+  }
+
+  // `perFile` arrives sorted DESC by directive count. When ONLY the byte axis
+  // broke, that ordering points at the wrong files — re-sort by bytes so the
+  // Top-files line lists the ones actually responsible for the breach.
+  const ranked =
+    budget.overByteBudget && !budget.overDirectiveBudget
+      ? [...budget.perFile].sort((a, b) => b.bytes - a.bytes || a.file.localeCompare(b.file))
+      : budget.perFile;
+
+  const top = ranked
     .slice(0, 3)
-    .map((f) => `${f.file} (${f.count})`)
+    .map((f) => `${f.file} (${f.count} dir, ${f.bytes} B)`)
     .join(', ');
 
   const message = [
-    `⚠ Instruction budget: ${budget.totalDirectives} always-on directives across ${budget.perFile.length} rules — over ceiling ${budget.ceiling}.`,
+    `⚠ Instruction budget over — ${axes.join(' · ')} across ${budget.perFile.length} always-on rules.`,
     `  Top files: ${top}`,
     '  See the instruction-budget audit (#687; archived in the private Meta-Vault) for the prune/demote list.',
   ].join('\n');

@@ -372,6 +372,40 @@ describe('block message content', { timeout: 15000 }, () => {
     expectDeny(result, 'PULL_REQUEST_TEMPLATE.md');
   });
 
+  // #919 (follow-up to #906): `command` is the only agent-controlled term in
+  // the reason. Echoed unbounded, a large one consumed emitDeny's whole
+  // 16 000-char clamp budget and cut lines 3-6 — the template list AND the
+  // `/templates-ack` hint — off the end. The deny still bit, but the reader was
+  // left with no remedy, defeating PRD § 3 Gherkin Pattern 3.
+  //
+  // Fake-regression, measured on the 200 043-char command below:
+  //   before COMMAND_ECHO_MAX → reason 16 000 chars, Default.md=false, templates-ack=false
+  //   after                   → reason  1 047 chars, Default.md=true,  templates-ack=true
+  // Reverting `clipCommand` in the hook turns the two content assertions RED.
+  it('keeps the template list and ack hint in the reason for a huge command', async () => {
+    const dir = await mkProjectTracked({ withGitlabMrTemplate: true });
+    const hugeCommand = `glab mr create --title foo --description "${'A'.repeat(200_000)}"`;
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(hugeCommand),
+    });
+    const envelope = expectDeny(result);
+    const reason = envelope.hookSpecificOutput.permissionDecisionReason;
+
+    // The remedy must survive — this is what the unbounded echo destroyed.
+    expect(reason).toContain('Default.md');
+    expect(reason).toContain('templates-ack');
+
+    // The echo is bounded and the cut is marked, so the reader can tell the
+    // command was truncated rather than ending there.
+    expect(reason).toContain('[truncated: showing 512 of 200043 characters]');
+
+    // Defence in depth: the hook's own bound, not emitDeny's 16 000 clamp, is
+    // what keeps this envelope small. A reason at/above the clamp would mean
+    // the hook is again passing an effectively unbounded term downstream.
+    expect(reason.length).toBeLessThan(2_000);
+  });
+
   // The operator half of the #906 repair: a short visible headline. Without
   // this, a regression that dropped systemMessage would leave the operator
   // seeing an unexplained refusal while every other assertion stayed green.

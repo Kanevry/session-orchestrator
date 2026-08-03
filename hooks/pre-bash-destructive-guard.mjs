@@ -299,6 +299,97 @@ function commandHasRecursiveForceRm(command) {
 }
 
 /**
+ * Expand a LEADING `$TMPDIR` / `${TMPDIR}` reference in an rm target token.
+ *
+ * The hook is a PreToolUse gate: it sees the raw, UNEXPANDED shell string.
+ * `rm -rf "${TMPDIR}"scratch` therefore arrives as the token `${TMPDIR}scratch`,
+ * which `path.isAbsolute()` reads as a RELATIVE path — so the #641 `wasAbsolute`
+ * gate (correctly, on its own terms) refuses to match it against any /tmp-class
+ * prefix, and the path is instead resolved against the PROJECT dir. A legitimate
+ * temp cleanup is blocked (#935 cause 1). Substituting the value the shell would
+ * have substituted, BEFORE absoluteness is judged, is the narrow fix.
+ *
+ * This does NOT by itself widen the safe set: the expansion result still has to
+ * land under a CONFINED allowlist prefix (see resolveAllowlistPrefixes), so an
+ * inherited `TMPDIR=/etc` expands to `/etc/...` and is still blocked (#642).
+ *
+ * Deliberately narrow: only TMPDIR, only in leading position, only when its
+ * value is absolute, and byte-for-byte as the shell would splice it (no invented
+ * separator — `TMPDIR=/tmp` + `${TMPDIR}x` really is `/tmpx`, not `/tmp/x`).
+ * A generic env-expander would be a far larger attack surface.
+ *
+ * @param {string} targetPath
+ * @returns {string}
+ */
+function expandTmpdirToken(targetPath) {
+  const m = /^\$(?:TMPDIR\b|\{TMPDIR\})/.exec(targetPath);
+  if (!m) return targetPath;
+  const value = process.env.TMPDIR || os.tmpdir();
+  if (!value || !path.isAbsolute(value)) return targetPath;
+  return value + targetPath.slice(m[0].length);
+}
+
+/**
+ * Canonicalise `absPath` by realpath-ing the deepest EXISTING ancestor and
+ * re-attaching the non-existent suffix.
+ *
+ * `fs.realpathSync.native` throws ENOENT on a path that does not exist — which
+ * is the NORMAL case here: `rm -rf` frequently targets something already gone,
+ * and a policy prefix (`$TMPDIR` of another boot session) need not exist either.
+ * The upward walk mirrors the identical pattern in hooks/enforce-scope.mjs
+ * (SECURITY-REQ-03) rather than inventing a second one.
+ *
+ * Any other fs error → return the lexical input unchanged. That is the fail-safe
+ * direction: the caller then compares lexically, i.e. exactly the pre-#935
+ * behaviour, never a broader one.
+ *
+ * @param {string} absPath
+ * @returns {string}
+ */
+function canonicalizeAncestors(absPath) {
+  let ancestor = absPath;
+  const segments = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync.native(ancestor);
+      return segments.length ? path.join(real, ...segments.reverse()) : real;
+    } catch (err) {
+      // ENOENT: nothing at this level yet. ENOTDIR: a FILE sits in the chain.
+      // Both mean "keep walking up"; anything else (ELOOP, EACCES) → lexical.
+      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return absPath;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return absPath; // reached the fs root, nothing existed
+      segments.push(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+/**
+ * Canonical LOCATION of an `rm` target.
+ *
+ * `rm -rf X` removes X ITSELF: when X is a symlink the link is unlinked and what
+ * it points at is untouched. So the final segment must NOT be symlink-resolved —
+ * only its parent chain. Resolving the leaf would be both wrong about what rm
+ * does and unsafe: `<project>/link-to-tmp` would canonicalise to /private/tmp and
+ * read as a safe temp target while the delete lands on project content.
+ *
+ * Canonicalising the parent chain keeps the judgement honest in both directions:
+ *   - `/tmp/link-to-etc/x` canonicalises OUT of the temp allowlist → blocked.
+ *     The pre-#935 literal prefix match allowed it (measured, real hole).
+ *   - `$TMPDIR/x` and its `/private/var/folders/...` canonical spelling collapse
+ *     onto the same string → both allowed, no literal-form guessing.
+ *
+ * @param {string} abs — already `path.normalize`d absolute path
+ * @returns {string}
+ */
+function canonicalizeRmTarget(abs) {
+  const parent = path.dirname(abs);
+  if (parent === abs) return abs; // filesystem root
+  return path.join(canonicalizeAncestors(parent), path.basename(abs));
+}
+
+/**
  * Return true when a single path is a safe `rm -rf` target.
  *
  * Safe targets:
@@ -306,7 +397,7 @@ function commandHasRecursiveForceRm(command) {
  *   - <projectRoot>/node_modules (any depth)
  *   - /tmp/ (any depth)                    — agent-owned scratch
  *   - /private/tmp/ (any depth)            — macOS canonical /tmp
- *   - resolved os.tmpdir() / $TMPDIR (any depth)
+ *   - resolved os.tmpdir() / $TMPDIR (any depth), in either spelling
  *
  * The /tmp-class prefixes come from the rule's optional `path-allowlist` and are
  * resolved at runtime here.
@@ -320,12 +411,17 @@ function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
   if (!targetPath) return false;
 
   const base = projectDir || process.cwd();
-  const wasAbsolute = path.isAbsolute(targetPath);
+  // Restore the shell's own substitution before judging absoluteness (#935).
+  const effective = expandTmpdirToken(targetPath);
+  const wasAbsolute = path.isAbsolute(effective);
 
   // Project-relative safe dirs (always allowed, independent of the rule allowlist).
+  // Deliberately LEXICAL: a project-relative candidate is never symlink-resolved,
+  // otherwise a link inside the project pointing at /tmp would read as safe and
+  // `rm -rf <that link>` — which destroys project content — would be allowed.
   const abs = wasAbsolute
-    ? path.normalize(targetPath)
-    : path.resolve(base, targetPath);
+    ? path.normalize(effective)
+    : path.resolve(base, effective);
 
   const safeProjectDirs = [
     path.join(base, '.orchestrator', 'tmp'),
@@ -341,9 +437,14 @@ function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
   // /tmp prefix just because the project dir itself happens to live under /tmp
   // (the case on CI runners where os.tmpdir() === /tmp). #641.
   if (wasAbsolute) {
+    // Compare CANONICAL forms on both sides. Literal matching made the verdict
+    // depend on which spelling of the same directory was typed (`/var/folders/…`
+    // allowed, `/private/var/folders/…` blocked — #935 cause 2) and let a symlink
+    // under /tmp launder a non-temp destination into the allowlist.
+    const canonTarget = canonicalizeRmTarget(abs);
     for (const prefix of resolveAllowlistPrefixes(ruleAllowlist)) {
       // The target must be the prefix dir itself or a descendant of it.
-      if (abs === prefix || abs.startsWith(prefix + path.sep)) return true;
+      if (canonTarget === prefix || canonTarget.startsWith(prefix + path.sep)) return true;
     }
   }
 
@@ -355,23 +456,51 @@ function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
  * prefixes. `$TMPDIR` expands to env.TMPDIR (if set) and os.tmpdir(); literal
  * paths are normalised. Trailing slashes are stripped for prefix comparison.
  *
+ * Every prefix is emitted in BOTH its lexical and its canonical (realpath)
+ * spelling, because the target it is compared against is canonicalised too
+ * (see canonicalizeRmTarget) — and when realpath is unavailable both sides fall
+ * back to lexical together, so the pair never drifts apart.
+ *
  * @param {string[]} ruleAllowlist
  * @returns {string[]} normalised absolute prefixes (no trailing slash)
  */
 function resolveAllowlistPrefixes(ruleAllowlist) {
   const out = new Set();
+  const strip = (p) => path.normalize(p).replace(/[/\\]+$/, '');
+
+  // Canonical macOS spellings are listed EXPLICITLY next to their symlink form:
+  // /tmp → /private/tmp and /var/folders → /private/var/folders. A TMPDIR handed
+  // to us already canonicalised (what fs.realpath returns on macOS) previously
+  // failed this confinement check and contributed NO prefix at all, so EVERY
+  // $TMPDIR target was blocked (#935 cause 2).
+  const tempRoots = ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders']
+    .map((p) => path.normalize(p));
+  const underTempRoot = (p) =>
+    tempRoots.some((root) => p === root || p.startsWith(root + path.sep));
+
+  // Operator-authored, VCS-reviewed policy literals (`/tmp/`, `/private/tmp/`).
   const add = (p) => {
     if (!p) return;
-    const norm = path.normalize(p).replace(/[/\\]+$/, '');
-    if (norm) out.add(norm);
+    const lex = strip(p);
+    if (!lex) return;
+    out.add(lex);
+    const canon = strip(canonicalizeAncestors(lex));
+    if (canon) out.add(canon);
   };
-  const tempRoots = ['/tmp', '/private/tmp', '/var/folders'].map((p) => path.normalize(p));
+
+  // Environment-derived (`$TMPDIR`) — attacker-influencable, hence DOUBLE
+  // confinement: the value must sit under a temp root both as written AND after
+  // symlink resolution. Checking only the lexical form would let a `TMPDIR`
+  // pointing at a symlink under /tmp (e.g. /tmp/evil → <project>) promote the
+  // project itself to an allowlisted prefix (#642 confinement, extended).
   const addTemp = (p) => {
     if (!p || !path.isAbsolute(p)) return;
-    const norm = path.normalize(p).replace(/[/\\]+$/, '');
-    if (tempRoots.some((root) => norm === root || norm.startsWith(root + path.sep))) {
-      out.add(norm);
-    }
+    const lex = strip(p);
+    if (!lex || !underTempRoot(lex)) return;
+    const canon = strip(canonicalizeAncestors(lex));
+    if (!canon || !underTempRoot(canon)) return;
+    out.add(lex);
+    out.add(canon);
   };
 
   for (const entry of Array.isArray(ruleAllowlist) ? ruleAllowlist : []) {

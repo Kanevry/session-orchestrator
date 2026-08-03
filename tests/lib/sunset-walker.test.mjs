@@ -38,8 +38,23 @@ const NOW = Date.parse('2026-05-30T12:00:00.000Z');
 const WALKER_CLI = fileURLToPath(
   new URL('../../scripts/lib/sunset/walker.mjs', import.meta.url),
 );
-const WALKER_JSON_CHILD_TIMEOUT_MS = 15_000;
-const WALKER_JSON_TEST_TIMEOUT_MS = 20_000;
+// The --json CLI test spawns a full repo walk (linear readFileSync/readdirSync
+// over the whole corpus — no subprocesses, no git). Solo it costs ~4.4-5.3 s;
+// under 8-way parallelism (the vitest `pool: 'forks'` analogue, plus co-resident
+// Claude sessions) it measured 8.6-8.8 s on 2026-07-30. The previous 15 s cap
+// left only ~1.7x reserve and went SIGTERM/ETIMEDOUT in full local runs while
+// CI — an uncontended ephemeral container — stayed green.
+//
+// Flat, NOT env-conditional like vitest.config.mjs's `process.env.CI ? ... : ...`:
+// there the contended side is CI; here it is inverted (local co-residency is the
+// contention source, CI passes), so a CI-branch would leave the failing
+// environment on the failing value. 30 s is testing.md's stated ceiling.
+const WALKER_JSON_CHILD_TIMEOUT_MS = 30_000;
+// MUST stay strictly above the child timeout: the child's SIGTERM has to land
+// first so spawnSync returns and formatWalkerCliFailure can report
+// status/signal/stdout/stderr. If vitest's own timeout fired first the failure
+// would surface as a bare, diagnostic-free test timeout.
+const WALKER_JSON_TEST_TIMEOUT_MS = 40_000;
 
 function formatWalkerCliFailure(label, result, extra = []) {
   const error = result.error

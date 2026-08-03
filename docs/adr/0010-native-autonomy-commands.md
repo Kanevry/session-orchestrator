@@ -80,3 +80,110 @@ This refresh closes the open Stay-vs-Adapter follow-up the original ADR logged (
 **Agent Teams = Adapter (unchanged from ADR-0002), PSA re-scoped.** ADR-0002 already pinned Agent Teams = **Adapter** and found its isolation premise **CONFIRMED FALSE** ("two teammates editing the same file leads to overwrites"; per-process "one team per session", not per-repo). The #665 refinement clarifies the boundary: PSA's durable moat is **operator-session safety** (PSA-001..004 + the per-repo session lock `acquire()` / `session.lock`) — a domain Agent Teams **structurally cannot enter** (per-process / in-run only). Agent Teams' graduation affects **only** the in-run multi-agent coordination slice, and even there our STATE.md write-lock (`withStateMdLock`) + file-scope deconfliction **remain necessary** (Teams provides no automatic isolation). PSA-005's STATE.md write-lock spans **both** axes; PSA-006 (Discovery grep-discipline) is orthogonal.
 
 **Team Memory = deliberate divergence (not obsolescence).** This repo's memory persists git/host-local to `.orchestrator/metrics/learnings.jsonl` under a **public-repo-safe** trust model (three-tier local/private/public scope; public mechanically requires `anonymized=true` + `host_class`; owner-leakage is blocked in CI per #653). Native Team Memory (`CLAUDE_MEMORY_STORES`) is **server-synced, Anthropic-auth-only** — a **different trust boundary**, chosen so a public mirror can never leak operator-private context. Grep-verified: `CLAUDE_MEMORY_STORES` has **0 hits** in the repo (not wired — the divergence is **by design**, not an unaddressed gap). This is divergence, not native obsolescence: the verdict is "keep ours", and the reason is the trust boundary, not feature parity.
+
+## Upstream Reference and Delta-Sync Provenance
+
+> Folded here from `.claude/rules/loop-and-monitor.md` (#885, 2026-07-31) to keep that always-on coordinator rule at its load-bearing routing substance (LM-001 decision tree + LM-002..LM-008 core rules). This section holds the upstream version-gate detail, per-primitive constraint tables, and the Delta-Sync provenance footers that the rule cites but a coordinator does not need inline at every session. The rule links here; the verdicts above are the SSOT and this section is descriptive reference, not a competing decision surface.
+
+### Crosswalk — Anthropic's four loop archetypes
+
+Anthropic's "designing loops" framing describes four generic loop shapes. This table maps each to the repo primitive that implements it and its current deployment state (config-key-driven wherever a knob exists) — read it as a cross-check on LM-001's Decision Tree, not a replacement for it.
+
+| Article loop type | Repo primitive | Deployment state |
+|---|---|---|
+| **Turn-based loop** | wave-executor inter-wave loop + `/goal` (LM-008) | wave-executor always-on; `/goal` opt-in via `goal-integration.enabled` (Session Config) |
+| **Goal-based loop** | `/goal` (LM-008) | opt-in — `goal-integration.enabled` + `goal-integration.seams` (Session Config) |
+| **Time-based loop** | `/loop` (LM-003) + Routines / `/schedule` (LM-004 / LM-004a) | `/loop` — `.claude/loop.md` present at repo root; Routines — off by design, "teach it, don't run it" (see LM-004 posture) |
+| **Proactive / event loop** | Monitor (LM-002) + Channels (LM-002a) | Monitor — ad hoc, no persistent config; Channels — research preview, `--channels` opt-in per session |
+
+### Monitor (LM-002) — version gates & WebSocket source
+
+Monitor requires v2.1.98+ and is unavailable on Bedrock/Vertex/Foundry and when `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set — on those configs fall back to a bounded `/loop` poll (code.claude.com/docs/en/tools-reference#monitor-tool).
+
+**WebSocket source (v2.1.195+).** Monitor also accepts a `ws://`/`wss://` source directly. Each complete text message is one event; a binary message emits a placeholder event; a message larger than 1 MiB ends the watch. This needs no polling script and avoids the `grep --line-buffered` pitfall. Prefer it over a `command` source whenever the upstream already speaks WebSocket; keep `command` (tail/grep) when messages still need shell-side filtering before they're notification-worthy.
+
+### Channels (LM-002a) — constraints
+
+Channels (research preview, v2.1.80+). Constraints (cite https://code.claude.com/docs/en/channels):
+
+- **Auth:** claude.ai authentication or a Claude Console API key; unavailable on Bedrock, Google Cloud Agent Platform, or Microsoft Foundry.
+- **Per-session opt-in** via the `--channels` flag.
+- **Org-gated on Team/Enterprise** — the org owner must additionally turn on `channelsEnabled` (a master switch) before any member can use Channels; on Pro/Max without an org, Channels is directly available with no extra toggle.
+- **Research-preview status** — the contract may change; do not wire a load-bearing automation onto it without a Monitor/`/loop` fallback.
+
+### Workflows (LM-002b) — constraints
+
+Dynamic Workflows (`Workflow` tool, v2.1.154+; full doc at https://code.claude.com/docs/en/workflows). Constraints (cite https://code.claude.com/docs/en/workflows):
+
+- **Caps:** **16 concurrent** / **1000 total** agents per run — agent-count bounds, not stop-conditions.
+- **Kill-switch:** `disableWorkflows` (settings), `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (env), or the `/config` toggle.
+- **Provider availability:** runs on Bedrock/Vertex/Foundry as well as Anthropic-auth.
+- **Save location:** `.claude/workflows/` (project) or `~/.claude/workflows/` (user; project wins). **Monorepo nuance (v2.1.178+):** a project-level save writes to the NEXT already-existing `.claude/workflows/` directory found walking up from CWD toward repo root, falling back to the repo root only if none exists yet along that path. Project workflows load from every `.claude/workflows/` on that path; if two define the same name, the one closest to the working directory runs (and if a project and a personal workflow share a name, the project one wins). Verify the actual write target before assuming root-level placement in a monorepo.
+- **Creation/trigger:** ask Claude in natural language to create or run a Workflow; use the eligible human-origin literal `ultracode` (pre-v2.1.160 this keyword was `workflow`); select `/effort ultracode`; or launch with `claude --effort ultracode` (v2.1.203+). `/workflows` only lists and manages Workflow runs — it does not create one.
+- **Keyword scope (v2.1.210+).** The inline `ultracode` keyword only opts in from human-typed input — the interactive prompt, an IDE panel, a Remote Control client, or an Agent SDK call stamped `origin: { kind: "human" }`. It does NOT trigger from a `-p` prompt, an unstamped Agent SDK call, **a scheduled task prompt** (relevant to `.claude/loop.md` fires — LM-003), or a webhook payload / relayed PR comment. Before v2.1.210 it fired from all of those routes too — do not assume a scheduled `/loop` body containing the literal word "ultracode" spawns a Workflow on current versions (code.claude.com/docs/en/workflows § Where the keyword works).
+- **Dynamic workflow size (v2.1.202+):** a `/config` setting — `unrestricted` / `small` / `medium` / `large` — controls the agent count Claude targets when planning a run. Tune it down for a tighter/cheaper fan-out, up when the objective genuinely needs the full 16/1000 headroom.
+- **`args` global:** a workflow script receives its parameters via the structured-data global `args` — `undefined` when the workflow is invoked without any parameters passed.
+- **Usage view:** `/workflows` exposes a per-phase breakdown of agent counts and token totals, with per-run controls keyed `p` (pause/resume) / `x` (stop) / `r` (restart) / `s` (save); only the `f` status filter carries an explicit version gate (v2.1.186+) — use the view to see where a run spent its budget before re-tuning the script.
+- **Per-stage model routing:** the `agent()` call in a workflow script accepts `model`/`effort` options, so different stages of the same run can route to different models/effort levels rather than one model for the whole workflow.
+- **Resume (`resumeFromRunId`) is same-session only** — it cannot resume a run that was started in a different session.
+
+Since v2.1.202, workflow-spawned agents emit OTel attributes `workflow.run_id` + `workflow.name`, and since v2.1.203 the progress line surfaces an advisory `Large workflow` warning once a run exceeds 25 planned agents OR 1.5M projected tokens — but neither closes the #665 gap: there is still no `autopilot.jsonl`-equivalent telemetry sink, no ten kill-switches, and the warning is advisory/non-blocking, not a gate. The **Stay (with Adapter-fallback)** verdict and its full reasoning are in [§ Native-Overlap Refresh](#native-overlap-refresh--2026-06-20-665) above; do not swap wave-executor for a bare Workflow on the assumption the caps (or the OTel/warning signals) substitute for the kill-switches.
+
+### `/loop` (LM-003) — version gates, cadence table & caveats
+
+Scheduled tasks (the `/loop` and Cron family as a whole) need **v2.1.71+** — cite this as the base gate before any of the finer-grained version gates below (code.claude.com/docs/en/scheduled-tasks).
+
+`/proactive` was historically documented as a `/loop` alias — upstream no longer documents it as of this re-verify (2026-07-02); treat `/loop` as the sole canonical form. Dynamic mode self-paces via the `ScheduleWakeup` tool (1 min–1 h); the pending wakeup surfaces in `session_crons` in the Stop-hook input (code.claude.com/docs/en/tools-reference#schedulewakeup). Since v2.1.202, a self-paced `/loop` can cleanly end itself by calling `ScheduleWakeup` with `stop: true`, which cancels the pending wakeup immediately. If an iteration ends without either a reschedule or `stop: true`, Claude Code plans one fallback wakeup ~20 minutes later and then ends the loop (before v2.1.202, not rescheduling was the only self-termination path) (code.claude.com/docs/en/scheduled-tasks#stop-a-loop).
+
+**Scheduled-task prompt trust (v2.1.214).** When a scheduled task fires, its configured prompt becomes Claude's assigned task. That trust applies to task assignment only: it does not bypass the skill invocation controls below, and it does not make the prompt human-origin for Workflows' literal `ultracode` trigger (LM-002b).
+
+**Skill-Dispatch-Gate (v2.1.196+).** A scheduled fire only EXECUTES skills that Claude itself is permitted to invoke. References to built-in commands (`/permissions`, `/model`, `/clear`), skills declared `disable-model-invocation: true`, skills withheld via `skillOverrides` or a `Skill` deny rule, and MCP prompts remain plain text and do not invoke those commands or skills. Practical corollary: the `.claude/loop.md` body must only INSTRUCT the fire to invoke model-invokable skills — a reference to a built-in command or a non-invokable skill as something the run itself should execute silently no-ops. Recommending such a command to the **operator** ("consider running `/permissions`") is still fine — that is prose read by a human, not a dispatch attempted by the run (code.claude.com/docs/en/scheduled-tasks).
+
+**Cadence selection — pick by observation-rate; cache is secondary.** Choose the interval from *how fast the watched thing changes*, then sanity-check against the cache TTL. The runtime clamps a self-paced wakeup to **[60s, 3600s]** (code.claude.com/docs/en/scheduled-tasks; /docs/en/tools-reference#schedulewakeup).
+
+| Range | When (by observation-rate) |
+|---|---|
+| `60s` – `270s` | The watched thing is changing now or imminently — a build finishing, a PR actively churning, a state transition about to land. Catch it on the next tick. |
+| `300s` – `~1200s` | Steady-state polling where a few-minutes-stale read is fine — mid-session backlog snapshot, inter-wave re-check. |
+| `1200s` – `3600s` (20 – 60 min) | Idle ticks / maintenance loops — vault-staleness re-banner, branch-tending while waiting on review. Nothing is expected to change fast. |
+| `> 3600s` | Out of range — `/loop` clamps self-paced wakeups to ≤ 1 h, and the 7-day expiry is the ceiling, not the design point. Use `/schedule` or Routines. |
+
+**Cache TTL is a secondary factor, and no longer a `300s` cliff by default.** On a Claude subscription, Claude Code's **main conversation** — where a `/loop` body runs — requests the **1-hour** prompt-cache TTL automatically at no extra cost. Delays below 3600s remain inside that nominal TTL; **3600s exactly is the boundary and must not be assumed to produce a cache hit** (code.claude.com/docs/en/prompt-caching § Cache lifetime). Two carve-outs re-introduce the 5-minute TTL and with it the classic `300s` worst-of-both trap: **(1)** usage overage (drawing on usage credits drops the TTL to five minutes); **(2)** API-key / Bedrock / Vertex / Foundry / AWS auth (5 min unless `ENABLE_PROMPT_CACHING_1H=1`). `FORCE_PROMPT_CACHING_5M=1` forces 5 min regardless of auth. **Under a 5-minute TTL the old rule still holds:** stay under ~270s to keep the cache warm, avoid ~300s (you pay the miss without amortising it), or commit to 1200s+ so one miss buys a long wait. Upstream itself prescribes no cadence numbers — the breakpoints above are repo-internal best practice; the cache-driven ones bind only under a 5-minute-TTL config. (The automatic 1-hour TTL is main-conversation-only; dispatched subagents always use the 5-minute TTL — irrelevant to `/loop`, but do not carry this reasoning into subagent fan-out.)
+
+**Off-minutes hygiene.** Cron jitter penalises `:00` and `:30` for one-shots (fire up to 90 s early). For recurring jobs, prefer minutes other than 0/30: `3 9 * * *` not `0 9 * * *`. Honours the same fleet-spread argument as `CronCreate`'s built-in guidance.
+
+**Non-Anthropic providers (Bedrock/Vertex/Foundry).** Mirrors the Monitor unavailability noted above (LM-002): a prompt-only `/loop <prompt>` (no interval) runs on a fixed 10-minute schedule there instead of self-pacing via `ScheduleWakeup`; a **truly bare `/loop` (no prompt) just prints the usage message** — the maintenance prompt does not run and neither `.claude/loop.md` nor `~/.claude/loop.md` is read. Always pass an explicit interval on these providers — do not rely on the project loop body.
+
+### Routines (LM-004) & `/schedule` (LM-004a) — full constraints
+
+**Routines (research preview)** run in Anthropic's cloud, not on the local host — this requires a claude.ai account (Pro/Max/Team/Enterprise) and Claude Code on the web; Console-API-key-only setups cannot use them. Three trigger types: **(a) Scheduled** (cron-style, minimum 1h interval per run), **(b) API-trigger** via `/fire` with beta header `experimental-cc-routine-2026-04-01`, **(c) GitHub events** (`pull_request.*`, `release.*`). A **daily run cap** applies per ACCOUNT, not per Routine (one-off manual runs are exempt from the cap) (code.claude.com/docs/en/routines § Usage and limits). Routines push, by default, only to `claude/`-prefixed branches (branch-safety guard; per-repository overridable via **Allow unrestricted branch pushes**) and can be disabled org-wide via an org-level toggle. Repo posture is "teach it, don't run it" — ADR-0003 remains SUPERSEDED and #485 remains won't-do.
+
+**`/schedule`** is the CLI front-end to Routines (list/update/run scheduled cloud agents). It requires **CLI v2.1.81+** AND a claude.ai subscription login — it is invisible/disabled on Console-API-key auth, on Bedrock/Vertex/Foundry, or when any of these are set: `DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`. Subcommands: `/schedule list` · `/schedule update` · `/schedule run`.
+
+### `/goal` (LM-008) — aliases, restore & availability
+
+`/goal <condition>` (Claude Code v2.1.139+). See https://code.claude.com/docs/en/goal.
+
+- **`/goal` with no arguments is introspection**, not a new goal — it prints the current goal's turns-elapsed and token-spend against the goal's baseline. `/goal stop`, `/goal off`, `/goal reset`, `/goal none`, `/goal cancel`, and a bare `/clear` are all aliases that remove the active goal (same effect as `/goal clear`). Restore is not limited to `--resume` — `--continue` restores the goal too, and doing so RESETS the turn/timer/token baseline the evaluator measures against. 4000-char condition limit; one goal per session; works headless (`claude -p "/goal …"`).
+- **Availability constraints:** requires Claude Code v2.1.139+; one active goal per session; UNAVAILABLE when `disableAllHooks` or `allowManagedHooksOnly` is set (the mechanism is a managed Stop hook). `/goal` is also gated by workspace trust — an untrusted workspace makes `/goal` unavailable regardless of the flags above. Surfaces: CLI, the Desktop app, and Remote Control sessions all support `/goal` (not CLI-only). When unavailable, fall back to a bounded `/loop` body that re-runs the deterministic gate and reports.
+- **Pairing with Auto mode (unattended runs).** For an unattended `/goal` that must run each turn without per-tool approval prompts, pair it with Auto mode — Auto mode removes per-tool prompts, `/goal` removes per-turn prompts; they compose (https://code.claude.com/docs/en/goal).
+
+### Delta-Sync Provenance (loop-and-monitor.md re-verify footers)
+
+These footers migrated from `.claude/rules/loop-and-monitor.md` (#885). They are provenance — evidence that the LM-001..LM-008 routing rules are actively maintained against upstream Claude Code releases, not stale one-time claims.
+
+_Re-verified 2026-07-09 (Delta-Sync v2.1.197→v2.1.205: ScheduleWakeup stop:true, Workflows-OTel/Large-warning, workflow-size/effort-Flag, Channels-org-gate, /background-carryover; Routines-Seite re-verifiziert)._
+
+_Re-verified 2026-07-10 (Delta-Sync v2.1.205→v2.1.206: zero functional delta — 2.1.206 touches /cd, /doctor, /commit-push-pr, gateway-login, EnterWorktree, MCP/model/agents-view fixes only; no /loop, scheduled-tasks, ScheduleWakeup, /goal, Workflows, Monitor, or Channels change)._
+
+_Re-verified 2026-07-12 (Delta-Sync v2.1.206→v2.1.207: zero functional delta for the /loop family — 2.1.207 touches Auto-mode Bedrock/Vertex/Foundry opt-in default, terminal rendering, worktree config, agent-teams mailbox crash-loop, Remote-Control status sync, Deep-research chip labeling, Bedrock SSO refresh, plugin `${user_config.*}` shell-injection fix, `/usage-credits` validation only; no LM-001…LM-008 claim changed. Full doc re-verify surfaced 3 pre-existing gaps fixed this round: LM-003 Skill-Dispatch-Gate `Skill` deny rule, LM-002b monorepo-nuance load-order, LM-002b usage-view version-gate precision. Routines/`/schedule` not re-verified this round; last check 2026-07-09)._
+
+_Re-verified 2026-07-12 (LM-003 cadence re-derivation: Claude Code subscription main-conversation uses the 1-hour prompt-cache TTL automatically — code.claude.com/docs/en/prompt-caching; the 300s trap now bites only under 5-min-TTL configs (usage overage / API-key / FORCE_PROMPT_CACHING_5M). Cadence = f(observation-rate), cache secondary. Subagents always 5-min TTL)._
+
+_Re-verified 2026-07-16 (Delta-Sync v2.1.207→v2.1.211 via ref-MCP: 2 Deltas — LM-002b ultracode-keyword human-origin-only scope (v2.1.210, new bullet added); LM-004 Routines daily-cap corrected per-Routine→per-ACCOUNT + branch-push default framing (live-docs mismatch predating this window, drive-by fix). All other LM-001…LM-008 claims zero-delta incl. Monitor/WS, Channels, Workflows caps/kill-switches, ScheduleWakeup stop:true, Skill-Dispatch-Gate, 1h-TTL cadence, /goal clauses, /schedule gating)._
+
+_Re-verified 2026-07-17 (Delta-Sync v2.1.211→v2.1.212 via WebFetch full-doc sweep: **zero functional delta** for the /loop family — 2.1.212 touches /fork background-session transformation, WebSearch limits, and subagent spawning limits only. All LM-001…LM-008 areas re-verified MATCH incl. Monitor/WS, Channels org-gate, Workflows 16/1000-caps + ultracode human-origin scope, ScheduleWakeup [60s,3600s] + stop:true, Skill-Dispatch-Gate, 1h-TTL cadence + 5-min carve-outs, /goal clauses + availability gates, Routines per-account cap + claude/-branch guard. LM-004a note: the /schedule v2.1.81+ version gate is no longer restated in current docs — historical claim, kept unchanged)._
+
+_Re-verified 2026-07-18 (Delta-Sync v2.1.212→v2.1.214 via official release notes + scheduled-tasks/tools/goal/channels/workflows/prompt-caching docs: one relevant scheduled-task fix — a fired prompt becomes the assigned task — and **zero contract delta elsewhere**)._
+
+_Re-verified 2026-07-19 (Delta-Sync v2.1.214→v2.1.215 via changelog + scheduled-tasks/tools-reference/goal/workflows/channels/prompt-caching/routines docs: **zero functional delta** for the /loop family. 2.1.215's sole entry — `/verify` and `/code-review` no longer model-invoked — touches no LM contract. All LM-001…LM-008 re-verified MATCH incl. Monitor/WS (1-MiB end-watch + binary-placeholder, v2.1.195), ScheduleWakeup [60s,3600s]+stop:true+session_crons, /loop 50-task/25k-byte caps + Skill-Dispatch-Gate + fired-prompt-trust, Workflows 16/1000 + ultracode human-origin scope + size-guideline, /goal aliases + --resume/--continue restore, 1h-TTL cadence + 5-min carve-outs, Channels org-gate, Routines per-account cap + claude/-branch guard, /schedule gating. Non-delta: a keyword-filtered changelog read misattributed a "200" subagent cap to 2.1.214 that the verbatim list does not contain — it is the 2.1.212 WebSearch 200-cap; no edit made)._

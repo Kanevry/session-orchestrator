@@ -14,9 +14,10 @@
  *      Default OFF — exit 0 immediately unless explicitly enabled.
  *   4. Read `input.transcript_path` (whole-session JSONL of assistant/user records),
  *      scan the TAIL (last ~8 `type:"assistant"` records), concat text blocks.
- *   5. Regex-scan the concatenated text for 7 claim patterns — 6 quantifier-
- *      triggered distributional claims plus the #908 bare-cardinal repo-state
- *      fact ("14 commits", "92 learnings", "5 dirty files", "412 lines").
+ *   5. Regex-scan the concatenated text for 8 claim patterns — 6 quantifier-
+ *      triggered distributional claims, the #908 bare-cardinal repo-state
+ *      fact ("14 commits", "92 learnings", "5 dirty files", "412 lines"), and
+ *      the #918 numerator/denominator slash form ("12/14 files", "4/4 callers").
  *   6. For each match, check whether a fenced ```bash block containing a
  *      MEASUREMENT command (grep/rg/find/git/wc/jq/ls/node/npm) appears within
  *      ±5 lines. If a claim has NO adjacent measurement block → record a
@@ -95,8 +96,15 @@ const STATE = '(?:commits?|learnings?|issues?|branches?|lines?|entries|records?|
  * false positives (`tests`, `references`, `matches`, `agents`, `files` without
  * a state adjective) are excluded here and remain reachable through the six
  * quantifier-triggered patterns above, which have a lexical anchor.
+ *
+ * `callers` (#918): PSA-006's own canonical noun — the rule text's worked
+ * examples ("4 of 4 callers", "100% of callers opt-in") all count callers, yet
+ * the cardinal pattern could not see a bare "14 callers". Re-measured with it
+ * admitted: 490 real SubagentStop transcripts (2026-07-31), +0 additional
+ * firings from the bare form — the noun is free on this corpus (all +3 delta
+ * firings came from the #918 slash pattern below).
  */
-const CARDINAL_NOUN = '(?:commits?|learnings?|issues?|branches?|lines?|files?)';
+const CARDINAL_NOUN = '(?:commits?|learnings?|issues?|branches?|lines?|files?|callers?)';
 
 /**
  * Wide noun class = code-distribution nouns ∪ repo-state nouns. Used by the six
@@ -160,6 +168,47 @@ const CARDINAL_STOPWORDS =
   'of|in|on|at|for|to|the|a|an|and|or|is|are|was|were|from|with|by|that|than|per|out|over|into|onto|via|but|as';
 const CARDINAL_GAP = `(?:\\s+(?!(?:${CARDINAL_STOPWORDS})\\b)[A-Za-z][\\w-]*){0,2}`;
 const CARDINAL_PATTERN = new RegExp(`${CARDINAL_TRIGGER}${CARDINAL_GAP}\\s+${CARDINAL_NOUN}\\b`, 'i');
+
+/**
+ * Pattern 8 (#918) — the PSA-006 CANONICAL numerator/denominator slash form:
+ * "12/14 files", "4/4 callers". PSA-006 literally demands "Quote the numerator
+ * AND denominator", and `N/M` is the notation that demand produces — yet the
+ * cardinal trigger's lookahead `(?![\d.%:/-])` excludes the slash, making the
+ * rule's own canon form structurally invisible (#918).
+ *
+ * Admitting the slash re-opens the `12615/0/11` gate-summary class the
+ * lookahead exists to suppress, so the slash form gets its OWN pattern with a
+ * STRICTER contract than the bare cardinal:
+ *
+ *   1. RATIO: exactly two slash-joined numbers. Both boundary guards stay:
+ *      the lookbehind rejects a numerator glued to a path/id (`hooks/12/14`),
+ *      the lookahead after the DENOMINATOR rejects a third slash-segment —
+ *      `12615/0/11` fails twice over (denominator `0` is followed by `/`, and
+ *      the trailing pair `0/11` has a `/`-glued numerator).
+ *   2. NOUN IMMEDIATELY AFTER — no CARDINAL_GAP. The noun-after-denominator is
+ *      the discriminator that separates a measured ratio ("12/14 files") from
+ *      a bare slash pair that is a date or score ("on 12/14 we shipped",
+ *      "rated 3/5 overall"): those are followed by anything BUT an artefact
+ *      noun. Widening to the gapped form would admit US-date + adjective +
+ *      noun collisions with no PSA-006 payoff.
+ *
+ * FP re-measured on the CORRECT text sort (#918 requirement — the prior 1.07
+ * rate was measured on coordinator narration, not on what this hook reads):
+ * 490 real SubagentStop subagent transcripts (`~/.claude/projects/<slug>/<session>/
+ * subagents/*.jsonl`), spawning THIS hook per transcript, 2026-07-31.
+ * Baseline (pre-#918): 345 firings / 0.7041 per stop. With slash form +
+ * `callers` admitted: 348 / 0.7102 — +3 firings, of which 1 is a true positive
+ * ("0/49 Learnings mit Allow-List-Typ", an unverified canon-form claim), 1
+ * quotes the #918 example sentence itself (mention-not-use), and 1 is a
+ * before/after line-count pair ("858/857 lines", class-consistent with the
+ * bare "412 lines" behaviour of pattern 7).
+ *
+ * Bounded quantifiers only ({1,9}) — linear-time, ReDoS-safe.
+ */
+const CARDINAL_RATIO_PATTERN = new RegExp(
+  `(?<![\\w#$:/.-])\\d{1,9}/\\d{1,9}(?![\\d.%:/-])\\s+${CARDINAL_NOUN}\\b`,
+  'i'
+);
 
 /** Inline-code spans are masked before the cardinal pattern runs. */
 const INLINE_CODE_RE = /`[^`\n]*`/g;
@@ -403,7 +452,8 @@ function findViolations(text) {
     const line = lines[i];
     let matched = CLAIM_PATTERNS.some((re) => re.test(line));
     if (!matched && !fencedLines.has(i)) {
-      matched = CARDINAL_PATTERN.test(line.replace(INLINE_CODE_RE, ' '));
+      const masked = line.replace(INLINE_CODE_RE, ' ');
+      matched = CARDINAL_PATTERN.test(masked) || CARDINAL_RATIO_PATTERN.test(masked);
     }
     if (!matched) continue;
 

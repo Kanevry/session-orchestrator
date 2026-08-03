@@ -69,9 +69,68 @@ if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
  */
 const DEFAULT_ACK_PATH = '.orchestrator/runtime/templates-acknowledged.json';
 
+/**
+ * Ceiling (in characters) for the raw bash command echoed into the deny reason.
+ *
+ * ## Why this file needs its own bound at all (#919, follow-up to #906)
+ *
+ * `command` is the ONE attacker/agent-controlled term in the reason — every
+ * other line is fixed text or a repo-derived path list. Echoing it unbounded
+ * made this hook the shortest path to the failure mode #906 was repaired for:
+ * a reason large enough to push the stdout envelope past the 65 536-byte kernel
+ * pipe buffer, where a truncated envelope reads as "no decision" and the tool
+ * call is ALLOWED. `emitDeny`'s {@link DENY_REASON_MAX} clamp (16 000) now
+ * stands in that path, but a consumer that respects the bound itself is the
+ * more robust shape — defence in depth, not reliance on the single downstream
+ * clamp.
+ *
+ * The clamp alone is also NOT sufficient here, which is the concrete bug this
+ * constant fixes rather than merely hardens against. `Command:` is line 2 of 6;
+ * the template-path list and the `/templates-ack` hint are lines 3-6. A
+ * 200 000-char command therefore consumed the entire 16 000-char budget and cut
+ * the remedy off the end — the deny still bit, but PRD § 3 Gherkin Pattern 3's
+ * required content never reached the reader.
+ *
+ * ## Why 512 and not the 80 used at the two stderr sites below
+ *
+ * This file already truncates `command` twice (bypass-matched and
+ * no-templates-found), both at `slice(0, 80)`. Those are one-line **stderr log**
+ * lines, where 80 is the terminal-width convention — a different consumer class.
+ * The repo's precedent for bounding a bash command inside a **structured record
+ * field** is `hooks/pre-bash-staging-fence.mjs` (`staged_paths[].command`,
+ * `slice(0, 512)`), and `permissionDecisionReason` is exactly that: a structured
+ * field, not a log line. Reusing 512 follows the matching house convention
+ * instead of inventing a third number. Reusing 80 would clip a realistic
+ * `gh pr create --title … --body …` mid-flag, defeating the recognisability the
+ * line exists to provide.
+ *
+ * Bound check: the fixed part of this reason measures 348 chars (see the
+ * call-site table in `scripts/lib/io.mjs`), so the worst case is 348 + 512 +
+ * the path list — ~19× below `DENY_REASON_MAX` and ~76× below the pipe buffer.
+ * This hook no longer contributes an unbounded term to the envelope at all.
+ */
+const COMMAND_ECHO_MAX = 512;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Clip the echoed command to {@link COMMAND_ECHO_MAX}, marking the cut so the
+ * reader can tell the command was truncated rather than ending there.
+ *
+ * The marker is budgeted INSIDE the ceiling — mirroring `_clampReason` in
+ * `scripts/lib/io.mjs` — so the returned string never exceeds it and the
+ * worst-case reason length stays a fixed, auditable number.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function clipCommand(command) {
+  if (command.length <= COMMAND_ECHO_MAX) return command;
+  const marker = `… [truncated: showing ${COMMAND_ECHO_MAX} of ${command.length} characters]`;
+  return command.slice(0, COMMAND_ECHO_MAX - marker.length) + marker;
+}
 
 /**
  * Block the create command: emit the PreToolUse deny envelope via emitDeny
@@ -90,6 +149,12 @@ const DEFAULT_ACK_PATH = '.orchestrator/runtime/templates-acknowledged.json';
  * to read the template or run `/templates-ack`. The operator sees the first
  * line via the derived `systemMessage` headline.
  *
+ * The echoed `command` is bounded by {@link COMMAND_ECHO_MAX} before it enters
+ * the reason: it is the only agent-controlled term here, and left unbounded it
+ * both risked the pipe-buffer fail-open #906 repaired AND pushed the template
+ * list plus the ack hint past `emitDeny`'s clamp — i.e. truncated away exactly
+ * the content the PRD requires. See that constant for the full rationale.
+ *
  * @param {{ host: string, command: string, templatePaths: string[],
  *           ackFile: string }} ctx
  * @returns {never}
@@ -101,7 +166,7 @@ function blockCreate(ctx) {
     : '  (none configured)';
   const reason = [
     `pre-bash-templates-first: ${host} create call detected without prior template Read.`,
-    `Command: ${command}`,
+    `Command: ${clipCommand(command)}`,
     `Found templates:`,
     pathList,
     `Read one of these first, OR run \`/templates-ack\` (writes ${ackFile}) to bypass for this session.`,
