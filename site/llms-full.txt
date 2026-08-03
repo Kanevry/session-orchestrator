@@ -1,0 +1,57 @@
+# session-orchestrator (full description for LLMs)
+
+Loop engineering for AI coding agents: a session-orchestration plugin that turns ad-hoc agent sessions into a repeatable research, plan, wave-execute, close loop with verification gates. It is a workflow layer that runs on top of the coding agent you already have (Claude Code, Codex CLI, Cursor IDE, or Pi), not a replacement for it. Independent and community-maintained; not affiliated with or endorsed by Anthropic, OpenAI, or Cursor. MIT license, local by default, no account required, telemetry strictly opt-in.
+
+Version 3.18.0 · npm package: session-orchestrator · requires Node.js >= 24 · https://session-orchestrator.com
+
+## The loop
+
+- /session [housekeeping|feature|deep] - research and Q&A: inspects git state, open issues, CI status, prior-session records, then presents one structured summary with a recommendation. Scope is agreed with the operator before any code.
+- /go - executes the agreed scope in five typed waves (Discovery, Impl-Core, Impl-Polish, Quality, Finalization) with parallel sub-agents and a quality gate (typecheck, test, lint) between waves.
+- /close - verifies every planned item against evidence, runs the full gate one last time, files carryover issues for unfinished work, commits cleanly, mirrors to GitHub when configured, writes session records and learnings.
+
+## Why waves and parallel sub-agents
+
+Containment, not raw speed: (a) file-scope deconfliction by construction - two agents in the same wave never write the same file; (b) context isolation per agent - one agent's confusion cannot leak into another's context window; (c) inter-wave review stops a bad pattern from propagating into later work; (d) the Quality wave runs a simplification pass on AI-generated code before tests are written, otherwise tests pin the AI patterns into place.
+
+## Guardrails (mechanisms, not assertions)
+
+- Destructive-command guard: 14 rules blocking git reset/checkout-discard/clean/stash, rm -rf, force-push, SQL DROP (hooks/pre-bash-destructive-guard.mjs, policy in .orchestrator/policy/blocked-commands.json)
+- Scope enforcement: PreToolUse hook blocks writes outside an agent's declared file scope (hooks/enforce-scope.mjs)
+- Verification Iron Law: no completion claims without fresh verification evidence (.claude/rules/verification-before-completion.md)
+- Full Gate: typecheck + tests + lint + debug-artifact scan, mechanically un-skippable at the Quality wave and session end
+- Session lock with heartbeat liveness per repo working copy (scripts/lib/session-lock.mjs)
+- Sub-agents may never run git add/commit/stash/push; the coordinator owns all VCS operations (PSA-007)
+- 10 autopilot kill-switches in a frozen enum; echo-stub detection catches a test command that is secretly a no-op
+- Honest platform note: hard enforcement is full on Claude Code; Cursor is post-hoc; Pi is bridged; Codex CLI scope enforcement is currently unavailable. Quality gates run fully on all four.
+
+## Memory and self-improvement
+
+Nothing is learned silently. Sessions append plain-text JSONL records (sessions, learnings with confidence scores and expiry). /evolve extracts patterns after 5+ sessions; a reconcile engine turns eligible learnings into PROPOSED rules that the operator approves one by one - it structurally cannot emit always-on rules. Failed approaches are recorded as "What Not To Retry" and force-read at the next session start.
+
+## Cross-repo (single operator, many repos)
+
+/portfolio aggregates issues/MRs/CI health across all registered repos; /dispatcher ranks free repos by backlog, staleness and readiness, then claims a lease atomically before launching; a vault live-status board shows in-progress/force-closed sessions across every repo on the host. GitLab and GitHub are both first-class (auto-detected; glab and gh drive the full issue/MR lifecycle).
+
+## Eval standard
+
+aiat-llm-eval v1: an open standard for honest LLM session evaluation. Pre-registered rubric, deterministic checks before any LLM judge, three-state verdicts with explicit abstention (cannot-determine instead of fake zeros), no global score (the validator rejects overall/total/mean fields), no superlatives in conforming reports, reproducibility as an executable proof (--verify). A session scoring itself is labelled a self-evaluation. Spec: docs/eval/aiat-llm-eval-v1.md in the repository.
+
+## Numbers (measured 2026-08-03 at HEAD d2de3ca)
+
+Version 3.18.0 · 46 skills · 25 commands · 15 typed sub-agents · 24 hook files (23 plugin-wired, 10 event types) · 14 destructive-command rules · 12,000+ tests (README badge; 556 test files) · 210 sessions and 95 learnings recorded in the plugin's own repository.
+
+## Install
+
+- Claude Code: /plugin marketplace add Kanevry/session-orchestrator then /plugin install session-orchestrator@kanevry - afterwards run npm install once inside the plugin directory (hooks import zx) and restart Claude Code.
+- Codex CLI: git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs
+- Cursor IDE: same clone, then node scripts/cursor-install.mjs /path/to/your/project
+- Pi: pi install npm:session-orchestrator
+
+Minimum config: a "## Session Config" section in CLAUDE.md (or AGENTS.md on Codex CLI) declaring test-command, typecheck-command, lint-command, agents-per-wave, waves, persistence, enforcement. Everything else is opt-in.
+
+## Links
+
+- Source, docs, issues: https://github.com/Kanevry/session-orchestrator
+- npm: https://www.npmjs.com/package/session-orchestrator
+- Methodology courses (optional, not required to use the plugin): https://agenticbuilders.at

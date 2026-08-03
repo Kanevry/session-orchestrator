@@ -1,0 +1,18 @@
+# session-orchestrator
+
+> Loop engineering for AI coding agents. Turn ad-hoc sessions into a repeatable research, plan, wave-execute, close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi. MIT-licensed, local by default, no account.
+
+Version: 3.18.0 · npm: session-orchestrator · requires Node.js >= 24
+
+## Install
+
+- Claude Code: `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (afterwards run `npm install` once inside the plugin directory and restart Claude Code)
+- Codex CLI: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs`
+- Cursor IDE: same clone, then `node scripts/cursor-install.mjs /path/to/your/project`
+- Pi: `pi install npm:session-orchestrator`
+
+## Links
+
+- Source, docs, issues: https://github.com/Kanevry/session-orchestrator
+- Eval standard (aiat-llm-eval v1): https://github.com/Kanevry/session-orchestrator/blob/main/docs/eval/aiat-llm-eval-v1.md
+- Full description for LLMs: https://session-orchestrator.com/llms-full.txt

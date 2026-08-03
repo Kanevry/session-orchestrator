@@ -1,0 +1,4 @@
+User-Agent: *
+Allow: /
+
+Sitemap: https://session-orchestrator.com/sitemap.xml
