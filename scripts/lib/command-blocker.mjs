@@ -175,6 +175,18 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
     const end = matchShellWhitespaceExpansion(command, i);
     if (end !== -1) { out += ' '; i = end; continue; }
     if (ch === '\\' && i + 1 < command.length) {
+      // Line continuation (#981): bash JOINS the two lines, so the pair must
+      // disappear here too — not only in the lexer. commandMatchesBlocked's
+      // fast path tests this normalized string and bails out before any
+      // tokenization; its invariant ("if the regex cannot match the raw string,
+      // no tokenization can produce a match") is FALSE while a continuation is
+      // still present, because eliding it JOINS text that the regex then spans.
+      // Measured: `git push \<LF>--force origin main` never reached the lexer —
+      // the fast path returned false and the force-push was ALLOWED.
+      // Only the unquoted state elides: inside single quotes bash keeps the
+      // backslash-newline literal, and the double-quoted case is left exactly
+      // as it was (scope discipline — no verdict there depends on it).
+      if (command[i + 1] === '\n') { i += 2; continue; }
       out += ch + command[i + 1];
       i += 2;
       continue;
@@ -278,7 +290,12 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *   - ANSI-C quotes `$'…'`: like single quotes but `\` escapes the next char, so
  *     `$'a\'b'` is ONE token `a'b` (#965). Whitespace-only bodies (`$'\t'`) never
  *     reach here — normalizeShellWhitespaceExpansions folded them to a space first.
- *   - Outside quotes: backslash escapes the next char (incl. whitespace → same token).
+ *   - Outside quotes: backslash escapes the next char (incl. whitespace → same token),
+ *     EXCEPT before a newline: that is a line continuation and both characters
+ *     are removed, exactly as bash joins the lines (#981 — see the branch).
+ *   - An unquoted newline that is neither continued nor part of a here-doc body
+ *     is a command SEPARATOR and emits `{ text: ';', quoted: false,
+ *     operator: 'newline' }` (#981). See the branch for why the text is `;`.
  *   - A token that mixes quoted + unquoted runs (e.g. foo"bar") is `quoted: true`
  *     because part of it came from a quoted run — conservative for the guard.
  *   - Redirect operators (#983) are emitted as standalone tokens carrying a
@@ -447,9 +464,41 @@ export function tokenizeCommand(command) {
     }
 
     if (ch === '\\' && i + 1 < command.length) {
+      // Backslash-NEWLINE is a LINE CONTINUATION, not an escape (#981). bash
+      // joins the lines and BOTH characters vanish before word splitting, so
+      // this branch must leave no trace: no text, and `started` untouched (a
+      // trailing continuation must not flush a phantom empty token).
+      //
+      // Pre-#981 the newline was appended as literal text and the guard saw a
+      // phantom `"\n"` token. Measured consequences, both wrong in a different
+      // direction: `rm -rf \<LF> /tmp/ok` (argv `rm -rf /tmp/ok`, allowlisted)
+      // was DENIED because `"\n"` read as a second, non-allowlisted target; and
+      // `git push \<LF>--force` was ALLOWED because `"\n--force"` is not the
+      // `--force` flag any rule looks for. Eliding converges the token stream
+      // on bash's argv, which is the only defensible reference.
+      if (command[i + 1] === '\n') { i++; continue; }
       text += command[i + 1]; started = true; i++;
       continue;
     }
+
+    // A REAL (non-continued) newline is a command separator, exactly like `;`
+    // in the POSIX grammar (#981). MUST stay below the pending-here-doc branch
+    // above: a newline that opens or ends a here-doc body is consumed there and
+    // never reaches this point, so a body line can never become a separator.
+    //
+    // Token shape: `text: ';'` is the canonical spelling of its separator class
+    // — every text-keyed consumer (splitSegments here, the ledger guard,
+    // scope-gate's SHELL_SEPARATOR_OPS) then classifies it correctly without a
+    // per-consumer edit, which a `text: '\n'` would silently NOT do (it would
+    // land in scope-gate's word stream and could displace a `sed -i` file
+    // argument). `operator: 'newline'` keeps the origin distinguishable for
+    // consumers that care, mirroring how `redirect` marks redirect tokens.
+    if (ch === '\n') {
+      flush();
+      tokens.push({ text: ';', quoted: false, operator: 'newline' });
+      continue;
+    }
+
     if (/\s/.test(ch)) { flush(); continue; }
 
     // Inside `$(( … ))` / `(( … ))` every `<` / `>` is a shift or comparison
@@ -568,8 +617,15 @@ export function tokenizeCommand(command) {
 
 /**
  * Split a tokenized command into chained segments on shell control operators
- * (`;`, `&&`, `||`, `|`, `&`). Only UNQUOTED single-token operators split; an
- * operator that arrived inside quotes stays part of its segment.
+ * (`;`, `&&`, `||`, `|`, `&`) and on newline separators (#981). Only UNQUOTED
+ * single-token operators split; an operator that arrived inside quotes stays
+ * part of its segment.
+ *
+ * The newline separator is checked by its `operator` field as well as its text,
+ * so the split survives a future change to that token's spelling. Because a
+ * separator token is CONSUMED here, it can never reach a per-segment operand
+ * loop — `parseRmTargets` in hooks/pre-bash-destructive-guard.mjs iterates
+ * segments, so it never sees a newline token and needed no change for #981.
  *
  * Exported as `splitChainSegments` (see the alias export below):
  * hooks/pre-bash-destructive-guard.mjs consumes it for wrapper-aware rm
@@ -584,7 +640,7 @@ function splitSegments(tokens) {
   let current = [];
   const operators = new Set([';', '&&', '||', '|', '&']);
   for (const tok of tokens) {
-    if (!tok.quoted && operators.has(tok.text)) {
+    if (!tok.quoted && (tok.operator === 'newline' || operators.has(tok.text))) {
       segments.push(current);
       current = [];
       continue;

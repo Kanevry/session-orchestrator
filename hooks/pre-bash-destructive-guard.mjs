@@ -39,33 +39,95 @@
  * finalized; a telemetry failure never changes the guard's decision.
  */
 
-import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
-// Single direct import from the source module (W4 B6): the hardening.mjs
-// barrel re-exports tokenizeCommand/commandMatchesBlocked from this very
-// module (same instance either way) but deliberately does NOT re-export the
-// #982/#983 primitives — one import path keeps the hook's dependency edge
-// unambiguous. The barrel itself is unchanged.
-import {
-  tokenizeCommand,
-  commandMatchesBlocked,
-  extractRedirectTargets,
-  redirectRuleMatches,
-  resolveSegmentVerb,
-  splitChainSegments,
-} from '../scripts/lib/command-blocker.mjs';
-import { readConfigFile } from '../scripts/lib/config.mjs';
-import { loadEffectivePolicy } from '../scripts/lib/blocked-commands-policy.mjs';
-import { isSessionConfigHeading } from '../scripts/lib/config/section-extractor.mjs';
-import { emitEvent } from '../scripts/lib/events.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+
+// ---------------------------------------------------------------------------
+// #992 — late-bound repo dependencies
+//
+// These used to be STATIC imports. A SyntaxError in any of them failed at ESM
+// LINK time, before the first statement here ran: node exited 1 with 0 bytes on
+// stdout, and the `main().catch(...)` handler at the bottom of this file was
+// structurally unreachable. Under the exit-0 PreToolUse protocol (#906) that
+// crash is, on the only decision-bearing channel, INDISTINGUISHABLE from an
+// explicit `emitAllow()` — the guard failed open and silently.
+//
+// Binding them late (dynamic `import()` inside `bootstrap()`, below) turns that
+// link-time crash into a catchable runtime error, which is what makes the
+// banner + HEAD-fallback in `_lib/guard-source-loader.mjs` reachable at all.
+// The rest of this file is unchanged: same names, same call sites.
+//
+// `profile-gate.mjs` stays static on purpose — it has ZERO imports of its own
+// and gates whether this hook runs at all.
+// ---------------------------------------------------------------------------
+/** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
+/** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+let resolveProjectDir;
+let resolvePluginRoot;
+// From command-blocker.mjs (W4 B6: one direct import path, not via the
+// hardening.mjs barrel, which does not re-export the #982/#983 primitives).
+let tokenizeCommand;
+let commandMatchesBlocked;
+let extractRedirectTargets;
+let redirectRuleMatches;
+let resolveSegmentVerb;
+let splitChainSegments;
+let readConfigFile;
+let loadEffectivePolicy;
+let isSessionConfigHeading;
+let emitEvent;
+
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/**
+ * Project dir for banner keying, resolved WITHOUT `platform.mjs` — that module
+ * is one of the ones that may have failed to load.
+ *
+ * @returns {string}
+ */
+function bannerProjectDir() {
+  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * Bind every repo dependency. Throws on any load failure; the caller banners.
+ *
+ * Order matters only for cost: the cheap plain imports run first, so a broken
+ * `io.mjs` never pays for a pointless `git show` on `command-blocker.mjs`.
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrap() {
+  ({ readStdin, emitAllow, emitDeny } = await import('../scripts/lib/io.mjs'));
+  ({ resolveProjectDir, resolvePluginRoot } = await import('../scripts/lib/platform.mjs'));
+  ({ readConfigFile } = await import('../scripts/lib/config.mjs'));
+  ({ loadEffectivePolicy } = await import('../scripts/lib/blocked-commands-policy.mjs'));
+  ({ isSessionConfigHeading } = await import('../scripts/lib/config/section-extractor.mjs'));
+  ({ emitEvent } = await import('../scripts/lib/events.mjs'));
+
+  const { loadCommandBlocker } = await import('./_lib/guard-source-loader.mjs');
+  const { module: blocker } = await loadCommandBlocker({
+    specifier: pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-blocker.mjs')).href,
+    repoRoot: PLUGIN_ROOT,
+    projectDir: bannerProjectDir(),
+  });
+  ({
+    tokenizeCommand,
+    commandMatchesBlocked,
+    extractRedirectTargets,
+    redirectRuleMatches,
+    resolveSegmentVerb,
+    splitChainSegments,
+  } = blocker);
+}
 
 // Module-level per-path policy cache (issue #250, extended for the #972
 // floor/overlay merge: one Map entry per policy path instead of a single-path
@@ -766,6 +828,38 @@ async function main() {
 
   // G6 — no blocking match
   return emitAllow();
+}
+
+// ---------------------------------------------------------------------------
+// Entry point (#992)
+//
+// TWO distinct failure classes, two distinct banners — do not merge them:
+//
+//   1. LOAD failure (`bootstrap()` throws): the guard never armed. Nothing was
+//      evaluated, so the fail-open is total. This used to be a bare exit-1
+//      crash with 0 bytes of stdout — indistinguishable from an allow, and
+//      therefore invisible. Now it exits 0 (still fail-open, so a broken module
+//      cannot brick the session) but SAYS SO, loudly, once per session.
+//   2. RUNTIME failure inside `main()`: pre-existing behaviour, unchanged.
+//      The guard armed and then tripped over a specific command; that is a
+//      narrower blast radius and keeps its historical `internal error` line.
+// ---------------------------------------------------------------------------
+try {
+  await bootstrap();
+} catch (loadError) {
+  try {
+    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+    emitGuardInactiveBanner({ projectDir: bannerProjectDir(), error: loadError });
+  } catch {
+    // Last resort: even the banner helper failed to load. Emit unconditionally
+    // (no once-per-session keying) — repeated noise beats a silent disarm.
+    process.stderr.write(
+      '🚨 pre-bash-destructive-guard: GUARD INACTIVE — module load failed ' +
+        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+        'Destructive Bash commands are NOT being blocked. See issue #992.\n'
+    );
+  }
+  process.exit(0); // fail-open, but no longer fail-silent
 }
 
 // Top-level error handler — never let exit 1 leak

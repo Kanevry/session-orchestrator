@@ -147,9 +147,9 @@ const FIXTURE_POLICY = {
 /**
  * Spawn the hook, pipe stdin JSON, collect stdout/stderr, resolve with exit code.
  */
-async function runHook({ projectDir, stdin, env = {} }) {
+async function runHook({ projectDir, stdin, env = {}, execArgv = [] }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK], {
+    const child = spawn(process.execPath, [...execArgv, HOOK], {
       cwd: projectDir,
       env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir, CLAUDE_PLUGIN_ROOT: projectDir, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -356,14 +356,17 @@ describe('severity block — git reset --hard', { timeout: 15000 }, () => {
     ]);
 
     // The operator half: a short, visible headline derived from line 1.
-    const out = JSON.parse(result.stdout);
-    expect(out.systemMessage).toBe(
+    // Read through the helper's return value rather than re-parsing stdout — a
+    // second `JSON.parse(result.stdout)` here was an inline restatement of the
+    // envelope contract (ban B4), and it duplicated the exclusivity check
+    // `expectDeny` already makes: its `Object.keys(obj).sort()` assertion pins
+    // the key set to exactly ['hookSpecificOutput','systemMessage'], which is
+    // strictly stronger than the two `toBeUndefined()` probes for the
+    // deprecated flat `{permissionDecision, reason}` form that stood here.
+    const headline = expectDeny(result).systemMessage;
+    expect(headline).toBe(
       "⛔ Destructive command blocked: 'git reset --hard' (rule: git-reset-hard)",
     );
-
-    // The deprecated flat form must not come back alongside the envelope.
-    expect(out.permissionDecision).toBeUndefined();
-    expect(out.reason).toBeUndefined();
   });
 });
 
@@ -939,8 +942,9 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
   ])('denies `%s`', async (_label, command, targetSubstring) => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    const envelope = expectDeny(result, 'redirect-truncate-protected');
-    expect(envelope.hookSpecificOutput.permissionDecisionReason).toContain(targetSubstring);
+    const reason = expectDeny(result, 'redirect-truncate-protected').hookSpecificOutput
+      .permissionDecisionReason;
+    expect(reason).toContain(targetSubstring);
   });
 
   // Plain allows — non-denylisted target, append mode, and the #983 interim
@@ -974,8 +978,9 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
   it('denies an ABSOLUTE spelling of a protected artefact and names it', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(`echo x > ${dir}/CLAUDE.md`) });
-    const envelope = expectDeny(result, 'redirect-truncate-protected');
-    expect(envelope.hookSpecificOutput.permissionDecisionReason).toContain(`${dir}/CLAUDE.md`);
+    const reason = expectDeny(result, 'redirect-truncate-protected').hookSpecificOutput
+      .permissionDecisionReason;
+    expect(reason).toContain(`${dir}/CLAUDE.md`);
   });
 
   it('denies a `~` spelling of a protected artefact', async () => {
@@ -1325,5 +1330,141 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
       env: { CLAUDE_PROJECT_DIR: unwritablePath('destructive-guard-events') },
     });
     expectDeny(result, 'git-reset-hard');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #992 — module-load failure must be VISIBLE, and must not disarm the guard
+//
+// The measured defect at 8cdb434: a SyntaxError in scripts/lib/command-blocker.mjs
+// failed at ESM LINK time, so the hook's own main().catch() never ran. Node exited
+// 1 with **0 bytes on stdout**. Under the exit-0 PreToolUse protocol (#906) the
+// exit code carries no decision — a deny is exit 0 + one hookSpecificOutput line,
+// an allow is exit 0 + empty stdout — so on the only decision-bearing channel the
+// crash was INDISTINGUISHABLE from an explicit emitAllow(). `rm -rf /` ran through.
+// One broken command-blocker.mjs disarmed 4 of the 7 deny-capable hooks at once.
+//
+// The break is injected with a module.register() loader over a data: URL rather
+// than by damaging the real file: nothing is written to disk, and the hook still
+// takes its REAL import path (an env-var pointing at a broken tmp fixture would
+// test the fixture, not the import).
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `--import` bootstrap data: URL that installs a loader corrupting
+ * command-blocker.mjs (and, optionally, every data:-URL module — which is how
+ * the HEAD fallback itself is broken, since that fallback imports the committed
+ * source through a data: URL).
+ */
+function brokenBlockerBoot({ alsoBreakHeadFallback = false } = {}) {
+  const loader = `
+export async function load(url, context, next) {
+  if (url.endsWith('command-blocker.mjs')) {
+    return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
+  }
+  ${
+    alsoBreakHeadFallback
+      ? `if (url.startsWith('data:text/javascript')) {
+    return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
+  }`
+      : ''
+  }
+  return next(url, context);
+}`;
+  const loaderUrl = `data:text/javascript;base64,${Buffer.from(loader, 'utf8').toString('base64')}`;
+  const boot = `import { register } from 'node:module';\nregister(${JSON.stringify(loaderUrl)});\n`;
+  return ['--import', `data:text/javascript;base64,${Buffer.from(boot, 'utf8').toString('base64')}`];
+}
+
+describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 }, () => {
+  it('still DENIES a destructive command when the working-tree command-blocker.mjs is broken', async () => {
+    // Bug this catches: at 8cdb434 this exact spawn produced EXIT=1 / stdout 0 bytes
+    // / decision NONE — `rm -rf /` waved through by a crashed guard.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+    expectDeny(result, 'rm-rf-destructive');
+  });
+
+  it('banners the HEAD fallback on stderr, naming the consequence — never silently', async () => {
+    // Bug this catches: a fallback that fires silently trades a visible hole for
+    // an invisible semantic drift (guard evaluating HEAD, operator believing it
+    // evaluates the working tree).
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+    expect(result.stderr).toContain('DEGRADED');
+    expect(result.stderr).toContain('running against HEAD, not your working tree');
+    expect(result.stderr).toContain('command-blocker.mjs');
+    // The banner is stderr-only: stdout carries the decision envelope and nothing
+    // else, or the #906 contract breaks for every call.
+    expect(result.stdout.split('\n').filter((l) => l.trim()).length).toBe(1);
+  });
+
+  it('banners GUARD INACTIVE — and does not crash — when the HEAD fallback is ALSO broken', async () => {
+    // Bug this catches: the total-failure path used to exit 1 with no stdout and
+    // only a SyntaxError stack — which wave agents read as a harness crash rather
+    // than a disarmed guard, and started routing around.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot({ alsoBreakHeadFallback: true }),
+    });
+    // exit 0 + empty stdout: still fail-open (a broken module must not brick the
+    // session) but no longer a crash — and no longer silent, per the stderr below.
+    expectAllow(result);
+    expect(result.stderr).toContain('GUARD INACTIVE');
+    expect(result.stderr).toContain('are NOT being blocked');
+  });
+
+  it('emits the degradation banner ONCE per session, not once per tool call', async () => {
+    // Bug this catches: a per-call banner floods the transcript, and an operator
+    // who learns to ignore the line is back at the invisible-outage failure mode.
+    const dir = await mkProjectTracked();
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({ session_id: `guard-992-${path.basename(dir)}` })
+    );
+
+    const first = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+    const second = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+
+    // Both calls still decide correctly — the once-per-session throttle governs
+    // the BANNER only, never the enforcement.
+    expectDeny(first, 'rm-rf-destructive');
+    expectDeny(second, 'rm-rf-destructive');
+
+    // Discriminating pair: the first call banners, the second does not. Asserting
+    // absence alone would pass for a banner that never fires at all.
+    expect(first.stderr).toContain('DEGRADED');
+    expect(second.stderr).not.toContain('DEGRADED');
+  });
+
+  it('is cost-neutral in normal operation: no banner, no stderr, no fallback', async () => {
+    // Bug this catches: a regression that pulls `git show` (or the banner) into
+    // the healthy path — paying for the defect case on every single tool call.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('echo hello') });
+    expectAllow(result);
+    // Not `toBe('')`: the #972 floor/overlay merge legitimately warns here about
+    // fixture overlay rules shadowed by the real repo's floor policy. The claim
+    // under test is narrower — the #992 degradation path contributed NOTHING.
+    expect(result.stderr).not.toMatch(/DEGRADED|GUARD INACTIVE|running against HEAD/);
   });
 });

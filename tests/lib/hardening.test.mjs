@@ -483,6 +483,30 @@ describe('commandMatchesBlocked', () => {
     ])('here-doc payload for an interpreter: (%j, %s) === %s', (command, pattern, expected) => {
       expect(commandMatchesBlocked(command, pattern)).toBe(expected);
     });
+
+    // -----------------------------------------------------------------------
+    // #981 — the verdict half of "newline is not whitespace, `\<LF>` is not an
+    // escape". Each row names a MEASURED pre-fix verdict; the token-shape half
+    // lives in hardening-tokenize.test.mjs.
+    // -----------------------------------------------------------------------
+    it.each([
+      // Was FALSE: the fast path tests the raw string, where the continuation
+      // still separates `push` from `--force`, so the matcher returned before
+      // the lexer ever ran and the force-push was allowed.
+      ['continuation splitting a pattern', 'git push \\\n--force origin main', 'git push --force', true],
+      // Was FALSE: the whole command was ONE segment whose verb was `echo`, so
+      // the here-doc body — which bash feeds to `bash` — counted as inert.
+      ['here-doc for an interpreter on a LATER line', 'echo hi\nbash <<EOF\nrm -rf /\nEOF', 'rm -rf', true],
+      // The boundary that must NOT move with it: a non-interpreter verb on the
+      // later line keeps its body inert. Splitting on the newline is what makes
+      // the two lines judgeable apart at all.
+      ['here-doc for a NON-interpreter on a later line', 'echo hi\ncat <<EOF\nrm -rf /\nEOF', 'rm -rf', false],
+      // Still true, via the second segment rather than the joined skeleton —
+      // pins that the split did not lose the plain-chain case.
+      ['plain dangerous line after a harmless one', 'echo hi\nrm -rf /', 'rm -rf', true],
+    ])('#981 — %s', (_name, command, pattern, expected) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(expected);
+    });
   });
 
   describe('additional edge cases', () => {
