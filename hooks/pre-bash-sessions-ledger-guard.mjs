@@ -98,11 +98,35 @@
  *      ALLOWS, where the sanitized form resolves dest=`…/sessions.jsonl` and
  *      denies. Deleting the sanitizer re-opens a proven ledger write path.
  *
- * Unifying `splitSegments`/`resolveVerb` with the lib's near-twins is a
- * separate change with its own verdict-flip surface (this module's
- * VERB_PREFIXES also carries `sudo`/`nohup`/`time`/`nice`, the lib's does not,
- * so `sudo rm -rf` resolves differently between them) — deliberately NOT done
- * here.
+ * ## Wrapper + segment parsing is the LIB's, not a local copy (#991)
+ *
+ * This module used to carry three near-twins of shared machinery: a local
+ * `splitSegments`, a local `resolveVerb`, and a FLAGBLIND `VERB_PREFIXES` set.
+ * The copies drifted, and the drift was fail-OPEN: `VERB_PREFIXES` skipped only
+ * the wrapper WORD and never its arguments, so `sudo -u root tee -a <ledger>`
+ * resolved to the verb `-u`, `tee` was never in verb position, and the write
+ * was ALLOWED. All fourteen wrapper spellings in the test table were measured
+ * ALLOW before this change — the guard reported a safety it did not provide.
+ *
+ * They are gone. `splitChainSegments` and `resolveSegmentVerb` now come from
+ * `scripts/lib/command-blocker.mjs` — the same primitives
+ * hooks/pre-bash-destructive-guard.mjs consumes, imported DIRECTLY from the
+ * source module for the reason stated there: the `hardening.mjs` barrel
+ * deliberately does not re-export the #982/#983 primitives, and one import edge
+ * keeps this hook's dependency graph unambiguous. The deleted `VERB_PREFIXES`
+ * was a strict SUBSET of the lib's `WRAPPER_UNWRAP` table (6 ⊂ 9), so the
+ * switch ADDS `doas`/`timeout`/`stdbuf` plus flag-awareness and removes nothing.
+ *
+ * `resolveSegmentVerb` additionally reports `wrapperArgs` — the value-taking
+ * wrapper flags consumed on the way to the verb. One of those operands is
+ * itself a WRITE: `/usr/bin/time -o <file>` TRUNCATES `<file>` (BSD time(1):
+ * "If file exists and the -a flag is not specified, the file will be
+ * overwritten"), while the verb is whatever `time` goes on to run. The target
+ * is therefore invisible in both `verb` and `args`, which is why
+ * `/usr/bin/time -o <ledger> npm test` was allowed and now denies. The bash
+ * KEYWORD `time` is unaffected: it rejects the flag outright
+ * (`bash -c 'time -o x echo hi'` → "-o: command not found"), so only
+ * `/usr/bin/time`, `command time` and `env time` can carry it at all.
  *
  * Fail-CLOSED on an unbalanced quote: if the scan ends mid-quote the command is
  * one bash itself would reject with a syntax error, so denying it when it
@@ -130,8 +154,12 @@
  *     buried in a quoted substitution is not the accident shape this guard is
  *     for — it is the "determined circumvention" line below.
  *   - In-place editors: `sed -i`, `perl -i`, `ed`, an interactive editor.
- *   - A write performed inside an interpreter: `node -e`, `python -c`, or any
- *     script the command invokes that appends the ledger itself.
+ *   - A write performed inside an interpreter: `node -e`, `python -c`,
+ *     `bash -c '… >> …/sessions.jsonl'`, or any script the command invokes that
+ *     appends the ledger itself. The one exception is a WRAPPER payload —
+ *     `env -S 'tee -a …/sessions.jsonl'` — which `resolveSegmentVerb` reports
+ *     as a payload and which this matcher re-enters (to MAX_PAYLOAD_DEPTH).
+ *     Interpreter `-c` payloads are a larger surface and stay out of scope.
  *   - Obfuscation: `eval`, `base64 -d | sh`, a here-doc-fed shell. Here-doc
  *     BODIES are skipped as the data they are — `bash <<EOF … EOF` therefore
  *     hides its payload from this matcher by construction.
@@ -164,7 +192,17 @@
  */
 
 import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-import { tokenizeCommand } from '../scripts/lib/hardening.mjs';
+// Single direct import from the source module (#991), matching the precedent in
+// hooks/pre-bash-destructive-guard.mjs: the hardening.mjs barrel re-exports
+// tokenizeCommand from this very module (same instance either way) but
+// deliberately does NOT re-export the #982/#983 primitives, so importing the
+// lexer from the barrel and the wrapper resolver from the source would give
+// this hook two dependency edges to one module. The barrel is unchanged.
+import {
+  tokenizeCommand,
+  resolveSegmentVerb,
+  splitChainSegments,
+} from '../scripts/lib/command-blocker.mjs';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -192,11 +230,28 @@ const TARGET_ECHO_MAX = 200;
 /** Verbs whose LAST non-flag argument is a write destination. */
 const DEST_LAST_VERBS = new Set(['cp', 'mv']);
 
-/** Command prefixes to skip when locating a segment's verb. */
-const VERB_PREFIXES = new Set(['sudo', 'command', 'env', 'nohup', 'time', 'nice']);
+/**
+ * Wrapper flags from {@link resolveSegmentVerb}'s `wrapperArgs` whose operand is
+ * a FILE the wrapper itself writes, keyed `<wrapper>:<flag>`.
+ *
+ * Deliberately an explicit pair list rather than "any argFlag operand": most
+ * value-taking wrapper flags name something that is NOT a path — `sudo -u` a
+ * user, `nice -n` a niceness, `timeout -k` a duration, `env -u` a variable, and
+ * `stdbuf -o` a BUFFERING MODE (`0`, `L`, `4096`), which shares its spelling
+ * with `time -o` and would be the obvious false positive of a blanket rule.
+ * Only `time -o`/`--output` opens a file for writing.
+ */
+const WRAPPER_FILE_FLAGS = new Set(['time:-o', 'time:--output']);
 
-/** Unquoted tokens that terminate one command segment. */
-const CHAIN_OPS = new Set([';', '&&', '||', '|', '&']);
+/**
+ * How deep to follow a wrapper's command-string payload (`env -S '…'`).
+ *
+ * Payloads are the only recursion source here, and two levels covers every
+ * shape a hurried agent produces while keeping the work bounded — a cap that
+ * cannot be exhausted into a bypass because the OUTER command is still matched
+ * on its own terms.
+ */
+const MAX_PAYLOAD_DEPTH = 2;
 
 /** Unquoted characters that end a shell WORD. */
 const WORD_END = new Set([';', '|', '&', '<', '>', '(', ')', '\n']);
@@ -418,45 +473,6 @@ function scanCommand(command) {
 }
 
 /**
- * Split a token list into command segments on unquoted chain operators.
- *
- * @param {Array<{text: string, quoted: boolean}>} tokens
- * @returns {Array<Array<{text: string, quoted: boolean}>>}
- */
-function splitSegments(tokens) {
-  const segments = [];
-  let current = [];
-  for (const tok of tokens) {
-    if (!tok.quoted && CHAIN_OPS.has(tok.text)) {
-      if (current.length) segments.push(current);
-      current = [];
-      continue;
-    }
-    current.push(tok);
-  }
-  if (current.length) segments.push(current);
-  return segments;
-}
-
-/**
- * Locate a segment's verb, skipping `VAR=value` assignments and wrapper
- * prefixes (`sudo`, `env`, …).
- *
- * @param {Array<{text: string, quoted: boolean}>} segment
- * @returns {{ verb: string, argsFrom: number }|null}
- */
-function resolveVerb(segment) {
-  for (let i = 0; i < segment.length; i++) {
-    const tok = segment[i];
-    if (!tok.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok.text)) continue;
-    const base = path.posix.basename(tok.text.replace(/\\/g, '/'));
-    if (VERB_PREFIXES.has(base)) continue;
-    return { verb: base, argsFrom: i + 1 };
-  }
-  return null;
-}
-
-/**
  * Find a non-redirect write verb (`tee`, `dd of=`, `cp`/`mv` destination)
  * whose target is the ledger.
  *
@@ -471,15 +487,38 @@ function resolveVerb(segment) {
  * `cp foo …/sessions.jsonl > /dev/null` resolves its destination to
  * `/dev/null` and allows. Measured; see the module docblock.
  *
+ * Verb resolution is `resolveSegmentVerb`'s (#991) — flag-aware, so a wrapper's
+ * OPTIONS are consumed with it and `sudo -u root tee -a <ledger>` reaches the
+ * real verb instead of stopping at `-u`.
+ *
  * @param {string} command - sanitized command
+ * @param {number} [depth] - payload recursion level (see MAX_PAYLOAD_DEPTH)
  * @returns {string|null} the offending target, or null
  */
-function findWriteVerbTarget(command) {
-  for (const segment of splitSegments(tokenizeCommand(command))) {
-    const resolved = resolveVerb(segment);
-    if (!resolved) continue;
-    const { verb, argsFrom } = resolved;
-    const args = segment.slice(argsFrom);
+function findWriteVerbTarget(command, depth = 0) {
+  for (const segment of splitChainSegments(tokenizeCommand(command))) {
+    const { verb, index, payloads, wrapperArgs } = resolveSegmentVerb(segment);
+
+    // A wrapper can write a file WITHOUT being the verb: `/usr/bin/time -o F`
+    // truncates F while the verb is whatever time runs. Checked before the verb
+    // dispatch because `time -o <ledger>` alone resolves to verb null.
+    for (const wa of wrapperArgs) {
+      if (!WRAPPER_FILE_FLAGS.has(`${wa.wrapper}:${wa.flag}`)) continue;
+      if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
+    }
+
+    // `env -S 'tee -a <ledger>'` hides a whole command line in one operand.
+    // Recurse on the payload with the SAME matcher rather than a second,
+    // weaker one — bounded by MAX_PAYLOAD_DEPTH.
+    if (depth < MAX_PAYLOAD_DEPTH) {
+      for (const payload of payloads) {
+        const hit = findLedgerWrite(payload, depth + 1);
+        if (hit) return hit;
+      }
+    }
+
+    if (!verb) continue;
+    const args = segment.slice(index + 1);
 
     if (verb === 'tee') {
       for (const arg of args) {
@@ -516,9 +555,10 @@ function findWriteVerbTarget(command) {
  * neutralises this function in place and re-runs the spawned-hook tests.
  *
  * @param {string} command
+ * @param {number} [depth] - payload recursion level (see MAX_PAYLOAD_DEPTH)
  * @returns {string|null}
  */
-function findLedgerWrite(command) {
+function findLedgerWrite(command, depth = 0) {
   if (typeof command !== 'string' || command.length === 0) return null;
   // Cheap pre-filter: no mention of the filename at all → nothing to analyse.
   if (!command.includes(LEDGER_BASENAME)) return null;
@@ -534,7 +574,7 @@ function findLedgerWrite(command) {
   if (!scan.balanced) {
     return `${LEDGER_BASENAME} (unbalanced quote — command not parseable, denied fail-closed)`;
   }
-  return findWriteVerbTarget(scan.sanitized);
+  return findWriteVerbTarget(scan.sanitized, depth);
 }
 
 // ---------------------------------------------------------------------------

@@ -351,16 +351,22 @@ const REDIRECT_PROBE_OPS = { truncate: '>', append: '>>', read: '<' };
  * backticks (those are reported `unresolved`), so the quoted probe round-trips
  * the target text exactly.
  *
+ * `repoRoot` MUST be the same value the deciding redirectRuleMatches call used
+ * (#988 T1): an absolute/`~` target only matches when the root is supplied, so
+ * dropping it here would leave `hit === null` for exactly the targets the new
+ * resolution added and the deny reason would silently fall back to the pattern.
+ *
  * @param {object} rule — the redirect-truncate policy rule
  * @param {Array<{ target: string|null, mode: string, unresolved?: boolean }>} entries
+ * @param {string} repoRoot — absolute repo root, forwarded to redirectRuleMatches
  * @returns {{ target: string, mode: string }|null}
  */
-function findMatchedRedirectEntry(rule, entries) {
+function findMatchedRedirectEntry(rule, entries, repoRoot) {
   for (const entry of entries) {
     if (entry.unresolved) continue;
     const op = REDIRECT_PROBE_OPS[entry.mode] ?? '>';
     const probe = `${op} "${entry.target.replace(/[\\"]/g, '\\$&')}"`;
-    if (redirectRuleMatches(rule, probe)) return entry;
+    if (redirectRuleMatches(rule, probe, { repoRoot })) return entry;
   }
   return null;
 }
@@ -658,15 +664,27 @@ async function main() {
       const modes = new Set(
         Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']
       );
-      const entries = extractRedirectTargets(command).filter((e) => modes.has(e.mode));
-      if (entries.some((e) => e.unresolved)) {
+      const collected = extractRedirectTargets(command);
+      const entries = collected.filter((e) => modes.has(e.mode));
+      // Recursion-cap markers (#988 T2) carry `mode: null` by construction — a
+      // bare `modes.has(e.mode)` filter drops them, which would make the new
+      // marker unobservable here. Keep them alongside the mode-matching ones.
+      const unresolved = collected.filter(
+        (e) => e.unresolved && (e.mode === null || modes.has(e.mode))
+      );
+      if (unresolved.length > 0) {
         // Variable/substitution operands are never match candidates (#641 FP
         // class) — surface them instead of guessing; never block on a guess.
+        // Same for a payload subtree a recursion cap cut off: the cap stays,
+        // its effect stops being silent.
+        const reasons = [
+          ...new Set(unresolved.map((e) => e.reason ?? 'variable/substitution')),
+        ].join(', ');
         process.stderr.write(
-          '⚠ pre-bash-destructive-guard: unresolved redirect target (variable/substitution) — not matched (fail-visible)\n'
+          `⚠ pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)\n`
         );
       }
-      if (!redirectRuleMatches(rule, command)) continue;
+      if (!redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
       if (severity !== 'block') {
         process.stderr.write(
           `⚠ pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}\n`
@@ -674,7 +692,7 @@ async function main() {
         continue;
       }
       // Reason stays short (stdout-budget): operator + target, never the command.
-      const hit = findMatchedRedirectEntry(rule, entries);
+      const hit = findMatchedRedirectEntry(rule, entries, projectDir);
       const label = hit ? `${REDIRECT_PROBE_OPS[hit.mode] ?? '>'} ${hit.target}` : pattern;
       await blockCommand(label, id, rationale, command, sessionId);
       continue; // unreachable (blockCommand never returns) — kept for clarity

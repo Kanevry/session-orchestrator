@@ -657,7 +657,14 @@ export const WRAPPER_UNWRAP = new Map([
   }],
   ['command', {}],
   ['nohup', {}],
-  ['time', {}],
+  // `-o FILE` is the BSD/GNU `time` report destination and it TRUNCATES without
+  // `-a` (BSD time(1): "If file exists and the -a flag is not specified, the
+  // file will be overwritten"). With an empty spec the operand was read as the
+  // verb, so `/usr/bin/time -o LEDGER tee -a X` resolved to `LEDGER` and hid
+  // the real write verb (#988 T3). Only the EXTERNAL `time` takes flags — the
+  // bash keyword rejects `-o` outright — so consuming them here cannot
+  // mis-parse a keyword invocation, which never carries `-o` in the first place.
+  ['time', { argFlags: new Set(['-o', '--output']) }],
   ['timeout', {
     argFlags: new Set(['-k', '--kill-after', '-s', '--signal']),
     positionals: 1,
@@ -681,21 +688,35 @@ export const WRAPPER_UNWRAP = new Map([
  * a skipped token is either a wrapper name, an option or a duration — never an
  * interpreter — so this cannot turn a match into a miss.
  *
+ * Return contract (ADDITIVE — `wrapperArgs` was appended in #988 T3; existing
+ * consumers destructuring `{ verb, index, payloads }` are unaffected):
+ *
  * @param {Array<{ text: string, quoted: boolean }>} segment
- * @returns {{ verb: string|null, index: number, payloads: string[] }}
+ * @returns {{ verb: string|null, index: number, payloads: string[],
+ *             wrapperArgs: Array<{ wrapper: string, flag: string, value: string|null }> }}
  *   verb — bare program basename (or synthetic `sh` for `sudo -i`/`-s`), null
  *   when the segment exhausts in wrappers; index — token index of the resolved
- *   verb (-1 when null); payloads — command strings a wrapper will execute.
+ *   verb (-1 when null); payloads — command strings a wrapper will execute;
+ *   wrapperArgs — the value-taking wrapper flags consumed on the way to the
+ *   verb, in encounter order. `wrapper` is the wrapper's basename (`time`),
+ *   `flag` the option as written (`-o`, `--output`), `value` its operand
+ *   (`null` when the flag ended the segment). Both the separated (`-o FILE`)
+ *   and the attached long form (`--output=FILE`) are reported. These operands
+ *   are FILE TARGETS a wrapper writes, invisible in `verb`/`payloads`:
+ *   `/usr/bin/time -o <ledger> npm test` truncates `<ledger>` while the verb
+ *   is `npm`. Downstream guards (ledger, #991) judge them as write targets.
  */
 export function resolveSegmentVerb(segment) {
   const payloads = [];
+  const wrapperArgs = [];
   let i = 0;
   // Skip leading FOO=bar env assignments (unquoted).
   while (i < segment.length && !segment[i].quoted && ENV_ASSIGN_RE.test(segment[i].text)) {
     i++;
   }
   while (i < segment.length) {
-    const spec = WRAPPER_UNWRAP.get(segment[i].text.replace(/^.*\//, '')); // basename
+    const wrapper = segment[i].text.replace(/^.*\//, ''); // basename
+    const spec = WRAPPER_UNWRAP.get(wrapper);
     if (!spec) break;
     i++; // consume the wrapper word
     let sawShellFlag = false;
@@ -720,14 +741,32 @@ export function resolveSegmentVerb(segment) {
         continue;
       }
       if (spec.shellFlags && spec.shellFlags.has(text)) { sawShellFlag = true; i++; continue; }
-      if (spec.argFlags && spec.argFlags.has(text)) { i += 2; continue; }
+      if (spec.argFlags && spec.argFlags.has(text)) {
+        // Separated form `-o FILE`: record the operand, then skip BOTH tokens
+        // exactly as before (token accounting unchanged — recording only).
+        wrapperArgs.push({
+          wrapper,
+          flag: text,
+          value: i + 1 < segment.length ? segment[i + 1].text : null,
+        });
+        i += 2;
+        continue;
+      }
+      if (spec.argFlags) {
+        // Attached long form `--output=FILE`. Consumes ONE token either way —
+        // this branch only records the operand the fall-through would drop.
+        const eq = text.indexOf('=');
+        if (eq > 0 && spec.argFlags.has(text.slice(0, eq))) {
+          wrapperArgs.push({ wrapper, flag: text.slice(0, eq), value: text.slice(eq + 1) });
+        }
+      }
       i++; // unknown / boolean / attached-value flag — one token
     }
     for (let p = spec.positionals ?? 0; p > 0 && i < segment.length; p--) i++;
-    if (sawShellFlag) return { verb: 'sh', index: i, payloads };
+    if (sawShellFlag) return { verb: 'sh', index: i, payloads, wrapperArgs };
   }
-  if (i >= segment.length) return { verb: null, index: -1, payloads };
-  return { verb: segment[i].text.replace(/^.*\//, ''), index: i, payloads };
+  if (i >= segment.length) return { verb: null, index: -1, payloads, wrapperArgs };
+  return { verb: segment[i].text.replace(/^.*\//, ''), index: i, payloads, wrapperArgs };
 }
 
 /**
@@ -917,20 +956,32 @@ function collectRedirectTargets(segments, out, depth, budget) {
       }
     }
 
-    if (depth < MAX_PAYLOAD_DEPTH) {
-      const resolved = resolveSegmentVerb(segment);
-      const payloads = [...resolved.payloads];
-      if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
-        payloads.push(...dashCPayloads(segment, resolved.index));
+    const resolved = resolveSegmentVerb(segment);
+    const payloads = [...resolved.payloads];
+    if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
+      payloads.push(...dashCPayloads(segment, resolved.index));
+    }
+    if (payloads.length === 0) continue;
+
+    // A cap that drops payloads SILENTLY is a bypass, not a cap: 33 filler
+    // `-c` segments exhausted the budget and `> CLAUDE.md` in the 34th came
+    // back as an EMPTY target list, so the guard saw nothing (#988 T2,
+    // probe-measured). Both cut-offs now emit an unresolved marker — the
+    // DoS ceiling is unchanged, its effect is merely visible.
+    if (depth >= MAX_PAYLOAD_DEPTH) {
+      out.push({ target: null, mode: null, fd: null, unresolved: true, reason: 'depth-exceeded' });
+      continue;
+    }
+    for (const payload of payloads) {
+      if (budget.remaining <= 0) {
+        out.push({ target: null, mode: null, fd: null, unresolved: true, reason: 'budget-exhausted' });
+        break;
       }
-      for (const payload of payloads) {
-        if (budget.remaining <= 0) break;
-        budget.remaining -= 1;
-        const subTokens = tokenizeCommand(
-          normalizeShellWhitespaceExpansions(payload, { expandSingleQuoted: true }),
-        );
-        collectRedirectTargets(splitSegments(subTokens), out, depth + 1, budget);
-      }
+      budget.remaining -= 1;
+      const subTokens = tokenizeCommand(
+        normalizeShellWhitespaceExpansions(payload, { expandSingleQuoted: true }),
+      );
+      collectRedirectTargets(splitSegments(subTokens), out, depth + 1, budget);
     }
   }
 }
@@ -950,12 +1001,18 @@ function collectRedirectTargets(segments, out, depth, budget) {
  *     variable (`> "$X"`), a command substitution, or is missing. Reported
  *     fail-visible so the consuming guard can LOG it; deliberately NOT a
  *     match candidate for redirectRuleMatches (see there — #641 FP class).
+ *   - `{ target: null, mode: null, fd: null, unresolved: true,
+ *      reason: 'budget-exhausted'|'depth-exceeded' }` — a payload subtree was
+ *     NOT traversed because a recursion cap cut it off (#988 T2). `mode` is
+ *     null: no redirect was parsed, so the entry belongs to no mode class and
+ *     a mode filter must not silently drop it.
  *
  * `dup` (`2>&1`), `heredoc` (`<<`), and `herestring` (`<<<`) redirects name
  * no filesystem target and are omitted (deliberate boundary, documented).
  *
  * @param {string} command
- * @returns {Array<{ target: string|null, mode: string, fd: number|null, unresolved?: boolean }>}
+ * @returns {Array<{ target: string|null, mode: string|null, fd: number|null,
+ *                   unresolved?: boolean, reason?: string }>}
  */
 export function extractRedirectTargets(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
@@ -1003,6 +1060,83 @@ function redirectGlobToRegExp(pattern) {
 }
 
 /**
+ * Collapse the macOS `/private` alias prefix: `/private/tmp` and `/private/var`
+ * name the SAME directories as `/tmp` and `/var` (the short forms are symlinks
+ * into `/private`). Without this, one location has two spellings that compare
+ * unequal — a repo checked out under `/tmp/...` (CI runners, worktrees) would
+ * not recognise its own root in a command that spells it `/private/tmp/...`.
+ *
+ * Deliberately STATIC: no `realpathSync` on user input. Resolving an
+ * attacker-supplied path at guard time is its own risk class, and this module
+ * is I/O-free by header invariant. Only the two known macOS aliases collapse;
+ * every other path is returned byte-identical.
+ *
+ * @param {string} p — an absolute, already-normalized path
+ * @returns {string}
+ */
+function stripPrivateAlias(p) {
+  return /^\/private\/(?:tmp|var)(?:\/|$)/.test(p) ? p.slice('/private'.length) : p;
+}
+
+/**
+ * Expand a LEADING `~` / `~/` in a redirect target to the operator's home dir —
+ * the shell substitution the hook never gets to see, because a PreToolUse gate
+ * receives the raw, UNEXPANDED command string. Same motivation as
+ * `expandTmpdirToken` in hooks/pre-bash-destructive-guard.mjs (which does the
+ * `$TMPDIR` half for rm operands); deliberately NOT merged with it — that one
+ * expands an env VAR reference for the rm-allowlist, this one expands the
+ * tilde WORD for the redirect denylist, and folding two token grammars into one
+ * expander would widen both.
+ *
+ * `~user/...` is left untouched: another account's home is not this repo.
+ *
+ * Tilde expansion is applied REGARDLESS of the operand's quoting. A fully
+ * quoted `> "~/x/CLAUDE.md"` is a literal `~` directory in the real shell, so
+ * matching it is a (harmless, safe-direction) over-block; the partially quoted
+ * `> ~/"My Docs"/CLAUDE.md` — which the tokenizer also reports as quoted, and
+ * which the shell DOES expand — would otherwise be a real bypass.
+ *
+ * @param {string} target
+ * @param {string|undefined} home
+ * @returns {string}
+ */
+function expandLeadingHome(target, home) {
+  if (target !== '~' && !target.startsWith('~/')) return target;
+  if (!home || !path.isAbsolute(home)) return target;
+  return home + target.slice(1);
+}
+
+/**
+ * Reduce a raw redirect target to the repo-relative POSIX form the denylist
+ * globs are written in, or `null` when it cannot name a file inside the repo.
+ *
+ * @param {string} raw — resolved target text (quotes already stripped)
+ * @param {string|null} repoRoot — absolute repo root, or null (no resolution)
+ * @param {string|undefined} home
+ * @returns {string|null}
+ */
+function repoRelativeRedirectTarget(raw, repoRoot, home) {
+  const expanded = expandLeadingHome(raw, home);
+
+  if (!path.isAbsolute(expanded)) {
+    return path.posix.normalize(expanded).replace(/^(\.\/)+/, '');
+  }
+  // Absolute target: only judgeable against a known repo root. Without one the
+  // pre-#988 behaviour stands (no match) rather than a guess.
+  if (!repoRoot || !path.isAbsolute(repoRoot)) return null;
+  const rel = path.relative(
+    stripPrivateAlias(path.normalize(repoRoot)),
+    stripPrivateAlias(path.normalize(expanded)),
+  );
+  // '' = the root itself (a directory, not a file target); '..'-prefixed or
+  // absolute = outside the repo, which the repo-relative denylist never covers.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return null;
+  }
+  return path.posix.normalize(rel).replace(/^(\.\/)+/, '');
+}
+
+/**
  * Match a `redirect-truncate` policy rule against a command (#983).
  *
  * For every extractRedirectTargets entry whose mode is in `rule.modes`
@@ -1012,9 +1146,18 @@ function redirectGlobToRegExp(pattern) {
  * POSIX-normalized before matching (`path.posix.normalize` collapses `.//`
  * and `sub/..` spellings — `> .//CLAUDE.md` and `> ./sub/../CLAUDE.md` (same
  * for the AGENTS.md alias) were silently ALLOWED pre-normalization, W4 F1a)
- * and a leading `./` is stripped;
- * no repo-root resolution happens here (pure function, no I/O — absolute and
- * `~` spellings are out of scope, see the follow-up issue).
+ * and a leading `./` is stripped.
+ *
+ * Absolute and `~` spellings (#988 T1). The denylist globs are repo-relative,
+ * so `> /abs/path/to/repo/CLAUDE.md` and `> ~/repo/CLAUDE.md` matched NOTHING
+ * and were silently allowed (probe-measured `rule abs: false`, `rule tilde:
+ * false` against `rule rel: true`). Pass `{ repoRoot }` and such a target is
+ * tilde-expanded, `/private`-alias-collapsed and made repo-relative before the
+ * globs run; a target outside the repo yields no match. WITHOUT `repoRoot`
+ * (the default) an absolute target still never matches — identical to the
+ * pre-#988 contract, so existing callers keep their exact behaviour. This
+ * function stays I/O-free: `~` resolves from `process.env.HOME` (overridable
+ * via `home`), never via a filesystem lookup.
  *
  * Deliberate boundary (#641 FP class): `unresolved: true` entries (variable
  * indirection, command substitution) are NEVER matched — blocking on a guess
@@ -1027,9 +1170,13 @@ function redirectGlobToRegExp(pattern) {
  *
  * @param {{ modes?: string[], 'target-denylist'?: string[] }} rule
  * @param {string} command
+ * @param {{ repoRoot?: string|null, home?: string|undefined }} [opts]
+ *   repoRoot — absolute repo root; enables absolute/`~` target resolution.
+ *   home — `~` expansion base; defaults to `process.env.HOME`.
  * @returns {boolean}
  */
-export function redirectRuleMatches(rule, command) {
+export function redirectRuleMatches(rule, command, opts = {}) {
+  const { repoRoot = null, home = process.env.HOME } = opts;
   if (!rule || typeof command !== 'string' || command.length === 0) return false;
   const denylist = Array.isArray(rule['target-denylist']) ? rule['target-denylist'] : [];
   if (denylist.length === 0) return false;
@@ -1039,7 +1186,8 @@ export function redirectRuleMatches(rule, command) {
   for (const entry of extractRedirectTargets(command)) {
     if (entry.unresolved) continue;
     if (!modes.has(entry.mode)) continue;
-    const target = path.posix.normalize(entry.target).replace(/^(\.\/)+/, '');
+    const target = repoRelativeRedirectTarget(entry.target, repoRoot, home);
+    if (target === null) continue;
     if (regexes.some((re) => re.test(target))) return true;
   }
   return false;

@@ -964,6 +964,62 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
     expectAllow(result);
     expect(result.stderr).toContain('unresolved redirect target');
   });
+
+  // #988 T1 — the denylist globs are repo-relative, so an ABSOLUTE or `~`
+  // spelling of the very same protected artefact matched nothing and the
+  // truncation was silently ALLOWED (probe-measured at 8cdb434:
+  // `rule abs: false` / `rule tilde: false` beside `rule rel: true`).
+  // The reason must still NAME the target: a deny that falls back to the bare
+  // pattern would mean findMatchedRedirectEntry lost the repoRoot.
+  it('denies an ABSOLUTE spelling of a protected artefact and names it', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(`echo x > ${dir}/CLAUDE.md`) });
+    const envelope = expectDeny(result, 'redirect-truncate-protected');
+    expect(envelope.hookSpecificOutput.permissionDecisionReason).toContain(`${dir}/CLAUDE.md`);
+  });
+
+  it('denies a `~` spelling of a protected artefact', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('echo x > ~/CLAUDE.md'),
+      env: { HOME: dir },
+    });
+    expectDeny(result, 'redirect-truncate-protected');
+  });
+
+  it('still allows an absolute CLAUDE.md OUTSIDE the project root', async () => {
+    // Direction guard: repo-root resolution must not promote every CLAUDE.md
+    // on the machine into a denylist hit.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('echo x > /etc/CLAUDE.md') });
+    expectAllow(result);
+  });
+
+  // #988 T2 — the recursion-cap markers carry `mode: null` by construction, so
+  // the hook's `modes.has(e.mode)` filter dropped them and the marker was
+  // unobservable HERE even though extractRedirectTargets emitted it. Without
+  // the fix the budget command below produces NO stderr at all: 32 filler
+  // payloads hide `> CLAUDE.md` and the DoS ceiling doubles as a full bypass.
+  it.each([
+    [
+      'budget-exhausted',
+      `bash ${Array.from({ length: 32 }, (_, i) => `-c 'echo f${i}'`).join(' ')} -c 'echo x > CLAUDE.md'`,
+    ],
+    [
+      'depth-exceeded',
+      (() => {
+        let s = 'echo x > CLAUDE.md';
+        for (let d = 0; d < 4; d++) s = `bash -c "${s.replace(/(["\\])/g, '\\$1')}"`;
+        return s;
+      })(),
+    ],
+  ])('warns (fail-visible) when a recursion cap cut a payload subtree: %s', async (reason, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(result);
+    expect(result.stderr).toContain(`unresolved redirect target (${reason})`);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ import {
   suggestForCommandBlock,
   extractRedirectTargets,
   redirectRuleMatches,
+  resolveSegmentVerb,
+  splitChainSegments,
 } from '@lib/command-blocker.mjs';
 
 describe('command-blocker.mjs (direct import)', () => {
@@ -215,38 +217,90 @@ describe('tokenizeCommand — redirect tokens (#983)', () => {
 });
 
 describe('extractRedirectTargets (#983)', () => {
-  it('extracts a simple truncate target', () => {
-    expect(extractRedirectTargets('echo x > out.log')).toEqual([
-      { target: 'out.log', mode: 'truncate', fd: null },
+  // Consolidated from 6 single-assert `it` blocks — same shape throughout
+  // (command in, entry list out), so the table costs one row per case.
+  it.each([
+    ['simple truncate target', 'echo x > out.log',
+      [{ target: 'out.log', mode: 'truncate', fd: null }]],
+    ['fd form carries its fd number', 'cmd 2>/dev/null',
+      [{ target: '/dev/null', mode: 'truncate', fd: 2 }]],
+    ['redirect inside a -c payload (recursion via the payload mechanics)', "bash -c 'echo x > CLAUDE.md'",
+      [{ target: 'CLAUDE.md', mode: 'truncate', fd: null }]],
+    ['variable indirection is unresolved, never guessed', 'echo x > "$X"',
+      [{ target: null, mode: 'truncate', fd: null, unresolved: true }]],
+    ['quotes are stripped from the target', 'echo x > "out file.log"',
+      [{ target: 'out file.log', mode: 'truncate', fd: null }]],
+    ['dup redirect names an fd, not a file', 'cmd 2>&1', []],
+  ])('%s', (_label, command, expected) => {
+    expect(extractRedirectTargets(command)).toEqual(expected);
+  });
+
+  // #988 T2 — the bug: both recursion cut-offs dropped the un-walked subtree
+  // SILENTLY, so a DoS ceiling doubled as a full bypass. Measured at 8cdb434:
+  // the budget command below returned `[]` — an empty list is indistinguishable
+  // from "this command redirects nowhere", and the guard allowed it.
+  it('marks a budget-exhausted payload subtree instead of dropping it silently', () => {
+    const filler = Array.from({ length: 32 }, (_, i) => `-c 'echo f${i}'`).join(' ');
+    expect(extractRedirectTargets(`bash ${filler} -c 'echo x > CLAUDE.md'`)).toEqual([
+      { target: null, mode: null, fd: null, unresolved: true, reason: 'budget-exhausted' },
     ]);
   });
 
-  it('extracts the fd form with its fd number', () => {
-    expect(extractRedirectTargets('cmd 2>/dev/null')).toEqual([
-      { target: '/dev/null', mode: 'truncate', fd: 2 },
-    ]);
-  });
-
-  it('finds a redirect inside a -c payload (recursion via the existing payload mechanics)', () => {
-    expect(extractRedirectTargets("bash -c 'echo x > CLAUDE.md'")).toEqual([
+  it('marks a depth-exceeded payload subtree, and still walks one within the cap', () => {
+    const nest = (n) => {
+      let s = 'echo x > CLAUDE.md';
+      for (let d = 0; d < n; d++) s = `bash -c "${s.replace(/(["\\])/g, '\\$1')}"`;
+      return s;
+    };
+    // The ceiling itself is unchanged — depth 3 still resolves the target.
+    expect(extractRedirectTargets(nest(3))).toEqual([
       { target: 'CLAUDE.md', mode: 'truncate', fd: null },
     ]);
-  });
-
-  it('reports variable-indirection targets as unresolved (fail-visible, no guessing)', () => {
-    expect(extractRedirectTargets('echo x > "$X"')).toEqual([
-      { target: null, mode: 'truncate', fd: null, unresolved: true },
+    expect(extractRedirectTargets(nest(4))).toEqual([
+      { target: null, mode: null, fd: null, unresolved: true, reason: 'depth-exceeded' },
     ]);
   });
+});
 
-  it('strips quotes from a quoted target', () => {
-    expect(extractRedirectTargets('echo x > "out file.log"')).toEqual([
-      { target: 'out file.log', mode: 'truncate', fd: null },
-    ]);
+describe('resolveSegmentVerb — `time` argFlags + wrapperArgs (#988 T3)', () => {
+  const resolve = (cmd) => resolveSegmentVerb(splitChainSegments(tokenizeCommand(cmd))[0]);
+
+  // The bug: `time` sat in WRAPPER_UNWRAP with an EMPTY spec, so `-o`'s operand
+  // was read as the verb. Measured at 8cdb434:
+  //   `/usr/bin/time -o /tmp/log tee -a LEDGER`            → verb "log"
+  //   `/usr/bin/time -o .orchestrator/metrics/sessions.jsonl …` → verb "sessions.jsonl"
+  // i.e. the wrapper HID the real write verb behind its own report file.
+  it('resolves past `time -o FILE` to the real verb', () => {
+    expect(resolve('/usr/bin/time -o /tmp/log tee -a LEDGER').verb).toBe('tee');
+    expect(resolve('/usr/bin/time -a -o /tmp/log rm -rf /x').verb).toBe('rm');
   });
 
-  it('omits dup redirects (2>&1 names an fd, not a file)', () => {
-    expect(extractRedirectTargets('cmd 2>&1')).toEqual([]);
+  // The operand `time` writes is a truncating file target invisible in
+  // `verb`/`payloads` — `time -o <ledger> npm test` empties <ledger> while the
+  // verb is `npm`. A2 (#991) judges these; without wrapperArgs they were
+  // discarded at the `i += 2` skip and unrecoverable downstream.
+  it('returns the consumed wrapper operands in both spellings', () => {
+    expect(resolve('/usr/bin/time -o /tmp/log tee -a LEDGER').wrapperArgs).toEqual([
+      { wrapper: 'time', flag: '-o', value: '/tmp/log' },
+    ]);
+    expect(resolve('/usr/bin/time --output=.orchestrator/metrics/sessions.jsonl npm test').wrapperArgs).toEqual([
+      { wrapper: 'time', flag: '--output', value: '.orchestrator/metrics/sessions.jsonl' },
+    ]);
+    // Additive contract: shapes without a value-taking wrapper flag report [].
+    expect(resolve('time npm test')).toEqual({
+      verb: 'npm', index: 1, payloads: [], wrapperArgs: [],
+    });
+  });
+
+  // Direction guard: unwrapping further must never LOSE a block. Each row was
+  // re-measured after the flip — all still match the rm -rf pattern.
+  it.each([
+    ['unquoted rm behind time -o', '/usr/bin/time -o /tmp/log rm -rf /'],
+    ['quoted payload behind time -o (the shape argFlags rescues)', "/usr/bin/time -o /tmp/log bash -c 'rm -rf /'"],
+    ['bare keyword-shaped time is untouched', "time bash -c 'rm -rf /'"],
+    ['boolean -p flag is untouched', "/usr/bin/time -p bash -c 'rm -rf /'"],
+  ])('still blocks: %s', (_label, command) => {
+    expect(commandMatchesBlocked(command, 'rm -rf')).toBe(true);
   });
 });
 
@@ -262,38 +316,51 @@ describe('redirectRuleMatches (#983 — denylist polarity)', () => {
     ],
   };
 
-  it('matches a truncating redirect onto CLAUDE.md (the #983 incident shape)', () => {
-    expect(redirectRuleMatches(RULE, 'rm -rf /tmp/ok &> CLAUDE.md')).toBe(true);
-    expect(redirectRuleMatches(RULE, 'echo x > CLAUDE.md')).toBe(true);
-  });
+  // One table, one shape: command in, verdict out. Consolidated from 7
+  // near-identical single-assert `it` blocks — each row still names the bug it
+  // catches, and a new spelling is now one row rather than one more block.
+  const ROOT = '/repo';
+  const HOME = '/home/op';
+  it.each([
+    // [label, command, opts, expected]
+    ['&> onto CLAUDE.md — the #983 incident shape', 'rm -rf /tmp/ok &> CLAUDE.md', {}, true],
+    ['plain > onto CLAUDE.md', 'echo x > CLAUDE.md', {}, true],
+    ['unprotected target stays allowed', 'rm -rf /tmp/ok > out.log', {}, false],
+    ['append >> stays allowed by design', 'echo note >> CLAUDE.md', {}, false],
+    ['** glob under .orchestrator/policy', 'echo {} > .orchestrator/policy/blocked-commands.json', {}, true],
+    // #641 FP boundary: blocking on a guessed variable value reintroduces the
+    // false-positive class #641 removed.
+    ['variable target is never a match candidate', 'echo x > "$X"', {}, false],
+    ['leading ./ is stripped', 'echo x > ./CLAUDE.md', {}, true],
+    // W4 F1a — without path.posix.normalize these non-canonical spellings fail
+    // the glob and the truncation is SILENTLY ALLOWED (probe-measured false).
+    ['.// spelling normalizes', 'echo x > .//CLAUDE.md', {}, true],
+    ['sub/.. spelling normalizes', 'echo x > ./sub/../CLAUDE.md', {}, true],
 
-  it('does NOT match an unprotected target (out.log)', () => {
-    expect(redirectRuleMatches(RULE, 'rm -rf /tmp/ok > out.log')).toBe(false);
-  });
-
-  it('does NOT match append >> onto a protected target (append stays allowed by design)', () => {
-    expect(redirectRuleMatches(RULE, 'echo note >> CLAUDE.md')).toBe(false);
-  });
-
-  it('matches a ** denylist glob (.orchestrator/policy/blocked-commands.json)', () => {
-    expect(redirectRuleMatches(RULE, 'echo {} > .orchestrator/policy/blocked-commands.json')).toBe(true);
-  });
-
-  it('does NOT match unresolved variable targets (deliberate #641-class FP boundary)', () => {
-    expect(redirectRuleMatches(RULE, 'echo x > "$X"')).toBe(false);
-  });
-
-  it('normalizes a leading ./ before denylist matching', () => {
-    expect(redirectRuleMatches(RULE, 'echo x > ./CLAUDE.md')).toBe(true);
-  });
-
-  // W4 F1a — bug each assert catches: without path.posix.normalize the
-  // non-canonical spellings `.//CLAUDE.md` and `./sub/../CLAUDE.md` fail the
-  // denylist glob and the truncation is SILENTLY ALLOWED (probe-measured
-  // false pre-fix). Absolute/`~` spellings are a separate follow-up issue.
-  it('normalizes `.//` and `sub/..` spellings before denylist matching (W4 F1a)', () => {
-    expect(redirectRuleMatches(RULE, 'echo x > .//CLAUDE.md')).toBe(true);
-    expect(redirectRuleMatches(RULE, 'echo x > ./sub/../CLAUDE.md')).toBe(true);
+    // #988 T1 — the denylist globs are repo-relative, so before repoRoot
+    // resolution an ABSOLUTE or `~` spelling of the very same file matched
+    // NOTHING and was silently allowed (probe-measured at 8cdb434:
+    // `rule abs: false` / `rule tilde: false` beside `rule rel: true`).
+    ['absolute in-repo target', `echo x > ${ROOT}/CLAUDE.md`, { repoRoot: ROOT }, true],
+    ['absolute in-repo ** glob', `echo x > ${ROOT}/.git/HEAD`, { repoRoot: ROOT }, true],
+    ['~ target', 'echo x > ~/repo/CLAUDE.md', { repoRoot: `${HOME}/repo`, home: HOME }, true],
+    ['bare ~ is not a file target', 'echo x > ~', { repoRoot: HOME, home: HOME }, false],
+    ['~user is another account, never this repo', 'echo x > ~other/repo/CLAUDE.md', { repoRoot: `${HOME}/repo`, home: HOME }, false],
+    // Direction guard: absolute resolution must not turn every foreign
+    // CLAUDE.md on the machine into a block.
+    ['absolute target OUTSIDE the repo', 'echo x > /etc/CLAUDE.md', { repoRoot: ROOT }, false],
+    ['sibling repo outside the root', 'echo x > /other/CLAUDE.md', { repoRoot: ROOT }, false],
+    // Without repoRoot the pre-#988 contract stands verbatim — existing
+    // callers that pass no options keep their exact behaviour.
+    ['absolute target WITHOUT repoRoot keeps the old no-match contract', `echo x > ${ROOT}/CLAUDE.md`, {}, false],
+    // macOS /private alias: /tmp and /private/tmp are one location with two
+    // spellings. A repo under /tmp (CI runners, worktrees) would otherwise not
+    // recognise its own root when the command spells it the other way.
+    ['/private/tmp target vs /tmp root', 'echo x > /private/tmp/r/CLAUDE.md', { repoRoot: '/tmp/r' }, true],
+    ['/tmp target vs /private/tmp root', 'echo x > /tmp/r/CLAUDE.md', { repoRoot: '/private/tmp/r' }, true],
+    ['/privatefoo is NOT the alias prefix', 'echo x > /privatefoo/CLAUDE.md', { repoRoot: '/foo' }, false],
+  ])('%s', (_label, command, opts, expected) => {
+    expect(redirectRuleMatches(RULE, command, opts)).toBe(expected);
   });
 });
 
