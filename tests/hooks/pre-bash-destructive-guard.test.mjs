@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
@@ -33,6 +34,18 @@ import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-destructive-guard.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
+
+/**
+ * The hook derives its own `PLUGIN_ROOT` from `import.meta.dirname`, NOT from
+ * `CLAUDE_PLUGIN_ROOT` — so the #992 `git show HEAD:` fallback runs against THIS
+ * repo checkout, never against the per-test fixture dir. In a source tree
+ * without `.git` (an npm-installed plugin, a tarball export) that fallback is
+ * structurally unavailable and every load failure degrades straight to the
+ * GUARD INACTIVE banner. The `skipIf(!HAS_GIT)` guards below make that
+ * dependency DECLARED instead of an undeclared 3-of-5 red (#992 QA finding).
+ */
+const HOOK_PLUGIN_ROOT = path.resolve(import.meta.dirname, '../..');
+const HAS_GIT = existsSync(path.join(HOOK_PLUGIN_ROOT, '.git'));
 
 /** Minimal policy fixture used by most tests (14 rules mirroring the spec). */
 const FIXTURE_POLICY = {
@@ -1356,16 +1369,21 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
  * the HEAD fallback itself is broken, since that fallback imports the committed
  * source through a data: URL).
  */
-function brokenBlockerBoot({ alsoBreakHeadFallback = false } = {}) {
+function brokenBlockerBoot({ alsoBreakHeadFallback = false, headSource = null } = {}) {
+  // `headSource` replaces the HEAD copy with a WELL-FORMED but incomplete module
+  // instead of breaking it outright — the shape-check case (a HEAD copy older
+  // than the working tree, i.e. exactly what happens when a newly added export
+  // is the thing that broke).
+  const headOverride = headSource ?? (alsoBreakHeadFallback ? 'export const broken = ;' : null);
   const loader = `
 export async function load(url, context, next) {
   if (url.endsWith('command-blocker.mjs')) {
     return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
   }
   ${
-    alsoBreakHeadFallback
+    headOverride !== null
       ? `if (url.startsWith('data:text/javascript')) {
-    return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
+    return { format: 'module', shortCircuit: true, source: ${JSON.stringify(headOverride)} };
   }`
       : ''
   }
@@ -1377,7 +1395,7 @@ export async function load(url, context, next) {
 }
 
 describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 }, () => {
-  it('still DENIES a destructive command when the working-tree command-blocker.mjs is broken', async () => {
+  it.skipIf(!HAS_GIT)('still DENIES a destructive command when the working-tree command-blocker.mjs is broken', async () => {
     // Bug this catches: at 8cdb434 this exact spawn produced EXIT=1 / stdout 0 bytes
     // / decision NONE — `rm -rf /` waved through by a crashed guard.
     const dir = await mkProjectTracked();
@@ -1389,7 +1407,7 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
     expectDeny(result, 'rm-rf-destructive');
   });
 
-  it('banners the HEAD fallback on stderr, naming the consequence — never silently', async () => {
+  it.skipIf(!HAS_GIT)('banners the HEAD fallback on stderr, naming the consequence — never silently', async () => {
     // Bug this catches: a fallback that fires silently trades a visible hole for
     // an invisible semantic drift (guard evaluating HEAD, operator believing it
     // evaluates the working tree).
@@ -1424,7 +1442,7 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
     expect(result.stderr).toContain('are NOT being blocked');
   });
 
-  it('emits the degradation banner ONCE per session, not once per tool call', async () => {
+  it.skipIf(!HAS_GIT)('emits the degradation banner ONCE per session, not once per tool call', async () => {
     // Bug this catches: a per-call banner floods the transcript, and an operator
     // who learns to ignore the line is back at the invisible-outage failure mode.
     const dir = await mkProjectTracked();
@@ -1466,5 +1484,131 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
     // fixture overlay rules shadowed by the real repo's floor policy. The claim
     // under test is narrower — the #992 degradation path contributed NOTHING.
     expect(result.stderr).not.toMatch(/DEGRADED|GUARD INACTIVE|running against HEAD/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #992 hardening — the once-per-session marker must not be a mute switch
+//
+// Measured hole in the #992 shipment: the marker path is fully predictable
+// (`sha256(projectDir).slice(0,12)` + the session id from `.orchestrator/
+// session.lock`) and PURE EXISTENCE suppressed the banner. Both attack steps
+// are themselves unblocked — `touch <marker>` is not a destructive command, and
+// `>> scripts/lib/io.mjs` is not on rule 14's target denylist. So an agent could
+// pre-create the marker, break a repo module, and the total-outage banner went
+// silent while the decision channel said ALLOW. That is strictly worse than the
+// pre-#992 crash it replaced: a crash is at least noisy on stderr.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reproduce the ATTACKER's marker-path derivation independently of the product
+ * code (the loader's own helper is module-private). If this drifts from the
+ * implementation the tests below stop reproducing the attack and must be
+ * re-measured — which is the honest failure direction for an attack pin.
+ */
+function attackerMarkerPath(projectDir, kind, key) {
+  const digest = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
+  return path.join(os.tmpdir(), `session-orchestrator-guard-${kind}-${digest}-${key}`);
+}
+
+describe('#992 hardening — banner-marker forgeability', { timeout: 30000 }, () => {
+  const plantedMarkers = [];
+
+  afterEach(async () => {
+    for (const m of plantedMarkers.splice(0)) await fs.rm(m, { force: true });
+  });
+
+  /** Write a project + session.lock and plant a bare-`touch` marker for `kind`. */
+  async function plantMarker(kind) {
+    const dir = await mkProjectTracked();
+    const sessionId = `guard-992h-${path.basename(dir)}`;
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({ session_id: sessionId })
+    );
+    const marker = attackerMarkerPath(dir, kind, sessionId);
+    plantedMarkers.push(marker);
+    await fs.writeFile(marker, ''); // the measured attack: an empty `touch`
+    return dir;
+  }
+
+  it('a pre-created marker does NOT silence the GUARD INACTIVE banner', async () => {
+    // Bug this catches (measured, both steps individually ALLOWed): with the
+    // marker planted, the total-failure path emitted 0 bytes of stderr while
+    // stdout stayed empty — i.e. an indistinguishable-from-allow silent disarm.
+    const dir = await plantMarker('inactive');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard'),
+      execArgv: brokenBlockerBoot({ alsoBreakHeadFallback: true }),
+    });
+    expectAllow(result); // still fail-OPEN by design — but never fail-SILENT
+    expect(result.stderr).toContain('GUARD INACTIVE');
+    expect(result.stderr).toContain('are NOT being blocked');
+  });
+
+  it('the GUARD INACTIVE banner repeats on EVERY call — a total outage is never throttled', async () => {
+    // Bug this catches: once-per-session keying belongs to the DEGRADED case
+    // (guard armed, evaluating HEAD). Applied to a total outage it means the
+    // operator sees one line and every later call is silently unprotected.
+    const dir = await mkProjectTracked();
+    const boot = brokenBlockerBoot({ alsoBreakHeadFallback: true });
+    const first = await runHook({ projectDir: dir, stdin: bashPayload('git reset --hard'), execArgv: boot });
+    const second = await runHook({ projectDir: dir, stdin: bashPayload('git reset --hard'), execArgv: boot });
+    expect(first.stderr).toContain('GUARD INACTIVE');
+    expect(second.stderr).toContain('GUARD INACTIVE');
+  });
+
+  it.skipIf(!HAS_GIT)('a bare `touch` marker does NOT silence the DEGRADED banner either', async () => {
+    // Bug this catches: the same pre-creation attack against the head-fallback
+    // banner. Existence is no longer the predicate — the marker must carry the
+    // loader's own scoped payload, which an empty file cannot forge.
+    const dir = await plantMarker('head-fallback');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+    expectDeny(result, 'rm-rf-destructive');
+    expect(result.stderr).toContain('DEGRADED');
+  });
+
+  it.skipIf(!HAS_GIT || process.platform === 'win32')(
+    'an UNWRITABLE marker dir degrades to a repeating banner, never to silence',
+    async () => {
+      // Bug this catches: a marker write that throws must not take the banner
+      // (or the decision) down with it. `/dev/null/<sub>` is the uid-uniform
+      // fast-ENOTDIR path — never chmod, CI runs as uid 0 where chmod is a no-op.
+      const dir = await mkProjectTracked();
+      const result = await runHook({
+        projectDir: dir,
+        stdin: bashPayload('rm -rf /'),
+        execArgv: brokenBlockerBoot(),
+        env: { TMPDIR: unwritablePath('guard-banner-marker') },
+      });
+      expectDeny(result, 'rm-rf-destructive');
+      expect(result.stderr).toContain('DEGRADED');
+    }
+  );
+
+  it.skipIf(!HAS_GIT)('an INCOMPLETE HEAD copy banners as a total failure, not as "still armed"', async () => {
+    // Bug this catches (measured): the shape-check covered 2 of the 6 exports
+    // the hook destructures, so a HEAD copy predating a newly added export
+    // passed as "DEGRADED — enforcement IS still armed" and then allowed every
+    // command with `⚠ internal error — splitChainSegments is not a function`.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot({
+        headSource:
+          'export function tokenizeCommand() { return []; }\n' +
+          'export function commandMatchesBlocked() { return false; }\n',
+      }),
+    });
+    expect(result.stderr).toContain('GUARD INACTIVE');
+    expect(result.stderr).not.toContain('DEGRADED');
+    expect(result.stderr).not.toContain('is not a function');
   });
 });

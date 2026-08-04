@@ -62,7 +62,10 @@ if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
 // Binding them late (dynamic `import()` inside `bootstrap()`, below) turns that
 // link-time crash into a catchable runtime error, which is what makes the
 // banner + HEAD-fallback in `_lib/guard-source-loader.mjs` reachable at all.
-// The rest of this file is unchanged: same names, same call sites.
+// The command-blocker half is held as a NAMESPACE object (`blocker.*`) rather
+// than six destructured bindings — see the `blocker` docblock below for why
+// that single change removes the shape-check drift that made a 4-of-6-missing
+// HEAD copy read as "still armed".
 //
 // `profile-gate.mjs` stays static on purpose — it has ZERO imports of its own
 // and gates whether this hook runs at all.
@@ -72,14 +75,22 @@ if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 let resolveProjectDir;
 let resolvePluginRoot;
-// From command-blocker.mjs (W4 B6: one direct import path, not via the
-// hardening.mjs barrel, which does not re-export the #982/#983 primitives).
-let tokenizeCommand;
-let commandMatchesBlocked;
-let extractRedirectTargets;
-let redirectRuleMatches;
-let resolveSegmentVerb;
-let splitChainSegments;
+/**
+ * The whole `command-blocker.mjs` namespace (W4 B6: one direct import path, not
+ * via the hardening.mjs barrel, which does not re-export the #982/#983
+ * primitives).
+ *
+ * Held as ONE object rather than destructured into six bindings on purpose: the
+ * required-export list then exists in exactly one place —
+ * `COMMAND_BLOCKER_EXPORTS` in `_lib/guard-source-loader.mjs`, which validates
+ * both the working-tree and the HEAD copy against it. The previous split (six
+ * names destructured here, two of them checked there) is what let a HEAD copy
+ * missing four exports banner "DEGRADED — still armed" and then fail open on
+ * every command.
+ *
+ * @type {Record<string, Function>|null}
+ */
+let blocker = null;
 let readConfigFile;
 let loadEffectivePolicy;
 let isSessionConfigHeading;
@@ -114,19 +125,14 @@ async function bootstrap() {
   ({ emitEvent } = await import('../scripts/lib/events.mjs'));
 
   const { loadCommandBlocker } = await import('./_lib/guard-source-loader.mjs');
-  const { module: blocker } = await loadCommandBlocker({
+  // Throws unless the loaded namespace carries the COMPLETE required export set
+  // (working-tree copy or HEAD fallback alike) — the caller then banners
+  // GUARD INACTIVE rather than arming a guard that cannot evaluate.
+  ({ module: blocker } = await loadCommandBlocker({
     specifier: pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-blocker.mjs')).href,
     repoRoot: PLUGIN_ROOT,
     projectDir: bannerProjectDir(),
-  });
-  ({
-    tokenizeCommand,
-    commandMatchesBlocked,
-    extractRedirectTargets,
-    redirectRuleMatches,
-    resolveSegmentVerb,
-    splitChainSegments,
-  } = blocker);
+  }));
 }
 
 // Module-level per-path policy cache (issue #250, extended for the #972
@@ -300,8 +306,8 @@ function parseRmTargets(command) {
   const targets = [];
   const writeTargets = [];
 
-  for (const segment of splitChainSegments(tokenizeCommand(command))) {
-    const { verb, index } = resolveSegmentVerb(segment);
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    const { verb, index } = blocker.resolveSegmentVerb(segment);
     if (verb !== 'rm') continue;
 
     let seenDashDash = false;
@@ -373,8 +379,8 @@ function isNullSink(targetPath) {
  * @returns {boolean}
  */
 function commandHasRecursiveForceRm(command) {
-  for (const segment of splitChainSegments(tokenizeCommand(command))) {
-    const { verb, index } = resolveSegmentVerb(segment);
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    const { verb, index } = blocker.resolveSegmentVerb(segment);
     if (verb !== 'rm' || segment[index].quoted) continue;
 
     let recursive = false;
@@ -428,7 +434,7 @@ function findMatchedRedirectEntry(rule, entries, repoRoot) {
     if (entry.unresolved) continue;
     const op = REDIRECT_PROBE_OPS[entry.mode] ?? '>';
     const probe = `${op} "${entry.target.replace(/[\\"]/g, '\\$&')}"`;
-    if (redirectRuleMatches(rule, probe, { repoRoot })) return entry;
+    if (blocker.redirectRuleMatches(rule, probe, { repoRoot })) return entry;
   }
   return null;
 }
@@ -726,7 +732,7 @@ async function main() {
       const modes = new Set(
         Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']
       );
-      const collected = extractRedirectTargets(command);
+      const collected = blocker.extractRedirectTargets(command);
       const entries = collected.filter((e) => modes.has(e.mode));
       // Recursion-cap markers (#988 T2) carry `mode: null` by construction — a
       // bare `modes.has(e.mode)` filter drops them, which would make the new
@@ -746,7 +752,7 @@ async function main() {
           `⚠ pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)\n`
         );
       }
-      if (!redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
+      if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
       if (severity !== 'block') {
         process.stderr.write(
           `⚠ pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}\n`
@@ -763,8 +769,8 @@ async function main() {
     // The rm-rf-destructive rule also fires for recursive+force rm flag variants
     // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.
     const matched = id === 'rm-rf-destructive'
-      ? (commandMatchesBlocked(command, pattern) || commandHasRecursiveForceRm(command))
-      : commandMatchesBlocked(command, pattern);
+      ? (blocker.commandMatchesBlocked(command, pattern) || commandHasRecursiveForceRm(command))
+      : blocker.commandMatchesBlocked(command, pattern);
     if (!matched) continue;
 
     if (severity === 'warn') {
@@ -849,7 +855,10 @@ try {
 } catch (loadError) {
   try {
     const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
-    emitGuardInactiveBanner({ projectDir: bannerProjectDir(), error: loadError });
+    // Unthrottled by design: EVERY call in an unarmed session says so (#992
+    // hardening — the once-per-session marker it used to pass through was
+    // suppressible by a bare `touch` on a derivable tmp path).
+    emitGuardInactiveBanner({ error: loadError });
   } catch {
     // Last resort: even the banner helper failed to load. Emit unconditionally
     // (no once-per-session keying) — repeated noise beats a silent disarm.

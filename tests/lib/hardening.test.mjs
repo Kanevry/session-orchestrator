@@ -501,10 +501,46 @@ describe('commandMatchesBlocked', () => {
       // later line keeps its body inert. Splitting on the newline is what makes
       // the two lines judgeable apart at all.
       ['here-doc for a NON-interpreter on a later line', 'echo hi\ncat <<EOF\nrm -rf /\nEOF', 'rm -rf', false],
-      // Still true, via the second segment rather than the joined skeleton —
-      // pins that the split did not lose the plain-chain case.
-      ['plain dangerous line after a harmless one', 'echo hi\nrm -rf /', 'rm -rf', true],
+      // (A fourth row, 'plain dangerous line after a harmless one', was deleted
+      // in #992: measured `true` against 718042c^ — i.e. green with all three
+      // #981 branches reverted — so it pinned nothing its comment claimed.)
     ])('#981 — %s', (_name, command, pattern, expected) => {
+      expect(commandMatchesBlocked(command, pattern)).toBe(expected);
+    });
+
+    // -----------------------------------------------------------------------
+    // #992 — #981 elided the continuation only in the UNQUOTED state, on the
+    // stated ground that "no verdict there depends on it". One did: the fast
+    // path in commandMatchesBlocked tests this very string, so a continuation
+    // surviving inside quotes returned false before the lexer ever ran.
+    // Measured against the live hook + the real 14-rule policy at 718042c:
+    //   DENY   git push \<LF>--force origin main
+    //   ALLOW  bash -c "git push \<LF>--force origin main"
+    //   ALLOW  bash -c 'git push \<LF>--force origin main'
+    // bash argv is identical for all three spellings: [push][--force].
+    // -----------------------------------------------------------------------
+    it.each([
+      ['double-quoted payload — the outer shell joins the lines',
+        'bash -c "git push \\\n--force origin main"', 'git push --force', true],
+      ['single-quoted payload — the INNER shell joins them',
+        "bash -c 'git push \\\n--force origin main'", 'git push --force', true],
+      // Control: without the continuation the same shape already denied, so a
+      // green row above cannot be credited to the quoted-payload guard alone.
+      ['control: no continuation, same shape',
+        'bash -c "git push --force origin main"', 'git push --force', true],
+      // The direction the elision moves a verdict the OTHER way, and why that
+      // is correct. `"foo\<LF>rm -rf /"` GLUES: measured
+      // `set -- "foo\<LF>XX -yy /"` → argv `[fooXX -yy /]`, and the inner shell
+      // then splits it into `[fooXX][-yy][/]` — the command is `fooXX`, not
+      // `XX`. So bash never runs `rm` here; the pre-#992 `true` was a false
+      // positive produced by treating the newline as a word boundary.
+      ['glued word is NOT the pattern — matches bash argv',
+        'bash -c "foo\\\nrm -rf /"', 'rm -rf', false],
+      // Same glue, the safe direction: a continuation INSIDE the verb makes the
+      // real command `foorm`, but one after a real space keeps the boundary.
+      ['continuation after a real space keeps the match',
+        'bash -c "rm -rf \\\n/tmp/x"', 'rm -rf', true],
+    ])('#992 — %s', (_name, command, pattern, expected) => {
       expect(commandMatchesBlocked(command, pattern)).toBe(expected);
     });
   });

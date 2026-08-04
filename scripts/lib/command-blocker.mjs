@@ -150,6 +150,15 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
       if (expandSingleQuoted) {
         const end = matchShellWhitespaceExpansion(command, i);
         if (end !== -1) { out += ' '; i = end; continue; }
+        // Line continuation inside SINGLE quotes (#992). The OUTER shell keeps
+        // `\<LF>` literal here — but under `expandSingleQuoted` the caller is
+        // looking at a string a LATER shell parses, and that inner shell joins
+        // the lines. Measured: `bash -c 'set -- rm -rf\<LF>/; …'` → argv
+        // `[rm][-rf/]`, i.e. the continuation is gone by the time the inner
+        // shell splits words. Gated on the flag for exactly that reason: the
+        // default (outer-shell) reading must keep the pair, or a literal
+        // `printf 'a\<LF>b'` would be misread.
+        if (ch === '\\' && command[i + 1] === '\n') { i += 2; continue; }
       }
       out += ch;
       i++;
@@ -163,6 +172,14 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
         if (end !== -1) { out += ' '; i = end; continue; }
       }
       if (ch === '\\' && i + 1 < command.length) {
+        // Line continuation inside DOUBLE quotes (#992). bash removes the pair
+        // here exactly as it does unquoted — measured `set -- "rm -rf\<LF>/"`
+        // → argv `[rm -rf/]`, the two characters leave no trace. Keeping them
+        // was the #981 scope cut ("no verdict there depends on it"); one did:
+        // commandMatchesBlocked's fast path tests this string, so
+        // `bash -c "git push \<LF>--force origin main"` never reached the lexer
+        // and the force-push was ALLOWED while the unquoted spelling denied.
+        if (command[i + 1] === '\n') { i += 2; continue; }
         out += ch + command[i + 1];
         i += 2;
         continue;
@@ -183,9 +200,11 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
       // still present, because eliding it JOINS text that the regex then spans.
       // Measured: `git push \<LF>--force origin main` never reached the lexer —
       // the fast path returned false and the force-push was ALLOWED.
-      // Only the unquoted state elides: inside single quotes bash keeps the
-      // backslash-newline literal, and the double-quoted case is left exactly
-      // as it was (scope discipline — no verdict there depends on it).
+      // All three states elide now (#992). The #981 claim that "no verdict
+      // depends on" the quoted branches was false: the fast path above tests
+      // this very string, so a continuation surviving inside quotes bailed the
+      // whole match out. See the `single` / `double` branches for their gating
+      // (single only under `expandSingleQuoted` — there the INNER shell joins).
       if (command[i + 1] === '\n') { i += 2; continue; }
       out += ch + command[i + 1];
       i += 2;
@@ -665,6 +684,15 @@ const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
  *
  * Spec fields (all optional):
  *   - argFlags:       Set of flags that consume a SEPARATE next-token argument.
+ *   - fileArgFlags:   Subset of `argFlags` whose operand is a FILE THE WRAPPER
+ *                     WRITES (`time -o report`), not merely an option value.
+ *                     Entries so flagged are reported with `writesFile: true`
+ *                     in `wrapperArgs` (#992). Membership is per-wrapper and
+ *                     deliberately narrow — measured counter-examples that must
+ *                     NOT be in it: `stdbuf -o 0` (a BUFFERING MODE), `nice -n
+ *                     10` (a priority), `sudo -u root` (a user name). A blanket
+ *                     "every argFlag operand is a file" rule would block all
+ *                     three; the table is the discriminator.
  *   - shellFlags:     Set of flags that make the wrapper itself spawn a shell
  *                     (`sudo -i` / `sudo -s`) — resolution yields the synthetic
  *                     verb `sh`, so the quoted-payload guard treats the segment
@@ -706,8 +734,16 @@ export const WRAPPER_UNWRAP = new Map([
     argFlags: new Set(['-u', '-C', '-a']),
     shellFlags: new Set(['-s']),
   }],
+  // `-P altpath` is BSD/macOS env(1)'s "search THIS path for the utility"
+  // option. It was missing, so `-P` was skipped as a one-token boolean and its
+  // operand landed in verb position: `env -P /bin:/usr/bin bash -c 'rm -rf
+  // /etc'` resolved to the verb `bin` (basename of `/bin:/usr/bin`), the
+  // segment was no longer an interpreter, and the quoted payload went inert —
+  // measured ALLOW (#992). Note the contrast with `sudo -P`, which is
+  // `--preserve-groups`, a BOOLEAN — the same letter is value-taking for one
+  // wrapper and not for the other, which is why this table is per-wrapper.
   ['env', {
-    argFlags: new Set(['-u', '--unset', '-C', '--chdir']),
+    argFlags: new Set(['-u', '--unset', '-C', '--chdir', '-P']),
     envAssignments: true,
     splitString: true,
   }],
@@ -720,7 +756,14 @@ export const WRAPPER_UNWRAP = new Map([
   // the real write verb (#988 T3). Only the EXTERNAL `time` takes flags — the
   // bash keyword rejects `-o` outright — so consuming them here cannot
   // mis-parse a keyword invocation, which never carries `-o` in the first place.
-  ['time', { argFlags: new Set(['-o', '--output']) }],
+  // `-f FORMAT` / `--format FORMAT` is GNU time(1) (not BSD/macOS, where the
+  // binary rejects it — so this row is Linux-CI-relevant only). Without it the
+  // format string is skipped as a boolean and the FOLLOWING token is read as
+  // the verb: measured `/usr/bin/time -f %e npm test` → verb `%e` (#992).
+  ['time', {
+    argFlags: new Set(['-o', '--output', '-f', '--format']),
+    fileArgFlags: new Set(['-o', '--output']),
+  }],
   ['timeout', {
     argFlags: new Set(['-k', '--kill-after', '-s', '--signal']),
     positionals: 1,
@@ -749,7 +792,8 @@ export const WRAPPER_UNWRAP = new Map([
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {{ verb: string|null, index: number, payloads: string[],
- *             wrapperArgs: Array<{ wrapper: string, flag: string, value: string|null }> }}
+ *             wrapperArgs: Array<{ wrapper: string, flag: string, value: string|null,
+ *                                  writesFile?: true }> }}
  *   verb — bare program basename (or synthetic `sh` for `sudo -i`/`-s`), null
  *   when the segment exhausts in wrappers; index — token index of the resolved
  *   verb (-1 when null); payloads — command strings a wrapper will execute;
@@ -757,10 +801,20 @@ export const WRAPPER_UNWRAP = new Map([
  *   verb, in encounter order. `wrapper` is the wrapper's basename (`time`),
  *   `flag` the option as written (`-o`, `--output`), `value` its operand
  *   (`null` when the flag ended the segment). Both the separated (`-o FILE`)
- *   and the attached long form (`--output=FILE`) are reported. These operands
- *   are FILE TARGETS a wrapper writes, invisible in `verb`/`payloads`:
- *   `/usr/bin/time -o <ledger> npm test` truncates `<ledger>` while the verb
- *   is `npm`. Downstream guards (ledger, #991) judge them as write targets.
+ *   and the attached long form (`--output=FILE`) are reported.
+ *
+ *   `writesFile: true` (#992) marks the entries whose operand is a FILE THE
+ *   WRAPPER WRITES, per the spec's `fileArgFlags`. The key is present ONLY when
+ *   true — an entry without it keeps the exact pre-#992 `{ wrapper, flag,
+ *   value }` shape, so a `toEqual` on a non-file entry is unaffected. This is
+ *   the answer to the question the caller actually has ("is this operand a
+ *   write target?"), which used to be re-derived from a second table
+ *   (`WRAPPER_FILE_FLAGS` in hooks/pre-bash-sessions-ledger-guard.mjs). That
+ *   copy is now REDUNDANT and can be replaced by `wa.writesFile` (#991
+ *   follow-up) — the knowledge lives here, next to the grammar it belongs to.
+ *   `/usr/bin/time -o <ledger> npm test` truncates `<ledger>` while the verb is
+ *   `npm`; extractRedirectTargets surfaces exactly these entries so the
+ *   redirect denylist sees them too.
  */
 export function resolveSegmentVerb(segment) {
   const payloads = [];
@@ -800,11 +854,13 @@ export function resolveSegmentVerb(segment) {
       if (spec.argFlags && spec.argFlags.has(text)) {
         // Separated form `-o FILE`: record the operand, then skip BOTH tokens
         // exactly as before (token accounting unchanged — recording only).
-        wrapperArgs.push({
+        const entry = {
           wrapper,
           flag: text,
           value: i + 1 < segment.length ? segment[i + 1].text : null,
-        });
+        };
+        if (spec.fileArgFlags?.has(text)) entry.writesFile = true;
+        wrapperArgs.push(entry);
         i += 2;
         continue;
       }
@@ -813,7 +869,10 @@ export function resolveSegmentVerb(segment) {
         // this branch only records the operand the fall-through would drop.
         const eq = text.indexOf('=');
         if (eq > 0 && spec.argFlags.has(text.slice(0, eq))) {
-          wrapperArgs.push({ wrapper, flag: text.slice(0, eq), value: text.slice(eq + 1) });
+          const flag = text.slice(0, eq);
+          const entry = { wrapper, flag, value: text.slice(eq + 1) };
+          if (spec.fileArgFlags?.has(flag)) entry.writesFile = true;
+          wrapperArgs.push(entry);
         }
       }
       i++; // unknown / boolean / attached-value flag — one token
@@ -1013,6 +1072,34 @@ function collectRedirectTargets(segments, out, depth, budget) {
     }
 
     const resolved = resolveSegmentVerb(segment);
+
+    // A wrapper can truncate a file WITHOUT any redirect operator and without
+    // being the verb: `/usr/bin/time -o CLAUDE.md npm test` empties CLAUDE.md
+    // while the verb is `npm` (BSD time(1): "If file exists and the -a flag is
+    // not specified, the file will be overwritten"). Measured pre-#992 against
+    // the real 14-rule policy: `> CLAUDE.md` DENY, `/usr/bin/time -o CLAUDE.md
+    // npm test` ALLOW. `writesFile` — never the bare `argFlags` membership — is
+    // the discriminator: `stdbuf -o 0`, `nice -n 10`, `sudo -u root` all carry
+    // an argFlag operand that is NOT a file, and all three stay unreported.
+    //
+    // Mode is `truncate` unconditionally, including under `time -a` (append).
+    // Deliberate, safe-direction over-report: reading `-a` would mean tracking
+    // the wrapper's BOOLEAN flags too — widening the contract a sibling guard
+    // consumes — to buy back a false-positive class that is empty in practice
+    // (nobody appends a timing report to a policy-protected file). An
+    // under-report here is a bypass; this over-report is a nuisance at worst.
+    for (const wa of resolved.wrapperArgs) {
+      if (wa.writesFile !== true) continue;
+      if (typeof wa.value !== 'string') continue;
+      if (/[$`]/.test(wa.value)) {
+        // Same fail-visible rule as a redirect operand (#983): never guess at a
+        // variable or a command substitution, but never silently drop it either.
+        out.push({ target: null, mode: 'truncate', fd: null, unresolved: true });
+        continue;
+      }
+      out.push({ target: wa.value, mode: 'truncate', fd: null });
+    }
+
     const payloads = [...resolved.payloads];
     if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
       payloads.push(...dashCPayloads(segment, resolved.index));
@@ -1065,6 +1152,15 @@ function collectRedirectTargets(segments, out, depth, budget) {
  *
  * `dup` (`2>&1`), `heredoc` (`<<`), and `herestring` (`<<<`) redirects name
  * no filesystem target and are omitted (deliberate boundary, documented).
+ *
+ * WIDENED CONTRACT (#992): the traversal ALSO reports wrapper file operands —
+ * `resolveSegmentVerb` entries carrying `writesFile: true`, i.e. today
+ * `/usr/bin/time -o FILE` / `--output=FILE`. Such a write has no redirect
+ * operator at all, so the pre-#992 traversal saw nothing and
+ * `/usr/bin/time -o CLAUDE.md npm test` truncated a denylisted file while
+ * `> CLAUDE.md` was blocked. They are emitted as `mode: 'truncate'`, `fd: null`
+ * — indistinguishable from a `>` entry by design, because the EFFECT on the
+ * named file is indistinguishable.
  *
  * @param {string} command
  * @returns {Array<{ target: string|null, mode: string|null, fd: number|null,

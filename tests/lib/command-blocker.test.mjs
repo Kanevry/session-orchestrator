@@ -281,10 +281,10 @@ describe('resolveSegmentVerb — `time` argFlags + wrapperArgs (#988 T3)', () =>
   // discarded at the `i += 2` skip and unrecoverable downstream.
   it('returns the consumed wrapper operands in both spellings', () => {
     expect(resolve('/usr/bin/time -o /tmp/log tee -a LEDGER').wrapperArgs).toEqual([
-      { wrapper: 'time', flag: '-o', value: '/tmp/log' },
+      { wrapper: 'time', flag: '-o', value: '/tmp/log', writesFile: true },
     ]);
     expect(resolve('/usr/bin/time --output=.orchestrator/metrics/sessions.jsonl npm test').wrapperArgs).toEqual([
-      { wrapper: 'time', flag: '--output', value: '.orchestrator/metrics/sessions.jsonl' },
+      { wrapper: 'time', flag: '--output', value: '.orchestrator/metrics/sessions.jsonl', writesFile: true },
     ]);
     // Additive contract: shapes without a value-taking wrapper flag report [].
     expect(resolve('time npm test')).toEqual({
@@ -301,6 +301,83 @@ describe('resolveSegmentVerb — `time` argFlags + wrapperArgs (#988 T3)', () =>
     ['boolean -p flag is untouched', "/usr/bin/time -p bash -c 'rm -rf /'"],
   ])('still blocks: %s', (_label, command) => {
     expect(commandMatchesBlocked(command, 'rm -rf')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #992 — value-taking wrapper flags that were missing from WRAPPER_UNWRAP, and
+// the `writesFile` half of the wrapperArgs contract.
+// ---------------------------------------------------------------------------
+describe('WRAPPER_UNWRAP completeness — missing value-taking flags (#992)', () => {
+  const resolve = (cmd) => resolveSegmentVerb(splitChainSegments(tokenizeCommand(cmd))[0]);
+
+  // The bug: BSD/macOS `env -P altpath` (env(1): "Search the set of directories
+  // as specified by altpath to locate the specified utility program") was not
+  // in env's argFlags. It was skipped as a one-token boolean and its PATH
+  // operand landed in verb position. Measured at 718042c:
+  //   `env -P /bin:/usr/bin bash -c 'rm -rf /etc'`      → verb "bin", ALLOW
+  //   `env -P /bin:/usr/bin psql -c 'DROP TABLE users'` → ALLOW
+  // Executability was confirmed — `env -P /bin:/usr/bin bash -c '…'` runs.
+  it('resolves past `env -P altpath` to the real interpreter', () => {
+    expect(resolve("env -P /bin:/usr/bin bash -c 'rm -rf /etc'").verb).toBe('bash');
+    expect(commandMatchesBlocked("env -P /bin:/usr/bin bash -c 'rm -rf /etc'", 'rm -rf')).toBe(true);
+    expect(commandMatchesBlocked("env -P /bin:/usr/bin psql -c 'DROP TABLE users'", 'DROP TABLE')).toBe(true);
+  });
+
+  // Same class, GNU time(1) `-f FORMAT` / `--format FORMAT` (not on BSD/macOS,
+  // so this row is Linux-CI-relevant only). Measured at 718042c: verb `%e`.
+  it('resolves past GNU `time -f FORMAT` to the real verb', () => {
+    expect(resolve('/usr/bin/time -f %e npm test').verb).toBe('npm');
+    expect(commandMatchesBlocked("/usr/bin/time --format=%e bash -c 'rm -rf /'", 'rm -rf')).toBe(true);
+  });
+
+  // `-P` is value-taking for `env` and BOOLEAN for `sudo` (--preserve-groups,
+  // per `sudo -h`). A per-wrapper table is the only thing that can hold both;
+  // this row fails the moment someone hoists `-P` into a shared flag set.
+  it('keeps `-P` per-wrapper: value-taking for env, boolean for sudo', () => {
+    expect(resolve('sudo -P rm -rf /').verb).toBe('rm');
+    expect(resolve('env -P /bin rm -rf /').verb).toBe('rm');
+  });
+});
+
+describe('wrapperArgs.writesFile + wrapper file targets (#992)', () => {
+  const resolve = (cmd) => resolveSegmentVerb(splitChainSegments(tokenizeCommand(cmd))[0]);
+
+  // The precision this replaces a second table with: `argFlags` membership says
+  // "this flag takes a value", NOT "that value is a file". All three rows below
+  // carry an argFlag operand that is not a filesystem target — a blanket rule
+  // would report every one of them and block `stdbuf -o 0 tee x`.
+  it.each([
+    ['sudo -u root — a user name', 'sudo -u root tee f'],
+    ['stdbuf -o 0 — a BUFFERING MODE', 'stdbuf -o 0 tee f'],
+    ['nice -n 10 — a priority', 'nice -n 10 tee f'],
+    ['time -f %e — a format string', '/usr/bin/time -f %e npm test'],
+  ])('does NOT mark %s as a write target', (_label, command) => {
+    for (const wa of resolve(command).wrapperArgs) {
+      expect(wa.writesFile).toBeUndefined();
+    }
+    expect(extractRedirectTargets(command)).toEqual([]);
+  });
+
+  // `/usr/bin/time -o FILE` truncates FILE (BSD time(1)) while the verb is
+  // whatever time runs — no redirect operator anywhere, so the pre-#992
+  // traversal reported nothing. Measured at 718042c against the real 14-rule
+  // policy: `> CLAUDE.md` DENY, `/usr/bin/time -o CLAUDE.md npm test` ALLOW.
+  it.each([
+    ['separated -o', '/usr/bin/time -o CLAUDE.md npm test'],
+    ['attached --output=', '/usr/bin/time --output=CLAUDE.md npm test'],
+  ])('reports the %s operand as a truncate target', (_label, command) => {
+    expect(extractRedirectTargets(command)).toEqual([
+      { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // Same #641 fail-visible rule the redirect operands follow: a variable or a
+  // command substitution is surfaced, never guessed at, never matched.
+  it('reports a variable operand as unresolved rather than guessing', () => {
+    expect(extractRedirectTargets('/usr/bin/time -o "$OUT" npm test')).toEqual([
+      { target: null, mode: 'truncate', fd: null, unresolved: true },
+    ]);
   });
 });
 
@@ -336,6 +413,18 @@ describe('redirectRuleMatches (#983 — denylist polarity)', () => {
     // the glob and the truncation is SILENTLY ALLOWED (probe-measured false).
     ['.// spelling normalizes', 'echo x > .//CLAUDE.md', {}, true],
     ['sub/.. spelling normalizes', 'echo x > ./sub/../CLAUDE.md', {}, true],
+
+    // #992 — a wrapper file flag truncates without any redirect operator. The
+    // rule sees it only because extractRedirectTargets now emits it; measured
+    // ALLOW against the real 14-rule policy before the fix.
+    ['time -o onto CLAUDE.md', '/usr/bin/time -o CLAUDE.md npm test', {}, true],
+    ['time --output= onto CLAUDE.md', '/usr/bin/time --output=CLAUDE.md npm test', {}, true],
+    // The precision boundary: an argFlag operand that is not a file must not
+    // become a target, or `stdbuf -o 0` / `nice -n 10` / `sudo -u root` block.
+    ['stdbuf -o 0 is a buffering mode, not a file', 'stdbuf -o 0 tee CLAUDE.md', {}, false],
+    ['nice -n 10 is a priority, not a file', 'nice -n 10 tee CLAUDE.md', {}, false],
+    ['sudo -u root is a user, not a file', 'sudo -u root tee CLAUDE.md', {}, false],
+    ['a time report outside the repo is not judgeable', '/usr/bin/time -o /tmp/log npm test', {}, false],
 
     // #988 T1 — the denylist globs are repo-relative, so before repoRoot
     // resolution an ABSOLUTE or `~` spelling of the very same file matched

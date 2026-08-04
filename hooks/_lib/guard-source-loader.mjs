@@ -41,6 +41,39 @@
  * successful HEAD fallback banners too ("running against HEAD, not the working
  * tree"), otherwise a visible hole is traded for an invisible semantic drift.
  *
+ * **The HEAD fallback presupposes a git checkout.** It shells out to
+ * `git show HEAD:<path>` in the PLUGIN ROOT (not the project dir). For an
+ * npm-installed plugin — or any tarball/vendored copy without a `.git` — that
+ * command fails by construction, so half of this module is structurally
+ * unavailable there: EVERY load failure degrades straight to the GUARD INACTIVE
+ * banner below. That is the designed fail-loud direction, not a regression, but
+ * it means the banner is the ONLY protection npm consumers get.
+ *
+ * ## Why the marker is not a mute switch (post-#992 hardening)
+ *
+ * The once-per-session throttle used to key on the mere EXISTENCE of a
+ * predictably-named tmp file, and it gated BOTH banner classes. Measured: an
+ * agent could `touch` that path (not a destructive command), then append a
+ * syntax error to a `scripts/lib/` module (not on any redirect denylist) and the
+ * total-outage banner went silent while the decision channel said ALLOW —
+ * strictly worse than the pre-#992 crash, which at least printed a stack trace.
+ * Two changes close it:
+ *
+ *   - **The `inactive` (total-outage) banner is NOT throttled at all.** Once per
+ *     call, every call. Throttling is for the *degraded* case (guard armed,
+ *     evaluating HEAD); a guard that is OFF must keep saying so. Noise there is
+ *     strictly cheaper than a silent disarm.
+ *   - **Where the marker remains (`head-fallback`), CONTENT decides, not
+ *     existence**: a scoped payload (magic + kind + banner key + projectDir
+ *     digest + boot epoch) that an empty `touch` cannot forge, opened
+ *     `O_CREAT|O_EXCL|O_NOFOLLOW` for write and `O_NOFOLLOW` for read — so the
+ *     marker path can no longer be aimed at an arbitrary file via a symlink,
+ *     and a foreign or stale file makes the banner REPEAT rather than vanish.
+ *
+ * Honest residual: an attacker who runs as the same uid and reproduces the
+ * payload format can still suppress the `head-fallback` banner. That is why the
+ * class that actually means "unprotected" no longer depends on the marker.
+ *
  * Measured cost: `git show` median 4.2 ms (n=21) against a hook allow-path
  * median of 61 ms (n=15) — +11 ms, and only in the defect case. Zero in normal
  * operation: nothing here runs unless an import already threw.
@@ -70,8 +103,40 @@ import { execFileSync } from 'node:child_process';
 /** TTL for the session-id-less marker fallback, mirroring `run-node.sh` (6h). */
 const BANNER_TTL_MS = 6 * 60 * 60 * 1000;
 
+/** Marker payload discriminator — an empty `touch` matches none of it. */
+const MARKER_MAGIC = 'session-orchestrator/guard-banner';
+const MARKER_VERSION = 1;
+
+/** Bucket width for the boot-epoch field (seconds), and its accepted drift. */
+const BOOT_BUCKET_S = 10;
+
 /** Repo-relative path of the one module that gets the HEAD fallback. */
-export const COMMAND_BLOCKER_REL = 'scripts/lib/command-blocker.mjs';
+const COMMAND_BLOCKER_REL = 'scripts/lib/command-blocker.mjs';
+
+/**
+ * The FULL export set `pre-bash-destructive-guard.mjs` needs from
+ * `command-blocker.mjs` — the single source of truth for the shape check.
+ *
+ * It lives here, and ONLY here, on purpose. The hook no longer destructures the
+ * module (it holds the namespace object and calls through it), so there is no
+ * second list to drift out of sync: a seventh export is added once, right here,
+ * and both the working-tree and the HEAD copy are validated against it.
+ *
+ * Why the check must cover all of them: it used to assert 2 of the 6, so a HEAD
+ * copy OLDER than the working tree — the normal case when a newly added export
+ * is the very thing that broke, i.e. the #982/#983/#988 history — passed as
+ * "DEGRADED, enforcement IS still armed" and then allowed every command with an
+ * `⚠ internal error — <fn> is not a function` line. A fallback that cannot
+ * enforce must banner as a TOTAL failure, never as "still armed".
+ */
+const COMMAND_BLOCKER_EXPORTS = [
+  'tokenizeCommand',
+  'commandMatchesBlocked',
+  'extractRedirectTargets',
+  'redirectRuleMatches',
+  'resolveSegmentVerb',
+  'splitChainSegments',
+];
 
 /**
  * Resolve the once-per-session banner key.
@@ -86,7 +151,7 @@ export const COMMAND_BLOCKER_REL = 'scripts/lib/command-blocker.mjs';
  * @returns {{key: string, ttl: boolean}} `ttl: true` means "key is not
  *   session-scoped — apply the 6h time TTL instead of pure existence".
  */
-export function resolveBannerKey(projectDir) {
+function resolveBannerKey(projectDir) {
   try {
     const raw = fs.readFileSync(path.join(projectDir, '.orchestrator', 'session.lock'), 'utf8');
     const id = JSON.parse(raw)?.session_id;
@@ -99,6 +164,21 @@ export function resolveBannerKey(projectDir) {
   return { key: 'ttl', ttl: true };
 }
 
+/** Per-project marker scope — the digest half of the marker file name. */
+function markerScope(projectDir) {
+  return crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
+}
+
+/**
+ * Coarse boot epoch (unix seconds, bucketed), used to invalidate markers left
+ * behind by a previous boot in a persistent `/tmp`. Bucketing absorbs the
+ * sub-second jitter between two `os.uptime()` reads; the reader additionally
+ * accepts ±1 bucket, so a call straddling a bucket edge is not a false miss.
+ */
+function bootEpochBucket() {
+  return Math.round((Date.now() / 1000 - os.uptime()) / BOOT_BUCKET_S);
+}
+
 /**
  * Absolute path of the marker file that makes the banner once-per-session.
  *
@@ -108,49 +188,141 @@ export function resolveBannerKey(projectDir) {
  * concatenation on `$TMPDIR` — that env var carries a trailing slash on macOS
  * and is unset on a Linux container.
  *
- * @param {string} projectDir - keyed per project so parallel repos (and
+ * The path is intentionally still derivable (it must be, across processes) —
+ * which is exactly why the path alone no longer decides anything: see
+ * `readMarker` for the payload the file has to carry.
+ *
+ * @param {string} scope - `markerScope(projectDir)`, so parallel repos (and
  *   per-test fixture dirs) never share a marker.
- * @param {string} kind - banner class (`head-fallback` | `inactive`).
+ * @param {string} kind - banner class (`head-fallback`).
  * @param {string} key
  * @returns {string}
  */
-export function bannerMarkerPath(projectDir, kind, key) {
-  const digest = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
-  return path.join(os.tmpdir(), `session-orchestrator-guard-${kind}-${digest}-${key}`);
+function bannerMarkerPath(scope, kind, key) {
+  return path.join(os.tmpdir(), `session-orchestrator-guard-${kind}-${scope}-${key}`);
 }
 
 /**
- * Write a guard-degradation banner to **stderr**, at most once per session.
+ * Read + VALIDATE a marker. Returns its write time, or `null` for "no marker of
+ * ours here" — which makes the banner fire.
  *
- * stderr, never stdout: stdout is the decision channel, and an allow REQUIRES
- * an empty stdout (see `tests/_helpers/hook-decision.mjs`). A banner on stdout
- * would corrupt every decision this hook makes.
+ * Every rejection path is deliberately the fail-LOUD one. A file that exists but
+ * does not carry this exact payload (an empty `touch`, a foreign file, a marker
+ * from another project, kind, session, or boot) is NOT a suppression signal.
  *
- * Marker IO failures are swallowed on purpose — a banner that cannot record
- * itself repeats, which is the fail-LOUD direction.
+ * `O_NOFOLLOW` matters on both halves of the marker lifecycle: without it the
+ * predictable path is an arbitrary-file-write primitive (aim a symlink at any
+ * file the session can write, and the marker write truncates it) and an
+ * arbitrary-file-READ oracle.
+ *
+ * @param {string} marker
+ * @param {{kind: string, key: string, scope: string}} expected
+ * @returns {{at: number}|null}
+ */
+function readMarker(marker, expected) {
+  let fd;
+  try {
+    fd = fs.openSync(marker, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const st = fs.fstatSync(fd);
+    // Regular file, single link, owned by us. A hard link or a foreign-uid file
+    // means somebody else controls this path — never honour it.
+    if (!st.isFile() || st.nlink !== 1) return null;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null;
+
+    const raw = fs.readFileSync(fd, 'utf8');
+    const rec = JSON.parse(raw);
+    if (rec?.magic !== MARKER_MAGIC || rec?.v !== MARKER_VERSION) return null;
+    if (rec.kind !== expected.kind || rec.key !== expected.key || rec.scope !== expected.scope) {
+      return null;
+    }
+    if (Math.abs(Number(rec.boot) - bootEpochBucket()) > 1) return null;
+
+    const at = Date.parse(rec.at);
+    if (!Number.isFinite(at) || at > Date.now() + 60_000) return null; // no future stamps
+    return { at };
+  } catch {
+    return null; // absent, symlinked (ELOOP), unreadable, or malformed
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* nothing to do on the error path */ }
+    }
+  }
+}
+
+/**
+ * Create the marker exclusively. Never overwrites: `O_EXCL` fails when anything
+ * already sits at the path, and a pre-planted file is therefore left alone —
+ * the banner then simply repeats on every call, which is the safe direction.
+ *
+ * @param {string} marker
+ * @param {{kind: string, key: string, scope: string}} fields
+ */
+function writeMarker(marker, fields) {
+  let fd;
+  try {
+    fd = fs.openSync(
+      marker,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    fs.writeSync(
+      fd,
+      `${JSON.stringify({
+        magic: MARKER_MAGIC,
+        v: MARKER_VERSION,
+        ...fields,
+        boot: bootEpochBucket(),
+        at: new Date().toISOString(),
+      })}\n`
+    );
+  } catch {
+    /* unwritable tmp / already present: emit anyway, repeatedly if need be */
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* nothing to do on the error path */ }
+    }
+  }
+}
+
+/**
+ * Write stderr unconditionally. stdout is NEVER an option here: stdout is the
+ * decision channel and an allow REQUIRES an empty stdout (see
+ * `tests/_helpers/hook-decision.mjs`) — a banner there would corrupt every
+ * decision this hook makes.
+ *
+ * @param {string} message
+ */
+function writeBanner(message) {
+  process.stderr.write(message.endsWith('\n') ? message : `${message}\n`);
+}
+
+/**
+ * Write a guard-DEGRADATION banner to stderr, at most once per session.
+ *
+ * Throttling is confined to the degraded class on purpose: there the guard is
+ * still armed, so a per-call banner is pure noise an operator learns to ignore.
+ * The total-outage banner does NOT come through here — see
+ * `emitGuardInactiveBanner`.
  *
  * @param {{projectDir: string, kind: string, message: string}} opts
  * @returns {boolean} whether the banner was emitted this call.
  */
-export function emitGuardBannerOnce({ projectDir, kind, message }) {
+function emitGuardBannerOnce({ projectDir, kind, message }) {
   const { key, ttl } = resolveBannerKey(projectDir);
-  const marker = bannerMarkerPath(projectDir, kind, key);
+  const scope = markerScope(projectDir);
+  const marker = bannerMarkerPath(scope, kind, key);
+  const fields = { kind, key, scope };
 
-  try {
-    const stat = fs.statSync(marker);
-    if (!ttl) return false; // session-keyed: already banners this session
-    if (Date.now() - stat.mtimeMs < BANNER_TTL_MS) return false;
-  } catch {
-    /* no marker yet — emit */
+  const existing = readMarker(marker, fields);
+  if (existing) {
+    if (!ttl) return false; // session-keyed: already bannered this session
+    if (Date.now() - existing.at < BANNER_TTL_MS) return false;
+    // Session-id-less TTL expiry: our own marker, verified above — refresh it.
+    try { fs.unlinkSync(marker); } catch { /* keep going; the write may still fail */ }
   }
 
-  try {
-    fs.writeFileSync(marker, `${new Date().toISOString()}\n`);
-  } catch {
-    /* unwritable tmp: emit anyway, repeatedly if need be */
-  }
-
-  process.stderr.write(message.endsWith('\n') ? message : `${message}\n`);
+  writeMarker(marker, fields);
+  writeBanner(message);
   return true;
 }
 
@@ -162,7 +334,7 @@ export function emitGuardBannerOnce({ projectDir, kind, message }) {
  * @returns {string} file content at HEAD.
  * @throws when git is absent, the dir is not a repo, or the path is not at HEAD.
  */
-export function readFromHead(repoRoot, relPath) {
+function readFromHead(repoRoot, relPath) {
   return execFileSync('git', ['-C', repoRoot, 'show', `HEAD:${relPath}`], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -180,9 +352,29 @@ export function readFromHead(repoRoot, relPath) {
  * @param {string} source
  * @returns {Promise<object>} the module namespace.
  */
-export function importFromSource(source) {
+function importFromSource(source) {
   const b64 = Buffer.from(source, 'utf8').toString('base64');
   return import(`data:text/javascript;base64,${b64}`);
+}
+
+/**
+ * Assert a loaded `command-blocker.mjs` namespace carries the COMPLETE API the
+ * guard calls through. A partial namespace is not a degraded guard — it is a
+ * guard that throws on the first command and fails open with an `internal
+ * error` line, so it must be treated as a load failure here, at the one place
+ * that can still fall back or banner.
+ *
+ * @param {object} mod
+ * @param {string} origin - human label for the banner ("working-tree copy" | "HEAD copy")
+ * @throws {Error} naming every missing export.
+ */
+function assertBlockerShape(mod, origin) {
+  const missing = COMMAND_BLOCKER_EXPORTS.filter((name) => typeof mod?.[name] !== 'function');
+  if (missing.length > 0) {
+    throw new Error(
+      `${origin} of ${COMMAND_BLOCKER_REL} is missing required export(s): ${missing.join(', ')}`
+    );
+  }
 }
 
 /**
@@ -197,18 +389,19 @@ export function importFromSource(source) {
  */
 export async function loadCommandBlocker({ specifier, repoRoot, projectDir }) {
   try {
-    return { module: await import(specifier), degraded: null };
+    const module = await import(specifier);
+    // The shape check runs on BOTH paths. A working-tree copy that parses but
+    // lost an export is the same defect class as a stale HEAD copy: without
+    // this it would arm "successfully" and then fail open per command.
+    assertBlockerShape(module, 'working-tree copy');
+    return { module, degraded: null };
   } catch (workingTreeError) {
     let mod;
     try {
       mod = await importFromSource(readFromHead(repoRoot, COMMAND_BLOCKER_REL));
-      // Shape check: a HEAD copy that parses but lost the API is NOT a usable
+      // A HEAD copy that parses but lost part of the API is NOT a usable
       // fallback — treat it as a total failure rather than half-arming.
-      if (typeof mod.tokenizeCommand !== 'function' || typeof mod.commandMatchesBlocked !== 'function') {
-        throw new Error('HEAD copy of command-blocker.mjs is missing its expected exports', {
-          cause: workingTreeError,
-        });
-      }
+      assertBlockerShape(mod, 'HEAD copy');
     } catch (headError) {
       workingTreeError.headFallbackError = headError;
       throw workingTreeError;
@@ -237,18 +430,28 @@ export async function loadCommandBlocker({ specifier, repoRoot, projectDir }) {
 /**
  * Banner for the total-failure case: no usable module, guard NOT armed.
  *
- * @param {{projectDir: string, error: unknown}} opts
+ * **Deliberately NOT throttled** — this is the one message that must survive
+ * every attempt to quiet it. Its predecessor went through the once-per-session
+ * marker, and because that marker was suppressible by a bare `touch` on a
+ * derivable path, the loudest signal in the system had the weakest lock on it:
+ * plant the file, break a module, and an unarmed guard said nothing at all
+ * while the decision channel said ALLOW. There is nothing to key on here
+ * anyway — every call after the first is equally unprotected, so every call
+ * has equal right to say so. Repetition is the point.
+ *
+ * `projectDir` is retained for signature symmetry with the degraded banner and
+ * for future scoping; it deliberately does not gate anything.
+ *
+ * @param {{projectDir?: string, error: unknown}} opts
  */
-export function emitGuardInactiveBanner({ projectDir, error }) {
+export function emitGuardInactiveBanner({ error }) {
   const primary = String(error?.message || error).split('\n')[0];
   const secondary = error?.headFallbackError
     ? String(error.headFallbackError.message || error.headFallbackError).split('\n')[0]
     : null;
 
-  emitGuardBannerOnce({
-    projectDir,
-    kind: 'inactive',
-    message: [
+  writeBanner(
+    [
       '',
       '🚨 pre-bash-destructive-guard: GUARD INACTIVE — this session is NOT protected.',
       `    Module load failed: ${primary}`,
@@ -259,6 +462,6 @@ export function emitGuardInactiveBanner({ projectDir, error }) {
       '    Fix: repair the failing module under scripts/lib/, then re-run.',
       '    See: issue #992, .claude/rules/parallel-sessions.md (PSA-003).',
       '',
-    ].join('\n'),
-  });
+    ].join('\n')
+  );
 }
