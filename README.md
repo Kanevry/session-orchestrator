@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.18.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.19.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-12%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -127,16 +127,17 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.18.0)
+## Recent highlights (v3.19.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.18.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.19.0 line:
 
-- **Instruments the panel could not silence** — three self-silencing vectors in the bash-write-verify scope detector closed (#938), the resource gate no longer reads its own cooling cost (min of 1m/5m CPU load, #943), the hooks-symmetry check now compares handler SETS per event so a single-platform hook is no longer invisible (#942), and remote-URL credentials are stripped at the source before any argv/log position — including tokens with a raw `@` (#907).
-- **Instruction corpus as the lever** — the always-on rule budget fell 471→~440 directives: `loop-and-monitor.md` halved into ADR-0010 (#885), the #688 trim list executed (#884), and eight documented contradictions resolved against the code (#886). The measured finding: on Claude Code the corpus size is the lever, not the delivery channel.
-- **Consolidation that bites** — 51 prose-presence pin tests removed and an implementation-mirror deleted (#912), `check-test-value-bans` narrowed 352→9 findings and ReDoS-hardened (#911), and a mutation sweep (8 modules, 70% kill-rate) closed the highest-value survivors with need-gated tests (#910).
-- **Ledger truth** — the abandoned-session backfill no longer fabricates a completion timestamp (#914), and orphan telemetry records are now documented on both the lifetime and running-window numbers (#939).
+- **Destructive-command guard, hardened in depth** — wrapper unwrapping (`sudo`/`doas`/`env`/`nohup`/`timeout`/`nice`/`stdbuf`, with depth-capped `-c` payload recursion) closes six measured bypasses (#982); the blocked-commands policy becomes a floor ∪ overlay model that can only escalate, never weaken (#972); shell redirects gain a target denylist — an `&>` redirect into a protected instruction file was a silent allow-with-truncation before (#983); and the denylist now resolves absolute paths, not just repo-relative ones.
+- **Session identity with proof** — the session lock persists an owner proof at genesis, so an ending session can no longer release a living foreign lock, and the abandoned-session backfiller no longer deletes the very alarm it exists to raise (#987, #926, #914).
+- **Supply chain** — two high-severity transitive vulnerabilities that `npm audit fix` could not reach are closed via package overrides.
+- **Release as one dispatch** — `scripts/release.mjs` (#978, local half): a single surfaces table drives version rewrite and preflight (12 version literals across 10 files, CHANGELOG gate, tag/registry collision, drift sweep over all tracked files, CI-green-on-HEAD, leakage gate), and the git tag is created only AFTER a verified npm publish. Found two real gaps on its first run: v3.18.0 had been tagged but never published to npm, and the hidden `.codex-plugin` manifest was invisible to a plain ripgrep census.
+- **session-orchestrator.com redesigned** — terminal hero, wave pipeline, leaderboard shell.
 
-Previous line (v3.17.0): opt-in anonymous usage telemetry (#841), vault-curation probe trio (#831), completed abandoned-session sweep, `npm-publish` token-runbook skill.
+Previous line (v3.18.0): panel-follow-ups and consolidation — bash-write-verify self-silencing vectors closed (#938), credential stripping at the source (#907), instruction-corpus diet 471→~440 directives, mutation-sweep-backed test consolidation.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 

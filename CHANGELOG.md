@@ -7,9 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-08-04
+
+Guard-hardening and release-mechanics line. Headline: the destructive-command guard closed
+six measured wrapper bypasses and inverted a silent redirect-truncation allow into a deny;
+the session lock gained an ownership proof; and the release process itself became one
+dispatch — whose very first preflight run surfaced that v3.18.0 had been tagged but never
+published to npm (the registry still served 3.17.0), the exact incident class #978 names.
+
 ### Added
 
+- **`scripts/release.mjs` — Release als ein Dispatch (#978, local half)** — one surfaces
+  table drives both the mechanical version rewrite (`--set-version`: 12 version literals
+  across 10 files, Codex cachebuster rotation, package-lock sync) and the preflight
+  (`--check`: surface parity with pattern-dead-is-a-failure semantics, CHANGELOG entry +
+  folded-[Unreleased] gate, tag collision on local/origin/github, npm-registry collision,
+  a `git grep` drift sweep over ALL tracked files, CI-green-on-HEAD via
+  `ci-status-banner.mjs`, the seven-pattern leakage gate over `npm pack --dry-run`).
+  `--publish` runs the token flow from `skills/npm-publish/SKILL.md` and creates the
+  annotated git tag only AFTER a registry-verified publish — eliminating the
+  "tagged but unpublished" state v3.18.0 fell into. Its first run surfaced two real gaps:
+  v3.18.0 was tagged but never published to npm (the registry served 3.17.0), and the
+  hidden `.codex-plugin` manifest was invisible to a plain ripgrep census — hidden
+  directories need `git grep`. The CI half of #978 (a `$CI_COMMIT_TAG` release stage)
+  stays open.
 - **`skills/contract-version-bump/`** — reusable, distributable skill for version-bumping machine-readable contracts (JSON Schema, API specs, config schemas): classifies the change against the contract's OWN versioning rule (not generic semver instinct), finds every version literal and vendored copy across this repo and `cross-repos:`, checks whether every known consumer evaluates each new/changed schema keyword, applies the bump consistently, writes a Keep-a-Changelog entry, and reports downstream drift. Codifies three traps from a real case (GitLab issue #17, `aiat-enablement` repo, 2026-07-25). Ships with `/contract-version-bump`.
+- **Wrapper unwrapping in the destructive-command guard (#982)** — table-driven
+  `WRAPPER_UNWRAP` (`sudo`/`doas`/`env` flags/`nohup`/`timeout`/`nice`/`stdbuf`,
+  `sudo -i/-s` → sh, `su` as interpreter) plus depth-capped `-c`/`env -S` payload
+  recursion; `rm` parsers rewritten segment-based on the shared splitter. Six measured
+  bypasses closed, zero regressions (differential-proved).
+- **Blocked-commands policy floor (#972)** — new `scripts/lib/blocked-commands-policy.mjs`
+  with floor ∪ overlay semantics: escalate-only, whole-rule-wins on block collisions,
+  fail-to-floor on empty/malformed overlays. Replaces first-hit-wins.
+- **Redirect target denylist (#983)** — new redirect token class (longest-match
+  `&>>`/`&>`/`>|`/`>>`/`>`/`N>`-forms) and rule 14 `redirect-truncate-protected`: the
+  premise was inverted — `&> CLAUDE.md` was a silent ALLOW-with-truncation before.
+- **Session-lock ownership proof (#987)** — owner proof persisted at lock genesis
+  (`.orchestrator/runtime/lock-owner-proof.json`); session-end releases only on
+  self-rotation and refuses foreign same-day collisions — closes the #926 residual.
+- **session-orchestrator.com redesign** — terminal hero, wave pipeline, leaderboard shell,
+  measured-numbers section (reconcile-rule count corrected 11 → 13 by the close-review).
+
+### Fixed
+
+- **Guard bypass residuals (three follow-up rounds)** — the denylist read repo-relative
+  while an attacker wrote absolute paths; the guard evaluated the working tree instead of
+  the rules corpus; a backslash split what bash glues together; and the review panel found
+  two further holes the repair session had itself opened. Each round closed with
+  fake-regression proofs.
+- **Session identity (#926, #914)** — an ending session no longer deletes a living foreign
+  session lock, and the abandoned-session backfiller no longer deletes the alarm it was
+  built to raise.
+- **Instrument deduplication** — nine instances of one fact wearing two faces consolidated
+  to single sources; the panel found three more in the repair itself.
+- **Reconcile expiry tests** — two tests measured the floor constant instead of
+  `ruleExpiryDays`; they now measure the contract.
+
+### Security
+
+- **Two high-severity transitive vulnerabilities** unreachable by `npm audit fix` closed
+  via `package.json` overrides (same class, found twice — the second instance surfaced
+  after the first override landed).
 
 ## [3.18.0] - 2026-07-31
 

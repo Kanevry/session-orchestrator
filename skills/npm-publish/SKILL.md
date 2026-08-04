@@ -29,7 +29,23 @@ Create at https://www.npmjs.com/settings/<user>/tokens → Generate New Token �
 
 **Never** put the token in the tracked `.npmrc` (it holds `ignore-scripts=true` per SEC-020 and is committed), never persist it into `~/.npmrc`, never echo it into logs.
 
-## Publish flow
+## Canonical path: `scripts/release.mjs` (Release als ein Dispatch, #978)
+
+Since v3.19.0 the release is ONE dispatch — the script mechanizes every step below plus the
+version-surface sync this skill previously left to operator memory (the gap that let v3.18.0
+ship tagged but unpublished):
+
+```bash
+node scripts/release.mjs --set-version X.Y.Z   # rewrite all 12 version literals (10 files) + codex cachebuster + lock sync
+# … author CHANGELOG entry + README highlights (enforced by --check) …
+node scripts/release.mjs --check               # preflight: surfaces, CHANGELOG, tag/registry collision, CI green, leakage gate
+node scripts/release.mjs --publish             # token publish → registry verify → tag AFTER publish → push origin+github
+```
+
+The tag is created only AFTER a registry-verified publish — never before. The manual flow
+below remains as the fallback and as documentation of what the script does.
+
+## Publish flow (manual fallback)
 
 ```bash
 # 1. Pre-flight (first publish: expect E404 = name free; upgrade: expect the previous version)
