@@ -3,8 +3,8 @@ id: owner-card
 type: peer-card
 target: user
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-07-02T07:40:26.819Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913"]
+updated: "2026-08-05T14:11:24.716Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913", "evolve-2026-08-05-deep-1-reviewed-no-changes"]
 ---
 
 <!-- BEGIN MANAGED: session-preferences -->

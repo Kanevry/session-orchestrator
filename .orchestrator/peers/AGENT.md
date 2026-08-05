@@ -1,10 +1,18 @@
+
+<!-- BEGIN MANAGED: guard-and-protocol-migration -->
+## Guard and protocol-migration discipline
+
+- Contract-Lock before fan-out: when N wave agents will all build against ONE shared contract surface (a factored signature, a shared test helper, a schema), dispatch the agent that OWNS that surface ALONE and serially FIRST, let it freeze the contract, then fan out the N followers against the frozen surface. Prevents N agents re-inventing the same contract in parallel and lets the followers stay file-disjoint.
+- When migrating an output protocol (channel, envelope, exit-code semantics), enumerate consumers by WHO SPAWNS the binary — never by grepping the payload field name. A consumer that pins only the channel or the exit code is structurally invisible to a payload grep and surfaces only at the Full Gate. Cross-check the census with a second, differently-shaped measurement.
+- A Discovery census is a claim about the PAST the moment a later wave changes the surface it measured. Before re-briefing a count/scope-map into a downstream wave, re-verify it at the current HEAD — a mid-session refactor (e.g. an earlier wave decoupling a module) silently invalidates the earlier map.
+<!-- END MANAGED: guard-and-protocol-migration -->
 ---
 id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-07-04T14:20:00.000Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes"]
+updated: "2026-08-05T14:11:24.716Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes", "main-2026-08-05-deep-1"]
 ---
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
