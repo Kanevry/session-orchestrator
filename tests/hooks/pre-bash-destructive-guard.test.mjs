@@ -1531,6 +1531,34 @@ describe('#995 — aggregated allow-with-notice never fail-opens', { timeout: 15
     // the block) — otherwise this would pass even if the Deckel never fired.
     expect(result.stderr).toContain('unresolved redirect target');
   });
+
+  // The ≥2-notice JOIN path (flushNotices → emitWarn(notices.join('\n'))). The
+  // block-wins case above and the single-notice cases elsewhere leave this
+  // untested: a regression that dropped notices[1..] (or broke the aggregate
+  // envelope) would keep every existing test green. `git revert HEAD > $OUT`
+  // pushes TWO DISTINCT notices in one invocation against the default FIXTURE
+  // policy — the git-revert-commit warn match, THEN the unresolved-redirect
+  // fail-visible marker on rule 14 — and no block fires, so both must appear in
+  // ONE combined systemMessage. Verified via a read-only live hook run that the
+  // command yields exactly these two notices (not guessed); the exact join text
+  // was captured from that same run.
+  it('joins ≥2 warn notices from one invocation into a single systemMessage', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git revert HEAD > $OUT'),
+    });
+    // expectWarn pins the full allow-with-notice contract: exit 0, exactly ONE
+    // stdout line, top-level keys EXACTLY ['systemMessage'] (so a regression that
+    // routed this through emitDeny — adding hookSpecificOutput — fails here).
+    const { systemMessage } = expectWarn(result);
+    // BOTH distinct notices must survive the join — dropping notices[1..] loses
+    // the second substring and turns this red (fake-regression verified).
+    expect(systemMessage).toContain("'git revert' (rule: git-revert-commit)");
+    expect(systemMessage).toContain('unresolved redirect target (variable/substitution)');
+    // The join itself: two notices, one message, split on the '\n' separator.
+    expect(systemMessage.split('\n')).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

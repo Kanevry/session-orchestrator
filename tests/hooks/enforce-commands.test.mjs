@@ -625,7 +625,7 @@ describe('bash-write-guard — gate wiring', { timeout: 15000 }, () => {
 // channel: the command guard was silently disarmed.
 //
 // This hook late-binds `command-blocker.mjs` (and `hardening.mjs`, which
-// transitively re-exports from it). Breaking command-blocker's working-tree copy
+// transitively imports command-blocker via scope-gate.mjs). Breaking command-blocker's working-tree copy
 // therefore fails `hardening` FIRST — it is armed before the headFallback
 // `blocker` entry and has no fallback of its own — so the failure degrades
 // straight to GUARD INACTIVE, git-independently. The banner rides stderr; the

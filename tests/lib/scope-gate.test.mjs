@@ -253,6 +253,26 @@ describe('extractBashWriteTargets — wrapper-aware verb resolution (#996.2)', (
   ])('control — still correct: %s', (_n, command, expected) => {
     expect(extractBashWriteTargets(command)).toEqual(expected);
   });
+
+  // BUG CAUGHT (#996.2 namespace regression — introduced by the #996.2 refactor
+  // itself, found live by the security-reviewer panel): the `index + 1` head-skip
+  // reads `resolveSegmentVerb`'s RAW-token index, but the loop counts words in the
+  // paren-peeled / redirect-target-excluded namespace. When a segment LEADS with a
+  // redirect (`> a.txt tee b.ts` → resolveSegmentVerb returns the `>` operator as
+  // the verb, mode-less) or a subshell paren (`(tee inner.ts)` → verb is the raw
+  // `(tee`, mode-less), the real write target fell into a mode=null argument slot
+  // and was silently DROPPED — a detection loss versus the pre-refactor (f7a11c5)
+  // pass. The verbResolutionSegment projection re-aligns the two namespaces.
+  it.each([
+    // form 1 — leading `>` redirect: `tee`'s file arg was lost (b.ts).
+    ['leading redirect before tee', '> a.txt tee b.ts', ['a.txt', 'b.ts']],
+    // form 2 — leading subshell paren: `tee`'s file arg was lost (inner.ts).
+    ['leading subshell paren around tee', '(tee inner.ts)', ['inner.ts']],
+    // form 3 — leading `>` redirect before sed -i: the in-place target was lost (z.ts).
+    ['leading redirect before sed -i', '> a.txt sed -i s/x/y/ z.ts', ['a.txt', 'z.ts']],
+  ])('regression — leading redirect/paren no longer loses the write target: %s', (_n, command, expected) => {
+    expect(extractBashWriteTargets(command)).toEqual(expected);
+  });
 });
 
 // ---------------------------------------------------------------------------

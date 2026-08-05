@@ -616,7 +616,16 @@ export function extractBashWriteTargets(command) {
   // wrapper table. `out`/`seen`/`add` stay outside the loop so de-duplication
   // and first-seen ordering hold across segments (`echo a > x; echo b >> x`).
   for (const segment of splitChainSegments(tokenizeCommand(command))) {
-    const { verb, index, wrapperArgs } = resolveSegmentVerb(segment);
+    // #996.2 namespace fix: resolve the verb in the SAME (paren-peeled,
+    // redirect-target-excluded) namespace the interpretation loop's `wordsSeen`
+    // counter walks below — see {@link verbResolutionSegment}. Passing the RAW
+    // segment mis-resolved a LEADING redirect (`> a.txt tee b.ts` → verb `>`) or a
+    // LEADING subshell paren (`(tee inner.ts)` → verb `(tee`): mode never became
+    // `tee`/`sed`/`dd` and the `index + 1` head-skip then swallowed the real
+    // write target. For A5's 10 wrapper forms (no leading redirect/paren) the view
+    // is a no-op, so verb/index/wrapperArgs — incl. the #992 `writesFile` marks —
+    // are byte-identical to the raw call.
+    const { verb, index, wrapperArgs } = resolveSegmentVerb(verbResolutionSegment(segment));
     const tokens = classifyShellTokens(segment);
 
     // A wrapper can WRITE a file through its OWN option, with no redirect and no
@@ -641,10 +650,13 @@ export function extractBashWriteTargets(command) {
     let sedInPlace = false;
 
     // THE ONE CARE POINT of the #996.2 refactor: the first `index + 1` WORD
-    // tokens of the classified stream are the wrapper chain + the verb itself
-    // (`resolveSegmentVerb.index` is the verb's raw-token position), never file
-    // arguments. `peelSubshellParens` emits AT MOST one `word` per raw token, so
-    // counting `word` tokens is 1:1 with the raw word tokens — skip that many.
+    // tokens that REACH the `wordsSeen` counter are the wrapper chain + the verb
+    // itself, never file arguments. `index` now comes from
+    // {@link verbResolutionSegment}, which resolves the verb in the SAME namespace
+    // this loop walks — paren-peeled words with redirect targets removed — so
+    // `index` is 1:1 with the `word` tokens that reach the counter below (a
+    // leading redirect or subshell paren no longer shifts it out of alignment).
+    // `peelSubshellParens` emits AT MOST one `word` per raw token.
     const headWordsToSkip = index + 1;
     let wordsSeen = 0;
 
@@ -806,6 +818,82 @@ function classifyShellTokens(tokens) {
       if (INPUT_REDIRECT_OP_RE.test(tok.text)) { out.push({ type: 'in' }); continue; }
     }
     out.push(...peelSubshellParens(tok));
+  }
+  return out;
+}
+
+/**
+ * Project a raw chain segment into the token list used for VERB resolution,
+ * in the SAME namespace {@link extractBashWriteTargets}'s interpretation loop
+ * walks with its `wordsSeen` counter (#996.2 namespace fix).
+ *
+ * {@link resolveSegmentVerb} resolves argv[0] from RAW tokens. Two segment shapes
+ * put a NON-verb token in raw position 0 and so mis-resolve the command head,
+ * losing the write target the pre-#996.2 pass had detected:
+ *   - a LEADING write-redirect — `> a.txt tee b.ts` resolves the `>` operator as
+ *     the "verb" (mode never becomes `tee`), and the loop's `index + 1` head-skip
+ *     then swallows `tee`, dropping `b.ts`.
+ *   - a LEADING subshell paren — `(tee inner.ts)` keeps the raw token `(tee`
+ *     (`.replace(/^.*\//,'')` leaves it untouched, no `/`), so the wrapper table
+ *     never matches: verb is the literal `(tee`, again mode-less. The classified
+ *     stream peels the paren AFTER, so the raw verb index and the peeled word
+ *     stream diverge.
+ *
+ * The projection makes both namespaces agree: peel leading/trailing parens off
+ * each unquoted token (matching {@link peelSubshellParens}' WORD output) and drop
+ * every write-redirect operator together with its target word — exactly the
+ * tokens the interpretation loop keeps OUT of `wordsSeen` (redirect operators are
+ * not `word`s; their targets are consumed by the `pendingRedirect` branch before
+ * the counter). The resulting segment's verb INDEX is then 1:1 with `wordsSeen`,
+ * so `index + 1` skips the wrapper chain + verb and no more.
+ *
+ * A5's 10 transparent-wrapper forms carry neither a leading redirect nor a paren,
+ * so this is a NO-OP for them: `resolveSegmentVerb`'s verb/index/wrapperArgs (incl.
+ * the #992 `writesFile` operand marks) are byte-identical to the raw-segment call.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {Array<{ text: string, quoted: boolean }>}
+ */
+function verbResolutionSegment(segment) {
+  const out = [];
+  let pendingRedirectTarget = false;
+  for (const tok of segment) {
+    if (!tok.quoted) {
+      // A write redirect consumes the NEXT token as its target — neither the
+      // operator nor its target reaches `wordsSeen`, so both must be absent here
+      // to keep the verb index aligned.
+      if (WRITE_REDIRECT_OP_RE.test(tok.text)) {
+        pendingRedirectTarget = true;
+        continue;
+      }
+      // heredoc / input-redirect operators carry no immediate target token that
+      // reaches `wordsSeen` (the here-doc delimiter emits nothing; an input target
+      // DOES reach the counter and so is kept) — drop only the operator itself.
+      if (HEREDOC_OP_RE.test(tok.text) || INPUT_REDIRECT_OP_RE.test(tok.text)) {
+        pendingRedirectTarget = false;
+        continue;
+      }
+      // Within a segment the only separator that can appear is an fd-dup `&`
+      // (e.g. `2>&1`), which classifyShellTokens also treats as a `sep` that
+      // resets the pending redirect — mirror that so the target after it stays.
+      if (SHELL_SEPARATOR_OPS.has(tok.text)) {
+        pendingRedirectTarget = false;
+        continue;
+      }
+    }
+    if (pendingRedirectTarget) {
+      pendingRedirectTarget = false;
+      continue; // this token is the dropped write-redirect target
+    }
+    if (tok.quoted) {
+      out.push(tok);
+      continue;
+    }
+    let text = tok.text;
+    while (text.startsWith('(')) text = text.slice(1);
+    while (text.endsWith(')')) text = text.slice(0, -1);
+    if (text.length === 0) continue; // pure paren = a separator, not a word
+    out.push({ text, quoted: false });
   }
   return out;
 }

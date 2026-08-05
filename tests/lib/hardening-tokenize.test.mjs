@@ -456,3 +456,36 @@ describe('tokenizeCommand — redirect operators (#965/#983 merged token class)'
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #999 — lastTerm reset across TWO here-docs opened on the SAME line
+//
+// The load-bearing bug the `lastTerm = false` reset (command-blocker.mjs, the
+// !terminated branch of readHeredocBody's caller) prevents: when a line opens
+// two here-docs (`paste <<A <<B`) and the FIRST terminates (lastTerm=true) but
+// the SECOND does not, a stale lastTerm would trigger the post-loop rewind
+// `j -= 1` onto the unterminated body's leading newline — injecting a PHANTOM
+// `{ text: ';', operator: 'newline' }` separator token the shell never produces
+// and shifting every downstream operand by one. No test covered two `<<` on one
+// line before this (grep-verified 0). The expected array below was derived by
+// running tokenizeCommand against this exact input at the fixed HEAD (read-only
+// live check), NOT hand-written.
+//
+// Discriminating: with the reset removed, an extra
+// `{ text: ';', quoted: false, operator: 'newline' }` appears between the `x`
+// body token and `yy` — this `toEqual` then fails (fake-regression verified).
+// ---------------------------------------------------------------------------
+describe('tokenizeCommand — multiple here-docs on one line, second unterminated (#999)', () => {
+  it('does not inject a phantom separator when a terminated here-doc precedes an unterminated one', () => {
+    // `paste <<A <<B` opens two bodies; A terminates at line `A`, B never finds
+    // its `B` terminator, so lexing resumes inside B's body (`yy zz`) as words.
+    expect(tokenizeCommand('paste <<A <<B\nx\nA\nyy zz')).toEqual([
+      { text: 'paste', quoted: false },
+      { text: '<<', quoted: false, redirect: { fd: null, mode: 'heredoc' } },
+      { text: '<<', quoted: false, redirect: { fd: null, mode: 'heredoc' } },
+      { text: 'x', quoted: true },
+      { text: 'yy', quoted: false },
+      { text: 'zz', quoted: false },
+    ]);
+  });
+});

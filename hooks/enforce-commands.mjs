@@ -68,8 +68,8 @@ let pathMatchesPattern;
 /**
  * The `command-blocker.mjs` namespace, imported DIRECTLY (not via the
  * hardening.mjs barrel — which does not carry the `headFallback` recovery, and
- * whose re-export of `commandMatchesBlocked`/`suggestForCommandBlock` transitively
- * fails when command-blocker breaks). Mirrors the direct binding in
+ * which transitively imports command-blocker via scope-gate.mjs, so it fails
+ * anyway when command-blocker breaks). Mirrors the direct binding in
  * pre-bash-destructive-guard / sessions-ledger-guard. Held as ONE object so the
  * required-export list lives in exactly one place: the `requires` array on the
  * `blocker` spec passed to `armGuard`.
@@ -118,9 +118,9 @@ function bannerProjectDir() {
  * `findScopeFile` / `extractBashWriteTargets` / `pathMatchesPattern`; the two
  * command-matching primitives come from the direct `blocker` namespace, which is
  * the only entry that opts into the `git show HEAD:` recovery. Because hardening
- * itself re-exports from command-blocker, a broken command-blocker fails hardening
- * FIRST (it arms before the headFallback entry) — so that case degrades straight
- * to GUARD INACTIVE, git or no git.
+ * transitively imports command-blocker (via scope-gate.mjs), a broken command-blocker
+ * fails hardening FIRST (it arms before the headFallback entry) — so that case
+ * degrades straight to GUARD INACTIVE, git or no git.
  *
  * @returns {Promise<void>}
  */
