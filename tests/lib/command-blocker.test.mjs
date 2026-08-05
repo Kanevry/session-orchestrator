@@ -15,6 +15,7 @@ import {
   suggestForCommandBlock,
   extractRedirectTargets,
   redirectRuleMatches,
+  redirectSpanEnd,
   resolveSegmentVerb,
   splitChainSegments,
 } from '@lib/command-blocker.mjs';
@@ -565,5 +566,98 @@ describe('commandMatchesBlocked — wrapper prefixes hid the interpreter (#970 H
     // Widening verb resolution must not invent matches: `echo` is not an
     // interpreter, so its quoted argument stays literal text behind `sudo` too.
     expect(commandMatchesBlocked('sudo echo "rm -rf /"', 'rm -rf')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1000 — dual parse for UNKNOWN value-taking wrapper flags
+// ---------------------------------------------------------------------------
+
+describe('resolveSegmentVerb — dual parse for unknown value-taking flags (#1000)', () => {
+  const resolve = (cmd) => resolveSegmentVerb(splitChainSegments(tokenizeCommand(cmd))[0]);
+
+  // The bug class: WRAPPER_UNWRAP can only enumerate the flags it KNOWS. Any
+  // value-taking flag missing from the table (a platform variant, a new
+  // release, a wrapper flag nobody measured) is skipped as a boolean and its
+  // OPERAND lands in verb position — the exact shape #992 had to patch twice
+  // by hand (`env -P`, GNU `time -f`). `-Q` stands in for the unenumerable
+  // rest: parse A reads the verb as `bin` (basename of the path operand), the
+  // segment stops being an interpreter, and the quoted payload goes inert.
+  it('blocks the interpreter that an unknown value-taking flag hid', () => {
+    expect(commandMatchesBlocked("env -Q /bin:/usr/bin bash -c 'rm -rf /etc'", 'rm -rf')).toBe(true);
+  });
+
+  // Fail-closed direction: parse B must never CANCEL parse A. Roughly a dozen
+  // real wrapper flags are booleans (`sudo -n`, `-H`, `-E`, `time -p`, …); if
+  // the value-taking reading replaced the boolean one instead of joining it,
+  // every one of them would start swallowing the interpreter.
+  it('keeps blocking when the unknown flag really is a boolean', () => {
+    expect(commandMatchesBlocked("sudo -n bash -c 'rm -rf /'", 'rm -rf')).toBe(true);
+  });
+
+  // Over-block direction: the second reading must not invent an interpreter.
+  // Here parse B swallows `grep` as `-n`'s operand and resolves the quoted
+  // pattern itself as the verb — a non-interpreter, so the quoted argument
+  // stays inert exactly as in parse A.
+  it('does NOT over-block: a benign wrapped non-interpreter stays allowed', () => {
+    expect(commandMatchesBlocked("sudo -n grep 'rm -rf' file", 'rm -rf')).toBe(false);
+  });
+
+  // Shape contract. `alt` must be OMITTED — not null, not undefined-valued —
+  // when the segment is unambiguous, or every strict `toEqual` on a resolution
+  // (e.g. the `time npm test` pin above) breaks on a key that carries no
+  // information. And it must never nest: `alt.alt` would mean the second
+  // reading was itself re-read, doubling the parse count per nesting level.
+  it('reports the second reading as `alt` only when the readings disagree', () => {
+    const ambiguous = resolve("env -Q /bin:/usr/bin bash -c 'rm -rf /etc'");
+    expect(ambiguous.verb).toBe('bin'); // parse A unchanged — still primary
+    expect(ambiguous.alt).toEqual({ verb: 'bash', index: 3, payloads: [], wrapperArgs: [] });
+    expect('alt' in ambiguous.alt).toBe(false);
+
+    const unambiguous = resolve('time npm test');
+    expect('alt' in unambiguous).toBe(false);
+  });
+});
+
+describe('extractRedirectTargets — wrapper targets across both readings (#1000)', () => {
+  // Parse A reads `x` as the verb and never reaches `time -o`, so the file the
+  // wrapper truncates was invisible to the redirect denylist — the #992 bypass
+  // re-opened through an unknown flag instead of a missing table row.
+  it('recovers a wrapper write target that only the value-taking reading sees', () => {
+    expect(extractRedirectTargets('env -Q x /usr/bin/time -o CLAUDE.md npm test')).toEqual([
+      { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // The mirror case, and the reason the two readings are UNIONED rather than
+  // one replacing the other: here it is parse B that loses the operand
+  // (`/usr/bin/time` is swallowed as `-n`'s value, so `-o` is never parsed as
+  // time's flag) while parse A reports it.
+  it('keeps a wrapper write target that only the boolean reading sees', () => {
+    expect(extractRedirectTargets('sudo -n /usr/bin/time -o report.txt npm test')).toEqual([
+      { target: 'report.txt', mode: 'truncate', fd: null },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1002 — the redirect operand-span rule, converged into one export
+// ---------------------------------------------------------------------------
+
+describe('redirectSpanEnd — one operand-span rule for all modes (#1002)', () => {
+  // The rule ("a redirect owns its next operand word, except dup/heredoc") was
+  // coded three times independently. These rows pin the MODE CLASSES, so a
+  // regression in the shared implementation cannot silently diverge one copy:
+  // a dup/heredoc that starts eating a word swallows the next real command,
+  // and a herestring/truncate that stops eating one feeds its operand back
+  // into the command surface as if it were an argument.
+  it.each([
+    ['dup owns nothing — its target is inline', 'cmd 2>&1 rest', 1, 1],
+    ['heredoc owns nothing — its delimiter is syntax', 'cat <<EOF rm', 1, 1],
+    ['herestring owns its word — inline data, not an rm operand', 'rm -rf /tmp/x <<< /etc/passwd', 3, 4],
+    ['truncate owns its word', 'cmd > log', 1, 2],
+    ['a dangling redirect owns nothing when the next token is a redirect', 'cmd > >> log', 1, 1],
+  ])('%s', (_label, command, i, expected) => {
+    expect(redirectSpanEnd(tokenizeCommand(command), i)).toBe(expected);
   });
 });

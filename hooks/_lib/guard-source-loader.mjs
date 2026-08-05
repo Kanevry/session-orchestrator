@@ -158,21 +158,42 @@ const HEAD_FALLBACK_ALLOWLIST = new Set([
  * `.orchestrator/session.lock`; when that fails we fall back to a time-TTL
  * marker exactly like `run-node.sh` does.
  *
+ * ## Why the id alone is not the key (#998.3)
+ *
+ * There is exactly ONE `session.lock` per working copy, so two parallel sessions
+ * in the SAME working copy resolve the same `session_id` — and the second one
+ * never sees its own degradation banner, because the first already wrote the
+ * marker. The key is therefore composed with a per-session PROCESS identity.
+ *
+ * **`ppid`, deliberately not `pid`.** Every hook invocation is its own short-lived
+ * node process, so a `pid`-keyed marker would be unique per tool call and the
+ * banner would fire on every call — the noisy-flood class the throttle exists to
+ * prevent, not the shared-marker class it is fixing. `ppid` is the harness
+ * process that spawns the hooks and is stable for the session's life:
+ * `hooks/run-node.sh` uses `exec node` on every branch, so no intermediate shell
+ * survives to become the parent and the ppid IS the harness. This is load-bearing
+ * — an added non-exec branch in `run-node.sh` would silently re-break the key.
+ *
+ * Total key length stays ≤ 64 (48-char id slice + `-pNNNNN`). Markers written in
+ * the old (id-only) format live at different paths and are simply never consulted
+ * — no migration, the worst case is one extra banner.
+ *
  * @param {string} projectDir
  * @returns {{key: string, ttl: boolean}} `ttl: true` means "key is not
  *   session-scoped — apply the 6h time TTL instead of pure existence".
  */
 function resolveBannerKey(projectDir) {
+  const proc = `p${typeof process.ppid === 'number' ? process.ppid : 0}`;
   try {
     const raw = fs.readFileSync(path.join(projectDir, '.orchestrator', 'session.lock'), 'utf8');
     const id = JSON.parse(raw)?.session_id;
     if (typeof id === 'string' && id.length > 0) {
-      return { key: id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64), ttl: false };
+      return { key: `${id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48)}-${proc}`, ttl: false };
     }
   } catch {
     /* no lock, unreadable, or malformed — fall through to the time TTL */
   }
-  return { key: 'ttl', ttl: true };
+  return { key: `ttl-${proc}`, ttl: true };
 }
 
 /** Per-project marker scope — the digest half of the marker file name. */
@@ -340,6 +361,29 @@ function emitGuardBannerOnce({ projectDir, kind, message }) {
 /**
  * Read a repo file's committed content via `git show HEAD:<relPath>`.
  *
+ * ## Why the git env is scrubbed here (#998.1 — defense in depth)
+ *
+ * The bytes this returns are handed straight to {@link importFromSource}, i.e.
+ * IMPORTED as code inside a deny-capable hook. `-C <repoRoot>` only sets the
+ * child's cwd; it does NOT win against `GIT_DIR`, which overrides repository
+ * discovery outright. With `GIT_DIR=<foreign repo>/.git` in the environment the
+ * call returns a FOREIGN repository's blob at the same relative path, and that
+ * blob is then executed — one env var plus one broken module away from code
+ * execution in the guard itself. Measured on this loader: without `GIT_DIR`
+ * 57,446 bytes of real source, with a foreign `GIT_DIR` 128 bytes of
+ * attacker-controlled content. **No vector is currently known by which a Bash
+ * command sets the LATER hook process's environment — this is defense in depth,
+ * not a fix for a reachable exploit.** It is applied at this single
+ * trust-sensitive shell-out rather than at {@link armGuard} entry, because this
+ * is the only place whose output becomes code.
+ *
+ * The listed keys are set to `undefined`, which Node OMITS when building the
+ * child env — a DELETION, never an empty-string assignment (`GIT_DIR=` is itself
+ * a discovery override, so `''` would re-open the hole it closes).
+ * `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` need no enumeration: they are inert
+ * without `GIT_CONFIG_COUNT`, which is scrubbed. `PATH`/`HOME`/`TMPDIR` are kept
+ * deliberately — git must still be findable and runnable.
+ *
  * @param {string} repoRoot
  * @param {string} relPath - POSIX, repo-relative.
  * @returns {string} file content at HEAD.
@@ -350,6 +394,19 @@ function readFromHead(repoRoot, relPath) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
     maxBuffer: 8 * 1024 * 1024,
+    env: {
+      ...process.env,
+      GIT_DIR: undefined,
+      GIT_WORK_TREE: undefined,
+      GIT_OBJECT_DIRECTORY: undefined,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+      GIT_COMMON_DIR: undefined,
+      GIT_INDEX_FILE: undefined,
+      GIT_NAMESPACE: undefined,
+      GIT_CONFIG_GLOBAL: undefined,
+      GIT_CONFIG_SYSTEM: undefined,
+      GIT_CONFIG_COUNT: undefined,
+    },
   });
 }
 

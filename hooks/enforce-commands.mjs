@@ -78,6 +78,17 @@ let pathMatchesPattern;
  */
 let blocker = null;
 
+/**
+ * Module labels `armGuard` recovered from HEAD because the working-tree copy
+ * failed (parse error OR shape check). Non-empty ⇒ this hook is armed against
+ * COMMITTED source. Surfaced on the visible stdout channel by {@link flushNotices}
+ * (#1001) — the stderr DEGRADED banner alone is discarded under the exit-0
+ * protocol, which made a degraded ALLOW indistinguishable from a healthy one.
+ *
+ * @type {string[]}
+ */
+let degradedLabels = [];
+
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
 /** This hook's name — threaded into the guard banner (#993: no hard-wired literal). */
@@ -128,7 +139,7 @@ async function bootstrap() {
   const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
 
   const { armGuard } = await import('./_lib/guard-source-loader.mjs');
-  const { modules } = await armGuard(
+  const { modules, degraded } = await armGuard(
     {
       io: { specifier: lib('io.mjs') },
       platform: { specifier: lib('platform.mjs') },
@@ -153,6 +164,29 @@ async function bootstrap() {
   ({ readJson } = modules.common);
   ({ findScopeFile, extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
   blocker = modules.blocker;
+  degradedLabels = degraded;
+}
+
+/**
+ * Flush the aggregated allow-with-notice channel (#1001).
+ *
+ * Notices raised during gate evaluation accumulate in `notices` and are emitted
+ * ONCE, here, on the VISIBLE stdout channel via `emitWarn` (allow-with-notice) —
+ * else a plain `emitAllow`. Both exit 0 and never return, so this is always the
+ * LAST statement on an allow path.
+ *
+ * Why aggregate instead of `emitWarn`-ing inline at the degraded site: `emitWarn`
+ * is `@returns never` (scripts/lib/io.mjs), so an inline call before the G6
+ * blocked-pattern loop would exit BEFORE any pattern was matched — turning every
+ * would-be DENY into an ALLOW-with-notice for the whole degraded session. A deny,
+ * when it fires, exits via `emitDeny` and these notices are simply dropped: DENY
+ * wins, and armGuard's stderr banner remains for CI/debug.
+ *
+ * @param {string[]} notices
+ * @returns {never}
+ */
+function flushNotices(notices) {
+  return notices.length > 0 ? emitWarn(notices.join('\n')) : emitAllow();
 }
 
 // Fallback safety list — applied when scope.blockedCommands is empty.
@@ -179,11 +213,29 @@ async function main() {
   const command = input?.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return emitAllow();
 
+  // #1001 — aggregated allow-with-notice channel, opened only AFTER G1/G2 (a
+  // non-Bash tool call or an empty command is not this hook's business, and must
+  // stay a bare allow so the notice does not ride every unrelated tool call).
+  // Flushed ONCE at the end of whichever allow path is taken; see flushNotices
+  // for why an inline emitWarn here would disarm the G6 deny below.
+  const notices = [];
+  // A guard armed from HEAD (working-tree module unparseable or shape-invalid) is
+  // a visible-channel concern: the DEGRADED banner rides stderr only, which exit 0
+  // discards. armGuard already fired that banner once per session; surface it on
+  // stdout too so a degraded ALLOW is not silently indistinguishable from a
+  // healthy one.
+  if (degradedLabels.length > 0) {
+    notices.push(
+      `${HOOK_NAME}: DEGRADED — guard module(s) loaded from HEAD, not your working tree ` +
+        `(${degradedLabels.join(', ')}); uncommitted changes to them are NOT in effect. See #992.`
+    );
+  }
+
   const projectRoot = resolveProjectDir();
 
   // G3 — no scope file → allow
   const scopePath = findScopeFile(projectRoot);
-  if (!scopePath) return emitAllow();
+  if (!scopePath) return flushNotices(notices);
 
   // SECURITY-REQ-08: read scope file exactly once; use the parsed object
   // for all subsequent gate checks.
@@ -214,9 +266,9 @@ async function main() {
   }
 
   // G4 — gate disabled → allow
-  if (!gateOn) return emitAllow();
+  if (!gateOn) return flushNotices(notices);
   // G5 — enforcement "off" → allow
-  if (enforcement === 'off') return emitAllow();
+  if (enforcement === 'off') return flushNotices(notices);
 
   // G6 — determine which list to check
   const useFallback = blockedCommands.length === 0;
@@ -232,12 +284,17 @@ async function main() {
       if (enforcement === 'strict') {
         return emitDeny(reason, suggestion);
       }
-      return emitWarn(`${reason} — ${suggestion}`);
+      // Aggregated, not inline: when the guard is DEGRADED the notice list is
+      // non-empty and both lines ride ONE envelope (a second emitWarn would be
+      // unreachable — emitWarn never returns). Undegraded, notices is empty and
+      // this stays the single-line warn it has always been.
+      notices.push(`${reason} — ${suggestion}`);
+      return flushNotices(notices);
     }
   }
 
   // G7 — no match → allow
-  return emitAllow();
+  return flushNotices(notices);
 }
 
 /**

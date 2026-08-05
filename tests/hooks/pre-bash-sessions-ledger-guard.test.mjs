@@ -20,7 +20,12 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { expectAllow, expectDeny, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import {
+  expectAllow,
+  expectDeny,
+  expectWarn,
+  expectGuardInactive,
+} from '../_helpers/hook-decision.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 const HOOK = resolve(import.meta.dirname, '../..', 'hooks/pre-bash-sessions-ledger-guard.mjs');
@@ -293,5 +298,92 @@ describe('#993 — GUARD INACTIVE on a broken command-blocker', { timeout: 30000
     // The consequence prose names the concrete outage, so the operator reads a
     // disarmed guard rather than a harness crash and does not route around it.
     expect(result.stderr).toContain('NOT being blocked');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1000 — an unknown dash-flag hid the write verb (DUAL PARSE)
+//
+// `resolveSegmentVerb` could not know whether an unrecognised wrapper flag is a
+// boolean or takes a value, and it guessed BOOLEAN. Guessing wrong in that
+// direction consumes one token too few, so the verb resolves to the flag's
+// OPERAND and `tee` is never in verb position — the write is allowed. The
+// resolver now reports the value-taking reading as an additive `alt`, and this
+// hook judges BOTH: a hit in either is a deny.
+// ---------------------------------------------------------------------------
+describe('#1000 — unknown-flag bypass (dual parse)', () => {
+  it.each([
+    // Measured ALLOW before the alt-loop: `--unknown` was read as a boolean, so
+    // the verb resolved to `5` and the tee was invisible.
+    ['nice with an unknown long flag', `nice --unknown 5 tee -a ${LEDGER}`],
+    // Same shape on env: verb resolved to `x`.
+    ['env with an unknown short flag', `env -Q x tee -a ${LEDGER}`],
+  ])('denies %s', (_label, command) => {
+    expectDeny(runHook({ command }), LEDGER);
+  });
+
+  it('keeps denying a genuinely BOOLEAN wrapper flag (parse A must survive)', () => {
+    // Direction guard: `sudo -n` IS a boolean, so parse A is the correct reading
+    // and `alt` is absent. A "fix" that judged only the value-taking reading
+    // would resolve the verb to `tee`'s own `-a` operand and lose this deny —
+    // this test catches that regression, which the two rows above cannot.
+    expectDeny(runHook({ command: `sudo -n tee -a ${LEDGER}` }), LEDGER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #998 item 2 — the MAX_PAYLOAD_DEPTH cut used to be SILENT
+//
+// A wrapper payload nested past the cap was dropped with no trace, so "analysed
+// and clean" and "never looked at" produced the identical empty-stdout allow.
+// The cut now raises a fail-visible marker. Still an ALLOW — this hook is an
+// accident-guard, fail-open by design; a depth cut is not evidence of a write.
+// ---------------------------------------------------------------------------
+describe('#998 — depth-cut is fail-VISIBLE', () => {
+  it('marks a ledger-bearing payload dropped at the depth cap instead of allowing silently', () => {
+    // Three nested `env -S` levels: the innermost `tee -a <ledger>` sits past
+    // MAX_PAYLOAD_DEPTH and is never analysed. Bug this catches: the operator
+    // previously got a clean allow with nothing to indicate the command was only
+    // partly read.
+    const inner = `tee -a ${LEDGER}`;
+    const mid = `env -S "${inner}"`;
+    const outer = `env -S 'env -S "${mid.replace(/"/g, '\\"')}"'`;
+    const warn = expectWarn(runHook({ command: outer }), 'depth-exceeded');
+    expect(warn.systemMessage).toContain('pre-bash-sessions-ledger-guard');
+  });
+
+  it('does NOT mark a deep-but-benign command (the basename filter is load-bearing)', () => {
+    // Bug this catches: an UNFILTERED mark turns every ordinary deeply-nested
+    // command into a warn envelope — noise this accident-guard must not generate,
+    // and a change that would break the whole expectAllow table above. The
+    // command still mentions the ledger at the OUTER level (so the cheap
+    // pre-filter does not short-circuit it), but reads it rather than writing,
+    // and the dropped payload names no ledger at all.
+    const outer = `cat ${LEDGER} | env -S 'env -S "env -S \\"echo hi\\""'`;
+    expectAllow(runHook({ command: outer }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1001 — DEGRADED surfaces on the DECISION channel
+//
+// This hook discarded `armGuard`'s `degraded` list, so a guard analysing
+// commands with the COMMITTED lexer was indistinguishable from a healthy one on
+// the only channel exit-0 surfaces. Unlike enforce-commands, this hook's
+// PARSE-ERROR door reaches DEGRADED directly: `command-blocker` is its only
+// fallback-bearing dependency and nothing imports it transitively first.
+// ---------------------------------------------------------------------------
+describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 30000 }, () => {
+  it('warns "DEGRADED" on the visible channel when the guard armed from HEAD', () => {
+    // Bug this catches: `const { modules } = await armGuard(...)` dropped
+    // `degraded`, so this spawn produced an EMPTY stdout — a silent allow.
+    // Only the working-tree copy is broken here (no alsoBreakHeadFallback), so
+    // the `git show HEAD:` recovery succeeds and the guard arms, degraded.
+    const result = runHook({
+      command: 'ls -la',
+      execArgv: brokenModuleBoot({ moduleBasename: 'command-blocker.mjs' }),
+    });
+    const warn = expectWarn(result, 'DEGRADED');
+    expect(warn.systemMessage).toContain('pre-bash-sessions-ledger-guard');
   });
 });

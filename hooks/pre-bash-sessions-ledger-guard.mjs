@@ -245,6 +245,7 @@ if (!shouldRunHook('pre-bash-sessions-ledger-guard')) process.exit(0);
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
 /**
  * The whole `command-blocker.mjs` namespace (#991: one direct import path, not
  * via the hardening.mjs barrel, which deliberately does NOT re-export the
@@ -254,6 +255,18 @@ if (!shouldRunHook('pre-bash-sessions-ledger-guard')) process.exit(0);
  * @type {Record<string, Function>|null}
  */
 let blocker = null;
+
+/**
+ * Module labels `armGuard` recovered from HEAD because the working-tree copy
+ * failed (parse error OR shape check). Non-empty ⇒ this hook is analysing
+ * commands with the COMMITTED lexer. Surfaced on the visible stdout channel by
+ * {@link flushNotices} (#1001) — the stderr DEGRADED banner alone is discarded
+ * under the exit-0 protocol, which made a degraded ALLOW indistinguishable from
+ * a healthy one.
+ *
+ * @type {string[]}
+ */
+let degradedLabels = [];
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -304,7 +317,7 @@ async function bootstrap() {
   const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
 
   const { armGuard } = await import('./_lib/guard-source-loader.mjs');
-  const { modules } = await armGuard(
+  const { modules, degraded } = await armGuard(
     {
       io: { specifier: lib('io.mjs') },
       blocker: {
@@ -321,8 +334,9 @@ async function bootstrap() {
     }
   );
 
-  ({ readStdin, emitAllow, emitDeny } = modules.io);
+  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   blocker = modules.blocker;
+  degradedLabels = degraded;
 }
 
 // ---------------------------------------------------------------------------
@@ -594,63 +608,101 @@ function scanCommand(command) {
  * OPTIONS are consumed with it and `sudo -u root tee -a <ledger>` reaches the
  * real verb instead of stopping at `-u`.
  *
+ * DUAL PARSE (#1000). `resolveSegmentVerb` returns an optional `alt` reading —
+ * the value-taking interpretation of an unknown dash-flag — whenever the two
+ * readings disagree about the verb. Both are judged here and the FIRST hit wins,
+ * which is the safe direction: guessing wrong in the boolean direction hid the
+ * write verb behind an unrecognised flag, and two commands were MEASURED to slip
+ * through that way (`nice --unknown 5 tee -a <ledger>` read the verb as `5`;
+ * `env -Q x tee -a <ledger>` read it as `x`). Judging both cannot lose a deny
+ * parse A already found — parse A is still evaluated first and unchanged.
+ *
  * @param {string} command - sanitized command
  * @param {number} [depth] - payload recursion level (see MAX_PAYLOAD_DEPTH)
+ * @param {string[]} [marks] - OUT-param accumulator for fail-visible markers
+ *   (#998): analysis this pass could not complete, e.g. a payload dropped at the
+ *   MAX_PAYLOAD_DEPTH cut. Threaded through the recursion so a mark raised in a
+ *   nested payload reaches `main()`. Never affects the return value — the
+ *   `string|null` contract is unchanged; marks add VISIBILITY, never a deny.
  * @returns {string|null} the offending target, or null
  */
-function findWriteVerbTarget(command, depth = 0) {
+function findWriteVerbTarget(command, depth = 0, marks = []) {
   for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
-    const { verb, index, payloads, wrapperArgs } = blocker.resolveSegmentVerb(segment);
+    const resolved = blocker.resolveSegmentVerb(segment);
+    const readings = [resolved, resolved.alt].filter(Boolean);
+    // Payloads are deduped ACROSS readings: both readings usually report the same
+    // `env -S '…'` operand, and recursing twice on one string only doubles work.
+    const payloadSet = new Set();
 
-    // A wrapper can write a file WITHOUT being the verb: `/usr/bin/time -o F`
-    // truncates F while the verb is whatever time runs. Checked before the verb
-    // dispatch because `time -o <ledger>` alone resolves to verb null. The
-    // file-vs-option distinction is the LEXER's now (#996.1): resolveSegmentVerb
-    // marks a write-destination operand `writesFile: true` from its per-wrapper
-    // `fileArgFlags` table (command-blocker.mjs — the writesFile contract, the
-    // `resolveSegmentVerb` return docblock), so a local `<wrapper>:<flag>` pair
-    // list here is gone. The rationale it encoded — `stdbuf -o` is a BUFFERING
-    // MODE, not a file, and `time -o` is the only wrapper flag that opens one —
-    // lives beside that table (command-blocker.mjs, the WRAPPER_UNWRAP docblock).
-    for (const wa of wrapperArgs) {
-      if (wa.writesFile !== true) continue;
-      if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
+    for (const { payloads, wrapperArgs } of readings) {
+      for (const p of payloads) payloadSet.add(p);
+
+      // A wrapper can write a file WITHOUT being the verb: `/usr/bin/time -o F`
+      // truncates F while the verb is whatever time runs. Checked before the verb
+      // dispatch because `time -o <ledger>` alone resolves to verb null. The
+      // file-vs-option distinction is the LEXER's now (#996.1): resolveSegmentVerb
+      // marks a write-destination operand `writesFile: true` from its per-wrapper
+      // `fileArgFlags` table (command-blocker.mjs — the writesFile contract, the
+      // `resolveSegmentVerb` return docblock), so a local `<wrapper>:<flag>` pair
+      // list here is gone. The rationale it encoded — `stdbuf -o` is a BUFFERING
+      // MODE, not a file, and `time -o` is the only wrapper flag that opens one —
+      // lives beside that table (command-blocker.mjs, the WRAPPER_UNWRAP docblock).
+      for (const wa of wrapperArgs) {
+        if (wa.writesFile !== true) continue;
+        if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
+      }
     }
 
     // `env -S 'tee -a <ledger>'` hides a whole command line in one operand.
     // Recurse on the payload with the SAME matcher rather than a second,
-    // weaker one — bounded by MAX_PAYLOAD_DEPTH.
-    if (depth < MAX_PAYLOAD_DEPTH) {
-      for (const payload of payloads) {
-        const hit = findLedgerWrite(payload, depth + 1);
-        if (hit) return hit;
+    // weaker one — bounded by MAX_PAYLOAD_DEPTH. Kept BEFORE the verb dispatch
+    // (pre-#1000 order), so which target a mixed command reports is unchanged.
+    if (payloadSet.size > 0) {
+      if (depth < MAX_PAYLOAD_DEPTH) {
+        for (const payload of payloadSet) {
+          const hit = findLedgerWrite(payload, depth + 1, marks);
+          if (hit) return hit;
+        }
+      } else if ([...payloadSet].some((p) => typeof p === 'string' && p.includes(LEDGER_BASENAME))) {
+        // The cut USED to be silent (#998 item 2): a payload nested past the cap
+        // was dropped with no trace, so an operator could not tell "analysed and
+        // clean" from "never looked at". Marked — but ONLY when the dropped
+        // payload actually mentions the ledger. An unfiltered mark would turn
+        // every ordinary deep-but-benign command into a warn envelope, which is
+        // noise this accident-guard must not generate. Still no deny: raising the
+        // cap into a deny is a policy change, not a visibility fix.
+        marks.push('depth-exceeded');
       }
     }
 
-    if (!verb) continue;
-    const args = segment.slice(index + 1);
+    for (const { verb, index } of readings) {
+      if (!verb) continue;
+      // `index` is the verb position OF THIS READING — never mix it with the
+      // other's (the lib docblock's positional-walk caveat).
+      const args = segment.slice(index + 1);
 
-    if (verb === 'tee') {
-      for (const arg of args) {
-        if (!arg.quoted && arg.text.startsWith('-')) continue;
-        if (refersToLedger(arg.text)) return arg.text;
+      if (verb === 'tee') {
+        for (const arg of args) {
+          if (!arg.quoted && arg.text.startsWith('-')) continue;
+          if (refersToLedger(arg.text)) return arg.text;
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (verb === 'dd') {
-      for (const arg of args) {
-        const m = /^of=(.*)$/.exec(arg.text);
-        if (m && refersToLedger(m[1])) return m[1];
+      if (verb === 'dd') {
+        for (const arg of args) {
+          const m = /^of=(.*)$/.exec(arg.text);
+          if (m && refersToLedger(m[1])) return m[1];
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (DEST_LAST_VERBS.has(verb)) {
-      const operands = args.filter((a) => a.quoted || !a.text.startsWith('-'));
-      // `cp a b` writes b; `cp ledger backup` READS the ledger and must pass.
-      const dest = operands.length >= 2 ? operands[operands.length - 1] : null;
-      if (dest && refersToLedger(dest.text)) return dest.text;
+      if (DEST_LAST_VERBS.has(verb)) {
+        const operands = args.filter((a) => a.quoted || !a.text.startsWith('-'));
+        // `cp a b` writes b; `cp ledger backup` READS the ledger and must pass.
+        const dest = operands.length >= 2 ? operands[operands.length - 1] : null;
+        if (dest && refersToLedger(dest.text)) return dest.text;
+      }
     }
   }
   return null;
@@ -666,9 +718,12 @@ function findWriteVerbTarget(command, depth = 0) {
  *
  * @param {string} command
  * @param {number} [depth] - payload recursion level (see MAX_PAYLOAD_DEPTH)
+ * @param {string[]} [marks] - OUT-param accumulator for fail-visible markers
+ *   (#998); see {@link findWriteVerbTarget}. Purely additive — the `string|null`
+ *   return contract is unchanged and a mark never becomes a deny.
  * @returns {string|null}
  */
-function findLedgerWrite(command, depth = 0) {
+function findLedgerWrite(command, depth = 0, marks = []) {
   if (typeof command !== 'string' || command.length === 0) return null;
   // Cheap pre-filter: no mention of the filename at all → nothing to analyse.
   if (!command.includes(LEDGER_BASENAME)) return null;
@@ -684,7 +739,28 @@ function findLedgerWrite(command, depth = 0) {
   if (!scan.balanced) {
     return `${LEDGER_BASENAME} (unbalanced quote — command not parseable, denied fail-closed)`;
   }
-  return findWriteVerbTarget(scan.sanitized, depth);
+  return findWriteVerbTarget(scan.sanitized, depth, marks);
+}
+
+/**
+ * Flush the aggregated allow-with-notice channel (#1001).
+ *
+ * Notices accumulate during matching and are emitted ONCE, here, on the VISIBLE
+ * stdout channel via `emitWarn` (allow-with-notice) — else a plain `emitAllow`.
+ * Both exit 0 and never return, so this is always the LAST statement on an allow
+ * path.
+ *
+ * Why aggregate instead of `emitWarn`-ing inline: `emitWarn` is `@returns never`
+ * (scripts/lib/io.mjs), so an inline call before `findLedgerWrite` would exit
+ * BEFORE the matcher ran — turning every would-be DENY into an ALLOW-with-notice.
+ * The deny path never reaches here and drops the notices by design: DENY wins,
+ * and the stderr copies remain for CI/debug.
+ *
+ * @param {string[]} notices
+ * @returns {never}
+ */
+function flushNotices(notices) {
+  return notices.length > 0 ? emitWarn(notices.join('\n')) : emitAllow();
 }
 
 // ---------------------------------------------------------------------------
@@ -702,9 +778,39 @@ async function main() {
   const command = input?.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return emitAllow();
 
+  // #1001 — aggregated allow-with-notice channel, opened only AFTER G1/G2 (a
+  // non-Bash call or an empty command is not this hook's business and stays a
+  // bare allow). Flushed ONCE on the allow path; see flushNotices for why an
+  // inline emitWarn here would disarm the G4 deny below.
+  const notices = [];
+  // A guard armed from HEAD is a visible-channel concern: the DEGRADED banner
+  // rides stderr only, which exit 0 discards. armGuard already fired it once per
+  // session; surface it on stdout so a degraded ALLOW is not silently
+  // indistinguishable from a healthy one.
+  if (degradedLabels.length > 0) {
+    notices.push(
+      `${HOOK_NAME}: DEGRADED — guard module(s) loaded from HEAD, not your working tree ` +
+        `(${degradedLabels.join(', ')}); uncommitted changes to them are NOT in effect. See #992.`
+    );
+  }
+
   // G3 — matcher. No direct ledger write → allow.
-  const target = findLedgerWrite(command);
-  if (!target) return emitAllow();
+  const marks = [];
+  const target = findLedgerWrite(command, 0, marks);
+  if (!target) {
+    // Fail-VISIBLE (#998 item 2): the matcher completed without a hit, but part
+    // of the command was never analysed. Say so rather than reporting a clean
+    // allow. Still an ALLOW — this hook is an accident-guard, fail-open by
+    // design, and a depth cut is not evidence of a write.
+    if (marks.length > 0) {
+      const msg =
+        `${HOOK_NAME}: unresolved payload (${[...new Set(marks)].join(', ')}) — ` +
+        `not analysed (fail-visible)`;
+      process.stderr.write(`⚠ ${msg}\n`);
+      notices.push(msg);
+    }
+    return flushNotices(notices);
+  }
 
   // G4 — deny. emitDeny writes the envelope with fs.writeSync (#906/#914): a
   // console.log here would be dropped above the 64 KiB pipe buffer, and a

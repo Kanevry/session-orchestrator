@@ -37,20 +37,50 @@
  *   WELL-FORMED but incomplete module (the shape-check case: a HEAD copy older
  *   than the working tree, missing a newly added export) instead of breaking it
  *   outright. Overrides `alsoBreakHeadFallback`'s default broken source.
+ * @param {string|null} [opts.workingSource=null] - replace the WORKING-TREE copy
+ *   with this source instead of the unparseable default. Additive: omit it and
+ *   the helper behaves exactly as before.
+ *
+ *   This is the door to the DEGRADED state for a hook whose parse-error door is
+ *   closed. `armGuard` degrades on EITHER a parse error OR an `assertShape`
+ *   failure, and for `hooks/enforce-commands.mjs` only the second is reachable:
+ *   its `hardening` spec has no fallback and imports `command-blocker.mjs`
+ *   transitively (via `scope-gate.mjs`), so a SyntaxError there kills bootstrap
+ *   FIRST and yields GUARD INACTIVE, never DEGRADED. A working copy that PARSES
+ *   but is missing one `requires` export fails only the shape check, so the
+ *   fallback runs and the guard arms from HEAD. For that hook (requires:
+ *   `commandMatchesBlocked` + `suggestForCommandBlock`):
+ *
+ *   ```js
+ *   brokenModuleBoot({
+ *     moduleBasename: 'command-blocker.mjs',
+ *     workingSource: 'export function commandMatchesBlocked() { return false; }',
+ *     headSource: 'export function commandMatchesBlocked(c, p) { return c.includes(p); }\n'
+ *       + 'export function suggestForCommandBlock() { return "use the sanctioned path"; }',
+ *   })
+ *   ```
+ *
+ *   `headSource` must then be a VALID module carrying the complete required set —
+ *   otherwise the HEAD copy fails its own shape check too and the hook banners
+ *   GUARD INACTIVE instead.
  * @returns {string[]} execArgv, e.g. `['--import', 'data:text/javascript;base64,…']`
  */
 export function brokenModuleBoot({
   moduleBasename = 'command-blocker.mjs',
   alsoBreakHeadFallback = false,
   headSource = null,
+  workingSource = null,
 } = {}) {
   // `headSource` (a WELL-FORMED but incomplete module) takes precedence over the
   // outright-broken default that `alsoBreakHeadFallback` selects.
   const headOverride = headSource ?? (alsoBreakHeadFallback ? 'export const broken = ;' : null);
+  // `workingSource` opts the working-tree copy out of the unparseable default —
+  // the only way to reach `assertShape`'s DEGRADED door (see the param docs).
+  const workingOverride = workingSource ?? 'export const broken = ;';
   const loader = `
 export async function load(url, context, next) {
   if (url.endsWith(${JSON.stringify(moduleBasename)})) {
-    return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
+    return { format: 'module', shortCircuit: true, source: ${JSON.stringify(workingOverride)} };
   }
   ${
     headOverride !== null

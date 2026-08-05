@@ -654,3 +654,98 @@ describe('#993 — load-failure visibility (GUARD INACTIVE)', { timeout: 30000 }
     expectGuardInactive(result, { hookName: 'enforce-commands' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1001 — DEGRADED visibility on the DECISION channel
+//
+// `armGuard` returns `{ modules, degraded }`; `degraded` names every module it
+// had to recover from HEAD because the working-tree copy failed. This hook
+// discarded that value: it destructured `{ modules }` only. The DEGRADED banner
+// therefore reached stderr alone — and under the exit-0 PreToolUse protocol
+// (#906) stderr is not surfaced, so a session running against COMMITTED source
+// looked byte-identical to a healthy one on the only channel the operator sees.
+//
+// Reaching DEGRADED here needs the SHAPE-CHECK door, not the parse-error door:
+// this hook's `hardening` spec has no fallback and imports command-blocker
+// transitively (via scope-gate.mjs), so a SyntaxError kills bootstrap FIRST and
+// yields GUARD INACTIVE (the suite above), never DEGRADED. A working copy that
+// PARSES but omits one `requires` export fails only `assertShape` — the HEAD
+// fallback then runs and the guard arms, degraded.
+// ---------------------------------------------------------------------------
+
+/**
+ * Working-tree command-blocker that PARSES but omits `suggestForCommandBlock` —
+ * one of the two names on the `blocker` spec's `requires` array, so it fails
+ * `assertShape` and nothing else.
+ *
+ * The other three exports are not decoration: `scope-gate.mjs` statically imports
+ * `tokenizeCommand` / `splitChainSegments` / `resolveSegmentVerb` from this
+ * module, and `hardening.mjs` pulls scope-gate in. Omitting them makes the LINK
+ * of `hardening` fail — which has no fallback and arms first — so the run lands
+ * on GUARD INACTIVE and never reaches the degraded path under test.
+ */
+const EXPORT_SHY_WORKING = [
+  'export function commandMatchesBlocked() { return false; }',
+  'export function tokenizeCommand() { return []; }',
+  'export function splitChainSegments() { return []; }',
+  'export function resolveSegmentVerb() { return { verb: null, index: -1, payloads: [], wrapperArgs: [] }; }',
+].join('\n');
+
+/** Valid HEAD replacement carrying the COMPLETE `requires` set. */
+const VALID_HEAD = [
+  'export function commandMatchesBlocked(command, pattern) { return command.includes(pattern); }',
+  'export function suggestForCommandBlock() { return "use the sanctioned path"; }',
+].join('\n');
+
+const DEGRADED_BOOT = {
+  moduleBasename: 'command-blocker.mjs',
+  workingSource: EXPORT_SHY_WORKING,
+  headSource: VALID_HEAD,
+};
+
+describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 30000 }, () => {
+  it('warns "DEGRADED" on the visible channel when the guard armed from HEAD (non-matching command)', async () => {
+    // Bug this catches: `const { modules } = await armGuard(...)` dropped
+    // `degraded` on the floor, so this exact spawn produced an EMPTY stdout —
+    // an ordinary silent allow, indistinguishable from a healthy guard, while
+    // the hook was in fact evaluating COMMITTED source.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: ['rm -rf'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('ls -la'),
+      execArgv: brokenModuleBoot(DEGRADED_BOOT),
+    });
+    const warn = expectWarn(result, 'DEGRADED');
+    // The notice must NAME the recovered module and the hook, else the operator
+    // cannot tell which uncommitted edit is not in effect.
+    expect(warn.systemMessage).toContain('enforce-commands');
+    expect(warn.systemMessage).toContain('blocker');
+  });
+
+  it('still DENIES a blocked command while degraded — the notice never preempts the deny', async () => {
+    // Bug this catches (the emitWarn trap, repo learning conf 0.8): emitWarn is
+    // `@returns never`. An inline warn at the degraded site — before the G6
+    // blocked-pattern loop — exits 0 with an allow-with-notice envelope, so every
+    // deny in a degraded session silently becomes an ALLOW. Aggregating and
+    // flushing only on the allow path is what keeps this a deny.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: ['rm -rf'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenModuleBoot(DEGRADED_BOOT),
+    });
+    expectDeny(result, 'rm -rf');
+    // expectDeny already pins "exactly one non-blank stdout line", which is the
+    // load-bearing half here: a second envelope (notice + deny) would leave the
+    // harness parsing the FIRST line only, and a leading systemMessage line reads
+    // as no-decision, i.e. fail-OPEN. Asserted explicitly so the intent survives
+    // any future loosening of the shared helper.
+    expect(result.stdout.split('\n').filter((l) => l.trim().length > 0)).toHaveLength(1);
+  });
+});

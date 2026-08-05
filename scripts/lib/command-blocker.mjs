@@ -804,10 +804,25 @@ export const WRAPPER_UNWRAP = new Map([
  * Return contract (ADDITIVE — `wrapperArgs` was appended in #988 T3; existing
  * consumers destructuring `{ verb, index, payloads }` are unaffected):
  *
+ * DUAL PARSE (#1000). An unknown dash-flag is ambiguous: this table cannot know
+ * whether `env -Q x bash -c '…'` means "`-Q` is a boolean, `x` is the verb" or
+ * "`-Q` takes `x`, `bash` is the verb". The resolver therefore reads the
+ * segment TWICE — parse A treats unknown flags as booleans (byte-identical to
+ * the pre-#1000 behaviour, and still the primary result), parse B treats them
+ * as value-taking — and reports the second reading as `alt` when it disagrees.
+ * Both readings are then judged, so a deny in EITHER is a deny: the safe
+ * direction, since guessing wrong in the boolean direction silently hid an
+ * interpreter behind an unrecognised flag (the measured #1000 bypass).
+ * `alt` is present ONLY when an unknown flag was skipped AND the two readings
+ * resolve a different verb or index; it is never nested (no `alt.alt`).
+ *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {{ verb: string|null, index: number, payloads: string[],
  *             wrapperArgs: Array<{ wrapper: string, flag: string, value: string|null,
- *                                  writesFile?: true }> }}
+ *                                  writesFile?: true }>,
+ *             alt?: { verb: string|null, index: number, payloads: string[],
+ *                     wrapperArgs: Array<{ wrapper: string, flag: string,
+ *                                          value: string|null, writesFile?: true }> } }}
  *   verb — bare program basename (or synthetic `sh` for `sudo -i`/`-s`), null
  *   when the segment exhausts in wrappers; index — token index of the resolved
  *   verb (-1 when null); payloads — command strings a wrapper will execute;
@@ -829,10 +844,18 @@ export const WRAPPER_UNWRAP = new Map([
  *   `/usr/bin/time -o <ledger> npm test` truncates `<ledger>` while the verb is
  *   `npm`; extractRedirectTargets surfaces exactly these entries so the
  *   redirect denylist sees them too.
+ *
+ *   `alt` (#1000) — the value-taking reading of the same segment, present only
+ *   under the conditions above. Consumers that judge (matchSegments,
+ *   collectRedirectTargets) must consider BOTH readings; consumers that need a
+ *   single token position (`parseRmTargets`, the scope gate) keep reading the
+ *   primary `verb`/`index` only — `alt.index` addresses a DIFFERENT reading of
+ *   the token stream and must never be fed to a positional walk.
  */
-export function resolveSegmentVerb(segment) {
+function resolveCore(segment, unknownFlagsTakeValue) {
   const payloads = [];
   const wrapperArgs = [];
+  let sawUnknownFlag = false;
   let i = 0;
   // Skip leading FOO=bar env assignments (unquoted).
   while (i < segment.length && !segment[i].quoted && ENV_ASSIGN_RE.test(segment[i].text)) {
@@ -889,13 +912,48 @@ export function resolveSegmentVerb(segment) {
           wrapperArgs.push(entry);
         }
       }
-      i++; // unknown / boolean / attached-value flag — one token
+      // Unknown / boolean / attached-value flag. A dash token that survived
+      // envAssignments, `--`, the non-dash break, splitString, shellFlags,
+      // argFlags AND the attached-`=` form is one this table does not know —
+      // the ONLY place the two readings differ (#1000). No wrapperArgs entry is
+      // recorded in the value-taking reading: an unknown flag is by
+      // construction absent from fileArgFlags, so `writesFile` can never be
+      // invented for it.
+      sawUnknownFlag = true;
+      i += (unknownFlagsTakeValue && i + 1 < segment.length) ? 2 : 1;
     }
     for (let p = spec.positionals ?? 0; p > 0 && i < segment.length; p--) i++;
-    if (sawShellFlag) return { verb: 'sh', index: i, payloads, wrapperArgs };
+    if (sawShellFlag) return { verb: 'sh', index: i, payloads, wrapperArgs, sawUnknownFlag };
   }
-  if (i >= segment.length) return { verb: null, index: -1, payloads, wrapperArgs };
-  return { verb: segment[i].text.replace(/^.*\//, ''), index: i, payloads, wrapperArgs };
+  if (i >= segment.length) return { verb: null, index: -1, payloads, wrapperArgs, sawUnknownFlag };
+  return {
+    verb: segment[i].text.replace(/^.*\//, ''),
+    index: i,
+    payloads,
+    wrapperArgs,
+    sawUnknownFlag,
+  };
+}
+
+/**
+ * Strip the internal `sawUnknownFlag` marker from a resolveCore result, leaving
+ * the public shape. The key must be ABSENT (not undefined-valued) so a strict
+ * `toEqual` on an unambiguous resolution keeps passing.
+ *
+ * @param {{ verb: string|null, index: number, payloads: string[],
+ *           wrapperArgs: object[], sawUnknownFlag: boolean }} r
+ * @returns {{ verb: string|null, index: number, payloads: string[], wrapperArgs: object[] }}
+ */
+function stripCore(r) {
+  return { verb: r.verb, index: r.index, payloads: r.payloads, wrapperArgs: r.wrapperArgs };
+}
+
+export function resolveSegmentVerb(segment) {
+  const a = resolveCore(segment, false); // parse A — byte-identical to pre-#1000
+  if (!a.sawUnknownFlag) return stripCore(a); // unambiguous → no `alt` key at all
+  const b = resolveCore(segment, true); // parse B — unknown flags take a value
+  if (b.verb === a.verb && b.index === a.index) return stripCore(a);
+  return { ...stripCore(a), alt: stripCore(b) };
 }
 
 /**
@@ -953,6 +1011,45 @@ function quotedTokensMatch(segment, re) {
 }
 
 /**
+ * How far a redirect token's syntax reaches: the index of the LAST token this
+ * redirect owns, starting at the redirect token itself (#1002).
+ *
+ * The grammar rule, stated ONCE (it was coded three times independently before
+ * this export existed):
+ *   - `dup` (`2>&1`) carries its target INLINE in the operator token — it owns
+ *     no following word.
+ *   - `heredoc` (`<<EOF`) consumes its delimiter as SYNTAX inside the lexer. A
+ *     terminated body arrives as a QUOTED token; an UNTERMINATED here-doc
+ *     leaves real command tokens behind, which must stay visible to the caller
+ *     — skipping a word here would eat the next real command (#970).
+ *   - EVERY other mode — `truncate` (`>`), `append` (`>>`), `read` (`<`) and
+ *     `herestring` (`<<<`) — owns the next word. `herestring` deliberately so:
+ *     in `rm -rf /tmp/x <<< /etc/passwd` the word after `<<<` is inline data
+ *     for the redirect, not an `rm` operand, and reading it as one would
+ *     invent a deletion target the command never had.
+ *   - A next token that is ITSELF a redirect is never an operand (`> >> x`):
+ *     the dangling redirect owns nothing.
+ *
+ * This does NOT answer "does this redirect name a filesystem target" — that is
+ * a SEPARATE rule, owned by collectRedirectTargets, which additionally excludes
+ * `herestring` (inline data names no file). Operand OWNERSHIP and target
+ * REPORTABILITY are different questions with different answers for `<<<`.
+ *
+ * @param {Array<{ text: string, quoted: boolean, redirect?: { mode: string } }>} segment
+ * @param {number} i — index of the redirect token
+ * @returns {number} `i` when the redirect owns no operand word, else `i + 1`
+ */
+export function redirectSpanEnd(segment, i) {
+  const tok = segment[i];
+  if (!tok || !tok.redirect) return i;
+  const hasOperandWord = tok.redirect.mode !== 'dup' && tok.redirect.mode !== 'heredoc';
+  if (hasOperandWord && i + 1 < segment.length && !segment[i + 1].redirect) {
+    return i + 1;
+  }
+  return i;
+}
+
+/**
  * Test whether a blocked pattern occurs OUTSIDE quoted tokens within a segment.
  * Reconstructs the unquoted skeleton (quoted tokens replaced by a single space
  * placeholder so they cannot bridge an adjacent-token match) and applies the
@@ -975,14 +1072,10 @@ function unquotedSegmentMatch(segment, re) {
     const tok = segment[i];
     if (tok.redirect) {
       parts.push(' ');
-      // `dup` (2>&1) has its target inline; `heredoc` consumes its delimiter in
-      // the lexer and its body arrives as a separate QUOTED token — neither has
-      // an operand word to skip, and skipping would eat the next real command.
-      const hasOperandWord = tok.redirect.mode !== 'dup' && tok.redirect.mode !== 'heredoc';
-      if (hasOperandWord && i + 1 < segment.length && !segment[i + 1].redirect) {
-        parts.push(' ');
-        i++; // operand word belongs to the redirect — skip it too
-      }
+      // Operand-span rule lives in redirectSpanEnd (#1002) — one grammar, one
+      // place. `end > i` is exactly the old inline predicate.
+      const end = redirectSpanEnd(segment, i);
+      if (end > i) { parts.push(' '); i = end; } // operand word belongs to the redirect
       continue;
     }
     parts.push(tok.quoted ? ' ' : tok.text);
@@ -1026,20 +1119,31 @@ function matchSegments(segments, re, depth, budget) {
     const resolved = resolveSegmentVerb(segment);
 
     // 2) Quoted occurrence → only a match when the segment verb is an interpreter
-    //    that executes its quoted payload.
+    //    that executes its quoted payload. EITHER reading of an ambiguous
+    //    unknown flag counts (#1000): `env -Q x bash -c 'rm -rf /etc'` resolves
+    //    to the non-interpreter `x` in parse A and to `bash` in parse B.
     if (quotedTokensMatch(segment, re)) {
-      if (resolved.verb && SHELL_EXEC_INTERPRETERS.has(resolved.verb)) return true;
+      const isInterp = (v) => Boolean(v) && SHELL_EXEC_INTERPRETERS.has(v);
+      if (isInterp(resolved.verb) || isInterp(resolved.alt?.verb)) return true;
       // else: inert literal inside quotes for a non-interpreter verb → no match
       // for THIS segment; keep scanning other segments.
     }
 
-    // 3) `-c`/`env -S` payload recursion (depth-capped, budgeted).
+    // 3) `-c`/`env -S` payload recursion (depth-capped, budgeted). The payload
+    //    set is the UNION over both readings, de-duplicated so an ambiguous
+    //    segment cannot double-charge the shared evaluation budget.
     if (depth < MAX_PAYLOAD_DEPTH) {
-      const payloads = resolved.payloads;
+      const payloadSet = new Set(resolved.payloads);
       if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
-        payloads.push(...dashCPayloads(segment, resolved.index));
+        for (const p of dashCPayloads(segment, resolved.index)) payloadSet.add(p);
       }
-      for (const payload of payloads) {
+      if (resolved.alt) {
+        for (const p of resolved.alt.payloads) payloadSet.add(p);
+        if (resolved.alt.verb && DASH_C_SHELLS.has(resolved.alt.verb)) {
+          for (const p of dashCPayloads(segment, resolved.alt.index)) payloadSet.add(p);
+        }
+      }
+      for (const payload of payloadSet) {
         if (budget.remaining <= 0) break;
         budget.remaining -= 1;
         const subTokens = tokenizeCommand(
@@ -1071,11 +1175,15 @@ function collectRedirectTargets(segments, out, depth, budget) {
       // Deliberate boundary: only file-operand modes are reported. `dup`
       // (`2>&1`) targets a file descriptor, `heredoc`/`herestring` operands
       // are inline data/delimiters — none names a filesystem target.
+      // NOTE: this mode filter is a SEPARATE rule from operand ownership
+      // (redirectSpanEnd) — `herestring` OWNS its next word but names no file,
+      // so it is excluded here and included there. Do not merge the two.
       if (mode === 'dup' || mode === 'heredoc' || mode === 'herestring') continue;
-      const operand = (i + 1 < segment.length && !segment[i + 1].redirect)
-        ? segment[i + 1]
-        : null;
-      if (operand) i++; // operand word belongs to this redirect
+      // Past the filter `hasOperandWord` is unconditionally true, so the shared
+      // span rule reduces to the old inline predicate (#1002).
+      const end = redirectSpanEnd(segment, i);
+      const operand = end > i ? segment[end] : null;
+      if (operand) i = end; // operand word belongs to this redirect
       if (!operand || /[$`]/.test(operand.text)) {
         // Variable indirection (`> "$X"`), command substitution (`> $(cmd)` /
         // backticks), or a missing operand: fail-visible, never guess (#983).
@@ -1102,9 +1210,25 @@ function collectRedirectTargets(segments, out, depth, budget) {
     // consumes — to buy back a false-positive class that is empty in practice
     // (nobody appends a timing report to a policy-protected file). An
     // under-report here is a bypass; this over-report is a nuisance at worst.
-    for (const wa of resolved.wrapperArgs) {
+    //
+    // Both readings of an ambiguous unknown flag contribute (#1000), UNIONED
+    // and never replaced: `env -Q x /usr/bin/time -o CLAUDE.md npm test` hides
+    // the operand from parse A (which reads `x` as the verb) and surfaces it in
+    // parse B, while `sudo -n /usr/bin/time -o report.txt npm test` is the
+    // mirror case — parse B swallows `/usr/bin/time` as `-n`'s operand and
+    // reports nothing. Replacement would lose one of the two.
+    const seenWrapperTargets = new Set();
+    const altWrapperArgs = resolved.alt ? resolved.alt.wrapperArgs : [];
+    for (const wa of [...resolved.wrapperArgs, ...altWrapperArgs]) {
       if (wa.writesFile !== true) continue;
       if (typeof wa.value !== 'string') continue;
+      // De-dup key is the OPERAND plus the mode, which for a resolved entry is
+      // exactly `target + ':' + mode`; using the operand keeps two distinct
+      // unresolved spellings (`"$OUT"` vs `"$X"`) distinct rather than
+      // collapsing them onto a shared `null` target.
+      const key = `${wa.value}:truncate`;
+      if (seenWrapperTargets.has(key)) continue;
+      seenWrapperTargets.add(key);
       if (/[$`]/.test(wa.value)) {
         // Same fail-visible rule as a redirect operand (#983): never guess at a
         // variable or a command substitution, but never silently drop it either.
